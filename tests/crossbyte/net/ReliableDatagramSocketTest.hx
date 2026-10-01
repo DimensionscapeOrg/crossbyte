@@ -1026,6 +1026,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 		var unused = new DatagramSocket();
 		var errors = 0;
 		var closes = 0;
+		var order:Array<String> = [];
 
 		try {
 			unused.bind(0, "127.0.0.1");
@@ -1033,14 +1034,22 @@ class ReliableDatagramSocketTest extends utest.Test {
 			unused.close();
 
 			client.timeout = 10;
-			client.addEventListener(IOErrorEvent.IO_ERROR, _ -> errors++);
-			client.addEventListener(Event.CLOSE, _ -> closes++);
+			client.addEventListener(IOErrorEvent.IO_ERROR, _ -> {
+				errors++;
+				order.push("ioError");
+			});
+			client.addEventListener(Event.CLOSE, _ -> {
+				closes++;
+				order.push("close");
+			});
 			client.connect("127.0.0.1", unusedPort);
 
 			pumpUntil(() -> errors > 0, 1.0);
 
 			Assert.equals(1, errors);
 			Assert.equals(1, closes);
+			// As the class says a failed connect ends: the error, then close.
+			Assert.same(["ioError", "close"], order);
 			Assert.isFalse(client.connected);
 			Assert.isTrue(throwsIOError(() -> client.send(bytesOf("late"))));
 		} catch (e:Dynamic) {

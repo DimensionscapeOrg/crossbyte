@@ -302,9 +302,16 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	}
 
 	/**
-		Stops listening, closes every reliable session -- each sending its
-		peer a FIN, after whatever it had waiting -- and closes the underlying
-		UDP transport.
+		Stops listening, ends every reliable session at once, as
+		`ReliableDatagramSocket.abort()` does, and closes the underlying UDP
+		transport.
+
+		Each session sends what it had gathered, then a FIN that ends its
+		peer's session the moment it arrives; what was still waiting for the
+		window, or lost and not yet sent again, is dropped. The sessions share
+		this server's socket, which goes with this call, so none can wait for
+		its peer. For a graceful shutdown `close()` the sessions first and
+		close the server once each has dispatched `close`.
 	**/
 	public function close():Void {
 		if (__closed) {
@@ -336,13 +343,14 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		__pending = new StringMap();
 		__pendingCount = 0;
 
-		// Closed, not just disposed: close() tells the peer, which disposing
+		// Aborted, not just disposed: abort() tells the peer, which disposing
 		// did not, so every client of a server that shut down went on
 		// sending into a closed port until its own timeout said the session
-		// was gone.
+		// was gone. And not closed gracefully, which would wait on the
+		// socket this call is about to close.
 		for (connection in connections) {
 			try {
-				connection.close();
+				connection.abort();
 			} catch (_:Dynamic) {}
 		}
 
@@ -1053,9 +1061,9 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	}
 
 	/**
-		Frees the relay's allocation, closing first each session that reached
-		its peer through it -- each with a FIN, while the relay can still carry
-		one.
+		Frees the relay's allocation, ending first each session that reached
+		its peer through it, at once, as `ReliableDatagramSocket.abort()` does
+		-- each with a FIN, while the relay can still carry one.
 	**/
 	public function releaseRelay():Void {
 		var released = relay;
@@ -1066,7 +1074,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		for (connection in __relayedSessions(released)) {
 			try {
-				connection.close();
+				connection.abort();
 			} catch (_:Dynamic) {}
 		}
 
@@ -1424,11 +1432,15 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		the server restarted, or gave the session up -- went on sending into
 		nothing until its own timeout ran out. A FIN is the size of the
 		smallest frame that can draw one, so answering gains a sender nothing
-		it could not send itself. Never sent for a FIN: two sides that each
-		thought the other a stranger would answer each other for good.
+		it could not send itself. Never sent for a FIN that ends a session at
+		once, which is what this sends: two sides that each thought the other
+		a stranger would answer each other for good. A graceful FIN is
+		answered, since its sender waits for an acknowledgement nothing here
+		will give -- often from a session that took the FIN and went, its
+		answer lost on the way.
 	**/
 	@:noCompletion private function __resetStranger(frame:Null<ReliableDatagramFrame>, address:String, port:Int, via:Null<TurnClient>):Void {
-		if (frame != null && frame.type == ReliableDatagramFrameType.FIN) {
+		if (frame != null && frame.type == ReliableDatagramFrameType.FIN && !frame.graceful) {
 			return;
 		}
 

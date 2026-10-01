@@ -53,7 +53,7 @@ import crossbyte._internal.net.IPv6;
 	gathered and sent together when the runtime's loop finishes its pass,
 	several frames to a datagram where the peer takes them, so a burst of
 	small messages costs a few system calls rather than one each. `flush()`
-	sends what is gathered at once, and `close()` sends it before the FIN.
+	sends what is gathered at once.
 
 	A frame lost on the way is found from what arrives after it. The
 	receiver's acknowledgement names the frames it holds past a gap, and a
@@ -61,9 +61,23 @@ import crossbyte._internal.net.IPv6;
 	one's round trip, and a little more, to arrive in. When nothing comes back
 	at all, the last frame goes again as a probe, and only then does a frame
 	wait out its retransmission timeout.
+
+	A session ends in one of three ways, and dispatches `close` once when it
+	has. `close()` is graceful: everything sent before it arrives, in order,
+	and then the peer's `close`; this side's follows when the peer has
+	acknowledged it all, or when the peer has gone `closeTimeout` seconds
+	without acknowledging anything. `abort()` ends it at once on both sides,
+	dropping whatever has not arrived. And a failure ends it with an
+	`ioError` saying why, and then `close`: a connect that times out or
+	whose name does not resolve, a send the system refuses, or a peer silent
+	for `idleTimeout`.
 	@event connect Dispatched when the reliable handshake completes.
-	@event close Dispatched when the reliable session closes.
-	@event ioError Dispatched when a handshake or transport error occurs.
+	@event close Dispatched once, when the session ends: closed by the peer,
+	       by this side's `close()` once it has finished, by `abort()`, or by
+	       a failure, after the `ioError` that says what it was. A connect
+	       that fails dispatches `ioError` and then `close`.
+	@event ioError Dispatched when a handshake or transport error occurs, and
+	       always followed by `close`.
 	@event data Dispatched in `DATAGRAM` mode when a complete reliable payload is delivered.
 	@event socketData Dispatched in `STREAM` mode when additional ordered bytes are available.
 **/
@@ -112,7 +126,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	public var bytesPending(get, never):Int;
 
 	/**
-		Indicates whether the reliable session handshake has completed.
+		Indicates whether the reliable session handshake has completed, and
+		the session has not been closed since. False from the moment `close()`
+		is called, while what it waits on is still on its way.
 	**/
 	public var connected(get, never):Bool;
 
@@ -428,8 +444,36 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	**/
 	public var idleTimeout(get, set):Float;
 
+	/** `closeTimeout` unless changed, in seconds. **/
+	public static inline var DEFAULT_CLOSE_TIMEOUT:Float = 10.0;
+
+	/**
+		How long, in seconds, `close()` waits on a peer that has stopped
+		acknowledging what this side sent. Zero sets no deadline, and a peer
+		that stops answering is then given up only at `idleTimeout`.
+
+		Measured from the last frame the peer was known to receive, not from
+		the call, so a long queue draining steadily is not cut off. A peer
+		that acknowledges nothing for this long is given up: an `ioError`
+		says what was sent before the close may not have arrived, unless all
+		that went unacknowledged was the close itself; the peer is sent a FIN
+		that ends its session at once, as `abort()` sends; and `close`
+		follows.
+
+		Read while a close waits, so changing it then changes that close.
+	**/
+	public var closeTimeout(get, set):Float;
+
 	@:noCompletion private var __keepAliveInterval:Float = DEFAULT_KEEP_ALIVE_INTERVAL;
 	@:noCompletion private var __idleTimeout:Float = DEFAULT_IDLE_TIMEOUT;
+	@:noCompletion private var __closeTimeout:Float = DEFAULT_CLOSE_TIMEOUT;
+
+	// A graceful close under way: close() has been called, and the session
+	// is waiting for the peer to acknowledge what it sent and the FIN after
+	// it. When the close began, and the timer that checks on it.
+	@:noCompletion private var __closing:Bool = false;
+	@:noCompletion private var __closeStartedAt:Float = 0;
+	@:noCompletion private var __closeTimerHandle:Int = -1;
 
 	// Whether a datagram has gone out since the last keepalive check, and for
 	// how long in a row the peer has been silent at those checks.
@@ -740,11 +784,76 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		Closes the reliable session.
-		If a remote endpoint is known, whatever is waiting to be sent goes
-		first, then a close control frame, and then local cleanup occurs.
+		Closes the reliable session gracefully: everything sent before this
+		call reaches the peer, in order, before the peer's `close`.
+
+		What is waiting goes first -- frames gathered this pass, frames the
+		congestion window is holding back (`bufferedAmount`), and in `STREAM`
+		mode bytes written and not yet flushed -- and whatever the peer has
+		not acknowledged is sent again as it needs to be. A FIN follows, in
+		the same sequence, so the peer acts on it only once everything before
+		it has arrived, whatever the network lost or reordered on the way.
+		This side's `close` is dispatched when the peer has acknowledged all
+		of it, or when the peer has gone `closeTimeout` seconds without
+		acknowledging anything -- after an `ioError`, if what went
+		unacknowledged was more than the FIN itself.
+
+		From the call on, the session is closed to the application:
+		`connected` reads false, sends, writes and reads throw, and what the
+		peer sends meanwhile is acknowledged and dropped. Calling it again
+		does nothing, and `abort()` ends a close that is waiting. A session
+		not yet connected has nothing to deliver, and is ended at once, as
+		`abort()` ends one.
+
+		A peer from before 1.0 takes the FIN the moment it arrives and does
+		not acknowledge it, so a close to one ends at `closeTimeout`.
 	**/
 	public function close():Void {
+		if (__closed || __closing) {
+			return;
+		}
+
+		if (!__connected || __remoteAddress == "" || __remotePort <= 0 || __transport == null) {
+			abort();
+			return;
+		}
+
+		// Set before the stream's bytes are queued: they are the last of
+		// what was sent, and go however far past `maxOutputBufferSize` they
+		// take the queue, a limit on a sender outrunning its path, which a
+		// close is not.
+		__closing = true;
+		__closeStartedAt = __clock();
+		if (__mode == STREAM && __output.length > 0) {
+			__queueBytes(__output, 0, __output.length);
+			__output = __createBuffer();
+		}
+		// Unread, and now unreadable: `bytesAvailable` says so.
+		__input = __createBuffer();
+
+		__queueFin();
+		__armCloseTimer(__closeTimeout);
+		// Now rather than when the pass ends, as the FIN always went: a
+		// program that closes and then exits still sends it.
+		__sendBundle();
+	}
+
+	/**
+		Ends the session at once, on both sides.
+
+		What this session has gathered in the pass goes, and then a FIN that
+		ends the peer's session the moment it arrives, holding nothing back
+		for what is still on its way: whatever the peer has not received by
+		then -- frames the congestion window held, frames lost and not yet
+		sent again, stream bytes not flushed -- is dropped, on both sides.
+		`close` is dispatched before this returns, for a session that had a
+		peer, and the peer dispatches its own when the FIN arrives.
+
+		For a session that cannot or should not wait: a server shutting down,
+		a peer breaking the protocol. `close()` is the graceful way, and
+		calling this while it waits ends that close.
+	**/
+	public function abort():Void {
 		if (__closed) {
 			return;
 		}
@@ -755,6 +864,92 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 
 		__dispose(true);
+	}
+
+	/**
+		Queues the graceful FIN behind everything this session has to send.
+		It takes its sequence when it goes, as a PACKET does -- the place
+		after the last frame -- and is sent again until acknowledged, as a
+		PACKET is.
+	**/
+	@:noCompletion private function __queueFin():Void {
+		var frame = new OutstandingFrame(new ByteArray(), 0, 0, false);
+		frame.fin = true;
+		if (__queueAt < __outgoingQueue.length || __windowExceeded()) {
+			__outgoingQueue.push(frame);
+			return;
+		}
+		__sendPacket(frame);
+	}
+
+	/** (Re)starts the timer that checks on a close, `delay` seconds from now; none for no deadline. **/
+	@:noCompletion private function __armCloseTimer(delay:Float):Void {
+		if (__closeTimerHandle != -1) {
+			CBTimer.clear(__closeTimerHandle);
+			__closeTimerHandle = -1;
+		}
+		if (__closeTimeout <= 0) {
+			return;
+		}
+		__closeTimerHandle = CBTimer.setTimeout(delay, __onCloseTimer);
+	}
+
+	/**
+		The close's deadline, looked at: given up if the peer has gone
+		`closeTimeout` seconds without showing it received anything, and
+		looked at again when it would have if it has shown so since.
+	**/
+	@:noCompletion private function __onCloseTimer():Void {
+		__closeTimerHandle = -1;
+		if (__closed || !__closing || __closeTimeout <= 0) {
+			return;
+		}
+
+		var since:Float = __lastDeliveryAt > __closeStartedAt ? __lastDeliveryAt : __closeStartedAt;
+		var left:Float = __closeTimeout - (__clock() - since);
+		if (left > 0) {
+			__armCloseTimer(left);
+			return;
+		}
+		__giveUpClose();
+	}
+
+	/**
+		The peer acknowledged nothing for `closeTimeout` seconds. What it has
+		not acknowledged may never arrive, which an `ioError` says -- unless
+		all that is missing is the FIN's own acknowledgement, which means the
+		rest arrived and only word of the close was lost. Then the peer is
+		told the session is over, at once, as `abort()` tells it: it may be
+		holding frames past a gap that will now never fill.
+	**/
+	@:noCompletion private function __giveUpClose():Void {
+		if (__sentButUnacknowledged() && hasEventListener(IOErrorEvent.IO_ERROR)) {
+			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, 'The peer acknowledged nothing for ${__closeTimeout} s after close(); '
+				+ 'what it had not acknowledged by then may not have arrived.'));
+		}
+		abort();
+	}
+
+	/**
+		Whether anything sent before the FIN is still unacknowledged: in
+		flight, held past a gap the peer has not filled, or waiting for the
+		window.
+	**/
+	@:noCompletion private function __sentButUnacknowledged():Bool {
+		var sequence:Seq32 = __windowBase;
+		while (sequence < __outSequence) {
+			var frame:Null<OutstandingFrame> = __outFrameCache.get(sequence);
+			if (frame != null && !frame.fin) {
+				return true;
+			}
+			sequence++;
+		}
+		for (index in __queueAt...__outgoingQueue.length) {
+			if (!__outgoingQueue[index].fin) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -789,7 +984,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		        `ReliableDatagramProtocol.MAX_PAYLOAD_SIZE` bytes.
 	**/
 	public function connect(host:String, port:Int, ?payload:ByteArray):Void {
-		if (__closed) {
+		// A close still waiting on its peer is as closed as one finished.
+		if (__closed || __closing) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -1417,10 +1613,21 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 		if (frame.ack != null) {
 			__acceptAck(frame.ack);
+			// What it acknowledged was the last of a close this side was
+			// waiting on, and the session is over: nothing it carries is
+			// for anyone now.
+			if (__closed) {
+				return;
+			}
 		}
 
 		switch (frame.type) {
-			case CONNECT, HANDSHAKE, FIN:
+			// A FIN that ends the session at once can come from anyone -- a
+			// server telling a peer it holds no session for it -- where a
+			// graceful one, holding a place in the sequence, only ever comes
+			// from a connected peer.
+			case CONNECT, HANDSHAKE:
+			case FIN if (!frame.graceful):
 			default:
 				if (!__connected) {
 					// Only a connected peer sends this, so the peer took this
@@ -1480,7 +1687,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			case ACK:
 				__acceptAckFrame(frame.sequence, frame.payload);
 			case FIN:
-				__dispose(true);
+				if (frame.graceful) {
+					__acceptFin(frame.sequence);
+				} else if (__closing) {
+					__closeEndedByPeer();
+				} else {
+					__dispose(true);
+				}
 			case UNRELIABLE:
 				__acceptUnreliable(frame.payload);
 			case SEQUENCED:
@@ -1552,7 +1765,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
 				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
 			}
-			close();
+			// At once: a graceful close would wait on a peer that is sending
+			// what this side has just refused to hold.
+			abort();
 			return;
 		}
 
@@ -1659,6 +1874,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// any loss this acknowledgement shows.
 		if (released > 0) {
 			__congestion.onAcknowledged(this, released, now);
+		}
+
+		// A close waiting on the peer, and nothing left in flight or queued:
+		// the FIN, which went last, is acknowledged, and so is everything
+		// before it.
+		if (__closing && __windowBase == __outSequence && __queueAt >= __outgoingQueue.length) {
+			__dispose(true);
 		}
 		return true;
 	}
@@ -1850,7 +2072,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		frame.deadline = now + __rto;
 		__lastTransmitAt = now;
 		__fastResends++;
-		__sendFrame(PACKET, sequence, frame.payload, 0, frame.payload.length, true, __currentAck(), frame.more);
+		__transmit(sequence, frame, true);
 	}
 
 	/** Sends every frame not yet acknowledged again, in order. **/
@@ -1865,7 +2087,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				frame.deadline = now + __rto;
 				__lastTransmitAt = now;
 				__fastResends++;
-				__sendFrame(PACKET, sequence, frame.payload, 0, frame.payload.length, true, __currentAck(), frame.more);
+				__transmit(sequence, frame, true);
 				if (__closed) {
 					return;
 				}
@@ -1909,7 +2131,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				frame.attempts++;
 				frame.sentAt = now;
 				__lastTransmitAt = now;
-				__sendFrame(PACKET, sequence, frame.payload, 0, frame.payload.length, true, __currentAck(), frame.more);
+				__transmit(sequence, frame, true);
 				return;
 			}
 			if (sequence == __windowBase) {
@@ -1973,6 +2195,67 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (!__closed) {
 			__sendAck();
 		}
+	}
+
+	/**
+		The peer's graceful FIN, which holds the place after the last frame it
+		sent, taken in order as a PACKET is: the session ends now if that
+		place is the next one due, and otherwise the FIN waits, as a frame
+		past a gap does, for what is missing before it.
+
+		The FIN carried no sequence, and the session ended the moment one
+		arrived. One that overtook a lost frame, or arrived while frames past
+		a gap were held, ended it with those never delivered -- and the
+		closing side, disposed at once, never sent them again.
+	**/
+	@:noCompletion private function __acceptFin(sequence:Seq32):Void {
+		if (sequence == __inSequence) {
+			__inSequence++;
+			__finishByPeer();
+			return;
+		}
+
+		if (__shouldBufferPacket(sequence)) {
+			__cacheFin(sequence);
+		}
+		__sendAck();
+	}
+
+	/** A graceful FIN held past a gap, as `__cacheFrame` holds a PACKET. **/
+	@:noCompletion private function __cacheFin(sequence:Seq32):Void {
+		if (!__inFrameCache.exists(sequence)) {
+			__inFrameCacheSize++;
+		}
+
+		__inFrameCache.set(sequence, new ReliableDatagramFrame(FIN, sequence, null, false, null, false, false, true));
+	}
+
+	/**
+		The peer has closed, and everything it sent before its FIN has been
+		delivered. The FIN is acknowledged at once -- the peer's close is
+		waiting on it, and this session sends nothing after it -- and the
+		session ends.
+	**/
+	@:noCompletion private function __finishByPeer():Void {
+		__ackOwed = true;
+		__sendBundle();
+		__dispose(true);
+	}
+
+	/**
+		The peer ended the session at once while this side's close was
+		waiting on it: it aborted, or had let its session go already -- as
+		one does once it has taken the FIN, and then hears it again because
+		its acknowledgement was lost. As at the deadline, an `ioError` says
+		so if more than the FIN went unacknowledged, and the session ends.
+		Nothing is sent to a peer that has gone.
+	**/
+	@:noCompletion private function __closeEndedByPeer():Void {
+		if (__sentButUnacknowledged() && hasEventListener(IOErrorEvent.IO_ERROR)) {
+			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, 'The peer ended the session before acknowledging everything sent before close(); '
+				+ 'what it had not acknowledged may not have arrived.'));
+		}
+		__dispose(true);
 	}
 
 	@:noCompletion private function __shouldBufferPacket(sequence:Seq32):Bool {
@@ -2080,6 +2363,14 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	@:noCompletion private function __dispatchPayload(payload:ByteArray):Void {
+		// Closed by this side, and waiting only to finish: what the peer sent
+		// meanwhile is acknowledged, so it is not sent again, and goes no
+		// further -- as a browser's WebSocket drops a message arriving after
+		// close() was called.
+		if (__closing) {
+			return;
+		}
+
 		payload.position = 0;
 		payload.endian = __endian;
 		payload.objectEncoding = objectEncoding;
@@ -2114,6 +2405,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			CBTimer.clear(__keepAliveHandle);
 			__keepAliveHandle = -1;
 		}
+		if (__closeTimerHandle != -1) {
+			CBTimer.clear(__closeTimerHandle);
+			__closeTimerHandle = -1;
+		}
+		__closing = false;
 
 		__stopRetransmitClock();
 
@@ -2144,8 +2440,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__input = __createBuffer();
 		__output = __createBuffer();
 		// Anything still gathered is for a session that no longer exists.
-		// close() sent it before coming here; a failure or a timeout has
-		// nobody left to send it to.
+		// abort() sent it before coming here, and so did a peer's close; a
+		// failure or a timeout has nobody left to send it to, and a close
+		// of this side's has finished with the peer's last acknowledgement.
 		__pendingLength = ReliableDatagramProtocol.BUNDLE_HEADER_SIZE;
 		__pendingCount = 0;
 		__ackOwed = false;
@@ -2182,6 +2479,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__inFrameCache.remove(__inSequence);
 			__inFrameCacheSize--;
 			__inSequence++;
+			// The peer's FIN, held for the gap that has just filled: the last
+			// of what it sent has been delivered.
+			if (frame.type == FIN) {
+				__finishByPeer();
+				return;
+			}
 			__deliverReliable(frame.payload, frame.more);
 		}
 	}
@@ -2398,6 +2701,23 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		return value;
 	}
 
+	@:noCompletion private inline function get_closeTimeout():Float {
+		return __closeTimeout;
+	}
+
+	@:noCompletion private function set_closeTimeout(value:Float):Float {
+		if (!(value >= 0)) {
+			throw new RangeError("A close timeout cannot be negative.");
+		}
+		__closeTimeout = value;
+		// A close already waiting is held to the new deadline, from the same
+		// point: the call, or the peer's last sign of progress since.
+		if (__closing && !__closed) {
+			__armCloseTimer(0);
+		}
+		return value;
+	}
+
 	@:noCompletion private function __prepareTransportListener():Void {
 		if (__transportListenerReady) {
 			return;
@@ -2496,7 +2816,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private function __enforceOutputLimit():Void {
 		var limit:Int = maxOutputBufferSize;
 
-		if (limit <= 0 || __queuedBytes <= limit) {
+		// Not for a close's own stream bytes, the last of what was written.
+		if (limit <= 0 || __queuedBytes <= limit || __closing) {
 			return;
 		}
 
@@ -2509,7 +2830,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
 				}
 
-				close();
+				// At once: a graceful close would wait for the very queue
+				// that has outgrown its limit to drain.
+				abort();
 
 			case THROW:
 				throw new IOError(message);
@@ -2523,7 +2846,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	@:noCompletion private inline function __requireOpenConnection():Void {
-		if (__closed || !__connected || __transport == null) {
+		if (__closed || __closing || !__connected || __transport == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 	}
@@ -2653,9 +2976,17 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		frame.attempts = 1;
 		__lastTransmitAt = now;
 		__outFrameCache.set(sequence, frame);
-		__sendFrame(PACKET, sequence, frame.payload, 0, frame.payload.length, false, __currentAck(), frame.more);
+		__transmit(sequence, frame, false);
 		__outSequence++;
 		__armRetransmitClock();
+	}
+
+	/**
+		Puts an outstanding frame on the wire, first time or again: a PACKET,
+		or the graceful FIN that ends the sequence.
+	**/
+	@:noCompletion private inline function __transmit(sequence:Seq32, frame:OutstandingFrame, resend:Bool):Void {
+		__sendFrame(frame.fin ? FIN : PACKET, sequence, frame.payload, 0, frame.payload.length, resend, __currentAck(), frame.more, frame.fin);
 	}
 
 	/** The one timer the session retransmits from, started on demand. **/
@@ -2725,7 +3056,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__congestion.onTimeout(this, now);
 		__setRto(__rto * 2);
 		overdue.deadline = now + __rto;
-		__sendFrame(PACKET, __windowBase, overdue.payload, 0, overdue.payload.length, true, __currentAck(), overdue.more);
+		__transmit(__windowBase, overdue, true);
 	}
 
 	/**
@@ -2800,7 +3131,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		is written in place, so nothing is copied or allocated for it.
 	**/
 	@:noCompletion private function __sendFrame(type:ReliableDatagramFrameType, sequence:Seq32, payload:ByteArray, offset:Int, length:Int, resend:Bool,
-			ack:Null<Seq32>, more:Bool):Void {
+			ack:Null<Seq32>, more:Bool, graceful:Bool = false):Void {
 		var size:Int = ReliableDatagramProtocol.frameSize(payload == null ? 0 : length, ack != null);
 		if (__pendingCount > 0
 			&& __pendingLength + ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE + size > ReliableDatagramProtocol.BUNDLE_LIMIT) {
@@ -2809,7 +3140,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		var entry:Int = __pendingLength;
 		var at:Int = entry + ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE;
-		var written:Int = ReliableDatagramProtocol.encodeInto(__scratch, type, sequence, payload, offset, length, resend, ack, more, at);
+		var written:Int = ReliableDatagramProtocol.encodeInto(__scratch, type, sequence, payload, offset, length, resend, ack, more, at, graceful);
 		var bytes:haxe.io.Bytes = __scratch;
 		bytes.set(entry, written >> 8);
 		bytes.set(entry + 1, written & 0xFF);
@@ -3120,7 +3451,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	@:noCompletion private inline function get_connected():Bool {
-		return __connected;
+		return __connected && !__closing;
 	}
 
 	@:noCompletion private inline function get_endian():Endian {
