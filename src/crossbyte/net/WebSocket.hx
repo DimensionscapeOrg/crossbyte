@@ -32,9 +32,33 @@ import haxe.Unserializer;
 import haxe.io.Error;
 
 /**
- * ...
- * @author Christopher Speciale
- */
+	A WebSocket session (RFC 6455): a client that connects to a `ws://` or
+	`wss://` server, or a session a `ServerWebSocket` accepted.
+
+	It is a `Socket`. What is written and then flushed goes as one binary
+	message, and what arrives is read as a stream -- or, with a listener for
+	`WebSocketMessageEvent.MESSAGE`, delivered a whole message at a time.
+	`sendText` and `sendBinary` send a message at once.
+
+	Where it differs from a plain socket it follows the browser's WebSocket:
+
+	- A connect that fails -- refused, unreachable, a TLS handshake or a
+	  certificate refused, an upgrade the server declined or never answered,
+	  `timeout` passed -- dispatches `ioError` saying why, and then `close`
+	  with code 1006. `connect` is never dispatched. A plain `Socket`
+	  dispatches `ioError` alone.
+	- `close` is a `WebSocketCloseEvent` carrying the code and reason, and is
+	  dispatched however the session ends, `close()` included.
+
+	@event connect  Dispatched when the session has opened: the upgrade is
+	                done, and messages can be sent.
+	@event close    Dispatched when the session ends, as a
+	                `WebSocketCloseEvent`.
+	@event ioError  Dispatched when a connect fails, ahead of `close`; and
+	                ahead of `close` when an open session is given up on --
+	                its peer silent past `idleTimeout`, say.
+	@author Christopher Speciale
+**/
 class WebSocket extends Socket {
 	// The server half: `ServerWebSocket` accepts a connection and hands the
 	// raw socket here to be framed.

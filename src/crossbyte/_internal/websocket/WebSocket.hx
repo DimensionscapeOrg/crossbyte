@@ -322,6 +322,12 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	// close, say -- and the owner is told once.
 	private var __closeReported:Bool = false;
 
+	// What a client's failed connect is reported by: whether the owner is
+	// the one closing it, and whether the owner has been told of an error
+	// yet. See __close.
+	private var __ownerClosing:Bool = false;
+	private var __errorReported:Bool = false;
+
 	// A close waiting for queued output to go: what it will report.
 	private var __closeWhenDrained:Bool = false;
 	private var __drainedCode:Int = 1000;
@@ -1521,7 +1527,12 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 					if (lines[0].indexOf("101") > -1) {
 						headers.set("status", "101");
 					} else {
-						__close(1002);
+						// A failed connect, as a browser reports one: the
+						// answer said, then 1006 (see __close). It closed with
+						// 1002 and no error, as if an open session had broken
+						// the protocol.
+						__onError("The server refused the WebSocket upgrade: " + lines[0]);
+						__close(1006);
 						return;
 					}
 
@@ -1532,7 +1543,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 						__startHeartbeat();
 						onopen(new WebsocketEvent(WebsocketEvent.OPEN, this));
 					} else {
-						__close(1002);
+						__onError("The server's answer to the WebSocket upgrade was not valid: " + lines[0]);
+						__close(1006);
 						return;
 					}
 				}
@@ -2478,6 +2490,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	#end
 
 	private function __onError(errorMessage:String):Void {
+		__errorReported = true;
 		onerror(new WebsocketEvent(WebsocketEvent.ERROR, this, errorMessage));
 	}
 
@@ -2506,6 +2519,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			return;
 		}
 
+		__ownerClosing = true;
 		var closing:Int = code == null ? 1000 : code;
 
 		if (readyState != OPEN) {
@@ -2528,6 +2542,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			return;
 		}
 
+		__ownerClosing = true;
 		if (readyState == OPEN) {
 			__sendCloseFrame(code, reason);
 		}
@@ -2613,10 +2628,26 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	}
 
 	private function __close(code:Int, ?reason:String):Void {
+		var connecting:Bool = readyState == CONNECTING;
 		readyState = CLOSED;
 
 		if (__closeReported) {
 			return;
+		}
+
+		// A client that never opened has failed to connect, whatever ended
+		// it, and says so as a browser's WebSocket does: an error saying why,
+		// then 1006. Here, once, where each way of failing used to say it
+		// differently -- 1015 for a TLS failure, 1002 and no error for a
+		// refused upgrade, 1006 and no error for a server that hung up. Its
+		// owner's own close is no failure.
+		if (connecting && __isClient == true && !__ownerClosing) {
+			if (!__errorReported) {
+				var why:String = __connected ? "The server closed the connection before it answered the WebSocket upgrade" : "The connection failed before it opened";
+				__onError(reason != null ? why + ": " + reason : why);
+			}
+			code = 1006;
+			reason = null;
 		}
 
 		__closeWhenDrained = false;
