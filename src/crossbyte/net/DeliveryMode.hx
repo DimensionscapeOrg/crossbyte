@@ -12,9 +12,12 @@ import crossbyte.errors.ArgumentError;
  * socket.send(input, 0, 0, DeliveryMode.sequenced(1));
  * ```
  *
- * - `RELIABLE` arrives, once, in the order it was sent, however large it is:
- *   it is split into frames, each resent until acknowledged, and put back
- *   together. What was not yet delivered holds back what came after it,
+ * - `RELIABLE` arrives, once, in the order it was sent: it is split into
+ *   frames, each resent until acknowledged, and put back together. It may be
+ *   as large as the receiving session's `maxMessageSize`, eight megabytes
+ *   unless the receiver changes it, and one larger ends the session, the
+ *   receiver saying why with an `ioError` and both sides dispatching
+ *   `close`. What was not yet delivered holds back what came after it,
  *   the price of the order.
  * - `UNRELIABLE` goes out once and is never resent, and may arrive in any
  *   order or not at all. Nothing waits for it and it waits for nothing.

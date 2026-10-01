@@ -221,8 +221,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		A reliable message larger than one frame travels as several, and is
 		held here until its last one arrives, so what a peer can make this
 		side hold is whatever it declares a message to be. Past this the
-		session is closed, with an `ioError` saying why, rather than the
-		fragments being kept for a message with no end.
+		session is ended at once, as `abort()` ends one, with an `ioError`
+		saying why, rather than the fragments being kept for a message with no
+		end; the peer dispatches `close`.
 	**/
 	public var maxMessageSize:Int = DEFAULT_MAX_MESSAGE_SIZE;
 
@@ -1312,9 +1313,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		says; see `DeliveryMode`.
 
 		The peer receives it as one `DatagramSocketDataEvent.DATA` holding
-		exactly these bytes. A `RELIABLE` message of any size is split into
-		frames and put back together before it is delivered; an unreliable or
-		sequenced one must fit one frame.
+		exactly these bytes. A `RELIABLE` message larger than a frame is split
+		into frames and put back together before it is delivered, up to the
+		peer's `maxMessageSize`, eight megabytes unless the peer changed it.
+		Past that the peer ends the session, as `abort()` ends one: an
+		`ioError` on its side, and `close` on both. An unreliable or sequenced
+		message must fit one frame.
 
 		It goes out when the runtime's loop finishes its pass, in a datagram
 		with whatever else this session sends in the same pass, or at
