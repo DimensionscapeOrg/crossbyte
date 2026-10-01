@@ -1,6 +1,7 @@
 package crossbyte.net.rtc;
 
 import crossbyte.errors.ArgumentError;
+import crossbyte.errors.IllegalOperationError;
 #if cpp
 import crossbyte.net.rtc._internal.NativeDtls;
 #end
@@ -36,7 +37,8 @@ import crossbyte.net.rtc._internal.NativeDtls;
 	could read its own DTLS private key could impersonate itself elsewhere.
 
 	`isSupported` says so rather than leaving a caller to find out from a
-	failure.
+	failure, and everything here that needs mbedTLS throws an
+	`IllegalOperationError` naming the target anywhere else.
 **/
 class DtlsCertificate {
 	/** How long a generated certificate lasts, in days. **/
@@ -80,8 +82,12 @@ class DtlsCertificate {
 		one made on the spot -- and for tests, which need the same certificate
 		twice.
 
+		Native only: reading a certificate needs mbedTLS.
+
 		@throws ArgumentError if either half is missing, or if the certificate
 		will not parse.
+		@throws IllegalOperationError on any target but native, naming it. It
+		threw "That certificate could not be read" there, whatever was given.
 	**/
 	public function new(certificatePem:String, privateKeyPem:String) {
 		if (certificatePem == null || certificatePem.length == 0) {
@@ -91,6 +97,10 @@ class DtlsCertificate {
 		if (privateKeyPem == null || privateKeyPem.length == 0) {
 			throw new ArgumentError("A private key is required: a certificate nothing can sign with proves nothing.");
 		}
+
+		#if !cpp
+		throw __nativeOnly("Reading a certificate");
+		#end
 
 		var digest = fingerprintOf(certificatePem);
 
@@ -115,8 +125,8 @@ class DtlsCertificate {
 		a self-signed certificate vouches for nothing.
 		@param lifetimeDays How long it stays valid. Days rather than years
 		because it is meant to outlive a session and not much more.
-		@throws String on a target that cannot generate one. Check
-		`isSupported`.
+		@throws IllegalOperationError on any target but native, naming it --
+		check `isSupported` -- where a bare String was thrown.
 	**/
 	public static function generate(commonName:String = "CrossByte", lifetimeDays:Int = DEFAULT_LIFETIME_DAYS):DtlsCertificate {
 		#if cpp
@@ -143,31 +153,39 @@ class DtlsCertificate {
 
 		return new DtlsCertificate(made[0], made[1]);
 		#else
-		throw "Certificates can only be generated on native targets, where mbedTLS is linked. Check DtlsCertificate.isSupported, and on a browser let RTCPeerConnection make its own.";
+		throw __nativeOnly("Generating a certificate");
 		#end
 	}
 
 	/**
-		The fingerprint of a certificate this peer did not make.
+		The fingerprint of a certificate this peer did not make, or null for
+		one that will not parse.
 
 		Used to check what a peer signalled against what it then presented, so
 		it takes PEM rather than a `DtlsCertificate` -- the far side's private
 		key is not ours to have.
+
+		@throws IllegalOperationError on any target but native, naming it. It
+		answered null there, which reads as a certificate that will not parse.
 	**/
 	public static function fingerprintOf(certificatePem:String):Null<String> {
 		#if cpp
 		return NativeDtls.fingerprint(certificatePem);
 		#else
-		return null;
+		throw __nativeOnly("Reading a certificate's fingerprint");
 		#end
 	}
 
 	/**
-		Whether `certificatePem` is the certificate `expected` names.
+		Whether `certificatePem` is the certificate `expected` names; false
+		when either is null.
 
 		Compared without case sensitivity because the separator-and-case form is
 		a display convention, and a peer that writes it in lowercase is naming
 		the same certificate.
+
+		@throws IllegalOperationError on any target but native, naming it, as
+		`fingerprintOf` does. It answered false there, as for a mismatch.
 	**/
 	public static function matches(certificatePem:String, expected:String):Bool {
 		if (certificatePem == null || expected == null) {
@@ -182,6 +200,14 @@ class DtlsCertificate {
 	public function toString():String {
 		// The key is deliberately absent.
 		return "DtlsCertificate(" + fingerprint + ")";
+	}
+
+	/** What every member that needs mbedTLS throws off native, naming the target it is on. **/
+	@:noCompletion private static function __nativeOnly(what:String):IllegalOperationError {
+		var target:String = #if (java || jvm) "the jvm" #elseif nodejs "Node" #elseif js "a browser" #elseif eval "the interpreter" #elseif neko "neko" #elseif hl "HashLink" #else "this target" #end;
+
+		return new IllegalOperationError(what + " needs mbedTLS, which only a native (hxcpp) build links, and this is " + target
+			+ ". Check DtlsCertificate.isSupported; in a browser, RTCPeerConnection makes its own.");
 	}
 
 	@:noCompletion private static function __stamp(seconds:Float):String {

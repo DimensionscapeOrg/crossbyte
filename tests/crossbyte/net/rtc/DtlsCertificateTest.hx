@@ -41,6 +41,35 @@ class DtlsCertificateTest extends utest.Test {
 		Assert.equals(DtlsCertificate.isSupported, made, "generating a certificate did not match what isSupported promised");
 	}
 
+	/**
+		Off native, every member that needs mbedTLS says so, naming the
+		target.
+
+		The constructor threw "That certificate could not be read" whatever
+		it was given, `generate` threw a bare String, and `fingerprintOf` and
+		`matches` answered null and false -- a certificate that would not
+		parse, a mismatch -- rather than that none of it can be done here.
+	**/
+	public function testOffNativeEveryMemberSaysItCannot():Void {
+		if (DtlsCertificate.isSupported) {
+			Assert.isTrue(DtlsCertificate.isSupported);
+			return;
+		}
+
+		var pem:String = "-----BEGIN CERTIFICATE-----\nbm90IGEgY2VydA==\n-----END CERTIFICATE-----\n";
+
+		Assert.raises(() -> new DtlsCertificate(pem, "key"), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> DtlsCertificate.generate(), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> DtlsCertificate.fingerprintOf(pem), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> DtlsCertificate.matches(pem, "AA:BB"), crossbyte.errors.IllegalOperationError);
+
+		try {
+			DtlsCertificate.generate();
+		} catch (e:crossbyte.errors.IllegalOperationError) {
+			Assert.isTrue(e.message.indexOf("this is ") >= 0 && e.message.indexOf("this target") < 0, "the error does not name the target: " + e.message);
+		}
+	}
+
 	public function testAGeneratedCertificateCarriesBothHalves():Void {
 		if (unsupported()) return;
 
