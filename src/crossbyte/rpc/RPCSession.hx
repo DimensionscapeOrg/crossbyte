@@ -569,16 +569,21 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	/**
-		Sends a one-way runtime RPC call on the dynamic lane.
+		Sends a one-way runtime RPC call on the dynamic lane. Each argument is
+		`null`, a `Bool`, an `Int`, a `Float`, a `String` or `haxe.io.Bytes`,
+		a `ByteArray` among them, sent as its `length` bytes, and arrives
+		as the same, `Bytes` for either of the last.
 
 		@throws ArgumentError When the call is over `maxFrameLength`.
+		@throws String When an argument is of a type the runtime lane does not carry.
 	**/
 	public function call(op:Int, ?args:Array<Dynamic>):Void {
 		__sendCallFrame(__runtimeFrame(op, 0, args));
 	}
 
 	/**
-	 * Sends a request/response runtime RPC call on the dynamic lane.
+	 * Sends a request/response runtime RPC call on the dynamic lane. Its
+	 * arguments, and the answer, are of the types `call` carries.
 	 *
 	 * The response payload is decoded through the runtime codec and resolved into a
 	 * normal `RPCResponse<T>`. A call that cannot go fails at once: over

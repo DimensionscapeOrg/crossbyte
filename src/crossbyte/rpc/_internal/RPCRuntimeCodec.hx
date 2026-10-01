@@ -64,15 +64,23 @@ class RPCRuntimeCodec {
 				output.writeByte(TAG_STRING);
 				output.writeVarUTF(value);
 			case TClass(Bytes):
-				final bytes:Bytes = cast value;
-				output.reserve(1);
-				output.writeByte(TAG_BYTES);
-				output.writeVarUInt(bytes.length);
-				output.reserve(bytes.length);
-				output.writeBytes(bytes, 0, bytes.length);
+				__writeBytes(output, cast value);
+			case TClass(_) if (Std.isOfType(value, Bytes)):
+				// A subclass of Bytes is bytes all the same: a ByteArray is one
+				// at run time, and was refused here. Its own length, not its
+				// buffer's.
+				__writeBytes(output, cast value);
 			default:
 				throw "Unsupported runtime RPC value: " + Std.string(Type.typeof(value));
 		}
+	}
+
+	private static inline function __writeBytes(output:ByteArrayOutput, bytes:Bytes):Void {
+		output.reserve(1);
+		output.writeByte(TAG_BYTES);
+		output.writeVarUInt(bytes.length);
+		output.reserve(bytes.length);
+		output.writeBytes(bytes, 0, bytes.length);
 	}
 
 	/** Reads one value, not past `end`. **/
