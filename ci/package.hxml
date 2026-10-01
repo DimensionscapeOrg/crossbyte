@@ -1,0 +1,4 @@
+# Builds dist/crossbyte-<version>.zip, the haxelib release; see ci/Package.hx.
+-cp ci
+-main Package
+--interp
