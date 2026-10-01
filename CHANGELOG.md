@@ -2163,6 +2163,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A STUN question's `timeoutMs` of 0 or less is documented as what it
+  is, the default of three seconds, `StunClient`'s questions,
+  `ReliableDatagramServerSocket.discoverPublicAddress`,
+  `INetHost.discoverPublicAddress` and `PeerConnection.gatherReflexive`,
+  rather than no deadline, as 0 is for a connection's `timeout`:
+  nothing but a deadline ends a question over UDP that nobody answers.
+  It said so nowhere, and the failure told the caller the server had not
+  answered "within 0ms"; it gives the time the question had.
 - `close()` may be called from any thread on a `Socket`, a `WebSocket`
   (and `closeWith()`), a `ReliableDatagramSocket` (and `abort()`) and a
   `NetConnection` over any of them. From a thread that is not the

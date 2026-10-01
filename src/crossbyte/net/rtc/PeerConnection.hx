@@ -1164,7 +1164,8 @@ class PeerConnection {
 
 		@param timeoutMs How long to keep asking. UDP reports nothing when a
 		datagram is dropped, so a server that never answers and one that was
-		never reached look identical from here and only a deadline ends it.
+		never reached look identical from here and only a deadline ends it:
+		0 or less asks for the default, three seconds, rather than for none.
 
 		@return The candidate that was added, or a failure naming why none was.
 		One query at a time: a second while one is outstanding fails rather than
