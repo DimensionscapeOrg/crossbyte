@@ -2178,6 +2178,10 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A statement executed on an asynchronous `SQLiteConnection` whose open
+  has failed, before that failure is dispatched, throws an
+  `IllegalOperationError`, as on a connection that is not open: the
+  worker had stopped, and the statement never answered.
 - MySQL counts and ids are whole past 2^31, on every target.
   `MySQLConnection.affectedRows` and `lastInsertRowID` are `Float`s, exact
   to 2^53, as SQLite's and Postgres's are. Natively both were held at

@@ -82,12 +82,17 @@ static int crossbyte_sqlite_progress(void *stop) {
 	return ((crossbyte_sqlite_stop *)stop)->requested.load(std::memory_order_relaxed);
 }
 
+// Registering and removing the handler takes the mutex of the connection,
+// which a statement stepping on another thread holds: in a GC-free zone, as
+// the blocking calls of the glue are, touching nothing of the GC inside.
 static void *crossbyte_sqlite_watch_progress(void *db) {
 	crossbyte_sqlite_stop *stop = new crossbyte_sqlite_stop();
 	stop->requested.store(0);
 	// Every thousand steps: an atomic read each time, against the tens of
 	// steps a row takes.
+	hx::EnterGCFreeZone();
 	sqlite3_progress_handler((struct sqlite3 *)db, 1000, crossbyte_sqlite_progress, stop);
+	hx::ExitGCFreeZone();
 	return stop;
 }
 
@@ -97,7 +102,9 @@ static void crossbyte_sqlite_set_stop(void *stop, bool on) {
 
 // Before the connection closes: nothing calls the handler after this.
 static void crossbyte_sqlite_unwatch_progress(void *db, void *stop) {
+	hx::EnterGCFreeZone();
 	sqlite3_progress_handler((struct sqlite3 *)db, 0, 0, 0);
+	hx::ExitGCFreeZone();
 	delete (crossbyte_sqlite_stop *)stop;
 }
 ')
@@ -243,12 +250,15 @@ class NativeSQLiteConnection implements Connection {
 		var stop:cpp.Pointer<cpp.Void> = __stop;
 		__db = null;
 		__stop = null;
+		__dbLock.release();
 
+		// Outside the lock, which interrupt() and stopRunning() wait on: this
+		// can wait for a statement another thread is stepping. Neither can
+		// reach either pointer now.
 		if (stop != null) {
 			__unwatchProgress(db, stop);
 		}
 
-		__dbLock.release();
 		__live = null;
 		__close(__handle);
 	}

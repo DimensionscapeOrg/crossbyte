@@ -156,7 +156,14 @@ class SQLiteStatement extends EventDispatcher {
 		var connection:SQLiteConnection = __sqlConnection;
 
 		if (connection.__async) {
-			connection.__addToQueue(__executeAsync(sql, prefetch, __cancels, connection.__cancelEpoch), SQLEvent.RESULT, this);
+			try {
+				connection.__addToQueue(__executeAsync(sql, prefetch, __cancels, connection.__cancelEpoch), SQLEvent.RESULT, this);
+			} catch (e:Dynamic) {
+				// Refused: its worker has stopped, after an open that failed.
+				__executing = false;
+				throw e;
+			}
+
 			return;
 		}
 
@@ -227,6 +234,8 @@ class SQLiteStatement extends EventDispatcher {
 		the runtime's thread.
 	**/
 	private function __executeAsync(sql:String, prefetch:Int, epoch:Int, connectionEpoch:Int):Void->Void {
+		// The worker this is queued for: the one that runs it.
+		var worker:crossbyte.sys.Worker = __sqlConnection.__sqlWorker;
 		return function() {
 			// Read here, on the worker, when the job runs: the connection the
 			// worker opened.
@@ -235,7 +244,7 @@ class SQLiteStatement extends EventDispatcher {
 			__resultSet = null;
 			connection.__settle();
 
-			if (!__start(connection, epoch, connectionEpoch)) {
+			if (!__start(connection, epoch, connectionEpoch, worker)) {
 				return;
 			}
 
@@ -256,7 +265,7 @@ class SQLiteStatement extends EventDispatcher {
 
 			connection.__leave();
 			__notePaged(message);
-			connection.__sqlWorker.sendProgress(message);
+			worker.sendProgress(message);
 		}
 	}
 
@@ -267,11 +276,11 @@ class SQLiteStatement extends EventDispatcher {
 		since, and told it will not run, as the rest of the connection's work
 		queued then is, when the connection's has.
 	**/
-	@:noCompletion private function __start(connection:SQLiteConnection, epoch:Int, connectionEpoch:Int):Bool {
+	@:noCompletion private function __start(connection:SQLiteConnection, epoch:Int, connectionEpoch:Int, worker:crossbyte.sys.Worker):Bool {
 		var verdict:Int = connection.__enter(this, epoch, connectionEpoch);
 
 		if (verdict == SQLiteConnection.ENTER_CANCELLED) {
-			connection.__refuseStatement(this, epoch);
+			connection.__refuseStatement(this, epoch, worker);
 		}
 
 		return verdict == SQLiteConnection.ENTER_RUN;
@@ -461,10 +470,11 @@ class SQLiteStatement extends EventDispatcher {
 
 	/** The work `next()` queues on an asynchronous connection: the next page, read on the worker. **/
 	private function __nextAsync(prefetch:Int, epoch:Int, connectionEpoch:Int):Void->Void {
+		var worker:crossbyte.sys.Worker = __sqlConnection.__sqlWorker;
 		return function() {
 			var connection:SQLiteConnection = __sqlConnection;
 
-			if (!__start(connection, epoch, connectionEpoch)) {
+			if (!__start(connection, epoch, connectionEpoch, worker)) {
 				return;
 			}
 
@@ -485,7 +495,7 @@ class SQLiteStatement extends EventDispatcher {
 
 			connection.__leave();
 			__notePaged(message);
-			connection.__sqlWorker.sendProgress(message);
+			worker.sendProgress(message);
 		}
 	}
 
