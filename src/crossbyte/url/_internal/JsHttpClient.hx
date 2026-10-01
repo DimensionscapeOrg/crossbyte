@@ -5,7 +5,6 @@ import crossbyte.http.HTTPCancelToken;
 import crossbyte.http.HTTPVersion;
 import crossbyte.url.URLRequest;
 import crossbyte.url.URLRequestHeader;
-import crossbyte.url.URLVariables;
 import haxe.io.Bytes;
 
 /**
@@ -67,13 +66,14 @@ class JsHttpClient {
 
 		var method:String = (request.method != null && request.method != "") ? request.method : "GET";
 
-		// A URLVariables goes where a form puts it: into the query of a GET or
-		// HEAD, and otherwise into the body, form-encoded. Sent as it stood,
-		// it was a debug dump of the map it is at run time.
+		// A URLVariables, or an object's fields, goes where a form puts it:
+		// into the query of a GET or HEAD, and otherwise into the body,
+		// form-encoded, as natively. Sent as it stood, it was a debug dump --
+		// of the map a URLVariables is at run time, or "{ user : bob }".
 		var url:String = request.url;
 		var body:Dynamic = request.data;
 		var contentType:String = request.contentType;
-		var form:Null<String> = URLVariables.encodeData(request.data);
+		var form:Null<String> = FormEncoding.encode(request.data);
 		if (form != null) {
 			if (method == "GET" || method == "HEAD") {
 				if (form.length > 0) {
