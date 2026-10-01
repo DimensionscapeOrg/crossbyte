@@ -336,3 +336,35 @@ int crossbyte_socket_recv_from(Dynamic socket, Array<unsigned char> buffer, int 
 	crossbyte_sockaddr_to_dynamic(reinterpret_cast<sockaddr*>(&nativeAddress), nativeAddressLength, address);
 	return received;
 }
+
+/**
+	Why a non-blocking connect failed, or null when it did not: SO_ERROR, in
+	the system's words. A connect that has finished, either way, makes the
+	socket writable, and on POSIX a refused or unreachable one is writable
+	too, only SO_ERROR tells them apart. Windows reports the failure in
+	select's exception set instead, and the answer here agrees with it.
+**/
+String crossbyte_socket_connect_error(Dynamic socket) {
+	SOCKET nativeSocket = crossbyte_val_sock(socket);
+	int error = 0;
+	SocketLen length = sizeof(error);
+
+	if (getsockopt(nativeSocket, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&error), &length) == SOCKET_ERROR) {
+		return String::create("the socket could not say whether it connected");
+	}
+
+	if (error == 0) {
+		return null();
+	}
+
+#if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
+	char text[256];
+	DWORD written = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, 0, (DWORD)error, 0, text, sizeof(text), 0);
+	while (written > 0 && (text[written - 1] == '\r' || text[written - 1] == '\n' || text[written - 1] == '.')) {
+		text[--written] = 0;
+	}
+	return written > 0 ? String::create(text) : String::create("connect failed");
+#else
+	return String::create(strerror(error));
+#endif
+}
