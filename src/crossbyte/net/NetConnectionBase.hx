@@ -37,6 +37,12 @@ abstract class NetConnectionBase implements CloseObservable {
 	// application's callbacks; see CloseObservable.
 	@:noCompletion private var __closeObserver:Null<Reason->Void> = null;
 	@:noCompletion private var __readyObserver:Null<Void->Void> = null;
+	@:noCompletion private var __closeObserved:Bool = false;
+
+	// Whether onClose has been told, after which nothing is; and what an
+	// error or a timeout said, for the onClose that follows it.
+	@:noCompletion private var __ended:Bool = false;
+	@:noCompletion private var __failure:Null<Reason> = null;
 
 	@:noCompletion public function __observeClose(observer:Null<Reason->Void>):Void {
 		__closeObserver = observer;
@@ -46,16 +52,42 @@ abstract class NetConnectionBase implements CloseObservable {
 		__readyObserver = observer;
 	}
 
-	/** Called by each transport wherever it ends: before `onClose`, and before an `onError` that stopped its reads. **/
+	/**
+		Closes the connection, telling `onClose` `reason` rather than
+		`Reason.Closed`: for a closer that knows more than that it closed --
+		an `RPCSession` whose heartbeat heard nothing closes its connection as
+		`Reason.Timeout`. `close()` is this with `Reason.Closed`. A connection
+		CrossByte did not write has only its own `close()`, which this calls.
+	**/
+	@:noCompletion public function __closeWith(reason:Reason):Void {
+		close();
+	}
+
+	/**
+		Called by each transport wherever it ends: before `onClose`, and before
+		an `onError` that stopped its reads. Once: an error followed by its
+		close is one end.
+	**/
 	@:noCompletion private inline function __notifyClose(reason:Reason):Void {
 		final observer = __closeObserver;
-		if (observer != null) {
+		if (observer != null && !__closeObserved) {
+			__closeObserved = true;
 			observer(reason);
 		}
 	}
 
-	/** Called by each transport as it becomes ready, before `onReady`. **/
+	/** What an `ioError` tells the callbacks: `Reason.Timeout` for a deadline that passed. **/
+	@:noCompletion private static function __reasonOf(error:crossbyte.events.IOErrorEvent):Reason {
+		return error.errorID == crossbyte.events.IOErrorEvent.TIMEOUT_ERROR_ID ? Reason.Timeout : Reason.Error(error.text);
+	}
+
+	/**
+		Called by each transport as it becomes ready, before `onReady`. A
+		connection ready again -- one an application wrote, taking another
+		peer -- has a new life, whose end is told in turn.
+	**/
 	@:noCompletion private inline function __notifyReady():Void {
+		__closeObserved = false;
 		final observer = __readyObserver;
 		if (observer != null) {
 			observer();
