@@ -16,6 +16,9 @@ import crossbyte.net.ice.IceCandidatePair;
 import crossbyte.net.ice.IceCandidateType;
 import crossbyte.net.ice.IceAgentState;
 import crossbyte.net.ice.IceCredentials;
+#if !macro
+import crossbyte.net.Certificate;
+#end
 import crossbyte.net.TurnClient;
 import crossbyte.net.TurnError;
 import crossbyte.net.TurnServer;
@@ -1240,14 +1243,22 @@ class PeerConnection {
 		over it cannot say so, and the connection stops with nothing to report.
 		See `TurnClient` for the one that does exactly that.
 
-		@param transport How the relay is reached: UDP when left out, or TCP,
-		for a network that lets nothing else out. What it relays is UDP either
-		way.
+		@param transport How the relay is reached: UDP when left out, or TCP or
+		TLS, for a network that lets nothing else out. What it relays is UDP
+		either way.
+		@param certAuthority For a relay reached over TLS whose certificate
+		chains to an authority the system does not trust -- a private relay's
+		own -- that authority; see `TurnServer.certAuthority`.
+		@param verifyCert For a relay reached over TLS: false to accept its
+		certificate unchecked, for a test against a relay with a throwaway one
+		and never otherwise; see `TurnServer.verifyCert`. These two were
+		`gatherRelayedFrom`'s alone, so a private relay over TLS could not be
+		reached through this.
 		@return The candidate that was added, or a failure naming why none was,
 		whose `cause` is a `TurnError` with the relay's code.
 	**/
 	public function gatherRelayed(server:String, username:String, password:String, port:Int = 3478, useChannels:Bool = false,
-			?transport:TurnTransport):Future<IceCandidate> {
+			?transport:TurnTransport #if !macro, ?certAuthority:Certificate, verifyCert:Bool = true #end):Future<IceCandidate> {
 		if (server == null || server == "") {
 			var future = new Future<IceCandidate>();
 			@:privateAccess future.__fail("A TURN server address is required.", new ArgumentError("server"));
@@ -1261,6 +1272,10 @@ class PeerConnection {
 				username: username,
 				password: password,
 				transport: transport
+				#if !macro,
+				certAuthority: certAuthority,
+				verifyCert: verifyCert
+				#end
 			}
 		], useChannels);
 	}

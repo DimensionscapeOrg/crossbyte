@@ -158,6 +158,11 @@ entry below says how:
   served as plain HTTP, and an `errorDocument` that is not there.
 
 ### Added
+- `PeerConnection.gatherRelayed` takes `certAuthority` and `verifyCert`
+  for a relay reached over TLS, as a `TurnServer` given to
+  `gatherRelayedFrom` does. It took the transport and nothing else, so a
+  private relay over TLS, whose authority no system trusts, could not be
+  reached through it.
 - `ReliableDatagramServerSocket.relayVerifyCert`, for a TURN relay reached
   over TLS whose certificate should not be checked -- a test against a
   throwaway one. The server passed its relay client an authority
