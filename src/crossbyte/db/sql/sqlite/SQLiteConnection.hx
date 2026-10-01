@@ -569,16 +569,58 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		}
 	}
 
+	/**
+		Removes the statistics `analyze()` gathered -- the rows of
+		`sqlite_stat1`, and of `sqlite_stat4` where SQLite keeps one -- from
+		every database the connection has open, attached ones included, and
+		has the query planner read them again, so it plans without them, as
+		AIR's `deanalyze()` does. Dispatches `SQLEvent.DEANALYZE` once that is
+		done.
+
+		It closed the connection and opened it again, and touched no
+		statistics: an in-memory database lost every table, a file kept its
+		statistics, and the session lost its transaction, attached databases
+		and settings. On an asynchronous connection `DEANALYZE` came at once,
+		and the reopen, made from the worker's thread, left the connection
+		answering nothing.
+	**/
 	public function deanalyze():Void {
-		if (__async) {
-			__addToQueue(deanalyzeAsync, SQLEvent.DEANALYZE);
-		} else {
-			__connection.close();
-			__open(__reference, __openMode, __initAutoCompact, __initPageSize);
-			__dispatchSQLEvent(SQLEvent.OPEN);
+		__perform(SQLEvent.DEANALYZE, __removeStatistics);
+	}
+
+	@:noCompletion private function __removeStatistics():Void {
+		var schemas:Array<String> = [];
+		var list:ResultSet = __connection.request("PRAGMA database_list;");
+
+		while (list.hasNext()) {
+			schemas.push(Std.string(Reflect.field(list.next(), "name")));
 		}
 
-		__dispatchSQLEvent(SQLEvent.DEANALYZE);
+		for (schema in schemas) {
+			var quoted:String = __quoteIdentifier(schema);
+			var tables:Array<String> = [];
+			var found:ResultSet = __connection.request("SELECT name FROM " + quoted
+				+ ".sqlite_master WHERE type = 'table' AND name IN ('sqlite_stat1', 'sqlite_stat4');");
+
+			while (found.hasNext()) {
+				tables.push(Std.string(Reflect.field(found.next(), "name")));
+			}
+
+			if (tables.length == 0) {
+				// Reloading a database with no statistics would make it an
+				// empty sqlite_stat1.
+				continue;
+			}
+
+			for (table in tables) {
+				__connection.request("DELETE FROM " + quoted + "." + table + ";");
+			}
+
+			// The planner keeps what it read until it reads again, and
+			// ANALYZE sqlite_schema reloads the statistics without gathering
+			// any.
+			__connection.request("ANALYZE " + quoted + ".sqlite_schema;");
+		}
 	}
 
 	public function cancel():Void {
@@ -963,20 +1005,6 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		}
 
 		cacheSize = DEFAULT_CACHE_SIZE;
-	}
-
-	private function deanalyzeAsync():Void {
-		var event:Event;
-
-		try {
-			__connection.close();
-			openAsync(__reference, __openMode, __initAutoCompact, __initPageSize);
-			event = new SQLEvent(SQLEvent.DEANALYZE);
-		} catch (e:Dynamic) {
-			event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.DEANALYZE, Std.string(e), "Execution failed: " + Std.string(e)));
-		}
-
-		__sqlWorker.sendProgress(event);
 	}
 
 	private function __onSQLWorkerComplete(e:ThreadEvent):Void {}

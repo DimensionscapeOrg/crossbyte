@@ -412,6 +412,96 @@ class SQLiteNativeTest extends utest.Test {
 		Assert.same(["open", "close", "open", "close"], events);
 	}
 
+	public function testDeanalyzeRemovesTheStatisticsAndKeepsTheConnection():Void {
+		// deanalyze() closed the connection and opened it again, and touched
+		// no statistics: an in-memory database lost every table, a file kept
+		// its sqlite_stat1, and what the session held -- a transaction, an
+		// attached database, busy_timeout -- was lost on the way.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		var events:Array<String> = [];
+
+		for (type in [SQLEvent.OPEN, SQLEvent.CLOSE, SQLEvent.ANALYZE, SQLEvent.DEANALYZE]) {
+			connection.addEventListener(type, e -> events.push(e.type));
+		}
+
+		connection.open(null, SQLiteMode.CREATE, false, 4096);
+		connection.request("CREATE TABLE t (x INTEGER, y INTEGER)");
+		connection.request("CREATE INDEX t_x ON t (x)");
+
+		for (i in 0...50) {
+			connection.request('INSERT INTO t VALUES ($i, $i)');
+		}
+
+		connection.attach("extra");
+		connection.request("CREATE TABLE extra.u (z INTEGER)");
+		connection.request("CREATE INDEX extra.u_z ON u (z)");
+		connection.request("INSERT INTO extra.u VALUES (1)");
+		connection.analyze();
+		Assert.isTrue(__count(connection, "main.sqlite_stat1") > 0, "analyze() gathered nothing to remove");
+		Assert.isTrue(__count(connection, "extra.sqlite_stat1") > 0, "analyze() gathered nothing to remove");
+
+		connection.busyTimeout = 1234;
+		connection.begin();
+		connection.deanalyze();
+
+		Assert.equals(0, __count(connection, "main.sqlite_stat1"));
+		Assert.equals(0, __count(connection, "extra.sqlite_stat1"), "an attached database kept its statistics");
+		Assert.equals(50, __count(connection, "t"), "the tables went with the statistics");
+		Assert.equals(1234, connection.busyTimeout);
+		Assert.isTrue(connection.inTransaction, "the open transaction was ended");
+		Assert.same([SQLEvent.OPEN, SQLEvent.ANALYZE, SQLEvent.DEANALYZE], events);
+		connection.rollback();
+		connection.close();
+	}
+
+	public function testAnAsynchronousDeanalyzeReportsOnceItIsDone():Void {
+		// DEANALYZE was dispatched as the call returned, before any work, and
+		// the work then reopened the connection from the worker's thread,
+		// which has no runtime: nothing on the connection answered again.
+		var path:String = __path("deanalyze");
+		var setup:SQLiteConnection = new SQLiteConnection();
+		setup.open(path, SQLiteMode.CREATE, false, 4096);
+		setup.request("CREATE TABLE t (x INTEGER)");
+		setup.request("CREATE INDEX t_x ON t (x)");
+
+		for (i in 0...50) {
+			setup.request('INSERT INTO t VALUES ($i)');
+		}
+
+		setup.analyze();
+		setup.close();
+
+		var connection:SQLiteConnection = new SQLiteConnection();
+		var events:Array<String> = [];
+
+		for (type in [SQLEvent.OPEN, SQLEvent.DEANALYZE, SQLEvent.CLOSE]) {
+			connection.addEventListener(type, e -> events.push(e.type));
+		}
+
+		connection.addEventListener(SQLErrorEvent.ERROR, e -> events.push("error: " + e.error.details()));
+		connection.openAsync(path, SQLiteMode.UPDATE, false, 4096);
+		connection.deanalyze();
+		Assert.same([], events, "dispatched before the work was done");
+
+		var count:SQLiteStatement = new SQLiteStatement();
+		count.sqlConnection = connection;
+		count.text = "SELECT COUNT(*) AS n FROM sqlite_stat1";
+		var rows:Dynamic = null;
+		count.addEventListener(SQLEvent.RESULT, _ -> rows = Reflect.field(count.getResult().data[0], "n"));
+		count.execute();
+		__pumpUntil(() -> rows != null || events.length > 2);
+		connection.close();
+		__pumpUntil(() -> events.indexOf(SQLEvent.CLOSE) >= 0);
+
+		Assert.same([SQLEvent.OPEN, SQLEvent.DEANALYZE, SQLEvent.CLOSE], events);
+		Assert.equals(0, rows);
+	}
+
+	/** The rows in `table`. **/
+	private static function __count(connection:SQLiteConnection, table:String):Int {
+		return Std.int(Reflect.field(connection.request("SELECT COUNT(*) AS n FROM " + table).next(), "n"));
+	}
+
 	public function testWhatSQLiteRefusesIsAnSQLError():Void {
 		// Against the engine itself: what hxcpp's glue throws is a String,
 		// which escaped as one, and nothing was dispatched.
