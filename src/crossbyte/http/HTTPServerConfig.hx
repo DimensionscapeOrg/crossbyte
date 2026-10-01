@@ -542,7 +542,8 @@ class HTTPServerConfig {
 
 	/**
 		Path to the PEM certificate chain this server presents. Set together
-		with `tlsKeyPath` to serve HTTPS.
+		with `tlsKeyPath` to serve HTTPS; `validate` refuses one without the
+		other, which used to be served as plain HTTP.
 	**/
 	public var tlsCertificatePath:String;
 
@@ -618,7 +619,9 @@ class HTTPServerConfig {
 		  without one;
 		- that `corsAllowCredentials` is not paired with an
 		  `corsAllowedOrigins` of `"*"`;
-		- that an `errorDocument` is a file that is there.
+		- that an `errorDocument` is a file that is there;
+		- that `tlsCertificatePath` and `tlsKeyPath` are set together or not
+		  at all.
 
 		`$uri` and `$uri/` are
 		tested by the resolver before it reads this list at all, before the
@@ -674,6 +677,17 @@ class HTTPServerConfig {
 		// say it is missing.
 		if (errorDocument != null && (!errorDocument.exists || errorDocument.isDirectory)) {
 			throw new ArgumentError("errorDocument " + errorDocument.nativePath + " is not a file that is there.");
+		}
+
+		// One path without the other is not HTTPS, so tlsEnabled is false, and
+		// the server listened in plaintext for a caller who had asked for
+		// HTTPS: a key variable misspelt was an unencrypted server.
+		var certificate:Bool = tlsCertificatePath != null && tlsCertificatePath != "";
+		var key:Bool = tlsKeyPath != null && tlsKeyPath != "";
+		if (certificate != key) {
+			throw new ArgumentError(certificate
+				? "tlsCertificatePath is set and tlsKeyPath is not: HTTPS needs both, and this server would have listened in plain HTTP. Set tlsKeyPath, or clear tlsCertificatePath for plain HTTP."
+				: "tlsKeyPath is set and tlsCertificatePath is not: HTTPS needs both, and this server would have listened in plain HTTP. Set tlsCertificatePath, or clear tlsKeyPath for plain HTTP.");
 		}
 	}
 }
