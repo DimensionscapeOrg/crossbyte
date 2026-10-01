@@ -41,6 +41,11 @@ namespace
 		void* view;
 		size_t viewSize;
 #endif
+		// What the mapping has room for after the header, measured here
+		// rather than taken from the header: the header is written by
+		// whichever participant initialised it, and one that opened the name
+		// asking for more than its creator made wrote its own size there.
+		size_t payloadRoom;
 	};
 
 	size_t defaultCapacity()
@@ -138,11 +143,34 @@ namespace
 		return header != nullptr && header->magic == SHARED_OBJECT_MAGIC;
 	}
 
+	// The most a payload may hold: what the header says, but never more than
+	// the mapping has.
+	size_t payloadLimit(SharedObjectState* state, SharedObjectHeader* header)
+	{
+		size_t declared = static_cast<size_t>(header->capacity);
+		return declared < state->payloadRoom ? declared : state->payloadRoom;
+	}
+
+	// Sets up a header nobody has yet, sized to what the mapping holds.
+	void initialiseHeader(SharedObjectHeader* header, size_t payloadRoom, int maxSize)
+	{
+		size_t wanted = static_cast<size_t>(maxSize);
+		header->magic = SHARED_OBJECT_MAGIC;
+		header->payloadSize = 0;
+		header->capacity = static_cast<uint32_t>(wanted < payloadRoom ? wanted : payloadRoom);
+	}
+
+	// The region's lock is held by whichever participant is reading or
+	// writing it, in any process, and waited for outside the collector's
+	// reach: a collection another thread of this process started does not
+	// wait on a thread that is waiting on another process. Nothing the
+	// collector owns is touched until the wait is over.
 #if defined(_WIN32)
 	bool lockForHandle(SharedObjectState* state)
 	{
 		if (state != nullptr && state->mutex != nullptr)
 		{
+			hx::AutoGCFreeZone waiting;
 			DWORD lockResult = WaitForSingleObject(state->mutex, INFINITE);
 			return (lockResult == WAIT_OBJECT_0 || lockResult == WAIT_ABANDONED);
 		}
@@ -157,9 +185,25 @@ namespace
 		}
 	}
 #else
+	bool lockDescriptor(int fd)
+	{
+		if (fd < 0)
+		{
+			return false;
+		}
+
+		hx::AutoGCFreeZone waiting;
+		int result;
+		do
+		{
+			result = flock(fd, LOCK_EX);
+		} while (result != 0 && errno == EINTR);
+		return result == 0;
+	}
+
 	bool lockForHandle(SharedObjectState* state)
 	{
-		return state != nullptr && state->fd >= 0 && flock(state->fd, LOCK_EX) == 0;
+		return state != nullptr && lockDescriptor(state->fd);
 	}
 
 	void unlockForHandle(SharedObjectState* state)
@@ -201,6 +245,16 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize)
 		return nullptr;
 	}
 
+	// A mapping that already existed keeps the size its creator gave it,
+	// whatever was asked for here, and the view covers all of it.
+	MEMORY_BASIC_INFORMATION viewInfo;
+	if (VirtualQuery(viewHandle, &viewInfo, sizeof(viewInfo)) == 0 || viewInfo.RegionSize <= sizeof(SharedObjectHeader))
+	{
+		UnmapViewOfFile(viewHandle);
+		CloseHandle(fileMapping);
+		return nullptr;
+	}
+
 	std::string mutexName = sharedName + "_mutex";
 	HANDLE mutex = CreateMutexA(nullptr, FALSE, mutexName.c_str());
 	if (mutex == nullptr)
@@ -222,6 +276,7 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize)
 	state->fileMapping = fileMapping;
 	state->view = viewHandle;
 	state->mutex = mutex;
+	state->payloadRoom = static_cast<size_t>(viewInfo.RegionSize) - sizeof(SharedObjectHeader);
 
 	if (!lockForHandle(state))
 	{
@@ -233,53 +288,42 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize)
 	}
 
 	auto* header = headerFromHandle(viewHandle);
-	if (!isValidHeader(header))
+	if (!isValidHeader(header) || header->capacity == 0)
 	{
-		header->magic = SHARED_OBJECT_MAGIC;
-		header->payloadSize = 0;
-		header->capacity = static_cast<uint32_t>(maxSize);
-	}
-	else if (header->capacity == 0)
-	{
-		header->capacity = static_cast<uint32_t>(maxSize);
+		initialiseHeader(header, state->payloadRoom, maxSize);
 	}
 
 	unlockForHandle(state);
 	return state;
 #else
-	bool created = false;
-	int fd = shm_open(sharedName.c_str(), O_RDWR | O_CREAT | O_EXCL, 0666);
-	if (fd >= 0)
-	{
-		created = true;
-	}
-	else if (errno == EEXIST)
-	{
-		fd = shm_open(sharedName.c_str(), O_RDWR, 0666);
-	}
-	else
-	{
-		return nullptr;
-	}
-
+	int fd = shm_open(sharedName.c_str(), O_RDWR | O_CREAT, 0666);
 	if (fd < 0)
 	{
 		return nullptr;
 	}
 
-	if (created)
+	// Sized and set up under the region's lock, by whichever participant
+	// takes it first. The creator sized it before taking the lock, so one
+	// opening the name in that moment found it empty and failed, or, if it
+	// took the lock before the creator did, wrote its own maxSize into the
+	// header, past the end of a smaller mapping.
+	if (!lockDescriptor(fd))
 	{
-		size_t mappedSize = sizeof(SharedObjectHeader) + static_cast<size_t>(maxSize);
-		if (ftruncate(fd, static_cast<off_t>(mappedSize)) != 0)
-		{
-			close(fd);
-			return nullptr;
-		}
+		close(fd);
+		return nullptr;
 	}
 
 	struct stat sharedInfo;
-	if (fstat(fd, &sharedInfo) != 0 || sharedInfo.st_size < static_cast<off_t>(sizeof(SharedObjectHeader)))
+	bool sized = fstat(fd, &sharedInfo) == 0;
+	if (sized && sharedInfo.st_size <= static_cast<off_t>(sizeof(SharedObjectHeader)))
 	{
+		size_t wantedSize = sizeof(SharedObjectHeader) + static_cast<size_t>(maxSize);
+		sized = ftruncate(fd, static_cast<off_t>(wantedSize)) == 0 && fstat(fd, &sharedInfo) == 0;
+	}
+
+	if (!sized || sharedInfo.st_size <= static_cast<off_t>(sizeof(SharedObjectHeader)))
+	{
+		flock(fd, LOCK_UN);
 		close(fd);
 		return nullptr;
 	}
@@ -288,6 +332,7 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize)
 	void* viewHandle = mmap(nullptr, mappedSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (viewHandle == MAP_FAILED)
 	{
+		flock(fd, LOCK_UN);
 		close(fd);
 		return nullptr;
 	}
@@ -296,6 +341,7 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize)
 	if (state == nullptr)
 	{
 		munmap(viewHandle, mappedSize);
+		flock(fd, LOCK_UN);
 		close(fd);
 		return nullptr;
 	}
@@ -303,21 +349,12 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize)
 	state->fd = fd;
 	state->view = viewHandle;
 	state->viewSize = mappedSize;
-
-	if (!lockForHandle(state))
-	{
-		munmap(viewHandle, mappedSize);
-		close(fd);
-		delete state;
-		return nullptr;
-	}
+	state->payloadRoom = mappedSize - sizeof(SharedObjectHeader);
 
 	auto* header = headerFromHandle(viewHandle);
 	if (!isValidHeader(header) || header->capacity == 0)
 	{
-		header->magic = SHARED_OBJECT_MAGIC;
-		header->payloadSize = 0;
-		header->capacity = static_cast<uint32_t>(maxSize);
+		initialiseHeader(header, state->payloadRoom, maxSize);
 	}
 
 	unlockForHandle(state);
@@ -362,31 +399,6 @@ extern "C" void native_sharedObjectClose(void* handle)
 	delete state;
 }
 
-extern "C" int native_sharedObjectGetDataLength(void* handle)
-{
-	auto* state = static_cast<SharedObjectState*>(handle);
-	if (state == nullptr || state->view == nullptr)
-	{
-		return -1;
-	}
-
-	if (!lockForHandle(state))
-	{
-		return -1;
-	}
-
-	auto* header = headerFromHandle(state->view);
-	if (!isValidHeader(header))
-	{
-		unlockForHandle(state);
-		return -1;
-	}
-
-	int dataLength = static_cast<int>(header->payloadSize);
-	unlockForHandle(state);
-	return dataLength;
-}
-
 extern "C" int native_sharedObjectGetCapacity(void* handle)
 {
 	auto* state = static_cast<SharedObjectState*>(handle);
@@ -407,7 +419,7 @@ extern "C" int native_sharedObjectGetCapacity(void* handle)
 		return -1;
 	}
 
-	int capacity = static_cast<int>(header->capacity);
+	int capacity = static_cast<int>(payloadLimit(state, header));
 	unlockForHandle(state);
 	return capacity;
 }
@@ -426,7 +438,7 @@ extern "C" bool native_sharedObjectWrite(void* handle, const unsigned char* data
 	}
 
 	auto* header = headerFromHandle(state->view);
-	if (!isValidHeader(header) || dataSize > static_cast<int>(header->capacity))
+	if (!isValidHeader(header) || static_cast<size_t>(dataSize) > payloadLimit(state, header))
 	{
 		unlockForHandle(state);
 		return false;
@@ -438,7 +450,14 @@ extern "C" bool native_sharedObjectWrite(void* handle, const unsigned char* data
 	return true;
 }
 
-extern "C" int native_sharedObjectRead(void* handle, unsigned char* buffer, int bufferSize)
+// The payload's length and its bytes, under one acquisition of the lock:
+// copied into `buffer` when it fits there, and its length returned either
+// way, so a caller whose buffer was too small knows what to take next time.
+// -1 when the region cannot be read.
+//
+// The length and the bytes were two calls, each locking for itself, and a
+// flush between them left a copy cut to the old length or short of the new.
+extern "C" int native_sharedObjectReadPayload(void* handle, unsigned char* buffer, int bufferSize)
 {
 	auto* state = static_cast<SharedObjectState*>(handle);
 	if (state == nullptr || state->view == nullptr || buffer == nullptr || bufferSize < 0)
@@ -452,21 +471,20 @@ extern "C" int native_sharedObjectRead(void* handle, unsigned char* buffer, int 
 	}
 
 	auto* header = headerFromHandle(state->view);
-	if (!isValidHeader(header))
+	if (!isValidHeader(header) || static_cast<size_t>(header->payloadSize) > payloadLimit(state, header))
 	{
 		unlockForHandle(state);
 		return -1;
 	}
 
 	int dataSize = static_cast<int>(header->payloadSize);
-	int bytesToCopy = (bufferSize < dataSize ? bufferSize : dataSize);
-	if (bytesToCopy > 0)
+	if (dataSize > 0 && dataSize <= bufferSize)
 	{
-		std::memcpy(buffer, payloadFromHandle(state->view), static_cast<size_t>(bytesToCopy));
+		std::memcpy(buffer, payloadFromHandle(state->view), static_cast<size_t>(dataSize));
 	}
 
 	unlockForHandle(state);
-	return bytesToCopy;
+	return dataSize;
 }
 
 extern "C" void native_sharedObjectClear(void* handle)
