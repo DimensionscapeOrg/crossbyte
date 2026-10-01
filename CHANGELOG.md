@@ -2178,6 +2178,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `ReliableDatagramServerSocket.attachIceAgent` says when the agent's
+  `connected` fails -- every pair failed, or none selected within the
+  agent's `timeout`, 80 seconds by default -- and its example handles the
+  failure, where a session dialled on `connected` waited for an answer it
+  was never told would not come. A relayed reliable session leaves its
+  peer's channel to `TurnClient.sendTo`, which asks for it with the first
+  datagram, rather than asking again before every one.
 - A STUN question's `timeoutMs` of 0 or less is documented as what it
   is, the default of three seconds -- `StunClient`'s questions,
   `ReliableDatagramServerSocket.discoverPublicAddress`,

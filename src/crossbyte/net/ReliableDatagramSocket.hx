@@ -3422,13 +3422,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/**
 		One datagram for the relay to forward. The peer is permitted first --
 		a relay forwards to an address only once it has been told to expect it,
-		and drops anything else without a word -- and bound to a channel when
-		the relay was asked to use them; both cost a lookup once in place.
+		and drops anything else without a word -- which costs a lookup once in
+		place. A channel, when the relay was asked to use them, is `sendTo`'s
+		to ask for, with the first datagram to the peer, and `poll`'s to
+		renew; this asked too, before every datagram, a second lookup each.
 	**/
 	@:noCompletion private function __sendRelayed(offset:Int, length:Int):Void {
-		var now:Float = haxe.Timer.stamp();
-		__relay.permit(__remoteAddress, now);
-		__relay.bindChannel(__remoteAddress, __remotePort, now);
+		__relay.permit(__remoteAddress, haxe.Timer.stamp());
 		__relay.sendTo(__scratch, __remoteAddress, __remotePort, offset, length);
 	}
 

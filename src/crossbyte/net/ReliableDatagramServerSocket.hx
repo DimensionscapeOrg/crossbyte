@@ -795,8 +795,16 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		agent.connected.then(function(pair) {
 			var session = server.connect(pair.remote.address, pair.remote.port);
+		}, function(reason) {
+			trace("no path to the peer: " + reason);
 		});
 		```
+
+		The agent still needs its candidates and the peer's credentials, and
+		`start`, as `IceAgent` describes. `connected` fails when every pair
+		has, and when no pair has been selected `agent.timeout` seconds after
+		`start` -- `IceAgent.DEFAULT_TIMEOUT`, 80, unless set -- so code that
+		dials on it hears when it never will.
 
 		@param agent The agent to run. Its `onSend` is replaced.
 		@throws IOError if this server is closed, unbound, or not listening --
@@ -1172,11 +1180,15 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		}
 	}
 
-	/** One datagram for the relay to forward to a peer, permitting the peer first. **/
+	/**
+		One datagram for the relay to forward to a peer, permitting the peer
+		first. A channel, where the relay was asked to use them, is the
+		client's own business: `sendTo` asks for one with the first datagram
+		to a peer, and `poll` renews it. This asked as well, before every
+		datagram, which cost a second lookup of the peer's channel each time.
+	**/
 	@:noCompletion private function __sendRelayed(client:TurnClient, bytes:ByteArray, offset:Int, length:Int, address:String, port:Int):Void {
-		var now:Float = haxe.Timer.stamp();
-		client.permit(address, now);
-		client.bindChannel(address, port, now);
+		client.permit(address, haxe.Timer.stamp());
 		client.sendTo(bytes, address, port, offset, length);
 	}
 
