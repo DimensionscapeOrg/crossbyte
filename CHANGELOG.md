@@ -76,6 +76,10 @@ entry below says how:
   `ThreadEvent.UPDATE` are gone.
 - `BCrypt.hash` makes `$2b$` hashes, and Postgres, MySQL and MongoDB
   statements throw what the server refused.
+- Off native cpp, `Ed25519.verifyDetached` throws an
+  `IllegalOperationError` where it answered `false`, and `keypair` and
+  `signDetached` throw one where they threw a String; check
+  `Ed25519.isAvailable()` first.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1137,6 +1141,14 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `Ed25519.verifyDetached` throws on a target with no Ed25519 backend --
+  anything but native cpp -- instead of answering `false`, which is the
+  answer for a forged signature: code checking signed messages there
+  refused every one, genuine ones included, by what looked like a working
+  check. `Argon2id.verify` throws for the same reason. `keypair`,
+  `signDetached` and `verifyDetached` there throw an
+  `IllegalOperationError` naming the target, where the first two threw a
+  String, and before looking at their arguments.
 - Reliable UDP sends what a pass produces from one socket in as few system
   calls as the system allows. Each datagram was a `sendto` of its own,
   which was nearly all a server sending reliable UDP spent: 5.9 us a
