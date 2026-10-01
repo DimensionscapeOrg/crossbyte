@@ -230,7 +230,9 @@ class PeerConnection {
 
 	/**
 		How long, in seconds from `connect`, the whole stack has to come up
-		before the connection gives up and fails `ready`.
+		before the connection gives up and fails `ready` -- and how long an
+		ICE restart has, from `restartIce` or the peer's restart offer, to
+		find its path before it is given up (see `restartIce`).
 
 		Every phase had its own ending except the ones that waited on the
 		peer to go first: a DTLS server waits for a ClientHello with no timer
@@ -299,6 +301,16 @@ class PeerConnection {
 		once it has one. Null when no restart is under way.
 	**/
 	@:noCompletion private var __restartAgent:IceAgent = null;
+
+	/** When the restart under way began, for `readyTimeout`. **/
+	@:noCompletion private var __restartStartedAt:Float = 0;
+
+	/**
+		What the restart under way replaced, put back if it is given up: this
+		side's credentials, whether its next description is an offer, and the
+		peer's description.
+	**/
+	@:noCompletion private var __beforeRestart:{credentials:IceCredentials, offering:Bool, remote:PeerDescription} = null;
 
 	/** Whether `connect` has started things, and when, for `readyTimeout`. **/
 	@:noCompletion private var __connecting:Bool = false;
@@ -659,6 +671,16 @@ class PeerConnection {
 		given to `connect`, restarts this side, and `description()` is then
 		the answer to send back. A browser does that after `restartIce()`.
 
+		A restart that has not found a path within `readyTimeout` seconds of
+		beginning -- the peer never answered the offer, or its checks failed
+		-- is given up, and the connection is where it would be without it:
+		carrying on over the old path while the peer answers consent checks
+		there, and closing when it does not. `iceRestarting` goes false with
+		`agent` unchanged, and `description()` describes the session as it
+		was. Nothing ended a restart before, and while one was under way the
+		old path's consent closed nothing, so a restart toward a peer that had
+		gone held the connection open for good.
+
 		@throws ArgumentError Before `connect`, or once closed.
 	**/
 	public function restartIce():Void {
@@ -694,6 +716,8 @@ class PeerConnection {
 		var fresh:IceCredentials = __host != null ? @:privateAccess __host.__freshCredentials(this) : IceCredentials.generate();
 		var restarting = __makeAgent(offering, fresh);
 
+		__beforeRestart = {credentials: credentials, offering: __offering, remote: __remote};
+		__restartStartedAt = __clock();
 		__offering = offering;
 		credentials = fresh;
 		__restartAgent = restarting;
@@ -706,9 +730,12 @@ class PeerConnection {
 			}
 		}
 
+		// One that cannot find a path is given up, and the old path decides,
+		// as it would have without a restart. It used to fail the connection,
+		// however well the old path was still doing.
 		restarting.connected.then(pair -> __onRestarted(restarting, pair), function(error:String):Void {
 			if (restarting == __restartAgent) {
-				__fail("The ICE restart found no path to the peer: " + error);
+				__abandonRestart("The ICE restart found no path to the peer: " + error);
 			}
 		});
 
@@ -771,6 +798,7 @@ class PeerConnection {
 		var previous = agent;
 		agent = restarting;
 		__restartAgent = null;
+		__beforeRestart = null;
 		iceControlling = restarting.controlling;
 
 		if (__host != null) {
@@ -786,6 +814,51 @@ class PeerConnection {
 			__onPathFound(pair);
 		} else {
 			__route(pair);
+		}
+	}
+
+	/**
+		Gives up the restart under way: its agent is closed, and this side's
+		credentials, role in the exchange and record of the peer's are put
+		back as they were before it.
+
+		The old path then decides, as it would have with no restart: the
+		session carries on there while the peer answers consent checks, and
+		the connection closes if it has stopped. That is the case a deadline
+		was missing for -- a restart toward a peer that had gone, which held
+		the connection open for good, since consent lost on the old path
+		closes nothing while a restart is under way.
+	**/
+	@:noCompletion private function __abandonRestart(reason:String):Void {
+		var restarting = __restartAgent;
+
+		if (__closed || restarting == null) {
+			return;
+		}
+
+		// Cleared first: closing it fails its future, whose handler would
+		// otherwise find it still the restart under way.
+		__restartAgent = null;
+		restarting.close();
+
+		if (__beforeRestart != null) {
+			credentials = __beforeRestart.credentials;
+			__offering = __beforeRestart.offering;
+
+			if (__beforeRestart.remote != null) {
+				__remote = __beforeRestart.remote;
+			}
+
+			__beforeRestart = null;
+		}
+
+		if (__host != null) {
+			@:privateAccess __host.__retire(this, restarting.localCredentials.usernameFragment);
+		}
+
+		if (agent.state == IceAgentState.FAILED) {
+			__shutdown(reason + " " + (agent.selectedPair != null ? "The peer had stopped answering consent checks on the path before it, too." : "No path was found before it either."),
+				false, false);
 		}
 	}
 
@@ -848,6 +921,15 @@ class PeerConnection {
 			if (__closed) {
 				return;
 			}
+
+			// Given as long to find its path as a connection is to come up.
+			if (__restartAgent != null && now - __restartStartedAt >= readyTimeout) {
+				__abandonRestart("The ICE restart found no path to the peer within " + readyTimeout + " seconds.");
+
+				if (__closed) {
+					return;
+				}
+			}
 		}
 
 		// Consent is the agent's to lose and this connection's to act on, and
@@ -859,7 +941,8 @@ class PeerConnection {
 		//
 		// Except while an ICE restart is under way. The old path going is often
 		// why there is one, and the new agent decides: it replaces this one if
-		// it finds a path, and fails the connection if it cannot.
+		// it finds a path, and if it cannot, or runs out of time, it is given
+		// up and this decides after all.
 		if (agent.state == IceAgentState.FAILED && __restartAgent == null) {
 			__shutdown(connected ? "The peer stopped answering consent checks, so the path to it is no longer usable." : "The peer stopped answering consent checks before the connection was ready.",
 				false, false);
