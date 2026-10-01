@@ -74,6 +74,14 @@ class NoFileSystem {
 		refuse("copy " + from + " to " + to);
 	}
 
+	public static function rename(from:String, to:String):Void {
+		refuse("rename " + from + " to " + to);
+	}
+
+	public static function absolutePath(path:String):String {
+		return refuse("resolve " + path + " against a working directory");
+	}
+
 	/**
 	 * Typed as returning whatever the caller expects, so a shim member can end
 	 * in `return refuse(...)` and still satisfy its signature. It never

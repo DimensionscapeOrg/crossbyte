@@ -76,6 +76,9 @@ entry below says how:
   `ThreadEvent.UPDATE` are gone.
 - `BCrypt.hash` makes `$2b$` hashes, and Postgres, MySQL and MongoDB
   statements throw what the server refused.
+- `File.moveTo` with `overwrite` replaces an existing directory instead of
+  merging into it, as its documentation says; merge with `copyTo` and then
+  delete the source if that is what was meant.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1932,6 +1935,25 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `File.copyTo` and `moveTo` refuse to copy or move a file onto itself, and
+  `moveTo` is a rename. The standard library's copy truncates its
+  destination before it reads the source, so `copyTo(itself, true)`
+  emptied the file and reported success, and so did copying onto
+  another name for it: its name in another case on Windows, a hard link, a
+  path through a junction. `moveTo` was a copy and then a delete, so it
+  did the same and then deleted what was left, which made renaming a
+  file's case on Windows or macOS lose the file. The two ends are compared
+  as files now, by the volume and index the file system keeps for each,
+  and an `IOError` says they are one; a name changed only in case is
+  renamed. Within a volume `moveTo` renames, so a directory moves in one
+  step whatever its size and a file replaced through it is never seen half
+  written; onto another volume it copies and then deletes, and leaves
+  nothing behind if the copy fails. With `overwrite` an existing
+  destination is replaced, a directory as a whole, where it was merged
+  into, and put back if the move fails. A directory is no longer copied
+  or moved into itself, which copied what it had just copied until the
+  path grew too long. Errors on these paths are `IOError`s carrying AIR's
+  error numbers, as documented, where some were the base `Error`.
 - `File.resolvePath` normalizes, as its documentation says: `.` is
   dropped, `..` consumes its parent and never climbs past the file
   system's root or the application storage directory, and an absolute

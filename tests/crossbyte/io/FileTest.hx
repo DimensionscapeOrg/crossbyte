@@ -811,6 +811,253 @@ class FileTest extends utest.Test {
 		Assert.isNull(c.getRelativePath(d, true));
 	}
 
+	public function testCopyToOntoItselfIsRefusedAndKeepsTheFile():Void {
+		// The standard library's copy truncates the destination before it
+		// reads the source. Onto itself, with overwrite, that emptied the
+		// file and reported success.
+		var dir = File.createTempDirectory();
+		var file = dir.resolvePath("self.txt");
+		HaxeFile.saveContent(file.nativePath, "precious data");
+
+		var spellings:Array<File> = [file, new File(file.nativePath), new File(dir.resolvePath("sub").nativePath + File.separator + ".." + File.separator + "self.txt")];
+
+		if (System.isWindows) {
+			// The same file to Windows, in another case.
+			spellings.push(dir.resolvePath("SELF.TXT"));
+		}
+
+		for (same in spellings) {
+			for (overwrite in [true, false]) {
+				var raised:Dynamic = null;
+
+				try {
+					file.copyTo(same, overwrite);
+				} catch (e:Dynamic) {
+					raised = e;
+				}
+
+				Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), 'copyTo(${same.nativePath}, $overwrite) did not raise an IOError: $raised');
+				Assert.equals("precious data", HaxeFile.getContent(file.nativePath), 'copyTo(${same.nativePath}, $overwrite) changed the file');
+			}
+		}
+
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testMoveToOntoItselfIsRefusedAndKeepsTheFile():Void {
+		var dir = File.createTempDirectory();
+		var file = dir.resolvePath("self.txt");
+		HaxeFile.saveContent(file.nativePath, "precious data");
+
+		for (overwrite in [true, false]) {
+			var raised:Dynamic = null;
+
+			try {
+				file.moveTo(new File(file.nativePath), overwrite);
+			} catch (e:Dynamic) {
+				raised = e;
+			}
+
+			Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), 'moveTo(itself, $overwrite) did not raise an IOError: $raised');
+			Assert.equals("precious data", HaxeFile.getContent(file.nativePath));
+		}
+
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testACaseOnlyRenameRenames():Void {
+		// On Windows, and macOS by default, "case.txt" and "CASE.txt" are one
+		// file. With overwrite, moveTo copied it onto itself, emptying it,
+		// and deleted it; without, it refused, because the destination
+		// "existed". There was no way to change a name's case.
+		for (overwrite in [false, true]) {
+			var dir = File.createTempDirectory();
+			HaxeFile.saveContent(dir.resolvePath("case.txt").nativePath, "precious data");
+
+			try {
+				dir.resolvePath("case.txt").moveTo(dir.resolvePath("CASE.txt"), overwrite);
+			} catch (e:Dynamic) {
+				Assert.fail('the rename threw with overwrite $overwrite: $e');
+			}
+
+			Assert.same(["CASE.txt"], sys.FileSystem.readDirectory(dir.nativePath), 'overwrite $overwrite');
+			Assert.equals("precious data", HaxeFile.getContent(dir.resolvePath("CASE.txt").nativePath));
+
+			try dir.deleteDirectory(true) catch (_:Dynamic) {}
+		}
+	}
+
+	public function testCopyToRefusesAHardLinkToItself():Void {
+		// Two names for one file, which comparing names cannot see.
+		var dir = File.createTempDirectory();
+		var file = dir.resolvePath("data.txt");
+		var link = dir.resolvePath("link.txt");
+		HaxeFile.saveContent(file.nativePath, "precious data");
+
+		// fsutil rather than mklink: Process quotes each argument, and cmd
+		// does not recognise a quoted "mklink" as its own command.
+		var made:Int = System.isWindows ? __quietly("fsutil", ["hardlink", "create", link.nativePath, file.nativePath]) : __quietly("ln",
+			[file.nativePath, link.nativePath]);
+
+		if (made != 0 || !link.exists) {
+			// No way to make one here; nothing to check.
+			Assert.pass();
+			try dir.deleteDirectory(true) catch (_:Dynamic) {}
+			return;
+		}
+
+		Assert.raises(() -> file.copyTo(link, true), crossbyte.errors.IOError);
+		Assert.equals("precious data", HaxeFile.getContent(file.nativePath));
+		Assert.equals("precious data", HaxeFile.getContent(link.nativePath));
+
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testMoveToIsARename():Void {
+		// It was a copy and a delete: a new file with the old one's bytes.
+		// A rename keeps the file itself, which the file system's own name
+		// for it, its index on the volume, shows where a target reports
+		// one.
+		var dir = File.createTempDirectory();
+		var source = dir.resolvePath("before.txt");
+		HaxeFile.saveContent(source.nativePath, "payload");
+		var before:Null<String> = crossbyte.io._internal.FileOps.identity(source.nativePath);
+
+		var target = dir.resolvePath("nested").resolvePath("after.txt");
+		source.moveTo(target);
+
+		Assert.isFalse(source.exists);
+		Assert.equals("payload", HaxeFile.getContent(target.nativePath));
+
+		if (before != null) {
+			Assert.equals(before, crossbyte.io._internal.FileOps.identity(target.nativePath), "the file was copied, not renamed");
+		}
+
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testMoveToReplacesAnExistingDirectory():Void {
+		var root = File.createTempDirectory();
+		var source = root.resolvePath("source");
+		var target = root.resolvePath("target");
+		source.createDirectory();
+		target.createDirectory();
+		HaxeFile.saveContent(source.resolvePath("new.txt").nativePath, "new");
+		HaxeFile.saveContent(target.resolvePath("old.txt").nativePath, "old");
+
+		Assert.raises(() -> source.moveTo(target, false), crossbyte.errors.IOError);
+
+		source.moveTo(target, true);
+
+		Assert.isFalse(source.exists);
+		Assert.same(["new.txt"], sys.FileSystem.readDirectory(target.nativePath));
+		// Nothing set aside is left behind.
+		Assert.same(["target"], sys.FileSystem.readDirectory(root.nativePath));
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testADirectoryIsNotCopiedOrMovedIntoItself():Void {
+		var root = File.createTempDirectory();
+		var dir = root.resolvePath("dir");
+		dir.createDirectory();
+		HaxeFile.saveContent(dir.resolvePath("a.txt").nativePath, "a");
+
+		Assert.raises(() -> dir.copyTo(dir.resolvePath("inner"), true), crossbyte.errors.IOError);
+		Assert.raises(() -> dir.moveTo(dir.resolvePath("inner"), true), crossbyte.errors.IOError);
+		Assert.same(["a.txt"], sys.FileSystem.readDirectory(dir.nativePath));
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testAMoveToAnotherVolumeCopiesThenDeletes():Void {
+		// One volume here, so the second is pretended: the move takes the
+		// path a rename cannot, which is the one the old moveTo always took.
+		var root = File.createTempDirectory();
+		var source = root.resolvePath("source");
+		var target = root.resolvePath("target");
+		source.resolvePath("deep").createDirectory();
+		HaxeFile.saveContent(source.resolvePath("deep").resolvePath("a.txt").nativePath, "a");
+		target.createDirectory();
+		HaxeFile.saveContent(target.resolvePath("old.txt").nativePath, "old");
+
+		var original = @:privateAccess File.__sameVolume;
+		@:privateAccess File.__sameVolume = (_, _, _) -> false;
+
+		try {
+			source.moveTo(target, true);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		@:privateAccess File.__sameVolume = original;
+
+		Assert.isFalse(source.exists);
+		Assert.same(["deep"], sys.FileSystem.readDirectory(target.nativePath));
+		Assert.equals("a", HaxeFile.getContent(target.resolvePath("deep").resolvePath("a.txt").nativePath));
+		Assert.same(["target"], sys.FileSystem.readDirectory(root.nativePath));
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testAFailedMovePutsTheReplacedDirectoryBack():Void {
+		if (!System.isWindows) {
+			// Needs a rename that fails after the target is set aside. Windows
+			// refuses to rename a directory with a file open inside it; POSIX
+			// does not.
+			Assert.pass();
+			return;
+		}
+
+		var root = File.createTempDirectory();
+		var source = root.resolvePath("source");
+		var target = root.resolvePath("target");
+		source.createDirectory();
+		target.createDirectory();
+		HaxeFile.saveContent(source.resolvePath("new.txt").nativePath, "new");
+		HaxeFile.saveContent(target.resolvePath("old.txt").nativePath, "old");
+
+		var held = HaxeFile.read(source.resolvePath("new.txt").nativePath, true);
+		var raised:Dynamic = null;
+
+		try {
+			source.moveTo(target, true);
+		} catch (e:Dynamic) {
+			raised = e;
+		}
+
+		held.close();
+
+		if (raised == null) {
+			// This file system let it through; nothing was lost either way.
+			Assert.isFalse(source.exists);
+			Assert.same(["new.txt"], sys.FileSystem.readDirectory(target.nativePath));
+		} else {
+			Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), Std.string(raised));
+			Assert.same(["old.txt"], sys.FileSystem.readDirectory(target.nativePath));
+			Assert.same(["new.txt"], sys.FileSystem.readDirectory(source.nativePath));
+			var left = sys.FileSystem.readDirectory(root.nativePath);
+			left.sort(Reflect.compare);
+			Assert.same(["source", "target"], left);
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	/** Runs a command with its output kept out of the test report. **/
+	private static function __quietly(command:String, args:Array<String>):Int {
+		try {
+			var process = new sys.io.Process(command, args);
+			process.stdout.readAll();
+			process.stderr.readAll();
+			var code:Int = process.exitCode();
+			process.close();
+			return code;
+		} catch (_:Dynamic) {
+			return -1;
+		}
+	}
+
 	public function testAnOrdinarySizeIsStillReported():Void {
 		var file = File.createTempFile();
 		HaxeFile.saveBytes(file.nativePath, Bytes.alloc(1234));
