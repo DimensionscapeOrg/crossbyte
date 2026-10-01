@@ -117,12 +117,23 @@ class ErrorsTest extends utest.Test {
 		Assert.equals("IOError", io.toString());
 	}
 
-	public function testEOFErrorUsesFixedFlashStyleSemantics():Void {
-		var eof = new EOFError("ignored", 99);
+	public function testEOFErrorKeepsTheMessageItIsGiven():Void {
+		// Its doc takes a message, and the constructor threw it away for a
+		// fixed one, FileStream's "Asked for 8 bytes with 3 left in the
+		// file" among them, and the id with it.
+		var eof = new EOFError("the frame ended inside its header", 99);
 		Assert.equals("EOFError", eof.name);
-		Assert.equals(2030, eof.errorID);
-		Assert.equals("End of file was encountered", eof.message);
-		Assert.equals("End of file was encountered", eof.toString());
+		Assert.equals("the frame ended inside its header", eof.message);
+		Assert.equals("the frame ended inside its header", eof.toString());
+		Assert.equals(99, eof.errorID);
+
+		// Without one, Flash's own: what every reader here throws.
+		var plain = new EOFError();
+		Assert.equals("EOFError", plain.name);
+		Assert.equals(2030, plain.errorID);
+		Assert.equals("End of file was encountered", plain.message);
+		Assert.equals("End of file was encountered", plain.toString());
+		Assert.equals("End of file was encountered", new EOFError("").message);
 	}
 
 	public function testSQLErrorExposesMetadataAndDetails():Void {
