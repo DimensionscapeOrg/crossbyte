@@ -9,7 +9,12 @@ package crossbyte._internal.system;
 	stack -- and Haxe defines `jvm` there too, so a path from the runtime to
 	`System` failed the build with "You cannot access the java package while in
 	a macro".
+
+	Not in a browser, as `System.sleep` is not: a page cannot block a thread,
+	and `Sys.sleep` does not exist there, which failed the browser build of
+	the whole library.
 **/
+#if !(js && !nodejs)
 class Sleep {
 	#if (eval && !macro)
 	private static var __windows:Null<Bool> = null;
@@ -34,3 +39,4 @@ class Sleep {
 		Sys.sleep(seconds);
 	}
 }
+#end
