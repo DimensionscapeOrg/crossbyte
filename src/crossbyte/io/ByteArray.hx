@@ -904,8 +904,13 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		// Same shape on the destination: `offset + length` decided both the
 		// test and the size passed to __resize, so an overflow asked for a
 		// negative allocation.
+		//
+		// Grown with the bytes from `offset` on left to the blit below, which
+		// writes all of them: only a gap before `offset` is zeroed. They were
+		// all zeroed and then written -- on JavaScript a byte at a time, a
+		// third of a Node server's working time taking uploads.
 		if ((bytes : ByteArrayData).length - offset < length) {
-			(bytes : ByteArrayData).__resize(offset + length);
+			(bytes : ByteArrayData).__resize(offset + length, offset);
 		}
 
 		(bytes : ByteArrayData).blit(offset, this, position, length);
@@ -1259,6 +1264,12 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	#if js
+	// Natively. Haxe's fill sets a byte at a time, and a ByteArray zeroes
+	// with it whatever growing exposes.
+	override public function fill(pos:Int, len:Int, value:Int):Void {
+		b.fill(value, pos, pos + len);
+	}
+
 	// A view's bytes appended at the end in one copy, the position left where
 	// it is. What a Node socket receives is a view of a pool Node shares; it
 	// was sliced into a buffer of its own, wrapped in a ByteArray, and copied

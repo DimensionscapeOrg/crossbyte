@@ -1157,6 +1157,13 @@ All notable changes to CrossByte will be documented in this file.
   U+FFFD, as in a browser. `URLLoader` decodes strictly: a text body that
   is not UTF-8 is an `IO_ERROR` with the bytes in `data`, where only some
   malformed sequences were and the rest came through as other characters.
+- `readBytes` into a `ByteArray` past its end zeroes only the gap before
+  where the bytes land, where it zeroed everything it grew and then wrote
+  over it; and on JavaScript a `ByteArray` zeroes natively, where Haxe's
+  `fill` set a byte at a time -- a third of a Node server's working time
+  taking uploads. 64 KB uploads: 23,600 a second where a Node server took
+  16,500, and 49,300 where a native one took 43,300; 1 MB uploads to Node,
+  1,250 where it took 920.
 - `PostgresStatement` and `MongoStatement` throw a failed statement's
   `SQLError` after dispatching it as an `SQLErrorEvent`, as `MySQLStatement`
   does. They dispatched it and returned, so to a caller not listening -- an
