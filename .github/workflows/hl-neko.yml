@@ -24,10 +24,13 @@ concurrency:
 env:
   HAXE_VERSION: "4.3.7"
   # 1.13 is the floor: haxe.atomic does not compile for hl below it, and
-  # ci/hl-tests.hxml passes -D hl-ver=1.13.0 to match. 1.14 is what the suite
-  # was brought up on. Move the two together.
-  HASHLINK_TAG: "1.14"
-  HASHLINK_VERSION: "1.14.0"
+  # ci/hl-tests.hxml passes -D hl-ver=1.13.0 to match. The suite was brought
+  # up on 1.14, whose collector now and then marked a block that was never
+  # allocated and died in gc_flush_mark on Linux: two runs on main in seven.
+  # 1.15 has HashLink's fix for that (#756); thirty runs of the suite on it,
+  # and thirty on 1.14 with #756 alone, never crashed. Move the two together.
+  HASHLINK_TAG: "1.15"
+  HASHLINK_VERSION: "1.15.0"
 
 jobs:
   neko:
