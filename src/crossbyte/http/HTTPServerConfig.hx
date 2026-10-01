@@ -398,6 +398,14 @@ class HTTPServerConfig {
 
 		Enforced by the owning server's sweep, which runs a few times a
 		second, so the deadline is precise to roughly a quarter second.
+
+		Neither this at `0` nor `keepAliveTimeout` at `0` lifts the deadline
+		a response being sent keeps of its own: one the server sends in
+		bursts -- a file over 256 KB, or a body too large for the output
+		buffer -- whose client takes none of it for 30 seconds is given up,
+		the connection closed under HTTP/1.1 and the stream reset under
+		HTTP/2. With both at `0` that deadline went unchecked, and a client
+		that stopped reading held its file and its connection for good.
 	**/
 	public var requestTimeout:Float;
 
@@ -472,7 +480,8 @@ class HTTPServerConfig {
 	/**
 		Seconds a kept-alive connection may sit idle between requests
 		before the server closes it. Defaults to 5; `0` and below disables
-		idle reaping.
+		idle reaping, and only that: a response being sent keeps a deadline
+		of its own (see `requestTimeout`).
 
 		Without a bound, every client that wanders off mid-session holds a
 		connection slot until its own end gives up, and `maxConnections`

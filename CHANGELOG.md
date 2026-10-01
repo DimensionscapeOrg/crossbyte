@@ -2163,6 +2163,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A response the server sends in bursts -- a file over 256 KB, a body too
+  large for the output buffer -- is held to its 30 s stall deadline
+  whatever `requestTimeout` and `keepAliveTimeout` are, over HTTP/1.1 and
+  HTTP/2. The deadline was checked by the sweep those two arm, so with both
+  at `0`, which sets no deadline for what they bound, nothing checked it:
+  a client that stopped reading held its file and its connection for good.
+  The sweep now also runs while such a response is being sent, and with
+  both timeouts off visits only those.
 - A request carried on from a later tick is answered `500` when serving it
   throws, as one carried on at once is: a middleware calling `next()` from
   a timer or a callback, and, over HTTP/1.1, a pipelined request parsed
