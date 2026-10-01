@@ -127,6 +127,54 @@ class FileOps {
 	}
 
 	/**
+		Cuts the file at `path` to `length` bytes, or extends it with zeros.
+		Through the system's own truncate where the target reaches one; the
+		interpreter, neko and hl have none, and there the kept part is read
+		and written back.
+	**/
+	public static function truncate(path:String, length:Int):Void {
+		#if (js && !nodejs)
+		throw new crossbyte.errors.IllegalOperationError("Cannot truncate " + path + ": this target has no filesystem.");
+		#elseif cpp
+		var failure:String = NativeFileSync.truncate(path, length);
+
+		if (failure != null && failure != "") {
+			throw failure;
+		}
+		#elseif jvm
+		var file = new java.io.RandomAccessFile(path, "rw");
+
+		try {
+			file.setLength(haxe.Int64.ofInt(length));
+		} catch (e:Dynamic) {
+			file.close();
+			throw e;
+		}
+
+		file.close();
+		#elseif nodejs
+		js.node.Fs.truncateSync(path, length);
+		#else
+		var kept:haxe.io.Bytes = haxe.io.Bytes.alloc(length);
+		var input = sys.io.File.read(path, true);
+		var got:Int = 0;
+
+		try {
+			while (got < length) {
+				var read:Int = input.readBytes(kept, got, length - got);
+				if (read <= 0) {
+					break;
+				}
+				got += read;
+			}
+		} catch (_:haxe.io.Eof) {}
+
+		input.close();
+		sys.io.File.saveBytes(path, kept);
+		#end
+	}
+
+	/**
 		Renames `from` over `to`, replacing it, in one step.
 
 		The standard library's rename does that on POSIX, and on Node and eval

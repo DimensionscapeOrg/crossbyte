@@ -260,6 +260,51 @@ void crossbyte_file_sync_directory(::String path) {
 #endif
 }
 
+::String crossbyte_file_truncate(::String path, double length) {
+	// The standard library has no truncate. FileStream read the whole file
+	// into memory and wrote back the part it kept, which is a file's size of
+	// memory and a window in which a crash leaves it empty.
+#if defined(_WIN32)
+	std::wstring file = toWide(path);
+	DWORD error = 0;
+
+	{
+		hx::AutoGCFreeZone zone;
+		// Shared both ways: the stream truncating has the file open itself.
+		HANDLE handle = CreateFileW(file.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+
+		if (handle == INVALID_HANDLE_VALUE) {
+			error = GetLastError();
+		} else {
+			LARGE_INTEGER at;
+			at.QuadPart = static_cast<LONGLONG>(length);
+
+			if (!SetFilePointerEx(handle, at, nullptr, FILE_BEGIN) || !SetEndOfFile(handle)) {
+				error = GetLastError();
+			}
+
+			CloseHandle(handle);
+		}
+	}
+
+	return error == 0 ? ::String("") : describe("SetEndOfFile", error);
+#else
+	std::string file = toNarrow(path);
+	int error = 0;
+
+	{
+		hx::AutoGCFreeZone zone;
+
+		if (truncate(file.c_str(), static_cast<off_t>(length)) != 0) {
+			error = errno;
+		}
+	}
+
+	return error == 0 ? ::String("") : describe("truncate", error);
+#endif
+}
+
 int crossbyte_file_create_exclusive(::String path, bool directory) {
 #if defined(_WIN32)
 	std::wstring target = toWide(path);

@@ -38,5 +38,9 @@ extern class NativeFileSync {
 	**/
 	@:native("crossbyte_file_identity")
 	public static function identity(path:String):String;
+
+	/** Cuts or extends a file to `length` bytes. Empty on success, else why not. **/
+	@:native("crossbyte_file_truncate")
+	public static function truncate(path:String, length:Float):String;
 }
 #end
