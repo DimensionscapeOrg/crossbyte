@@ -303,7 +303,8 @@ class ServerWebSocket extends ServerSocket {
 		Creates a ServerWebSocket.
 
 		@param secure When `true`, the server terminates TLS (`wss://`) and
-			requires a certificate via `cert` before listening.
+			requires a certificate, through `cert` or `setCertificate()`,
+			before `bind()`.
 		@throws Error On the eval target, when `secure` is true. Inherited from
 			`ServerSocket`, which cannot install a certificate there.
 	**/
@@ -313,11 +314,6 @@ class ServerWebSocket extends ServerSocket {
 		// the property ServerSocket exposes and this class inherits, read
 		// false on a server that was terminating TLS. Two fields for one fact,
 		// and the public one was the wrong one.
-		//
-		// It also means a secure ServerWebSocket now refuses on the jvm target
-		// at construction, where before it was accepted and then had no TLS to
-		// give it. That refusal was always ServerSocket's, and skipping past
-		// it was never deliberate.
 		super(secure);
 
 		// The server dispatches CONNECT to itself once a handshake
@@ -710,6 +706,11 @@ class ServerWebSocket extends ServerSocket {
 		if (__closed) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
+		// As ServerSocket asks. Natively nothing did: the server listened,
+		// and every handshake failed without a word.
+		if (secure && !__hasCertificate) {
+			throw new IOError("A secure ServerWebSocket requires a certificate, through cert or setCertificate(), before bind().");
+		}
 		if (backlog < 0) {
 			throw new RangeError("The supplied index is out of bounds.");
 		} else if (backlog == 0) {
@@ -892,21 +893,33 @@ class ServerWebSocket extends ServerSocket {
 	#end
 
 	/**
-		The certificate for a Secure WebSocket Server.
+		The certificate this server presents to clients, with its private key.
+
+		Set it before `bind()`, where a native server builds its TLS
+		configuration: it is refused afterwards, where it used to be taken
+		and then never presented. A secure server will not `listen()`
+		without one.
+
+		@throws Error When this server is not secure, or is already bound.
+		@throws ArgumentError When the certificate or the key is missing.
 	**/
 	public var cert(default, set):{certificate:Certificate, key:Key};
 
 	@:noCompletion private function set_cert(value:{certificate:Certificate, key:Key}):{certificate:Certificate, key:Key} {
-		if (secure) {
-			#if nodejs
-			// Kept, not applied: listen() builds the server from it. Assigning
-			// after listen() therefore does nothing, which is the same as on a
-			// native server, where the TLS configuration is materialized when
-			// the listener is bound.
-			#else
-			__webServerSocket.setCertificate(value.certificate.__native, value.key.__native);
-			#end
+		__requireUnboundTls("cert");
+		if (value == null || value.certificate == null || value.key == null) {
+			throw new ArgumentError("cert needs a certificate and its key.");
 		}
+
+		#if nodejs
+		// Kept for listen(), which builds the server from it: Node takes a TLS
+		// server's key and certificate when it is created.
+		__tlsCertificate = value.certificate;
+		__tlsKey = value.key;
+		#else
+		__webServerSocket.setCertificate(value.certificate.__native, value.key.__native);
+		#end
+		__hasCertificate = true;
 
 		return cert = value;
 	}
