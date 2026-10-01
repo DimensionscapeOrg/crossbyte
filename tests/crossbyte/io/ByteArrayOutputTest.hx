@@ -185,6 +185,62 @@ class ByteArrayOutputTest extends utest.Test {
 		Assert.isFalse(output.validateSize(8));
 	}
 
+	/**
+		Every writer makes room for what it writes, as the class doc says an
+		output grows. The fixed-size writers -- byte, short, int, float,
+		double, bytes -- only checked, outside `final`, and threw: a
+		`new ByteArrayOutput()` could not take `writeInt(1)` without a
+		`reserve(4)` first. In a `final` build they did not check at all.
+	**/
+	public function testFixedSizeWritersGrowTheOutput():Void {
+		var output = new ByteArrayOutput();
+		output.writeByte(0x7F);
+		output.writeShort(0x1234);
+		output.writeInt(0x55667788);
+		output.writeFloat(1.5);
+		output.writeDouble(-2.25);
+		output.writeBoolean(true);
+		output.writeBytes(Bytes.ofString("tail"));
+
+		var bytes:Bytes = output;
+		Assert.equals(1 + 2 + 4 + 4 + 8 + 1 + 4, bytes.length);
+		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
+		Assert.equals(0x7F, input.readByte());
+		Assert.equals(0x1234, input.readShort());
+		Assert.equals(0x55667788, input.readInt());
+		Assert.floatEquals(1.5, input.readFloat());
+		Assert.floatEquals(-2.25, input.readDouble());
+		Assert.isTrue(input.readBoolean());
+		Assert.equals("tail", input.readUTFBytes(4));
+		Assert.isTrue(input.eof());
+	}
+
+	@:access(crossbyte.io.ByteArrayDataOutput)
+	public function testGrowingByItselfTakesFewChunks():Void {
+		// Grown as a ByteArray grows, by at least what it holds, so value after
+		// value without reserve() is not a chunk -- an allocation and a copy --
+		// apiece.
+		var output = new ByteArrayOutput();
+		for (i in 0...10000) {
+			output.writeInt(i);
+		}
+
+		var data:crossbyte.io.ByteArrayOutput.ByteArrayDataOutput = cast output;
+		var chunks:Int = data.byteCache == null ? 1 : data.byteCache.length + 1;
+		Assert.isTrue(chunks <= 16, "10000 ints took " + chunks + " chunks");
+
+		var bytes:Bytes = output;
+		Assert.equals(40000, bytes.length);
+		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
+		for (i in 0...10000) {
+			if (input.readInt() != i) {
+				Assert.fail("int " + i + " came back wrong");
+				return;
+			}
+		}
+		Assert.isTrue(input.eof());
+	}
+
 	public function testWriteUTFRefusesWhatItsLengthPrefixCannotState():Void {
 		// Sixteen bits of length; past 65535 it wrapped and desynchronised
 		// every read after the string.

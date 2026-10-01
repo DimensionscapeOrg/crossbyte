@@ -89,13 +89,12 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		Denotes the default object encoding for the ByteArray class to use for a
 		new ByteArray instance. When you create a new ByteArray instance, the
 		encoding on that instance starts with the value of
-		`defaultObjectEncoding`. The `defaultObjectEncoding`
-		property is initialized to `ObjectEncoding.DEFAULT`. This value varies
-		between platforms.
+		`defaultObjectEncoding`. The `defaultObjectEncoding` property is
+		initialized to `ObjectEncoding.DEFAULT`, which is `HXSF` on every
+		target.
 		When an object is written to or read from binary data, the
-		`objectEncoding` value is used to determine whether the
-		Haxe, JavaScript, ActionScript 3.0, ActionScript 2.0 or ActionScript 1.0
-		format should be used. The value is a constant from the ObjectEncoding
+		`objectEncoding` value is used to determine whether HXSF, JSON, AMF3
+		or AMF0 is used. The value is a constant from the ObjectEncoding
 		class.
 	**/
 	public static var defaultObjectEncoding(get, set):ObjectEncoding;
@@ -155,8 +154,13 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	/**
 		Clears the contents of the byte array and resets the `length`
-		and `position` properties to 0. Calling this method explicitly
-		frees up the memory used by the ByteArray instance.
+		and `position` properties to 0.
+
+		The memory the bytes took is kept, unlike AIR's `clear()`, which
+		frees it: a byte array cleared and filled again reuses its buffer and
+		allocates nothing, which is what a buffer reused for every message
+		wants, and what `Socket` relies on for its own. To give the memory
+		back, drop the byte array and let the collector take it.
 	**/
 	public inline function clear():Void {
 		this.clear();
@@ -223,9 +227,20 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	/**
-		Converts a Bytes object into a ByteArray.
-		@param	buffer	A Bytes instance
-		@returns	A new ByteArray
+		Converts a Bytes object into a ByteArray -- which is also what
+		assigning a `Bytes` to a `ByteArray` does.
+
+		The ByteArray uses `bytes`' own storage rather than a copy: natively,
+		on the jvm, hl, neko and JavaScript, a change made through either
+		shows in the other, until the ByteArray grows past that storage and
+		takes a buffer of its own. The interpreter copies, so there the two
+		are independent from the start. For a ByteArray of its own on every
+		target, copy first: `ByteArray.fromBytes(bytes.sub(0, bytes.length))`.
+
+		A `ByteArray` passed in comes back as it is.
+
+		@param	bytes	A Bytes instance
+		@returns	A ByteArray over `bytes`, or null for null.
 	**/
 	@:from public static function fromBytes(bytes:Bytes):ByteArray {
 		if (bytes == null)
@@ -377,8 +392,17 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		Reads an object from the byte array, in whichever format
 		`objectEncoding` names. That is `HXSF` unless you changed it, not AMF.
 
+		An `HXSF` or `JSON` object is read as `writeObject` frames one: the
+		length in bytes of its text, as an unsigned 32-bit integer in this
+		byte array's `endian`, then the text as UTF-8. `AMF0` and `AMF3` are
+		their own framing.
+
 		@return The deserialized object.
-		@throws EOFError There is not sufficient data available to read.
+		@throws EOFError There is not sufficient data available to read. For
+				`HXSF` and `JSON`, `position` is left where it was, so the
+				read can be tried again once the rest has arrived.
+		@throws RangeError An `HXSF` or `JSON` object declares 2^31 bytes or
+				more, which no ByteArray holds.
 	**/
 	public inline function readObject():Dynamic {
 		return this.readObject();
@@ -447,13 +471,23 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	/**
 		Reads an **unsigned variable-length integer** that was written
-		using `writeVarInt()`.
+		using `writeVarUInt()`: the same format as
+		`ByteArrayInput.readVarUInt` and `ByteArrayOutput.writeVarUInt`.
+		`ByteArray` has no signed (ZigZag) varint; those two classes do,
+		as `readVarInt` and `writeVarInt`.
 
-		@return The decoded integer (0 – 0xFFFFFFFF).
+		@return The decoded integer (0 – 0xFFFFFFFF). As an `Int`, a value
+				from 2^31 up reads as negative; check for that where the value
+				is a length or a count.
 		@throws EOFError If the buffer ends before the var-int terminates.
+				`position` is left where it was, so the read can be tried
+				again once the rest has arrived.
+		@throws RangeError If the var-int does not fit in 32 bits: its fifth
+				byte carries more than four bits, or asks for a sixth.
+				`position` is left where it was.
 	**/
-	public inline function readVarInt():Int {
-		return this.readVarInt();
+	public inline function readVarUInt():UInt {
+		return this.readVarUInt();
 	}
 
 	@:arrayAccess @:noCompletion private inline function set(index:Int, value:Int):Int {
@@ -602,6 +636,13 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		Writes an object into the byte array, in whichever format
 		`objectEncoding` names. That is `HXSF` unless you changed it, not AMF.
 
+		An `HXSF` or `JSON` object is framed as the length in bytes of its
+		text, an unsigned 32-bit integer in this byte array's `endian`, then
+		the text as UTF-8, so it can be as large as a ByteArray. (1.0.0-rc.1
+		framed it as `writeUTF` frames a string, behind a 16-bit length, and
+		refused one past 65,535 bytes; the two framings do not read each
+		other.) `AMF0` and `AMF3` are their own framing.
+
 		@param object The object to serialize.
 	**/
 	public inline function writeObject(object:Dynamic):Void {
@@ -653,18 +694,25 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		with Google Protocol Buffers “varint”).
 
 		```text
-		value range   encoded length
-		0 – 127        1 byte
-		128 – 16,383     2 bytes
-		16,384 – 2,097,151 3 bytes
+		value range                    encoded length
+		0 – 127                        1 byte
+		128 – 16,383                   2 bytes
+		16,384 – 2,097,151             3 bytes
+		2,097,152 – 268,435,455        4 bytes
+		268,435,456 – 4,294,967,295    5 bytes
 		```
 		Each byte stores the lower 7 bits; the high bit is set to 1
 		until the final byte, where it is 0.
 
-		@param value The non-negative integer to encode (0 – 0xFFFFFFFF)
+		The same format as `ByteArrayOutput.writeVarUInt`, read back by
+		`readVarUInt` here or `ByteArrayInput.readVarUInt`.
+
+		@param value The unsigned integer to encode (0 – 0xFFFFFFFF). A
+			   negative `Int` is the unsigned value it holds: -1 is written
+			   as 0xFFFFFFFF, in five bytes.
 	**/
-	public inline function writeVarInt(value:Int):Void {
-		this.writeVarInt(value);
+	public inline function writeVarUInt(value:UInt):Void {
+		this.writeVarUInt(value);
 	}
 
 	// Get & Set Methods
@@ -989,16 +1037,45 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			#end
 
 			case HXSF:
-				var data = readUTF();
-				return Unserializer.run(data);
+				return Unserializer.run(__readObjectText());
 
 			case JSON:
-				var data = readUTF();
-				return Json.parse(data);
+				return Json.parse(__readObjectText());
 
 			default:
 				throw new Exception(__unsupportedEncoding(objectEncoding));
 		}
+	}
+
+	/**
+		The text an HXSF or JSON object was written as: its length in bytes as
+		an unsigned 32-bit integer in this stream's `endian`, then that many
+		bytes of UTF-8. Framed as `writeUTF` frames a string, behind sixteen
+		bits, an object could not pass 65,535 bytes of text.
+
+		An object only part of which is here is an EOFError that leaves
+		`position` where it was, so a socket's reader can try again when the
+		rest has arrived; readUTF moved it past the length first.
+	**/
+	@:noCompletion private function __readObjectText():String {
+		var at:Int = position;
+		var count:Int = readUnsignedInt();
+		if (count < 0) {
+			// From 2^31 up, which no ByteArray holds, so no wait would end it.
+			position = at;
+			throw new RangeError("An object declares 2^31 bytes or more, which no ByteArray holds.");
+		}
+		if (count > __available() - position) {
+			position = at;
+			throw new EOFError();
+		}
+		return readUTFBytes(count);
+	}
+
+	@:noCompletion private function __writeObjectText(text:String):Void {
+		var bytes:Bytes = crossbyte._internal.Utf8.bytesOf(text);
+		writeUnsignedInt(bytes.length);
+		__writeAll(bytes);
 	}
 
 	// Reached when objectEncoding names a format this build cannot do -- AMF
@@ -1140,18 +1217,34 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		return crossbyte._internal.Utf8.stringOf(this, position - length, length);
 	}
 
-	@:keep public inline function readVarInt():Int {
-		var result = 0;
-		var shift = 0;
-		var byte:Int;
-		do {
-			byte = this.readUnsignedByte();
-			result |= (byte & 0x7F) << shift;
-			shift += 7;
-			if (shift > 35) {
+	@:keep public function readVarUInt():Int {
+		// Through a cursor of its own, committed once the varint is whole: a
+		// varint cut short leaves `position` where it was, as a truncated
+		// readInt does, so a reader can try again when the rest arrives.
+		var at:Int = position;
+		var end:Int = __available();
+		var result:Int = 0;
+		var shift:Int = 0;
+		while (true) {
+			if (at >= end) {
 				throw new EOFError();
 			}
-		} while ((byte & 0x80) != 0);
+			var byte:Int = get(at++);
+			// The fifth byte carries the last four bits of 32 and has to end
+			// the varint. Anything above them was shifted off the top, so
+			// 2^32 + 1 read as 1; a continuation bit here asked for a sixth
+			// byte, which the old bound of 35 let in and folded back over
+			// the value.
+			if (shift == 28 && byte > 0x0F) {
+				throw new RangeError("A varint does not fit in 32 bits.");
+			}
+			result |= (byte & 0x7F) << shift;
+			if ((byte & 0x80) == 0) {
+				break;
+			}
+			shift += 7;
+		}
+		position = at;
 		return result;
 	}
 
@@ -1355,12 +1448,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			#end
 
 			case HXSF:
-				var value = Serializer.run(object);
-				writeUTF(value);
+				__writeObjectText(Serializer.run(object));
 
 			case JSON:
-				var value = Json.stringify(object);
-				writeUTF(value);
+				__writeObjectText(Json.stringify(object));
 
 			default:
 				throw new Exception(__unsupportedEncoding(objectEncoding));
@@ -1399,11 +1490,15 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		__writeAll(crossbyte._internal.Utf8.bytesOf(value));
 	}
 
-	@:keep public inline function writeVarInt(value:Int):Void {
-		var v = value >>> 0;
-		while (v > 0x7F) {
+	@:keep public inline function writeVarUInt(value:Int):Void {
+		// Tested and shifted as the unsigned value it is. A signed
+		// `v > 0x7F` was false for anything with bit 31 set, which went out
+		// as one byte: 0x80000000 read back as 0, 0xFFFFFFFF as a varint
+		// that never ended.
+		var v:Int = value;
+		while ((v & ~0x7F) != 0) {
 			writeByte((v & 0x7F) | 0x80);
-			v >>= 7;
+			v >>>= 7;
 		}
 		writeByte(v);
 	}

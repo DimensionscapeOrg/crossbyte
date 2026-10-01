@@ -1,5 +1,6 @@
 package crossbyte.io;
 
+import crossbyte.errors.IOError;
 import utest.Assert;
 
 class ByteDeltaTest extends utest.Test {
@@ -175,7 +176,7 @@ class ByteDeltaTest extends utest.Test {
 	private static function craft(varints:Array<Int>, ?tail:Array<Int>):ByteArray {
 		var bytes = new ByteArray();
 		for (value in varints) {
-			bytes.writeVarInt(value);
+			bytes.writeVarUInt(value);
 		}
 		if (tail != null) {
 			for (value in tail) {
@@ -213,6 +214,26 @@ class ByteDeltaTest extends utest.Test {
 		var needsBaseline:ByteArray = ByteDelta.encode(copyOf(baseline, 0, 5), baseline);
 		needsBaseline.position = 0;
 		Assert.raises(() -> ByteDelta.decode(needsBaseline, null));
+	}
+
+	/**
+		A varint past 32 bits is a malformed delta, refused with the IOError
+		the documentation gives for one. The reader shifted the extra bits off
+		the top, so a length of 2^32 + 3 read as 3 and this decoded; and a
+		length from 2^31 up was written as a single byte, of 0.
+	**/
+	public function testALengthPast31BitsIsAMalformedDelta():Void {
+		var baseline:ByteArray = randomBytes(5);
+
+		var past32 = new ByteArray();
+		for (byte in [0x83, 0x80, 0x80, 0x80, 0x10, 0x00, 0x03, 1, 2, 3]) {
+			past32.writeByte(byte);
+		}
+		past32.position = 0;
+		Assert.raises(() -> ByteDelta.decode(past32, baseline), IOError);
+
+		Assert.raises(() -> ByteDelta.decode(craft([0x80000000]), baseline), IOError);
+		Assert.raises(() -> ByteDelta.decode(craft([0xFFFFFFFF]), baseline), IOError);
 	}
 
 	public function testRandomBytesNeverBuildMoreThanTheLimit():Void {

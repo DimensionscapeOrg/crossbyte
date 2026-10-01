@@ -23,6 +23,13 @@ import crossbyte.sys._internal.JvmSignals.JvmSignalHandler;
  * only records the request, and asks the watching runtime to look; nothing
  * else runs on the handler's thread.
  *
+ * For a console window closing, a logoff or a system shutdown, Windows ends
+ * the process as soon as the console handler returns. The handler therefore
+ * holds the event while the runtime runs the callbacks and exits -- the
+ * process ending on its own lets it go -- for as long as Windows allows:
+ * about five seconds for a closed console window, and at most 20 seconds.
+ * Ctrl+C and Ctrl+Break do not end the process, and are not held.
+ *
  * A process started by the Windows Service Control Manager has no console and
  * receives none of those events, so a service needs
  * `installServiceControl()` instead: it adds the SCM as a second signal source
