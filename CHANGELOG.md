@@ -1932,6 +1932,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `SnowflakeId` no longer hands out the same identifier twice when its
+  clock reads fractions of a millisecond, as its default clock does
+  natively: microseconds on Linux and macOS, and on Windows a thousandth
+  per millisecond that lands either side of the whole one. A reading that
+  differed only in its fraction was taken for a new millisecond, the
+  sequence went back to zero and the fraction was then dropped; two
+  million identifiers on Windows held 32,635 repeats. The clock is read
+  in whole milliseconds now.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened
