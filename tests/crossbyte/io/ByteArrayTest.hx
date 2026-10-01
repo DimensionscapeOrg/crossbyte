@@ -26,6 +26,39 @@ class ByteArrayTest extends utest.Test {
 		Assert.equals("hello", byteArray.readUTFBytes(byteArray.length));
 	}
 
+	/**
+		Converting Bytes to a ByteArray allocates nothing the size of them.
+
+		fromBytes made a ByteArrayData of the bytes' length -- allocated and
+		zero-filled -- and then adopted the bytes' own buffer in its place, so
+		the first buffer was garbage the moment it was made. Every implicit
+		conversion paid for it, the socket read path among them: each read,
+		however small, went through a 64 KB scratch and so allocated and
+		cleared 64 KB. At 60,000 requests a second that was most of the
+		server's allocation.
+	**/
+	public function testFromBytesAllocatesNothingTheSizeOfTheBytes():Void {
+		#if cpp
+		var source = Bytes.alloc(64 * 1024);
+		var kept:Array<ByteArray> = [];
+		cpp.vm.Gc.run(true);
+		cpp.vm.Gc.enable(false);
+		var before = cpp.vm.Gc.memInfo64(cpp.vm.Gc.MEM_INFO_LARGE);
+		for (i in 0...100) {
+			kept.push(ByteArray.fromBytes(source));
+		}
+		var grown = cpp.vm.Gc.memInfo64(cpp.vm.Gc.MEM_INFO_LARGE) - before;
+		cpp.vm.Gc.enable(true);
+
+		Assert.isTrue(grown < 64 * 1024, "100 conversions of 64 KB allocated " + grown + " bytes of large objects");
+		// The ByteArray is a view of the same buffer, as it always was.
+		source.set(0, 7);
+		Assert.equals(7, kept[99][0]);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testLengthExpansionZeroFillsAndTruncationClampsPosition():Void {
 		var byteArray = new ByteArray();
 		byteArray.writeByte(0x41);

@@ -850,7 +850,12 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public static function fromBytes(bytes:Bytes):ByteArrayData {
-		var result = new ByteArrayData(bytes.length);
+		// Made empty, then given the bytes' own buffer. Made at their length,
+		// it allocated and zero-filled a buffer that __fromBytes dropped at
+		// once -- on every implicit conversion, every socket read among them,
+		// where the bytes are a 64 KB scratch. eval copies into the buffer
+		// rather than adopting one, so it is still made to size there.
+		var result = new ByteArrayData(#if eval bytes.length #else 0 #end);
 		result.__fromBytes(bytes);
 		return result;
 	}
