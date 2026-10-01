@@ -2163,6 +2163,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `NetHost` made from a URI on port 0 -- `tcp://127.0.0.1:0`, and
+  `ws://`, `wss://` and `rudp://` alike -- listens on a port the system
+  chooses, as `ServerSocket.bind(0)` does, and `localPort` says which. The
+  URI was read as one to dial, where port 0 names nothing, and refused, so
+  a host made from a URI could only be given a port someone had found free
+  a moment before. A URI to dial still refuses port 0.
 - A `-D final` build compiles again -- Lime's `-final` defines `final` --
   on every sys target. `final` inlines the socket registry's `update()`,
   and a return added in the middle of it for a failing poll backend

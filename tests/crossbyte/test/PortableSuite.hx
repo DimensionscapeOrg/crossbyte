@@ -107,6 +107,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.NetConnectionLifecycleTest());
 		// A wss:// NetHost given its certificate.
 		runner.addCase(new crossbyte.net.NetHostTLSTest());
+		// A NetHost made from a URI on port 0, which Node binds a turn later.
+		runner.addCase(new crossbyte.net.NetHostUriTest());
 		#end
 		// A page's Socket against the echo endpoint ci/browser/run.js serves.
 		// The browser only: it is the one target where a Socket is a WebSocket.
