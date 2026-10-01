@@ -1528,10 +1528,145 @@ final class File extends EventDispatcher {
 
 	/**
 		Opens the file in the application registered by the operating system to open this file type.
+
+		A directory opens in the file manager. The application is started and this returns: it does
+		not wait for it, nor report what it does after starting. Through `explorer.exe` on Windows,
+		`open` on macOS and `xdg-open` elsewhere -- on Node through `child_process` -- so it opens on
+		the desktop of the user the program runs as, and does nothing visible for a service with no
+		desktop.
+
+		As in AIR, a file the operating system would run rather than open is refused: one with an
+		executable's extension (`exe`, `bat`, `cmd`, `com`, `msi`, `ps1`, `vbs`, `js`, `jar`, `lnk`,
+		`sh`, `app`, `command`, `desktop` and the like), and on Linux and macOS a file marked
+		executable.
+
+		@throws IOError The file does not exist.
+		@throws IllegalOperationError The file's type is one that would be run; or there is no way to
+		open a file here -- a browser, an operating system other than Windows, macOS, Linux and BSD, or
+		`xdg-open` not installed.
 	**/
 	public function openWithDefaultApplication():Void {
-		// System.openFile(__path);
+		// It was empty: a public, documented member that did nothing at all.
+		#if (js && !nodejs)
+		throw new IllegalOperationError("A browser cannot open a file in another application.");
+		#else
+		if (!FileSystem.exists(__path)) {
+			throw __ioError('"$__path" does not exist.', 3003);
+		}
+
+		var path:String = FilePath.normalize(FileSystem.absolutePath(__path), System.isWindows);
+
+		if (!FileSystem.isDirectory(path) && __runsRatherThanOpens(path)) {
+			throw new IllegalOperationError('"$path" is a type of file the operating system would run rather than open, and is not opened.');
+		}
+
+		var launch:Null<{command:String, args:Array<String>}> = __defaultApplicationCommand(path, System.PLATFORM);
+
+		if (launch == null) {
+			throw new IllegalOperationError("There is no way to open a file with its default application on " + System.PLATFORM + ".");
+		}
+
+		__launch(launch.command, launch.args);
+		#end
 	}
+
+	/**
+		The command that opens `path` with its default application on
+		`platform`, or null where there is none.
+	**/
+	@:noCompletion private static function __defaultApplicationCommand(path:String, platform:String):Null<{command:String, args:Array<String>}> {
+		return switch (platform) {
+			// explorer.exe rather than cmd's `start`, which a quoted argument --
+			// and Process quotes each -- stops being: cmd reads `"start"` as
+			// the name of a program.
+			case "windows": {command: "explorer.exe", args: [path]};
+			case "mac": {command: "open", args: [path]};
+			case "linux" | "freebsd" | "openbsd" | "netbsd" | "bsd": {command: "xdg-open", args: [path]};
+			default: null;
+		}
+	}
+
+	/**
+		Whether the operating system would run `path` rather than open it:
+		an executable's extension anywhere, and on POSIX the executable bit.
+	**/
+	@:noCompletion private static function __runsRatherThanOpens(path:String):Bool {
+		var extension:Null<String> = Path.extension(path);
+
+		if (extension != null && __RUNNABLE.indexOf(extension.toLowerCase()) >= 0) {
+			return true;
+		}
+
+		#if !(js && !nodejs)
+		if (!System.isWindows) {
+			try {
+				// Any of the three execute bits.
+				return FileSystem.stat(path).mode & 0x49 != 0;
+			} catch (_:Dynamic) {}
+		}
+		#end
+
+		return false;
+	}
+
+	@:noCompletion private static final __RUNNABLE:Array<String> = [
+		"exe", "com", "bat", "cmd", "msi", "msp", "msc", "scr", "pif", "cpl", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "wsc", "hta",
+		"lnk", "reg", "scf", "url", "inf", "jar", "appref-ms", "application", "gadget", "sh", "bash", "csh", "ksh", "zsh", "app", "command", "tool",
+		"terminal", "workflow", "desktop", "run"
+	];
+
+	/**
+		Starts `command` and lets it run. Dynamic so a test can see what
+		would be started without starting it.
+	**/
+	@:noCompletion private static dynamic function __launch(command:String, args:Array<String>):Void {
+		#if (js && !nodejs)
+		throw new IllegalOperationError("A browser cannot start a program.");
+		#elseif nodejs
+		var child:Dynamic = js.node.ChildProcess.spawn(command, args, cast {detached: true, stdio: "ignore"});
+		// Reported on the child, not thrown here, so it is caught and dropped:
+		// once started it is not this call's to answer for.
+		child.on("error", (_:Dynamic) -> {});
+		child.unref();
+		#else
+		if (System.PLATFORM != "windows" && !__onPath(command)) {
+			throw new IllegalOperationError('"$command", which opens files with their default applications here, is not installed.');
+		}
+
+		var process:sys.io.Process = new sys.io.Process(command, args);
+
+		#if target.threaded
+		// Waited for elsewhere, so this call does not wait, and a POSIX child
+		// is reaped rather than left a zombie for the life of the process.
+		sys.thread.Thread.create(() -> {
+			try {
+				process.exitCode();
+			} catch (_:Dynamic) {}
+			try {
+				process.close();
+			} catch (_:Dynamic) {}
+		});
+		#end
+		#end
+	}
+
+	#if !(js && !nodejs)
+	@:noCompletion private static function __onPath(command:String):Bool {
+		var path:Null<String> = Sys.getEnv("PATH");
+
+		if (path == null) {
+			return false;
+		}
+
+		for (directory in path.split(System.isWindows ? ";" : ":")) {
+			if (directory != "" && FileSystem.exists(Path.join([directory, command]))) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+	#end
 
 	/**
 		Creates a new File object with a path relative to this File object's path, based on the path
