@@ -87,7 +87,7 @@ entry below says how:
   advertise it, is not asked, and keeps its end open as before.
 - `PeerConnection.addLocalCandidate` throws for a relayed candidate, which
   never worked from there: ask `gatherRelayed` or `gatherRelayedFrom`.
-- An `IceAgent` fails when it has selected no pair 40 seconds after
+- An `IceAgent` fails when it has selected no pair 80 seconds after
   `start` (`timeout`), where it waited without end; set `timeout` to 0 to
   keep waiting.
 - Off native cpp, `Ed25519.verifyDetached` throws an
@@ -1288,6 +1288,16 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `IceAgent.DEFAULT_TIMEOUT`, the time an agent has from `start` to select
+  a pair, is 80 seconds, where round three made it 40. A nomination is a
+  check, given up on 39.5 seconds after it goes out, and forty was a moment
+  past that one schedule: an agent whose nominated pair went quiet moved on
+  to another pair that had answered only if the first had answered within
+  half a second, so a NAT that dropped a pair's first checks put the
+  agent's deadline ahead of its nomination's. Eighty is a moment past two
+  schedules, one for a pair to be answered however late, one for its
+  nomination to go unanswered, and still ends every wait nothing else
+  does. `PeerConnection` keeps its own `readyTimeout`.
 - Off native, `DtlsCertificate`'s constructor, `generate`, `fingerprintOf`
   and `matches` throw an `IllegalOperationError` naming the target, and
   each says so in its documentation. The constructor threw "That
@@ -2349,7 +2359,7 @@ entry below says how:
   that found no path also failed the connection however well the old path
   was doing.
 - An `IceAgent` gives up when it has not selected a pair within `timeout`
-  seconds of `start`, 40 by default, 0 for none, and `connected` fails
+  seconds of `start`, 80 by default, 0 for none, and `connected` fails
   saying what it was waiting for. It could wait for ever: with no pair to
   check (a peer offering only names, and no check arriving), as a
   controlled agent whose pairs answered and was never nominated, or as a

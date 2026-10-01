@@ -117,11 +117,22 @@ class IceAgent {
 		The deadline an agent is given to select a pair unless `timeout` says
 		otherwise, in seconds from `start`.
 
-		Forty: a moment past the 39.5 seconds one pair is checked for, so it
-		ends only the waits nothing else would, no pair to check, or a
-		nomination that never comes.
+		Eighty: a moment past two of the 39.5-second schedules RFC 8445's
+		timers give one check, an RTO of 500 ms, doubling, RFC 8489's seven
+		transmissions and sixteen RTOs for the last. One schedule is for a
+		pair to be answered, however late in its own; the other for the
+		nomination of it to go unanswered, after which the agent nominates the
+		next pair that answered. It was forty, a moment past one schedule, and
+		that move fitted only when the first pair had answered within half a
+		second, a NAT that drops a pair's first checks, as one does until
+		its own side has sent, pushed the agent's deadline ahead of its
+		nomination's. It ends only the waits nothing else would: no pair to
+		check, a nomination that never comes, a second nomination lost. RFC
+		8863 asks an agent not to give up on its checks before 39.5 seconds,
+		which this is well past. `PeerConnection` bounds its whole connect
+		with its own `readyTimeout`.
 	**/
-	public static inline var DEFAULT_TIMEOUT:Float = 40.0;
+	public static inline var DEFAULT_TIMEOUT:Float = 80.0;
 
 	/**
 		The most remote candidates one agent will hold: those the peer
@@ -244,7 +255,10 @@ class IceAgent {
 		and the controlling peer never nominating one; or as the controlling
 		agent, its nomination unanswered while another pair had answered. That
 		last one now moves on to the next pair that answered; the deadline is
-		for the rest.
+		for the rest. A nomination is given up on 39.5 seconds after it goes
+		out, so a `timeout` shorter than that plus the time the first pair
+		took to answer, `DEFAULT_TIMEOUT` leaves room, ends the agent
+		before the move.
 	**/
 	public var timeout:Float = DEFAULT_TIMEOUT;
 
