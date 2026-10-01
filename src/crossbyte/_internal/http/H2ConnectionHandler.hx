@@ -48,21 +48,23 @@ class H2ConnectionHandler implements PassFlush {
 	// Set while a close is waiting for the end of the pass: see __onDrained.
 	private var __closeQueued:Bool = false;
 
-	// What each stream pumping a body out asked the sweep to call, by stream:
-	// see HTTPResponseWriter.sweepWith. Made when the first is asked for.
-	private var __sweeps:Null<Map<Int, Float->Void>> = null;
+	// The server's sweep, which each stream's writer registers a body it is
+	// pumping out with: see HTTPResponseWriter.sweepWith.
+	private final __sweepWith:Null<(HTTPResponseWriter, Null<Float->Void>) -> Void>;
 
 	/**
 	 * @param buffered Bytes already read off the socket, if this connection was
 	 *        identified by looking at them. Fed to the frame layer before
 	 *        anything else, since they are the start of the preface.
+	 * @param sweepWith The server's sweep, for its streams' writers.
 	 */
 	public function new(socket:Socket, config:HTTPServerConfig, ?php:PHPBridge, ?buffered:ByteArray,
-			?onResponse:(HTTPStatusEvent, HTTPRequestHandler) -> Void) {
+			?onResponse:(HTTPStatusEvent, HTTPRequestHandler) -> Void, ?sweepWith:(HTTPResponseWriter, Null<Float->Void>) -> Void) {
 		__socket = socket;
 		__config = config;
 		__php = php;
 		__onResponse = onResponse;
+		__sweepWith = sweepWith;
 
 		__connection = new H2ServerConnection(__send);
 		__connection.maxResetStreams = config.http2MaxResetStreams;
@@ -212,17 +214,10 @@ class H2ConnectionHandler implements PassFlush {
 			}
 		}
 
+		// Not idle while a stream is open. A body being pumped out on one has
+		// a deadline of its own, its stall check, which the server's sweep
+		// calls through the stream's writer whatever the timeouts are.
 		if (__connection.openStreams > 0) {
-			// A body being pumped to a peer that has stopped taking it has a
-			// deadline of its own, which the HTTP/1.1 sweep enforced and this
-			// one never reached: a client that never opened its window held a
-			// file, and a pump, per stream for good.
-			if (__sweeps != null) {
-				var checks:Array<Float->Void> = [for (check in __sweeps) check];
-				for (check in checks) {
-					check(now);
-				}
-			}
 			return;
 		}
 
@@ -340,8 +335,7 @@ class H2ConnectionHandler implements PassFlush {
 			try {
 				admitted.__continueDecodedRequest(body, request.tooLarge, request.timedOut);
 			} catch (error:Dynamic) {
-				Logger.error("HTTP/2 request handling failed: " + error);
-				__connection.resetStream(request.streamId, H2ErrorCode.INTERNAL_ERROR);
+				__serveFailed(admitted, request.streamId, error);
 			}
 			return;
 		}
@@ -361,23 +355,33 @@ class H2ConnectionHandler implements PassFlush {
 			handler.__serveDecodedRequest(request.method, target, query, __fieldsOf(request), body, request.tooLarge, request.headersTooLarge,
 				request.timedOut, request.startedAt);
 		} catch (error:Dynamic) {
-			Logger.error("HTTP/2 request handling failed: " + error);
-			__connection.resetStream(request.streamId, H2ErrorCode.INTERNAL_ERROR);
+			__serveFailed(handler, request.streamId, error);
 		}
 	}
 
-	/** Registers, or with null drops, what the sweep calls for `streamId`: HTTPResponseWriter.sweepWith. */
-	private function __sweepWith(streamId:Int, check:Null<Float->Void>):Void {
-		if (check == null) {
-			if (__sweeps != null) {
-				__sweeps.remove(streamId);
-			}
-			return;
+	/**
+	 * Answers what serving a request threw outside any middleware -- the rate
+	 * limiter, a status listener, the static files -- as the HTTP/1.1 parser
+	 * answers it: `500`, while nothing of the response has gone out, and the
+	 * stream reset once a head has, since no status can follow one (see
+	 * `HTTPRequestHandler.__sendError`). A response already finished, or
+	 * still being written, is left be.
+	 *
+	 * Every such throw reset the stream, `INTERNAL_ERROR`, so a request that
+	 * could still have been answered got no status at all -- where one
+	 * refused at its headers, through `__admit`, was answered `500`.
+	 */
+	private function __serveFailed(handler:HTTPRequestHandler, streamId:Int, error:Dynamic):Void {
+		Logger.error("HTTP/2 request handling failed: " + error);
+		try {
+			handler.__sendErrorResponse(500, "Internal Server Error");
+		} catch (_:Dynamic) {}
+
+		if (!handler.__responded && __connection.hasStream(streamId)) {
+			// The answer threw as well. The stream still ends, or its client
+			// waits on it for as long as the connection lasts.
+			__connection.resetStream(streamId, H2ErrorCode.INTERNAL_ERROR);
 		}
-		if (__sweeps == null) {
-			__sweeps = new Map();
-		}
-		__sweeps.set(streamId, check);
 	}
 
 	/** A handler answering on `request`'s stream, hooked to the server's per-response hook. */

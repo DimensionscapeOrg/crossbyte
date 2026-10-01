@@ -1086,10 +1086,7 @@ class HTTPServerH2Test extends utest.Test {
 			session.request(1, "GET", "/big.bin", true);
 			session.until(() -> session.received(1) >= 65535 || session.ended, () -> {
 				// The sweep, as it would run once the deadline has passed.
-				var later:Float = haxe.Timer.stamp() + 31;
-				for (connection in @:privateAccess session.server.__activeHttp2) {
-					connection.checkDeadline(later);
-				}
+				@:privateAccess session.server.__sweep(haxe.Timer.stamp() + 31);
 				session.until(() -> session.finished(1) || session.ended, () -> {
 					session.request(3, "GET", "/index.html", true);
 					session.until(() -> session.finished(3) || session.ended, () -> {
@@ -1100,6 +1097,58 @@ class HTTPServerH2Test extends utest.Test {
 						async.done();
 					});
 				});
+			});
+		});
+	}
+
+	public function testAStalledHttp2DownloadIsEndedWithBothTimeoutsOff(async:Async):Void {
+		// requestTimeout and keepAliveTimeout at 0 set no deadline for what
+		// they bound, and the stall deadline is not theirs: a download whose
+		// client stops taking it is still ended. It was checked from the walk
+		// those two arm, so with both off nothing looked at it, and the file
+		// stayed open for as long as the connection did. The deadline is held
+		// in the past while this waits, as 30 s without a byte taken would
+		// leave it: what is under test is whether the running server looks.
+		var held:HTTPRequestHandler = null;
+		var session = new H2Session(config -> {
+			config.requestTimeout = 0;
+			config.keepAliveTimeout = 0;
+			__bigFile(config, 1024 * 1024);
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/big.bin") {
+						held = handler;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/big.bin", true);
+			session.until(() -> session.received(1) >= 65535 || session.ended, () -> {
+				var pumping:Bool = held != null && @:privateAccess held.__streaming;
+				session.until(() -> {
+					if (held != null && @:privateAccess held.__streaming) {
+						@:privateAccess held.__streamStallDeadline = haxe.Timer.stamp() - 1;
+					}
+					return session.finished(1) || session.ended;
+				}, () -> {
+					session.request(3, "GET", "/index.html", true);
+					session.until(() -> session.finished(3) || session.ended, () -> {
+						// A few sweeps' worth, for it to find nothing left to do.
+						session.pause(0.75, () -> {
+							var stillSweeping:Bool = @:privateAccess session.server.__sweepArmed;
+							session.close();
+							Assert.isTrue(pumping, "the download was not being pumped, so this shows nothing");
+							Assert.isFalse(@:privateAccess held.__streaming, "a stalled download outlived its deadline with both timeouts off");
+							Assert.equals(2, session.resetCode(1), "the stalled stream was not reset");
+							Assert.equals(200, session.status(3), "the connection went with the stalled stream");
+							Assert.isFalse(stillSweeping, "the sweep kept running with both timeouts off and nothing being sent");
+							async.done();
+						});
+					});
+				}, 3.0);
 			});
 		});
 	}
@@ -1219,6 +1268,225 @@ class HTTPServerH2Test extends utest.Test {
 				});
 			});
 		});
+	}
+
+	public function testAProducerHearsTheServerResetItsStream(async:Async):Void {
+		// A stream the server resets is as over as one the client resets, but
+		// only the client's reset reached the producer: one the server reset
+		// for the client's protocol error -- DATA on a stream the client had
+		// ended, STREAM_CLOSED -- heard nothing until it next wrote, and one
+		// waiting on an event to write never did.
+		var closes:Int = 0;
+		var events:HTTPResponseStream = null;
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/events") {
+						handler.addEventListener(crossbyte.events.Event.CLOSE, _ -> closes++);
+						events = handler.beginResponse(200, "text/event-stream");
+						events.writeText("first");
+						return;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/events", true);
+			session.until(() -> session.body(1) == "first" || session.ended, () -> {
+				session.trickle(1, "after the end");
+				session.until(() -> closes > 0 || session.ended, () -> {
+					var heardBeforeWriting:Int = closes;
+					var accepted:Bool = events.writeText("after");
+					// The connection carries on for everything else.
+					session.request(3, "GET", "/index.html", true);
+					session.until(() -> session.finished(3) || session.ended, () -> {
+						session.close();
+						// The connection closing as well, which must not tell it again.
+						HTTPTestSupport.pumpMoreAsync(5, () -> {
+							Assert.equals(5, session.resetCode(1), "the server did not reset the stream, so this shows nothing");
+							Assert.equals(1, heardBeforeWriting, "the producer was not told its stream was reset");
+							Assert.isFalse(accepted);
+							Assert.equals(1, closes, "CLOSE was dispatched " + closes + " times");
+							Assert.equals(200, session.status(3));
+							async.done();
+						});
+					});
+				}, 2.0);
+			});
+		});
+	}
+
+	public function testAStreamTheServerResetsLetsGoOfItsFile(async:Async):Void {
+		// A download parked on the client's window, whose stream the server
+		// then resets for a WINDOW_UPDATE of nothing (PROTOCOL_ERROR). The
+		// reset drops the stream's writable callback, which is all the pump
+		// was waiting on, so it held the file until the stall deadline -- and,
+		// with both timeouts off, for as long as the connection lived.
+		var held:HTTPRequestHandler = null;
+		var closes:Int = 0;
+		var session = new H2Session(config -> {
+			__bigFile(config, 1024 * 1024);
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/big.bin") {
+						held = handler;
+						handler.addEventListener(crossbyte.events.Event.CLOSE, _ -> closes++);
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/big.bin", true);
+			session.until(() -> session.received(1) >= 65535 || session.ended, () -> {
+				var pumping:Bool = held != null && @:privateAccess held.__streaming;
+				session.windowUpdate(1, 0);
+				session.until(() -> (held != null && !@:privateAccess held.__streaming) || session.ended, () -> {
+					var stillPumping:Bool = held != null && @:privateAccess held.__streaming;
+					session.request(3, "GET", "/index.html", true);
+					session.until(() -> session.finished(3) || session.ended, () -> {
+						session.close();
+						HTTPTestSupport.pumpMoreAsync(5, () -> {
+							Assert.isTrue(pumping, "the download was not being pumped, so this shows nothing");
+							Assert.equals(1, session.resetCode(1), "the server did not reset the stream, so this shows nothing");
+							Assert.isFalse(stillPumping, "a download whose stream the server reset kept its file open");
+							Assert.equals(1, closes, "CLOSE was dispatched " + closes + " times");
+							Assert.equals(200, session.status(3));
+							async.done();
+						});
+					});
+				}, 2.0);
+			});
+		});
+	}
+
+	public function testAThrowServingAnHttp2RequestIsAnswered500(async:Async):Void {
+		// What a request's serving throws outside any middleware -- here the
+		// rate limiter's key -- is answered 500 over HTTP/1.1. Over HTTP/2 the
+		// stream was reset INTERNAL_ERROR instead, so the client got no status
+		// at all for a request the server could still answer.
+		var session = new H2Session(config -> {
+			config.rateLimitKey = handler -> {
+				if (handler.requestPath == "/broken") {
+					throw "the key broke";
+				}
+				return null;
+			};
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/broken", true);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.request(3, "GET", "/index.html", true);
+				session.until(() -> session.finished(3) || session.ended, () -> {
+					session.close();
+					Assert.equals(-1, session.resetCode(1), "the stream was reset rather than answered");
+					Assert.equals(500, session.status(1));
+					Assert.equals(200, session.status(3), "the connection did not carry on");
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testAThrowServingAnHttp2RequestAfterItsBodyIsAnswered500(async:Async):Void {
+		// The same for a request weighed at its headers and carried on when
+		// its body arrives: there it was reset too. The throw is a status
+		// listener's, on the response the request was first given.
+		var thrown:Bool = false;
+		var session = new H2Session(config -> {
+			config.onExpectContinue = handler -> {
+				handler.addEventListener(crossbyte.events.HTTPStatusEvent.HTTP_RESPONSE_STATUS, _ -> {
+					if (!thrown) {
+						thrown = true;
+						throw "the listener broke";
+					}
+				});
+				return true;
+			};
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("expect", "100-continue")]);
+			session.until(() -> session.statuses(1).length > 0 || session.ended, () -> {
+				session.data(1, "the body");
+				session.until(() -> session.finished(1) || session.ended, () -> {
+					session.close();
+					Assert.isTrue(thrown, "the listener never threw, so this shows nothing");
+					Assert.equals(-1, session.resetCode(1), "the stream was reset rather than answered");
+					Assert.equals("100,500", session.statuses(1).join(","));
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testAnHttp2ResponseCutShortIsResetNotAnsweredAgain():Void {
+		// A write that throws after a response's head has gone out leaves no
+		// status to say so with: a 500 now would go in behind the head. From a
+		// middleware, the 500's text went out as the 200's body, ended as
+		// though whole; from the files, outside any middleware, the stream
+		// was reset, which is what both do now.
+		for (routed in [true, false]) {
+			var frames:Array<H2Frame> = __servedThroughABreakingWrite(routed);
+			var types:Array<String> = [for (frame in frames) frame.type.toString()];
+			var label:String = routed ? "from a middleware" : "from the files";
+			Assert.equals("HEADERS,RST_STREAM", types.join(","), label + ": stream 1 got " + types.join(","));
+			var reset:Null<H2Frame> = frames.length > 0 ? frames[frames.length - 1] : null;
+			if (reset != null && reset.type == H2FrameType.RST_STREAM) {
+				Assert.equals(2, reset.payload.get(3), label + ": the stream was reset with " + reset.payload.get(3));
+			}
+		}
+	}
+
+	/**
+		The frames written for stream 1 of one GET for `/index.html` through an
+		`H2ConnectionHandler`, on a socket that throws when the response's
+		first DATA is written: answered by a middleware, or, with none, by the
+		files.
+	**/
+	private static function __servedThroughABreakingWrite(routed:Bool):Array<H2Frame> {
+		var root = File.createTempDirectory();
+		var fixture = new ByteArray();
+		fixture.writeUTFBytes("Hello over h2");
+		root.resolvePath("index.html").save(fixture);
+
+		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"]);
+		config.http2Enabled = true;
+		if (routed) {
+			config.middleware.push((handler, next) -> handler.respond(200, "text/plain", "routed"));
+		}
+		var socket = new BreakingDataSocket(1);
+		var connection = new crossbyte._internal.http.H2ConnectionHandler(socket, config);
+
+		var out = new BytesBuffer();
+		out.addString(H2Connection.PREFACE);
+		writeFrame(out, H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0));
+		var block = new HpackEncoder(4096).encode([
+			new HpackHeader(":method", "GET"),
+			new HpackHeader(":scheme", "http"),
+			new HpackHeader(":authority", "127.0.0.1"),
+			new HpackHeader(":path", "/index.html")
+		]);
+		writeFrame(out, H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, 1, block);
+		socket.arrive(out.getBytes());
+		connection.close();
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+
+		var written = socket.writtenSoFar();
+		var frames:Array<H2Frame> = [];
+		var position = 0;
+		while (position + H2Frame.HEADER_SIZE <= written.length) {
+			var frame = H2Frame.read(written, position);
+			position += H2Frame.HEADER_SIZE + H2Frame.lengthOf(written, position);
+			if (frame.streamId == 1) {
+				frames.push(frame);
+			}
+		}
+		return frames;
 	}
 
 	// ---------------------------------------------------------------- driver
@@ -1563,6 +1831,34 @@ private class FlushCountingSocket extends Socket {
 	}
 
 	override public function close():Void {}
+}
+
+/**
+	A `FlushCountingSocket` whose write of the first DATA frame on one stream
+	throws, as a socket refusing a write mid-response does: one past its
+	output cap under `OutputOverflowPolicy.THROW`, say. Each frame is one
+	write here, so the frame's type and stream are the first bytes given.
+**/
+private class BreakingDataSocket extends FlushCountingSocket {
+	private final __streamId:Int;
+	private var __broken:Bool = false;
+
+	public function new(streamId:Int) {
+		super();
+		__streamId = streamId;
+	}
+
+	override public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+		var count:Int = length == 0 ? bytes.length - offset : length;
+		if (!__broken && count >= H2Frame.HEADER_SIZE && bytes[offset + 3] == (H2FrameType.DATA : Int)) {
+			var streamId:Int = ((bytes[offset + 5] & 0x7F) << 24) | (bytes[offset + 6] << 16) | (bytes[offset + 7] << 8) | bytes[offset + 8];
+			if (streamId == __streamId) {
+				__broken = true;
+				throw new crossbyte.errors.IOError("the write broke");
+			}
+		}
+		super.writeBytes(bytes, offset, length);
+	}
 }
 
 /** A limiter that throws: something the parse path calls outside any middleware. */

@@ -430,9 +430,11 @@ class H2ServerConnection {
 	}
 
 	/**
-	 * Calls `callback` if the peer resets `streamId` before it ends: the
-	 * client abandoning a response, which a producer writing one as it goes
-	 * has to hear about. Dropped, uncalled, when the stream ends normally.
+	 * Calls `callback` if `streamId` is reset before it ends, by the peer --
+	 * the client abandoning a response -- or by this side with `resetStream`:
+	 * either way the response is over, which a producer writing one as it
+	 * goes has to hear about. Called once; dropped, uncalled, when the stream
+	 * ends normally.
 	 */
 	public function setAbandonedCallback(streamId:Int, callback:Null<Void->Void>):Void {
 		if (callback == null) {
@@ -629,7 +631,16 @@ class H2ServerConnection {
 		resetStream(target.id, H2ErrorCode.NO_ERROR);
 	}
 
-	/** Resets one stream, leaving the connection running. */
+	/**
+	 * Resets one stream, leaving the connection running, and calls what
+	 * `setAbandonedCallback` registered for it, as a reset from the peer does.
+	 *
+	 * Whoever resets it, the response being written on it is over. Only the
+	 * peer's reset said so, so a stream this side reset -- the peer sending
+	 * DATA after ending it, a WINDOW_UPDATE of nothing -- left its producer
+	 * writing into a stream that refused it, and a file being pumped out on
+	 * it open, its pump waiting on a window that could no longer come.
+	 */
 	public function resetStream(streamId:Int, code:H2ErrorCode):Void {
 		var payload:Bytes = Bytes.alloc(4);
 		__writeUInt32(payload, 0, cast code);
@@ -637,9 +648,15 @@ class H2ServerConnection {
 
 		var target:Null<H2Stream> = __streams.get(streamId);
 		if (target != null) {
+			// Taken before __forget drops it.
+			var abandoned:Null<Void->Void> = __abandoned.get(streamId);
 			target.close();
 			__forget(streamId);
 			__writable.remove(streamId);
+
+			if (abandoned != null) {
+				abandoned();
+			}
 		}
 	}
 

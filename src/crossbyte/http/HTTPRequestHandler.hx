@@ -158,6 +158,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 	// A response has been written for the current request slot; a second
 	// one would corrupt the stream. Cleared only where a new slot opens.
 	@:noCompletion private var __responded:Bool = false;
+	// The current request's head has gone to the writer, until the request
+	// after it. Set ahead of __responded, which waits for the response to be
+	// written: a write that throws between the two leaves a head out with
+	// no response finished behind it, and a second head would go in after.
+	@:noCompletion private var __headOut:Bool = false;
 	// The keep/close decision, made once at header-write time and acted
 	// on at finish, so the Connection header and the socket action can
 	// never disagree.
@@ -269,7 +274,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// so subscribing here would have two readers racing one socket. Its
 		// request is timed from its HEADERS, which the frame layer stamped,
 		// and its deadline is the stream's, which the frame layer keeps.
-		if (writer == null) {
+		// Asked of the writer, not of whether one was given: the server gives
+		// an HTTP/1.1 handler its writer too, to hear from its sweep.
+		if (!__writer.ownsConnection) {
 			__setup();
 			__requestStartedAt = haxe.Timer.stamp();
 			__receiveDeadline = config.requestTimeout > 0 ? __requestStartedAt + config.requestTimeout : 0;
@@ -526,7 +533,19 @@ final class HTTPRequestHandler extends EventDispatcher {
 				break;
 			}
 			__responded = false;
-			__parseRequest();
+			// Behind a catch of its own, rather than only the read handler's:
+			// a pipelined request is also parsed from the end of the answer
+			// before it, which an asynchronous middleware gives from a later
+			// tick, with no read handler on the stack. What parsing it threw
+			// went to the runtime's timer, the request was never answered,
+			// and __processing stayed set, so the connection parsed nothing
+			// again.
+			try {
+				__parseRequest();
+			} catch (error:Dynamic) {
+				Logger.error("Error reading data: " + error);
+				__sendErrorResponse(500, "Internal Server Error");
+			}
 		} while (__reprocess && __origin.connected);
 		__processing = false;
 	}
@@ -549,25 +568,18 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * timed out here.
 	 */
 	@:noCompletion private function __checkReceiveDeadline(now:Float):Void {
-		// A streamed body owns this sweep while it is in flight. It must not
-		// reach the 408 below: that path writes a whole response, and the
-		// status line for this one left with the head — a second one would
-		// land inside the body as though it were file content. The stall
-		// check closes instead, which is the only signal left.
+		// A streamed body must not reach the 408 below: that path writes a
+		// whole response, and the status line for this one left with the
+		// head -- a second one would land inside the body as though it were
+		// file content. Its deadline is the stall check, which the sweep
+		// calls through the writer (sweepWith) whatever the timeouts are;
+		// called from here, it went unchecked with both timeouts off, since
+		// then nothing ran this.
 		//
-		// The sweep is the one periodic visit both cases already share, so
-		// they ride it together rather than arming a second timer. When
-		// keep-alive lands and responses end at a single __finishResponse
-		// funnel (keep-alive integration), this dispatch belongs there.
 		// A response the application is writing as it goes has no deadline
 		// here: how long it takes is the producer's, and a client that stops
 		// reading is caught by write() at the output cap.
-		if (__openStream != null) {
-			return;
-		}
-
-		if (__streaming) {
-			__checkStreamStall(now);
+		if (__openStream != null || __streaming) {
 			return;
 		}
 
@@ -1012,7 +1024,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private function __runMiddleware(index:Int, onComplete:Void->Void):Void {
 		if (index >= __config.middleware.length) {
-			onComplete();
+			// Behind the catch a middleware is called behind. Reached from the
+			// last next(), which a middleware may call from a later tick -- a
+			// timer, a lookup come back -- and then no catch up the stack is
+			// this request's: what serving it threw went to the runtime's timer
+			// and the request was never answered.
+			try {
+				onComplete();
+			} catch (error:Dynamic) {
+				__dispatchMiddlewareError(error, haxe.CallStack.exceptionStack());
+			}
 			return;
 		}
 
@@ -1714,10 +1735,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// not mid-transfer.
 		__writer.onDrain = __pumpStream;
 
-		// The stall deadline, from whichever sweep reaches this response, and
-		// the client giving up on it without closing the connection: an
-		// HTTP/2 reset of its stream, which drops the drain this pump waits
-		// on, so nothing else would ever stop it.
+		// The stall deadline, from the server's sweep, which runs for it
+		// whatever the timeouts are, and the client giving up on it without
+		// closing the connection: an HTTP/2 reset of its stream, which drops
+		// the drain this pump waits on, so nothing else would ever stop it.
 		__writer.sweepWith(__checkStreamStall);
 		__watchClient();
 
@@ -1948,11 +1969,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private function __dispatchResponseBytes(statusCode:Int, statusMessage:String, headers:Array<URLRequestHeader>, contentType:String,
 			data:ByteArray, headOnly:Bool = false, ?contentLength:Int, open:Bool = false, mayEncode:Bool = true):Void {
 		// A response for this request slot has already been written (a
-		// middleware that called respond() and then next() anyway); a
-		// second one would corrupt the stream. Suppressed before the log
-		// and the status event so it neither logs, counts, nor touches
-		// the socket.
-		if (__responded) {
+		// middleware that called respond() and then next() anyway), or begun
+		// and cut short by a write that threw; a second one would corrupt
+		// the stream. Suppressed before the log and the status event so it
+		// neither logs, counts, nor touches the socket.
+		if (__responded || __headOut) {
 			return;
 		}
 
@@ -2089,6 +2110,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			__streamPending = true;
 		}
 
+		__headOut = true;
 		__writer.writeHead({
 			statusCode: statusCode,
 			statusMessage: statusMessage,
@@ -2193,8 +2215,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	/**
 	 * Whether the client can still be written to: false once it has gone,
-	 * or, over HTTP/2, has reset this request's stream. A route holding a
-	 * request open -- a long poll -- can read it, or listen for
+	 * or, over HTTP/2, once this request's stream has been reset -- by the
+	 * client, or by the server for something the client sent on it. A route
+	 * holding a request open -- a long poll -- can read it, or listen for
 	 * `Event.CLOSE` instead.
 	 */
 	public var connected(get, never):Bool;
@@ -2220,9 +2243,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * the stream drops what it is given.
 	 *
 	 * Listen here for `Event.CLOSE` to hear that the client went away -- the
-	 * connection closed, or under HTTP/2 the stream was reset -- and stop
-	 * producing; the stream refuses writes from then on. A request already
-	 * answered gets a stream that refuses them from the start.
+	 * connection closed, or under HTTP/2 the stream was reset, by the client
+	 * or by the server -- and stop producing; it is dispatched once, and the
+	 * stream refuses writes from then on. A request already answered gets a
+	 * stream that refuses them from the start.
 	 */
 	public function beginResponse(statusCode:Int, contentType:String, ?headers:Array<URLRequestHeader>, ?statusMessage:String):HTTPResponseStream {
 		if (__responded || __openStream != null) {
@@ -2648,6 +2672,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// window per megabyte a client happened to POST.
 		__requestBody = new ByteArray();
 		__requestConsumed = false;
+		__headOut = false;
 		// Unconditionally, same invariant as everywhere else: scan
 		// offsets die with the buffer they pointed into.
 		__resetHeaderScan();
@@ -2684,6 +2709,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * HTTP/2 makes a malformed response.
 	 */
 	@:noCompletion private function __sendError(statusCode:Int, statusMessage:String, text:String, ?headers:Array<URLRequestHeader>):Void {
+		if (__headOut && !__responded) {
+			// A head is out and the write after it threw: no status can follow
+			// it, and this one would have gone into the body it began. The
+			// response is given up instead -- the connection closed under
+			// HTTP/1.1, the stream reset under HTTP/2 -- which the client can
+			// tell from the length the head promised. HTTP/1.1 wrote a second
+			// status line into the body, and HTTP/2 the second body's text.
+			__abandonResponse();
+			return;
+		}
+
 		var page:Null<ErrorPage> = __config.errorDocument != null ? __errorPage() : null;
 		if (page != null) {
 			// HTTPServerConfig.errorDocument, as read once. Never compressed:
