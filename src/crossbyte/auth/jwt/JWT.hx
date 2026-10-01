@@ -3,6 +3,7 @@ package crossbyte.auth.jwt;
 import haxe.io.Bytes;
 import haxe.crypto.Base64;
 import haxe.Json;
+import crossbyte.auth._internal.JsonNesting;
 import crossbyte.auth.jwt._internal.sign.IJWTSigner;
 import crossbyte.auth.jwt._internal.sign.HS256Signer;
 import crossbyte.auth.jwt._internal.sign.Ed25519Signer;
@@ -421,7 +422,7 @@ class JWT {
 		// is parsed before the signature is checked, so a token needed no key
 		// to be nested 6,000 deep in 16 KB -- within a raised maxTokenLength --
 		// and natively that overflowed the stack and ended the process.
-		if (maxNesting > 0 && !__nestsWithin(text, maxNesting)) {
+		if (maxNesting > 0 && !JsonNesting.within(text, maxNesting)) {
 			return null;
 		}
 
@@ -436,40 +437,6 @@ class JWT {
 			return null;
 		}
 		return value;
-	}
-
-	/**
-		Whether the objects and arrays in `json` nest no deeper than `limit`.
-		Brackets inside strings are text, escaped quotes included. One pass,
-		allocating nothing.
-	**/
-	@:noCompletion private static function __nestsWithin(json:String, limit:Int):Bool {
-		var depth:Int = 0;
-		var inString:Bool = false;
-		var i:Int = 0;
-		var length:Int = json.length;
-		while (i < length) {
-			var code:Int = StringTools.fastCodeAt(json, i);
-			if (inString) {
-				if (code == "\\".code) {
-					// Whatever is escaped, a quote included, is not structure.
-					i++;
-				} else if (code == '"'.code) {
-					inString = false;
-				}
-			} else if (code == '"'.code) {
-				inString = true;
-			} else if (code == "{".code || code == "[".code) {
-				depth++;
-				if (depth > limit) {
-					return false;
-				}
-			} else if (code == "}".code || code == "]".code) {
-				depth--;
-			}
-			i++;
-		}
-		return true;
 	}
 
 	@:noCompletion private static function __audMatches(expected:String, aud:Dynamic):Bool {
