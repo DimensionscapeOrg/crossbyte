@@ -700,6 +700,89 @@ class DatagramSocketTest extends utest.Test {
 	}
 
 	/**
+		What a pass sends through `__sendInPass` goes when the pass ends,
+		every datagram whole and each to its own peer: a run of equal ones to
+		one peer, which Linux sends as one call the kernel cuts up, and
+		datagrams to two peers in turn, which go 64 to a call. A datagram
+		that cannot go is told to its sender.
+	**/
+	public function testWhatAPassSendsGoesWholeWhenThePassEnds():Void {
+		#if (cpp || jvm)
+		if (!requireDatagramSupport()) return;
+
+		var sender = new DatagramSocket();
+		var first = new DatagramSocket();
+		var second = new DatagramSocket();
+		var got:Map<String, Array<String>> = ["first" => [], "second" => []];
+
+		try {
+			for (receiver in [first, second]) {
+				if (DatagramSocket.bufferSizeSupported) {
+					receiver.receiveBufferSize = 1024 * 1024;
+				}
+				receiver.bind(0, "127.0.0.1");
+				var name:String = receiver == first ? "first" : "second";
+				receiver.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) {
+					e.data.position = 0;
+					got[name].push(e.data.readUTFBytes(e.data.length));
+				});
+				receiver.receive();
+			}
+			sender.bind(0, "127.0.0.1");
+
+			var toFirst = sender.__resolveTarget("127.0.0.1", first.localPort);
+			var toSecond = sender.__resolveTarget("127.0.0.1", second.localPort);
+			var expected:Map<String, Array<String>> = ["first" => [], "second" => []];
+			function queue(name:String, text:String):Void {
+				var bytes = haxe.io.Bytes.ofString(text);
+				sender.__sendInPass(bytes, 0, bytes.length, name == "first" ? toFirst : toSecond, null);
+				expected[name].push(text);
+			}
+			// A run of equal datagrams to one peer, the last shorter.
+			for (i in 0...40) {
+				queue("first", StringTools.lpad(Std.string(i), "0", 1000));
+			}
+			queue("first", "the end of the run");
+			// Then two peers in turn, of every length.
+			for (i in 0...50) {
+				queue(i % 2 == 0 ? "first" : "second", "datagram " + i + " " + StringTools.lpad("", "x", i * 7));
+			}
+
+			var bad = new BadDestination();
+			// An IPv6 destination from an IPv4 socket, which every system refuses.
+			var nowhere = new sys.net.Address();
+			nowhere.setHost(new sys.net.Host("::1"));
+			nowhere.port = first.localPort;
+			var ping = haxe.io.Bytes.ofString("to an address of the wrong family");
+			sender.__sendInPass(ping, 0, ping.length, nowhere, bad);
+
+			#if cpp
+			// Asked of the system, not of the listeners, which nothing has pumped.
+			var watched:Array<sys.net.Socket> = [first.__socket, second.__socket];
+			Assert.equals(0, sys.net.Socket.select(watched, [], [], 0.05).read.length, "a datagram went before the pass ended");
+			#end
+			@:privateAccess CrossByte.current().__flushHeld();
+			pumpUntil(() -> got["first"].length >= expected["first"].length && got["second"].length >= expected["second"].length, 3.0);
+
+			Assert.same(expected["first"], got["first"], "what the first peer received");
+			Assert.same(expected["second"], got["second"], "what the second peer received");
+			Assert.equals(1, bad.failures, "a datagram that could not go was not reported to its sender");
+		} catch (e:Dynamic) {
+			closeQuietly(sender);
+			closeQuietly(first);
+			closeQuietly(second);
+			throw e;
+		}
+
+		closeQuietly(sender);
+		closeQuietly(first);
+		closeQuietly(second);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
 		Datagrams from two peers in turn, each reported as from its own: the
 		source a datagram names is kept from one to the next, and must not be
 		kept past a change of sender.
@@ -863,6 +946,19 @@ private class FloodUdpSocket extends sys.net.UdpSocket {
 		addr.host = LOOPBACK.ip;
 		addr.port = 9;
 		return 1;
+	}
+}
+#end
+
+#if (cpp || jvm)
+/** A sender through a socket's pass batch, counting what it is told could not go. **/
+private class BadDestination implements crossbyte._internal.net.DatagramSender {
+	public var failures:Int = 0;
+
+	public function new() {}
+
+	public function __datagramFailed(error:String):Void {
+		failures++;
 	}
 }
 #end
