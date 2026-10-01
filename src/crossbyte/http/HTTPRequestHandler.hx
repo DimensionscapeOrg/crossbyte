@@ -871,7 +871,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * @return Whether the request may go on; false once it has been answered.
 	 */
 	@:noCompletion private function __admitDecodedRequest(method:String, requestPath:String, queryString:String, headers:Map<String, String>,
-			startedAt:Float, bodyToCome:Bool):Bool {
+			startedAt:Float, bodyToCome:Bool, declaredLength:Int = -1):Bool {
 		__takeDecodedRequest(method, queryString, headers, startedAt);
 		__admitted = true;
 
@@ -900,14 +900,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return false;
 		}
 
-		if (bodyToCome) {
-			// Too big is said before a byte of it is sent, as over HTTP/1.1.
-			// The frame layer read the field already, so it is a number.
-			var declared:Null<String> = headers.get("content-length");
-			if (declared != null && __parseContentLength(declared) > __config.maxRequestBodySize) {
-				__sendErrorResponse(413, "Payload Too Large");
-				return false;
-			}
+		// Too big is said before a byte of it is sent, as over HTTP/1.1. The
+		// frame layer read the field already, so it arrives a number.
+		if (bodyToCome && declaredLength > __config.maxRequestBodySize) {
+			__sendErrorResponse(413, "Payload Too Large");
+			return false;
 		}
 
 		return __admitExpectation(bodyToCome);

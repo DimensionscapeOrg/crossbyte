@@ -308,7 +308,7 @@ class H2ConnectionHandler implements PassFlush {
 		var admitted:Bool = false;
 		try {
 			admitted = handler.__admitDecodedRequest(request.method, mark >= 0 ? request.path.substr(0, mark) : request.path,
-				mark >= 0 ? request.path.substr(mark + 1) : "", __fieldsOf(request), request.startedAt, true);
+				mark >= 0 ? request.path.substr(mark + 1) : "", __fieldsOf(request), request.startedAt, true, request.declaredLength);
 		} catch (error:Dynamic) {
 			// As the HTTP/1.1 parser answers what serving a request threw.
 			Logger.error("HTTP/2 request handling failed: " + error);
