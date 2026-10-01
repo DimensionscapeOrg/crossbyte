@@ -2193,8 +2193,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	/**
 	 * Whether the client can still be written to: false once it has gone,
-	 * or, over HTTP/2, has reset this request's stream. A route holding a
-	 * request open, a long poll, can read it, or listen for
+	 * or, over HTTP/2, once this request's stream has been reset, by the
+	 * client, or by the server for something the client sent on it. A route
+	 * holding a request open, a long poll, can read it, or listen for
 	 * `Event.CLOSE` instead.
 	 */
 	public var connected(get, never):Bool;
@@ -2220,9 +2221,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * the stream drops what it is given.
 	 *
 	 * Listen here for `Event.CLOSE` to hear that the client went away, the
-	 * connection closed, or under HTTP/2 the stream was reset, and stop
-	 * producing; the stream refuses writes from then on. A request already
-	 * answered gets a stream that refuses them from the start.
+	 * connection closed, or under HTTP/2 the stream was reset, by the client
+	 * or by the server, and stop producing; it is dispatched once, and the
+	 * stream refuses writes from then on. A request already answered gets a
+	 * stream that refuses them from the start.
 	 */
 	public function beginResponse(statusCode:Int, contentType:String, ?headers:Array<URLRequestHeader>, ?statusMessage:String):HTTPResponseStream {
 		if (__responded || __openStream != null) {

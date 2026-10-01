@@ -2163,6 +2163,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An HTTP/2 stream the server resets ends its response as one its client
+  resets does: a handler listening for `Event.CLOSE` hears it, once, and a
+  file being sent on it is let go. Only the client's reset was passed on,
+  so a stream the server reset for something the client sent on it, DATA
+  after the client had ended the stream, a `WINDOW_UPDATE` of nothing,
+  left a producer waiting for something to write hearing nothing, and a
+  download holding its file open until the 30 s stall deadline.
 - A `-D final` build compiles again, Lime's `-final` defines `final`,
   on every sys target. `final` inlines the socket registry's `update()`,
   and a return added in the middle of it for a failing poll backend
