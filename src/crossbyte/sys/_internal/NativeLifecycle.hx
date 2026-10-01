@@ -15,6 +15,15 @@ extern class NativeLifecycle {
 
 	@:native("crossbyte_lifecycle_reset")
 	public static function reset():Void;
+
+	#if windows
+	// Tests only; see NativeLifecycle.h.
+	@:native("crossbyte_lifecycle_deliver_console_event")
+	public static function deliverConsoleEvent(controlType:Int, closeWaitMs:Int):Bool;
+
+	@:native("crossbyte_lifecycle_console_handlers_holding")
+	public static function consoleHandlersHolding():Int;
+	#end
 }
 #else
 extern class NativeLifecycle {}
