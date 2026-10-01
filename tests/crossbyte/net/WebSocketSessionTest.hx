@@ -759,6 +759,52 @@ class WebSocketSessionTest extends utest.Test {
 	}
 
 	/**
+		`writeBytes` refuses a range outside `bytes`, as its doc promises and
+		as `DatagramSocket.send` does, where it wrote whatever part of the
+		range fell inside and said nothing. `sendBinary` likewise.
+	**/
+	@:timeout(15000)
+	public function testARangeOutsideTheBytesIsRefused(async:Async):Void {
+		__serve(null, function(server, sessions, finish) {
+			var peer = new WirePeer(server.localPort);
+			peer.upgrade();
+
+			NetPump.until(() -> {
+				peer.poll();
+				return sessions.length > 0;
+			}, 5.0, function(_) {
+				if (sessions.length == 0) {
+					Assert.fail("no session");
+					finish();
+					return;
+				}
+
+				var session = sessions[0];
+				var bytes = new ByteArray();
+				bytes.length = 4;
+
+				Assert.raises(() -> session.writeBytes(bytes, 5), crossbyte.errors.RangeError);
+				Assert.raises(() -> session.writeBytes(bytes, -1), crossbyte.errors.RangeError);
+				Assert.raises(() -> session.writeBytes(bytes, 0, 5), crossbyte.errors.RangeError);
+				Assert.raises(() -> session.writeBytes(bytes, 2, 3), crossbyte.errors.RangeError);
+				Assert.raises(() -> session.writeBytes(null), crossbyte.errors.ArgumentError);
+				Assert.raises(() -> session.sendBinary(bytes, 5), crossbyte.errors.RangeError);
+				Assert.raises(() -> session.sendBinary(bytes, 2, 3), crossbyte.errors.RangeError);
+				Assert.equals(0, session.__output.length, "a refused range wrote something");
+
+				// In range, it is all taken; and an offset at the end is nothing.
+				session.writeBytes(bytes, 1, 3);
+				session.writeBytes(bytes, 4);
+				Assert.equals(3, session.__output.length, "a range inside the bytes was not written whole");
+				session.__output.clear();
+
+				peer.close();
+				finish();
+			});
+		}, async);
+	}
+
+	/**
 		The output limit honours `outputOverflowPolicy`, as `Socket`'s does.
 		`CLOSE`, the default, says why before it closes: an `ioError`, then
 		`close` with 1011. The session closed without a word.
