@@ -91,6 +91,12 @@ entry below says how:
   the audience it is; with none, those tokens are refused.
 
 ### Added
+- `OAuthToken.idToken`, the OpenID Connect ID token a sign-in with the
+  `openid` scope answers with: the JWT that says who signed in, which was
+  dropped although `OAuth`'s own example asks for that scope. And
+  `getAuthorizationUrl` takes further parameters for the request, such as
+  OpenID Connect's `nonce`, which has to be new for each sign-in and so had
+  nowhere to go. `OAuthToken` and `OAuthConfig` document their fields.
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
   `DETACH DATABASE`, and `loadSchema()` with `getSchemaResult()`: a
   database's tables with their columns, views, indices and triggers.
@@ -1973,6 +1979,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `OAuth.getAuthorizationUrl` adds the flow's parameters after a query the
+  authorization endpoint carries of its own. They followed a second `?`,
+  so a parameter put in the endpoint -- Google's `access_type=offline`,
+  without which no refresh token is issued -- took the rest of the URL as
+  its value.
 - `JWT.verify` refuses a token whose header carries `crit`, as
   `UNSUPPORTED_CRITICAL`, a new `JWTRejection`. The extensions it names
   are ones the token may not be accepted without, none is implemented

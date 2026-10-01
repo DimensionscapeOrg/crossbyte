@@ -39,6 +39,11 @@ using StringTools;
  * // ...and when the provider redirects back:
  * oauth.getAccessToken(code, token -> signIn(token), error -> refuse(error), verifier);
  * ```
+ *
+ * With the `openid` scope the provider answers with an OpenID Connect ID
+ * token too, `token.idToken`: the JWT that says who signed in. Verify it with
+ * `JWT` against the provider's keys (`JWKSet`), its issuer and your client id
+ * as the audience, before trusting who it names.
  */
 class OAuth {
 	/**
@@ -80,15 +85,28 @@ class OAuth {
 	/**
 	 * Generates the authorization URL for the OAuth flow.
 	 *
+	 * The flow's parameters are added to `OAuthConfig.authorizeUrl`, after any
+	 * query it carries of its own -- the place for parameters that never
+	 * change, such as Google's `access_type=offline`.
+	 *
 	 * @param state A unique state parameter to prevent CSRF attacks.
 	 * @param scope The scope of the requested permissions.
 	 * @param codeChallenge The PKCE challenge, `codeChallenge(verifier)`, which
 	 *        is sent with `code_challenge_method=S256`. Omit it to leave PKCE out.
+	 * @param extra Further parameters for this request, encoded like the rest:
+	 *        OpenID Connect's `nonce`, which has to be new for each sign-in,
+	 *        `prompt` or `login_hint`.
 	 * @return The authorization URL.
 	 */
-	public function getAuthorizationUrl(state:String, scope:String, ?codeChallenge:String):String {
-		var url:String = config.authorizeUrl
-			+ "?response_type=code"
+	public function getAuthorizationUrl(state:String, scope:String, ?codeChallenge:String, ?extra:Map<String, String>):String {
+		// After the endpoint's own query, if it has one: the parameters were
+		// added after a second "?", so the endpoint's last parameter took the
+		// rest of the URL as its value.
+		var endpoint:String = config.authorizeUrl;
+		var joiner:String = endpoint.indexOf("?") < 0 ? "?" : (StringTools.endsWith(endpoint, "?") || StringTools.endsWith(endpoint, "&") ? "" : "&");
+		var url:String = endpoint
+			+ joiner
+			+ "response_type=code"
 			+ "&client_id=" + __encode(config.clientId)
 			+ "&redirect_uri=" + __encode(config.redirectUri)
 			+ "&state=" + __encode(state)
@@ -96,6 +114,12 @@ class OAuth {
 
 		if (codeChallenge != null && codeChallenge != "") {
 			url += "&code_challenge=" + __encode(codeChallenge) + "&code_challenge_method=S256";
+		}
+
+		if (extra != null) {
+			for (name => value in extra) {
+				url += "&" + __encode(name) + "=" + __encode(value);
+			}
 		}
 		return url;
 	}
@@ -286,7 +310,7 @@ class OAuth {
 			}
 
 			token = new OAuthToken(Std.string(accessToken), __optionalString(data, "refresh_token"), __toInt(Reflect.field(data, "expires_in")),
-				__optionalString(data, "token_type"), __optionalString(data, "scope"));
+				__optionalString(data, "token_type"), __optionalString(data, "scope"), __optionalString(data, "id_token"));
 		} catch (e:Dynamic) {
 			__fail(operation, "malformed response: " + Std.string(e), onError);
 			return;
