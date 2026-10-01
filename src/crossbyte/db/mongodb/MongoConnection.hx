@@ -169,7 +169,9 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 
 		@throws ArgumentError When the config is malformed or asks for
 		something unsupported, before anything is sent.
-		@throws IOError When no server can be reached or the handshake fails.
+		@throws IOError When no server can be reached, none finishes the
+		handshake within `connectTimeout` (see it for the targets it cannot
+		bound), or the handshake fails.
 		@throws MongoError When the server refuses the credentials.
 	**/
 	public function open(cfg:MongoConfig):Void {
@@ -919,34 +921,24 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	@:noCompletion private function __connectTo(host:MongoHost, settings:MongoSettings):String {
 		var socket:FlexSocket = new FlexSocket(settings.tls);
 		var peer:String = host.host + ":" + host.port;
+		// One deadline for all of it, the connect, TLS, the hello and the
+		// login, as MySQL's connectTimeout covers its login. It bounded only
+		// the connect, and not even that on Windows; the hello and the login
+		// then waited on socketTimeout, no limit by default, so a server that
+		// accepted and never answered held open() for good.
+		__handshakeDeadline = settings.connectTimeout > 0 ? haxe.Timer.stamp() + settings.connectTimeout : NO_DEADLINE;
 
 		try {
 			if (settings.tls) {
 				__configureTls(socket, settings, host.host);
 			}
 
-			// Not on eval, which raises an expired socket timeout as a native
-			// error no Haxe catch intercepts: the interpreter aborts instead of
-			// the call failing.
-			#if !eval
-			if (settings.connectTimeout > 0) {
-				socket.setTimeout(settings.connectTimeout);
-			}
-			#end
-
-			socket.connect(host.host, host.port);
+			__connectSocket(socket, host, peer);
 
 			if (settings.tls) {
+				__boundNextWait(socket, peer);
 				socket.handshake();
 			}
-
-			// Unlimited unless asked: a read timing out mid-reply leaves the
-			// connection out of step, so it is closed, and a long aggregation
-			// is a legitimate wait. The server bounds an operation with
-			// maxTimeMS instead.
-			#if !eval
-			socket.setTimeout(settings.socketTimeout);
-			#end
 
 			// Replies are waited on one at a time, so Nagle's delay would be paid on
 			// every command. Best effort: a socket that cannot say is still usable.
@@ -958,11 +950,208 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 				socket.close();
 			} catch (_:Dynamic) {}
 
+			// Separate throws, not one of a conditional: the jvm refuses to
+			// load a method that throws an untyped value.
+			if (Std.isOfType(e, IOError)) {
+				// Says what went wrong already, a deadline run out included.
+				throw e;
+			}
+
+			if (__ranOut()) {
+				// A timed-out wait says only that it would have blocked.
+				throw new IOError(__outOfTime(peer));
+			}
+
 			throw new IOError('Connecting to MongoDB at $peer failed: ${Std.string(e)}');
 		}
 
 		__wire = new MongoWire(socket, __reader, peer);
+		#if eval
+		// The interpreter fails an expired socket timeout by aborting, so the
+		// wire waits on select instead.
+		__wire.deadline = __handshakeDeadline;
+		#end
 
+		var verdict:String = __handshakeWith(settings);
+
+		// Open: from here a read waits on socketTimeout, unlimited unless asked.
+		// A read timing out mid-reply leaves the connection out of step, so it
+		// is closed, and a long aggregation is a legitimate wait; the server
+		// bounds an operation with maxTimeMS instead. Not on eval, which
+		// raises an expired socket timeout as a native error no Haxe catch
+		// intercepts: the interpreter aborts instead of the call failing.
+		__handshakeDeadline = NO_DEADLINE;
+		#if eval
+		__wire.deadline = NO_DEADLINE;
+		#else
+		if (verdict == null) {
+			socket.setTimeout(settings.socketTimeout);
+		}
+		#end
+
+		return verdict;
+	}
+
+	/** No deadline: a wait that runs as long as it takes. **/
+	@:noCompletion private static final NO_DEADLINE:Float = Math.POSITIVE_INFINITY;
+
+	// Where an open's handshake with the host it is trying gives up, as a
+	// haxe.Timer.stamp(); NO_DEADLINE outside one, or with connectTimeout 0.
+	@:noCompletion private var __handshakeDeadline:Float = NO_DEADLINE;
+
+	/**
+		Connects `socket`, within the handshake's deadline where the target
+		allows: natively and on neko a connect in progress, which select
+		finishes or abandons. On the jvm a blocking connect, and a TLS one's
+		handshake, is bounded by the socket's timeout. hl's is bounded where
+		the system applies a send timeout to a connect, which Linux does and
+		Windows does not, and eval connects with no bound at all. The name is
+		looked up first, on this thread, for as long as the resolver takes.
+	**/
+	@:noCompletion private function __connectSocket(socket:FlexSocket, host:MongoHost, peer:String):Void {
+		var address:sys.net.Host = new sys.net.Host(host.host);
+
+		#if (cpp || neko)
+		if (__handshakeDeadline != NO_DEADLINE) {
+			socket.setBlocking(false);
+
+			try {
+				socket.connectHost(address, host.port);
+			} catch (e:Dynamic) {
+				// A connect in progress: the plain socket keeps that to itself,
+				// and the TLS one says so before its handshake.
+				if (!crossbyte._internal.socket.BlockedError.isBlocked(e)) {
+					throw e;
+				}
+			}
+
+			__awaitConnect(socket, peer);
+			socket.setBlocking(true);
+			return;
+		}
+		#elseif !eval
+		__boundNextWait(socket, peer);
+		#end
+
+		socket.connectHost(address, host.port);
+	}
+
+	#if (cpp || neko)
+	/** Waits, until the handshake's deadline, for a connect in progress to come up or fail. **/
+	@:noCompletion private function __awaitConnect(socket:FlexSocket, peer:String):Void {
+		while (true) {
+			var left:Float = __handshakeDeadline - haxe.Timer.stamp();
+
+			if (left <= 0) {
+				throw new IOError(__outOfTime(peer));
+			}
+
+			var ready = FlexSocket.select([], [socket], [socket], left);
+
+			if (ready.others.length > 0) {
+				// Where Windows reports a connect that failed.
+				throw __connectFailure(socket);
+			}
+
+			if (ready.write.length > 0) {
+				#if cpp
+				// POSIX reports a connect that failed as writable too, as it
+				// does one that came up; SO_ERROR tells the two apart.
+				var failure:Null<String> = crossbyte._internal.net.NativeSocketAddress.connectError((socket : sys.net.Socket));
+
+				if (failure != null) {
+					throw failure;
+				}
+				#else
+				if (__peerOf(socket) == null) {
+					throw __connectFailure(socket);
+				}
+				#end
+
+				return;
+			}
+		}
+	}
+
+	/** Why a connect failed, where the target can say. **/
+	@:noCompletion private static function __connectFailure(socket:FlexSocket):String {
+		#if cpp
+		var failure:Null<String> = crossbyte._internal.net.NativeSocketAddress.connectError((socket : sys.net.Socket));
+		return failure != null ? failure : "the connection was refused";
+		#else
+		return "the connection was refused";
+		#end
+	}
+
+	#if neko
+	/** The peer, or null for a socket that is not connected. **/
+	@:noCompletion private static function __peerOf(socket:FlexSocket):Dynamic {
+		try {
+			return socket.peer();
+		} catch (_:Dynamic) {
+			return null;
+		}
+	}
+	#end
+	#end
+
+	/**
+		Bounds the next wait on `socket` by what is left of the handshake's
+		deadline, a socket timeout, which a read or a write that runs out
+		fails with, or fails at once when nothing is left. Not on eval: it
+		fails an expired socket timeout by aborting, so the wire selects there.
+	**/
+	@:noCompletion private function __boundNextWait(socket:FlexSocket, peer:String):Void {
+		if (__handshakeDeadline == NO_DEADLINE) {
+			return;
+		}
+
+		var left:Float = __handshakeDeadline - haxe.Timer.stamp();
+
+		if (left <= 0) {
+			throw new IOError(__outOfTime(peer));
+		}
+
+		#if !eval
+		socket.setTimeout(left);
+		#end
+	}
+
+	/** `__send(true)` while a connection is being opened: within what is left of connectTimeout. **/
+	@:noCompletion private function __handshakeSend():Dynamic {
+		__boundNextWait(__wire.socket, __wire.peer);
+
+		try {
+			return __send(true);
+		} catch (e:IOError) {
+			if (__ranOut()) {
+				throw new IOError(__outOfTime(__wire.peer));
+			}
+
+			throw e;
+		}
+	}
+
+	/**
+		Whether the handshake's deadline has passed, so a wait that failed was
+		its timeout, which a read reports only as having blocked, or as an
+		end of stream. A socket timeout fires on the system's timer, which
+		can run a little ahead of `haxe.Timer.stamp()`: measured on Windows,
+		the read failed before the stamp reached the deadline.
+	**/
+	@:noCompletion private inline function __ranOut():Bool {
+		return haxe.Timer.stamp() >= __handshakeDeadline - 0.1;
+	}
+
+	@:noCompletion private function __outOfTime(peer:String):String {
+		return 'MongoDB at $peer did not finish connecting within ${__settings.connectTimeout} s (connectTimeout)';
+	}
+
+	/**
+		Says hello and authenticates, over the wire `__connectTo` opened.
+		Answers `null` when the host will do, or why it will not.
+	**/
+	@:noCompletion private function __handshakeWith(settings:MongoSettings):String {
 		var scram:Scram = null;
 		var mechanism:String = settings.authMechanism;
 		var credentials:Bool = settings.username != null || mechanism == "MONGODB-X509";
@@ -999,7 +1188,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		}
 
 		__endBody("admin", null, false);
-		var hello:Dynamic = __send(true);
+		var hello:Dynamic = __handshakeSend();
 
 		if (!__isOk(hello) && __int(Reflect.field(hello, "code")) == MongoError.COMMAND_NOT_FOUND) {
 			// Before 4.4.2 the command was isMaster.
@@ -1012,7 +1201,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			}
 
 			__endBody("admin", null, false);
-			hello = __send(true);
+			hello = __handshakeSend();
 		}
 
 		__check("hello", hello);
@@ -1083,7 +1272,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			}
 
 			__endBody("$external", null, false);
-			__checkAuth(__send(true));
+			__checkAuth(__handshakeSend());
 			return;
 		}
 
@@ -1101,7 +1290,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			__writer.value("payload", payload, 1);
 			__writer.value("autoAuthorize", 1, 1);
 			__endBody(authSource, null, false);
-			__checkAuth(__send(true));
+			__checkAuth(__handshakeSend());
 			return;
 		}
 
@@ -1128,7 +1317,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			__writer.value("autoAuthorize", 1, 1);
 			__writer.value("options", new BsonDocument().add("skipEmptyExchange", true), 1);
 			__endBody(authSource, null, false);
-			reply = __checkAuth(__send(true));
+			reply = __checkAuth(__handshakeSend());
 		}
 
 		var conversation:Dynamic = Reflect.field(reply, "conversationId");
@@ -1137,7 +1326,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		__writer.value("conversationId", conversation, 1);
 		__writer.value("payload", proof, 1);
 		__endBody(authSource, null, false);
-		reply = __checkAuth(__send(true));
+		reply = __checkAuth(__handshakeSend());
 		scram.verifyServer(__payload(reply));
 
 		// A server that does not honour skipEmptyExchange wants one more,
@@ -1153,7 +1342,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			__writer.value("conversationId", conversation, 1);
 			__writer.value("payload", Bytes.alloc(0), 1);
 			__endBody(authSource, null, false);
-			reply = __checkAuth(__send(true));
+			reply = __checkAuth(__handshakeSend());
 		}
 	}
 
