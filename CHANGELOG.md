@@ -1932,6 +1932,10 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- DATA on an HTTP/2 stream its client has already ended is refused with
+  `STREAM_CLOSED`, as RFC 9113 5.1 has it. It was taken as more body, and
+  a second END_STREAM delivered the request again, so a second handler
+  answered a stream the first was answering.
 - An HTTP/2 response the server has to give up on partway, a file that
   came up short, a read that failed, a stream written faster than its
   client takes it, resets its own stream and leaves the connection's

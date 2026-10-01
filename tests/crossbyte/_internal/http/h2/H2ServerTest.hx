@@ -415,6 +415,35 @@ class H2ServerTest extends utest.Test {
 		Assert.isFalse(server.closed);
 	}
 
+	public function testDataAfterARequestHasEndedIsAStreamError():Void {
+		// A stream the peer has ended takes no more DATA (5.1). It was
+		// appended, and a second END_STREAM delivered the request again: two
+		// handlers for one stream, each answering it.
+		var out = new Collector();
+		var server = new H2ServerConnection(out.write);
+		var delivered:Int = 0;
+		// Not answered: the request is still the application's when the DATA
+		// comes, as a slow route's is.
+		server.onRequest = _ -> delivered++;
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+		out.bytes();
+
+		var encoder = new HpackEncoder(4096);
+		server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, 1, encoder.encode(requestFields([]))));
+		server.receive(frame(H2FrameType.DATA, H2Flags.END_STREAM, 1, Bytes.ofString("again")));
+
+		Assert.equals(1, delivered, "a request was delivered twice");
+		var reset:Null<H2Frame> = null;
+		for (candidate in Collector.parse(out.bytes())) {
+			if (candidate.type == H2FrameType.RST_STREAM) {
+				reset = candidate;
+			}
+		}
+		Require.notNull(reset, "the stream was not reset");
+		Assert.equals(5, reset.payload.get(3), "the reset was not STREAM_CLOSED");
+		Assert.isFalse(server.closed);
+	}
+
 	public function testDuplicatePseudoHeaderIsRejected():Void {
 		Assert.notNull(firstResetFor([
 			new HpackHeader(":method", "GET"), new HpackHeader(":scheme", "http"), new HpackHeader(":path", "/a"),
