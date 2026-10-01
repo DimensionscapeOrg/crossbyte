@@ -1032,6 +1032,13 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 						throw new ArgumentError("Database does not exist.");
 					}
 			}
+
+			if (openMode == READ) {
+				// hxcpp's glue opens every file to read and write, so READ only
+				// checked that the file existed: an INSERT through it
+				// succeeded. Held to reading here instead, as AIR's READ is.
+				__connection.request("PRAGMA query_only = 1;");
+			}
 		}
 
 		if (__openMode == CREATE) {
