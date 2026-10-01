@@ -83,6 +83,25 @@ final class CrossByte extends EventDispatcher {
 	 */
 	public static var defaultSocketCapacity:Int = 1024;
 
+	/**
+		Whether a native Windows build runs its whole process at
+		`HIGH_PRIORITY_CLASS`, ahead of everything else on the machine at
+		normal priority. Off by default.
+
+		It used to be raised unasked, by every native Windows build, as the
+		runtime loaded: a library has no business deciding that for the
+		process it is part of, and a busy server at high priority can starve
+		the rest of the machine, its shell and its debugger included. Ask
+		for it where frame timing matters more than the rest of the machine
+		-- a game server on a box of its own.
+
+		Takes effect when it is set, before or after the application is
+		created; set back to `false`, the process returns to the class it
+		had before. It names Windows because the class is Windows': on every
+		other target it does nothing.
+	**/
+	public static var windowsHighPriority(default, set):Bool = false;
+
 	// ==== Private Static Variables ====
 	@:noCompletion private static inline var DEFAULT_TICKS_PER_SECOND:UInt = 12;
 
@@ -332,10 +351,16 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private static function __onCrossByteInit():Bool {
 		#if (cpp && windows)
 		NativeWindowsRuntime.beginTimingPeriod(1);
-		NativeWindowsRuntime.setHighPriorityProcess();
 		#end
 
 		return true;
+	}
+
+	@:noCompletion private static function set_windowsHighPriority(value:Bool):Bool {
+		#if (cpp && windows)
+		NativeWindowsRuntime.setHighPriorityProcess(value);
+		#end
+		return windowsHighPriority = value;
 	}
 
 	// ==== Public Variables ====

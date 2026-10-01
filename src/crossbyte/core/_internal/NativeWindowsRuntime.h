@@ -6,7 +6,8 @@ extern "C" {
 
 void crossbyte_windows_begin_timing_period(int milliseconds);
 void crossbyte_windows_end_timing_period(int milliseconds);
-void crossbyte_windows_set_high_priority_process();
+void crossbyte_windows_set_high_priority_process(int high);
+int crossbyte_windows_get_priority_class();
 int crossbyte_windows_get_current_thread_id();
 void crossbyte_windows_set_thread_priority(int threadId, int priority);
 
