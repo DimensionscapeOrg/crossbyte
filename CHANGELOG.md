@@ -1989,9 +1989,9 @@ entry below says how:
   when the peer has acknowledged it. A peer that acknowledges nothing for
   `closeTimeout` seconds, ten unless changed, is given up, with an
   `ioError` if more than the FIN went unacknowledged. `abort()` ends a
-  session at once, as `close()` did, and is what a server's own `close()`
-  and `releaseRelay()` do to their sessions, as are an oversized message
-  and an output queue past its limit.
+  session at once, as `close()` did. A server's own `close()` and
+  `releaseRelay()` end their sessions that way, and so do a message past
+  `maxMessageSize` and an output queue past its limit.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened
