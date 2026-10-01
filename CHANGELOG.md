@@ -1969,6 +1969,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On Node an application made once the program is running runs. Its loop
+  went through `haxe.EntryPoint`, as a child runtime's did, which runs
+  what it is handed only until the program has started; an `Application`
+  made after an asynchronous load never got an INIT or a tick. It starts
+  in a later turn now, as a child does.
 - A `NativeProcess`'s output keeps a character a read cuts in two whole,
   natively, on the jvm, hl and neko. Each read of the child's output was
   decoded on its own, so a UTF-8 character split between two reads, at

@@ -40,6 +40,46 @@ class ApplicationTest extends utest.Test {
 
 	#if js
 	/**
+		An application made once the program is running runs. Its loop went
+		through haxe.EntryPoint, which on Node runs what it is handed only
+		until the program has started, so an application made after that,
+		once an asynchronous load had finished, say, never ran: no INIT, no
+		tick. A real primordial runtime, made in a later turn with the
+		harness's set aside, and the harness's put back after.
+	**/
+	@:access(crossbyte.Timer)
+	@:timeout(5000)
+	public function testAnApplicationMadeOnceRunningRuns(async:utest.Async):Void {
+		js.Syntax.code("setTimeout({0}, 5)", () -> {
+			var harness:CrossByte = CrossByte.__primordial;
+			var harnessTimers = crossbyte.Timer.currentOrNull();
+			var inits = 0;
+			var ticks = 0;
+			CrossByte.__primordial = null;
+			var runtime = new CrossByte(true, DEFAULT, false);
+			runtime.tps = 100;
+			runtime.addEventListener(crossbyte.events.Event.INIT, _ -> inits++);
+			runtime.addEventListener(TickEvent.TICK, _ -> ticks++);
+
+			var started = haxe.Timer.stamp();
+			var check:Void->Void = null;
+			check = () -> {
+				if (ticks < 3 && haxe.Timer.stamp() - started < 4) {
+					js.Syntax.code("setTimeout({0}, 5)", check);
+					return;
+				}
+				runtime.exit();
+				CrossByte.__primordial = harness;
+				crossbyte.Timer.bindCurrentThread(harnessTimers);
+				Assert.equals(1, inits, "the application never started");
+				Assert.isTrue(ticks >= 3, "the application ticked " + ticks + " times");
+				async.done();
+			};
+			js.Syntax.code("setTimeout({0}, 5)", check);
+		});
+	}
+
+	/**
 		A POLL runtime on JavaScript runs the DEFAULT loop, since there is no
 		socket set to poll there. It threw at its first frame, which took down
 		every ServerApplication on Node.
