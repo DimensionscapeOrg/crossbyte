@@ -42,5 +42,13 @@ extern class NativeFileSync {
 	/** Cuts or extends a file to `length` bytes. Empty on success, else why not. **/
 	@:native("crossbyte_file_truncate")
 	public static function truncate(path:String, length:Float):String;
+
+	/**
+		When the file was created, in milliseconds since 1970: `-1` if the
+		system keeps no creation time for it, `-2` if it cannot be examined.
+		Not `stat`'s ctime, which on POSIX is when its status last changed.
+	**/
+	@:native("crossbyte_file_created")
+	public static function created(path:String):Float;
 }
 #end

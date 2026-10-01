@@ -27,3 +27,7 @@ int crossbyte_file_create_exclusive(::String path, bool directory);
 // Cuts or extends the file at `path` to `length` bytes. Returns an empty
 // string, or why it could not.
 ::String crossbyte_file_truncate(::String path, double length);
+
+// When the file at `path` was created, in milliseconds since 1970; -1 if the
+// system keeps no creation time for it, -2 if it cannot be examined.
+double crossbyte_file_created(::String path);
