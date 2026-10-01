@@ -25,6 +25,14 @@ class RewriteEngine {
 	 * and each call costs filesystem lookups, so a request a route answered
 	 * never pays for them. A path or rewrite target whose `..` steps climb
 	 * above the root resolves to nothing, rather than throwing.
+	 *
+	 * A request naming an existing file or directory index is served it,
+	 * unless a rule that asks about files -- one with a `FileExists` or
+	 * `DirExists` condition -- applies first; every other rule is passed over
+	 * for it, which is Apache's `RewriteCond !-f` written in for every rule
+	 * that does not say otherwise. It used to be served before any rule was
+	 * looked at, so no rule could win over a file that existed, though
+	 * `HTTPServerConfig.tryFiles` said one asking about files could.
 	 */
 	public static function decide(cfg:HTTPServerConfig, reqPath:String, reqQuery:String, method:String, headers:StringMap<String>):Decision {
 		var orig:Null<String> = normalize(reqPath);
@@ -33,17 +41,19 @@ class RewriteEngine {
 		}
 		var q:String = reqQuery;
 
-		if (isFile(cfg, orig)) {
-			return d(orig, false, true, q, false);
-		}
-
-		var idx0:String = dirIndex(cfg, orig);
-		if (idx0 != null) {
-			return d(idx0, false, true, q, false);
-		}
+		// What the request names as it stands: a file, or a directory's index.
+		// The same lookups, in the same order, as before; with no rules they
+		// are the whole of it.
+		var named:Null<String> = isFile(cfg, orig) ? orig : dirIndex(cfg, orig);
 
 		var working:String = orig;
 		for (r in cfg.rewrites) {
+			// A file the request names wins over a rule that does not ask
+			// about files. One that does decides for itself, in its place.
+			if (named != null && !asksAboutFiles(r)) {
+				continue;
+			}
+
 			if (!reMatch(r.pattern, working, has(r, RewriteFlag.NC))) {
 				continue;
 			}
@@ -93,12 +103,17 @@ class RewriteEngine {
 			}
 		}
 
+		if (named != null) {
+			// No rule that asked took it elsewhere. The query is the request's:
+			// a rule that matched and led nowhere does not change it.
+			return d(named, false, true, reqQuery, false);
+		}
+
 		for (c in cfg.tryFiles) {
 			// `$uri` and `$uri/` are already settled: decide() opens by
-			// testing both against the request path and returns if either
-			// resolves, so reaching here means both have already failed.
-			// Testing them again costs two filesystem probes per request and
-			// cannot reach a different answer.
+			// testing both against the request path, and reaching here means
+			// both have failed. Testing them again costs two filesystem probes
+			// per request and cannot reach a different answer.
 			if (c == "$uri" || c == "$uri/") {
 				continue;
 			}
@@ -114,6 +129,20 @@ class RewriteEngine {
 		}
 
 		return null;
+	}
+
+	/** Whether `rule` has a `FileExists` or `DirExists` condition, and so says for itself what an existing file means to it. */
+	@:noCompletion public static function asksAboutFiles(rule:RewriteRule):Bool {
+		var conditions:Null<Array<RewriteCondition>> = rule.conditions;
+		if (conditions == null) {
+			return false;
+		}
+		for (condition in conditions) {
+			if (condition.type == RewriteConditionType.FileExists || condition.type == RewriteConditionType.DirExists) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	@:noCompletion public static inline function isPhpPath(p:String):Bool {
