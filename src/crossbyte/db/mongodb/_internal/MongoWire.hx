@@ -40,6 +40,15 @@ class MongoWire {
 	/** Where the server is, for messages. **/
 	public var peer(default, null):String;
 
+	/**
+		Where a read stops waiting, as a `haxe.Timer.stamp()`; infinite, the
+		default, for none. Used on the interpreter only, while a connection
+		is opened: elsewhere the socket's own timeout bounds a read, and eval
+		fails an expired one by aborting the process, so there each read is
+		preceded by a `select` until the deadline.
+	**/
+	public var deadline:Float = Math.POSITIVE_INFINITY;
+
 	@:noCompletion private var __in:Bytes;
 	@:noCompletion private var __held:Int = 0;
 	@:noCompletion private var __requestId:Int = 0;
@@ -248,6 +257,12 @@ class MongoWire {
 	/** Reads until at least `count` bytes are held. **/
 	@:noCompletion private function __fill(count:Int):Void {
 		while (__held < count) {
+			#if eval
+			if (deadline != Math.POSITIVE_INFINITY) {
+				__awaitReadable();
+			}
+			#end
+
 			var read:Int = socket.input.readBytes(__in, __held, __in.length - __held);
 
 			if (read <= 0) {
@@ -257,6 +272,23 @@ class MongoWire {
 			__held += read;
 		}
 	}
+
+	#if eval
+	/**
+		Waits, until `deadline`, for something to read. Safe for a TLS socket
+		here: during a handshake every reply is read whole, to its length, so
+		nothing is left decrypted where select cannot see it.
+	**/
+	@:noCompletion private function __awaitReadable():Void {
+		var left:Float = deadline - haxe.Timer.stamp();
+
+		if (left > 0 && FlexSocket.select([socket], [], [], left).read.length > 0) {
+			return;
+		}
+
+		throw new IOError('MongoDB at $peer did not answer in time.');
+	}
+	#end
 
 	/** Drops the message just read, keeping anything after it. **/
 	@:noCompletion private function __consume(length:Int):Void {

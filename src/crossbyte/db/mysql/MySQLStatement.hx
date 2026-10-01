@@ -6,6 +6,7 @@ package crossbyte.db.mysql;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.SQLError;
 import crossbyte.db.sql.SQLResult;
+import crossbyte.db.sql._internal.ItemRows;
 import crossbyte.db.sql._internal.ParamBinder;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.SQLErrorEvent;
@@ -17,6 +18,13 @@ import sys.db.ResultSet;
 @:access(crossbyte.db.mysql.MySQLConnection)
 class MySQLStatement extends EventDispatcher {
 	public var executing(get, null):Bool;
+
+	/**
+		A class each row is made an instance of, as AIR's `itemClass`: made
+		with no arguments, and each field set from the column of its name. A
+		column the class has no field for fails the statement with an
+		`SQLError`. Null, the default, leaves rows anonymous objects.
+	**/
 	public var itemClass:Class<Dynamic>;
 	/**
 		Named values substituted into `text` by `execute()`, as `:name`, each
@@ -29,7 +37,13 @@ class MySQLStatement extends EventDispatcher {
 		- `Bool` as `TRUE` or `FALSE`;
 		- `haxe.io.Bytes` as a hex literal, `X'00ff...'`, which carries a NUL
 		  byte, where a string is cut at its first one;
-		- `Date` as its UTC fields, as the driver reads DATETIME columns back;
+		- `Date` as its UTC fields, on every target. Natively the client reads
+		  `DATETIME` columns back as UTC too, so a `Date` makes the round
+		  trip. Haxe's drivers elsewhere do not: on hl and neko a `DATETIME`
+		  comes back in local time, shifted by the local offset from UTC
+		  unless the process runs in UTC, and on the jvm Haxe's JDBC binding
+		  makes a `Date` of `DATE` and `TIME` columns only, leaving a
+		  `DATETIME` the JDBC driver's own value;
 		- anything else as a string, quoted by the connection's `quote()`,
 		  which follows the session's `NO_BACKSLASH_ESCAPES`.
 
@@ -84,7 +98,7 @@ class MySQLStatement extends EventDispatcher {
 		failed INSERT read as one that had run.
 	**/
 	public function execute(prefetch:Int = -1):Void {
-		if (__connection == null) {
+		if (__live() == null) {
 			throw "MySQLStatement: no connection set.";
 		}
 
@@ -99,7 +113,7 @@ class MySQLStatement extends EventDispatcher {
 		try {
 			// Read as the rows are asked for: a page of a million-row result
 			// no longer waits for, and holds, all million.
-			__resultSet = __sqlConnection != null ? __sqlConnection.__requestStream(sql) : __connection.request(sql);
+			__resultSet = __sqlConnection != null ? __sqlConnection.__requestStream(sql) : __live().request(sql);
 			__queueResult();
 		} catch (e:Dynamic) {
 			__executing = false;
@@ -301,22 +315,29 @@ class MySQLStatement extends EventDispatcher {
 		__prefetch = 0;
 	}
 
+	/** Queues a page, its rows made instances of `itemClass` when it is set. **/
 	@:noCompletion private inline function __push(rows:Array<Dynamic>):Void {
-		__resultQueue.push(rows);
+		__resultQueue.push(ItemRows.make(rows, itemClass));
 	}
 
 	private function get_executing():Bool {
 		return __executing;
 	}
 
+	/**
+		The connection's handle as it is now. It was copied when
+		`sqlConnection` was set, so a statement given its connection before
+		`open()` held none and refused to run, as SQLite's did.
+	**/
+	@:noCompletion private inline function __live():Connection {
+		return __sqlConnection != null ? __sqlConnection.__connection : __connection;
+	}
+
 	private function set_sqlConnection(v:MySQLConnection):MySQLConnection {
 		__sqlConnection = v;
-		if (v != null) {
-			__connection = v.__connection;
-		} else {
-			__connection = null;
-		}
-
+		// Kept for a statement given a handle directly, as tests do; with a
+		// connection set, its handle is asked for each time instead.
+		__connection = v != null ? v.__connection : null;
 		return v;
 	}
 

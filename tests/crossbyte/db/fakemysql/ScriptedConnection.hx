@@ -21,6 +21,9 @@ class ScriptedConnection implements Connection {
 	public var closed:Bool = false;
 	public var closeCount:Int = 0;
 
+	/** What `lastInsertId()` answers, an Int, as `sys.db.Connection` has it, wrapped past 2^31 where a driver wraps. **/
+	public var insertId:Int = 0;
+
 	public function new() {}
 
 	public function request(s:String):ResultSet {
@@ -75,7 +78,7 @@ class ScriptedConnection implements Connection {
 	}
 
 	public function lastInsertId():Int {
-		return 0;
+		return insertId;
 	}
 
 	public function dbName():String {

@@ -12,31 +12,136 @@ import sys.db.ResultSet;
  * `sqlite3_get_autocommit` answers from the connection's own state, so a
  * transaction begun or ended as SQL text, `request("BEGIN")`, or rolled
  * back by SQLite after an error is reflected, at no cost.
+ *
+ * It also keeps the `sqlite3` pointer itself, for `sqlite3_interrupt`, which
+ * hxcpp's glue has no call for and keeps out of reach. SQLite hands every
+ * connection it opens to each automatic extension registered with
+ * `sqlite3_auto_extension`, on the thread opening it; the one registered
+ * here notes it, and `open` takes it straight after the glue's own open
+ * returns, on the same thread, no change to hxcpp needed.
  */
 @:noCompletion
 @:buildXml('<include name="${HXCPP}/src/hx/libs/sqlite/Build.xml"/>')
 @:cppFileCode('
 HXCPP_EXTERN_CLASS_ATTRIBUTES bool _hx_sqlite_get_autocommit(Dynamic handle);
+
+// Two calls of the SQLite C API that the glue above has no wrapper for,
+// declared rather than included: sqlite3.h is on the include path of the
+// hxcpp sqlite files only.
+extern "C" {
+	struct sqlite3;
+	int sqlite3_auto_extension(void (*xEntryPoint)(void));
+	void sqlite3_interrupt(struct sqlite3 *db);
+}
+
+// The connection sqlite3_open made last on this thread, as SQLite reports it
+// to every automatic extension. Per thread, so opens on several threads at
+// once cannot take each other.
+static thread_local struct sqlite3 *crossbyte_sqlite_opened = 0;
+
+// Runs inside sqlite3_open, in the GC-free zone the glue opens it in: it
+// touches nothing but the pointer.
+static int crossbyte_sqlite_note_open(struct sqlite3 *db, char **error, const void *api) {
+	crossbyte_sqlite_opened = db;
+	return 0;
+}
+
+static void crossbyte_sqlite_watch_opens() {
+	// SQLite registers an entry point once, however often it is asked.
+	sqlite3_auto_extension((void (*)(void))crossbyte_sqlite_note_open);
+}
+
+static void *crossbyte_sqlite_take_opened() {
+	struct sqlite3 *db = crossbyte_sqlite_opened;
+	crossbyte_sqlite_opened = 0;
+	return db;
+}
+
+static void crossbyte_sqlite_interrupt(void *db) {
+	sqlite3_interrupt((struct sqlite3 *)db);
+}
 ')
 class NativeSQLiteConnection implements Connection {
 	@:noCompletion private var __handle:Dynamic;
 
+	// The sqlite3 pointer behind __handle, or null once closed. Guarded by
+	// __dbLock: interrupt() may run on any thread, and must never reach a
+	// connection close() has freed.
+	@:noCompletion private var __db:cpp.Pointer<cpp.Void>;
+	@:noCompletion private var __dbLock:sys.thread.Mutex;
+
 	public static function open(path:String):NativeSQLiteConnection {
-		return new NativeSQLiteConnection(__connect(path));
+		__watchOpens();
+		// Cleared first, so what is taken below can only be this open's.
+		__takeOpened();
+		var connection:NativeSQLiteConnection = new NativeSQLiteConnection(__connect(path));
+		connection.__db = __takeOpened();
+		return connection;
 	}
 
 	public function new(handle:Dynamic) {
 		__handle = handle;
+		__dbLock = new sys.thread.Mutex();
+	}
+
+	/**
+		Stops the statement running on this connection at its next step,
+		it fails with "interrupted", from any thread. Does nothing when none
+		is running, or once closed. A write interrupted inside a transaction
+		takes the whole transaction back with it, as SQLite has it.
+	**/
+	public function interrupt():Void {
+		__dbLock.acquire();
+
+		if (__db != null) {
+			__interruptDb(__db);
+		}
+
+		__dbLock.release();
 	}
 
 	/** Whether no transaction is open. **/
 	public var autocommit(get, never):Bool;
 
+	/**
+		Runs `s` and answers its result.
+
+		hxcpp's glue keeps one live result per connection, and starts a
+		request by finalizing the one before it: a statement read a page at a
+		time while others ran on the connection, a cursor whose rows are
+		each written elsewhere, lost every row after the page in hand, and
+		its next page read as the empty last one. So the result still live
+		reads the rest of its rows into its own hands first, and gives them
+		as asked; only a result interleaved that way pays for it.
+	**/
 	public function request(s:String):ResultSet {
-		return new NativeSQLiteResultSet(__request(__handle, s));
+		var previous:NativeSQLiteResultSet = __live;
+
+		if (previous != null) {
+			__live = null;
+			previous.__keepRest();
+		}
+
+		var result:NativeSQLiteResultSet = new NativeSQLiteResultSet(__request(__handle, s));
+
+		if (!result.__exhausted) {
+			__live = result;
+		}
+
+		return result;
 	}
 
+	// The result of the last request while it may still have rows to give.
+	@:noCompletion private var __live:NativeSQLiteResultSet;
+
 	public function close():Void {
+		// Let go of under the lock first: an interrupt() already running
+		// finishes with the pointer before SQLite frees it, and one arriving
+		// later finds nothing.
+		__dbLock.acquire();
+		__db = null;
+		__dbLock.release();
+		__live = null;
 		__close(__handle);
 	}
 
@@ -108,15 +213,31 @@ class NativeSQLiteConnection implements Connection {
 
 	@:native("_hx_sqlite_get_autocommit")
 	extern private static function __getAutocommit(handle:Dynamic):Bool;
+
+	@:native("crossbyte_sqlite_watch_opens")
+	extern private static function __watchOpens():Void;
+
+	@:native("crossbyte_sqlite_take_opened")
+	extern private static function __takeOpened():cpp.Pointer<cpp.Void>;
+
+	@:native("crossbyte_sqlite_interrupt")
+	extern private static function __interruptDb(db:cpp.Pointer<cpp.Void>):Void;
 }
 
 @:noCompletion
+@:allow(crossbyte.db.sql.sqlite._internal.NativeSQLiteConnection)
 private class NativeSQLiteResultSet implements ResultSet {
 	public var length(get, null):Int;
 	public var nfields(get, null):Int;
 
 	@:noCompletion private var __result:Dynamic;
 	@:noCompletion private var __cache:List<Dynamic>;
+	// Whether the statement has no row left to give: stepped to its end.
+	@:noCompletion private var __exhausted:Bool = false;
+	// A failure __keepRest met reading ahead, thrown once the rows before it
+	// have been taken, where reading them in turn would have met it.
+	@:noCompletion private var __failed:Bool = false;
+	@:noCompletion private var __failure:Dynamic = null;
 
 	public function new(result:Dynamic) {
 		__cache = new List();
@@ -127,20 +248,51 @@ private class NativeSQLiteResultSet implements ResultSet {
 
 	private function get_length():Int {
 		if (nfields != 0) {
-			while (true) {
-				var row:Dynamic = __next(__result);
+			var row:Dynamic = __step();
 
-				if (row == null) {
-					break;
-				}
-
+			while (row != null) {
 				__cache.add(row);
+				row = __step();
 			}
 
 			return __cache.length;
 		}
 
 		return __length(__result);
+	}
+
+	/** The next row from the statement itself, or null once it has none. **/
+	@:noCompletion private function __step():Dynamic {
+		if (__exhausted) {
+			return null;
+		}
+
+		var row:Dynamic = __next(__result);
+
+		if (row == null) {
+			__exhausted = true;
+		}
+
+		return row;
+	}
+
+	/**
+		Reads the rows the statement has left into this result's own hands,
+		before the connection's next request has the glue finalize it.
+	**/
+	@:noCompletion private function __keepRest():Void {
+		try {
+			var row:Dynamic = __step();
+
+			while (row != null) {
+				__cache.add(row);
+				row = __step();
+			}
+		} catch (e:Dynamic) {
+			__exhausted = true;
+			__failed = true;
+			__failure = e;
+		}
 	}
 
 	private function get_nfields():Int {
@@ -165,7 +317,14 @@ private class NativeSQLiteResultSet implements ResultSet {
 			return cached;
 		}
 
-		return __next(__result);
+		if (__failed) {
+			__failed = false;
+			var failure:Dynamic = __failure;
+			__failure = null;
+			throw failure;
+		}
+
+		return __step();
 	}
 
 	public function results():List<Dynamic> {

@@ -16,6 +16,10 @@
  *   fake:fail-next-commit
  *                       makes the next COMMIT fail outright, as a serialization
  *                       failure or a deferred constraint does
+ *   fake:live           how many connections are open in the process: made by
+ *                       PQconnectdb and not yet given to PQfinish
+ *   fake:transaction    this connection's transaction as the server holds it:
+ *                       idle, open or aborted
  *   BEGIN / COMMIT / ROLLBACK
  *                       tracked the way the server tracks them: a COMMIT in an
  *                       aborted transaction succeeds with the tag ROLLBACK, and
@@ -39,6 +43,11 @@
 static void fakeSleepMs(int ms) {
 	Sleep((DWORD)ms);
 }
+/* Connections are made and finished on several threads at once. */
+static volatile LONG fakeLive = 0;
+static void fakeCountLive(int delta) {
+	InterlockedExchangeAdd(&fakeLive, (LONG)delta);
+}
 #else
 #include <time.h>
 #define FAKEPQ_EXPORT __attribute__((visibility("default")))
@@ -47,6 +56,10 @@ static void fakeSleepMs(int ms) {
 	ts.tv_sec = ms / 1000;
 	ts.tv_nsec = (long)(ms % 1000) * 1000000L;
 	nanosleep(&ts, NULL);
+}
+static volatile long fakeLive = 0;
+static void fakeCountLive(int delta) {
+	__sync_fetch_and_add(&fakeLive, (long)delta);
 }
 #endif
 
@@ -270,6 +283,17 @@ static FakeResult* fakeRun(FakeConn* conn, const char* sql, int nParams, const c
 		return fakeRow("conninfo", conn->conninfo, strlen(conn->conninfo));
 	}
 
+	if (strcmp(sql, "fake:live") == 0) {
+		char text[16];
+		snprintf(text, sizeof(text), "%ld", (long)fakeLive);
+		return fakeRow("live", text, strlen(text));
+	}
+
+	if (strcmp(sql, "fake:transaction") == 0) {
+		const char* state = conn->transaction == TX_OPEN ? "open" : (conn->transaction == TX_ABORTED ? "aborted" : "idle");
+		return fakeRow("transaction", state, strlen(state));
+	}
+
 	if (startsWith(sql, "fake:count ")) {
 		int n = atoi(sql + 11);
 		return fakeCount(n < 0 ? 0 : (n > 10000 ? 10000 : n));
@@ -316,6 +340,7 @@ FAKEPQ_EXPORT void* PQconnectdb(const char* conninfo) {
 
 	conn->status = CONNECTION_OK;
 	conn->conninfo = fakeDup(conninfo == NULL ? "" : conninfo, conninfo == NULL ? 0 : strlen(conninfo));
+	fakeCountLive(1);
 
 	if (conninfoValue(conn->conninfo, "host", host, sizeof(host))) {
 		if (startsWith(host, "fail-")) {
@@ -341,6 +366,7 @@ FAKEPQ_EXPORT void PQfinish(void* conn) {
 	if (conn != NULL) {
 		free(((FakeConn*)conn)->conninfo);
 		free(conn);
+		fakeCountLive(-1);
 	}
 }
 

@@ -21,7 +21,11 @@ typedef MongoFindOptions = {
 	/** At most this many documents; 0, the default, for no limit. **/
 	@:optional var limit:Int;
 
-	/** Documents per round trip after the first batch. The server decides when left out. **/
+	/**
+		Documents per batch, the first included: it is sent with the `find`,
+		which sizes the first batch, and with each `getMore` after. The
+		server decides when left out.
+	**/
 	@:optional var batchSize:Int;
 
 	/** An index to use, by name or by its keys. **/
@@ -68,6 +72,7 @@ typedef MongoDeleteOptions = {
 }
 
 typedef MongoAggregateOptions = {
+	/** Documents per batch, the first included, as `MongoFindOptions.batchSize`. **/
 	@:optional var batchSize:Int;
 	@:optional var maxTimeMS:Int;
 	@:optional var allowDiskUse:Bool;

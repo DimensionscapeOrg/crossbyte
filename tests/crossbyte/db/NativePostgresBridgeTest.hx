@@ -3,6 +3,7 @@ package crossbyte.db;
 #if cpp
 import crossbyte.db.postgres.PostgresConfig;
 import crossbyte.db.postgres.PostgresConnection;
+import crossbyte.db.postgres.PostgresIsolationLevel;
 import crossbyte.db.postgres.PostgresParameter;
 import crossbyte.errors.SQLError;
 import crossbyte.events.SQLErrorEvent;
@@ -507,6 +508,137 @@ class NativePostgresBridgeTest extends utest.Test {
 		}
 
 		return pages.join(" ");
+	}
+
+	public function testAutocommitOffKeepsATransactionOpenUntilCommit():Void {
+		// autocommit stored a flag nothing read: set false, every statement
+		// still committed on its own. PostgreSQL has no setting for it on the
+		// server, so the driver begins the transaction itself, as MySQL's
+		// server and JDBC do.
+		var connection:PostgresConnection = __open(__config("localhost"));
+		Assert.isTrue(connection.autocommit);
+		connection.autocommit = false;
+		Assert.isFalse(connection.autocommit);
+
+		connection.request("SELECT 1");
+		Assert.equals(IN_TRANSACTION, __serverTransaction(connection), "the statement ran, and committed, on its own");
+		Assert.isTrue(connection.inTransaction);
+		connection.commit();
+		Assert.equals(IDLE, __serverTransaction(connection));
+		// Still off: the next statement begins the next transaction.
+		Assert.isTrue(connection.inTransaction, "autocommit off reads as a transaction open, as on MySQL");
+		connection.requestParams("SELECT $1::text", [Text("x")]);
+		Assert.equals(IN_TRANSACTION, __serverTransaction(connection));
+		connection.rollback();
+		Assert.equals(IDLE, __serverTransaction(connection));
+		Assert.isTrue(connection.ping());
+		Assert.equals(IDLE, __serverTransaction(connection), "ping() began a transaction");
+
+		// Turned back on, what is open is committed, as MySQL does.
+		connection.request("SELECT 1");
+		var commits:Int = 0;
+		connection.addEventListener(crossbyte.events.SQLEvent.COMMIT, _ -> commits++);
+		connection.autocommit = true;
+		Assert.equals(1, commits);
+		Assert.equals(IDLE, __serverTransaction(connection));
+		connection.request("SELECT 1");
+		Assert.equals(IDLE, __serverTransaction(connection));
+		Assert.isFalse(connection.inTransaction);
+		connection.close();
+	}
+
+	public function testAnIsolationLevelTheServerRefusesThrows():Void {
+		// The setter swallowed the server's refusal: the level read as set,
+		// and the session went on at the old one.
+		var connection:PostgresConnection = __open(__config("localhost"));
+		connection.begin();
+
+		try {
+			// Aborts the transaction: the stand-in, as the server, refuses
+			// everything else until it ends.
+			connection.request("fake:fail");
+		} catch (_:Dynamic) {}
+
+		var thrown:Dynamic = null;
+
+		try {
+			connection.isolationLevel = PostgresIsolationLevel.SERIALIZABLE;
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+
+		Assert.isTrue(Std.isOfType(thrown, SQLError), "the refusal was swallowed: " + Std.string(thrown));
+		connection.rollback();
+		connection.isolationLevel = PostgresIsolationLevel.SERIALIZABLE;
+		Assert.equals(IDLE, __serverTransaction(connection), "setting the level began a transaction");
+		connection.close();
+	}
+
+	@:noCompletion private static inline var IDLE:Int = 0;
+	@:noCompletion private static inline var IN_TRANSACTION:Int = 2;
+
+	/** The transaction as the stand-in server holds it: libpq's PQtransactionStatus. **/
+	@:noCompletion private static function __serverTransaction(connection:PostgresConnection):Int {
+		return crossbyte.db.postgres._internal.NativePostgres.transactionStatus(@:privateAccess connection.__nativeHandle);
+	}
+
+	public function testWhatRequestIsRefusedIsAnSQLError():Void {
+		// request() threw an IOError for a statement the server refused, where
+		// requestParams() threw an SQLError, and code catching SQLError, as
+		// MongoError's doc says every driver's failures are caught, caught
+		// nothing from request(). On a connection not open it threw a String.
+		var connection:PostgresConnection = __open(__config("localhost"));
+		var thrown:Dynamic = null;
+
+		try {
+			connection.request("fake:fail");
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+
+		Assert.isTrue(Std.isOfType(thrown, SQLError), "request() threw " + Std.string(thrown));
+
+		if (Std.isOfType(thrown, SQLError)) {
+			var error:SQLError = thrown;
+			Assert.isTrue(error.details().indexOf("fake failure") >= 0, error.details());
+		}
+
+		Assert.isTrue(connection.ping(), "the connection did not survive a refused statement");
+		connection.close();
+
+		var refused:Dynamic = null;
+
+		try {
+			new PostgresConnection().request("SELECT 1");
+		} catch (e:Dynamic) {
+			refused = e;
+		}
+
+		Assert.isTrue(Std.isOfType(refused, SQLError), "a connection not open threw " + Std.string(refused));
+	}
+
+	public function testOpeningAgainClosesTheConnectionItHad():Void {
+		// open() on an open connection replaced its native handle and left
+		// the first connection open, unreachable, for the life of the process,
+		// a server connection each time a pool factory or a reconnect
+		// called it twice. MySQL's closes first; this does too now.
+		var connection:PostgresConnection = __open(__config("localhost"));
+		var closes:Int = 0;
+		connection.addEventListener(crossbyte.events.SQLEvent.CLOSE, _ -> closes++);
+		var before:Int = __live(connection);
+
+		connection.open(__config("localhost"));
+
+		Assert.equals(before, __live(connection), "the first connection was left open");
+		Assert.equals(1, closes);
+		Assert.isTrue(connection.ping(), "the second connection is not the one in use");
+		connection.close();
+	}
+
+	/** The connections the stand-in has open, process-wide. **/
+	@:noCompletion private static function __live(connection:PostgresConnection):Int {
+		var rows:Dynamic = connection.request("fake:live");
+		return Std.parseInt(Std.string(Reflect.field(rows.next(), "live")));
 	}
 
 	@:noCompletion private static function __open(config:PostgresConfig):PostgresConnection {

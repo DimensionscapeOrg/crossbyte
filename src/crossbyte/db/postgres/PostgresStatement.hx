@@ -5,6 +5,7 @@ package crossbyte.db.postgres;
 
 import crossbyte.db.postgres._internal.PostgresWire;
 import crossbyte.db.sql.SQLResult;
+import crossbyte.db.sql._internal.ItemRows;
 import crossbyte.db.sql._internal.ParamBinder;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.SQLErrorEvent;
@@ -18,6 +19,13 @@ typedef PostgresResultSet = Dynamic;
 @:access(crossbyte.db.postgres.PostgresConnection)
 class PostgresStatement extends EventDispatcher {
 	public var executing(get, null):Bool;
+
+	/**
+		A class each row is made an instance of, as AIR's `itemClass`: made
+		with no arguments, and each field set from the column of its name. A
+		column the class has no field for fails the statement with an
+		`SQLError`. Null, the default, leaves rows anonymous objects.
+	**/
 	public var itemClass:Class<Dynamic>;
 	/**
 		Named values substituted into `text` by `execute()`.
@@ -213,11 +221,19 @@ class PostgresStatement extends EventDispatcher {
 		return null;
 	}
 
+	/**
+		`query` with `parameters` substituted. A parameter set to null is
+		written as `NULL`, as MySQL's statements write it; it was taken for one
+		never set and left in the SQL as `:name`, which the server refused.
+		Backslashes are not escapes in a PostgreSQL literal, with
+		`standard_conforming_strings` on as it has been by default since 9.1,
+		except in an `E'...'` string; and nothing inside a dollar-quoted
+		string, `$$ ... $$`, is substituted.
+	**/
 	private function __applyParameters(query:String):String {
 		var params:FieldStruct<String> = parameters;
-		return ParamBinder.substitute(query, function(name:String):Null<Dynamic> {
-			return FieldStruct.exists(params, name) ? FieldStruct.get(params, name) : null;
-		}, __quoteValue);
+		return ParamBinder.substituteWith(query, name -> FieldStruct.exists(params, name), name -> FieldStruct.get(params, name), __quoteValue,
+			false, true);
 	}
 
 	private function __quoteValue(value:Dynamic):String {
@@ -282,8 +298,9 @@ class PostgresStatement extends EventDispatcher {
 		return __sqlConnection;
 	}
 
+	/** Queues a page, its rows made instances of `itemClass` when it is set. **/
 	@:noCompletion private inline function __push(rows:Array<Dynamic>):Void {
-		__resultQueue.push(rows);
+		__resultQueue.push(ItemRows.make(rows, itemClass));
 	}
 }
 
