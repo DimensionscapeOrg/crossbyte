@@ -1935,6 +1935,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A server's `HTTPStatusEvent.HTTP_RESPONSE_STATUS` says what was answered,
+  as the event's doc has it: `responseURL` is the request's path and
+  query, where it was the client's address (`remoteAddress` has that), and
+  `responseHeaders` every field the response carries but its framing,
+  where it was only the fields a caller had added, for a static file, no
+  `Content-Type`, `Date` or `Server`.
 - A `POST` goes where the rewrite rules send it, as a `GET` does: it was
   resolved against the path it named, so a form posting to a rewritten
   path was answered 404. And a rule's query, merged with the request's
