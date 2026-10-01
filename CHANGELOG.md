@@ -78,6 +78,8 @@ entry below says how:
   statements throw what the server refused.
 - `ByteArrayInput.readVarUInt` reads values from 2^31 up, as a negative
   `Int`, where it threw; check for one where the value is a length.
+- `ByteArray.readVarInt` and `writeVarInt` are `readVarUInt` and
+  `writeVarUInt`, in the same format.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1134,6 +1136,13 @@ entry below says how:
 - accepted `wss://` sessions now run the deferred, timeout-guarded TLS handshake the client path already used; previously a server-side handshake happened implicitly on first read with no bound, so a peer that completed TCP then stalled mid-TLS held the socket indefinitely (`docs/proposals/0012-websocket-tls-handshake.md`)
 
 ### Removed
+- `ByteArray.readVarInt` and `writeVarInt`, which are `readVarUInt` and
+  `writeVarUInt`: the names `ByteArrayInput` and `ByteArrayOutput` give the
+  same unsigned format, and `Socket.readVarUInt` reads. Those two classes
+  call ZigZag, a signed format, `readVarInt` and `writeVarInt`, so code
+  moved from one class to another compiled and read every negative number
+  wrong. The old names are gone rather than given to ZigZag, so a call to
+  one stops compiling instead of changing format.
 - `ThreadEvent.UPDATE`. Nothing dispatched it, and no worker or task had
   anything it could have meant; `PROGRESS` carries a worker's messages.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
@@ -1935,10 +1944,11 @@ entry below says how:
 
 ### Fixed
 - The varint writers write every value they take. `ByteArray.writeVarInt`
-  and `ByteArrayOutput.writeVarUInt` looped while a signed `v > 0x7F`, so a
-  value with bit 31 set went out as one byte: 0x80000000 read back as 0,
-  and 0xFFFFFFFF as a varint that never ended. `ByteArrayOutput.writeVarInt`
-  sent every ZigZag value from 2^30 up in magnitude that way, and
+  (`writeVarUInt` now, under Removed) and `ByteArrayOutput.writeVarUInt`
+  looped while a signed `v > 0x7F`, so a value with bit 31 set went out as
+  one byte: 0x80000000 read back as 0, and 0xFFFFFFFF as a varint that
+  never ended. `ByteArrayOutput.writeVarInt` sent every ZigZag value from
+  2^30 up in magnitude that way, and
   `varUIntSize` sized them at one byte. The readers refuse a value past 32
   bits, where they shifted the extra bits off the top and read 2^32 + 1 as
   1: a `RangeError` from a `ByteArray`, an `IOError` from

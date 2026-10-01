@@ -447,7 +447,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	/**
 		Reads an **unsigned variable-length integer** that was written
-		using `writeVarInt()`.
+		using `writeVarUInt()`: the same format as
+		`ByteArrayInput.readVarUInt` and `ByteArrayOutput.writeVarUInt`.
+		`ByteArray` has no signed (ZigZag) varint; those two classes do,
+		as `readVarInt` and `writeVarInt`.
 
 		@return The decoded integer (0 – 0xFFFFFFFF). As an `Int`, a value
 				from 2^31 up reads as negative; check for that where the value
@@ -459,8 +462,8 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 				byte carries more than four bits, or asks for a sixth.
 				`position` is left where it was.
 	**/
-	public inline function readVarInt():Int {
-		return this.readVarInt();
+	public inline function readVarUInt():UInt {
+		return this.readVarUInt();
 	}
 
 	@:arrayAccess @:noCompletion private inline function set(index:Int, value:Int):Int {
@@ -670,12 +673,15 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		Each byte stores the lower 7 bits; the high bit is set to 1
 		until the final byte, where it is 0.
 
+		The same format as `ByteArrayOutput.writeVarUInt`, read back by
+		`readVarUInt` here or `ByteArrayInput.readVarUInt`.
+
 		@param value The unsigned integer to encode (0 – 0xFFFFFFFF). A
 			   negative `Int` is the unsigned value it holds: -1 is written
 			   as 0xFFFFFFFF, in five bytes.
 	**/
-	public inline function writeVarInt(value:Int):Void {
-		this.writeVarInt(value);
+	public inline function writeVarUInt(value:UInt):Void {
+		this.writeVarUInt(value);
 	}
 
 	// Get & Set Methods
@@ -1151,7 +1157,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		return crossbyte._internal.Utf8.stringOf(this, position - length, length);
 	}
 
-	@:keep public function readVarInt():Int {
+	@:keep public function readVarUInt():Int {
 		// Through a cursor of its own, committed once the varint is whole: a
 		// varint cut short leaves `position` where it was, as a truncated
 		// readInt does, so a reader can try again when the rest arrives.
@@ -1426,7 +1432,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		__writeAll(crossbyte._internal.Utf8.bytesOf(value));
 	}
 
-	@:keep public inline function writeVarInt(value:Int):Void {
+	@:keep public inline function writeVarUInt(value:Int):Void {
 		// Tested and shifted as the unsigned value it is. A signed
 		// `v > 0x7F` was false for anything with bit 31 set, which went out
 		// as one byte: 0x80000000 read back as 0, 0xFFFFFFFF as a varint
