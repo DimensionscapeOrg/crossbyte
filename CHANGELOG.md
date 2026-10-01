@@ -1932,6 +1932,17 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `Key` loads from every form a key file comes in, with its password,
+  on every target. The jvm read an unencrypted PKCS#8 key alone: an
+  encrypted one, or a PKCS#1 or SEC1 key -- what `openssl genrsa` and
+  `openssl ecparam -genkey` write -- was an error saying to convert the
+  file. Natively, and on hl, neko and eval, mbedTLS decrypts PKCS#8 only
+  with DES, so the AES-encrypted key OpenSSL writes by default failed
+  with "Requested encryption or digest alg not available", and eval's
+  `Key.fromPem` passed no password at all. On Node a certificate chosen by
+  SNI was given its key without the passphrase, so every handshake for
+  that name failed when the key was encrypted; each name's context is now
+  made once, at `listen()`, rather than at every handshake.
 - A `Key` shows nothing of itself when printed. On Node it held its PEM
   text and passphrase in two plain fields, and `trace`, `Std.string`,
   `JSON.stringify` and `console.log` each printed both, so one debugging
