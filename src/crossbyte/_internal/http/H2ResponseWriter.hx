@@ -40,10 +40,15 @@ class H2ResponseWriter implements HTTPResponseWriter {
 	private var __onAbandoned:Null<Void->Void> = null;
 	private var __ended:Bool = false;
 
-	public function new(connection:H2ServerConnection, socket:Socket, streamId:Int) {
+	// The connection's flush, which waits for the end of a read the
+	// response is being written in the middle of; see H2ConnectionHandler.
+	private final __flush:Void->Void;
+
+	public function new(connection:H2ServerConnection, socket:Socket, streamId:Int, ?flush:Void->Void) {
 		__connection = connection;
 		__socket = socket;
 		__streamId = streamId;
+		__flush = flush != null ? flush : socket.flush;
 	}
 
 	// The stream as well as the connection: a stream the client has reset
@@ -169,7 +174,7 @@ class H2ResponseWriter implements HTTPResponseWriter {
 	}
 
 	public function flush():Void {
-		__socket.flush();
+		__flush();
 	}
 
 	public function endResponse():Void {
@@ -181,7 +186,7 @@ class H2ResponseWriter implements HTTPResponseWriter {
 		// An empty DATA with END_STREAM. Needed whenever the head went out
 		// without the flag, which is every response that had a body.
 		__connection.sendData(__streamId, null, true);
-		__socket.flush();
+		__flush();
 	}
 
 	public function abort():Void {
@@ -190,6 +195,6 @@ class H2ResponseWriter implements HTTPResponseWriter {
 		}
 		__ended = true;
 		__connection.resetStream(__streamId, H2ErrorCode.INTERNAL_ERROR);
-		__socket.flush();
+		__flush();
 	}
 }

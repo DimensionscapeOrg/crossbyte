@@ -85,7 +85,7 @@ class H2ConnectionHandler {
 		__socket.__onWritableDrain = __connection.notifyWritable;
 
 		if (buffered != null && buffered.length > 0) {
-			__connection.receive(buffered, 0, buffered.length);
+			__receive(buffered);
 		}
 	}
 
@@ -99,11 +99,21 @@ class H2ConnectionHandler {
 		// long poll is not taken for one silent since the request came in.
 		__lastActivity = haxe.Timer.stamp();
 
-		var out:ByteArray = new ByteArray();
-		out.writeBytes(bytes, 0, bytes.length);
-		__socket.writeBytes(out, 0, out.length);
-		__socket.flush();
+		__socket.writeBytes(bytes, 0, bytes.length);
+
+		// While a read is being taken apart, what it answers at once goes out
+		// together when it is done (see __receive). Every frame was flushed
+		// on its own, SETTINGS, its acknowledgement, each response's HEADERS
+		// and DATA, a system call apiece: two a request, where HTTP/1.1
+		// pays one. A frame sent at any other time, an answer that came later,
+		// still goes at once.
+		if (!__receiving) {
+			__socket.flush();
+		}
 	}
+
+	// Set while __receive hands a read to the frame layer.
+	private var __receiving:Bool = false;
 
 	private function __onData(_:ProgressEvent):Void {
 		var inbound:ByteArray = new ByteArray();
@@ -113,7 +123,34 @@ class H2ConnectionHandler {
 		}
 
 		__lastActivity = haxe.Timer.stamp();
-		__connection.receive(inbound, 0, inbound.length);
+		__receive(inbound);
+	}
+
+	/** Hands `inbound` to the frame layer, and sends what it answered with in one write. **/
+	private function __receive(inbound:ByteArray):Void {
+		__receiving = true;
+		try {
+			__connection.receive(inbound, 0, inbound.length);
+		} catch (error:Dynamic) {
+			__receiving = false;
+			__flushOut();
+			throw error;
+		}
+		__receiving = false;
+		__flushOut();
+	}
+
+	private function __flushOut():Void {
+		if (__socket.connected) {
+			__socket.flush();
+		}
+	}
+
+	/** A writer's flush: at once, unless a read is being answered, which flushes when it is done. **/
+	private function __flushUnlessReceiving():Void {
+		if (!__receiving) {
+			__socket.flush();
+		}
 	}
 
 	/** Whether a drain has started here and every stream it let finish has. */
@@ -191,6 +228,11 @@ class H2ConnectionHandler {
 		} catch (_:Dynamic) {}
 
 		if (__socket.connected) {
+			// The GOAWAY, and anything else held for the end of a read this
+			// close came in the middle of.
+			try {
+				__socket.flush();
+			} catch (_:Dynamic) {}
 			__socket.close();
 		}
 	}
@@ -252,7 +294,7 @@ class H2ConnectionHandler {
 			body.position = 0;
 		}
 
-		var writer = new H2ResponseWriter(__connection, __socket, request.streamId);
+		var writer = new H2ResponseWriter(__connection, __socket, request.streamId, __flushUnlessReceiving);
 		var handler = new HTTPRequestHandler(__socket, __config, __php, writer);
 		if (__onResponse != null) {
 			var onResponse = __onResponse;
@@ -270,6 +312,10 @@ class H2ConnectionHandler {
 	private function __onConnectionError(error:crossbyte._internal.http.h2.H2ConnectionError):Void {
 		Logger.error("HTTP/2 connection error: " + error.message);
 		if (__socket.connected) {
+			// Found partway through a read, so its GOAWAY is still held.
+			try {
+				__socket.flush();
+			} catch (_:Dynamic) {}
 			__socket.close();
 		}
 	}
