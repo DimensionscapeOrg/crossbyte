@@ -245,6 +245,103 @@ class SQLiteNativeTest extends utest.Test {
 		connection.close();
 	}
 
+	public function testAnAsynchronousFailureReachesItsListener():Void {
+		// Every failure on an asynchronous connection killed the process: the
+		// connection's own errors were taken for a statement's message, and a
+		// statement's error had its absent result set read.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		var events:Array<String> = [];
+
+		for (type in [SQLEvent.OPEN, SQLEvent.BEGIN, SQLEvent.ROLLBACK, SQLEvent.CLOSE]) {
+			connection.addEventListener(type, e -> events.push(e.type));
+		}
+
+		connection.addEventListener(SQLErrorEvent.ERROR, e -> events.push("error:" + e.error.operation));
+		connection.openAsync(null, SQLiteMode.CREATE, false, 4096);
+		connection.begin();
+		// SQLite refuses a transaction inside one.
+		connection.begin();
+		connection.rollback();
+
+		var statement:SQLiteStatement = new SQLiteStatement();
+		statement.sqlConnection = connection;
+		statement.text = "SELECT * FROM nowhere";
+		var failed:SQLError = null;
+		statement.addEventListener(SQLErrorEvent.ERROR, e -> failed = e.error);
+		statement.execute();
+
+		var after:SQLiteStatement = new SQLiteStatement();
+		after.sqlConnection = connection;
+		after.text = "SELECT 7 AS seven";
+		var seven:Dynamic = null;
+		after.addEventListener(SQLEvent.RESULT, _ -> seven = Reflect.field(after.getResult().data[0], "seven"));
+		after.execute();
+		connection.close();
+
+		__pumpUntil(() -> events.indexOf(SQLEvent.CLOSE) >= 0);
+		Assert.same([SQLEvent.OPEN, SQLEvent.BEGIN, "error:" + SQLEvent.BEGIN, SQLEvent.ROLLBACK, SQLEvent.CLOSE], events);
+		Require.notNull(failed);
+		Assert.isTrue(failed.details().indexOf("no such table") >= 0, failed.details());
+		Assert.isFalse(statement.executing);
+		Assert.equals(7, seven, "the connection stopped answering after a failure");
+	}
+
+	public function testAsynchronousStatementsQueuedTogetherEachGetEveryRow():Void {
+		// The worker handed each statement its result set and went on to the
+		// next statement, while the runtime's thread read the rows -- and
+		// hxcpp's glue starts a statement by finalizing the one before it. Of
+		// two SELECTs of 5000 rows queued together, the first got one row.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		var opened:Bool = false;
+		connection.addEventListener(SQLEvent.OPEN, _ -> opened = true);
+		connection.openAsync(null, SQLiteMode.CREATE, false, 4096);
+
+		var setup:SQLiteStatement = new SQLiteStatement();
+		setup.sqlConnection = connection;
+		setup.text = "CREATE TABLE t AS WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 5000) SELECT i FROM n";
+		setup.execute();
+
+		var counts:Array<String> = [];
+		var first:SQLiteStatement = new SQLiteStatement();
+		first.sqlConnection = connection;
+		first.text = "SELECT i FROM t";
+		first.addEventListener(SQLEvent.RESULT, _ -> counts.push("first:" + first.getResult().data.length));
+		var second:SQLiteStatement = new SQLiteStatement();
+		second.sqlConnection = connection;
+		second.text = "SELECT i FROM t";
+		second.addEventListener(SQLEvent.RESULT, _ -> counts.push("second:" + second.getResult().data.length));
+		first.execute();
+		second.execute();
+
+		// And paged, with a rowid past 2^31 making each statement's rowid a
+		// query of its own.
+		var insert:SQLiteStatement = new SQLiteStatement();
+		insert.sqlConnection = connection;
+		insert.text = "INSERT INTO t (rowid, i) VALUES (3000000000, 0)";
+		insert.execute();
+		var paged:SQLiteStatement = new SQLiteStatement();
+		paged.sqlConnection = connection;
+		paged.text = "SELECT i FROM t";
+		var pagedRows:Int = 0;
+		paged.addEventListener(SQLEvent.RESULT, function(_) {
+			var page = paged.getResult();
+			pagedRows += page == null ? 0 : page.data.length;
+
+			if (paged.executing) {
+				paged.next(1000);
+			}
+		});
+		paged.execute(1000);
+
+		__pumpUntil(() -> counts.length >= 2 && !paged.executing);
+		connection.close();
+		__pumpUntil(() -> false, 0.2);
+
+		Assert.isTrue(opened);
+		Assert.same(["first:5000", "second:5000"], counts);
+		Assert.equals(5001, pagedRows);
+	}
+
 	public function testWhatSQLiteRefusesIsAnSQLError():Void {
 		// Against the engine itself: what hxcpp's glue throws is a String,
 		// which escaped as one, and nothing was dispatched.
