@@ -6,6 +6,7 @@ import crossbyte.FieldStruct;
 import crossbyte.db.mongodb.bson.BsonDocument;
 import crossbyte.db.mongodb.bson.ExtendedJson;
 import crossbyte.db.sql.SQLResult;
+import crossbyte.db.sql._internal.ItemRows;
 import crossbyte.errors.SQLError;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.SQLErrorEvent;
@@ -41,6 +42,14 @@ import crossbyte.events.SQLEvent;
 @:access(crossbyte.db.mongodb.MongoConnection)
 class MongoStatement extends EventDispatcher {
 	public var executing(get, null):Bool;
+
+	/**
+		A class each document is made an instance of, as AIR's `itemClass`
+		makes rows: made with no arguments, and each field set from the
+		document's field of its name -- `_id` included, so the class needs
+		one. A field the class does not have fails the command with an
+		`SQLError`. Null, the default, leaves documents anonymous objects.
+	**/
 	public var itemClass:Class<Dynamic>;
 
 	/** Values for the `:name` placeholders in `text`, bound as BSON values. **/
@@ -106,7 +115,9 @@ class MongoStatement extends EventDispatcher {
 
 		try {
 			var params:FieldStruct<Dynamic> = parameters;
-			var command:Dynamic = ExtendedJson.parse(text, name -> FieldStruct.exists(params, name) ? FieldStruct.get(params, name) : null);
+			// Whether each exists is asked apart from its value, so one set to
+			// null is bound as BSON null; it was refused as "no parameter".
+			var command:Dynamic = ExtendedJson.parse(text, name -> FieldStruct.get(params, name), name -> FieldStruct.exists(params, name));
 
 			if (!Std.isOfType(command, BsonDocument)) {
 				throw new SQLError(SQLEvent.RESULT, "A command is a JSON object.", "Execution failed: a command is a JSON object.");
@@ -260,8 +271,26 @@ class MongoStatement extends EventDispatcher {
 		__resultQueue = [];
 	}
 
-	@:noCompletion private inline function __push(a:Array<Dynamic>):Void {
-		__resultQueue.push(a);
+	/** Queues a page, its documents made instances of `itemClass` when it is set. **/
+	@:noCompletion private function __push(documents:Array<Dynamic>):Void {
+		if (itemClass != null) {
+			// A command's reply comes back as a BsonDocument, whose fields are
+			// its keys rather than its class's.
+			for (i in 0...documents.length) {
+				if (Std.isOfType(documents[i], BsonDocument)) {
+					var ordered:BsonDocument = documents[i];
+					var plain:Dynamic = {};
+
+					for (key in ordered.keys()) {
+						Reflect.setField(plain, key, ordered.get(key));
+					}
+
+					documents[i] = plain;
+				}
+			}
+		}
+
+		__resultQueue.push(ItemRows.make(documents, itemClass));
 	}
 }
 #end

@@ -138,6 +138,21 @@ entry below says how:
   peers, and anything stored, move to 1.0 together.
 - A native Windows build runs at the priority it was started with; set
   `CrossByte.windowsHighPriority = true` for the high class it took itself.
+- SQLite failures are `SQLError`s, as the other drivers' are, and are
+  dispatched as `SQLErrorEvent`s: catch `SQLError` where code caught the
+  `String` the driver threw.
+- `SQLiteConnection.open()` and `openAsync()` throw on a connection that
+  is open: `close()` it first, and after an asynchronous close wait for
+  `CLOSE`.
+- An SQLite connection opened with `SQLiteMode.READ` refuses to write:
+  open with `UPDATE` to write.
+- `SQLiteConnection.totalChanges` is a `Float` and `FKViolation.rowid` a
+  `Null<Float>`.
+- `PostgresConnection.request()` throws `SQLError` where it threw
+  `IOError` (a refused statement) or a `String` (no connection).
+- `PostgresConnection.autocommit = false` takes effect, where it did
+  nothing: statements then wait for `commit()`. Remove it from code that
+  set it and relied on each statement committing.
 
 ### Added
 - `ReliableDatagramServerSocket.relayVerifyCert`, for a TURN relay reached
@@ -2745,6 +2760,164 @@ entry below says how:
   `position` where it was, so it can be read again once the rest arrives;
   one whose fifth byte asks for a sixth is a `RangeError`, not an
   `EOFError` that says to wait for more.
+- An SQLite statement read a page at a time keeps its rows when other
+  statements run on the same connection between its pages -- a cursor
+  whose rows are each written elsewhere. hxcpp's glue keeps one live
+  result per connection and finalizes it as the next request starts, so
+  the statement stopped after the page in hand, and its next page read as
+  the empty, complete last one: 10 rows of 100. The result still live now
+  reads what it has left into its own hands first; only a result
+  interleaved that way pays for it.
+- Postgres statement parameters are not substituted into a dollar-quoted
+  string or past an escaped quote in an `E'...'` string. The scan did not
+  know either: it substituted a `:name` the server reads as inside the
+  literal, and a value holding the dollar tag -- `$$; DROP TABLE users;
+  --` -- or no quote at all ended the server's literal for it, the rest
+  statement text. A placeholder inside such a literal is left as written,
+  as one inside any other literal is.
+- A `MySQLStatement` given its connection before `open()` runs once the
+  connection is open; it copied the connection's handle when
+  `sqlConnection` was set, held none, and refused. And a MySQL isolation
+  level the server refuses is thrown as a `MySQLError`, as every other
+  refusal is: the setter went round `request()`, so the driver's own error
+  escaped -- on the jvm a `java.sql.SQLException`.
+- The PostgreSQL docs say what the driver is: libpq natively, PDO on php,
+  nothing elsewhere -- the class said "backed by PHP PDO", and the README
+  listed PostgreSQL with no target at all -- and that
+  `PostgresConnection.lastInsertRowID` reads 0 on PostgreSQL 12 and later,
+  which assign no OIDs. MongoDB's `batchSize` sizes the first batch too,
+  as it is sent with the `find`; the doc said it applied after the first.
+- Off cpp, a MySQL insert id past 2^31 reads back whole in
+  `SQLResult.lastInsertRowID`, and `MySQLConnection.lastInsertRowID`
+  holds at 2147483647 as it does natively. Haxe's drivers keep it in an
+  `Int`: hl and neko wrapped it, and on the jvm Haxe's JDBC binding read a
+  single insert's key with `getInt` after the insert had run, so a
+  committed insert was reported as failed. An id that cannot be right is
+  asked for with `SELECT LAST_INSERT_ID()`, as text, as the SQLite driver
+  does; on the jvm that `getInt` failure -- SQLSTATE 22003 with no error
+  number, from an `INSERT` or `REPLACE` -- is taken for the success it was.
+  And `MySQLStatement.parameters` says per target how a `DATETIME` written
+  from a `Date` reads back, which is as UTC natively only.
+- `MongoConfig.connectTimeout` bounds the whole of `open()` with each
+  server -- the connect, TLS, the hello and the login -- as MySQL's bounds
+  its login. It was only a socket timeout set before the connect, which
+  Windows ignores for a connect (21 s to a host that drops the SYN), and
+  was replaced by `socketTimeout`, no limit by default, before the hello:
+  a server that accepted and never answered held `open()` for good, and on
+  the interpreter neither timeout applied at all. The connect is made
+  without blocking and finished within the deadline natively and on neko;
+  the interpreter bounds the hello and login with `select`. Where a target
+  cannot bound a step, `connectTimeout` says so.
+- `itemClass` works on every statement -- SQLite, MySQL, Postgres and
+  MongoDB -- as AIR's does: each row is made an instance of the class, with
+  no arguments, and each field set from the column of its name, and a
+  column the class has no field for fails the statement with an
+  `SQLError`. It was declared on all four and read by none, so every row
+  was an anonymous object whatever it said.
+- A statement parameter set to `null` is written as `NULL` by Postgres's
+  and SQLite's statements, as MySQL's has been, and bound as BSON null by
+  MongoDB's. Postgres and SQLite took it for a parameter never set and left
+  `:name` in the SQL -- the server refused it, and SQLite read it as an
+  unbound parameter, NULL by luck -- and MongoDB refused it as "no
+  parameter named". `ExtendedJson.parse` takes whether a parameter exists
+  apart from its value for this, and `MongoConnection.request()` binds a
+  key mapped to null.
+- `PostgresConnection.autocommit` works: set `false`, a transaction begins
+  before the next statement and lasts until `commit()` or `rollback()`, as
+  on MySQL and in JDBC, and `inTransaction` reads true meanwhile, as
+  MySQL's does, so `ConnectionPool` rolls back and retires a connection
+  handed back that way. Set back to `true` it commits what is open.
+  PostgreSQL has no such setting on the server, and the flag was stored
+  and never read: every statement committed on its own. And setting
+  `isolationLevel` throws the `SQLError` the server refused it with,
+  where the refusal was swallowed and the level read as set.
+- `PostgresConnection.request()` throws an `SQLError` for a statement the
+  server refuses, as `requestParams()` and the other drivers' `request()`
+  do, and for a connection that is not open. It threw an `IOError` for the
+  one and a `String` for the other, so code catching `SQLError` -- as
+  `MongoError` says the other drivers' failures are caught -- caught
+  neither.
+- An SQLite database opened with `autoCompact` shrinks as rows are deleted,
+  as AIR's does. It was made INCREMENTAL, which gives nothing back until
+  `PRAGMA incremental_vacuum` runs, and nothing ran it: after 200 rows of
+  8 KiB were deleted the file stayed 1.7 MB with 425 free pages, while
+  `autoCompact` read `true`. New databases are FULL, which truncates the
+  file at every commit, and `autoCompact` is true for FULL only; a
+  database made by an earlier version reads `false`, and `compact()`
+  reclaims its space.
+- SQLite's `foreignKeyCheck()` and `totalChanges` read row ids and counts
+  whole, as `lastInsertRowID` already does. Both were parsed into an `Int`
+  with `Std.parseInt`, which past 2^31 answers differently on each target
+  and never the number: a violation at rowid 3,000,000,000 was reported at
+  2147483647, the row a repair would then have touched. `FKViolation.rowid`
+  is a `Null<Float>` -- null for a `WITHOUT ROWID` table, which has none --
+  and `totalChanges` a `Float`.
+- An SQLite connection opened with `SQLiteMode.READ` cannot write, as
+  AIR's `READ` cannot. It only checked that the file existed and then opened
+  it to read and write: an `INSERT` through it succeeded. It is held to
+  reading with SQLite's `query_only` now, which `SQLiteMode.READ` documents.
+- `SQLiteConnection.cancel()` stops the work and keeps the connection, as
+  AIR's does. On an asynchronous connection the statement running is
+  interrupted (`sqlite3_interrupt`, on cpp) and fails with "interrupted",
+  everything queued before the call is dropped with an `SQLErrorEvent`
+  saying so, and `CANCEL` follows them; the connection then runs what it is
+  asked as before. It cancelled the connection's worker instead: the
+  running statement went on to its end unreported, the queued work was
+  dropped without a word, `CANCEL` came at once, and `close()` never
+  closed, holding the connection and its file for the life of the process.
+  On a synchronous connection it interrupts a statement running on another
+  thread.
+- `SQLiteConnection.deanalyze()` removes the statistics `analyze()`
+  gathered, as AIR's does: the rows of `sqlite_stat1`, and of
+  `sqlite_stat4` where there is one, in every database the connection has
+  open, and the query planner reads them again. It closed the connection
+  and opened it again instead, touching no statistics: an in-memory
+  database lost every table, a file kept its statistics, and the session
+  lost its transaction, attached databases and settings. On an
+  asynchronous connection `DEANALYZE` came before the work, which then
+  left the connection answering nothing; it comes once the work is done.
+- Opening a Postgres or SQLite connection that is already open no longer
+  leaks the first. Postgres replaced its native handle and left that
+  server connection open for the life of the process; it now closes it
+  first, dispatching `CLOSE`, as MySQL does. SQLite replaced its handle
+  too, leaving the first holding its locks, and `openAsync()` started a
+  second worker over the same object; it now throws an
+  `IllegalOperationError`, as AIR's `open()` does -- and, after an
+  asynchronous `close()`, until its `CLOSE` arrives, when the old worker
+  has let go. An SQLite operation, `request()` or property read on a
+  closed connection throws `IllegalOperationError` where each
+  dereferenced the connection it did not have, and an open that failed
+  part way closes what it had opened.
+- An asynchronous `SQLiteConnection` survives a failure, and each of its
+  statements gets every row. Any error on one killed the process: the
+  connection's own failures -- a refused `BEGIN`, a failed open -- were
+  taken for a statement's message and its absent statement dereferenced,
+  and a failed statement had its absent result set read. And the worker
+  handed each statement its result set and went on to the next statement
+  while the runtime's thread read the rows, but hxcpp's glue starts a
+  statement by finalizing the one before it: of two SELECTs queued
+  together, the first got one row. Rows are read on the worker now and
+  sent back a page at a time; work queued behind a `close()`, or behind an
+  open that failed, is told it will not run instead of waiting for ever;
+  and `SQLResult.rowsAffected` is what a write changed, and 0 for a
+  SELECT, where reading it stepped through the rest of a SELECT's rows.
+- An SQLite SELECT returns all its rows once the connection's last rowid
+  has passed 2^31. A statement read that rowid as soon as it had started,
+  and past 2^31 reading it is a query of its own, which hxcpp's glue starts
+  by finalizing the statement before it: every SELECT came back with its
+  first row only. The rowid is read once the statement's rows are all read.
+- SQLite reports its failures as the other drivers do. An operation or
+  statement SQLite refuses on a synchronous connection is dispatched as an
+  `SQLErrorEvent` and thrown as an `SQLError`, and `request()` throws an
+  `SQLError`; each let hxcpp's raw `String` escape, told no listener, and a
+  statement dispatched no `RESULT` at all. A statement whose connection is
+  not open throws an `IllegalOperationError` where it dereferenced the
+  connection it did not have, and it asks its connection for its state when
+  it runs: it copied the connection when `sqlConnection` was set, so one
+  given its connection before an `openAsync()` had finished held none, and
+  one kept across a `close()` and `open()` held the closed one. A second
+  `close()` does nothing, and a savepoint SQLite refused is not the one a
+  nameless release reaches for next.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened
