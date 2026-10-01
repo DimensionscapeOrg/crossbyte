@@ -14,10 +14,13 @@ class NativeProcessTest extends utest.Test {
 	// not reliably a three-second operation on a busy CI runner.
 	private static inline var TIMEOUT:Float = 15.0;
 
-	// hl and neko with no OS define: their bytecode runs on any OS and their
-	// process API with it, so nothing names one and none is needed.
+	// Every target with processes and threads but the interpreter: cpp, hl,
+	// neko and the jvm, none of which but cpp names an OS when it is built. The
+	// jvm was left out by asking for one, and refused to start a process though
+	// it can. The interpreter's process calls hold every thread while they
+	// wait, so it refuses, and says why.
 	public function testSupportFlagMatchesTarget():Void {
-		#if (nodejs || hl || neko || (sys && (windows || linux || mac || macos)))
+		#if (nodejs || (sys && target.threaded && !eval))
 		Assert.isTrue(NativeProcess.isSupported);
 		#else
 		Assert.isFalse(NativeProcess.isSupported);
@@ -25,18 +28,29 @@ class NativeProcessTest extends utest.Test {
 	}
 
 	public function testStartThrowsWhenUnsupported():Void {
-		#if (hl || neko || (sys && (windows || linux || mac || macos)))
+		#if (sys && target.threaded && !eval)
 		Assert.pass();
 		#else
+		// An IllegalOperationError, which says the target cannot, rather than
+		// the ArgumentError it was, which says the caller passed something
+		// wrong; and on the interpreter, why.
 		var proc = new NativeProcess();
-		Assert.isTrue(throws(function() {
+		var thrown:Dynamic = null;
+		try {
 			proc.start(new NativeProcessStartupInfo("echo"));
-		}));
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+		Assert.isTrue(Std.isOfType(thrown, crossbyte.errors.IllegalOperationError), "start threw " + thrown);
+		#if eval
+		Assert.isTrue(Std.string(thrown).indexOf("interpreter") >= 0, "the refusal did not name the interpreter: " + thrown);
+		#end
+		Assert.isFalse(proc.running);
 		#end
 	}
 
 	public function testStartEmitEventsAndExitCode():Void {
-		#if (hl || neko || (sys && (windows || linux || mac || macos)))
+		#if (sys && target.threaded && !eval)
 		var proc = new NativeProcess();
 		var output:String = "";
 		var exited:Bool = false;
@@ -76,7 +90,7 @@ class NativeProcessTest extends utest.Test {
 		target's `sys.io.Process` has one -- they all have `getPid()`.
 	**/
 	public function testThePidIsTheChilds():Void {
-		#if (hl || neko || (sys && (windows || linux || mac || macos)))
+		#if (sys && target.threaded && !eval)
 		var proc = new NativeProcess();
 		var exited:Bool = false;
 		var exitPid:Int = -1;
@@ -91,9 +105,18 @@ class NativeProcessTest extends utest.Test {
 
 		pumpUntil(() -> exited, TIMEOUT);
 
-		Assert.isTrue(pid > 0, "the running child reported pid " + pid);
 		Assert.isTrue(exited);
 		Assert.equals(pid, exitPid);
+		#if jvm
+		// The one place there is no id to have: Java 8 on Windows keeps the
+		// child's handle and no way to learn its id, as `pid` documents. The
+		// jvm's own getPid() answered -1 everywhere, Linux and Java 9 included.
+		if (System.isWindows && Std.parseFloat(java.lang.System.getProperty("java.specification.version")) < 9) {
+			Assert.equals(-1, pid);
+			return;
+		}
+		#end
+		Assert.isTrue(pid > 0, "the running child reported pid " + pid);
 		#else
 		Assert.pass();
 		#end
@@ -109,7 +132,7 @@ class NativeProcessTest extends utest.Test {
 		5,212 ms between two ticks, for a child quiet for five seconds.
 	**/
 	public function testAQuietChildDoesNotStopTheRuntime():Void {
-		#if (hl || neko || (sys && (windows || linux || mac || macos)))
+		#if (sys && target.threaded && !eval)
 		var proc = new NativeProcess();
 		var exited:Bool = false;
 		proc.addEventListener(NativeProcessEvent.EXIT, _ -> exited = true);
@@ -145,7 +168,7 @@ class NativeProcessTest extends utest.Test {
 	}
 
 	public function testExitEventDispatchesOnOwningRuntimeTick():Void {
-		#if (hl || neko || (sys && (windows || linux || mac || macos)))
+		#if (sys && target.threaded && !eval)
 		var primordial = CrossByte.current();
 		var child = new CrossByte(false, DEFAULT, true);
 		var proc = new NativeProcess();
@@ -178,7 +201,7 @@ class NativeProcessTest extends utest.Test {
 	// `windows` define, and their bytecode runs on whichever OS it is given to.
 	@:noCompletion private static function getDefaultInfo():NativeProcessStartupInfo {
 		if (System.isWindows) {
-			return new NativeProcessStartupInfo("cmd.exe", ["/C echo nativeprocess_smoke"]);
+			return new NativeProcessStartupInfo("cmd.exe", ["/C", "echo", "nativeprocess_smoke"]);
 		}
 		return new NativeProcessStartupInfo("sh", ["-c", "echo nativeprocess_smoke"]);
 	}

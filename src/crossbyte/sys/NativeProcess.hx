@@ -13,16 +13,18 @@ import haxe.io.Eof;
 import haxe.io.Input;
 import haxe.io.Output;
 
-// hl and neko without an OS define. Their bytecode runs unchanged on any OS, so
-// nothing names one when it is built -- and none is needed: their
-// sys.io.Process and threads work wherever the VM does. Asked for one, as cpp
-// is, both refused to start a process anywhere.
-#if nodejs
+// Every target with sys.io.Process and threads but the interpreter: cpp, hl,
+// neko and the jvm. Only cpp names an OS when it is built -- the others'
+// bytecode runs unchanged on any -- and none is needed, since their Process and
+// threads work wherever they run. Asked for an OS, hl and neko refused to start
+// a process anywhere, and the jvm did until this asked for threads instead.
+// The interpreter is left out for the reason `isSupported` gives.
 import crossbyte.errors.IllegalOperationError;
+#if nodejs
 import crossbyte.sys._internal.NodeProcessOutput;
 import js.node.ChildProcess as ChildProcessModule;
 import js.node.child_process.ChildProcess as ChildProcessObject;
-#elseif (hl || neko || (sys && (windows || linux || mac || macos)))
+#elseif (sys && target.threaded && !eval)
 import sys.io.Process;
 import sys.thread.Deque;
 import sys.thread.Thread;
@@ -30,12 +32,33 @@ import sys.thread.Thread;
 
 /** Launches and monitors a native operating-system process. */
 class NativeProcess extends EventDispatcher {
-	public static inline var isSupported:Bool = #if (nodejs || hl || neko || (sys && (windows || linux || mac || macos))) true #else false #end;
+	/**
+		Whether this build can start a process: natively, on the jvm, hl,
+		neko and Node.
+
+		Not on the interpreter (`--interp`). Its process natives -- a read of
+		the child's output, the wait for it to end -- hold every thread while
+		they wait, so a child with nothing to say stopped the whole program
+		until it spoke or ended, and one that waits for input before writing
+		anything could never be given any. `start` throws there, saying so.
+		Not in a browser either, which has no processes; the class is not built
+		for one.
+	**/
+	public static inline var isSupported:Bool = #if (nodejs || (sys && target.threaded && !eval)) true #else false #end;
 
 	public var standardInput(get, never):Output;
 	public var standardOutput(get, never):Input;
 	public var standardError(get, never):Input;
 	public var running(get, never):Bool;
+
+	/**
+		The child's process id while it runs, and on the `EXIT` event; -1 before
+		one has started.
+
+		On the jvm the id needs Java 9 or later, or Linux or macOS: Java 8 on
+		Windows keeps the child's handle and gives no way to learn its id, and
+		there this stays -1.
+	**/
 	public var pid(get, never):Int;
 	public var exitCode(get, never):Int;
 
@@ -45,7 +68,7 @@ class NativeProcess extends EventDispatcher {
 	#if nodejs
 	@:noCompletion private var __process:ChildProcessObject;
 	@:noCompletion private var __standardInput:NodeProcessOutput;
-	#elseif (hl || neko || (sys && (windows || linux || mac || macos)))
+	#elseif (sys && target.threaded && !eval)
 	@:noCompletion private var __process:Process;
 	#else
 	@:noCompletion private var __process:Dynamic;
@@ -83,7 +106,7 @@ class NativeProcess extends EventDispatcher {
 		#if nodejs
 		__startNode(info);
 		#else
-		#if (hl || neko || (sys && (windows || linux || mac || macos)))
+		#if (sys && target.threaded && !eval)
 		try {
 			var args = info.arguments == null ? [] : info.arguments;
 			__process = new Process(info.executable, args, false);
@@ -147,7 +170,7 @@ class NativeProcess extends EventDispatcher {
 
 	#if !nodejs
 	@:noCompletion private function __execute(info:Dynamic):Void {
-		#if (hl || neko || (sys && (windows || linux || mac || macos)))
+		#if (sys && target.threaded && !eval)
 		try {
 			var readerCompletion = new Deque<String>();
 			Thread.create(() -> {
@@ -159,10 +182,16 @@ class NativeProcess extends EventDispatcher {
 				readerCompletion.add(STREAM_STDERR);
 			});
 
-			__exitCode = __waitForExit();
+			// The output to its end first, then the exit code. The jvm's
+			// exitCode() reads whatever output is left into a buffer of its
+			// own before it waits, racing the readers above for it: what it
+			// took was never delivered, and the child's output went missing.
+			// Elsewhere the order changes nothing, since both had to finish
+			// before the completion went out.
+			readerCompletion.pop(true);
+			readerCompletion.pop(true);
 
-			readerCompletion.pop(true);
-			readerCompletion.pop(true);
+			__exitCode = __waitForExit();
 
 			__worker.sendComplete({exitCode: __exitCode, pid: __pid});
 
@@ -291,7 +320,11 @@ class NativeProcess extends EventDispatcher {
 	@:noCompletion private function __resolvePid():Int {
 		try {
 			if (__process != null) {
+				#if (jvm && !macro)
+				var pid:Null<Int> = __jvmPid(@:privateAccess __process.proc);
+				#else
 				var pid:Null<Int> = __process.getPid();
+				#end
 				if (pid != null && pid > 0) {
 					return pid;
 				}
@@ -300,6 +333,32 @@ class NativeProcess extends EventDispatcher {
 
 		return -1;
 	}
+
+	#if (jvm && !macro)
+	/**
+		The child's id on the jvm. Its `sys.io.Process.getPid()` looks for a
+		`pid` field, which no JDK's `Process` has, and answers -1. Java 9 added
+		a `pid()` method; before it only the POSIX implementation kept the id,
+		in a private field. Java 8 on Windows keeps a handle and no id at all.
+	**/
+	@:noCompletion private static function __jvmPid(process:java.lang.Process):Int {
+		try {
+			// Looked up on Process, the public class, rather than on the
+			// child's own class, which no code outside java.base may call into.
+			var method = java.lang.Class.forName("java.lang.Process").getMethod("pid");
+			var id:java.lang.Long = cast method.invoke(process);
+			return id.intValue();
+		} catch (_:Dynamic) {}
+
+		try {
+			var field = java.Lib.getNativeType(process).getDeclaredField("pid");
+			field.setAccessible(true);
+			return field.getInt(process);
+		} catch (_:Dynamic) {}
+
+		return -1;
+	}
+	#end
 	#end
 
 	#if !nodejs
@@ -467,7 +526,14 @@ class NativeProcess extends EventDispatcher {
 
 	@:noCompletion private inline function __requireSupported():Void {
 		if (!isSupported) {
-			throw new ArgumentError("NativeProcess is not supported on this target.");
+			// An IllegalOperationError naming the target, as everything that
+			// cannot work on one throws; this was an ArgumentError, which says
+			// the caller passed something wrong.
+			#if eval
+			throw new IllegalOperationError("NativeProcess cannot start a process on the interpreter (--interp): its process calls hold every thread while they wait on the child. Build for a native target, the jvm, hl, neko or Node.");
+			#else
+			throw new IllegalOperationError("NativeProcess cannot start a process on this target.");
+			#end
 		}
 	}
 

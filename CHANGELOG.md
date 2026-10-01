@@ -1956,6 +1956,17 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `NativeProcess` starts a child process on the jvm. Its support check
+  asked for an OS define, which only native builds have, so the jvm
+  refused though it can; it asks for threads now. The jvm's `exitCode()`
+  buffers away whatever output is left before it waits, so the output is
+  read to its end first, everywhere, and the child's id is looked up as
+  the jvm's own `getPid()`, which answered -1, did not (Java 8 on Windows
+  keeps none, as `pid` says). The interpreter still cannot -- its process
+  calls hold every thread while they wait, so a quiet child stopped the
+  program -- and `start` says so with an `IllegalOperationError` naming
+  it, where it threw an `ArgumentError`. `isSupported` and the README say
+  where it runs.
 - `EventDispatcher.addEventListener` documents `priority` as what it is:
   higher runs first, and equal priorities run in the order added. It called
   it an insertion index, clamped to the list's length, with lower values
