@@ -1217,6 +1217,139 @@ class FileTest extends utest.Test {
 		Assert.isNull(command("haiku"));
 	}
 
+	public function testCancelWithNothingPendingDoesNothing():Void {
+		// It cancelled a worker without asking whether there was one: with
+		// nothing pending, a null access.
+		var dir = File.createTempDirectory();
+		var cancels:Int = 0;
+		dir.addEventListener(Event.CANCEL, _ -> cancels++);
+
+		try {
+			dir.cancel();
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		Assert.equals(0, cancels);
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	#if target.threaded
+	public function testACancelledCopyStopsAndLeavesNoPartialDestination():Void {
+		// It went on: a 64 MB copy finished after it had been cancelled. The
+		// copy is slowed here, a block at a time, so the cancel lands part way.
+		var root = File.createTempDirectory();
+		var source = root.resolvePath("source.bin");
+		var copy = root.resolvePath("copy.bin");
+		HaxeFile.saveBytes(source.nativePath, Bytes.alloc(4 * 1024 * 1024));
+		var events:Array<String> = [];
+		var blocks:Int = 0;
+
+		var original = @:privateAccess File.__copiedBlock;
+		@:privateAccess File.__copiedBlock = (_, _) -> {
+			blocks++;
+			crossbyte.sys.System.sleep(0.05);
+		};
+
+		source.addEventListener(Event.COMPLETE, _ -> events.push("complete"));
+		source.addEventListener(Event.CANCEL, _ -> events.push("cancel"));
+		source.addEventListener(IOErrorEvent.IO_ERROR, _ -> events.push("ioError"));
+		source.copyToAsync(copy, true);
+
+		var deadline:Float = haxe.Timer.stamp() + 10;
+		while (blocks == 0 && haxe.Timer.stamp() < deadline) {
+			crossbyte.sys.System.sleep(0.001);
+		}
+
+		source.cancel();
+		__pumpFor(0.5);
+		@:privateAccess File.__copiedBlock = original;
+
+		Assert.isTrue(blocks > 0 && blocks < 4, 'cancelled after $blocks blocks of 4');
+		Assert.same(["cancel"], events);
+		Assert.isFalse(copy.exists, "the partial copy is still there");
+		Assert.equals(4 * 1024 * 1024, source.size);
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testACancelledMoveAcrossVolumesPutsEverythingBack():Void {
+		var root = File.createTempDirectory();
+		var source = root.resolvePath("source");
+		var target = root.resolvePath("target");
+		source.createDirectory();
+		HaxeFile.saveBytes(source.resolvePath("big.bin").nativePath, Bytes.alloc(4 * 1024 * 1024));
+		target.createDirectory();
+		HaxeFile.saveContent(target.resolvePath("old.txt").nativePath, "old");
+		var blocks:Int = 0;
+		var events:Array<String> = [];
+
+		var sameVolume = @:privateAccess File.__sameVolume;
+		var copiedBlock = @:privateAccess File.__copiedBlock;
+		@:privateAccess File.__sameVolume = (_, _, _) -> false;
+		@:privateAccess File.__copiedBlock = (_, _) -> {
+			blocks++;
+			crossbyte.sys.System.sleep(0.05);
+		};
+
+		source.addEventListener(Event.COMPLETE, _ -> events.push("complete"));
+		source.addEventListener(Event.CANCEL, _ -> events.push("cancel"));
+		source.moveToAsync(target, true);
+
+		var deadline:Float = haxe.Timer.stamp() + 10;
+		while (blocks == 0 && haxe.Timer.stamp() < deadline) {
+			crossbyte.sys.System.sleep(0.001);
+		}
+
+		source.cancel();
+		__pumpFor(0.5);
+		@:privateAccess File.__sameVolume = sameVolume;
+		@:privateAccess File.__copiedBlock = copiedBlock;
+
+		Assert.same(["cancel"], events);
+		Assert.same(["big.bin"], sys.FileSystem.readDirectory(source.nativePath));
+		Assert.same(["old.txt"], sys.FileSystem.readDirectory(target.nativePath));
+		var left = sys.FileSystem.readDirectory(root.nativePath);
+		left.sort(Reflect.compare);
+		Assert.same(["source", "target"], left);
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+	#end
+
+	public function testTwoOperationsAtOnceBothReport():Void {
+		// One worker field served every operation, so the first to finish
+		// disposed of the other's worker, whose result was then never
+		// heard, or, the other way round, found the field empty.
+		var root = File.createTempDirectory();
+		var file = root.resolvePath("data.txt");
+		HaxeFile.saveContent(file.nativePath, "payload");
+		var completes:Int = 0;
+		var errors:Int = 0;
+
+		file.addEventListener(Event.COMPLETE, _ -> completes++);
+		file.addEventListener(IOErrorEvent.IO_ERROR, _ -> errors++);
+		file.loadAsync();
+		file.copyToAsync(root.resolvePath("copy.txt"), true);
+		pumpUntil(() -> completes + errors >= 2, 5.0);
+
+		Assert.equals(2, completes);
+		Assert.equals(0, errors);
+		Assert.equals("payload", Require.notNull(file.data).toString());
+		Assert.equals("payload", HaxeFile.getContent(root.resolvePath("copy.txt").nativePath));
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	private static function __pumpFor(seconds:Float):Void {
+		var runtime = CrossByte.current();
+		var until:Float = haxe.Timer.stamp() + seconds;
+		while (haxe.Timer.stamp() < until) {
+			runtime.pump(1 / 60, 0);
+			crossbyte.sys.System.sleep(0.001);
+		}
+	}
+
 	/** Runs a command with its output kept out of the test report. **/
 	private static function __quietly(command:String, args:Array<String>):Int {
 		try {
