@@ -2,9 +2,11 @@ package crossbyte.utils;
 
 /**
  * Defines the available checksum algorithms for verifying data integrity.
- * 
+ *
  * A checksum algorithm is used to detect errors in transmitted or stored data.
  * The choice of algorithm depends on factors like speed, collision resistance, and security.
+ *
+ * `Checksum.compute` and `Checksum.hex` compute each one.
  */
 enum ChecksumAlgorithm {
 	/**
