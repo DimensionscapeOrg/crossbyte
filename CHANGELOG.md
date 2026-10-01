@@ -1944,6 +1944,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The PostgreSQL docs say what the driver is: libpq natively, PDO on php,
+  nothing elsewhere -- the class said "backed by PHP PDO", and the README
+  listed PostgreSQL with no target at all -- and that
+  `PostgresConnection.lastInsertRowID` reads 0 on PostgreSQL 12 and later,
+  which assign no OIDs. MongoDB's `batchSize` sizes the first batch too,
+  as it is sent with the `find`; the doc said it applied after the first.
 - Off cpp, a MySQL insert id past 2^31 reads back whole in
   `SQLResult.lastInsertRowID`, and `MySQLConnection.lastInsertRowID`
   holds at 2147483647 as it does natively. Haxe's drivers keep it in an

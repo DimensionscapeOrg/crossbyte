@@ -25,7 +25,14 @@ import php.Global;
 import php.Syntax;
 #end
 
-/** PostgreSQL connection wrapper currently backed by PHP PDO on supported targets. */
+/**
+	A connection to PostgreSQL. Natively (cpp) it drives libpq, loaded when
+	the connection opens -- from `PostgresConfig.libraryPath` or
+	`libraryPaths`, or where the system keeps it -- with bound parameters
+	(`requestParams`), `cancel()` and the timeouts `PostgresConfig` sets. On
+	php it runs on PDO. No other target has a driver: `isSupported` is
+	`false` there, and `open()` throws.
+**/
 class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransactionalConnection {
 	public static final isSupported:Bool = #if php __checkSupport() #elseif cpp true #else false #end;
 
@@ -40,7 +47,15 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		borrower left open.
 	**/
 	public var inTransaction(get, null):Bool;
+	/**
+		The OID of the row the last single-row `INSERT` made, as libpq's
+		`PQoidValue` reports it -- which PostgreSQL 12 and later never
+		assign, since tables there have no OIDs, so it reads 0. For the key
+		of a row inserted, ask the statement for it: `INSERT ... RETURNING
+		id`.
+	**/
 	public var lastInsertRowID(get, null):Int;
+
 	public var affectedRows(get, null):Int;
 	public var serverVersion(get, null):String;
 
