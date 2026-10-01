@@ -1955,6 +1955,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The `PeerConnection` class example advertises an address: it binds the
+  wildcard, which names no interface, and now asks `LocalAddress` for the
+  default route and adds it, where it advertised nothing a peer could
+  check. The class documentation said such a peer ended up advertising
+  loopback; it advertises no address at all.
 - With `TurnClient.useChannels` on, the first datagram `sendTo` sends to a
   peer asks for a channel, and once the relay binds it the rest go as
   ChannelData, as the class documentation said they would "on its own".
