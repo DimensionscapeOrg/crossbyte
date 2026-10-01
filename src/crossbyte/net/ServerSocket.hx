@@ -579,11 +579,26 @@ class ServerSocket extends EventDispatcher {
 			}
 
 			if (__tlsSni.length > 0) {
-				var sni = __tlsSni;
+				// Each name's context made once, here, with its key's
+				// passphrase. It was made at every handshake for the name,
+				// without the passphrase: an encrypted key, which the default
+				// certificate's could be, failed every handshake that asked
+				// for its name, and an unencrypted one was parsed again for
+				// each. A key or certificate Node cannot read now throws from
+				// listen(), as the default certificate's does.
+				var sni:Array<{match:String->Bool, context:Dynamic}> = [];
+				for (entry in __tlsSni) {
+					var material:Dynamic = {key: entry.key.__pem, cert: entry.certificate.__pem};
+					if (entry.key.__passphrase != null) {
+						material.passphrase = entry.key.__passphrase;
+					}
+					sni.push({match: entry.match, context: Tls.createSecureContext(material)});
+				}
 				options.SNICallback = function(servername:String, callback:Dynamic):Void {
 					for (entry in sni) {
-						if (entry.match(servername)) {
-							callback(null, Tls.createSecureContext({key: entry.key.__pem, cert: entry.certificate.__pem}));
+						var matched:Bool = try entry.match(servername) catch (_:Dynamic) false;
+						if (matched) {
+							callback(null, entry.context);
 							return;
 						}
 					}

@@ -1629,16 +1629,16 @@ class JvmSslCertificate {
 }
 
 /**
-	A private key, read from an unencrypted PKCS#8 PEM.
+	A private key, read from PEM in whichever form it came: see `readPEM`.
 
-	PKCS#8, `BEGIN PRIVATE KEY`, is what `openssl req -newkey ... -nodes`
-	writes and what `PKCS8EncodedKeySpec` reads, so the common case needs no
-	dependency. PKCS#1 (`BEGIN RSA PRIVATE KEY`) and encrypted keys are refused
-	by name rather than misparsed: the JDK cannot read either without a
-	conversion step, and a key that silently fails to load would surface much
-	later as a handshake that never completes.
+	PKCS#8, `BEGIN PRIVATE KEY`, is what `PKCS8EncodedKeySpec` reads, so
+	the other forms are brought to it with the JDK alone: decrypted with its
+	ciphers, and rewritten in PKCS#8's DER. A form that cannot be read is
+	refused by name rather than misparsed: a key that silently fails to load
+	would surface much later as a handshake that never completes.
 
-	The algorithm is not stated in the PEM, so each candidate is tried in turn.
+	The algorithm is not stated in a PKCS#8 PEM's armour, so each candidate
+	is tried in turn there.
 **/
 class JvmSslKey {
 	private static var __ALGORITHMS:Array<String> = ["RSA", "EC", "DSA", "EdDSA"];
@@ -1661,6 +1661,21 @@ class JvmSslKey {
 		return readPEM(sys.io.File.getContent(path), isPublic, password);
 	}
 
+	/**
+		Reads a private key in any of the forms a key file comes in, as
+		mbedTLS and Node do: PKCS#8 (`BEGIN PRIVATE KEY`), PKCS#8 encrypted
+		(`BEGIN ENCRYPTED PRIVATE KEY`), and the older PKCS#1 (`BEGIN RSA
+		PRIVATE KEY`) and SEC1 (`BEGIN EC PRIVATE KEY`), plain or encrypted
+		by OpenSSL (`Proc-Type: 4,ENCRYPTED`). The JDK reads only the first, so
+		the older two are rewritten as PKCS#8, the same key, with its
+		algorithm stated, and an encrypted one is decrypted with `password`
+		first. A `password` given for a key that is not encrypted is not
+		needed, and not used.
+
+		All of them used to be refused but the first, with an error saying to
+		convert the file: a key that loaded natively and on Node did not load
+		on the jvm, and no password could be given here at all.
+	**/
 	public static function readPEM(pem:String, isPublic:Bool = false, ?password:String):JvmSslKey {
 		if (pem == null || pem == "") {
 			throw "A key needs PEM text to read from.";
@@ -1670,31 +1685,44 @@ class JvmSslKey {
 			throw "Public keys are not supported by the jvm TLS backend.";
 		}
 
-		if (password != null && password != "") {
-			throw "Encrypted private keys are not supported by the jvm TLS backend yet. "
-				+ "Convert the key to an unencrypted PKCS#8 with: "
-				+ "openssl pkcs8 -topk8 -nocrypt -in key.pem -out key-pkcs8.pem";
+		// By its armour. A file can hold more than the key, an EC key's
+		// parameters before it, a certificate beside it, so the key's own
+		// block is the one read.
+		if (pem.indexOf("-----BEGIN ENCRYPTED PRIVATE KEY-----") >= 0) {
+			var form:String = "an encrypted PKCS#8 key (BEGIN ENCRYPTED PRIVATE KEY)";
+			return __fromPkcs8(__decryptPkcs8(__decode(__body(pem, "ENCRYPTED PRIVATE KEY")), __required(password, form)), null);
+		}
+		if (pem.indexOf("-----BEGIN PRIVATE KEY-----") >= 0) {
+			return __fromPkcs8(__decode(__body(pem, "PRIVATE KEY")), null);
+		}
+		if (pem.indexOf("-----BEGIN RSA PRIVATE KEY-----") >= 0) {
+			var pkcs1:haxe.io.Bytes = __traditional(pem, "RSA PRIVATE KEY", "a PKCS#1 RSA key (BEGIN RSA PRIVATE KEY)", password);
+			return __fromPkcs8(__pkcs8(haxe.io.Bytes.ofHex(RSA_ALGORITHM), pkcs1), "RSA");
+		}
+		if (pem.indexOf("-----BEGIN EC PRIVATE KEY-----") >= 0) {
+			var sec1:haxe.io.Bytes = __traditional(pem, "EC PRIVATE KEY", "a SEC1 EC key (BEGIN EC PRIVATE KEY)", password);
+			return __fromPkcs8(__ecPkcs8(sec1), "EC");
 		}
 
-		if (pem.indexOf("BEGIN RSA PRIVATE KEY") >= 0 || pem.indexOf("BEGIN EC PRIVATE KEY") >= 0) {
-			throw "PKCS#1 keys are not supported by the jvm TLS backend. "
-				+ "Convert the key to PKCS#8 with: "
-				+ "openssl pkcs8 -topk8 -nocrypt -in key.pem -out key-pkcs8.pem";
-		}
+		throw "The text holds no private key: there is no BEGIN PRIVATE KEY, BEGIN ENCRYPTED PRIVATE KEY, BEGIN RSA PRIVATE KEY or "
+			+ "BEGIN EC PRIVATE KEY block in it.";
+	}
 
-		var body = __body(pem, "PRIVATE KEY");
-		var der = try {
-			Base64.getMimeDecoder().decode(body);
-		} catch (e:Dynamic) {
-			throw "The key is not valid base64: " + Std.string(e);
-		}
+	/** rsaEncryption's AlgorithmIdentifier, with its NULL parameters (RFC 8017 A.1). **/
+	private static inline var RSA_ALGORITHM:String = "300d06092a864886f70d0101010500";
 
-		var spec = new PKCS8EncodedKeySpec(der);
+	/** id-ecPublicKey's object identifier, 1.2.840.10045.2.1, as DER (RFC 5480 2.1.1). **/
+	private static inline var EC_PUBLIC_KEY:String = "06072a8648ce3d0201";
+
+	/** A PKCS#8 key: each algorithm in turn, or the one its form says. **/
+	private static function __fromPkcs8(der:haxe.io.Bytes, algorithm:Null<String>):JvmSslKey {
+		var spec = new PKCS8EncodedKeySpec(der.getData());
 		var failure:String = null;
+		var candidates:Array<String> = algorithm != null ? [algorithm] : __ALGORITHMS;
 
-		for (algorithm in __ALGORITHMS) {
+		for (candidate in candidates) {
 			try {
-				return new JvmSslKey(KeyFactory.getInstance(algorithm).generatePrivate(spec));
+				return new JvmSslKey(KeyFactory.getInstance(candidate).generatePrivate(spec));
 			} catch (e:Dynamic) {
 				if (failure == null) {
 					failure = Std.string(e);
@@ -1702,7 +1730,266 @@ class JvmSslKey {
 			}
 		}
 
-		throw "The key could not be read as any of " + __ALGORITHMS.join(", ") + ": " + failure;
+		throw "The key could not be read as any of " + candidates.join(", ") + ": " + failure;
+	}
+
+	private static function __required(password:Null<String>, form:String):String {
+		if (password == null || password == "") {
+			throw "The key is " + form + ", and no password was given to decrypt it with.";
+		}
+		return password;
+	}
+
+	/**
+		PKCS#8's own encryption (RFC 8018), which the JDK decrypts. PBES2,
+		what `openssl pkcs8 -topk8` and `openssl req` write, names its key
+		derivation and cipher inside its parameters, and the JDK spells the
+		pair as one algorithm there, `PBEWithHmacSHA256AndAES_256`; the older
+		schemes are named by the identifier itself.
+	**/
+	private static function __decryptPkcs8(der:haxe.io.Bytes, password:String):haxe.io.Bytes {
+		var info:EncryptedPrivateKeyInfo = try {
+			new EncryptedPrivateKeyInfo(der.getData());
+		} catch (e:Dynamic) {
+			throw "The encrypted key could not be read: " + Std.string(e);
+		}
+
+		var parameters:AlgorithmParameters = info.getAlgParameters();
+		var name:String = info.getAlgName();
+		var algorithm:String = (name == "PBES2" || name == "1.2.840.113549.1.5.13") && parameters != null ? parameters.toString() : name;
+
+		var cipher:Cipher = try {
+			var secret = SecretKeyFactory.getInstance(algorithm).generateSecret(new PBEKeySpec(__chars(password)));
+			var cipher = Cipher.getInstance(algorithm);
+			cipher.init(Cipher.DECRYPT_MODE, secret, parameters);
+			cipher;
+		} catch (e:Dynamic) {
+			throw "The key is encrypted with " + algorithm + ", which this jvm cannot decrypt: " + Std.string(e);
+		}
+
+		return try {
+			haxe.io.Bytes.ofData(info.getKeySpec(cipher).getEncoded());
+		} catch (e:Dynamic) {
+			throw "The key could not be decrypted, is the password right? " + Std.string(e);
+		}
+	}
+
+	/**
+		A PKCS#1 or SEC1 key: its DER, decrypted first when OpenSSL encrypted
+		it (RFC 1421's headers, `Proc-Type: 4,ENCRYPTED` and `DEK-Info`, ahead
+		of the base64).
+	**/
+	private static function __traditional(pem:String, label:String, form:String, password:Null<String>):haxe.io.Bytes {
+		var body:String = __body(pem, label);
+		var dekInfo:Null<String> = null;
+		var encrypted:Bool = false;
+		var data:StringBuf = new StringBuf();
+
+		for (raw in body.split("\n")) {
+			var line:String = StringTools.trim(raw);
+			var colon:Int = line.indexOf(":");
+			if (colon > 0) {
+				var header:String = line.substr(0, colon);
+				var value:String = StringTools.trim(line.substr(colon + 1));
+				if (header == "Proc-Type") {
+					encrypted = value.indexOf("ENCRYPTED") >= 0;
+				} else if (header == "DEK-Info") {
+					dekInfo = value;
+				}
+			} else {
+				data.add(line);
+			}
+		}
+
+		var der:haxe.io.Bytes = __decode(data.toString());
+		if (!encrypted) {
+			return der;
+		}
+		if (dekInfo == null) {
+			throw "The key is " + form + " marked as encrypted, with no DEK-Info saying how.";
+		}
+		return __decryptTraditional(der, dekInfo, __required(password, form + ", encrypted"), form);
+	}
+
+	/**
+		OpenSSL's own encryption of a PEM key: a block cipher in CBC mode,
+		keyed from the password by EVP_BytesToKey, MD5, one round, salted
+		with the first eight bytes of the IV `DEK-Info` names.
+	**/
+	private static function __decryptTraditional(data:haxe.io.Bytes, dekInfo:String, password:String, form:String):haxe.io.Bytes {
+		var comma:Int = dekInfo.indexOf(",");
+		var name:String = StringTools.trim(comma < 0 ? dekInfo : dekInfo.substr(0, comma)).toUpperCase();
+		var iv:haxe.io.Bytes = try {
+			haxe.io.Bytes.ofHex(StringTools.trim(dekInfo.substr(comma + 1)));
+		} catch (_:Dynamic) {
+			throw "The key is " + form + " whose DEK-Info carries no IV: " + dekInfo;
+		}
+
+		var transformation:String;
+		var algorithm:String;
+		var keyLength:Int;
+		switch (name) {
+			case "AES-128-CBC":
+				transformation = "AES/CBC/PKCS5Padding";
+				algorithm = "AES";
+				keyLength = 16;
+			case "AES-192-CBC":
+				transformation = "AES/CBC/PKCS5Padding";
+				algorithm = "AES";
+				keyLength = 24;
+			case "AES-256-CBC":
+				transformation = "AES/CBC/PKCS5Padding";
+				algorithm = "AES";
+				keyLength = 32;
+			case "DES-EDE3-CBC":
+				transformation = "DESede/CBC/PKCS5Padding";
+				algorithm = "DESede";
+				keyLength = 24;
+			case "DES-CBC":
+				transformation = "DES/CBC/PKCS5Padding";
+				algorithm = "DES";
+				keyLength = 8;
+			default:
+				throw "The key is " + form + " encrypted with " + name + ", which the jvm TLS backend cannot decrypt. "
+					+ "Re-encrypt it with AES: openssl pkcs8 -topk8 -v2 aes-256-cbc -in key.pem -out key-pkcs8.pem";
+		}
+		if (iv.length < 8) {
+			throw "The key is " + form + " whose DEK-Info IV is too short: " + dekInfo;
+		}
+
+		var secret:haxe.io.Bytes = __bytesToKey(haxe.io.Bytes.ofString(password), iv.sub(0, 8), keyLength);
+		return try {
+			var cipher = Cipher.getInstance(transformation);
+			cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(secret.getData(), algorithm), new IvParameterSpec(iv.getData()));
+			haxe.io.Bytes.ofData(cipher.doFinal(data.getData()));
+		} catch (e:Dynamic) {
+			throw "The key could not be decrypted, is the password right? " + Std.string(e);
+		}
+	}
+
+	/** OpenSSL's EVP_BytesToKey with MD5 and one round, as its PEM encryption uses it. **/
+	private static function __bytesToKey(password:haxe.io.Bytes, salt:haxe.io.Bytes, length:Int):haxe.io.Bytes {
+		var key = new haxe.io.BytesBuffer();
+		var previous:Null<haxe.io.Bytes> = null;
+		while (key.length < length) {
+			var round = new haxe.io.BytesBuffer();
+			if (previous != null) {
+				round.add(previous);
+			}
+			round.add(password);
+			round.add(salt);
+			previous = haxe.crypto.Md5.make(round.getBytes());
+			key.add(previous);
+		}
+		return key.getBytes().sub(0, length);
+	}
+
+	/**
+		A SEC1 key as PKCS#8. The key names its curve itself, in its `[0]`
+		parameters (RFC 5915 3), and that moves to the AlgorithmIdentifier,
+		where PKCS#8 says it; the rest stays as it was. Written as OpenSSL
+		writes the same key as PKCS#8, so it is the same key, byte for byte,
+		whichever way the file had it.
+	**/
+	private static function __ecPkcs8(sec1:haxe.io.Bytes):haxe.io.Bytes {
+		var key = __element(sec1, 0);
+		var curve:Null<haxe.io.Bytes> = null;
+		var rest = new haxe.io.BytesBuffer();
+		var at:Int = key.start;
+		while (at < key.end) {
+			var field = __element(sec1, at);
+			if (field.tag == 0xA0) {
+				curve = sec1.sub(field.start, field.end - field.start);
+			} else {
+				rest.add(sec1.sub(at, field.end - at));
+			}
+			at = field.end;
+		}
+		if (curve == null) {
+			throw "The key is a SEC1 EC key (BEGIN EC PRIVATE KEY) that does not name its curve, and the jvm cannot read one without. "
+				+ "Convert it to PKCS#8 with: openssl pkcs8 -topk8 -nocrypt -in key.pem -out key-pkcs8.pem";
+		}
+
+		var algorithm = new haxe.io.BytesBuffer();
+		algorithm.add(haxe.io.Bytes.ofHex(EC_PUBLIC_KEY));
+		algorithm.add(curve);
+		return __pkcs8(__tlv(0x30, algorithm.getBytes()), __tlv(0x30, rest.getBytes()));
+	}
+
+	/** A PKCS#8 PrivateKeyInfo (RFC 5208 5): version 0, the algorithm, and the key. **/
+	private static function __pkcs8(algorithm:haxe.io.Bytes, key:haxe.io.Bytes):haxe.io.Bytes {
+		var info = new haxe.io.BytesBuffer();
+		info.add(haxe.io.Bytes.ofHex("020100"));
+		info.add(algorithm);
+		info.add(__tlv(0x04, key));
+		return __tlv(0x30, info.getBytes());
+	}
+
+	/** One DER element: its tag, and where its contents begin and end. **/
+	private static function __element(der:haxe.io.Bytes, at:Int):{tag:Int, start:Int, end:Int} {
+		if (at + 2 > der.length) {
+			throw "The key's DER ends inside an element.";
+		}
+		var tag:Int = der.get(at);
+		var first:Int = der.get(at + 1);
+		var start:Int = at + 2;
+		var length:Int = first;
+		if (first >= 0x80) {
+			var count:Int = first & 0x7F;
+			if (count == 0 || count > 3 || start + count > der.length) {
+				throw "The key's DER has a length it cannot hold.";
+			}
+			length = 0;
+			for (i in 0...count) {
+				length = (length << 8) | der.get(start + i);
+			}
+			start += count;
+		}
+		if (start + length > der.length) {
+			throw "The key's DER ends inside an element.";
+		}
+		return {tag: tag, start: start, end: start + length};
+	}
+
+	/** A DER element of `tag` holding `content`. **/
+	private static function __tlv(tag:Int, content:haxe.io.Bytes):haxe.io.Bytes {
+		var out = new haxe.io.BytesBuffer();
+		var length:Int = content.length;
+		out.addByte(tag);
+		if (length < 0x80) {
+			out.addByte(length);
+		} else if (length < 0x100) {
+			out.addByte(0x81);
+			out.addByte(length);
+		} else if (length < 0x10000) {
+			out.addByte(0x82);
+			out.addByte(length >> 8);
+			out.addByte(length & 0xFF);
+		} else {
+			out.addByte(0x83);
+			out.addByte(length >> 16);
+			out.addByte((length >> 8) & 0xFF);
+			out.addByte(length & 0xFF);
+		}
+		out.add(content);
+		return out.getBytes();
+	}
+
+	private static function __chars(text:String):java.NativeArray<java.types.Char16> {
+		var chars = new java.NativeArray<java.types.Char16>(text.length);
+		for (i in 0...text.length) {
+			var code:Int = StringTools.fastCodeAt(text, i);
+			chars[i] = cast code;
+		}
+		return chars;
+	}
+
+	private static function __decode(base64:String):haxe.io.Bytes {
+		return try {
+			haxe.io.Bytes.ofData(Base64.getMimeDecoder().decode(base64));
+		} catch (e:Dynamic) {
+			throw "The key is not valid base64: " + Std.string(e);
+		}
 	}
 
 	private static function __body(pem:String, label:String):String {

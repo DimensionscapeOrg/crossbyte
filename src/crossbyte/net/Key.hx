@@ -70,6 +70,13 @@ final class Key {
 	/**
 	 * Reads a PEM private key from disk.
 	 *
+	 * Every target takes every form a key file comes in: PKCS#8 (`BEGIN
+	 * PRIVATE KEY`), PKCS#8 encrypted (`BEGIN ENCRYPTED PRIVATE KEY`), and
+	 * the older PKCS#1 (`BEGIN RSA PRIVATE KEY`) and SEC1 (`BEGIN EC PRIVATE
+	 * KEY`), plain or encrypted by OpenSSL. On Node the key is read, and an
+	 * encrypted one decrypted, when a server or client first uses it, so a
+	 * wrong password is reported there rather than here.
+	 *
 	 * @param path Path to the key file.
 	 * @param password The passphrase, for a key that is encrypted. Omit for
 	 *        one that is not.
@@ -87,8 +94,11 @@ final class Key {
 		// the passphrase travels with it rather than being applied here.
 		key.__pem = File.getContent(path);
 		key.__passphrase = password;
-		#else
+		#elseif (java || jvm)
 		key.__native = NativeKey.loadFile(path, false, password);
+		#else
+		var decrypted:Null<String> = password == null ? null : __decryptForMbedtls(sys.io.File.getContent(path), password);
+		key.__native = decrypted != null ? NativeKey.readPEM(decrypted, false, null) : NativeKey.loadFile(path, false, password);
 		#end
 
 		return key;
@@ -98,6 +108,8 @@ final class Key {
 	 * Takes a PEM private key that is already in hand rather than one on disk,
 	 * which is how a key arrives from a secret manager, and is the reason
 	 * not to force every deployment to write one to a file first.
+	 *
+	 * It takes the forms `fromFile` does.
 	 *
 	 * @param pem The private key in PEM form.
 	 * @param password The passphrase, for a key that is encrypted.
@@ -113,11 +125,51 @@ final class Key {
 		#if nodejs
 		key.__pem = pem;
 		key.__passphrase = password;
-		#else
+		#elseif (java || jvm)
 		key.__native = NativeKey.readPEM(pem, false, password);
+		#else
+		var decrypted:Null<String> = password == null ? null : __decryptForMbedtls(pem, password);
+		if (decrypted != null) {
+			key.__native = NativeKey.readPEM(decrypted, false, null);
+		} else {
+			#if eval
+			key.__native = __evalReadPem(pem, password);
+			#else
+			key.__native = NativeKey.readPEM(pem, false, password);
+			#end
+		}
 		#end
 
 		return key;
 	}
+
+	#if !(nodejs || java || jvm)
+	/**
+		An encrypted PKCS#8 key the way OpenSSL encrypts one, PBES2 with
+		AES, decrypted, since the mbedTLS these targets carry decrypts
+		PBES2 with DES alone; null for any other key, which mbedTLS reads
+		itself. See `EncryptedKey`.
+	**/
+	private static function __decryptForMbedtls(pem:String, password:String):Null<String> {
+		return crossbyte._internal.socket.EncryptedKey.decryptPem(pem, password);
+	}
+	#end
+
+	#if eval
+	/**
+		eval's own `readPEM` hands mbedTLS no password whatever it is given,
+		its `loadFile` passes one, its `readPEM` passes `null`, so an
+		encrypted key could not be read from text there at all, and the
+		error blamed the password. This is that call with the password in it.
+	**/
+	private static function __evalReadPem(pem:String, password:Null<String>):NativeKey {
+		var native:NativeKey = @:privateAccess new NativeKey();
+		var code:Int = @:privateAccess native.native.parse_key(haxe.io.Bytes.ofString(pem), password, sys.ssl.Mbedtls.getDefaultCtrDrbg());
+		if (code != 0) {
+			throw mbedtls.Error.strerror(code);
+		}
+		return native;
+	}
+	#end
 }
 #end
