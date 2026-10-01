@@ -1932,6 +1932,34 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An HTTP/2 request is held to `requestTimeout` from its own HEADERS. Every
+  frame read or written set the connection's one clock back, so a client
+  sending a byte of body every 0.4 s held a request open under a
+  `requestTimeout` of one second for as long as it liked, and was answered
+  200, where HTTP/1.1 answered 408 at 1.05 s. A late request is answered
+  `408` on its stream, which is then reset, and the connection carries its
+  other requests on; it used to be the whole connection that went. And an
+  HTTP/2 connection is idle, for `keepAliveTimeout`, while it has no stream
+  open: PINGs, SETTINGS and WINDOW_UPDATEs counted as activity, so a client
+  sending only PINGs held a connection for good.
+- `keepAliveMaxRequests` and `keepAlive = false` hold for HTTP/2, which took
+  no notice of either. The stream that reaches the limit, the first, with
+  keep-alive off, is the last the connection takes: a GOAWAY naming it
+  goes out as it opens, a stream opened after it is refused with
+  `REFUSED_STREAM`, which tells the client it is safe to send elsewhere, and
+  the connection closes once the streams it took have been answered.
+- An HTTP/2 request is weighed when its headers arrive, as an HTTP/1.1 one
+  is at the end of its header block, rather than once the whole body has.
+  A `content-length` past `maxRequestBodySize` is answered `413` before a
+  byte of the body is sent, one was refused only once that much had
+  arrived, the rate limiter and the content codings are asked then, and
+  `onExpectContinue`, which was never asked over HTTP/2, is asked of a
+  request carrying `expect: 100-continue`: a refusal answers its stream and
+  resets it, and going ahead sends an interim `100`.
+- An HTTP/2 request's duration, in the server's `_request_seconds`
+  histogram, is measured from its HEADERS, as an HTTP/1.1 request's is from
+  its first byte. It was measured from when its body had all arrived, so an
+  upload that took a second was recorded as taking none.
 - A PHP backend that fails or does not answer in time is answered with a
   whole `502` or `504`. Each went out as a `HEAD`'s answer, with a
   `Content-Length` counting its text and no text after it, so the client

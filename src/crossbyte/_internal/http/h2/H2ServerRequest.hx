@@ -42,6 +42,50 @@ class H2ServerRequest {
 	public var headersTooLarge:Bool = false;
 
 	/**
+		Set when the body did not finish arriving within the time the
+		connection's owner allowed, so it is delivered without one, to be
+		answered `408`. See `H2ServerConnection.expireRequests`.
+	**/
+	public var timedOut:Bool = false;
+
+	/**
+		`haxe.Timer.stamp()` when the request's HEADERS arrived, or `0` when
+		it was built some other way.
+	**/
+	public var startedAt:Float = 0;
+
+	/**
+		What the connection's owner attached when it admitted the request at
+		its headers (`H2ServerConnection.onRequestHead`), handed back with the
+		request when its body has arrived. The connection never reads it.
+	**/
+	public var context:Null<Any> = null;
+
+	// The content-length field as read, or -1 for none, held against the
+	// body once it has all arrived.
+	private var __declaredLength:Int = -1;
+
+	/** The `content-length` field, or -1 when the request has none. */
+	public var declaredLength(get, never):Int;
+
+	private inline function get_declaredLength():Int {
+		return __declaredLength;
+	}
+
+	/**
+		Gives a request read at its headers the body that has since arrived,
+		or throws `H2StreamError` if that is not the length its
+		`content-length` said (RFC 9113 8.1.1).
+	**/
+	public function attachBody(received:Null<Bytes>):Void {
+		var length:Int = received == null ? 0 : received.length;
+		if (__declaredLength >= 0 && __declaredLength != length) {
+			throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR, 'content-length $__declaredLength does not match the $length bytes of DATA received');
+		}
+		body = received == null ? Bytes.alloc(0) : received;
+	}
+
+	/**
 	 * A request whose header section went past the limit: what arrived of its
 	 * pseudo-header fields, the rest left out as not all there, and
 	 * `headersTooLarge` set. Nothing here is validated, since nothing about it
@@ -104,6 +148,7 @@ class H2ServerRequest {
 		var path:String = null;
 		var regular:Array<HpackHeader> = [];
 		var seenRegular:Bool = false;
+		var declaredLength:Int = -1;
 
 		for (field in decoded) {
 			var name:String = field.name;
@@ -174,6 +219,12 @@ class H2ServerRequest {
 						throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR,
 							'content-length "${field.value}" does not match the $received bytes of DATA received');
 					}
+					// Two that disagree are one more way for the field to lie
+					// about the body; 8.1.1 makes either malformed.
+					if (declaredLength >= 0 && declaredLength != declared) {
+						throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR, 'content-length appears twice, as $declaredLength and $declared');
+					}
+					declaredLength = declared;
 				case _:
 			}
 
@@ -198,7 +249,10 @@ class H2ServerRequest {
 			throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR, "Request is missing a non-empty :path");
 		}
 
-		return new H2ServerRequest(streamId, method, scheme, authority == null ? "" : authority, path, regular, body == null ? Bytes.alloc(0) : body);
+		var request:H2ServerRequest = new H2ServerRequest(streamId, method, scheme, authority == null ? "" : authority, path, regular,
+			body == null ? Bytes.alloc(0) : body);
+		request.__declaredLength = declaredLength;
+		return request;
 	}
 
 	private static function __once(streamId:Int, name:String, current:String, value:String):String {
