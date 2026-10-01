@@ -187,10 +187,16 @@ final class NativeSocketRegistry {
 			__isDirty = true;
 		}
 
-		if (__set.isEmpty && __writeSet.isEmpty) {
-			return;
+		// Nothing watched, nothing to poll. The poll is a function of its own,
+		// not returns from this one: `-D final` inlines update(), and Haxe
+		// cannot inline a return from the middle of it -- the catch below
+		// returned, and every final build failed to compile.
+		if (!__set.isEmpty || !__writeSet.isEmpty) {
+			__pollAndDispatch(timeout);
 		}
+	}
 
+	@:noCompletion private function __pollAndDispatch(timeout:Float):Void {
 		if (__isDirty) {
 			// Cleared first: a backend that throws here is replaced below, and
 			// the replacement is prepared from these same lists.
