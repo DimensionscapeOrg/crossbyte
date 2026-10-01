@@ -1866,6 +1866,15 @@ All notable changes to CrossByte will be documented in this file.
   uploads is now 3 to 10 MB, and throughput stays within the range it
   varied over before: Windows loopback swings by half from run to run,
   with or without the cap.
+- A TLS socket reads more than one record a pass. A TLS read returns one
+  record at most, 16 KB of plaintext, which never filled the 64 KB read
+  buffer, so every TLS read was taken for the last of its pass. An upload
+  over TLS was read at one record a pass: 16 MB/s at 1,000 ticks a second
+  for one connection and 63 MB/s for four. A read that returns a whole
+  record now reads on, within the same per-pass megabyte: 410 and
+  390 MB/s, which is mbedTLS's software AES on an MSVC build. Not on eval,
+  whose sockets block, so that a read past the last record would wait for
+  the next.
 - A `POLL` loop reads its sockets every frame. Poll was given only what was
   left of a frame once that was at least a millisecond, so a runtime at
   1,000 ticks a second, whose frames never have a whole millisecond left
