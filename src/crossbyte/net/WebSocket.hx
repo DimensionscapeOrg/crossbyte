@@ -15,6 +15,7 @@ import crossbyte._internal.websocket.WebSocket as InternalWS;
 import crossbyte._internal.websocket.WebsocketEvent;
 import crossbyte.core.CrossByte;
 import crossbyte.errors.IOError;
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.errors.SecurityError;
 import crossbyte.events.Event;
 import crossbyte.events.EventType;
@@ -49,6 +50,9 @@ import haxe.io.Error;
 	  dispatches `ioError` alone.
 	- `close` is a `WebSocketCloseEvent` carrying the code and reason, and is
 	  dispatched however the session ends, `close()` included.
+	- There is no half-close: a session ends both ways at once, with a close
+	  frame. `shutdown()` throws, and `peerShutdownPolicy` is not consulted --
+	  a peer that shuts its side ends the session, as 1006.
 
 	@event connect  Dispatched when the session has opened: the upgrade is
 	                done, and messages can be sent.
@@ -179,13 +183,16 @@ class WebSocket extends Socket {
 	// Socket's: a secure Socket checks its server the same way.
 
 	/**
-		Bytes of unsent frame data allowed to accumulate for this session
-		before it is closed with 1011, or `0` for no limit.
+		Bytes of unsent frame data allowed to accumulate for this session, or
+		`0` for no limit. Past it `outputOverflowPolicy` decides, as on a
+		`Socket`: `CLOSE`, the default, dispatches `ioError` and closes the
+		session with 1011, throwing away what was waiting; `THROW` throws an
+		`IOError` from the send that left it past the limit, and keeps the
+		session.
 
 		A peer that stops reading — a slept phone, a half-open connection —
 		leaves everything sent to it buffered with nothing to reclaim it.
-		Frames are never dropped to stay under the limit; the session is
-		closed once it is clear the peer is not draining.
+		Frames are never dropped to stay under the limit.
 
 		Overrides `Socket.maxOutputBufferSize` to bound the session's frame
 		buffer instead of the base socket's. A WebSocket writes through its
@@ -275,11 +282,14 @@ class WebSocket extends Socket {
 		browser hands its page as a `Blob` or an `ArrayBuffer` -- the wrong
 		shape for the JSON most pages expect.
 
-		@throws IOError if the session is not open.
+		@throws IOError if the session is not open, or, under the `THROW`
+			`outputOverflowPolicy`, if more than `maxOutputBufferSize` is
+			left waiting; the message is sent all the same.
 	**/
 	public function sendText(text:String):Void {
 		__requireOpen();
 		__webSocket.sendString(text == null ? "" : text);
+		__checkOutputLimit();
 	}
 
 	/**
@@ -287,7 +297,9 @@ class WebSocket extends Socket {
 		once rather than when the socket is next flushed. A `length` of 0 sends
 		everything from `offset`.
 
-		@throws IOError if the session is not open.
+		@throws IOError if the session is not open, or, under the `THROW`
+			`outputOverflowPolicy`, if more than `maxOutputBufferSize` is
+			left waiting; the message is sent all the same.
 	**/
 	public function sendBinary(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
 		__requireOpen();
@@ -299,6 +311,55 @@ class WebSocket extends Socket {
 		var message:ByteArray = new ByteArray();
 		message.writeBytes(bytes, offset, length);
 		__webSocket.sendBytes(message);
+		__checkOutputLimit();
+	}
+
+	/**
+		`THROW`'s half of `outputOverflowPolicy`, after a send: anything the
+		pass is holding is offered to the socket at once, as a `Socket`'s
+		flush offers its buffer before it measures, and if more than
+		`maxOutputBufferSize` is still waiting an `IOError` is thrown and the
+		session kept. `CLOSE`'s half is the session's own, at the write that
+		left it past the limit; see `__overflowCloses`.
+
+		Both were missing: whatever the policy, the session closed with 1011
+		and said nothing.
+	**/
+	@:noCompletion private inline function __checkOutputLimit():Void {
+		if (__maxOutputBufferSize > 0 && outputOverflowPolicy == OutputOverflowPolicy.THROW) {
+			__throwPastOutputLimit();
+		}
+	}
+
+	@:noCompletion private function __throwPastOutputLimit():Void {
+		var session = __webSocket;
+		if (session == null || session.outputBufferLength <= __maxOutputBufferSize) {
+			return;
+		}
+
+		@:privateAccess session.__flushPendingOutput();
+		var waiting:Int = session.outputBufferLength;
+		if (waiting > __maxOutputBufferSize) {
+			throw new IOError('WebSocket output buffer reached $waiting bytes, exceeding the $__maxOutputBufferSize byte limit; the peer is not reading.');
+		}
+	}
+
+	/** Whether the session closes when its output passes the limit. **/
+	@:noCompletion private function __overflowCloses():Bool {
+		return outputOverflowPolicy != OutputOverflowPolicy.THROW;
+	}
+
+	/**
+		Not for a `WebSocket`: a session ends both ways at once, with a close
+		frame -- `closeWith()` or `close()` -- and RFC 6455 has no half-close
+		for `shutdown(false, true)` to stand for. `peerShutdownPolicy` is not
+		consulted either: a peer that shuts its side ends the session, as 1006.
+
+		@throws IllegalOperationError Always. It returned, having done
+			nothing.
+	**/
+	override public function shutdown(read:Bool, write:Bool):Void {
+		throw new IllegalOperationError("A WebSocket has no half-close: a session ends both ways at once, with closeWith() or close().");
 	}
 
 	/**
@@ -444,7 +505,9 @@ class WebSocket extends Socket {
 		Written while the session is still connecting, it waits and goes once
 		the session opens, where it threw; see `sendText` for a text message.
 
-		@throws IOError if the session is closing or closed.
+		@throws IOError if the session is closing or closed, or, under the
+			`THROW` `outputOverflowPolicy`, if more than `maxOutputBufferSize`
+			is left waiting; the message is sent all the same.
 	**/
 	override public function flush():Void {
 		if (__webSocket == null) {
@@ -465,6 +528,7 @@ class WebSocket extends Socket {
 
 			__webSocket.sendBytes(__output);
 			__output.clear();
+			__checkOutputLimit();
 		}
 	}
 
@@ -1048,6 +1112,7 @@ class WebSocket extends Socket {
 		__webSocket.onmessage = socket_onMessage;
 		__webSocket.onclose = socket_onClose;
 		__webSocket.onerror = socket_onError;
+		__webSocket.onoverflow = __overflowCloses;
 		__syncProgressHook();
 
 		// A server's session asks its server about its upgrade -- through

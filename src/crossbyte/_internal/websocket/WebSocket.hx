@@ -199,6 +199,18 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	public var maxOutputBufferSize:Int = 0;
 
 	/**
+	 * Asked when a write leaves more than `maxOutputBufferSize` waiting:
+	 * `true` closes the session with 1011, after an error saying why, and
+	 * throws away what was waiting; `false` keeps both, for an owner that
+	 * says so its own way. Unset, the session closes.
+	 */
+	public var onoverflow:Void->Bool = null;
+
+	// Whether the close underway throws away what is waiting rather than
+	// sending it first: the output limit's, which exists to reclaim it.
+	private var __discardOnClose:Bool = false;
+
+	/**
 	 * Bytes still waiting for the socket to accept them.
 	 *
 	 * A value that keeps climbing means the peer is not draining as fast as
@@ -1216,8 +1228,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		// limit is measured there. It was measured after a return this path
 		// always took, and so never.
 		if (maxOutputBufferSize > 0 && __socket != null && __socket.writableLength > maxOutputBufferSize) {
-			__close(1011, "output buffer limit exceeded");
-			return;
+			if (__overflow(__socket.writableLength)) {
+				return;
+			}
 		}
 
 		// A close that was waiting for this to go: Node has it now, and sends
@@ -1268,16 +1281,38 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	private function __afterPartialWrite():Void {
 		// Only a peer that is not draining can push the buffer past its
 		// limit, and it will not recover on its own.
-		if (maxOutputBufferSize > 0 && __pendingOutput.length - __pendingSent > maxOutputBufferSize) {
-			__pendingOutput.clear();
-			__pendingSent = 0;
-			__close(1011, "output buffer limit exceeded");
+		var waiting:Int = __pendingOutput.length - __pendingSent;
+		if (maxOutputBufferSize > 0 && waiting > maxOutputBufferSize && __overflow(waiting)) {
 			return;
 		}
 
 		__queueWritable();
 	}
 	#end
+
+	/**
+		`waiting` bytes are past `maxOutputBufferSize`: the owner's
+		`onoverflow` says whether the session closes, and when it does the
+		owner hears why first, and what was waiting is thrown away rather
+		than left queued for a peer that is not reading. Answers whether it
+		closed.
+
+		It closed with 1011 and said nothing, whatever the owner's
+		`outputOverflowPolicy` said; and on Node ended its socket, which keeps
+		Node's queue waiting on that same peer.
+	**/
+	private function __overflow(waiting:Int):Bool {
+		if (onoverflow != null && !onoverflow()) {
+			return false;
+		}
+
+		__pendingOutput.clear();
+		__pendingSent = 0;
+		__discardOnClose = true;
+		__onError('WebSocket output buffer reached $waiting bytes, exceeding the $maxOutputBufferSize byte limit; the peer is not reading.');
+		__close(1011, "output buffer limit exceeded");
+		return true;
+	}
 
 	private function __handleControlFrame(opcode:WebSocketOpcode, payload:ByteArray):Void {
 		switch (opcode) {
@@ -2669,7 +2704,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			// before it was held -- the close frame `abort` and a protocol
 			// failure send just ahead of this, and whatever was sent before it.
 			// Node sends what it was given ahead of the end.
-			if (__connected && __pendingOutput != null && __pendingOutput.length > __pendingSent) {
+			if (__connected && !__discardOnClose && __pendingOutput != null && __pendingOutput.length > __pendingSent) {
 				var held:ByteArray = new ByteArray();
 				held.writeBytes(__pendingOutput, __pendingSent, __pendingOutput.length - __pendingSent);
 				__pendingOutput.clear();
@@ -2705,7 +2740,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			// as the process ran.
 			try {
 				#if nodejs
-				if (__connected) {
+				// Ended, so what Node holds goes ahead of the FIN -- unless what
+				// it holds is what is being reclaimed, when it goes at once.
+				if (__connected && !__discardOnClose) {
 					__socket.end(null);
 				} else {
 					__socket.destroy();
