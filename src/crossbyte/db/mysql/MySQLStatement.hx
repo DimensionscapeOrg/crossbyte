@@ -98,7 +98,7 @@ class MySQLStatement extends EventDispatcher {
 		failed INSERT read as one that had run.
 	**/
 	public function execute(prefetch:Int = -1):Void {
-		if (__connection == null) {
+		if (__live() == null) {
 			throw "MySQLStatement: no connection set.";
 		}
 
@@ -113,7 +113,7 @@ class MySQLStatement extends EventDispatcher {
 		try {
 			// Read as the rows are asked for: a page of a million-row result
 			// no longer waits for, and holds, all million.
-			__resultSet = __sqlConnection != null ? __sqlConnection.__requestStream(sql) : __connection.request(sql);
+			__resultSet = __sqlConnection != null ? __sqlConnection.__requestStream(sql) : __live().request(sql);
 			__queueResult();
 		} catch (e:Dynamic) {
 			__executing = false;
@@ -324,14 +324,20 @@ class MySQLStatement extends EventDispatcher {
 		return __executing;
 	}
 
+	/**
+		The connection's handle as it is now. It was copied when
+		`sqlConnection` was set, so a statement given its connection before
+		`open()` held none and refused to run, as SQLite's did.
+	**/
+	@:noCompletion private inline function __live():Connection {
+		return __sqlConnection != null ? __sqlConnection.__connection : __connection;
+	}
+
 	private function set_sqlConnection(v:MySQLConnection):MySQLConnection {
 		__sqlConnection = v;
-		if (v != null) {
-			__connection = v.__connection;
-		} else {
-			__connection = null;
-		}
-
+		// Kept for a statement given a handle directly, as tests do; with a
+		// connection set, its handle is asked for each time instead.
+		__connection = v != null ? v.__connection : null;
 		return v;
 	}
 

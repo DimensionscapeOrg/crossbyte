@@ -423,6 +423,41 @@ class MySQLDriverTest extends utest.Test {
 		return pages.join(" ");
 	}
 
+	public function testAStatementGivenItsConnectionBeforeOpenRuns():Void {
+		// The statement copied its connection's handle when sqlConnection was
+		// set: given its connection before open(), it held none, and refused
+		// to run on the connection that was by then open.
+		var connection:MySQLConnection = new MySQLConnection();
+		var statement:MySQLStatement = new MySQLStatement();
+		statement.sqlConnection = connection;
+		var wire:ScriptedConnection = new ScriptedConnection();
+		wire.results.set("SELECT 1 AS one", [{one: 1}]);
+		connection.__connection = wire;
+
+		statement.text = "SELECT 1 AS one";
+		statement.execute();
+		Assert.equals(1, (Reflect.field(statement.getResult().data[0], "one") : Int));
+	}
+
+	public function testAnIsolationLevelTheServerRefusesIsAMySQLError():Void {
+		// The setter went round request(), so what the driver threw escaped
+		// as itself, on the jvm a java.sql.SQLException, not as the
+		// MySQLError every other refusal is.
+		var wire:ScriptedConnection = new ScriptedConnection();
+		wire.failures.set("SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE;", "Transaction characteristics can't be changed while a transaction is in progress");
+		var connection:MySQLConnection = new MySQLConnection();
+		connection.__connection = wire;
+		var thrown:Dynamic = null;
+
+		try {
+			connection.isolationLevel = crossbyte.db.mysql.IsolationLevel.SERIALIZABLE;
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+
+		Assert.isTrue(Std.isOfType(thrown, MySQLError), "the setter threw " + Std.string(thrown));
+	}
+
 	public function testAnInsertIdPastThirtyTwoBitsIsAskedForInSQL():Void {
 		// Off cpp the id came from sys.db.Connection.lastInsertId(), an Int:
 		// wrapped past 2^31 on hl and neko, which read it with a 32-bit
