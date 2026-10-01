@@ -404,6 +404,106 @@ class MetricsTest extends utest.Test {
 		Assert.equals(latency.count(), __sample(metrics.toPrometheus(), "scraped_seconds_count"));
 	}
 
+	#if (cpp || java || jvm)
+	/** What a test of this suite passes its own binary to run `firstReadChild`. **/
+	public static inline var FIRST_READ_CHILD:String = "--crossbyte-child=metrics-first-read";
+
+	/**
+		The first reads of `Metrics.shared` in a process, from eight threads
+		at once, find one registry.
+
+		It was made at the first read, with nothing to stop two threads from
+		both finding it missing. On the jvm eight threads reading it first got
+		eight registries every time, and seven of the eight counters they
+		registered went into registries that were then dropped, no scrape
+		ever showed them. Only a process's first read can tell, so this runs
+		its own binary again for one: the native suite and the jvm's, which
+		are the binaries that can be run again.
+	**/
+	@:timeout(90000)
+	public function testTheFirstReadsOfTheSharedRegistryFindOne():Void {
+		#if (java || jvm)
+		var command:String = haxe.io.Path.join([java.lang.System.getProperty("java.home"), "bin", "java"]);
+		var args:Array<String> = ["-jar", Sys.programPath(), FIRST_READ_CHILD];
+		#else
+		var command:String = Sys.programPath();
+		var args:Array<String> = [FIRST_READ_CHILD];
+		#end
+		var child = new sys.io.Process(command, args);
+		var deadline:Float = haxe.Timer.stamp() + 60.0;
+
+		while (child.exitCode(false) == null) {
+			if (haxe.Timer.stamp() > deadline) {
+				child.kill();
+				child.close();
+				Assert.fail("the child never finished");
+				return;
+			}
+			crossbyte.sys.System.sleep(0.02);
+		}
+
+		var report:String = "";
+		for (line in child.stdout.readAll().toString().split("\n")) {
+			if (StringTools.startsWith(line, "registries=")) {
+				report = StringTools.trim(line);
+			}
+		}
+		child.close();
+
+		Assert.equals("registries=1 lost=0", report);
+	}
+
+	/**
+		The child's side: eight threads, released together, read the shared
+		registry for the first time in this process and register a counter
+		each in what they found. Prints how many registries they found and
+		how many of their counters the shared one's scrape is missing.
+	**/
+	public static function firstReadChild():Void {
+		var threads:Int = 8;
+		var go = new haxe.atomic.AtomicInt(0);
+		var ready = new sys.thread.Deque<Bool>();
+		var found = new sys.thread.Deque<Metrics>();
+
+		for (t in 0...threads) {
+			sys.thread.Thread.create(function():Void {
+				ready.add(true);
+				var spins:Int = 0;
+				while (go.load() == 0) {
+					__letTheCollectorIn(++spins);
+				}
+				var registry:Metrics = Metrics.shared;
+				registry.counter("first_read_" + t).inc();
+				found.add(registry);
+			});
+		}
+
+		for (_ in 0...threads) {
+			ready.pop(true);
+		}
+		go.store(1);
+
+		var registries:Array<Metrics> = [];
+		for (_ in 0...threads) {
+			var registry:Metrics = found.pop(true);
+			if (registries.indexOf(registry) < 0) {
+				registries.push(registry);
+			}
+		}
+
+		var text:String = Metrics.shared.toPrometheus();
+		var lost:Int = 0;
+		for (t in 0...threads) {
+			if (text.indexOf("first_read_" + t + " 1\n") < 0) {
+				lost++;
+			}
+		}
+
+		Sys.println("registries=" + registries.length + " lost=" + lost);
+		Sys.stdout().flush();
+	}
+	#end
+
 	/**
 		A place for the collector to stop this thread now and then. The loops
 		above allocate nothing, and on hxcpp a thread that never allocates
