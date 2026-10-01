@@ -730,11 +730,21 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 		}
 
 		__socket.__output.writeBytes(bytes, offset, length);
-		outTimestamp = __socket.__cbInstance.uptime;
+		outTimestamp = __uptime();
+	}
+
+	/**
+		The uptime of the runtime the socket is on. Read from the native
+		socket's own runtime field, it was a TypeError on a Node client --
+		every send, and the first arrival, which closed the connection.
+	**/
+	@:noCompletion private inline function __uptime():Float {
+		final runtime:CrossByte = __socket.__runtime();
+		return runtime != null ? runtime.uptime : 0.0;
 	}
 
 	@:noCompletion private inline function socket_onData(_e:ProgressEvent):Void {
-		inTimestamp = __socket.__cbInstance.uptime;
+		inTimestamp = __uptime();
 		final input:ByteArrayInput = __socket.__input;
 		#if debug
 		try
