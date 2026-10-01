@@ -108,6 +108,11 @@ entry below says how:
 - `SecureRandom.getSecureRandomBytes`, and so everything that needs secure
   random bytes, throws an `IllegalOperationError` on the interpreter, neko
   and HashLink, where it threw a String.
+- `URLRequest.idleTimeout = 0` is no idle limit natively too, where it was
+  30 seconds. On Node a request for any version but HTTP/1.1 fails, and in
+  a browser one with `followRedirects = false` does.
+- `RPCResponse.respond()` replaces the responder bound before, as it says,
+  where it added one: add with `then`.
 
 ### Added
 - `ReliableDatagramServerSocket.relayVerifyCert`, for a TURN relay reached
@@ -1257,6 +1262,14 @@ entry below says how:
   `signDetached` and `verifyDetached` there throw an
   `IllegalOperationError` naming the target, where the first two threw a
   String, and before looking at their arguments.
+- A `URLRequest` setting means the same on every target, or its member
+  says where it cannot. `idleTimeout = 0` is no idle limit natively, as it
+  already was on JavaScript; natively it was 30 seconds. On Node a request
+  asks for HTTP/1.1 or is refused, saying so, since Node's http client
+  speaks no other: it went out as HTTP/1.1 whatever was asked, where
+  natively HTTP/2 speaks it or fails. In a browser a request with
+  `followRedirects = false` is refused, since the browser follows every
+  redirect itself and the 3xx could not be handed back.
 - Reliable UDP sends what a pass produces from one socket in as few system
   calls as the system allows. Each datagram was a `sendto` of its own,
   which was nearly all a server sending reliable UDP spent: 5.9 us a
@@ -2250,6 +2263,75 @@ entry below says how:
   sequence went back to zero and the fraction was then dropped; two
   million identifiers on Windows held 32,635 repeats. The clock is read
   in whole milliseconds now.
+- In a browser, `HTTP_RESPONSE_STATUS` says a response was redirected only
+  when it was. A relative URL was compared, as written, with the absolute
+  one the browser reports, so every load of one said it had been.
+- An `HTTPBackend` is handed a request's headers as `"Name: value"`, as
+  `HTTPRequestContext.headers` says; `URLLoader` passed them as
+  `URLRequestHeader.toString()` writes them, with no space. And the client
+  and RPC documentation says what the code does: HTTP/2 registers itself
+  on first use, where `HTTP2Backend`, `HTTPVersion` and
+  `URLRequest.httpVersion` said it had to be registered; `URLRequest`'s
+  `contentType` and `data` say what each sends, where `data` pointed at a
+  note that did not exist; `RPCSession.stop()` says it fails the calls
+  waiting; and `onHandlerError` has its description back.
+- The RPC runtime lane carries a `ByteArray`, as the bytes it holds, in an
+  argument or an answer: the guide says it carries `haxe.io.Bytes`, and a
+  `ByteArray` is one. It was refused as "Unsupported runtime RPC value",
+  the codec matching the `Bytes` class exactly where a `ByteArray` is a
+  subclass of it at run time.
+- The HTTP/2 client sends `Accept-Encoding: identity` unless the caller
+  sent one, as `URLRequest.requestHeaders` says the client does and as the
+  HTTP/1.1 client and Node do. It sent none, which a server may read as
+  leave to use any coding at all, one the client cannot decode among them.
+- The native HTTP/1.1 client reports no informational status, as the
+  client contract says: `URLLoader` dispatched `HTTP_STATUS` for a
+  `100 Continue` ahead of the 200. And a body of unknown length, chunked
+  or ended by the close, reports a `bytesTotal` of 0, as on JavaScript,
+  where it reported -1, which `ProgressEvent.bytesTotal`, a `UInt`, read
+  as 4294967295.
+- `RPCResponse.respond()` replaces the responder, as it says it does:
+  only the one bound last hears the outcome. It added one each time, so a
+  response bound to one responder and then another told both, the one
+  passed to the constructor included. One bound after the call has been
+  answered is told at once, and `then` still adds.
+- `URLLoader` on Node and in a browser sends an object's fields as a
+  form, as it does natively: a POST's as its body, a GET's as its query.
+  Only a `URLVariables` was encoded there, and an object went out as
+  `Std.string` made it, "{ user : bob }", a GET's as a body.
+- `URLLoader` on Node sends `User-Agent: CrossByte` while
+  `URLRequest.userAgent` is unset, as the member says; it sent none. In a
+  browser a `userAgent` set is handed to the browser, which has the last
+  word on it; a response a redirect took from `https` to `http` is refused
+  unless `followInsecureRedirects` allows it; and a coded body the browser
+  decoded past `maxDecompressedSize` fails the load. A page ignored all
+  three.
+- `URLLoader` sends a `URLVariables`, or an object's fields, over HTTP/2
+  as it does over HTTP/1.1: a GET's or HEAD's as its query, any other
+  method's as a form body. The HTTP/2 backend never read them, so a form
+  went out as an empty POST with no Content-Type, and a GET without its
+  query, though setting `httpVersion` is all a request is told to change.
+- `URLLoader` on Node carries the cookies a redirect sets to the hops
+  after it, as `URLRequest.manageCookies`, on by default, says: by the
+  native client's rules, a cookie goes back only to the host that set it,
+  a `Secure` one only over TLS, and a `Cookie` the caller wrote wins. Node
+  kept nothing, so a sign-in answering 302 with a session cookie reached
+  the page it sent the client to without it. In a browser the browser's
+  own jar applies, and `manageCookies` now says so.
+- `URLLoader.close()` ends the load in flight on Node and in a browser,
+  and `cancelToken` cancels one there. `close()` only stopped the next
+  load being refused as busy: the request it closed went on, and its
+  COMPLETE arrived after the next load's, on the same loader. And there
+  was no token at all. The request is now aborted where it stands, which
+  the server sees at once, and what a closed load still reports is
+  dropped; cancelling the token fails the load with "Request cancelled",
+  as it does natively.
+- `URLLoader` on Node and in a browser sends a `ByteArray` body as the
+  bytes it holds. Both clients sent the buffer beneath it, which runs on
+  past `length` into the room it keeps to grow, and into whatever it held
+  before it was cleared: "hello" written after a cleared secret went out
+  as 69 bytes, the rest of the secret among them. Natively the body was
+  always `length` bytes.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened
