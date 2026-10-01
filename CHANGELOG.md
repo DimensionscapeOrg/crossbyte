@@ -1944,6 +1944,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The README says where the IPC classes and the crypto work. It called
+  `LocalConnection`, `SharedChannel`, `SharedObject` and the native crypto
+  native or jvm features: all of them are native only, `Argon2id` runs on
+  Node too, and of that sentence only ALPN works on the jvm. The crypto
+  list names each class and where it runs. `SecureRandom.isSupported`'s
+  doc names HashLink beside the interpreter and neko as where it is false.
 - `Metrics.shared` is one registry however many threads read it first.
   It was made at the first read, with nothing to stop two threads from
   both finding it missing: on the jvm, eight threads reading it first got
