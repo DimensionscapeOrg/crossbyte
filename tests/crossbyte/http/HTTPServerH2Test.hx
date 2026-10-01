@@ -1442,6 +1442,105 @@ class HTTPServerH2Test extends utest.Test {
 		}
 	}
 
+	public function testAClientsGoAwayStillGetsTheResponsesItIsOwed(async:Async):Void {
+		// A client's GOAWAY was read as the end of the connection: nothing it
+		// sent after it was read, and no response went out after it, so a
+		// request still being answered got nothing, and one whose body was
+		// still arriving was never served. RFC 9113 6.8: the streams it opened
+		// still complete; it opens no more, and once they have, the connection
+		// closes.
+		var working:HTTPRequestHandler = null;
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/work") {
+						working = handler;
+						return;
+					}
+					handler.respond(200, "text/plain", "got " + handler.requestText);
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/work", true);
+			session.request(3, "POST", "/upload", false);
+			session.until(() -> working != null || session.ended, () -> {
+				// NO_ERROR, and no stream of the server's to process: a
+				// client is never pushed one.
+				session.goAway(0, 0);
+				// The rest of stream 3's request, sent after the GOAWAY.
+				session.data(3, "the body");
+				// A stream it opens after its own GOAWAY is refused.
+				session.request(5, "GET", "/index.html", true);
+				session.until(() -> (session.finished(3) && session.finished(5)) || session.dropped, () -> {
+					var droppedEarly:Bool = session.dropped;
+					if (working != null) {
+						working.respond(200, "text/plain", "done");
+					}
+					session.until(() -> session.dropped, () -> {
+						session.close();
+						Assert.isFalse(droppedEarly, "the connection closed with a response still owed");
+						Assert.equals(200, session.status(1), "the response being worked on was dropped");
+						Assert.equals("done", session.body(1));
+						Assert.equals(200, session.status(3), "a body sent after the GOAWAY was not read");
+						Assert.equals("got the body", session.body(3));
+						Assert.equals(7, session.resetCode(5), "a stream opened after the GOAWAY was not refused");
+						Assert.isTrue(session.dropped, "the connection outlived its last stream");
+						async.done();
+					}, 3.0);
+				});
+			});
+		});
+	}
+
+	public function testAClientsGoAwayForAnErrorEndsTheConnection(async:Async):Void {
+		// A GOAWAY carrying an error says the client is closing: §5.4.1 has it
+		// close the connection once it has sent one. The server stopped
+		// reading, and kept the socket, with a stream open, for good.
+		var working:HTTPRequestHandler = null;
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> {
+					working = handler;
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/work", true);
+			session.until(() -> working != null || session.ended, () -> {
+				var started:Float = haxe.Timer.stamp();
+				session.goAway(1, 0);
+				session.until(() -> session.dropped, () -> {
+					var took:Float = haxe.Timer.stamp() - started;
+					session.close();
+					Assert.isTrue(session.dropped, "a client's GOAWAY for an error left the connection open");
+					Assert.isTrue(took < 1.0, 'closed ${took}s after the GOAWAY');
+					async.done();
+				}, 3.0);
+			});
+		});
+	}
+
+	public function testAMalformedGoAwayIsAConnectionError(async:Async):Void {
+		// §6.8: a GOAWAY belongs to the connection, stream 0, and carries at
+		// least eight bytes. One on a stream was taken as any other, the end
+		// of the connection, which the server then kept open, saying
+		// nothing; it is a PROTOCOL_ERROR, and the connection is closed.
+		var session = new H2Session(config -> {});
+
+		session.start(() -> {
+			session.frame(H2FrameType.GOAWAY, 0, 1, Bytes.alloc(8));
+			session.until(() -> session.dropped, () -> {
+				session.close();
+				Assert.equals(H2ErrorCode.PROTOCOL_ERROR, session.goAwayCode, "the server's GOAWAY said " + session.goAwayCode);
+				Assert.isTrue(session.dropped, "a malformed GOAWAY left the connection open");
+				async.done();
+			}, 3.0);
+		});
+	}
+
 	public function testACloseListenerAddedAfterItsStreamWasResetHearsIt(async:Async):Void {
 		// A stream reset while nothing listened, by its client here, said
 		// nothing to a CLOSE listener added after it: the listener was
@@ -2333,6 +2432,33 @@ private class H2Session {
 	public function ping():Void {
 		var out = new BytesBuffer();
 		__writeFrame(out, H2FrameType.PING, 0, 0, Bytes.alloc(8));
+		__send(out);
+	}
+
+	/**
+		Sends a GOAWAY: `code`, NO_ERROR by default, and `lastStreamId`, the
+		last stream the server opened that this side will process, 0 for a
+		client, which is never pushed one.
+	**/
+	public function goAway(code:Int = 0, lastStreamId:Int = 0):Void {
+		var payload:Bytes = Bytes.alloc(8);
+		payload.set(0, (lastStreamId >> 24) & 0x7F);
+		payload.set(1, (lastStreamId >> 16) & 0xFF);
+		payload.set(2, (lastStreamId >> 8) & 0xFF);
+		payload.set(3, lastStreamId & 0xFF);
+		payload.set(4, (code >> 24) & 0xFF);
+		payload.set(5, (code >> 16) & 0xFF);
+		payload.set(6, (code >> 8) & 0xFF);
+		payload.set(7, code & 0xFF);
+		var out = new BytesBuffer();
+		__writeFrame(out, H2FrameType.GOAWAY, 0, 0, payload);
+		__send(out);
+	}
+
+	/** Sends one frame as given, well formed or not. */
+	public function frame(type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {
+		var out = new BytesBuffer();
+		__writeFrame(out, type, flags, streamId, payload);
 		__send(out);
 	}
 
