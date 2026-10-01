@@ -38,6 +38,42 @@ class LoggerTest extends utest.Test {
 	}
 	#end
 
+	/**
+		On Node, logging never syncs stdout. `Sys.stdout().flush()` is
+		`fs.fsyncSync` there, which Linux refuses for a pipe -- Docker's,
+		systemd's, a `| tee` -- so a warning threw from inside whatever was
+		reporting it, and so did the runtime's flush after every frame that
+		logged. To a file it was a disk sync a frame: 4% of a server's time.
+		`Sys.println` there is `process.stdout.write`, which holds nothing
+		back to flush.
+	**/
+	public function testLoggingOnNodeNeverSyncsStdout():Void {
+		#if nodejs
+		var fs:Dynamic = js.Lib.require("fs");
+		var fsync:Dynamic = fs.fsyncSync;
+		var syncs:Int = 0;
+		fs.fsyncSync = function(fd:Int):Void {
+			syncs++;
+			// What Linux answers for a pipe.
+			throw "EINVAL: invalid argument, fsync";
+		};
+		Logger.sink = null;
+		var thrown:Dynamic = null;
+		try {
+			Logger.info("a line to a piped stdout");
+			Logger.warn("a warning to a piped stdout");
+			Logger.__flushStdout();
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+		fs.fsyncSync = fsync;
+		Assert.isNull(thrown, "logging threw: " + thrown);
+		Assert.equals(0, syncs, "stdout was synced");
+		#else
+		Assert.pass();
+		#end
+	}
+
 	private var captured:Array<String>;
 
 	public function setup():Void {
