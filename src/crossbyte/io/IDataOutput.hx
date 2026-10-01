@@ -4,11 +4,14 @@ import crossbyte.net.ObjectEncoding;
 
 /**
 	The IDataOutput interface provides a set of methods for writing binary data. This
-	interface is the I/O counterpart to the IDataInput interface, which reads binary data. The IDataOutput interface is implemented by the FileStream, Socket and ByteArray
-	classes.
-	All IDataInput and IDataOutput operations are "bigEndian" by default (the most
-	significant byte in the sequence is stored at the lowest or first storage address),
-	and are nonblocking.
+	interface is the I/O counterpart to the IDataInput interface, which reads binary data.
+	`ByteArray`, `FileStream`, `Socket` (and so `WebSocket`) and `ReliableDatagramSocket`
+	implement it.
+
+	Multi-byte values are written in the implementing object's `endian`. A `ByteArray`
+	and the sockets start in `ByteArray.defaultEndian`, which is little-endian on every
+	target unless you change it -- not big-endian, as in AIR. Set `endian` to
+	`Endian.BIG_ENDIAN` for network byte order.
 	Sign extension matters only when you read data, not when you write it. Therefore, you
 	do not need separate write methods to work with `IDataInput.readUnsignedByte()` and `IDataInput.readUnsignedShort()`. In other words:
 	* Use `IDataOutput.writeByte()` with `IDataInput.readUnsignedByte()` and
@@ -24,9 +27,11 @@ interface IDataOutput {
 	public var endian(get, set):Endian;
 
 	/**
-		Used to determine whether the `AMF3` or `AMF0` format is used when writing or
-		reading binary data using the `writeObject()` method. The value is a constant from
-		the ObjectEncoding class.
+		Which format `writeObject()` writes, a constant from the ObjectEncoding class. It is
+		`HXSF` unless changed -- not AMF, as in AIR; a `ByteArray` starts in
+		`ByteArray.defaultObjectEncoding`. `JSON` is always available. `AMF0` and `AMF3`
+		need the optional `format` haxelib (`-lib format`), and asking for one without it
+		throws.
 	**/
 	public var objectEncoding:ObjectEncoding;
 
@@ -75,7 +80,7 @@ interface IDataOutput {
 
 	/**
 		Writes a 32-bit signed integer.
-		@param	value	A byte value as a signed integer.
+		@param	value	The integer to write.
 	**/
 	public function writeInt(value:Int):Void;
 
@@ -90,8 +95,8 @@ interface IDataOutput {
 	public function writeMultiByte(value:String, charSet:String):Void;
 
 	/**
-		Writes an object to the file stream, byte stream, or byte array, in AMF
-		serialized format.
+		Writes an object to the file stream, byte stream, or byte array, in the format
+		`objectEncoding` names: `HXSF` unless changed, not AMF.
 		@param	object	The object to be serialized.
 	**/
 	public function writeObject(object:Dynamic):Void;
@@ -99,13 +104,15 @@ interface IDataOutput {
 	/**
 		Writes a 16-bit integer. The low 16 bits of the parameter are used; the high 16
 		bits are ignored.
-		@param	value	A byte value as an integer.
+		@param	value	The integer whose low 16 bits are written.
 	**/
 	public function writeShort(value:Int):Void;
 
 	/**
 		Writes a 32-bit unsigned integer.
-		@param	value	A byte value as an unsigned integer.
+		@param	value	The value to write, 0 to 4294967295. Its 32 bits are written as
+		they are, so a negative `Int` writes the unsigned value it holds: -1 is
+		4294967295.
 	**/
 	public function writeUnsignedInt(value:Int):Void;
 

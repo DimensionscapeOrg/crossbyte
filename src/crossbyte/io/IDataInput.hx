@@ -5,11 +5,17 @@ import crossbyte.net.ObjectEncoding;
 /**
 	The IDataInput interface provides a set of methods for reading binary data. This
 	interface is the I/O counterpart to the IDataOutput interface, which writes binary data.
-	All IDataInput and IDataOutput operations are "bigEndian" by default (the most
-	significant byte in the sequence is stored at the lowest or first storage address), and
-	are nonblocking. If insufficient data is available, an `EOFError` exception is thrown.
-	Use the `IDataInput.bytesAvailable` property to determine how much data is available
-	to read.
+	`ByteArray`, `FileStream`, `Socket` (and so `WebSocket`) and `ReliableDatagramSocket`
+	implement it.
+
+	Multi-byte values are read in the implementing object's `endian`. A `ByteArray` and
+	the sockets start in `ByteArray.defaultEndian`, which is little-endian on every target
+	unless you change it -- not big-endian, as in AIR. Set `endian` to `Endian.BIG_ENDIAN`
+	for network byte order.
+
+	Reads never wait for data. If insufficient data is available, an `EOFError` exception
+	is thrown. Use the `IDataInput.bytesAvailable` property to determine how much data is
+	available to read.
 	Sign extension matters only when you read data, not when you write it. Therefore you
 	do not need separate write methods to work with `IDataInput.readUnsignedByte()` and
 	`IDataInput.readUnsignedShort()`. In other words:
@@ -33,9 +39,11 @@ interface IDataInput {
 	public var endian(get, set):Endian;
 
 	/**
-		Used to determine whether the `AMF3` or `AMF0` format is used when writing or
-		reading binary data using the `readObject()` method. The value is a constant from
-		the ObjectEncoding class.
+		Which format `readObject()` reads, a constant from the ObjectEncoding class. It is
+		`HXSF` unless changed -- not AMF, as in AIR; a `ByteArray` starts in
+		`ByteArray.defaultObjectEncoding`. `JSON` is always available. `AMF0` and `AMF3`
+		need the optional `format` haxelib (`-lib format`), and asking for one without it
+		throws.
 	**/
 	public var objectEncoding:ObjectEncoding;
 
@@ -56,10 +64,10 @@ interface IDataInput {
 
 	/**
 		Reads the number of data bytes, specified by the `length` parameter, from the file
-		stream, byte stream, or byte array. The bytes are read into the ByteArray objected
+		stream, byte stream, or byte array. The bytes are read into the ByteArray object
 		specified by the `bytes` parameter, starting at the position specified by `offset`.
 		@param	bytes	The ByteArray object to read data into.
-		 		@param	offset	The offset into the `bytes` parameter at which data read should
+		@param	offset	The offset into the `bytes` parameter at which data read should
 		begin.
 		@param	length	The number of bytes to read. The default value of 0 causes all
 		available data to be read.
@@ -104,8 +112,8 @@ interface IDataInput {
 	public function readMultiByte(length:UInt, charSet:String):String;
 
 	/**
-		Reads an object from the file stream, byte stream, or byte array, encoded in AMF
-		serialized format.
+		Reads an object from the file stream, byte stream, or byte array, in the format
+		`objectEncoding` names: `HXSF` unless changed, not AMF.
 		@returns	The deserialized object
 		@throws	EOFError	There is not sufficient data available to read.
 	**/
@@ -127,7 +135,9 @@ interface IDataInput {
 
 	/**
 		Reads an unsigned 32-bit integer from the file stream, byte stream, or byte array.
-		@returns	The returned value is in the range 0 to 4294967295.
+		@returns	The 32 bits as an `Int`, which is as wide as a Haxe integer goes, so a
+		value from 2^31 up is negative here. Assign it to a `UInt` to compare it as the 0
+		to 4294967295 it stands for. (`ByteArray.readUnsignedInt` returns a `UInt`.)
 		@throws	EOFError	There is not sufficient data available to read.
 	**/
 	public function readUnsignedInt():Int;
