@@ -70,6 +70,15 @@ class StoreTest extends utest.Test {
 	 * success arm, because utest carries on after a failed case and one store
 	 * that will not clear must not strand every store behind it.
 	 */
+	/**
+	 * Stores live in the application's own storage directory, which is
+	 * created when first asked for -- so in a temporary one here, and the
+	 * account's real application data never sees a test run.
+	 */
+	public function setupClass():Void {
+		StorageSandbox.enter();
+	}
+
 	@:timeout(10000)
 	public function teardownClass(async:Async):Void {
 		removeCreated(0, async);
@@ -78,6 +87,7 @@ class StoreTest extends utest.Test {
 	private static function removeCreated(index:Int, async:Async):Void {
 		if (index >= created.length) {
 			created = [];
+			StorageSandbox.leave();
 			async.done();
 			return;
 		}

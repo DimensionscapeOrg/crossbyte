@@ -79,8 +79,24 @@ entry below says how:
 - `File.moveTo` with `overwrite` replaces an existing directory instead of
   merging into it, as its documentation says; merge with `copyTo` and then
   delete the source if that is what was meant.
+- `File.applicationStorageDirectory` is the application's own directory
+  inside the account's application data, so stores moved:
+  `%APPDATA%\stores\<name>` is now `%APPDATA%\<id>\stores\<name>`, and
+  `$HOME/stores/<name>` is now `~/.local/share/<id>/stores/<name>` on
+  Linux and `~/Library/Application Support/<id>/stores/<name>` on macOS,
+  with `<id>` the main class's full name unless `-D crossbyte_app_id`
+  names it. Nothing is moved for you -- a store in the old place could be
+  any application's -- so move an application's own across once. Two
+  applications with the same main class, such as `Main`, share a
+  directory until one sets the define.
 
 ### Added
+- `System.applicationId`, the name an application's storage directory and
+  stores are kept under: the `crossbyte_app_id` define
+  (`-D crossbyte_app_id=com.example.chat`), which the build refuses unless
+  every platform can give a directory that name, or else the main class's
+  full name -- the same whichever target the application is built for. A
+  build with no main class uses the program's file name.
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
   `DETACH DATABASE`, and `loadSchema()` with `getSchemaResult()`: a
   database's tables with their columns, views, indices and triggers.
@@ -1140,6 +1156,16 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `File.applicationStorageDirectory`, and every `Store` kept in it, is the
+  application's own: `System.applicationId` inside `%APPDATA%` on Windows,
+  `~/Library/Application Support` on macOS, and `$XDG_DATA_HOME` or
+  `~/.local/share` elsewhere, created the first time it is asked for. It
+  was `%APPDATA%` or `$HOME` itself, the account's root, which every
+  CrossByte program on the account shared -- so two applications that
+  opened a store of the same name opened one store, where `Store` promised
+  each its own. An environment with no `APPDATA` (and no `USERPROFILE`) or
+  no `HOME` is an `IOError` that says so, where the path came out as
+  "null".
 - Reliable UDP sends what a pass produces from one socket in as few system
   calls as the system allows. Each datagram was a `sendto` of its own,
   which was nearly all a server sending reliable UDP spent: 5.9 us a
