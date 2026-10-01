@@ -1932,6 +1932,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `HTTPServerConfig.errorDocument` is the body of every error the server
+  answers by itself, a missing file's 404, a 403, a 405, a refused or
+  late request, a 500, with the status each would have had, and the
+  `Content-Type` its extension names. It was accepted and kept and never
+  read, so every error went out as a line of plain text. It is read once,
+  when first wanted, and `validate` refuses one that is not there. An
+  answer middleware or a route gives with `respond()` is never replaced.
 - The server's own error answers, a 404 for a missing file, a 403, 405,
   429, 501 and the rest, carry no body for a `HEAD`. They went out with
   their text whatever the method, so a `HEAD` for a missing file had

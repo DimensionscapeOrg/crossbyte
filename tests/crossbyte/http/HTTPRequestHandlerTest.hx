@@ -1233,6 +1233,60 @@ class HTTPRequestHandlerTest extends utest.Test {
 		}, null, true);
 	}
 
+	public function testTheErrorDocumentIsTheBodyOfTheServersOwnErrors(async:Async):Void {
+		// errorDocument was declared, taken by the constructor, and read by
+		// nothing: every error went out as one line of plain text whatever it
+		// named.
+		var page:String = "<h1>Not here</h1>";
+		__sendRequests(async, [
+			(handler, next) -> {
+				if (handler.requestPath == "/route") {
+					handler.respond(404, "text/plain", "the route's own");
+					return;
+				}
+				next();
+			}
+		], [
+			"GET /missing.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
+			"HEAD /missing.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
+			"POST /index.html HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1\r\n\r\nx",
+			"GET /route HTTP/1.1\r\nHost: localhost\r\n\r\n",
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
+		], function(result):Void {
+			Assert.equals(404, result.responses[0].status);
+			Assert.equals(page, result.responses[0].body, "the error document was not the 404's body");
+			Assert.equals("text/html; charset=utf-8", result.responses[0].headers.get("content-type"));
+			Assert.equals(404, result.responses[1].status);
+			Assert.equals(Std.string(page.length), result.responses[1].headers.get("content-length"), "a HEAD did not give the page's length");
+			Assert.equals(405, result.responses[2].status);
+			Assert.equals(page, result.responses[2].body, "the error document was not the 405's body");
+			// An answer a route wrote is its own.
+			Assert.equals("the route's own", result.responses[3].body);
+			Assert.equals("Hello from middleware test", result.responses[4].body);
+			async.done();
+		}, config -> {
+			var document = config.rootDirectory.resolvePath("oops.html");
+			var bytes = new ByteArray();
+			bytes.writeUTFBytes(page);
+			document.save(bytes);
+			config.errorDocument = document;
+		}, true);
+	}
+
+	public function testAnErrorDocumentThatIsNotThereIsRefused():Void {
+		var root = File.createTempDirectory();
+		var config = new HTTPServerConfig("127.0.0.1", 0, root);
+		config.errorDocument = root.resolvePath("absent.html");
+		var refused:Bool = false;
+		try {
+			config.validate();
+		} catch (_:crossbyte.errors.ArgumentError) {
+			refused = true;
+		}
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+		Assert.isTrue(refused, "an errorDocument that is not there was accepted");
+	}
+
 	public function testLateAsynchronousNextCannotAnswerALaterRequest(async:Async):Void {
 		// testRespondThenNextEmitsSingleResponse covers the synchronous
 		// violation. This covers the asynchronous one: request one answers
