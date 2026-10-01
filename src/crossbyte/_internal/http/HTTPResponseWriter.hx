@@ -58,11 +58,13 @@ interface HTTPResponseWriter {
 	var onAbandoned(get, set):Null<Void->Void>;
 
 	/**
-	 * Has whoever sweeps this connection call `check` with the sweep's
-	 * `haxe.Timer.stamp()` while a body is pumped out, so a transfer the peer
-	 * has stopped taking has a deadline; `null` stops it. The HTTP/1.1 sweep
-	 * visits the handler itself, so its writer ignores this. Under HTTP/2 the
-	 * sweep visits the connection, which knew nothing of its streams' pumps.
+	 * Has the server's sweep call `check` with its `haxe.Timer.stamp()`, a
+	 * few times a second, while a body is pumped out, so a transfer the peer
+	 * has stopped taking has a deadline; `null` stops it. The sweep runs for
+	 * these whatever `requestTimeout` and `keepAliveTimeout` are, and visits
+	 * only these when both are off: a stall deadline was checked from the
+	 * walk those two arm, so with both at `0` it never was. A writer with no
+	 * server behind it has no sweep, and ignores this.
 	 */
 	function sweepWith(check:Null<Float->Void>):Void;
 

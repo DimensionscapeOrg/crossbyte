@@ -274,7 +274,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// so subscribing here would have two readers racing one socket. Its
 		// request is timed from its HEADERS, which the frame layer stamped,
 		// and its deadline is the stream's, which the frame layer keeps.
-		if (writer == null) {
+		// Asked of the writer, not of whether one was given: the server gives
+		// an HTTP/1.1 handler its writer too, to hear from its sweep.
+		if (!__writer.ownsConnection) {
 			__setup();
 			__requestStartedAt = haxe.Timer.stamp();
 			__receiveDeadline = config.requestTimeout > 0 ? __requestStartedAt + config.requestTimeout : 0;
@@ -566,25 +568,18 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * timed out here.
 	 */
 	@:noCompletion private function __checkReceiveDeadline(now:Float):Void {
-		// A streamed body owns this sweep while it is in flight. It must not
-		// reach the 408 below: that path writes a whole response, and the
-		// status line for this one left with the head, a second one would
-		// land inside the body as though it were file content. The stall
-		// check closes instead, which is the only signal left.
+		// A streamed body must not reach the 408 below: that path writes a
+		// whole response, and the status line for this one left with the
+		// head, a second one would land inside the body as though it were
+		// file content. Its deadline is the stall check, which the sweep
+		// calls through the writer (sweepWith) whatever the timeouts are;
+		// called from here, it went unchecked with both timeouts off, since
+		// then nothing ran this.
 		//
-		// The sweep is the one periodic visit both cases already share, so
-		// they ride it together rather than arming a second timer. When
-		// keep-alive lands and responses end at a single __finishResponse
-		// funnel (keep-alive integration), this dispatch belongs there.
 		// A response the application is writing as it goes has no deadline
 		// here: how long it takes is the producer's, and a client that stops
 		// reading is caught by write() at the output cap.
-		if (__openStream != null) {
-			return;
-		}
-
-		if (__streaming) {
-			__checkStreamStall(now);
+		if (__openStream != null || __streaming) {
 			return;
 		}
 
@@ -1740,10 +1735,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// not mid-transfer.
 		__writer.onDrain = __pumpStream;
 
-		// The stall deadline, from whichever sweep reaches this response, and
-		// the client giving up on it without closing the connection: an
-		// HTTP/2 reset of its stream, which drops the drain this pump waits
-		// on, so nothing else would ever stop it.
+		// The stall deadline, from the server's sweep, which runs for it
+		// whatever the timeouts are, and the client giving up on it without
+		// closing the connection: an HTTP/2 reset of its stream, which drops
+		// the drain this pump waits on, so nothing else would ever stop it.
 		__writer.sweepWith(__checkStreamStall);
 		__watchClient();
 
