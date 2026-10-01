@@ -1151,6 +1151,12 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- Off native, `DtlsCertificate`'s constructor, `generate`, `fingerprintOf`
+  and `matches` throw an `IllegalOperationError` naming the target, and
+  each says so in its documentation. The constructor threw "That
+  certificate could not be read" whatever it was given, `generate` a bare
+  String, and `fingerprintOf` and `matches` answered null and false, a
+  certificate that would not parse, a mismatch.
 - `PeerConnection.addLocalCandidate` and `PeerConnectionHost.
   addLocalCandidate` refuse a relayed candidate with an `ArgumentError`
   naming `gatherRelayed` and `gatherRelayedFrom`. A relayed address works
