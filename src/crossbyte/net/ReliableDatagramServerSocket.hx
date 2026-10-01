@@ -590,7 +590,12 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		looks the name up for each request itself, and one that does not
 		resolve leaves the question to its deadline.
 
-		@throws IOError if this server is closed, unbound, or not listening.
+		@return The address and port this socket appears as, or a failure. A
+		       question that cannot be asked is not thrown but returned
+		       failed already: for a server closed, unbound or not listening,
+		       its `cause` an `IOError`; for a `server` left empty, an
+		       `ArgumentError`; and with no cause for a second question while
+		       one is outstanding, or a target with no secure random source.
 	**/
 	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<ReflexiveAddress> {
 		var future = new Future<ReflexiveAddress>();
@@ -733,9 +738,10 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		@param destination The peer's address, numeric. Which one it is matters:
 		a peer on this subnet and a peer across the internet are reached on
 		different interfaces, and this answers for the one named.
-		@throws IOError if this server is closed, unbound, or not listening,
-		in which case `localPort` is not settled either, so the answer would have
-		nothing to pair with.
+		@return The local address, or a failure. For a server closed, unbound
+		or not listening, whose `localPort` is not settled, so the answer
+		would have nothing to pair with, the future is returned failed
+		already, its `cause` an `IOError`, rather than this throwing.
 	**/
 	public function localAddressFor(destination:String):Future<String> {
 		if (__closed || !bound || !listening) {
@@ -897,7 +903,13 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		or TLS for a network that lets nothing else out, what it relays is
 		UDP either way, and a session's datagrams are the same datagrams. A
 		TLS relay's certificate is checked; see `relayCertAuthority`.
-		@return The relayed address, or a failure whose `cause` is a `TurnError`.
+		@return The relayed address, or a failure: one whose `cause` is a
+		`TurnError` when the relay refused or never answered. A request that
+		cannot be made is not thrown but returned failed already: for a
+		server closed, unbound or not listening, its `cause` an `IOError`;
+		with the server, username or password missing, an `ArgumentError`;
+		and with no cause for a target with no secure random source, or a
+		server that holds a relay already.
 	**/
 	public function allocateRelay(server:String, port:Int = 3478, username:String, password:String, useChannels:Bool = false,
 			?transport:TurnTransport):Future<ReflexiveAddress> {
