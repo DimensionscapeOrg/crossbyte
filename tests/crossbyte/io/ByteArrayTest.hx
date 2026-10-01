@@ -37,6 +37,27 @@ class ByteArrayTest extends utest.Test {
 		cleared 64 KB. At 60,000 requests a second that was most of the
 		server's allocation.
 	**/
+	/**
+		On JavaScript, text is written through the platform's `TextEncoder`,
+		ten times as fast as Haxe's encoder for 64 KB, and an unpaired
+		surrogate goes out as U+FFFD, as it does from every browser and from
+		Node. Haxe's encoder took the character after a lone high surrogate
+		into it -- "a", U+D800, "b" went out as "a" and U+10062 -- and wrote a
+		lone low one as bytes UTF-8 does not allow.
+	**/
+	public function testALoneSurrogateIsWrittenAsTheReplacementCharacter():Void {
+		#if js
+		var data = new ByteArray();
+		data.writeUTFBytes("a" + String.fromCharCode(0xD800) + "b");
+		data.writeUTFBytes("a" + String.fromCharCode(0xDC00) + "b");
+		var written = Bytes.alloc(data.length);
+		written.blit(0, data, 0, data.length);
+		Assert.equals("61efbfbd6261efbfbd62", written.toHex());
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testFromBytesAllocatesNothingTheSizeOfTheBytes():Void {
 		#if cpp
 		var source = Bytes.alloc(64 * 1024);

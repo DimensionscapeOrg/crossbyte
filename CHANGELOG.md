@@ -1113,6 +1113,17 @@ All notable changes to CrossByte will be documented in this file.
   636, the rest held by encoding the text. The gzip header is the one
   written everywhere else, and Brotli declares the window the Haxe encoder
   does, not Node's 4 MB.
+- On JavaScript, text is encoded to UTF-8 through the platform's
+  `TextEncoder` -- `ByteArray.writeUTFBytes` and `writeUTF`, every
+  `Socket.writeUTFBytes`, `respond`, a WebSocket's `sendString` -- ten
+  times as fast as the Haxe encoder for 64 KB. An unpaired surrogate goes
+  as U+FFFD, as from a browser; the Haxe encoder took the next character
+  into it, or wrote bytes UTF-8 does not allow. `respond` hands the
+  encoded text over as the body rather than copying it into another
+  buffer, on every target. A Node server answering `respond` with 64 KB
+  serves 9,260 a second where it served 1,390, and browsers 64 KB of
+  compressed JSON 4,450 where it served 1,100; a native one answering
+  64 KB serves 34,200 where it served 28,300, and small answers 5% more.
 - `PostgresStatement` and `MongoStatement` throw a failed statement's
   `SQLError` after dispatching it as an `SQLErrorEvent`, as `MySQLStatement`
   does. They dispatched it and returned, so to a caller not listening -- an
