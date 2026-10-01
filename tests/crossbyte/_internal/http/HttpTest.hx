@@ -493,6 +493,18 @@ class HttpTest extends utest.Test {
 		}
 	}
 
+	/**
+		An idle timeout of `0` or less is no limit -- a socket timeout of `0`,
+		which every target's socket takes as none -- as it is on JavaScript
+		and on every socket. It was 30 seconds here, a difference no case
+		shorter than 30 seconds can see, so the mapping is asserted itself.
+	**/
+	public function testAnIdleTimeoutOfZeroIsNoLimit():Void {
+		Assert.equals(0.0, Http.__idleSeconds(0));
+		Assert.equals(0.0, Http.__idleSeconds(-1));
+		Assert.equals(1.5, Http.__idleSeconds(1500));
+	}
+
 	public function testBuildQueryEncodesScalarsArraysAndNestedObjects():Void {
 		var query = Http.__buildQuery({
 			search: "hello world",

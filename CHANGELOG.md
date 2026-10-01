@@ -76,6 +76,9 @@ entry below says how:
   `ThreadEvent.UPDATE` are gone.
 - `BCrypt.hash` makes `$2b$` hashes, and Postgres, MySQL and MongoDB
   statements throw what the server refused.
+- `URLRequest.idleTimeout = 0` is no idle limit natively too, where it was
+  30 seconds. On Node a request for any version but HTTP/1.1 fails, and in
+  a browser one with `followRedirects = false` does.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1137,6 +1140,14 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A `URLRequest` setting means the same on every target, or its member
+  says where it cannot. `idleTimeout = 0` is no idle limit natively, as it
+  already was on JavaScript; natively it was 30 seconds. On Node a request
+  asks for HTTP/1.1 or is refused, saying so, since Node's http client
+  speaks no other: it went out as HTTP/1.1 whatever was asked, where
+  natively HTTP/2 speaks it or fails. In a browser a request with
+  `followRedirects = false` is refused, since the browser follows every
+  redirect itself and the 3xx could not be handed back.
 - Reliable UDP sends what a pass produces from one socket in as few system
   calls as the system allows. Each datagram was a `sendto` of its own,
   which was nearly all a server sending reliable UDP spent: 5.9 us a
@@ -1932,6 +1943,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `URLLoader` on Node sends `User-Agent: CrossByte` while
+  `URLRequest.userAgent` is unset, as the member says; it sent none. In a
+  browser a `userAgent` set is handed to the browser, which has the last
+  word on it; a response a redirect took from `https` to `http` is refused
+  unless `followInsecureRedirects` allows it; and a coded body the browser
+  decoded past `maxDecompressedSize` fails the load. A page ignored all
+  three.
 - `URLLoader` sends a `URLVariables`, or an object's fields, over HTTP/2
   as it does over HTTP/1.1: a GET's or HEAD's as its query, any other
   method's as a form body. The HTTP/2 backend never read them, so a form

@@ -5,6 +5,7 @@ package crossbyte.url;
 import crossbyte.events.Event;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.net.NetPump;
+import crossbyte.url._internal.JsHttpClient;
 import utest.Assert;
 import utest.Async;
 
@@ -131,6 +132,90 @@ class URLLoaderBrowserTest extends utest.Test {
 		});
 	}
 
+	/**
+		A request asking not to follow redirects is refused in a page, and
+		nothing is sent: the browser follows every redirect itself and shows a
+		page none of them. It went out, and came back as wherever a redirect
+		led, where every other target hands the 3xx back.
+	**/
+	public function testARequestNotToFollowRedirectsIsRefused(async:Async):Void {
+		var sent:Int = 0;
+		var restore:Void->Void = wrap("send", (_, _) -> sent++);
+		var request:URLRequest = new URLRequest("/index.html");
+		request.followRedirects = false;
+		loadThen(request, outcome -> {
+			restore();
+			Assert.isTrue(StringTools.startsWith(outcome, "error URLRequest.followRedirects = false is not available in a browser"), outcome);
+			Assert.equals(0, sent, "a request the page could not honour was sent");
+			async.done();
+		});
+	}
+
+	/**
+		A `userAgent` set is handed to the browser, which has the last word on
+		it; it was not passed on at all. Unset, nothing is, and the browser's
+		own goes.
+	**/
+	public function testAUserAgentSetIsHandedToTheBrowser(async:Async):Void {
+		var named:Array<String> = [];
+		// Kept from the browser's own: Chrome refuses the name and says so in
+		// the console, which this suite takes for a failure.
+		var restore:Void->Void = replace("setRequestHeader", (xhr, args, original) -> {
+			if (Std.string(args[0]).toLowerCase() == "user-agent") {
+				named.push(args[1]);
+				return null;
+			}
+			return original.apply(xhr, args);
+		});
+		var request:URLRequest = new URLRequest("/index.html");
+		request.userAgent = "Tester/1";
+		loadThen(request, set -> {
+			loadThen(new URLRequest("/index.html"), unset -> {
+				restore();
+				Assert.equals("complete", set);
+				Assert.equals("complete", unset);
+				Assert.same(["Tester/1"], named, "the userAgent set was not handed to the browser, once");
+				async.done();
+			});
+		});
+	}
+
+	/**
+		A coded body that the browser decoded past `maxDecompressedSize`
+		fails the load, as it does natively and on Node, once the browser has
+		shown it whole. The limit was not consulted in a page. The suite's
+		server codes nothing, so the response is made to say it did.
+	**/
+	public function testABodyDecodedPastTheLimitFails(async:Async):Void {
+		var restore:Void->Void = replace("getResponseHeader", (xhr, args, original) -> {
+			return Std.string(args[0]).toLowerCase() == "content-encoding" ? "gzip" : original.apply(xhr, args);
+		});
+		var limited:URLRequest = new URLRequest("/index.html");
+		limited.maxDecompressedSize = 16;
+		loadThen(limited, refused -> {
+			loadThen(new URLRequest("/index.html"), taken -> {
+				restore();
+				Assert.isTrue(StringTools.startsWith(refused, "error Failed to decode response body"), refused);
+				Assert.equals("complete", taken, "the default limit refused a page");
+				async.done();
+			});
+		});
+	}
+
+	/**
+		A response the browser reached by a redirect from `https` to plain
+		`http` is refused unless `followInsecureRedirects` allows it, as every
+		other client refuses that hop. A page learns of the hop only once it
+		has been made, from where the response says it came from.
+	**/
+	public function testARedirectToPlainHttpIsRefusedOnceSeen():Void {
+		Assert.notNull(JsHttpClient.__followedRefusal("https://a.example/x", "http://a.example/y", false));
+		Assert.isNull(JsHttpClient.__followedRefusal("https://a.example/x", "http://a.example/y", true));
+		Assert.isNull(JsHttpClient.__followedRefusal("https://a.example/x", "https://b.example/y", false));
+		Assert.isNull(JsHttpClient.__followedRefusal("http://a.example/x", "http://b.example/y", false));
+		Assert.isNull(JsHttpClient.__followedRefusal("/relative", "/relative", false));
+	}
+
 	/** Records what `loader` dispatches into `events`, as "COMPLETE <data>" or "IO_ERROR <text>". */
 	private static function listen(loader:URLLoader, events:Array<String>):Void {
 		loader.addEventListener(Event.COMPLETE, _ -> events.push("COMPLETE " + Std.string(loader.data)));
@@ -143,10 +228,22 @@ class URLLoaderBrowserTest extends utest.Test {
 		Answers the function that puts the browser's back.
 	**/
 	private static function wrap(name:String, seen:(xhr:Dynamic, args:Array<Dynamic>) -> Void):Void->Void {
+		return replace(name, (xhr, args, original) -> {
+			seen(xhr, args);
+			return original.apply(xhr, args);
+		});
+	}
+
+	/**
+		Puts `with` in place of `XMLHttpRequest.prototype[name]`. It is handed
+		the request, the call's arguments and the browser's own method, to
+		call or not, and what it answers is the call's. Answers the function
+		that puts the browser's back.
+	**/
+	private static function replace(name:String, with:(xhr:Dynamic, args:Array<Dynamic>, original:Dynamic) -> Dynamic):Void->Void {
 		var prototype:Dynamic = js.Syntax.code("XMLHttpRequest.prototype");
 		var original:Dynamic = Reflect.field(prototype, name);
-		Reflect.setField(prototype, name, js.Syntax.code("function() { {0}(this, Array.prototype.slice.call(arguments)); return {1}.apply(this, arguments); }",
-			seen, original));
+		Reflect.setField(prototype, name, js.Syntax.code("function() { return {0}(this, Array.prototype.slice.call(arguments), {1}); }", with, original));
 		return () -> Reflect.setField(prototype, name, original);
 	}
 

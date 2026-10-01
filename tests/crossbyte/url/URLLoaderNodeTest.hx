@@ -352,6 +352,60 @@ class URLLoaderNodeTest extends utest.Test {
 		});
 	}
 
+	/**
+		`User-Agent: CrossByte` while `userAgent` is unset, as the member says
+		and the native client sends. Node sends none of its own, so a request
+		went out with no User-Agent at all. One set is sent instead, and one
+		the caller wrote among its headers is the one Node sends.
+	**/
+	public function testTheUserAgentIsCrossByteUnlessSet(async:Async):Void {
+		serveWith((request:Dynamic, body:js.node.Buffer, response:Dynamic) -> {
+			response.writeHead(200, {"Content-Type": "text/plain"});
+			response.end(Std.string(Reflect.field(request.headers, "user-agent")));
+		}, (port, close) -> {
+			var url:String = 'http://127.0.0.1:$port/';
+			loadWith(url, _ -> {}, unset -> {
+				loadWith(url, request -> request.userAgent = "Tester/1", set -> {
+					loadWith(url, request -> request.requestHeaders.push(new URLRequestHeader("User-Agent", "Mine/2")), written -> {
+						close();
+						Assert.equals("ok CrossByte", unset);
+						Assert.equals("ok Tester/1", set);
+						Assert.equals("ok Mine/2", written);
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
+	/**
+		A version Node's http client cannot speak is refused, saying so,
+		where it went out as HTTP/1.1 whatever was asked -- and natively a
+		version that cannot be had fails rather than falls back.
+	**/
+	public function testAVersionNodeCannotSpeakIsRefused(async:Async):Void {
+		var served:Int = 0;
+		serveWith((request:Dynamic, body:js.node.Buffer, response:Dynamic) -> {
+			served++;
+			response.writeHead(200, {"Content-Type": "text/plain"});
+			response.end("over " + Std.string(request.httpVersion));
+		}, (port, close) -> {
+			var url:String = 'http://127.0.0.1:$port/';
+			loadWith(url, request -> request.httpVersion = crossbyte.http.HTTPVersion.HTTP_2, two -> {
+				loadWith(url, request -> request.httpVersion = crossbyte.http.HTTPVersion.HTTP_1, one -> {
+					loadWith(url, _ -> {}, eleven -> {
+						close();
+						Assert.isTrue(StringTools.startsWith(two, "error HTTP/2 is not available to URLLoader on Node"), two);
+						Assert.isTrue(StringTools.startsWith(one, "error HTTP/1.0 is not available to URLLoader on Node"), one);
+						Assert.equals("ok over 1.1", eleven);
+						Assert.equals(1, served, "a request for a version Node cannot speak was sent");
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
 	/** Records what `loader` dispatches into `events`, as "COMPLETE <data>" or "IO_ERROR <text>". */
 	private static function listen(loader:URLLoader, events:Array<String>):Void {
 		loader.addEventListener(Event.COMPLETE, _ -> events.push("COMPLETE " + Std.string(loader.data)));

@@ -58,7 +58,11 @@ typedef HTTPRequestContext = {
 	/** The version this backend was resolved for. */
 	var version:HTTPVersion;
 
-	/** Idle timeout in milliseconds. */
+	/**
+	 * Idle timeout in milliseconds: the longest the request may go with
+	 * nothing arriving for it. `0` or less is none; see
+	 * `URLRequest.idleTimeout`.
+	 */
 	var timeout:Int;
 
 	/** Value to send as the `User-Agent` request header. */
