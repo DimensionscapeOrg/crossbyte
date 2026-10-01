@@ -2117,6 +2117,39 @@ class SctpDataTransferTest extends utest.Test {
 		Assert.isTrue(pair.run(() -> @:privateAccess pair.clientData.__resetRequest == null), "the reset was never answered once the path came back");
 	}
 
+	/**
+		Once the peer has asked to shut down, no reset is asked for: a request
+		waiting, or one the peer never answered, is dropped rather than sent
+		into a shutdown, where RFC 6525 has none made.
+	**/
+	public function testNoResetIsAskedForOnceThePeerShutsDown():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var asked:Int = 0;
+		pair.watchClient(packet -> for (found in reconfigIn(packet)) if (found.type == SctpParameter.OUTGOING_SSN_RESET) asked++);
+
+		// One in flight, never answered, and another waiting behind it.
+		pair.cutToServer = true;
+		pair.clientData.resetStreams([3], pair.now);
+		pair.clientData.resetStreams([5], pair.now);
+		Assert.equals(1, asked, "the first request did not go");
+
+		// The peer asks to shut down, everything sent having been acknowledged.
+		var shutdown = new ByteArray();
+		shutdown.endian = Endian.BIG_ENDIAN;
+		shutdown.writeInt((@:privateAccess pair.clientData.__nextTsn - 1) | 0);
+		shutdown.position = 0;
+		pair.sackToClient(new SctpChunk(SctpPacket.CHUNK_SHUTDOWN, 0, shutdown));
+
+		for (_ in 0...30) {
+			pair.clientData.poll(pair.now);
+			pair.now += 0.25;
+		}
+
+		Assert.equals(1, asked, "a reset was asked for " + (asked - 1) + " more times during the shutdown");
+	}
+
 	public function testSequenceComparisonSurvivesWrapping():Void {
 		Assert.isTrue(SctpDataChunk.isEarlier(1, 2));
 		Assert.isFalse(SctpDataChunk.isEarlier(2, 1));

@@ -1812,6 +1812,12 @@ class SctpDataTransfer {
 
 		__answersOwed.resize(0);
 
+		// Asked only while the association is open: a shutdown the peer began
+		// is no time to reconfigure it, and the channels go with it anyway.
+		if (association.state != SctpAssociationState.ESTABLISHED) {
+			__resetWanted.resize(0);
+		}
+
 		if (__resetWanted.length > 0 && __resetRequest == null && ((__taken - __resetAfter) | 0) >= 0) {
 			var count:Int = __resetWanted.length < MAX_RESET_STREAMS ? __resetWanted.length : MAX_RESET_STREAMS;
 			var streams:Array<Int> = __resetWanted.splice(0, count);
@@ -1854,6 +1860,13 @@ class SctpDataTransfer {
 	**/
 	@:noCompletion private function __onResetTimer(now:Float):Void {
 		var request = __resetRequest;
+
+		// Not into a shutdown, whatever is still unanswered.
+		if (association.state != SctpAssociationState.ESTABLISHED) {
+			__resetRequest = null;
+			__resetWanted.resize(0);
+			return;
+		}
 
 		if (!request.answered) {
 			__errorCount++;
