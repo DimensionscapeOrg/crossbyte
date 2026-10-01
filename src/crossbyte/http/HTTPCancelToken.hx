@@ -80,10 +80,25 @@ class HTTPCancelToken {
 		__release();
 	}
 
-	/** Forgets a handler whose request has finished on its own. */
+	/**
+	 * Forgets a handler whose request has finished on its own.
+	 *
+	 * Compared as a method, not by identity: on eval and the jvm each mention
+	 * of `object.method` is a new closure, so handing back a bound method
+	 * found nothing, and the handler ran at a later cancel anyway.
+	 */
 	public function removeHandler(handler:Void->Void):Void {
+		if (handler == null) {
+			return;
+		}
+
 		__acquire();
-		__handlers.remove(handler);
+		for (i in 0...__handlers.length) {
+			if (Reflect.compareMethods(__handlers[i], handler)) {
+				__handlers.splice(i, 1);
+				break;
+			}
+		}
 		__release();
 	}
 
