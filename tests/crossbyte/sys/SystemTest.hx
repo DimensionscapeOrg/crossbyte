@@ -334,6 +334,45 @@ class SystemTest extends utest.Test {
 		Assert.isNull(System.__parseIoregUuid(null));
 	}
 
+	public function testSystemMemoryIsAskedOfTheSystem():Void {
+		// Each figure started a process, wmic on Windows, natively and on
+		// the jvm too, grep on Linux, and macOS answered 0.
+		var started:Float = haxe.Timer.stamp();
+		var total:Float = System.totalSystemMemory();
+		var free:Float = System.freeSystemMemory();
+		var took:Float = haxe.Timer.stamp() - started;
+		Assert.isTrue(total > 64 * 1024 * 1024, 'total $total');
+		Assert.isTrue(free > 0 && free <= total, 'free $free of $total');
+		#if (cpp || jvm || java || nodejs)
+		// Asked directly. Through wmic the two took 0.2 s and more on
+		// Windows; the jvm's first answer now takes 4 ms.
+		Assert.isTrue(took < 0.1, 'the two figures took $took s');
+		#end
+		#if !nodejs
+		if (System.PLATFORM == "linux") {
+			Assert.equals(System.__parseMeminfo(System.__readProcFile("/proc/meminfo"), "MemTotal"), total);
+		}
+		#end
+	}
+
+	public function testMemoryOutputsAreRead():Void {
+		var meminfo:String = "MemTotal:       16314616 kB\nMemFree:          301212 kB\nMemAvailable:    9876543 kB\n";
+		Assert.equals(16314616.0 * 1024, System.__parseMeminfo(meminfo, "MemTotal"));
+		Assert.equals(9876543.0 * 1024, System.__parseMeminfo(meminfo, "MemAvailable"));
+		Assert.equals(-1.0, System.__parseMeminfo("MemTotal: 1 kB\n", "MemAvailable"));
+
+		var vmStat:String = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                               10000.\n"
+			+ "Pages active:                            200000.\nPages inactive:                           30000.\n"
+			+ "Pages speculative:                         4000.\nPages throttled:                              0.\n";
+		Assert.equals((10000.0 + 30000.0 + 4000.0) * 16384.0, System.__parseVmStat(vmStat));
+		Assert.equals(-1.0, System.__parseVmStat("nothing"));
+		Assert.equals(-1.0, System.__parseVmStat(null));
+
+		Assert.equals(68530098176.0, System.__parseFirstNumber("TotalPhysicalMemory  \r\r\n68530098176  \r\r\n\r\r\n"));
+		Assert.isNull(System.__parseFirstNumber("FreePhysicalMemory  \r\r\n"));
+		Assert.isNull(System.__parseFirstNumber(null));
+	}
+
 	#if !(jvm || java)
 	static function __restoreEnv(name:String, value:Null<String>):Void {
 		#if nodejs
