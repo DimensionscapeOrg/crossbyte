@@ -2218,7 +2218,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * or, over HTTP/2, once this request's stream has been reset, by the
 	 * client, or by the server for something the client sent on it. A route
 	 * holding a request open, a long poll, can read it, or listen for
-	 * `Event.CLOSE` instead.
+	 * `Event.CLOSE` instead, which a listener added after the client went
+	 * still hears, in a later turn.
 	 */
 	public var connected(get, never):Bool;
 
@@ -2244,9 +2245,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 *
 	 * Listen here for `Event.CLOSE` to hear that the client went away, the
 	 * connection closed, or under HTTP/2 the stream was reset, by the client
-	 * or by the server, and stop producing; it is dispatched once, and the
-	 * stream refuses writes from then on. A request already answered gets a
-	 * stream that refuses them from the start.
+	 * or by the server, and stop producing; each listener hears it once,
+	 * one added after the client had already gone included, in a later turn,
+	 * and the stream refuses writes from then on. A request already answered,
+	 * or whose client has gone, gets a stream that refuses them from the
+	 * start.
 	 */
 	public function beginResponse(statusCode:Int, contentType:String, ?headers:Array<URLRequestHeader>, ?statusMessage:String):HTTPResponseStream {
 		if (__responded || __openStream != null) {
@@ -2411,16 +2414,80 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/**
 	 * Watches the connection for Event.CLOSE only once something listens for
 	 * it here, so a handler nobody asks costs no listener on its socket.
+	 *
+	 * A listener added once the client has gone, `connected` false, is
+	 * told too, once, in a later turn rather than before this returns. It
+	 * was registered on a connection already closed, or under HTTP/2 a
+	 * stream already reset, and heard nothing, or only the connection
+	 * closing whenever that came: a route that looked something up before
+	 * listening, and the producer the `HTTPResponseStream` example stops on
+	 * CLOSE, ran on for a client that had left.
 	 */
 	override public function addEventListener<T>(type:crossbyte.events.EventType<T>, listener:T->Void, priority:Int = 0):Void {
 		super.addEventListener(type, listener, priority);
 		if ((type : String) == Event.CLOSE) {
-			__watchClient();
+			if (connected) {
+				__watchClient();
+			} else {
+				__tellLate(cast listener);
+			}
 		}
 	}
 
+	/**
+	 * Tells `listener`, added after its client had gone, in a later turn: by
+	 * the CLOSE that was never dispatched, when nobody had been told, and to
+	 * it alone when the others heard it already, so each listener hears it
+	 * once. Not if it has been removed by then.
+	 */
+	@:noCompletion private function __tellLate(listener:Event->Void):Void {
+		var dispatched:Bool = __clientLeft;
+		var tell = function():Void {
+			if (!dispatched) {
+				// Unless something told everyone meanwhile, this one included.
+				if (!__clientLeft) {
+					__clientGone();
+				}
+				return;
+			}
+			if (__listensForClose(listener)) {
+				var event:Event = new Event(Event.CLOSE);
+				@:privateAccess event.target = this;
+				@:privateAccess event.currentTarget = this;
+				listener(event);
+			}
+		};
+
+		var runtime:Null<crossbyte.core.CrossByte> = #if nodejs @:privateAccess __origin.__nodeRuntime #else @:privateAccess __origin.__cbInstance #end;
+		if (runtime == null) {
+			runtime = crossbyte.core.CrossByte.current();
+		}
+		if (runtime == null || !runtime.post(tell)) {
+			// No turn will come: now is the only time it can be told.
+			tell();
+		}
+	}
+
+	@:noCompletion private function __listensForClose(listener:Event->Void):Bool {
+		var listeners = __eventMap == null ? null : __eventMap.get(Event.CLOSE);
+		if (listeners == null) {
+			return false;
+		}
+		for (entry in listeners) {
+			var registered:Dynamic = entry.listener;
+			// As removeEventListener compares: two reads of a bound method are
+			// not == on eval and the jvm.
+			if (registered == (cast listener) #if !(cpp || js) || Reflect.compareMethods(registered, listener) #end) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	@:noCompletion private function __watchClient():Void {
-		if (__watchingClient) {
+		// Not once CLOSE has gone out: there is nothing left to hear, and the
+		// connection closing later would tell every listener again.
+		if (__watchingClient || __clientLeft) {
 			return;
 		}
 		__watchingClient = true;
@@ -2443,9 +2510,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	/**
 	 * The client went away before its response was done: an open stream is
-	 * cut loose, and whoever listens hears `Event.CLOSE`.
+	 * cut loose, and whoever listens hears `Event.CLOSE`, once.
 	 */
 	@:noCompletion private function __clientGone():Void {
+		if (__clientLeft) {
+			return;
+		}
 		__clientLeft = true;
 		__unwatchClient();
 		__detachOpenStream();

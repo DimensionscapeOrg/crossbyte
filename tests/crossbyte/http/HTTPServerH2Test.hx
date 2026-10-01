@@ -1442,6 +1442,136 @@ class HTTPServerH2Test extends utest.Test {
 		}
 	}
 
+	public function testACloseListenerAddedAfterItsStreamWasResetHearsIt(async:Async):Void {
+		// A stream reset while nothing listened, by its client here, said
+		// nothing to a CLOSE listener added after it: the listener was
+		// registered for a stream already gone, and heard only the connection
+		// closing, whenever that came. The listener the HTTPResponseStream doc
+		// adds after beginResponse is one such, and its producer ran on. It
+		// is told now, once, in a later turn rather than from inside
+		// addEventListener.
+		var held:HTTPRequestHandler = null;
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/poll") {
+						held = handler;
+						return;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/poll", true);
+			session.until(() -> held != null || session.ended, () -> {
+				session.reset(1);
+				session.until(() -> (held != null && !held.connected) || session.ended, () -> {
+					var heard:Int = 0;
+					var events = held.beginResponse(200, "text/event-stream");
+					held.addEventListener(crossbyte.events.Event.CLOSE, _ -> heard++);
+					var heardInsideTheCall:Int = heard;
+					session.until(() -> heard > 0 || session.ended, () -> {
+						var heardBeforeTheClose:Int = heard;
+						session.request(3, "GET", "/index.html", true);
+						session.until(() -> session.finished(3) || session.ended, () -> {
+							session.close();
+							// The connection closing as well, which must not tell it again.
+							HTTPTestSupport.pumpMoreAsync(5, () -> {
+								Assert.isFalse(events.connected);
+								Assert.equals(0, heardInsideTheCall, "CLOSE was dispatched from inside addEventListener");
+								Assert.equals(1, heardBeforeTheClose, "a listener added after the reset did not hear CLOSE");
+								Assert.equals(1, heard, "CLOSE was dispatched " + heard + " times");
+								Assert.equals(200, session.status(3));
+								async.done();
+							});
+						});
+					}, 2.0);
+				});
+			});
+		});
+	}
+
+	public function testACloseListenerAddedAfterTheServerResetItsStreamHearsIt(async:Async):Void {
+		// The same for a stream the server reset, for DATA after the client
+		// had ended it, STREAM_CLOSED, before anything listened.
+		var held:HTTPRequestHandler = null;
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/poll") {
+						held = handler;
+						return;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/poll", true);
+			session.until(() -> held != null || session.ended, () -> {
+				session.trickle(1, "after the end");
+				session.until(() -> !held.connected || session.ended, () -> {
+					var late:Int = 0;
+					held.addEventListener(crossbyte.events.Event.CLOSE, _ -> late++);
+					session.until(() -> late > 0 || session.ended, () -> {
+						var lateBeforeTheClose:Int = late;
+						session.close();
+						HTTPTestSupport.pumpMoreAsync(5, () -> {
+							Assert.equals(5, session.resetCode(1), "the server did not reset the stream, so this shows nothing");
+							Assert.equals(1, lateBeforeTheClose, "a listener added after the server's reset did not hear CLOSE");
+							Assert.equals(1, late, "CLOSE was dispatched " + late + " times");
+							async.done();
+						});
+					}, 2.0);
+				});
+			});
+		});
+	}
+
+	public function testAListenerAddedAfterCloseWentOutHearsItOnce(async:Async):Void {
+		// One listener hears the reset as it happens; a second, added after,
+		// is told in a later turn, alone. The connection closing then tells
+		// neither again: the second's watch had the first hear CLOSE twice.
+		var held:HTTPRequestHandler = null;
+		var first:Int = 0;
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/poll") {
+						held = handler;
+						handler.addEventListener(crossbyte.events.Event.CLOSE, _ -> first++);
+						return;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/poll", true);
+			session.until(() -> held != null || session.ended, () -> {
+				session.reset(1);
+				session.until(() -> first > 0 || session.ended, () -> {
+					var second:Int = 0;
+					held.addEventListener(crossbyte.events.Event.CLOSE, _ -> second++);
+					session.until(() -> second > 0 || session.ended, () -> {
+						var secondBeforeTheClose:Int = second;
+						session.close();
+						HTTPTestSupport.pumpMoreAsync(5, () -> {
+							Assert.equals(1, secondBeforeTheClose, "a listener added after CLOSE went out did not hear it");
+							Assert.equals(1, first, "the first listener heard CLOSE " + first + " times");
+							Assert.equals(1, second, "the second listener heard CLOSE " + second + " times");
+							async.done();
+						});
+					}, 2.0);
+				});
+			});
+		});
+	}
+
 	public function testARefusalWhoseAnswerThrowsIsResetAsAnError(async:Async):Void {
 		// A request refused at its headers, a Content-Length past the limit,
 		// whose 413 threw, and whose 500 then threw as well, had no answer
