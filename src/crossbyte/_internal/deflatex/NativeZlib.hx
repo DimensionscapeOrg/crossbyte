@@ -12,8 +12,8 @@ import haxe.io.Bytes;
 	that alone. hxcpp already links zlib for `haxe.zip`, so this adds no
 	dependency.
 
-	The streaming encoder stays on the `Deflater`: it flushes a chunk at a
-	time, and `haxe.zip.Compress` gives no flush between finishing and not.
+	A body compressed as it streams goes through the same zlib, flushed after
+	each piece; see `NativeDeflateStream`.
 **/
 #if cpp
 @:noCompletion
