@@ -138,12 +138,15 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	public var endian(get, set):Endian;
 
 	/**
-	 * The IP address this socket is bound to on the local machine.
+	 * The IP address this socket is bound to on the local machine: null until
+	 * it has one -- before `connect()`, after `close()`, and on the jvm, hl
+	 * and neko while a connect is still under way.
 	**/
 	public var localAddress(get, never):String;
 
 	/**
-		The port this socket is bound to on the local machine.
+		The port this socket is bound to on the local machine; 0 until it has
+		one, as for `localAddress`.
 	 */
 	public var localPort(get, never):Int;
 
@@ -160,6 +163,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		You can use this property to determine the IP address of a client socket 
 		dispatched in a ServerSocketConnectEvent by a ServerSocket object.
+
+		Null while the socket is not connected: before `connect()` has
+		finished, and after `close()`.
 	 */
 	public var remoteAddress(get, never):String;
 
@@ -168,6 +174,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		You can use this property to determine the port number of a client socket 
 		dispatched in a ServerSocketConnectEvent by a ServerSocket object.
+
+		0 while the socket is not connected, as for `remoteAddress`.
 	 */
 	public var remotePort(get, never):Int;
 
@@ -2904,9 +2912,15 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		return __endian;
 	}
 
+	// The ends read null and 0 until the socket has them -- before connect(),
+	// after close(), and on the jvm, hl and neko while a connect is still
+	// under way, where the system has no local end to report yet -- rather
+	// than dereferencing what is not there: an RPC session started on a
+	// connection still connecting threw a NullPointerException on the jvm.
+
 	@:noCompletion private function get_localAddress():String {
 		#if nodejs
-		return __socket.localAddress;
+		return __socket == null ? null : __socket.localAddress;
 		#elseif (js && !nodejs)
 		return __refuseEndpoint("localAddress");
 		#else
@@ -2916,23 +2930,26 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// difference -- and the TCP socket beside it never did, so an
 		// application comparing what it bound against what it was told back
 		// worked over UDP and failed over TCP on the same target.
-		return crossbyte._internal.net.IPv6.compress(__socket.host().host.toString());
+		var local = __localEnd();
+		return local == null ? null : crossbyte._internal.net.IPv6.compress(local.host.toString());
 		#end
 	}
 
 	@:noCompletion private function get_localPort():Int {
 		#if nodejs
-		return __socket.localPort;
+		var port:Null<Int> = __socket == null ? null : __socket.localPort;
+		return port == null ? 0 : port;
 		#elseif (js && !nodejs)
 		return __refuseEndpoint("localPort");
 		#else
-		return __socket.host().port;
+		var local = __localEnd();
+		return local == null ? 0 : local.port;
 		#end
 	}
 
 	@:noCompletion private function get_remoteAddress():String {
 		#if nodejs
-		return __socket.remoteAddress;
+		return __socket == null ? null : __socket.remoteAddress;
 		#elseif (js && !nodejs)
 		return __refuseEndpoint("remoteAddress");
 		#else
@@ -2952,11 +2969,23 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private var __peerAddress:String = null;
 	@:noCompletion private var __peerPort:Int = 0;
 
+	// The local end as the system reports it, or null when it has none to
+	// report: no socket, or one whose connect has not given it an end yet.
+	@:noCompletion private function __localEnd():Null<{host:sys.net.Host, port:Int}> {
+		return __socket == null ? null : try __socket.host() catch (_:Dynamic) null;
+	}
+
 	@:noCompletion private function __readPeer():Void {
 		if (__peerOf != null && __peerOf == __socket) {
 			return;
 		}
-		var peer = __socket.peer();
+		var peer = __socket == null ? null : try __socket.peer() catch (_:Dynamic) null;
+		if (peer == null) {
+			__peerAddress = null;
+			__peerPort = 0;
+			__peerOf = null;
+			return;
+		}
 		__peerAddress = crossbyte._internal.net.IPv6.compress(peer.host.toString());
 		__peerPort = peer.port;
 		__peerOf = __connected ? __socket : null;
@@ -2997,7 +3026,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	@:noCompletion private function get_remotePort():Int {
 		#if nodejs
-		return __socket.remotePort;
+		var port:Null<Int> = __socket == null ? null : __socket.remotePort;
+		return port == null ? 0 : port;
 		#elseif (js && !nodejs)
 		return __refuseEndpoint("remotePort");
 		#else

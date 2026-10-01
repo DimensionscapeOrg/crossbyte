@@ -70,6 +70,45 @@ class SocketContractTest extends utest.Test {
 	}
 
 	/**
+		A socket's ends read null and 0 while it has none -- before
+		`connect()` and after `close()` -- and the ones it was given while
+		connected. Asking dereferenced a socket that was not there, so a
+		close handler asking whom it had talked to threw, natively, and on
+		the jvm an RPC session started on a connection still connecting
+		threw a NullPointerException from `localAddress`.
+	**/
+	@:timeout(15000)
+	public function testItsEndsReadNothingWhileItHasNone(async:Async):Void {
+		var idle = new Socket();
+		try {
+			Assert.isNull(idle.localAddress, "an unconnected socket has a local address");
+			Assert.equals(0, idle.localPort);
+			Assert.isNull(idle.remoteAddress, "an unconnected socket has a remote address");
+			Assert.equals(0, idle.remotePort);
+		} catch (e:Dynamic) {
+			Assert.fail("asking an unconnected socket for its ends threw: " + e);
+		}
+
+		__connected(function(client, peer, done) {
+			Assert.equals("127.0.0.1", client.remoteAddress);
+			Assert.isTrue(client.remotePort > 0);
+			Assert.equals("127.0.0.1", client.localAddress);
+			Assert.isTrue(client.localPort > 0);
+
+			client.close();
+			try {
+				Assert.isNull(client.localAddress, "a closed socket still has a local address");
+				Assert.equals(0, client.localPort);
+				Assert.isNull(client.remoteAddress, "a closed socket still has a remote address");
+				Assert.equals(0, client.remotePort);
+			} catch (e:Dynamic) {
+				Assert.fail("asking a closed socket for its ends threw: " + e);
+			}
+			done();
+		}, async);
+	}
+
+	/**
 		A `socketData` event's `bytesLoaded` is what arrived for it, as the
 		native read loop has always said; on Node and in a page it was
 		everything still unread, so an event for 4 bytes said 7 when the 3

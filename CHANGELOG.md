@@ -2095,6 +2095,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `Socket`'s `localAddress`, `localPort`, `remoteAddress` and
+  `remotePort` read null and 0 while it has no such end -- before
+  `connect()`, after `close()`, and on the jvm, hl and neko while a
+  connect is under way -- instead of throwing. A close handler asking
+  whom it had talked to threw on every target, and an `RPCSession`
+  started on a connection still connecting threw a NullPointerException
+  on the jvm.
 - `SharedObject` opens on macOS. A region's name there was the one Linux
   uses, longer than the 31 characters macOS allows a shared memory name,
   and its lock was `flock()` on the region's descriptor, which macOS
