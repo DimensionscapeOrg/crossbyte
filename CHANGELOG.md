@@ -2173,6 +2173,23 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `SQLiteStatement.cancel()` stops the statement, and only it, as AIR's
+  does. On an asynchronous connection its work not yet run is dropped, its
+  work running now is interrupted, and the rows it left unread are let go
+  of, ending the read they held; nothing more is dispatched for it, and the
+  connection's other work carries on. On a synchronous connection, another
+  thread cancelling a statement that is running interrupts it. It only
+  reset the statement's own fields: an INSERT cancelled before its turn
+  still inserted, a statement running ran on to its end, holding up the
+  work behind it, and a statement read a page at a time kept its read open
+  -- a writer elsewhere was told "database is locked" -- until the next
+  statement on the connection read all its rows.
+- `SQLiteConnection.cancel()`, and a statement's own, stop a statement
+  whose work is just starting. SQLite clears an interrupt as a statement
+  starts when no other is running, so a cancel that landed while the
+  worker prepared the statement was lost, and the statement ran on: an
+  `execute()` and `cancel()` in a row lost it within the first few of 150
+  tries. A progress handler stops it now, until its work is over.
 - An asynchronous `SQLiteConnection` no longer crashes the process when
   the calling thread asks it something while its worker runs a statement.
   `request()`, and the properties and methods that ask SQLite --
