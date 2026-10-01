@@ -33,6 +33,14 @@ import utest.Assert;
 **/
 @:access(crossbyte.net.ReliableDatagramSocket)
 class ReliableDatagramCloseTest extends utest.Test {
+	/** Whatever sessions a case left open, and their sockets, ended after it. **/
+	public function teardown():Void {
+		for (link in Link.made) {
+			link.close();
+		}
+		Link.made = [];
+	}
+
 	// ------------------------------------------------------------ graceful
 
 	public function testDataSentJustBeforeCloseArrivesInFullAndInOrderThenClose():Void {
@@ -373,17 +381,31 @@ private class Link {
 	/** What was lost, in order. **/
 	public var lost:Array<String> = [];
 
+	/** Every link made and not yet closed by the case's teardown. **/
+	public static var made:Array<Link> = [];
+
 	public static function make(mode:ReliableDatagramSocketMode = DATAGRAM):Link {
 		if (!DatagramSocket.isSupported) {
 			Assert.isFalse(DatagramSocket.isSupported);
 			return null;
 		}
-		return new Link(mode);
+		var link = new Link(mode);
+		made.push(link);
+		return link;
 	}
 
 	private function new(mode:ReliableDatagramSocketMode) {
 		a = TapSocket.make("a", 1000, 5000, log, mode);
 		b = TapSocket.make("b", 5000, 1000, log, mode);
+	}
+
+	/** Ends both sessions, whatever state the case left them in. **/
+	public function close():Void {
+		for (session in [a, b]) {
+			try {
+				session.abort();
+			} catch (_:Dynamic) {}
+		}
 	}
 
 	public static function describe(frame:ReliableDatagramFrame):String {
