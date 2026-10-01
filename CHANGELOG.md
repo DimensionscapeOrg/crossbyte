@@ -1942,6 +1942,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `ReliableDatagramServerSocket.discoverPublicAddress` and
+  `localAddressFor` say what they do with a question they cannot ask:
+  return it failed, its `cause` an `IOError` for a server not bound and
+  listening, as `allocateRelay` does. They said they threw, so a caller
+  catching the throw never heard of the failure.
 - `ReliableDatagramSocket.readMultiByte` and `writeMultiByte` say they
   read and write UTF-8 and ignore the character set named, as
   `ByteArray`'s already do; they promised the named set.
