@@ -226,6 +226,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.EndpointTest());
 		runner.addCase(new crossbyte.net.NetConnectionTest());
 		runner.addCase(new crossbyte.net.NetHostTest());
+		// Also in PortableSuite: Node is where a key kept its PEM in plain view.
+		runner.addCase(new crossbyte.net.KeyTest());
 		runner.addCase(new crossbyte._internal.socket.poll.PollBackendRegistryTest());
 		runner.addCase(new crossbyte._internal.socket.poll.PollBackendSeamTest());
 		runner.addCase(new crossbyte._internal.socket.FlexSocketTest());

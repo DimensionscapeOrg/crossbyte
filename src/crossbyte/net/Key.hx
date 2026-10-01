@@ -23,7 +23,9 @@ import sys.ssl.Key as NativeKey;
  * A key is the one piece of TLS material worth being careful about in an API.
  * It is never read back out, never logged, and never converted to a string --
  * the only thing that can be done with one is hand it to a server that is
- * about to present it.
+ * about to present it. Printed -- traced, logged, put in a string or, on
+ * Node, given to `JSON.stringify` or `console.log` -- it shows that it is a
+ * key and nothing of it.
  */
 final class Key {
 	#if nodejs
@@ -40,7 +42,29 @@ final class Key {
 	@:noCompletion private var __native:NativeKey;
 	#end
 
-	private function new() {}
+	private function new() {
+		#if nodejs
+		// Kept out of what Node lists of an object. On Node a key holds its
+		// PEM text and passphrase as they are, in two plain fields, and
+		// JSON.stringify, console.log and a for-in -- Std.string's fallback --
+		// each listed both: one debugging line put the key, and the password
+		// protecting it, in a log. Not enumerable, none of them sees either.
+		js.lib.Object.defineProperty(this, "__pem", {value: null, writable: true, enumerable: false});
+		js.lib.Object.defineProperty(this, "__passphrase", {value: null, writable: true, enumerable: false});
+		#end
+	}
+
+	/** That this is a key, and nothing of it. **/
+	public function toString():String {
+		return "[Key: redacted]";
+	}
+
+	#if nodejs
+	/** What `JSON.stringify` writes for a key: the same as `toString`. **/
+	public function toJSON():String {
+		return toString();
+	}
+	#end
 
 
 	/**

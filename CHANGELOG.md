@@ -1932,6 +1932,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `Key` shows nothing of itself when printed. On Node it held its PEM
+  text and passphrase in two plain fields, and `trace`, `Std.string`,
+  `JSON.stringify` and `console.log` each printed both, so one debugging
+  line put a server's private key, and the password protecting it, in a
+  log. It prints as `[Key: redacted]` on every target now.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened
