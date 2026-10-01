@@ -845,12 +845,7 @@ class H2Connection {
 	}
 
 	private function __writeFrame(type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {
-		var out:BytesBuffer = new BytesBuffer();
-		H2Frame.writeHeader(out, payload.length, type, flags, streamId);
-		if (payload.length > 0) {
-			out.addBytes(payload, 0, payload.length);
-		}
-		__write(out.getBytes());
+		__write(H2Frame.encode(type, flags, streamId, payload));
 	}
 
 	private function __write(bytes:Bytes):Void {

@@ -43,6 +43,30 @@ class H2Frame {
 	 * rejecting keeps a caller from having to pre-validate an id it derived
 	 * arithmetically.
 	 */
+	/**
+		A whole frame in one allocation: its header, then `length` bytes of
+		`payload` from `offset` (all of it when `length` is negative). Frames
+		were built in a BytesBuffer that grew a byte at a time and copied out,
+		from a payload already cut out of its source with sub().
+	**/
+	public static function encode(type:H2FrameType, flags:Int, streamId:Int, payload:Null<Bytes>, offset:Int = 0, length:Int = -1):Bytes {
+		var size:Int = payload == null ? 0 : (length < 0 ? payload.length - offset : length);
+		var out:Bytes = Bytes.alloc(HEADER_SIZE + size);
+		out.set(0, (size >> 16) & 0xff);
+		out.set(1, (size >> 8) & 0xff);
+		out.set(2, size & 0xff);
+		out.set(3, (cast type : Int) & 0xff);
+		out.set(4, flags & 0xff);
+		out.set(5, (streamId >> 24) & 0x7f);
+		out.set(6, (streamId >> 16) & 0xff);
+		out.set(7, (streamId >> 8) & 0xff);
+		out.set(8, streamId & 0xff);
+		if (size > 0) {
+			out.blit(HEADER_SIZE, payload, offset, size);
+		}
+		return out;
+	}
+
 	public static function writeHeader(out:BytesBuffer, length:Int, type:H2FrameType, flags:Int, streamId:Int):Void {
 		out.addByte((length >> 16) & 0xff);
 		out.addByte((length >> 8) & 0xff);

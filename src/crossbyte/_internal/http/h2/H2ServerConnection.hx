@@ -445,10 +445,9 @@ class H2ServerConnection {
 				chunk = allowed;
 			}
 
-			var data:Bytes = target.take(chunk);
-			var last:Bool = target.queued == 0 && target.pendingEndStream;
+			var last:Bool = target.queued == chunk && target.pendingEndStream;
 
-			__writeFrame(H2FrameType.DATA, last ? H2Flags.END_STREAM : 0, target.id, data);
+			__write(target.takeFrame(chunk, last ? H2Flags.END_STREAM : 0));
 			target.sendWindow -= chunk;
 			__connectionSendWindow -= chunk;
 
@@ -1136,7 +1135,7 @@ class H2ServerConnection {
 				flags |= H2Flags.END_STREAM;
 			}
 
-			__writeFrame(first ? H2FrameType.HEADERS : H2FrameType.CONTINUATION, flags, streamId, block.sub(offset, chunk));
+			__writeFrameOf(first ? H2FrameType.HEADERS : H2FrameType.CONTINUATION, flags, streamId, block, offset, chunk);
 
 			offset += chunk;
 			first = false;
@@ -1146,13 +1145,13 @@ class H2ServerConnection {
 		}
 	}
 
-	private function __writeFrame(type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {
-		var out:BytesBuffer = new BytesBuffer();
-		H2Frame.writeHeader(out, payload.length, type, flags, streamId);
-		if (payload.length > 0) {
-			out.addBytes(payload, 0, payload.length);
-		}
-		__write(out.getBytes());
+	private inline function __writeFrame(type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {
+		__write(H2Frame.encode(type, flags, streamId, payload));
+	}
+
+	/** A frame of `length` bytes of `source` from `offset`, without cutting them out first. **/
+	private inline function __writeFrameOf(type:H2FrameType, flags:Int, streamId:Int, source:Bytes, offset:Int, length:Int):Void {
+		__write(H2Frame.encode(type, flags, streamId, source, offset, length));
 	}
 
 	private function __fail(e:H2ConnectionError):Void {

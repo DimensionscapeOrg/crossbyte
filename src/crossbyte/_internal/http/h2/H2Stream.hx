@@ -164,6 +164,28 @@ class H2Stream {
 		return out;
 	}
 
+	/**
+		A DATA frame of up to `count` queued bytes, `flags` on it, made from the
+		queue where they sit: take() cut them out into a Bytes of their own and
+		the frame copied them again.
+	**/
+	public function takeFrame(count:Int, flags:Int):Bytes {
+		if (count > queued) {
+			count = queued;
+		}
+
+		var frame:Bytes = H2Frame.encode(H2FrameType.DATA, flags, id, __queue, __queueOffset, count);
+		__queueOffset += count;
+
+		if (__queueOffset >= __queueLength) {
+			__queue = null;
+			__queueOffset = 0;
+			__queueLength = 0;
+		}
+
+		return frame;
+	}
+
 	public inline function isClosed():Bool {
 		return state == CLOSED;
 	}
