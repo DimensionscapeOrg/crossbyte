@@ -564,12 +564,15 @@ class WebSocket extends Socket {
 						 not open.
 	**/
 	override public function readObject():Dynamic {
-		if (objectEncoding == HXSF) {
-			return Unserializer.run(readUTF());
-		} else {
-			// TODO: Add support for AMF if haxelib "format" is included
-			return null;
+		if (__webSocket == null) {
+			throw new IOError("Operation attempted on invalid socket.");
 		}
+
+		// As a ByteArray reads one, in every encoding a ByteArray can -- JSON
+		// always, AMF with -lib format -- and one this build cannot do throws.
+		// Only HXSF was read: anything else read null, and said nothing.
+		__input.objectEncoding = objectEncoding;
+		return __input.readObject();
 	}
 
 	/**
@@ -797,11 +800,10 @@ class WebSocket extends Socket {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		if (objectEncoding == HXSF) {
-			__output.writeUTF(Serializer.run(object));
-		} else {
-			// TODO: Add support for AMF if haxelib "format" is included
-		}
+		// As a ByteArray writes one; see readObject. Anything but HXSF wrote
+		// nothing, and said nothing.
+		__output.objectEncoding = objectEncoding;
+		__output.writeObject(object);
 	}
 
 	/**

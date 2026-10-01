@@ -446,6 +446,41 @@ class SocketTest extends utest.Test {
 		Assert.equals(5 * chunk, throttled.taken.length, "not every piece was sent");
 	}
 
+	/**
+		An object round-trips in every encoding a ByteArray handles: JSON,
+		which is always there. A Socket took only HXSF; anything else read
+		null and wrote nothing, and an encoding the build cannot do -- AMF
+		without -lib format -- said so nowhere. ByteArray had been fixed for
+		exactly that; its siblings had not.
+	**/
+	public function testAnObjectRoundTripsInJson():Void {
+		var writer = progressSocket();
+		var reader = progressSocket();
+		writer.objectEncoding = ObjectEncoding.JSON;
+		reader.objectEncoding = ObjectEncoding.JSON;
+
+		writer.writeObject({name: "crossbyte", count: 3});
+		reader.__input.writeBytes(writer.__output, 0, writer.__output.length);
+		reader.__input.position = 0;
+		var back:Dynamic = reader.readObject();
+
+		Require.notNull(back);
+		Assert.equals("crossbyte", back.name);
+		Assert.equals(3, back.count);
+
+		#if !format
+		reader.objectEncoding = ObjectEncoding.AMF3;
+		reader.__input.position = 0;
+		Assert.raises(() -> reader.readObject(), null, "an encoding this build cannot read read nothing, and said nothing");
+		#end
+
+		for (socket in [writer, reader]) {
+			var raw:SysSocket = socket.__socket;
+			socket.__socket = null;
+			try raw.close() catch (_:Dynamic) {}
+		}
+	}
+
 	/** A connected socket over an unconnected system socket, its runtime this thread's, ready to buffer writes. **/
 	private function progressSocket():Socket {
 		var socket = new Socket();
