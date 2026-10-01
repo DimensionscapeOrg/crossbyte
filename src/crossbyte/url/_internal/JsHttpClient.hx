@@ -1,5 +1,6 @@
 package crossbyte.url._internal;
 
+import crossbyte._internal.http.CookieJar;
 import crossbyte.http.HTTPCancelToken;
 import crossbyte.url.URLRequest;
 import crossbyte.url.URLRequestHeader;
@@ -368,6 +369,14 @@ class JsHttpClient {
 		var redirects:Int = 0;
 		var leftOrigin:Bool = false;
 
+		// The native client's jar, for the length of this request: what a
+		// response sets goes back to the host that set it on the hops after
+		// it, unless the caller wrote a Cookie of its own, which wins while it
+		// is sent. Nothing was kept, so a sign-in answering 302 with a session
+		// cookie reached the page it sent the client to without it.
+		var jar:Null<CookieJar> = request.manageCookies ? new CookieJar() : null;
+		var callersCookie:Bool = __hasHeader(headers, "cookie");
+
 		function hop(target:String, method:String, body:Dynamic):Void {
 			var url:js.node.url.URL;
 
@@ -383,6 +392,15 @@ class JsHttpClient {
 			}
 
 			var secure:Bool = url.protocol == "https:";
+
+			if (jar != null && !callersCookie) {
+				// The last hop's, for its own host, is not this one's.
+				__removeHeader(headers, "cookie");
+				var cookie:Null<String> = jar.headerFor(url.hostname, secure);
+				if (cookie != null) {
+					headers.set("Cookie", cookie);
+				}
+			}
 
 			// Framed with its length, whatever the method. Node frames a body
 			// only for the methods it expects one on, so a body on a GET, DELETE
@@ -418,6 +436,15 @@ class JsHttpClient {
 				var code:Int = response.statusCode;
 				onStatus(code);
 
+				if (jar != null) {
+					// While `url` is still the host that set them. Node gives the
+					// fields as an array, and the jar takes them a line each.
+					var setCookie:Dynamic = response.headers.get("set-cookie");
+					if (setCookie != null) {
+						jar.store(Std.isOfType(setCookie, Array) ? (setCookie : Array<Dynamic>).join("\n") : Std.string(setCookie), url.hostname);
+					}
+				}
+
 				var location:Dynamic = response.headers.get("location");
 				if (request.followRedirects && (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) && location != null) {
 					// The redirect's own body is not wanted; reading it lets the
@@ -450,6 +477,9 @@ class JsHttpClient {
 						__removeHeader(headers, "authorization");
 						__removeHeader(headers, "proxy-authorization");
 						__removeHeader(headers, "cookie");
+						// The jar's cookies, for whichever host set them, go on
+						// from here in the caller's place.
+						callersCookie = false;
 						// And the client certificate, meant for the origin named.
 						leftOrigin = true;
 					}
@@ -754,6 +784,16 @@ class JsHttpClient {
 		}
 
 		step(codings.length - 1, body);
+	}
+
+	/** Whether `headers` holds `name`, lowercase, whatever case the caller wrote it in. */
+	static function __hasHeader(headers:haxe.DynamicAccess<String>, name:String):Bool {
+		for (key in headers.keys()) {
+			if (key.toLowerCase() == name) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** Removes a header whatever case the caller wrote it in. */

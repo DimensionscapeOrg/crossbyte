@@ -70,6 +70,12 @@ class URLRequest {
 		oldest going first, as a browser's do, and one longer than 4,096
 		characters is ignored.
 
+		By these rules on every target but the browser. In a browser the
+		browser's own jar is used instead, whatever this says, by the
+		browser's rules: it keeps cookies between requests too, and a request
+		to another origin carries none, since `XMLHttpRequest.withCredentials`
+		is left off.
+
 		The default comes from `URLRequestDefaults.manageCookies`.
 	**/
 	public var manageCookies:Bool;
