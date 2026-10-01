@@ -2163,6 +2163,23 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `close()` may be called from any thread on a `Socket`, a `WebSocket`
+  (and `closeWith()`), a `ReliableDatagramSocket` (and `abort()`) and a
+  `NetConnection` over any of them. From a thread that is not the
+  connection's runtime's, the close is handed to the runtime, as
+  `CrossByte.post` hands work over, and happens there after the call
+  returns, so `close` and `onClose` are told on the runtime's thread.
+  A WebSocket's `close()` threw there part way through, inside its
+  heartbeat's timer, and the error was swallowed: the close frame went,
+  the connection stayed open, the heartbeat ran on for good and `close`
+  was never dispatched. Its `closeWith()`, and a reliable session's
+  `close()`, threw at their callers, the reliable one with its FIN never
+  sent; a plain socket and a `NetConnection` closed, and told their
+  listeners on the wrong thread. A session's timers are now its runtime's
+  whichever thread arms or clears one, which on Node also keeps the
+  sessions a child runtime's server accepts on the child's timers, where
+  a heartbeat or keepalive armed in a socket's callback went on the
+  application's.
 - A reliable or WebSocket `NetConnection` stamps `inTimestamp` and
   `outTimestamp` with the uptime of the runtime its socket runs on, read
   off the socket. It asked `CrossByte.current()` on every message, a
