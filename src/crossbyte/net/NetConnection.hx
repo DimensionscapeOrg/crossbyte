@@ -998,7 +998,24 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 				__socket.writeBytes(data);
 				__socket.flush();
 		}
-		outTimestamp = CrossByte.current().uptime;
+		outTimestamp = __uptime();
+	}
+
+	/**
+		The uptime of the runtime the socket delivers on, read off its
+		transport. Every message sent and received asked `CrossByte.current()`
+		instead: a thread-local lookup a message, and on JavaScript the
+		application's runtime rather than a child's whenever a socket's
+		callback was what sent or received, a clock the child's heartbeat
+		does not read. The calling thread's is the fallback for a socket with
+		no transport yet.
+	**/
+	@:noCompletion private inline function __uptime():Float {
+		var runtime:Null<CrossByte> = @:privateAccess __socket.__transportRuntime();
+		if (runtime == null) {
+			runtime = CrossByte.__currentOrNull();
+		}
+		return runtime != null ? runtime.uptime : 0.0;
 	}
 
 	public function close():Void {
@@ -1025,13 +1042,13 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 	}
 
 	@:noCompletion private inline function socket_onDatagramData(event:DatagramSocketDataEvent):Void {
-		inTimestamp = CrossByte.current().uptime;
+		inTimestamp = __uptime();
 		event.data.position = 0;
 		__onData(event.data);
 	}
 
 	@:noCompletion private function socket_onStreamData(_event:ProgressEvent):Void {
-		inTimestamp = CrossByte.current().uptime;
+		inTimestamp = __uptime();
 		var bytes = new ByteArray();
 		var available = __socket.bytesAvailable;
 		if (available > 0) {
@@ -1221,8 +1238,21 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 	public function send(data:ByteArray):Void {
 		__socket.writeBytes(data);
 		__socket.flush();
-		var runtime = CrossByte.current();
-		outTimestamp = runtime != null ? runtime.uptime : 0.0;
+		outTimestamp = __uptime();
+	}
+
+	/**
+		The uptime of the runtime the session runs on, as a reliable
+		connection's is read: `send` asked `CrossByte.current()`, a lookup a
+		message and on JavaScript the application's runtime whenever a
+		socket's callback sent.
+	**/
+	@:noCompletion private inline function __uptime():Float {
+		var runtime:Null<CrossByte> = @:privateAccess __socket.__cbInstance;
+		if (runtime == null) {
+			runtime = CrossByte.__currentOrNull();
+		}
+		return runtime != null ? runtime.uptime : 0.0;
 	}
 
 	public function close():Void {
@@ -1254,10 +1284,8 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 	}
 
 	@:noCompletion private inline function socket_onData(_e:ProgressEvent):Void {
-		@:privateAccess {
-			inTimestamp = __socket.__cbInstance != null ? __socket.__cbInstance.uptime : 0.0;
-			__onData(__socket.__input);
-		}
+		inTimestamp = __uptime();
+		@:privateAccess __onData(__socket.__input);
 	}
 
 	@:noCompletion private inline function socket_onClose(e:Event):Void {

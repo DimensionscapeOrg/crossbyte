@@ -75,9 +75,12 @@ class WebSocket extends Socket {
 		var webSocket:WebSocket = new WebSocket();
 
 		// The server first: the session asks it about its upgrade, and the
-		// settings below are its.
+		// settings below are its. Its runtime too: on Node this is called
+		// from the server's connection callback, where `current()` is the
+		// application's runtime even for a server a child runtime runs.
 		webSocket.__server = server;
-		webSocket.__cbInstance = CrossByte.current();
+		var runtime:Null<CrossByte> = server != null ? @:privateAccess server.__cbInstance : null;
+		webSocket.__cbInstance = runtime != null ? runtime : CrossByte.current();
 		webSocket.__webSocket = crossbyte._internal.websocket.WebSocket.fromAcceptedSocket(socket);
 		// Said, as a socket a secure ServerSocket accepted says it: every
 		// session a secure server accepted read false.

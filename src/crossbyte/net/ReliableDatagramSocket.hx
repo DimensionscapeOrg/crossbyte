@@ -737,6 +737,16 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	@:noCompletion private var __timeout:Int = 20000;
 	@:noCompletion private var __transport:DatagramSocket;
+
+	/**
+		The runtime this session's datagrams are delivered on, which its
+		transport took when it began receiving; null before it has. Read for
+		each message by a `NetConnection` over this socket.
+	**/
+	@:noCompletion private inline function __transportRuntime():Null<CrossByte> {
+		return __transport != null ? __transport.__cbInstance : null;
+	}
+
 	#if !nodejs
 	// The peer's address as the transport sends to it, kept: the transport
 	// keeps only the last one it was asked for, so a server sending a
