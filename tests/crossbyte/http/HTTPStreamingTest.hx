@@ -236,6 +236,83 @@ class HTTPStreamingTest extends utest.Test {
 		});
 	}
 
+	#if (cpp || neko || hl || jvm)
+	public function testAStalledDownloadIsEndedWithBothTimeoutsOff(async:Async):Void {
+		// requestTimeout and keepAliveTimeout at 0 set no deadline for what
+		// they bound, and the stall deadline is not theirs: a download whose
+		// client stops reading is still ended. Its check was reached through
+		// the connection's receive deadline, from the sweep those two arm, so
+		// with both off nothing looked at it, and the file and the connection
+		// were held for good.
+		//
+		// The client is a plain socket the runtime never reads, so the
+		// transfer stalls as one to a client that stopped reading does: the
+		// system's buffers fill and the pump parks with the rest of the file
+		// unsent. The deadline is then held in the past, as 30 s without
+		// progress would leave it: what is under test is whether the running
+		// server looks. (Not on Node, which has no such socket.)
+		var root:File = File.createTempDirectory();
+		var body = new ByteArray();
+		body.length = 16 * 1024 * 1024;
+		root.resolvePath("large.bin").save(body);
+
+		var handler:HTTPRequestHandler = null;
+		var capture = function(h:HTTPRequestHandler, next:?Dynamic->Void):Void {
+			handler = h;
+			next();
+		};
+		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"], null, null, null, [capture]);
+		config.requestTimeout = 0;
+		config.keepAliveTimeout = 0;
+		var server = new HTTPServer(config);
+
+		var client = new sys.net.Socket();
+		client.connect(new sys.net.Host("127.0.0.1"), server.localPort);
+		client.output.writeString("GET /large.bin HTTP/1.1\r\nHost: localhost\r\n\r\n");
+		client.output.flush();
+
+		function finish(parked:Bool):Void {
+			var streaming:Bool = handler != null && handler.__streaming;
+			var open:Int = server.activeConnections;
+			try client.close() catch (_:Dynamic) {}
+			try server.close() catch (_:Dynamic) {}
+			try root.deleteDirectory(true) catch (_:Dynamic) {}
+			Assert.isTrue(parked, "the download never stalled, so this shows nothing");
+			Assert.isFalse(streaming, "a stalled download outlived its deadline with both timeouts off");
+			Assert.equals(0, open, "the server kept the stalled connection");
+			async.done();
+		}
+
+		// Parked: pumping, with nothing more of the file sent for fifty
+		// passes in a row.
+		var remaining:Int = -1;
+		var still:Int = 0;
+		HTTPTestSupport.pumpWallUntilAsync(function():Bool {
+			if (handler == null || !handler.__streaming) {
+				return false;
+			}
+			if (handler.__streamRemaining == remaining) {
+				still++;
+			} else {
+				still = 0;
+				remaining = handler.__streamRemaining;
+			}
+			return still >= 50;
+		}, 10.0, function(parked:Bool):Void {
+			if (!parked) {
+				finish(false);
+				return;
+			}
+			HTTPTestSupport.pumpWallUntilAsync(function():Bool {
+				if (handler.__streaming) {
+					handler.__streamStallDeadline = haxe.Timer.stamp() - 1;
+				}
+				return !handler.__streaming && server.activeConnections == 0;
+			}, 3.0, _ -> finish(true));
+		});
+	}
+	#end
+
 	/** Printable, with a long period: a misplaced slice cannot alias back. */
 	private static inline function __textAt(i:Int):Int {
 		return 0x30 + ((i ^ (i >> 8) ^ (i >> 16)) & 0x3F);

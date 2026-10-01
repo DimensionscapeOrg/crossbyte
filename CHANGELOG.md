@@ -2163,6 +2163,40 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A response the server sends in bursts, a file over 256 KB, a body too
+  large for the output buffer, is held to its 30 s stall deadline
+  whatever `requestTimeout` and `keepAliveTimeout` are, over HTTP/1.1 and
+  HTTP/2. The deadline was checked by the sweep those two arm, so with both
+  at `0`, which sets no deadline for what they bound, nothing checked it:
+  a client that stopped reading held its file and its connection for good.
+  The sweep now also runs while such a response is being sent, and with
+  both timeouts off visits only those.
+- A request carried on from a later tick is answered `500` when serving it
+  throws, as one carried on at once is: a middleware calling `next()` from
+  a timer or a callback, and, over HTTP/1.1, a pipelined request parsed
+  behind an answer given that way. What the files or the rate limiter's
+  key threw went to the runtime's timer instead, and the request was never
+  answered at all, nor, for the pipelined one, any request after it on
+  that connection.
+- What serving an HTTP/2 request throws outside any middleware, the rate
+  limiter's key, a listener on the response, the static files, is
+  answered `500` on its stream, as over HTTP/1.1. The stream was reset
+  `INTERNAL_ERROR`, so the client got no status for a request the server
+  could still answer. And a response whose head has gone out is never
+  answered again, on either protocol: when a write after the head throws,
+  a socket past its output cap under `OutputOverflowPolicy.THROW`,
+  the response is given up, the connection closed under HTTP/1.1 and the
+  stream reset under HTTP/2, which the client can tell from the length the
+  head promised. HTTP/1.1 wrote the `500`'s status line into the middle of
+  the first response's body, and HTTP/2, from a middleware, sent the
+  `500`'s text as that body, ended as though whole.
+- An HTTP/2 stream the server resets ends its response as one its client
+  resets does: a handler listening for `Event.CLOSE` hears it, once, and a
+  file being sent on it is let go. Only the client's reset was passed on,
+  so a stream the server reset for something the client sent on it, DATA
+  after the client had ended the stream, a `WINDOW_UPDATE` of nothing,
+  left a producer waiting for something to write hearing nothing, and a
+  download holding its file open until the 30 s stall deadline.
 - A `-D final` build compiles again, Lime's `-final` defines `final`,
   on every sys target. `final` inlines the socket registry's `update()`,
   and a return added in the middle of it for a failing poll backend

@@ -13,6 +13,8 @@ import crossbyte.net.Socket as CBSocket;
 import crossbyte.http.HTTPRequestHandler;
 import crossbyte._internal.http.H2ConnectionHandler;
 import crossbyte._internal.http.H2PrefaceSniffer;
+import crossbyte._internal.http.HTTP1ResponseWriter;
+import crossbyte._internal.http.HTTPResponseWriter;
 import crossbyte.io.ByteArray;
 import crossbyte.http.HTTPServerConfig;
 import crossbyte.utils.Logger;
@@ -52,11 +54,23 @@ class HTTPServer extends ServerSocket {
 	@:noCompletion private var __sweepAccumulator:Float = 0;
 	@:noCompletion private var __sweepArmed:Bool = false;
 
+	// Each body being pumped out, by its writer, with the stall check its
+	// pump keeps: what the sweep runs whatever the timeouts are (see
+	// HTTPResponseWriter.sweepWith). Counted, since a map has no size, so the
+	// sweep can tell when it has nothing left to do.
+	@:noCompletion private var __pumps:ObjectMap<HTTPResponseWriter, Float->Void>;
+	@:noCompletion private var __pumpCount:Int = 0;
+
+	// __sweepWith, made once and handed to every writer.
+	@:noCompletion private final __sweepHook:(HTTPResponseWriter, Null<Float->Void>) -> Void;
+
 	public function new(config:HTTPServerConfig) {
 		config.validate();
 		super(config.tlsEnabled);
 		__connections = 0;
 		__config = config;
+		__pumps = new ObjectMap();
+		__sweepHook = __sweepWith;
 
 		if (config.tlsEnabled) {
 			try {
@@ -211,8 +225,8 @@ class HTTPServer extends ServerSocket {
 
 		var onTick:TickEvent->Void = null;
 		onTick = function(_:TickEvent):Void {
-			// Closed here as well as in the sweep, which a server with both
-			// timeouts turned off never arms.
+			// Closed here as well as in the sweep's walk of the connections,
+			// which a server with both timeouts turned off never makes.
 			if (__connections > 0) {
 				var finished:Array<H2ConnectionHandler> = [for (handler in __activeHttp2) if (handler.drained) handler];
 				for (handler in finished) {
@@ -259,6 +273,8 @@ class HTTPServer extends ServerSocket {
 		__active = new ObjectMap();
 		__activeHttp2 = new ObjectMap();
 		__sniffing = new ObjectMap();
+		__pumps = new ObjectMap();
+		__pumpCount = 0;
 		__connections = 0;
 
 		try {
@@ -374,7 +390,7 @@ class HTTPServer extends ServerSocket {
 		// The same per-response hook as HTTP/1.1, so HTTP/2 responses are counted
 		// and timed. They were not, so a server serving browsers over h2
 		// reported almost nothing.
-		var handler:H2ConnectionHandler = new H2ConnectionHandler(socket, __config, php, buffered, this_onResponse);
+		var handler:H2ConnectionHandler = new H2ConnectionHandler(socket, __config, php, buffered, this_onResponse, __sweepHook);
 		__activeHttp2.set(socket, handler);
 		__connections++;
 		__armReceiveSweep();
@@ -406,7 +422,8 @@ class HTTPServer extends ServerSocket {
 			e.socket.outputOverflowPolicy = __config.outputOverflowPolicy;
 		}
 
-		var handler:HTTPRequestHandler = new HTTPRequestHandler(e.socket, __config, php);
+		// Its writer made here, so a body it pumps out reaches the sweep.
+		var handler:HTTPRequestHandler = new HTTPRequestHandler(e.socket, __config, php, new HTTP1ResponseWriter(e.socket, __sweepHook));
 		__active.set(e.socket, handler);
 		__connections++;
 		__armReceiveSweep();
@@ -437,10 +454,14 @@ class HTTPServer extends ServerSocket {
 	 *
 	 * The sweep also reaps idle keep-alive connections, one walk, two
 	 * meanings of the same per-handler deadline, so it must arm when
-	 * either timeout is live, not only `requestTimeout`.
+	 * either timeout is live, not only `requestTimeout`. And it holds every
+	 * body being pumped out to its stall deadline, whatever the timeouts
+	 * are, so it arms while one is: with both timeouts off it never armed,
+	 * and a download whose client stopped taking it held its file and its
+	 * connection for good.
 	 */
 	@:noCompletion private function __armReceiveSweep():Void {
-		if (__sweepArmed || (__config.requestTimeout <= 0 && !(__config.keepAlive && __config.keepAliveTimeout > 0))) {
+		if (__sweepArmed || (!__timeoutsLive() && __pumpCount <= 0)) {
 			return;
 		}
 
@@ -454,13 +475,33 @@ class HTTPServer extends ServerSocket {
 		__sweepAccumulator = 0;
 	}
 
+	/** Whether either timeout sets a deadline, which the walk over every connection keeps. */
+	@:noCompletion private inline function __timeoutsLive():Bool {
+		return __config.requestTimeout > 0 || (__config.keepAlive && __config.keepAliveTimeout > 0);
+	}
+
+	/**
+	 * Registers, or with `null` drops, the stall check of a body `writer` is
+	 * pumping out: what `HTTPResponseWriter.sweepWith` reaches here.
+	 */
+	@:noCompletion private function __sweepWith(writer:HTTPResponseWriter, check:Null<Float->Void>):Void {
+		if (check == null) {
+			if (__pumps.remove(writer)) {
+				__pumpCount--;
+			}
+			return;
+		}
+
+		if (!__pumps.exists(writer)) {
+			__pumpCount++;
+		}
+		__pumps.set(writer, check);
+		__armReceiveSweep();
+	}
+
 	@:noCompletion private function this_onReceiveSweep(e:TickEvent):Void {
 		if (__connections <= 0) {
-			var runtime:CrossByte = __cbInstance != null ? __cbInstance : CrossByte.current();
-			if (runtime != null) {
-				runtime.removeEventListener(TickEvent.TICK, this_onReceiveSweep);
-			}
-			__sweepArmed = false;
+			__disarmReceiveSweep();
 			return;
 		}
 
@@ -470,6 +511,46 @@ class HTTPServer extends ServerSocket {
 		}
 		__sweepAccumulator = 0;
 
+		// Asked here, a few times a second, rather than above on every tick.
+		if (!__timeoutsLive() && __pumpCount <= 0) {
+			__disarmReceiveSweep();
+			return;
+		}
+
+		__sweep(haxe.Timer.stamp());
+	}
+
+	@:noCompletion private function __disarmReceiveSweep():Void {
+		var runtime:CrossByte = __cbInstance != null ? __cbInstance : CrossByte.current();
+		if (runtime != null) {
+			runtime.removeEventListener(TickEvent.TICK, this_onReceiveSweep);
+		}
+		__sweepArmed = false;
+	}
+
+	/**
+	 * One visit of the sweep, at `now` (`haxe.Timer.stamp()`): every
+	 * connection's deadlines while either timeout sets one, and every body
+	 * being pumped out regardless. With both timeouts off only those are
+	 * visited, so a server holding many idle connections pays for the
+	 * transfers in flight, not for every connection, a few times a second.
+	 */
+	@:noCompletion private function __sweep(now:Float):Void {
+		if (__timeoutsLive()) {
+			__sweepConnections(now);
+		}
+
+		if (__pumpCount > 0) {
+			// Gathered first: a check that ends its transfer drops it from the
+			// map, from inside this loop.
+			var checks:Array<Float->Void> = [for (check in __pumps) check];
+			for (check in checks) {
+				check(now);
+			}
+		}
+	}
+
+	@:noCompletion private function __sweepConnections(now:Float):Void {
 		// Snapshot before checking, same discipline as drain(): an expired
 		// idle connection is closed inside the check, and close()
 		// synchronously re-enters cleanupSocket, which mutates __active
@@ -484,8 +565,6 @@ class HTTPServer extends ServerSocket {
 		for (handler in __activeHttp2) {
 			http2.push(handler);
 		}
-
-		var now:Float = haxe.Timer.stamp();
 
 		// A connection still silent at its deadline never began a request, so
 		// there is nothing to answer it with; it is closed.

@@ -387,10 +387,9 @@ class HTTPResponseStreamTest extends utest.Test {
 		});
 		var socket = new RequestOnlySocket();
 		var writer = new CountingWriter();
-		// A writer given leaves the reading to whoever gave it, as HTTP/2's
-		// frame layer does; this one reads the socket as HTTP/1.1 does.
+		// A writer that does not own the connection, as HTTP/1.1's does not,
+		// leaves the handler to read the socket itself.
 		var handler = new HTTPRequestHandler(socket, config, null, writer);
-		@:privateAccess handler.__setup();
 
 		socket.arrive("GET /s HTTP/1.1\r\nHost: x\r\n\r\n");
 
