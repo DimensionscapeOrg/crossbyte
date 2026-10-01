@@ -1335,8 +1335,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		// host() on a sys socket answers with the unbound endpoint.
 		return __localAddress;
 		#else
-		var local = __getLocalEndpoint();
-		return local != null ? IPv6.compress(local.host.toString()) : "";
+		return __knownLocal() ? __localText : "";
 		#end
 	}
 
@@ -1344,10 +1343,31 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		#if nodejs
 		return __localPort;
 		#else
-		var local = __getLocalEndpoint();
-		return local != null ? local.port : 0;
+		return __knownLocal() ? __localNumber : 0;
 		#end
 	}
+
+	#if !nodejs
+	/**
+		Whether this socket's own address is known, asking the system only when
+		it is not: the answer is kept until a bind, connect or close, which are
+		all that can change it -- and kept only once it has a port, since a
+		socket that was never bound is given one by its first send. Each read of
+		`localAddress` or `localPort` was a getsockname() call, and a reliable
+		session reads both for every message it hands over.
+	**/
+	@:noCompletion private function __knownLocal():Bool {
+		if (__localText == null || __localNumber == 0) {
+			var local = __getLocalEndpoint();
+			if (local == null) {
+				return false;
+			}
+			__localText = IPv6.compress(local.host.toString());
+			__localNumber = local.port;
+		}
+		return true;
+	}
+	#end
 
 	@:noCompletion private inline function get_receiving():Bool {
 		return __receiving;
