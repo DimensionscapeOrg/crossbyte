@@ -372,6 +372,10 @@ class FakeTurnRelay {
 				attributes.push(FakeTurnRelay.alternateServer(allocateError.alternate.address, allocateError.alternate.port));
 			}
 
+			if (allocateError.alternateDomain != null) {
+				attributes.push(StunMessage.text(StunMessage.ATTR_ALTERNATE_DOMAIN, allocateError.alternateDomain));
+			}
+
 			events.push("allocate-error");
 			__send(__sign(new StunMessage(StunMessage.ALLOCATE_ERROR, message.transactionId, attributes), credential), from, fromPort, now);
 			return;
@@ -425,6 +429,10 @@ class FakeTurnRelay {
 			return;
 		}
 
+		if (__wrongCredentials(allocation, credential, message, from, fromPort, now)) {
+			return;
+		}
+
 		if (asked == 0) {
 			__allocations.remove(key);
 			closeRelay(allocation.relayPort);
@@ -450,6 +458,10 @@ class FakeTurnRelay {
 
 		if (allocation == null) {
 			__refuseSigned(message, 437, "Allocation Mismatch", credential, from, fromPort, now);
+			return;
+		}
+
+		if (__wrongCredentials(allocation, credential, message, from, fromPort, now)) {
 			return;
 		}
 
@@ -505,6 +517,10 @@ class FakeTurnRelay {
 
 		if (allocation == null) {
 			__refuseSigned(message, 437, "Allocation Mismatch", credential, from, fromPort, now);
+			return;
+		}
+
+		if (__wrongCredentials(allocation, credential, message, from, fromPort, now)) {
 			return;
 		}
 
@@ -750,6 +766,24 @@ class FakeTurnRelay {
 		return true;
 	}
 
+	/**
+		RFC 8656 section 5: a request on an allocation must be signed by the
+		username that made it, and anything else is refused with 441 (Wrong
+		Credentials) -- which is what TURN REST credentials meet, since their
+		expiry is part of the username and every renewal is a new one.
+
+		@return Whether it was refused.
+	**/
+	@:noCompletion private function __wrongCredentials(allocation:FakeAllocation, credential:FakeCredential, message:StunMessage, from:String,
+			fromPort:Int, now:Float):Bool {
+		if (credential.username == allocation.username) {
+			return false;
+		}
+
+		__refuseSigned(message, 441, "Wrong Credentials", credential, from, fromPort, now);
+		return true;
+	}
+
 	@:noCompletion private function __refuseSigned(message:StunMessage, code:Int, reason:String, credential:FakeCredential, from:String, fromPort:Int,
 			now:Float):Void {
 		events.push("refused-" + code);
@@ -877,7 +911,10 @@ typedef RelayEndpoint = {address:String, port:Int};
 typedef RelayRefusal = {
 	code:Int,
 	reason:String,
-	?alternate:RelayEndpoint
+	?alternate:RelayEndpoint,
+
+	/** ALTERNATE-DOMAIN, which a 300 over TLS names for the alternate's certificate to be checked against. **/
+	?alternateDomain:String
 }
 
 /** One client's allocation, as the relay keeps it. **/

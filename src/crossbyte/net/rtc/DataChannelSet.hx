@@ -27,6 +27,15 @@ import haxe.ds.IntMap;
 	A caller does not choose the number, which is why `create` does not offer
 	it: a number chosen from the wrong side of the parity is one the peer will
 	answer on a stream it thinks it owns.
+
+	## Closing
+
+	By resetting streams, RFC 6525, as RFC 8831 section 6.7 has it. A channel
+	closed here resets the stream this end sends on, once what was sent on it
+	before has gone; the peer closes its end when the reset reaches it and
+	resets its own in answer. A peer's reset closes the channel here the same
+	way. Against a peer that did not say it understands RE-CONFIG the close is
+	this end's alone.
 **/
 class DataChannelSet {
 	/** RFC 8832's identifier for a channel control message. **/
@@ -46,6 +55,9 @@ class DataChannelSet {
 
 	@:noCompletion private var __channels:IntMap<DataChannel> = new IntMap();
 	@:noCompletion private var __nextId:Int;
+
+	/** Set once the association is ending, when there is nobody left to reset a stream toward. **/
+	@:noCompletion private var __ending:Bool = false;
 
 	/**
 		@param wasDtlsClient Whether this peer was the client in the DTLS
@@ -71,6 +83,22 @@ class DataChannelSet {
 
 			if (channel != null) {
 				@:privateAccess channel.__deliver(payload, protocolId);
+			}
+		};
+
+		// The peer closed channels: it reset the streams it sends on, or asked
+		// this end to reset its own. Each channel closes the ordinary way, which
+		// resets the stream this end sends on in answer -- RFC 8831 section
+		// 6.7's other half. A channel this end had already closed is not here,
+		// and its stream was reset when it closed.
+		transfer.onStreamsReset = function(streams:Null<Array<Int>>):Void {
+			var closing:Array<DataChannel> = streams == null ? [for (channel in __channels) channel] : [
+				for (streamId in streams)
+					if (__channels.exists(streamId)) __channels.get(streamId)
+			];
+
+			for (channel in closing) {
+				channel.close();
 			}
 		};
 	}
@@ -126,6 +154,10 @@ class DataChannelSet {
 		and the first sign of it was a `send` that threw.
 	**/
 	public function closeAll():Void {
+		// No stream is reset on the way: the association is ending, which
+		// closes the peer's channels with it.
+		__ending = true;
+
 		// Copied first: closing a channel removes it from the map being read.
 		var closing:Array<DataChannel> = [for (channel in __channels) channel];
 
@@ -189,13 +221,15 @@ class DataChannelSet {
 	/**
 		The next stream number for a channel this side opens.
 
-		**Deliberately never reuses a closed channel's number.** There is no
-		close handshake here -- no RE-CONFIG, no stream reset; `close()` is local
-		state and the peer is never told -- so a reused number is one the far
-		side still believes is taken, and its own collision guard would refuse
-		the OPEN in silence. Freeing the map entry is about not retaining a dead
-		channel, and about letting the *peer* reopen on a number of its parity;
-		it is not licence to hand this side's numbers out twice.
+		**Deliberately never reuses a closed channel's number.** Closing resets
+		the stream at both ends, and a number is free again only once both
+		resets are done -- the peer's answering one can be late, or never come
+		from a peer without stream reconfiguration -- so a reused number could
+		be one the far side still believes taken, and its own collision guard
+		would refuse the OPEN in silence. Freeing the map entry is about not
+		retaining a dead channel, and about letting the *peer* reopen on a
+		number of its parity, whose sequence numbers the reset has started
+		again; it is not licence to hand this side's numbers out twice.
 
 		What changed is the end of the range. The counter used to run past 65535
 		and keep going, while `SctpDataChunk` writes the number into a sixteen-
@@ -218,7 +252,9 @@ class DataChannelSet {
 	}
 
 	/**
-		Puts a closed channel's stream number back into circulation.
+		A channel has closed: its stream number goes back into circulation for
+		the peer, and the stream this end sends on is reset, which closes the
+		peer's end of the channel -- after everything already sent on it.
 
 		Guarded on identity because a handler on `onClose` may already have
 		opened a replacement on that number, and dropping that one would lose a
@@ -227,6 +263,10 @@ class DataChannelSet {
 	@:noCompletion private function __release(channel:DataChannel):Void {
 		if (__channels.get(channel.id) == channel) {
 			__channels.remove(channel.id);
+
+			if (!__ending) {
+				transfer.resetStreams([channel.id], transfer.association.clock);
+			}
 		}
 	}
 }

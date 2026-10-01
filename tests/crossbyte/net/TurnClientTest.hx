@@ -928,6 +928,40 @@ class TurnClientTest extends utest.Test {
 		Assert.isTrue(network.relay.count("send-relayed") > 0, "the traffic did not go back to indications");
 	}
 
+	/**
+		With channels on, sending is enough: the first datagram to a peer asks
+		for a channel, and once the relay agrees the rest go as ChannelData.
+
+		The class documentation said so -- "once on, it happens on its own" --
+		and only callers that asked for the channel themselves ever got one.
+		A client used directly sent every datagram as an indication.
+	**/
+	public function testWithChannelsOnSendingAsksForOne():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.useChannels = true;
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		client.permit(PEER, network.now);
+		network.run(() -> network.relay.count("permitted") > 0, 5);
+
+		for (i in 0...10) {
+			var payload = new ByteArray();
+			payload.writeUTFBytes("datagram " + i);
+			payload.position = 0;
+			client.sendTo(payload, PEER, PEER_PORT);
+			network.advance(0.25);
+		}
+
+		Assert.equals(1, network.relay.requestsOf("bind"), "sending asked for " + network.relay.requestsOf("bind") + " channels");
+		Assert.isTrue(network.relay.count("channeldata-relayed") > 0, "nothing went over the channel once it was bound");
+		Assert.isTrue(network.relay.count("send-relayed") > 0, "the first datagram did not go as an indication while the bind was asked for");
+	}
+
 	// ------------------------------------------------------------------
 	// Redirections, reasons and credentials
 	// ------------------------------------------------------------------
@@ -1054,6 +1088,44 @@ class TurnClientTest extends utest.Test {
 
 		Assert.isTrue(client.active, "a 401 to a request signed with the old credentials was taken as final: " + lost);
 		Assert.isTrue(network.relay.count("refreshed") >= 2, "the second refresh never succeeded");
+	}
+
+	/**
+		A new username is refused for the allocation held, which keeps the one
+		it was made with.
+
+		A relay ties an allocation to its username and refuses a request on it
+		signed with another, 441 -- and TURN REST credentials carry their
+		expiry in the username, so every renewal is a new one. The client took
+		it, the relay refused the next Refresh, and the allocation was lost.
+	**/
+	public function testANewUsernameIsRefusedForTheAllocationHeld():Void {
+		if (unsupported()) return;
+
+		var relay = new FakeTurnRelay();
+		relay.users = ["1700000000:alice" => "first", "1700003600:alice" => "second"];
+
+		var network = new TurnNetwork(relay);
+		var client = network.client(null, "1700000000:alice", "first");
+		var lost:Array<String> = [];
+		client.onLost = reason -> lost.push(reason);
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		if (!client.active) {
+			Assert.fail("the relay never allocated");
+			return;
+		}
+
+		Assert.raises(() -> client.setCredentials("1700003600:alice", "second"), crossbyte.errors.ArgumentError,
+			"a new username was taken for the allocation it was not made with");
+
+		network.advance(TurnClient.DEFAULT_LIFETIME / 2 + 5, 0.25);
+
+		Assert.equals(0, relay.count("refused-441"), "a request on the allocation was signed with another username");
+		Assert.isTrue(relay.count("refreshed") >= 1, "the refresh never succeeded");
+		Assert.isTrue(client.active, "the allocation was lost: " + lost);
 	}
 
 	// ------------------------------------------------------------------

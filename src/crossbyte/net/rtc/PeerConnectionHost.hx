@@ -10,6 +10,7 @@ import crossbyte.io.ByteArray;
 import crossbyte.io.Endian;
 import crossbyte.net.DatagramSocket;
 import crossbyte.net.ice.IceCandidate;
+import crossbyte.net.ice.IceCandidateType;
 import crossbyte.net.ice.IceCredentials;
 import crossbyte.net._internal.stun.StunMessage;
 import haxe.ds.ObjectMap;
@@ -140,10 +141,18 @@ class PeerConnectionHost {
 		public address, typically, which a wildcard bind cannot know.
 
 		Connections already open offer it too, from now on.
+
+		@throws ArgumentError For a relayed candidate, as
+		`PeerConnection.addLocalCandidate` refuses one: a shared socket has no
+		relay to send through.
 	**/
 	public function addLocalCandidate(candidate:IceCandidate):Void {
 		if (candidate == null) {
 			throw new ArgumentError("A candidate is required.");
+		}
+
+		if (candidate.type == IceCandidateType.RELAYED) {
+			throw new ArgumentError("A relayed candidate works only through the allocation that lent it, and connections on a shared socket have no relay to send through.");
 		}
 
 		__candidates.push(candidate);
@@ -196,7 +205,12 @@ class PeerConnectionHost {
 
 	/**
 		Moves every connection forward. Driven from the runtime tick once
-		bound; public so a test can drive it with a clock of its own.
+		bound.
+
+		@param now `haxe.Timer.stamp()`'s time, as `PeerConnection.poll` takes
+		it: what arrives on the socket is handled on that clock, so one of the
+		caller's own would disagree with it. Public so a test can pass a later
+		time on it.
 	**/
 	public function poll(now:Float):Void {
 		// Backwards, so a connection that closes during its own poll -- and

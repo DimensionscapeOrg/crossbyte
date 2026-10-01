@@ -232,6 +232,17 @@ class SctpDataTransfer {
 	**/
 	public dynamic function onFailure(reason:String):Void {}
 
+	/**
+		Called when the peer has reset streams: RFC 6525's outgoing reset of
+		streams it sends on, which is how a data channel's far end says it has
+		closed (RFC 8831 section 6.7), or its request that this end reset
+		streams it sends on. Everything the peer sent on them before the reset
+		has been delivered by then, and their sequence numbers start again
+		from zero, so a stream can carry a new channel. `streams` is null for
+		every stream.
+	**/
+	public dynamic function onStreamsReset(streams:Null<Array<Int>>):Void {}
+
 	// ------------------------------------------------------------------
 	// Sending
 	// ------------------------------------------------------------------
@@ -353,6 +364,44 @@ class SctpDataTransfer {
 	@:noCompletion private var __forwardTsnOwed:Bool = false;
 
 	// ------------------------------------------------------------------
+	// Stream reset, RFC 6525
+	// ------------------------------------------------------------------
+
+	/** The Re-configuration Request Sequence Number this end's next request takes; RFC 6525 starts it at the initial TSN. **/
+	@:noCompletion private var __nextRequestSeq:Int;
+
+	/** The one the peer's next request should carry, likewise starting at its initial TSN. **/
+	@:noCompletion private var __peerRequestSeq:Int;
+
+	/** Streams this end has closed and not yet asked the peer to reset. **/
+	@:noCompletion private var __resetWanted:Array<Int> = [];
+
+	/** Streams `resetStreams` has taken, ever: how a request from the peer learns whether it caused any. **/
+	@:noCompletion private var __resetsAsked:Int = 0;
+
+	/**
+		How many chunks must have left the queue before the request for
+		`__resetWanted` may go: everything queued before the last of them
+		closed. Counted against `__taken`, so a message handed over before a
+		close goes ahead of the reset that closes the stream.
+	**/
+	@:noCompletion private var __resetAfter:Int = 0;
+
+	/** Chunks ever queued, and ever taken off the queue -- numbered, or dropped as abandoned. **/
+	@:noCompletion private var __queued:Int = 0;
+
+	@:noCompletion private var __taken:Int = 0;
+
+	/** This end's request in flight; one at a time, as RFC 6525 has it. **/
+	@:noCompletion private var __resetRequest:Null<OwnReset> = null;
+
+	/** The peer's latest request, and what became of it: what a repeat of it is answered with. **/
+	@:noCompletion private var __peerReset:Null<PeerReset> = null;
+
+	/** Answers owed to the peer's requests, sent once the packet that asked has been read. **/
+	@:noCompletion private var __answersOwed:Array<ReconfigAnswer> = [];
+
+	// ------------------------------------------------------------------
 	// Receiving
 	// ------------------------------------------------------------------
 
@@ -422,6 +471,11 @@ class SctpDataTransfer {
 		// the cumulative acknowledgement by exactly one.
 		this.__cumulativeTsn = association.remoteTsn - 1;
 
+		// RFC 6525 section 3.1: each end numbers its reconfiguration requests
+		// from its own initial TSN.
+		this.__nextRequestSeq = association.localTsn;
+		this.__peerRequestSeq = association.remoteTsn;
+
 		association.onChunk = function(chunk:SctpChunk, packet:SctpPacket):Void {
 			switch (chunk.type) {
 				case SctpPacket.CHUNK_DATA:
@@ -432,6 +486,8 @@ class SctpDataTransfer {
 					__onShutdown(chunk);
 				case SctpPacket.CHUNK_FORWARD_TSN:
 					__onForwardTsn(chunk);
+				case SctpPacket.CHUNK_RECONFIG:
+					__onReconfig(chunk);
 				default:
 			}
 		};
@@ -527,6 +583,7 @@ class SctpDataTransfer {
 			// message's fragments, queued together, are numbered together.
 			__pending.push(new Queued(streamId, protocolId, fragment, flags, message));
 			__pendingBytes += size;
+			__queued++;
 
 			offset += size;
 			first = false;
@@ -569,6 +626,14 @@ class SctpDataTransfer {
 			}
 		}
 
+		if (__resetRequest != null && now >= __resetRequest.retryAt) {
+			__onResetTimer(now);
+
+			if (association.state == SctpAssociationState.CLOSED) {
+				return;
+			}
+		}
+
 		// RFC 4960 section 7.2.1: a window nobody has used for a timeout is a
 		// measurement of a path that may have changed since, so it decays
 		// rather than being spent at once when sending resumes.
@@ -582,7 +647,8 @@ class SctpDataTransfer {
 		// for company goes now.
 		__beginOpportunity();
 
-		if (__lostCount > 0 || __pendingAt < __pending.length || __sackNeeded) {
+		if (__lostCount > 0 || __pendingAt < __pending.length || __sackNeeded || __answersOwed.length > 0
+			|| (__resetWanted.length > 0 && __resetRequest == null)) {
 			__flush(now, __sackNeeded);
 		}
 	}
@@ -604,6 +670,41 @@ class SctpDataTransfer {
 
 	@:noCompletion private function get_retransmissionTimeout():Float {
 		return __rto;
+	}
+
+	/**
+		Resets streams this end sends on, RFC 6525's outgoing reset: how a data
+		channel is closed, so the peer's end of it closes too (RFC 8831
+		section 6.7).
+
+		What was handed to `send` before goes first: the request waits until
+		everything queued by now has been numbered, and carries the last TSN
+		this end assigned, which the peer waits to have received before it
+		resets anything. The streams' sequence numbers then start again from
+		zero, for a channel opened on them later. A request goes again until
+		the peer answers it, each timeout counting toward the association's
+		`MAX_ATTEMPTS` as one on data does.
+
+		@return Whether the peer will be asked: not when it did not say it
+		understands RE-CONFIG, or the association is not open. Nothing is
+		reset then, and the peer is not told.
+	**/
+	public function resetStreams(streams:Array<Int>, now:Float):Bool {
+		if (streams == null || association.state != SctpAssociationState.ESTABLISHED || !association.peerSupportsReconfig) {
+			return false;
+		}
+
+		for (streamId in streams) {
+			if (__resetWanted.indexOf(streamId) < 0 && (__resetRequest == null || __resetRequest.streams.indexOf(streamId) < 0)) {
+				__resetWanted.push(streamId);
+				__resetsAsked++;
+			}
+		}
+
+		__resetAfter = __queued;
+		__beginOpportunity();
+		__flush(now);
+		return true;
 	}
 
 	// ------------------------------------------------------------------
@@ -651,6 +752,13 @@ class SctpDataTransfer {
 			__bundle.push(__buildSack());
 			__sackSent();
 			__emit();
+		}
+
+		// Answers to the peer's stream resets, and this end's own request once
+		// what was queued before the close has been numbered -- after the data,
+		// so the peer rarely has to defer it.
+		if (__answersOwed.length > 0 || (__resetWanted.length > 0 && __resetRequest == null && ((__taken - __resetAfter) | 0) >= 0)) {
+			__sendReconfig(now);
 		}
 
 		// Compacted in place once the part already sent is the larger half.
@@ -718,6 +826,7 @@ class SctpDataTransfer {
 			// part of it went takes that part with it.
 			if (next.message != null && next.message.spent(0, now)) {
 				__pendingAt++;
+				__taken++;
 				__pendingBytes -= length;
 
 				if (!next.message.abandoned) {
@@ -767,6 +876,7 @@ class SctpDataTransfer {
 			__unacknowledged.push(outstanding);
 
 			__pendingAt++;
+			__taken++;
 			__pendingBytes -= length;
 			__flightSize += size;
 			__inFlight += length;
@@ -1428,6 +1538,22 @@ class SctpDataTransfer {
 			return;
 		}
 
+		// A reset the peer asked for that waited on data still to arrive: the
+		// packet just read may have brought the last of it. Here rather than
+		// per chunk, once the packet has been delivered, so everything the peer
+		// sent before the reset is up before the stream is.
+		if (__peerReset != null && __peerReset.waiting && !SctpDataChunk.isEarlier(__cumulativeTsn, __peerReset.lastTsn)) {
+			__performPeerReset(__peerReset);
+
+			if (association.state == SctpAssociationState.CLOSED) {
+				return;
+			}
+		}
+
+		if (__answersOwed.length > 0) {
+			__flushOwed = true;
+		}
+
 		// RFC 4960 section 6.2: a SACK for at least every second packet that
 		// carried DATA, rather than one a tick for all of them.
 		if (__packetHadData) {
@@ -1444,6 +1570,326 @@ class SctpDataTransfer {
 			__beginOpportunity();
 			__flush(association.clock);
 		}
+	}
+
+	// ------------------------------------------------------------------
+	// Stream reset, RFC 6525
+	//
+	// How a data channel closes (RFC 8831 section 6.7): the end that closes
+	// resets the stream it sends on, the other resets its own in answer, and
+	// once both have the channel is closed and the stream's sequence numbers
+	// start again from zero. A reset is performed only once everything sent
+	// on the association before it has arrived, so no message is lost to it.
+	// There was none of this: closing a channel told the peer nothing, and a
+	// browser's close was never heard.
+	// ------------------------------------------------------------------
+
+	/** RFC 6525 section 4.4's results. **/
+	@:noCompletion private static inline var RESULT_NOTHING_TO_DO:Int = 0;
+
+	@:noCompletion private static inline var RESULT_PERFORMED:Int = 1;
+	@:noCompletion private static inline var RESULT_DENIED:Int = 2;
+	@:noCompletion private static inline var RESULT_ALREADY_IN_PROGRESS:Int = 4;
+	@:noCompletion private static inline var RESULT_BAD_SEQUENCE:Int = 5;
+	@:noCompletion private static inline var RESULT_IN_PROGRESS:Int = 6;
+
+	/** Streams one request names at most, which keeps it well inside a packet. **/
+	@:noCompletion private static inline var MAX_RESET_STREAMS:Int = 256;
+
+	@:noCompletion private function __onReconfig(chunk:SctpChunk):Void {
+		// RFC 6525 section 3.1: one or two parameters to a chunk.
+		var parameters = SctpParameter.readAll(chunk.value, 0, chunk.value.length);
+		var count:Int = parameters.length < 2 ? parameters.length : 2;
+
+		for (i in 0...count) {
+			var parameter = parameters[i];
+			var value = parameter.value;
+			value.endian = Endian.BIG_ENDIAN;
+			value.position = 0;
+
+			switch (parameter.type) {
+				case SctpParameter.OUTGOING_SSN_RESET:
+					__onOutgoingResetRequest(value);
+				case SctpParameter.INCOMING_SSN_RESET:
+					__onIncomingResetRequest(value);
+				case SctpParameter.RECONFIG_RESPONSE:
+					__onReconfigResponse(value);
+				case SctpParameter.SSN_TSN_RESET, SctpParameter.ADD_OUTGOING_STREAMS, SctpParameter.ADD_INCOMING_STREAMS:
+					// Requests this end does not make and does not grant, which
+					// RFC 6525 leaves optional: answered Denied, in sequence.
+					if (value.length >= 4) {
+						__onPeerRequest(value.readInt(), null, 0, false, true);
+					}
+				default:
+			}
+		}
+	}
+
+	/** The peer resets streams it sends on: a data channel's far end closing. **/
+	@:noCompletion private function __onOutgoingResetRequest(value:ByteArray):Void {
+		if (value.length < 12) {
+			return;
+		}
+
+		var sequence:Int = value.readInt();
+		value.readInt(); // Its answer to a request of ours, which this end never needs one for.
+		var lastTsn:Int = value.readInt();
+		__onPeerRequest(sequence, __streamsIn(value), lastTsn, false, false);
+	}
+
+	/** The peer asks this end to reset streams it sends on. **/
+	@:noCompletion private function __onIncomingResetRequest(value:ByteArray):Void {
+		if (value.length < 4) {
+			return;
+		}
+
+		var sequence:Int = value.readInt();
+		__onPeerRequest(sequence, __streamsIn(value), 0, true, false);
+	}
+
+	/** The stream numbers ending a request, or null for none, which means every stream. **/
+	@:noCompletion private function __streamsIn(value:ByteArray):Null<Array<Int>> {
+		if (value.position + 2 > value.length) {
+			return null;
+		}
+
+		var streams:Array<Int> = [];
+
+		while (value.position + 2 <= value.length) {
+			streams.push(value.readUnsignedShort());
+		}
+
+		return streams;
+	}
+
+	/**
+		A request from the peer, checked against the sequence RFC 6525 section
+		5.2.1 has it numbered in: the next one is acted on, a repeat of the
+		last is answered again as it stands now, and anything else is refused
+		as out of sequence.
+	**/
+	@:noCompletion private function __onPeerRequest(sequence:Int, streams:Null<Array<Int>>, lastTsn:Int, incoming:Bool, refused:Bool):Void {
+		if (sequence != __peerRequestSeq) {
+			var repeat:Bool = __peerReset != null && sequence == __peerReset.sequence;
+			__answersOwed.push(new ReconfigAnswer(sequence, repeat ? -1 : RESULT_BAD_SEQUENCE));
+			return;
+		}
+
+		// One reset at a time waiting on data. A conforming peer has one
+		// request outstanding, so this is a peer that did not wait.
+		if (__peerReset != null && __peerReset.waiting) {
+			__answersOwed.push(new ReconfigAnswer(sequence, RESULT_ALREADY_IN_PROGRESS));
+			return;
+		}
+
+		__peerRequestSeq = (__peerRequestSeq + 1) | 0;
+
+		var reset = new PeerReset(sequence, streams, lastTsn);
+		__peerReset = reset;
+
+		if (refused) {
+			reset.result = RESULT_DENIED;
+			__answersOwed.push(new ReconfigAnswer(sequence, -1));
+			return;
+		}
+
+		if (incoming) {
+			// Asked to reset what this end sends: the channels on those streams
+			// close, which resets them, and the request that does is the answer
+			// (RFC 6525 section 5.2.3) -- it carries this sequence as the one it
+			// answers. Nothing to reset is said so at once.
+			reset.result = RESULT_IN_PROGRESS;
+			var asked:Int = __resetsAsked;
+			onStreamsReset(streams);
+
+			if (__resetsAsked == asked) {
+				reset.result = RESULT_NOTHING_TO_DO;
+				__answersOwed.push(new ReconfigAnswer(sequence, -1));
+			}
+
+			return;
+		}
+
+		// Performed only once everything the peer sent before it has arrived,
+		// so no message on the stream is lost to the reset; until then it is
+		// answered In progress and the peer asks again (section 5.2.2).
+		if (SctpDataChunk.isEarlier(__cumulativeTsn, lastTsn)) {
+			reset.waiting = true;
+			reset.result = RESULT_IN_PROGRESS;
+		} else {
+			__performPeerReset(reset);
+		}
+
+		__answersOwed.push(new ReconfigAnswer(sequence, -1));
+	}
+
+	/**
+		The peer's outgoing reset, performed: the streams' sequence numbers
+		start again from zero, and whoever is above hears that the peer has
+		closed them.
+	**/
+	@:noCompletion private function __performPeerReset(reset:PeerReset):Void {
+		reset.waiting = false;
+		reset.result = RESULT_PERFORMED;
+
+		if (reset.streams == null) {
+			for (streamId in [for (key in __held.keys()) key]) {
+				__release(streamId);
+			}
+
+			__expectedSequence = new IntMap();
+		} else {
+			for (streamId in reset.streams) {
+				// Anything still held was waiting for a sequence the peer gave up
+				// on, and the next one on this stream is a new channel's zero.
+				__release(streamId);
+				__expectedSequence.remove(streamId);
+			}
+		}
+
+		onStreamsReset(reset.streams);
+	}
+
+	/**
+		The peer's answer to this end's request. Done when it reset the
+		streams, or had nothing to; asked again later when it is still waiting
+		for data to arrive; given up when it refuses, since the streams are
+		closed here either way and are not reused.
+	**/
+	@:noCompletion private function __onReconfigResponse(value:ByteArray):Void {
+		if (value.length < 8 || __resetRequest == null) {
+			return;
+		}
+
+		var sequence:Int = value.readInt();
+		var result:Int = value.readInt();
+
+		if (sequence != __resetRequest.sequence) {
+			return;
+		}
+
+		// The peer is there, whatever it said.
+		__errorCount = 0;
+
+		switch (result) {
+			case RESULT_IN_PROGRESS, RESULT_ALREADY_IN_PROGRESS:
+				__resetRequest.answered = true;
+				__resetRequest.retryAt = association.clock + __rto;
+				return;
+			default:
+		}
+
+		// A request the peer made of this end that this one answered: answered
+		// in full now.
+		if (__peerReset != null && __peerReset.sequence == __resetRequest.answering && __peerReset.result == RESULT_IN_PROGRESS
+			&& !__peerReset.waiting) {
+			__peerReset.result = result == RESULT_PERFORMED || result == RESULT_NOTHING_TO_DO ? RESULT_PERFORMED : RESULT_DENIED;
+		}
+
+		__resetRequest = null;
+
+		// The next streams waiting, if any closed meanwhile.
+		__flushOwed = true;
+	}
+
+	/** Sends the answers owed, and this end's request when one can go. **/
+	@:noCompletion private function __sendReconfig(now:Float):Void {
+		// What is queued in front goes in front.
+		if (__bundle.length > 0) {
+			__emit();
+		}
+
+		var chunks:Array<SctpChunk> = [];
+
+		for (answer in __answersOwed) {
+			var result:Int = answer.result >= 0 ? answer.result : (__peerReset != null && __peerReset.sequence == answer.sequence ? __peerReset.result : RESULT_BAD_SEQUENCE);
+			var value = new ByteArray();
+			value.endian = Endian.BIG_ENDIAN;
+			value.writeInt(answer.sequence);
+			value.writeInt(result);
+			chunks.push(__reconfigChunk(SctpParameter.RECONFIG_RESPONSE, value));
+		}
+
+		__answersOwed.resize(0);
+
+		// Asked only while the association is open: a shutdown the peer began
+		// is no time to reconfigure it, and the channels go with it anyway.
+		if (association.state != SctpAssociationState.ESTABLISHED) {
+			__resetWanted.resize(0);
+		}
+
+		if (__resetWanted.length > 0 && __resetRequest == null && ((__taken - __resetAfter) | 0) >= 0) {
+			var count:Int = __resetWanted.length < MAX_RESET_STREAMS ? __resetWanted.length : MAX_RESET_STREAMS;
+			var streams:Array<Int> = __resetWanted.splice(0, count);
+
+			// Before anything more can be sent on them: what the next channel on
+			// one of these streams sends is its sequence zero.
+			for (streamId in streams) {
+				__outboundSequence.remove(streamId);
+			}
+
+			var request = new OwnReset(__nextRequestSeq, (__peerRequestSeq - 1) | 0, (__nextTsn - 1) | 0, streams);
+			__nextRequestSeq = (__nextRequestSeq + 1) | 0;
+
+			var value = new ByteArray();
+			value.endian = Endian.BIG_ENDIAN;
+			value.writeInt(request.sequence);
+			value.writeInt(request.answering);
+			value.writeInt(request.lastTsn);
+
+			for (streamId in streams) {
+				value.writeShort(streamId);
+			}
+
+			request.chunk = __reconfigChunk(SctpParameter.OUTGOING_SSN_RESET, value);
+			request.retryAt = now + __rto;
+			__resetRequest = request;
+			chunks.push(request.chunk);
+		}
+
+		if (chunks.length > 0) {
+			association.onSend(association.packetFor(chunks));
+		}
+	}
+
+	/**
+		No answer to this end's request in time: sent again, as RFC 6525
+		section 5.1.1 has it, counted against the association like a data
+		timeout and backing off the same way. One the peer answered In progress
+		is simply asked again.
+	**/
+	@:noCompletion private function __onResetTimer(now:Float):Void {
+		var request = __resetRequest;
+
+		// Not into a shutdown, whatever is still unanswered.
+		if (association.state != SctpAssociationState.ESTABLISHED) {
+			__resetRequest = null;
+			__resetWanted.resize(0);
+			return;
+		}
+
+		if (!request.answered) {
+			__errorCount++;
+
+			if (__errorCount > MAX_ATTEMPTS) {
+				association.__end("The peer stopped answering: a stream reset went unanswered through " + MAX_ATTEMPTS + " timeouts in a row.", true);
+				return;
+			}
+
+			__rto = __rto * 2 > MAX_RTO ? MAX_RTO : __rto * 2;
+		}
+
+		request.answered = false;
+		request.retryAt = now + __rto;
+		association.onSend(association.packetFor([request.chunk]));
+	}
+
+	@:noCompletion private static function __reconfigChunk(type:Int, value:ByteArray):SctpChunk {
+		var parameter = new ByteArray();
+		value.position = 0;
+		SctpParameter.writeAll(parameter, [new SctpParameter(type, value)]);
+		parameter.position = 0;
+		return new SctpChunk(SctpPacket.CHUNK_RECONFIG, 0, parameter);
 	}
 
 	// ------------------------------------------------------------------
@@ -2257,6 +2703,68 @@ private class Held {
 	public var bytes:Int = 0;
 
 	public function new() {}
+}
+
+/** This end's request to reset streams it sends on, until the peer answers it. **/
+private class OwnReset {
+	public var sequence(default, null):Int;
+
+	/** The peer's request this one answers, or the last it made: RFC 6525's Re-configuration Response Sequence Number. **/
+	public var answering(default, null):Int;
+
+	/** The last TSN assigned before it, which the peer waits to have received. **/
+	public var lastTsn(default, null):Int;
+
+	public var streams(default, null):Array<Int>;
+
+	/** Encoded once, and the same bytes sent again. **/
+	public var chunk:SctpChunk;
+
+	public var retryAt:Float = 0;
+
+	/** Whether the peer answered In progress, so the next sending is a question asked again rather than a timeout. **/
+	public var answered:Bool = false;
+
+	public function new(sequence:Int, answering:Int, lastTsn:Int, streams:Array<Int>) {
+		this.sequence = sequence;
+		this.answering = answering;
+		this.lastTsn = lastTsn;
+		this.streams = streams;
+	}
+}
+
+/** The peer's latest request, and where it has got to. **/
+private class PeerReset {
+	public var sequence(default, null):Int;
+
+	/** Null for every stream. **/
+	public var streams(default, null):Null<Array<Int>>;
+
+	/** For an outgoing reset, the last TSN the peer assigned before it. **/
+	public var lastTsn(default, null):Int;
+
+	/** Waiting for data up to `lastTsn` to arrive before it is performed. **/
+	public var waiting:Bool = false;
+
+	/** What it is answered with, now and if the peer asks again. **/
+	public var result:Int = 0;
+
+	public function new(sequence:Int, streams:Null<Array<Int>>, lastTsn:Int) {
+		this.sequence = sequence;
+		this.streams = streams;
+		this.lastTsn = lastTsn;
+	}
+}
+
+/** An answer owed: a request's sequence number, and its result, or -1 for whatever the request's state says when it goes. **/
+private class ReconfigAnswer {
+	public var sequence(default, null):Int;
+	public var result(default, null):Int;
+
+	public function new(sequence:Int, result:Int) {
+		this.sequence = sequence;
+		this.result = result;
+	}
 }
 
 /** A complete message waiting for its turn on a stream. **/

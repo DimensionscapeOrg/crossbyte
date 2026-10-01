@@ -568,6 +568,130 @@ class PeerConnectionTest extends utest.Test {
 	}
 
 	/**
+		A restart toward a peer that has gone ends the connection.
+
+		While a restart was under way, consent lost on the old path closed
+		nothing -- the restart's agent was to decide -- and that agent, still
+		waiting for the peer's answer to the offer, was never started and had
+		no deadline. So `restartIce()` toward a peer whose tab had closed held
+		the connection open for good.
+	**/
+	public function testARestartTowardAPeerThatHasGoneEndsTheConnection():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+
+		try {
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			if (!alice.connected || !bob.connected) {
+				Assert.fail("the two never connected");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			var reasons:Array<String> = [];
+			alice.onClose = reason -> reasons.push(reason);
+			alice.readyTimeout = 5.0;
+
+			// Gone without a word, and the restart's offer goes nowhere.
+			@:privateAccess bob.__socket.close();
+			bob.close();
+			alice.restartIce();
+
+			// Past consent on the old path and past the restart's deadline, on
+			// the clock the tick uses.
+			alice.poll(haxe.Timer.stamp() + IceAgent.CONSENT_TIMEOUT + 10.0);
+
+			Assert.isFalse(alice.connected, "a restart toward a peer that had gone held the connection open");
+			Assert.equals(1, reasons.length, "the connection's end was reported " + reasons.length + " times");
+
+			if (reasons.length > 0) {
+				Assert.isTrue(reasons[0].indexOf("restart") >= 0 && reasons[0].indexOf("consent") >= 0,
+					"the reason does not say the restart and the old path both failed: " + reasons[0]);
+			}
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
+		A restart the peer never answers is given up, and the connection goes
+		on over the path it had.
+
+		Nothing ended one: `iceRestarting` stayed true, a second `restartIce()`
+		returned at once as already under way, and `description()` went on
+		offering credentials no agent checked with.
+	**/
+	public function testARestartThePeerNeverAnswersIsGivenUp():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+		var accepted:DataChannel = null;
+		var heard:Array<String> = [];
+
+		try {
+			bob.onChannel = function(channel:DataChannel):Void {
+				accepted = channel;
+				channel.onMessage = text -> heard.push(text);
+			};
+
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			var chat = alice.connected ? alice.createDataChannel("chat") : null;
+			pumpUntil(() -> chat != null && chat.open && accepted != null, 5.0);
+
+			if (accepted == null) {
+				Assert.fail("the two never connected with a channel open");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			var before = alice.agent;
+			var fragment:String = alice.credentials.usernameFragment;
+
+			alice.readyTimeout = 1.0;
+			alice.restartIce();
+			Assert.isTrue(alice.iceRestarting);
+
+			// The offer never reaches Bob, who goes on answering on the old path.
+			pumpUntil(() -> !alice.iceRestarting, 5.0);
+
+			Assert.isFalse(alice.iceRestarting, "a restart the peer never answered was never given up");
+			Assert.isTrue(alice.connected && bob.connected && chat.open, "giving the restart up took the connection down");
+			Assert.isTrue(alice.agent == before, "the session moved off the path it had");
+			Assert.equals(fragment, alice.description().usernameFragment, "the description still offers the given-up restart's credentials");
+
+			chat.send("still here");
+			pumpUntil(() -> heard.length > 0, 5.0);
+			Assert.equals("still here", heard.join(","), "the old path stopped carrying the session");
+
+			alice.restartIce();
+			Assert.isTrue(alice.iceRestarting, "another restart could not begin");
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
 		An answer repeats the section id of the offer it answers.
 	**/
 	public function testAnAnswerRepeatsTheOffersSectionId():Void {

@@ -40,6 +40,79 @@ class PeerConnectionGatheringTest extends utest.Test {
 	}
 
 	/**
+		A relayed candidate added from outside is refused, saying where one
+		that works comes from.
+
+		It was taken in silence, with no way to send through the relay, so the
+		checks "from" it went straight at the peer from this socket while the
+		peer was told to answer the relay -- a pair that could never work, and
+		nothing said why. A host candidate is still taken, and a shared
+		socket's host refuses a relayed one too.
+	**/
+	public function testARelayedCandidateAddedFromOutsideIsRefused():Void {
+		if (unsupported()) return;
+
+		var connection = new PeerConnection(true);
+		var host = new PeerConnectionHost();
+
+		try {
+			connection.bind(0, "127.0.0.1");
+			var relayed = new IceCandidate(RELAYED, "203.0.113.10", 49152);
+
+			Assert.raises(() -> connection.addLocalCandidate(relayed), crossbyte.errors.ArgumentError,
+				"a relayed candidate with no relay behind it was taken");
+
+			var advertised:Array<String> = [for (candidate in connection.description().candidates) candidate.type];
+			Assert.equals(-1, advertised.indexOf("relay"), "the refused candidate was advertised anyway");
+
+			connection.addLocalCandidate(IceCandidate.host("127.0.0.1", connection.localPort + 1));
+			Assert.equals(2, connection.description().candidates.length, "a host candidate was not taken");
+
+			host.bind(0, "127.0.0.1");
+			Assert.raises(() -> host.addLocalCandidate(relayed), crossbyte.errors.ArgumentError,
+				"a shared socket's host took a relayed candidate");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		connection.close();
+		host.close();
+	}
+
+	/**
+		What the class example says: a wildcard bind advertises no address at
+		all, and `LocalAddress` gives it the one to advertise.
+	**/
+	public function testAWildcardBindAdvertisesWhatLocalAddressFinds():Void {
+		if (unsupported()) return;
+
+		var connection = new PeerConnection(true);
+
+		try {
+			connection.bind(0, "0.0.0.0");
+			Assert.equals(0, connection.description().candidates.length, "a wildcard bind advertised an address by itself");
+
+			var found:String = null;
+			crossbyte.net.LocalAddress.primary().then(address -> found = address, _ -> {});
+			pumpUntil(() -> found != null, 3.0);
+
+			if (found == null) {
+				Assert.warn("this machine has no default route to ask about");
+			} else {
+				connection.addLocalCandidate(IceCandidate.host(found, connection.localPort));
+				var candidates = connection.description().candidates;
+				Assert.equals(1, candidates.length);
+				Assert.equals(found, candidates[0].address);
+				Assert.equals(connection.localPort, candidates[0].port);
+			}
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		connection.close();
+	}
+
+	/**
 		The address the server reports becomes a candidate, and one the peer
 		will be told about.
 	**/

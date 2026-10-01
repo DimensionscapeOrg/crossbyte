@@ -76,6 +76,110 @@ class DataChannelTest extends utest.Test {
 	}
 
 	/**
+		Closing a channel closes the peer's end of it.
+
+		RFC 8831 section 6.7 closes a data channel by resetting its streams,
+		RFC 6525, and there was no stream reset here: `close()` was local
+		state, the peer was never told, and went on sending into a channel
+		nothing read. A browser's channel stayed open for good.
+	**/
+	public function testClosingAChannelClosesThePeersEnd():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var accepted:DataChannel = null;
+		pair.serverChannels.onChannel = channel -> accepted = channel;
+
+		var chat = pair.clientChannels.create("chat");
+		Assert.isTrue(pair.run(() -> chat.open && accepted != null), "the channel never opened");
+
+		var peerCloses:Int = 0;
+		accepted.onClose = () -> peerCloses++;
+
+		chat.close();
+
+		Assert.isTrue(pair.run(() -> peerCloses > 0), "the peer's end of the channel never closed");
+		Assert.equals(1, peerCloses);
+		Assert.isFalse(accepted.open, "the peer's channel still reports itself open");
+		Assert.isNull(pair.serverChannels.channel(accepted.id), "the peer's set still holds the channel");
+
+		// And its answering reset is done, so neither end has anything in flight.
+		Assert.isTrue(pair.run(() -> pair.settled()), "a stream reset was left unanswered");
+	}
+
+	/**
+		And the peer closing its end is heard here.
+
+		The other half: a browser's `channel.close()` resets the stream it
+		sends on, and with nothing reading RE-CONFIG, `onClose` never ran.
+	**/
+	public function testThePeerClosingAChannelIsHeard():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var accepted:DataChannel = null;
+		pair.serverChannels.onChannel = channel -> accepted = channel;
+
+		var chat = pair.clientChannels.create("chat");
+		Assert.isTrue(pair.run(() -> chat.open && accepted != null), "the channel never opened");
+
+		var closes:Int = 0;
+		chat.onClose = () -> closes++;
+
+		accepted.close();
+
+		Assert.isTrue(pair.run(() -> closes > 0), "the peer closed the channel and nothing here heard it");
+		Assert.equals(1, closes);
+		Assert.isFalse(chat.open);
+		Assert.raises(() -> chat.send("after the peer closed"), ArgumentError);
+		Assert.isTrue(pair.run(() -> pair.settled()), "a stream reset was left unanswered");
+	}
+
+	/**
+		What was sent before a close arrives before it, all of it.
+
+		Most of it is still queued when `close()` is called -- far more than
+		the congestion window lets out at once -- and the reset waits behind
+		it: the peer hears every message, in order, and then the close.
+	**/
+	public function testWhatWasSentBeforeACloseArrivesFirst():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var accepted:DataChannel = null;
+		pair.serverChannels.onChannel = channel -> accepted = channel;
+
+		var chat = pair.clientChannels.create("chat");
+		Assert.isTrue(pair.run(() -> chat.open && accepted != null), "the channel never opened");
+
+		var heard:Array<String> = [];
+		accepted.onMessage = text -> heard.push(text);
+		accepted.onClose = () -> heard.push("closed");
+
+		var filler = StringTools.lpad("", "x", 900);
+
+		for (i in 0...40) {
+			chat.send(i + filler);
+		}
+
+		Assert.isTrue(chat.bufferedAmount > 0, "everything went at once, so nothing was waiting when the channel closed");
+		chat.close();
+
+		Assert.isTrue(pair.run(() -> heard.length > 0 && heard[heard.length - 1] == "closed"), "the peer never heard the close");
+		Assert.equals(41, heard.length, "the peer heard " + (heard.length - 1) + " of 40 messages before the close");
+
+		var inOrder:Bool = true;
+
+		for (i in 0...(heard.length - 1)) {
+			if (heard[i] != i + filler) {
+				inOrder = false;
+			}
+		}
+
+		Assert.isTrue(inOrder, "the messages before the close arrived out of order");
+	}
+
+	/**
 		When the association goes, every channel on it goes too, and says so.
 
 		This is what `PeerConnection` does with an ABORT, a close_notify, lost
@@ -250,8 +354,7 @@ class DataChannelTest extends utest.Test {
 		accepted[0].close();
 
 		// The peer is entitled to that number again. Wound back by hand because
-		// create() deliberately never reuses one on its own -- there is no close
-		// handshake, so only the peer knows it has finished with the stream.
+		// create() deliberately never reuses one on its own; see __freeStreamId.
 		@:privateAccess pair.serverChannels.__nextId = stream;
 
 		var again = pair.serverChannels.create("second");
@@ -666,5 +769,17 @@ private class Pair {
 		}
 
 		return done();
+	}
+
+	/** Whether neither end has a stream reset waiting, in flight or unanswered. **/
+	public function settled():Bool {
+		for (data in [clientData, serverData]) {
+			if (@:privateAccess data.__resetRequest != null || @:privateAccess data.__resetWanted.length > 0
+				|| @:privateAccess data.__answersOwed.length > 0) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 }

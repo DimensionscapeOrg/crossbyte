@@ -33,10 +33,19 @@ import haxe.Int64;
 	that has not been written yet.
 
 	```haxe
+	// Given socket:crossbyte.net.DatagramSocket, local:String, theirCredentials:IceCredentials.
+	import crossbyte.core.CrossByte;
+	import crossbyte.events.DatagramSocketDataEvent;
+	import crossbyte.events.TickEvent;
+
 	var agent = new IceAgent(true, IceCredentials.generate());
-	agent.onSend = (payload, address, port) -> server.sendTo(payload, address, port);
-	agent.addLocalCandidate(IceCandidate.host(local, server.localPort));
+	agent.onSend = (payload, address, port) -> socket.send(payload, 0, payload.length, address, port);
+	agent.addLocalCandidate(IceCandidate.host(local, socket.localPort));
 	agent.start(theirCredentials, haxe.Timer.stamp());
+
+	// What arrives is offered to it, and its clock moves on the tick.
+	socket.addEventListener(DatagramSocketDataEvent.DATA, e -> agent.receive(e.data, e.srcAddress, e.srcPort, haxe.Timer.stamp()));
+	CrossByte.current().addEventListener(TickEvent.TICK, _ -> agent.poll(haxe.Timer.stamp()));
 
 	agent.connected.then(function(pair) {
 		trace("use " + pair.remote.address + ":" + pair.remote.port);
@@ -75,6 +84,18 @@ class IceAgent {
 	public static inline var MAX_ATTEMPTS:Int = 7;
 
 	/**
+		How long the last transmission is given to be answered, in seconds:
+		RFC 8489's Rm of sixteen times the first timeout.
+
+		So a pair nothing answers is given up on 39.5 seconds after its first
+		check -- seven transmissions over 31.5 seconds, and eight more for the
+		last of them to be answered. It waited one more doubling instead, and
+		gave up at 63.5, which `TurnClient` had already stopped doing for the
+		same schedule.
+	**/
+	public static inline var FINAL_WAIT:Float = 8.0;
+
+	/**
 		How often consent to keep sending is re-asked for. RFC 7675 section 5.1.
 
 		Randomised around this rather than sent on the dot, because a fixed
@@ -93,13 +114,25 @@ class IceAgent {
 	public static inline var CONSENT_TIMEOUT:Float = 30.0;
 
 	/**
-		The most remote candidates one agent will hold.
+		The deadline an agent is given to select a pair unless `timeout` says
+		otherwise, in seconds from `start`.
+
+		Forty: a moment past the 39.5 seconds one pair is checked for, so it
+		ends only the waits nothing else would -- no pair to check, or a
+		nomination that never comes.
+	**/
+	public static inline var DEFAULT_TIMEOUT:Float = 40.0;
+
+	/**
+		The most remote candidates one agent will hold: those the peer
+		advertised, and those learned from where its checks arrived.
 
 		Every remote candidate pairs with every local one, and `__rebuild`
 		scans the whole checklist for each pair it considers, so the work grows
 		faster than the list does -- and the list is the peer's to choose. A
 		real peer offers a handful; RFC 8445 section 6.1.2.5 bounds the
-		checklist for the same reason.
+		checklist for the same reason. A check from a new place once the list
+		is full goes unanswered.
 	**/
 	public static inline var MAX_REMOTE_CANDIDATES:Int = 64;
 
@@ -149,7 +182,27 @@ class IceAgent {
 	/** Random, 64 bits, and compared when two peers claim the same role. **/
 	public var tiebreaker(default, null):Int64;
 
+	/** Where the agent has got to. `onStateChanged` says when it moves. **/
 	public var state(default, null):IceAgentState = NEW;
+
+	/**
+		Called when `state` changes: CHECKING once `start` has the peer's
+		credentials, CONNECTED when a pair is selected, and FAILED when every
+		pair has failed or, after connecting, the peer has stopped answering
+		consent checks for `CONSENT_TIMEOUT`. Not called for `close()`, which
+		the caller already knows about.
+
+		FAILED is final. The agent neither sends nor answers again, as RFC
+		7675 has a sender whose consent expired stop, and a path afresh is an
+		ICE restart: a new agent. A check nominating a pair used to bring a
+		failed agent back to CONNECTED, with nothing reporting it.
+
+		The consent failure used to set `state` and call nothing, on the
+		reasoning that a hook nothing is obliged to read is a way of not
+		reporting it -- which left a caller with nothing to read but `state`,
+		polled every tick.
+	**/
+	public dynamic function onStateChanged(state:IceAgentState):Void {}
 
 	/**
 		The pair traffic should use, once there is one.
@@ -170,11 +223,30 @@ class IceAgent {
 	/**
 		Resolves with the nominated pair, or fails when every pair has.
 
-		One shot: an agent that has connected stays connected until it is
-		closed, and an ICE restart is a new agent rather than a second result
-		on this one.
+		One shot: it settles once, with the first pair selected, and what
+		becomes of the path afterwards is said elsewhere. The controlling peer
+		can nominate another pair, which `onSelectedPairChanged` reports; and
+		the peer can stop answering consent checks, after which the agent is
+		FAILED for good, which `onStateChanged` reports. An ICE restart is a
+		new agent rather than a second result on this one.
 	**/
 	public var connected(default, null):Future<IceCandidatePair>;
+
+	/**
+		How long, in seconds from `start`, the agent has to select a pair
+		before it gives up: FAILED, and `connected` failed with a reason that
+		says what it was waiting for. 0 for no deadline. Read at every poll, so
+		it can be changed while checking.
+
+		There was none, and an agent could wait for ever: with no pair to check
+		-- the peer's candidates all names, or none reachable from this agent's
+		-- and no check arriving; as the controlled agent, its pairs answering
+		and the controlling peer never nominating one; or as the controlling
+		agent, its nomination unanswered while another pair had answered. That
+		last one now moves on to the next pair that answered; the deadline is
+		for the rest.
+	**/
+	public var timeout:Float = DEFAULT_TIMEOUT;
 
 	/**
 		Called with a datagram to put on the wire.
@@ -206,7 +278,12 @@ class IceAgent {
 	@:noCompletion private var __consentedAt:Float = 0;
 	@:noCompletion private var __valid:Array<IceCandidatePair> = [];
 	@:noCompletion private var __nextCheckAt:Float = 0;
+
+	/** Whether a nomination is in flight; cleared when it goes unanswered, so another is made. **/
 	@:noCompletion private var __nominating:Bool = false;
+
+	/** When `start` was called, which `timeout` is measured from. **/
+	@:noCompletion private var __startedAt:Float = 0;
 
 	/** Whether any pair created or triggered since connecting may still need checking. **/
 	@:noCompletion private var __lateChecks:Bool = false;
@@ -343,8 +420,10 @@ class IceAgent {
 
 		this.remoteCredentials = remoteCredentials;
 		state = CHECKING;
+		__startedAt = now;
 		__nextCheckAt = now;
 		__rebuild();
+		onStateChanged(CHECKING);
 	}
 
 	/**
@@ -374,12 +453,17 @@ class IceAgent {
 			return;
 		}
 
+		if (timeout > 0 && now - __startedAt >= timeout) {
+			__giveUp(__overdue());
+			return;
+		}
+
 		for (check in __checks) {
 			if (check.state == IN_PROGRESS && now >= check.nextAttemptAt) {
 				if (check.attempts >= MAX_ATTEMPTS) {
-					// Nothing came back through seven transmissions over about
-					// half a minute. The pair is not a path.
-					check.state = FAILED;
+					// Nothing came back through seven transmissions and the
+					// wait after the last: 39.5 seconds. The pair is not a path.
+					__checkFailed(check);
 				} else {
 					__transmit(check, now);
 				}
@@ -409,13 +493,16 @@ class IceAgent {
 		that: a socket this agent shares with a relay client or a reflexive
 		query decodes each datagram once and shows the message to each, rather
 		than having each decode it again.
-		@return Whether this was a STUN message the agent took. False means the
-		datagram belongs to whatever else shares the socket, which is the normal
-		case once a session is carrying data -- so a caller should pass it on
-		rather than dropping it.
+		@return Whether this was a STUN message the agent took: a check
+		addressed to its credentials and signed with them, or an answer to a
+		check it sent. False means the datagram belongs to whatever else shares
+		the socket, which is the normal case once a session is carrying data --
+		so a caller should pass it on rather than dropping it.
 	**/
 	public function receive(payload:ByteArray, fromAddress:String, fromPort:Int, now:Float, ?via:IceCandidate, ?message:StunMessage):Bool {
-		if (state == CLOSED || payload == null) {
+		// A failed agent is done, like a closed one: it answers nothing, and
+		// nothing brings it back.
+		if (state == CLOSED || state == FAILED || payload == null) {
 			return false;
 		}
 
@@ -435,28 +522,31 @@ class IceAgent {
 		var previous = __arrivedVia;
 		__arrivedVia = via;
 
+		// Each says whether the message was this agent's. They all used to be
+		// reported taken, so a check addressed to another session, or an
+		// answer to something this agent never asked, was kept from whatever
+		// else on the socket might have wanted it.
+		var taken:Bool;
+
 		switch (message.type) {
 			case StunMessage.BINDING_REQUEST:
-				__answer(message, fromAddress, fromPort, now);
+				taken = __answer(message, fromAddress, fromPort, now);
 			case StunMessage.BINDING_SUCCESS:
 				// Consent first: its transaction is not in __checks, so
 				// __accept would look straight past it.
-				if (!__acceptConsent(message, now)) {
-					__accept(message, fromAddress, fromPort, now);
-				}
+				taken = __acceptConsent(message, now) || __accept(message, fromAddress, fromPort, now);
 			case StunMessage.BINDING_ERROR:
-				__refused(message, now);
+				taken = __refused(message, now);
 			default:
 				// STUN, but not a check: a relay's answer, a Data indication.
 				// Whatever else shares the socket may want it, and taking it
 				// here is what swallowed a TURN relay's answers on a reliable
 				// datagram server with an agent attached.
-				__arrivedVia = previous;
-				return false;
+				taken = false;
 		}
 
 		__arrivedVia = previous;
-		return true;
+		return taken;
 	}
 
 	/** Stops everything. A closed agent neither sends nor answers. **/
@@ -492,8 +582,8 @@ class IceAgent {
 		usually are, and ICE pairs a relayed candidate with all of them. A relay
 		drops what it has no permission for without a word, so each of those
 		checks would otherwise be sent seven times over half a minute into
-		nothing, and an agent whose other pairs had all failed would wait that
-		long to say so.
+		nothing, and an agent whose other pairs had all failed would wait 39.5
+		seconds to say so.
 
 		A pair that has answered is left alone: it is a path that demonstrably
 		worked, whatever was said about it since.
@@ -511,7 +601,7 @@ class IceAgent {
 			}
 
 			if (check.pair.local.sameAs(local) && check.pair.remote.address == remoteAddress) {
-				check.state = FAILED;
+				__checkFailed(check);
 				changed = true;
 			}
 		}
@@ -548,8 +638,10 @@ class IceAgent {
 		// Recorded, because a refusal that comes back may be answering a claim
 		// this agent has since abandoned. See __refused.
 		check.sentAsControlling = controlling;
-		// Doubling from 500ms, so seven attempts span roughly 31 seconds.
-		check.nextAttemptAt = now + INITIAL_RTO * Math.pow(2, check.attempts - 1);
+		// Doubling from 500ms, so seven attempts span 31.5 seconds, and the
+		// last given sixteen times the first to be answered (RFC 8489 section
+		// 6.2.1): a pair is given up on at 39.5.
+		check.nextAttemptAt = now + (check.attempts >= MAX_ATTEMPTS ? FINAL_WAIT : INITIAL_RTO * Math.pow(2, check.attempts - 1));
 
 		__sendVia(check.pair.local, message.encodeSigned(remoteCredentials.password), check.pair.remote.address, check.pair.remote.port);
 	}
@@ -569,19 +661,73 @@ class IceAgent {
 
 		check.nominate = true;
 		check.attempts = 0;
+
+		// A transaction of its own. The check that proved the pair was
+		// answered under the old one, and a late copy of that answer -- the
+		// peer replying to a retransmission -- was taken for the nomination's,
+		// selecting a pair the peer had never been asked to use.
+		check.transaction = __freshTransaction();
 		check.state = WAITING;
 		__transmit(check, now);
+	}
+
+	/**
+		A check is given up on. When it was this agent's nomination, the pair
+		it nominated has stopped answering since it was proved, and is no
+		longer valid: the next poll nominates the best of the pairs left. The
+		nomination used to stay in flight for good, so a controlling agent
+		whose first choice went quiet never chose again, while another pair
+		that had answered sat unused.
+	**/
+	@:noCompletion private function __checkFailed(check:IceCheck):Void {
+		check.state = FAILED;
+
+		if (!check.nominate) {
+			return;
+		}
+
+		check.nominate = false;
+		__nominating = false;
+
+		for (pair in __valid) {
+			if (pair.sameAs(check.pair)) {
+				__valid.remove(pair);
+				break;
+			}
+		}
+	}
+
+	/** Why an agent that ran out of time had not connected, for `connected`'s failure. **/
+	@:noCompletion private function __overdue():String {
+		var within:String = " within " + timeout + " seconds";
+
+		if (__checks.length == 0) {
+			return "No candidate pair could be formed" + within + ": "
+				+ (__locals.length == 0 ? "this agent has no candidate of its own" : (__remotes.length == 0 ? "the peer offered no candidate this agent could use, and no check came from it" : "none of this agent's candidates can reach the peer's"))
+				+ ".";
+		}
+
+		if (__valid.length > 0 && !controlling) {
+			return __valid.length + " candidate pair" + (__valid.length == 1 ? "" : "s") + " answered, and the controlling peer nominated none" + within + ".";
+		}
+
+		if (__valid.length > 0) {
+			return "No pair this agent nominated was answered" + within + ".";
+		}
+
+		return "No candidate pair answered" + within + ".";
 	}
 
 	// ------------------------------------------------------------------
 	// Receiving
 	// ------------------------------------------------------------------
 
-	@:noCompletion private function __answer(request:StunMessage, fromAddress:String, fromPort:Int, now:Float):Void {
+	/** @return Whether the check was this agent's: addressed to its credentials and signed with them. **/
+	@:noCompletion private function __answer(request:StunMessage, fromAddress:String, fromPort:Int, now:Float):Bool {
 		var usernameBytes = request.attribute(StunMessage.ATTR_USERNAME);
 
 		if (usernameBytes == null) {
-			return;
+			return false;
 		}
 
 		usernameBytes.position = 0;
@@ -591,7 +737,17 @@ class IceAgent {
 		// is what makes it a check for this session rather than a stray
 		// datagram or somebody else's.
 		if (!localCredentials.addressedByUsername(username) || !request.verifyIntegrity(localCredentials.password)) {
-			return;
+			return false;
+		}
+
+		// A check from somewhere the peer never advertised makes that place a
+		// remote candidate, so `MAX_REMOTE_CANDIDATES` has to hold here as it
+		// does for the advertised ones: it did not, and a peer checking from
+		// 192 ports had 192 candidates paired and checked back. Past the cap
+		// the check goes unanswered, since an answer would make a pair at the
+		// peer's end -- one it could nominate -- that this end never formed.
+		if (__remoteAt(fromAddress, fromPort) == null && __remotes.length >= MAX_REMOTE_CANDIDATES) {
+			return true;
 		}
 
 		// Before answering: the sender may have claimed the same role this
@@ -603,7 +759,7 @@ class IceAgent {
 			]);
 
 			__sendVia(__arrivedVia, refusal.encodeSigned(localCredentials.password), fromAddress, fromPort);
-			return;
+			return true;
 		}
 
 		// Where this peer sees the sender, which is how the sender learns about
@@ -620,7 +776,7 @@ class IceAgent {
 		var pair = __pairFrom(fromAddress, fromPort, __arrivedVia);
 
 		if (pair == null) {
-			return;
+			return true;
 		}
 
 		var check = __checkFor(pair);
@@ -656,23 +812,32 @@ class IceAgent {
 			// selecting happens the moment the check answers.
 			check.nominatedByPeer = true;
 		}
+
+		return true;
 	}
 
-	@:noCompletion private function __accept(response:StunMessage, fromAddress:String, fromPort:Int, now:Float):Void {
+	/** @return Whether the response answered a check this agent sent. **/
+	@:noCompletion private function __accept(response:StunMessage, fromAddress:String, fromPort:Int, now:Float):Bool {
 		if (remoteCredentials == null) {
-			return;
+			return false;
 		}
 
 		var check = __checkByTransaction(response);
 
-		if (check == null || check.state != IN_PROGRESS) {
-			return;
+		if (check == null) {
+			return false;
+		}
+
+		// A second answer to a check already answered: this agent's own, and
+		// nothing more to do with it.
+		if (check.state != IN_PROGRESS) {
+			return true;
 		}
 
 		// Keyed with the other peer's password, the same one that signed the
 		// request -- so a response nobody could have signed is not an answer.
 		if (!response.verifyIntegrity(remoteCredentials.password)) {
-			return;
+			return false;
 		}
 
 		check.state = SUCCEEDED;
@@ -694,6 +859,7 @@ class IceAgent {
 		}
 
 		__settleIfFinished();
+		return true;
 	}
 
 	/**
@@ -755,23 +921,25 @@ class IceAgent {
 		changing sides and asking again -- with a new transaction, because the
 		old one has been answered and a peer is entitled to ignore a repeat of
 		it.
+
+		@return Whether the refusal answered a check this agent sent.
 	**/
-	@:noCompletion private function __refused(response:StunMessage, now:Float):Void {
+	@:noCompletion private function __refused(response:StunMessage, now:Float):Bool {
 		var check = __checkByTransaction(response);
 
 		if (check == null || remoteCredentials == null) {
-			return;
+			return false;
 		}
 
 		if (!response.verifyIntegrity(remoteCredentials.password)) {
-			return;
+			return false;
 		}
 
 		if (response.errorCodeValue() != ROLE_CONFLICT) {
 			// Any other refusal is this pair failing, not the session.
-			check.state = FAILED;
+			__checkFailed(check);
 			__settleIfFinished();
-			return;
+			return true;
 		}
 
 		// Only if this refusal is about the role currently held. A check sent
@@ -793,6 +961,7 @@ class IceAgent {
 		check.attempts = 0;
 		check.state = WAITING;
 		__transmit(check, now);
+		return true;
 	}
 
 	/**
@@ -812,6 +981,11 @@ class IceAgent {
 
 		for (check in __checks) {
 			check.pair = new IceCandidatePair(check.pair.local, check.pair.remote, controlling);
+
+			// A nomination made under the old role is withdrawn with it: its
+			// answer would otherwise select the pair as though the peer had been
+			// asked by the agent entitled to ask.
+			check.nominate = false;
 		}
 
 		var revalued:Array<IceCandidatePair> = [];
@@ -992,14 +1166,7 @@ class IceAgent {
 		the other end.
 	**/
 	@:noCompletion private function __pairFrom(address:String, port:Int, ?via:IceCandidate):Null<IceCandidatePair> {
-		var remote:IceCandidate = null;
-
-		for (candidate in __remotes) {
-			if (candidate.address == address && candidate.port == port) {
-				remote = candidate;
-				break;
-			}
-		}
+		var remote:IceCandidate = __remoteAt(address, port);
 
 		if (remote == null) {
 			remote = new IceCandidate(PEER_REFLEXIVE, address, port);
@@ -1034,6 +1201,17 @@ class IceAgent {
 		return null;
 	}
 
+	/** The remote candidate at `address:port`, advertised or learned, or null. **/
+	@:noCompletion private function __remoteAt(address:String, port:Int):Null<IceCandidate> {
+		for (candidate in __remotes) {
+			if (candidate.address == address && candidate.port == port) {
+				return candidate;
+			}
+		}
+
+		return null;
+	}
+
 	@:noCompletion private function __addValid(pair:IceCandidatePair):Void {
 		for (existing in __valid) {
 			if (existing.sameAs(pair)) {
@@ -1062,12 +1240,10 @@ class IceAgent {
 		}
 
 		if (now - __consentedAt >= CONSENT_TIMEOUT) {
-			// FAILED rather than a callback, because a hook nothing is obliged
-			// to read is a way of not reporting this. `selectedPair` is left
-			// alone: it is what the path *was*, which is worth having when
-			// working out why a session stopped.
-			state = FAILED;
-			__consentTransaction = null;
+			// `selectedPair` is left alone: it is what the path *was*, which
+			// is worth having when working out why a session stopped.
+			// `connected` resolved long ago and keeps its result.
+			__giveUp("The peer stopped answering consent checks.");
 			return;
 		}
 
@@ -1132,7 +1308,10 @@ class IceAgent {
 	}
 
 	@:noCompletion private function __select(pair:IceCandidatePair, now:Float):Void {
-		if (state == CLOSED) {
+		// Only while checking or connected. A failed agent is done: a
+		// nomination used to bring one back to CONNECTED, through the branch
+		// below meant for the first, with nothing told.
+		if (state != CHECKING && state != CONNECTED) {
 			return;
 		}
 
@@ -1169,6 +1348,7 @@ class IceAgent {
 		__consentDueAt = now + CONSENT_INTERVAL;
 
 		@:privateAccess connected.__resolve(pair);
+		onStateChanged(CONNECTED);
 	}
 
 	@:noCompletion private function __settleIfFinished():Void {
@@ -1182,8 +1362,15 @@ class IceAgent {
 			}
 		}
 
+		__giveUp("Every candidate pair failed: no path between these two peers was found.");
+	}
+
+	/** Fails the agent for good, saying why. **/
+	@:noCompletion private function __giveUp(reason:String):Void {
 		state = FAILED;
-		@:privateAccess connected.__fail("Every candidate pair failed: no path between these two peers was found.", null);
+		__consentTransaction = null;
+		@:privateAccess connected.__fail(reason, null);
+		onStateChanged(FAILED);
 	}
 
 	@:noCompletion private function __sameEndpoint(mapped:ReflexiveAddress, candidate:IceCandidate):Bool {

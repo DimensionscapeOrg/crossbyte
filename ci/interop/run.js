@@ -308,6 +308,42 @@ async function restartTowardBrowser(page, peer) {
   await waitForBrowserSession(page, ufrag, 'CrossByte\'s restart');
 }
 
+/**
+ * A channel closed from each end. RFC 8831 section 6.7 closes a data channel
+ * by resetting its streams (RFC 6525): the end that closes resets the stream
+ * it sends on, and the other resets its own in answer. The browser's channel
+ * finishes closing only when both have -- so the browser is the judge of
+ * whether CrossByte reads a reset, answers it, and makes one Chrome accepts.
+ * Closing used to tell the peer nothing, and RE-CONFIG went unread.
+ */
+async function closeBothWays(page, peer, browserCloses, crossbyteCloses) {
+  peer.send({ close: true, theirs: browserCloses, ours: crossbyteCloses });
+  await peer.wait('close-ready', 10000);
+
+  await page.evaluate('window.__closeChannel(' + JSON.stringify(browserCloses) + ')');
+  const heard = await peer.wait('closed-by-browser', 25000).catch(() => null);
+
+  if (!heard || !heard.heard) {
+    throw new Error('the browser closed "' + browserCloses + '" and CrossByte never heard it: ' + JSON.stringify(heard));
+  }
+
+  await page.waitForFunction(label => window.__interop.closed[label] === true, { timeout: 5000 }, browserCloses).catch(() => {
+    throw new Error('the browser\'s close of "' + browserCloses + '" never completed: CrossByte did not reset its own stream in answer');
+  });
+
+  const ours = await peer.wait('closed-toward-browser', 25000).catch(() => null);
+
+  if (!ours || !ours.done) {
+    throw new Error('CrossByte closed "' + crossbyteCloses + '" and the browser never answered with its own reset: ' + JSON.stringify(ours));
+  }
+
+  // While the peer is still up: a connection torn down closes every channel
+  // anyway, which would pass this for the wrong reason.
+  await page.waitForFunction(label => window.__interop.closed[label] === true, { timeout: 1500 }, crossbyteCloses).catch(() => {
+    throw new Error('CrossByte closed "' + crossbyteCloses + '" and the browser\'s channel never closed');
+  });
+}
+
 async function browserOffers(page, mdns, shared) {
   console.log('\n=== the browser offers, CrossByte answers ===');
   console.log('  CrossByte should end up ICE-controlled and the DTLS client');
@@ -318,7 +354,7 @@ async function browserOffers(page, mdns, shared) {
     throw new Error('the browser produced no data channel offer');
   }
 
-  const peer = startPeer({ mode: 'answer', sdp: offer, host: shared, restart: true });
+  const peer = startPeer({ mode: 'answer', sdp: offer, host: shared, restart: true, close: true });
 
   try {
     const answer = await peer.wait('answer', 15000);
@@ -406,6 +442,9 @@ async function browserOffers(page, mdns, shared) {
 
     await restartFromBrowser(page, peer);
     console.log('  passed: the browser restarted ICE, and the session moved to the new path with its channel');
+
+    await closeBothWays(page, peer, 'interop', 'state');
+    console.log('  passed: a channel closed from each end closed at both');
   } finally {
     peer.kill();
   }
@@ -415,7 +454,7 @@ async function crossbyteOffers(page, mdns, shared) {
   console.log('\n=== CrossByte offers, the browser answers ===');
   console.log('  CrossByte should end up ICE-controlling and the DTLS server');
 
-  const peer = startPeer({ mode: 'offer', host: shared, restart: true });
+  const peer = startPeer({ mode: 'offer', host: shared, restart: true, close: true });
 
   try {
     const offer = await peer.wait('offer', 15000);
@@ -471,6 +510,9 @@ async function crossbyteOffers(page, mdns, shared) {
 
     await restartTowardBrowser(page, peer);
     console.log('  passed: CrossByte restarted ICE, and the session moved to the new path with its channel');
+
+    await closeBothWays(page, peer, 'interop', 'state');
+    console.log('  passed: a channel closed from each end closed at both');
   } finally {
     peer.kill();
   }
@@ -544,5 +586,6 @@ async function crossbyteOffers(page, mdns, shared) {
   console.log('  a real RTCPeerConnection and CrossByte opened a data channel and');
   console.log('  exchanged messages, in both directions and both role pairings,');
   console.log('  against a browser publishing its addresses and one hiding them,');
-  console.log('  and with CrossByte on a socket of its own and on a shared one.');
+  console.log('  and with CrossByte on a socket of its own and on a shared one;');
+  console.log('  and each end closed a channel that the other then closed too.');
 })();
