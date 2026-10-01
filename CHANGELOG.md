@@ -2163,6 +2163,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `-D final` build compiles again, Lime's `-final` defines `final`,
+  on every sys target. `final` inlines the socket registry's `update()`,
+  and a return added in the middle of it for a failing poll backend
+  stopped every final build at "Cannot inline a not final return". CI
+  type-checks a final build now.
 - A `ServerSocket`'s `handshakeTimeout` of 0 sets no deadline, as every
   other timeout does and as `ServerWebSocket`'s does. It failed every TLS
   handshake at the first accept tick natively, and at 1 ms on Node.
