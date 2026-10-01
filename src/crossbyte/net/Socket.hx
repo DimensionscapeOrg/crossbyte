@@ -375,6 +375,19 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private static inline var READ_CHUNK:Int = 64 * 1024;
 
 	/**
+	 * What one readable socket may take in one pass: sixteen full reads, as
+	 * Netty's sixteen reads a wakeup and libuv's thirty-two. Whatever is left
+	 * is still in the kernel, which reports the socket readable again on the
+	 * next pass.
+	 *
+	 * The loop read for as long as reads came back full, which a peer
+	 * sending faster than the server copies keeps them doing: one uploader
+	 * over loopback held the runtime inside its socket, with no timer run
+	 * and no other socket read, while its unread backlog grew to 365 MB.
+	 */
+	@:noCompletion private static inline var READ_BUDGET:Int = 16 * READ_CHUNK;
+
+	/**
 	 * Consumed bytes tolerated at the front of `__input` before the unread
 	 * tail is moved down. Compacting on every arrival, which is what
 	 * rebuilding the buffer per read amounted to, costs a copy of the whole
@@ -2269,7 +2282,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					// The eval gate below runs inside this try on purpose: a
 					// select failure on a dying socket lands in the catches and
 					// closes the connection, the same as a failed read.
-				} while (l == scratch.length #if eval && __evalShouldKeepReading() #end);
+				} while (bLength < READ_BUDGET
+					&& l == scratch.length
+					#if eval && __evalShouldKeepReading() #end);
 			} catch (e:Eof) {
 				// The peer sent FIN. That is all this says: it will send no
 				// more. Whether it is still reading, half-closed and waiting
@@ -2289,6 +2304,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				}
 			} catch (e:Dynamic) {
 				doClose = true;
+			}
+
+			// Stopped with its share of the pass taken: what is left is read
+			// before the loop waits, not after it.
+			if (bLength >= READ_BUDGET && !doClose && __cbInstance != null) {
+				@:privateAccess __cbInstance.__noteMoreToRead();
 			}
 		}
 

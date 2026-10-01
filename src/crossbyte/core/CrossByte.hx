@@ -663,6 +663,13 @@ final class CrossByte extends EventDispatcher {
 		__socketRegistry.__waited = 0.0;
 		__socketRegistry.update(socketTimeout);
 		__flushHeld();
+		// As the runtime's own loops do: a socket that stopped with its share
+		// of the pass taken is read again while the host's frame lasts, not
+		// at its next one.
+		while (__socketRegistry.__moreToRead && Timer.stamp() - frameStart < delta && __getRunning()) {
+			__socketRegistry.update(0);
+			__flushHeld();
+		}
 		__cpuTime = Timer.stamp() - frameStart - __socketRegistry.__waited;
 		#else
 		__cpuTime = Timer.stamp() - frameStart;
@@ -1120,6 +1127,16 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private inline function unwatchWritable(socket:Socket):Void {
 		if (__socketRegistry != null) {
 			__socketRegistry.unwatchWritable(socket);
+		}
+	}
+
+	/**
+		Tells the loop a socket stopped reading with its share of the pass
+		taken and more likely waiting, so it reads again before it waits.
+	**/
+	@:noCompletion private inline function __noteMoreToRead():Void {
+		if (__socketRegistry != null) {
+			__socketRegistry.__moreToRead = true;
 		}
 	}
 	#end
@@ -1641,6 +1658,18 @@ final class CrossByte extends EventDispatcher {
 		#if !js
 		__socketRegistry.update();
 		__flushHeld();
+		// A socket that stopped with its share of the pass taken is read
+		// again at once while the frame has time left, rather than at the
+		// next frame with the frame slept out in between: polled once a
+		// frame, a socket at the default 12 ticks a second would be read a
+		// megabyte every 84 ms however fast its data came.
+		while (__socketRegistry.__moreToRead && Timer.stamp() < __frameDeadline && __getRunning()) {
+			__socketRegistry.update();
+			if (__hasPosted) {
+				__runPosted();
+			}
+			__flushHeld();
+		}
 		#end
 
 		__cpuTime = __dt = Timer.stamp() - frameStart;
@@ -1700,8 +1729,14 @@ final class CrossByte extends EventDispatcher {
 		// sockets altogether: a server at that rate never accepted or read,
 		// and one that fell behind stopped reading its clients until it
 		// caught up, which reading them is part of.
+		//
+		// And again, with no wait, while a socket stopped with its share of
+		// the pass taken and more waiting, for as long as the frame lasts:
+		// a frame too short to wait in otherwise read it once and slept out
+		// the rest, so at 1,000 ticks a second an upload was read a megabyte
+		// a sleep.
 		var polled:Bool = false;
-		while ((remaining >= MIN_POLL_WAIT || !polled) && __getRunning()) {
+		while ((remaining >= MIN_POLL_WAIT || !polled || (__socketRegistry.__moreToRead && remaining > 0)) && __getRunning()) {
 			polled = true;
 			#if !js
 			__socketRegistry.update(remaining >= MIN_POLL_WAIT ? remaining : 0);
