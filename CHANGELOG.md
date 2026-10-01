@@ -1937,6 +1937,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `PeerConnection` gives up an ICE restart that has found no path within
+  `readyTimeout` of beginning, or whose agent finds none, and goes on as it
+  would have without it: over the old path while the peer answers consent
+  checks there, closing when it does not. Nothing ended a restart the peer
+  never answered, and while one was under way lost consent closed
+  nothing, so `restartIce()` toward a peer that had gone held the
+  connection open for good, and no later restart could begin. A restart
+  that found no path also failed the connection however well the old path
+  was doing.
 - An `IceAgent` gives up when it has not selected a pair within `timeout`
   seconds of `start`, 40 by default, 0 for none, and `connected` fails
   saying what it was waiting for. It could wait for ever: with no pair to
