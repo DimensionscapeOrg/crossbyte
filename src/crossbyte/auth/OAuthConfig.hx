@@ -4,10 +4,23 @@ package crossbyte.auth;
  * OAuth configuration class.
  */
 class OAuthConfig {
+	/** The client id the provider issued. */
 	public var clientId:String;
+
+	/** The client secret, or `null` for a public client using PKCE, which sends none. */
 	public var clientSecret:String;
+
+	/**
+	 * The provider's authorization endpoint. It may carry a query of its own,
+	 * for parameters that never change; `OAuth.getAuthorizationUrl` adds the
+	 * flow's after it.
+	 */
 	public var authorizeUrl:String;
+
+	/** The provider's token endpoint. */
 	public var tokenUrl:String;
+
+	/** Where the provider sends the user back, exactly as registered with it. */
 	public var redirectUri:String;
 
 	/**
