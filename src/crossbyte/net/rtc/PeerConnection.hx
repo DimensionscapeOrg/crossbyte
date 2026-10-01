@@ -918,8 +918,15 @@ class PeerConnection {
 	}
 
 	/**
-		Moves every layer forward. Driven from the runtime tick once bound;
-		public so a test can drive it with a clock of its own.
+		Moves every layer forward. Driven from the runtime tick once bound.
+
+		@param now `haxe.Timer.stamp()`'s time, the one clock every layer here
+		is driven from (see "One clock" above) -- not a clock of the caller's
+		own, which this used to say would do. A datagram arrives with no time
+		attached, so the paths it takes read `haxe.Timer.stamp()` themselves,
+		and a clock of another epoch would put every retransmission due at
+		once or never. Public so a test can pass a later time on it, and move
+		every timer past its deadline in one call.
 	**/
 	public function poll(now:Float):Void {
 		if (__closed) {

@@ -1955,6 +1955,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `PeerConnection.poll` and `PeerConnectionHost.poll` say `now` must be
+  `haxe.Timer.stamp()`'s time. They said a test could drive them with a
+  clock of its own, which cannot work: what arrives on the socket comes
+  with no time and is handled on `haxe.Timer.stamp()`, so timers armed on
+  one clock and checked on the other fire at once or never.
 - `DtlsTransport`'s documentation says which peer is the DTLS client as
   `PeerConnection` and `SessionDescription` do: the description's
   `a=setup` decides (RFC 5763, RFC 8842), and the answerer -- the
