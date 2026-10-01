@@ -1942,6 +1942,10 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `WebSocket.readMultiByte` and `writeMultiByte` say what they do, as
+  `ByteArray`'s already did: the character set is ignored, and the bytes
+  are UTF-8. They promised `"shift_jis"` and the rest. Its `readObject` and
+  `writeObject` say they use `objectEncoding`, where they said AMF.
 - `WebSocket.writeBytes` and `sendBinary` refuse a range outside the bytes
   given, with a `RangeError` (an `ArgumentError` for `null`), as
   `writeBytes` promised and as `DatagramSocket.send` does. They wrote
