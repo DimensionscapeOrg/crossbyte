@@ -48,10 +48,12 @@ interface HTTPResponseWriter {
 	 */
 	var onDrain(get, set):Null<Void->Void>;
 	/**
-	 * Invoked if the peer abandons this response without the connection
-	 * closing: under HTTP/2, a reset of its stream. A closed connection is
-	 * the socket's own `Event.CLOSE`, and under HTTP/1.1 that is the only way
-	 * a response is abandoned, so this is never called there.
+	 * Invoked if this response is abandoned without the connection closing:
+	 * under HTTP/2, a reset of its stream, whether the peer sent it or the
+	 * server did -- for a protocol error of the peer's on that stream, say. A
+	 * closed connection is the socket's own `Event.CLOSE`, and under HTTP/1.1
+	 * that is the only way a response is abandoned, so this is never called
+	 * there.
 	 */
 	var onAbandoned(get, set):Null<Void->Void>;
 

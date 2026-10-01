@@ -1221,6 +1221,99 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	public function testAProducerHearsTheServerResetItsStream(async:Async):Void {
+		// A stream the server resets is as over as one the client resets, but
+		// only the client's reset reached the producer: one the server reset
+		// for the client's protocol error -- DATA on a stream the client had
+		// ended, STREAM_CLOSED -- heard nothing until it next wrote, and one
+		// waiting on an event to write never did.
+		var closes:Int = 0;
+		var events:HTTPResponseStream = null;
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/events") {
+						handler.addEventListener(crossbyte.events.Event.CLOSE, _ -> closes++);
+						events = handler.beginResponse(200, "text/event-stream");
+						events.writeText("first");
+						return;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/events", true);
+			session.until(() -> session.body(1) == "first" || session.ended, () -> {
+				session.trickle(1, "after the end");
+				session.until(() -> closes > 0 || session.ended, () -> {
+					var heardBeforeWriting:Int = closes;
+					var accepted:Bool = events.writeText("after");
+					// The connection carries on for everything else.
+					session.request(3, "GET", "/index.html", true);
+					session.until(() -> session.finished(3) || session.ended, () -> {
+						session.close();
+						// The connection closing as well, which must not tell it again.
+						HTTPTestSupport.pumpMoreAsync(5, () -> {
+							Assert.equals(5, session.resetCode(1), "the server did not reset the stream, so this shows nothing");
+							Assert.equals(1, heardBeforeWriting, "the producer was not told its stream was reset");
+							Assert.isFalse(accepted);
+							Assert.equals(1, closes, "CLOSE was dispatched " + closes + " times");
+							Assert.equals(200, session.status(3));
+							async.done();
+						});
+					});
+				}, 2.0);
+			});
+		});
+	}
+
+	public function testAStreamTheServerResetsLetsGoOfItsFile(async:Async):Void {
+		// A download parked on the client's window, whose stream the server
+		// then resets for a WINDOW_UPDATE of nothing (PROTOCOL_ERROR). The
+		// reset drops the stream's writable callback, which is all the pump
+		// was waiting on, so it held the file until the stall deadline -- and,
+		// with both timeouts off, for as long as the connection lived.
+		var held:HTTPRequestHandler = null;
+		var closes:Int = 0;
+		var session = new H2Session(config -> {
+			__bigFile(config, 1024 * 1024);
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/big.bin") {
+						held = handler;
+						handler.addEventListener(crossbyte.events.Event.CLOSE, _ -> closes++);
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/big.bin", true);
+			session.until(() -> session.received(1) >= 65535 || session.ended, () -> {
+				var pumping:Bool = held != null && @:privateAccess held.__streaming;
+				session.windowUpdate(1, 0);
+				session.until(() -> (held != null && !@:privateAccess held.__streaming) || session.ended, () -> {
+					var stillPumping:Bool = held != null && @:privateAccess held.__streaming;
+					session.request(3, "GET", "/index.html", true);
+					session.until(() -> session.finished(3) || session.ended, () -> {
+						session.close();
+						HTTPTestSupport.pumpMoreAsync(5, () -> {
+							Assert.isTrue(pumping, "the download was not being pumped, so this shows nothing");
+							Assert.equals(1, session.resetCode(1), "the server did not reset the stream, so this shows nothing");
+							Assert.isFalse(stillPumping, "a download whose stream the server reset kept its file open");
+							Assert.equals(1, closes, "CLOSE was dispatched " + closes + " times");
+							Assert.equals(200, session.status(3));
+							async.done();
+						});
+					});
+				}, 2.0);
+			});
+		});
+	}
+
 	// ---------------------------------------------------------------- driver
 
 	/**
