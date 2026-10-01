@@ -201,6 +201,34 @@ class ServerWebSocketTLSTest extends utest.Test {
 	}
 
 	/**
+		A session a secure server accepted says it is secure, as a socket a
+		secure `ServerSocket` accepted does. It said false.
+	**/
+	@:timeout(30000)
+	public function testASecureServersSessionsSayTheyAreSecure(async:Async):Void {
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
+			async.done();
+			return;
+		}
+
+		var reported:Array<Bool> = [];
+		__serve(function(server) {
+			server.cert = {certificate: fixture.certificate, key: fixture.key};
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) reported.push(e.socket.secure));
+		}, function(server, sessions, finish) {
+			TlsProbe.run(server.localPort, {upgrade: true}, function(outcome) {
+				NetPump.until(() -> reported.length > 0, 2.0, function(_) {
+					Assert.isNull(outcome.error, "the client could not connect: " + outcome.error);
+					Assert.same([true], reported, "a session over TLS said it was not secure");
+					finish();
+				});
+			});
+		}, async);
+	}
+
+	/**
 		A peer that connects and never starts TLS is dropped at
 		`handshakeTimeout`, and counted in `handshakeFailures`.
 

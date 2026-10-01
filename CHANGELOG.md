@@ -1942,6 +1942,8 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A session a secure `ServerWebSocket` accepted says it is `secure`, as a
+  socket a secure `ServerSocket` accepted does. It read `false`.
 - `ServerWebSocket.listen()` throws an `IOError` for a server that is not
   bound, as its doc says, natively as on Node. Natively it never asked:
   Windows refused the listen with an error of the socket's own, and Linux
