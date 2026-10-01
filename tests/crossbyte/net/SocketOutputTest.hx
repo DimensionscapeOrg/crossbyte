@@ -2,6 +2,7 @@ package crossbyte.net;
 
 import crossbyte.events.Event;
 import crossbyte.events.IOErrorEvent;
+import crossbyte.events.OutputProgressEvent;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.io.ByteArray;
 import utest.Assert;
@@ -51,6 +52,49 @@ class SocketOutputTest extends utest.Test {
 			}, 20.0, function(_) {
 				Assert.equals(count * size, peer.received, "not everything written arrived");
 				Assert.equals(0, peer.misplaced, peer.misplaced + " bytes arrived as something other than what was written in their place");
+				finish();
+			});
+		}, async);
+	}
+
+	/**
+		A writer is told as its backlog reaches a slow reader, down to
+		nothing left waiting. OUTPUT_PROGRESS was documented and never
+		dispatched, so a writer had nothing to wait on but a timer.
+	**/
+	@:timeout(30000)
+	public function testAWriterIsToldAsItsBacklogDrains(async:Async):Void {
+		var count:Int = 8;
+		var size:Int = 512 * 1024;
+
+		__withPeer(function(server:ServerSocket, accepted:Socket, peer:SlowPeer, finish:Void->Void) {
+			var pending:Array<Float> = [];
+			var total:Float = 0;
+			accepted.addEventListener(OutputProgressEvent.OUTPUT_PROGRESS, function(e:OutputProgressEvent) {
+				pending.push(e.bytesPending);
+				total = e.bytesTotal;
+			});
+
+			var message = new ByteArray();
+			for (i in 0...count) {
+				message.clear();
+				for (_ in 0...size) {
+					message.writeByte(0x61 + i);
+				}
+				accepted.writeBytes(message, 0, size);
+				accepted.flush();
+			}
+			peer.resume();
+
+			NetPump.until(() -> {
+				peer.drain();
+				return pending.length > 0 && pending[pending.length - 1] == 0;
+			}, 20.0, function(_) {
+				Assert.isTrue(pending.length > 0, "nothing said the backlog had gone");
+				if (pending.length > 0) {
+					Assert.equals(0., pending[pending.length - 1], "the last OUTPUT_PROGRESS left " + pending[pending.length - 1] + " bytes waiting");
+				}
+				Assert.equals(1. * count * size, total, "bytesTotal");
 				finish();
 			});
 		}, async);
