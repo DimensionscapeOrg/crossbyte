@@ -2095,6 +2095,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An `RPCSession` whose heartbeat hears nothing closes its connection as
+  `Reason.Timeout`, so the connection's `onClose`, a `NetHost`'s
+  `onDisconnect` and the session's `onDown` hear `Timeout`; they heard
+  `Closed`, as for an application's own `close()`. A connection ended for
+  breaking the protocol closes with that error as its reason.
 - A reliable `NetConnection` whose connect, idle or close deadline passes
   ends as `Reason.Timeout`, as a TCP or WebSocket one does:
   `ReliableDatagramSocket` dispatches those `ioError`s with

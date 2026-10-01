@@ -1520,8 +1520,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			Logger.debug('RPC session $sessionId heard nothing for $silence s; closing its connection');
 		}
 		__failAllPending("RPC connection timed out: nothing arrived for " + __heartbeatTimeout + " ms", Reason.Timeout);
+		// Closed as the timeout it is, so the connection's `onClose`, a host's
+		// `onDisconnect` and this session's `onDown` hear `Timeout`, not the
+		// `Closed` an application's own close() says.
 		try {
-			__connection.close();
+			(__connection : NetConnectionBase).__closeWith(Reason.Timeout);
 		} catch (_:Dynamic) {}
 		// A connection whose close says nothing -- some of an application's
 		// own -- has ended all the same.
@@ -1536,7 +1539,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			__connection.onError(reason);
 		} catch (_:Dynamic) {}
 		try {
-			__connection.close();
+			(__connection : NetConnectionBase).__closeWith(reason);
 		} catch (_:Dynamic) {}
 	}
 }
