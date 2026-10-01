@@ -1965,6 +1965,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A JWT nested deeply enough no longer ends the process verifying it. JSON
+  is parsed a frame per level and a token's header is parsed before its
+  signature is checked, so no key was needed: natively a 16 KB token,
+  inside a raised `maxTokenLength`, which the doc suggests for tokens with
+  many claims, nested 6,000 deep overflowed the stack, on the runtime's
+  thread or a worker's. A header or claims nested more than 32 deep is
+  refused as `MALFORMED` before it is parsed.
 - `SharedObject` reads a region whole and never replaces `data` with `{}`.
   `sync()` and the constructor read the payload's length and its bytes
   under two acquisitions of the region's lock, so a flush by another

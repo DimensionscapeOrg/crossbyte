@@ -100,6 +100,32 @@ class JWTVerifyTest extends utest.Test {
 		Assert.isTrue(jwt.verify(bulky).valid);
 	}
 
+	/**
+		A header or claims nested deeper than any real token are refused before
+		they are parsed.
+
+		JSON is parsed a frame per level, and the header is parsed before the
+		signature is checked, so this needed no key. Natively a 16 KB token,
+		within a raised `maxTokenLength`, which the doc suggests for tokens
+		with many claims, nested 6,000 deep overflowed the stack and ended
+		the process, on the runtime's thread and on a worker alike.
+	**/
+	public function testDeeplyNestedJsonIsRefusedBeforeItIsParsed():Void {
+		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]), ISSUER, "api");
+		jwt.maxTokenLength = 16384;
+		var deep:String = StringTools.lpad("", "[", 6000) + StringTools.lpad("", "]", 6000);
+
+		expectRefused(jwt, forge('{"alg":"HS256","typ":"JWT","x":$deep}', claims()), MALFORMED);
+		expectRefused(jwt, forge('{"alg":"HS256","typ":"JWT"}', withClaim(claims(), '"x":$deep')), MALFORMED);
+		// Inside strings brackets are only text.
+		var bracketed:String = StringTools.lpad("", "[", 100);
+		Assert.isTrue(jwt.verify(forge('{"alg":"HS256","typ":"JWT"}', withClaim(claims(), '"note":"$bracketed"'))).valid);
+
+		// What real tokens carry nests a few levels, and passes.
+		var roles:String = '"realm_access":{"roles":["a"]},"resource_access":{"client":{"roles":["b",["c",{"d":[1]}]]}}';
+		Assert.isTrue(jwt.verify(forge('{"alg":"HS256","typ":"JWT"}', withClaim(claims(), roles))).valid);
+	}
+
 	public function testKeysRotateWithoutRebuildingTheVerifier():Void {
 		var jwt:JWT = JWT.make(HS256([{secret: "old-secret-old-secret-old-secret-01"}]), ISSUER, "api", 0);
 		jwt.acceptedTypes = ["JWT"];
@@ -147,6 +173,11 @@ class JWTVerifyTest extends utest.Test {
 			}
 		}
 		return haxe.Json.stringify(base);
+	}
+
+	/** `json`, an object, with `member`, raw JSON, `"name":value`, added at its end. */
+	static function withClaim(json:String, member:String):String {
+		return json.substr(0, json.length - 1) + "," + member + "}";
 	}
 
 	/** A token with exactly this header and payload, signed with the secret. */

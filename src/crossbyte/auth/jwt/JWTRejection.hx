@@ -9,7 +9,10 @@ package crossbyte.auth.jwt;
  * to fetch the issuer's keys again.
  */
 enum abstract JWTRejection(String) to String {
-	/** Not three base64url segments of JSON objects, or a header field of the wrong type. */
+	/**
+	 * Not three base64url segments of JSON objects, a header field of the
+	 * wrong type, or JSON nested more than 32 deep.
+	 */
 	var MALFORMED = "malformed";
 
 	/** Longer than `JWT.maxTokenLength`, and not parsed at all. */
