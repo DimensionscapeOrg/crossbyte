@@ -80,6 +80,8 @@ entry below says how:
   `IllegalOperationError` where it answered `false`, and `keypair` and
   `signDetached` throw one where they threw a String; check
   `Ed25519.isAvailable()` first.
+- `SharedObject.sync()` throws an `IOError` for a payload the build cannot
+  read, where it set `data` to `{}`.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1944,6 +1946,22 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `SharedObject` reads a region whole and never replaces `data` with `{}`.
+  `sync()` and the constructor read the payload's length and its bytes
+  under two acquisitions of the region's lock, so a flush by another
+  participant in between left a copy cut short: it failed to parse and
+  `data` became `{}`, which the next flush wrote over the shared state, or
+  the read threw. With a second handle flushing for three seconds, 176,256
+  of 613,235 syncs read `{}`. The length and the bytes are one read now,
+  under one lock. A payload this build cannot read makes `sync()` throw an
+  `IOError` and leaves `data` as it was; the constructor starts from
+  `defaultData` then, which it dropped. A handle asking for more than the
+  region's creator made is told the region's real capacity -- it was told
+  its own, and its first large flush wrote past the end of the mapping --
+  and on Linux and macOS one opening a region its creator had not sized yet
+  sizes it, where it failed. The class says how long a region lives on
+  each OS: on Windows until its last handle closes, on Linux and macOS
+  until the machine restarts.
 - The README says where the IPC classes and the crypto work. It called
   `LocalConnection`, `SharedChannel`, `SharedObject` and the native crypto
   native or jvm features: all of them are native only -- `Argon2id` runs on
