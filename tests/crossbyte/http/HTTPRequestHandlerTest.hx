@@ -2002,6 +2002,63 @@ class HTTPRequestHandlerTest extends utest.Test {
 		});
 	}
 
+	public function testAThrowAfterAnAsynchronousNextIsAnswered500(async:Async):Void {
+		// A middleware that calls next() from a later tick -- once a session
+		// lookup comes back, say -- carries the request on with no catch of
+		// its on the stack: what the files then threw went to the runtime's
+		// timer, and the request was never answered at all. The throw is a
+		// status listener's, on the response the file was first given.
+		var thrown:Bool = false;
+		__sendRequest(async, [
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				handler.addEventListener(crossbyte.events.HTTPStatusEvent.HTTP_RESPONSE_STATUS, _ -> {
+					if (!thrown) {
+						thrown = true;
+						throw "the listener broke";
+					}
+				});
+				Timer.delay(function() {
+					next();
+				}, 20);
+			}
+		], "GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n", function(response):Void {
+			Assert.isTrue(thrown, "the listener never threw, so this shows nothing");
+			Assert.equals(500, response.status);
+			async.done();
+		});
+	}
+
+	public function testAThrowServingAPipelinedRequestAfterAnAsynchronousAnswerIsAnswered500(async:Async):Void {
+		// The request behind an answer given from a later tick is parsed from
+		// inside that answer, with no read handler on the stack to catch what
+		// parsing it throws -- here the rate limiter's key: it went to the
+		// runtime's timer, the request was never answered, and the connection
+		// parsed nothing again.
+		__sendRequests(async, [
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				if (handler.requestPath == "/later") {
+					Timer.delay(() -> handler.respond(200, "text/plain", "later"), 20);
+					return;
+				}
+				next();
+			}
+		], [
+			"GET /later HTTP/1.1\r\nHost: localhost\r\n\r\n",
+			"GET /broken HTTP/1.1\r\nHost: localhost\r\n\r\n"
+		], function(result):Void {
+			Assert.equals(2, result.responses.length);
+			Assert.equals(200, result.responses[0].status);
+			Assert.equals("later", result.responses[0].body);
+			Assert.equals(500, result.responses[1].status);
+			async.done();
+		}, config -> config.rateLimitKey = handler -> {
+			if (handler.requestPath == "/broken") {
+				throw "the key broke";
+			}
+			return null;
+		}, true);
+	}
+
 	public function testAResponseCutShortClosesRatherThanAnsweringAgain():Void {
 		// A write that throws after a response's head has gone out -- a socket
 		// past its output cap under OutputOverflowPolicy.THROW -- was answered

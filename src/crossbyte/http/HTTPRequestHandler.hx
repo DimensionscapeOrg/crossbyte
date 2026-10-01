@@ -531,7 +531,19 @@ final class HTTPRequestHandler extends EventDispatcher {
 				break;
 			}
 			__responded = false;
-			__parseRequest();
+			// Behind a catch of its own, rather than only the read handler's:
+			// a pipelined request is also parsed from the end of the answer
+			// before it, which an asynchronous middleware gives from a later
+			// tick, with no read handler on the stack. What parsing it threw
+			// went to the runtime's timer, the request was never answered,
+			// and __processing stayed set, so the connection parsed nothing
+			// again.
+			try {
+				__parseRequest();
+			} catch (error:Dynamic) {
+				Logger.error("Error reading data: " + error);
+				__sendErrorResponse(500, "Internal Server Error");
+			}
 		} while (__reprocess && __origin.connected);
 		__processing = false;
 	}
@@ -1017,7 +1029,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private function __runMiddleware(index:Int, onComplete:Void->Void):Void {
 		if (index >= __config.middleware.length) {
-			onComplete();
+			// Behind the catch a middleware is called behind. Reached from the
+			// last next(), which a middleware may call from a later tick -- a
+			// timer, a lookup come back -- and then no catch up the stack is
+			// this request's: what serving it threw went to the runtime's timer
+			// and the request was never answered.
+			try {
+				onComplete();
+			} catch (error:Dynamic) {
+				__dispatchMiddlewareError(error, haxe.CallStack.exceptionStack());
+			}
 			return;
 		}
 
