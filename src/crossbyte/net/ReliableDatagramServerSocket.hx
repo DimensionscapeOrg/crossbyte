@@ -599,6 +599,11 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		looks the name up for each request itself, and one that does not
 		resolve leaves the question to its deadline.
 
+		`timeoutMs` is how long to keep asking. 0 or less asks for the
+		default, three seconds: not for no deadline, as 0 is for a
+		connection's `timeout`, since nothing else ends a question over UDP
+		that nobody answers.
+
 		@return The address and port this socket appears as, or a failure. A
 		       question that cannot be asked is not thrown but returned
 		       failed already: for a server closed, unbound or not listening,
@@ -671,10 +676,11 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			if (query.expired(now)) {
 				// UDP reports nothing when it is dropped, so a silent network
 				// and a wrong server address look identical from here; the
-				// deadline is the only thing that ends this.
+				// deadline is the only thing that ends this. The time the
+				// question had: a timeout of 0 is the default's.
 				var damage:Null<String> = query.damage();
 				__settleStun(null, (damage != null ? "No usable reply" : "No reply") + " from the STUN server at " + server + ":" + port + " within "
-					+ timeoutMs + "ms" + (damage != null ? ": " + damage + "." : "."));
+					+ query.timeoutMs + "ms" + (damage != null ? ": " + damage + "." : "."));
 				return;
 			}
 

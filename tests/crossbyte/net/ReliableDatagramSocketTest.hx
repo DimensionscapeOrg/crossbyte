@@ -243,6 +243,43 @@ class ReliableDatagramSocketTest extends utest.Test {
 	}
 
 	/**
+		A timeout of 0 asks for the default, three seconds, as `StunClient`'s
+		does, and the failure says how long that was rather than "0ms".
+	**/
+	public function testADiscoveryTimeoutOfZeroAsksForTheDefaultAndSaysSo():Void {
+		if (!requireDatagramSupport()) return;
+
+		// A socket that takes the question and never answers it.
+		var silent = new DatagramSocket();
+		var server = new ReliableDatagramServerSocket();
+		var failure:String = null;
+
+		try {
+			silent.bind(0, "127.0.0.1");
+			silent.receive();
+
+			server.bind(0, "127.0.0.1");
+			server.listen();
+
+			var started:Float = haxe.Timer.stamp();
+			server.discoverPublicAddress("127.0.0.1", silent.localPort, 0).then(_ -> {}, error -> failure = error);
+			pumpUntil(() -> failure != null, 8.0);
+			var took:Float = haxe.Timer.stamp() - started;
+
+			Assert.notNull(failure, "a question with a timeout of 0 never ended");
+			Assert.isTrue(took >= 2.5, "a timeout of 0 gave the question up after " + took + " s, short of the default three");
+			if (failure != null) {
+				Assert.isTrue(failure.indexOf("3000ms") >= 0, "the failure does not say how long it waited: " + failure);
+			}
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try server.close() catch (_:Dynamic) {}
+		try silent.close() catch (_:Dynamic) {}
+	}
+
+	/**
 		A question the server cannot ask fails the future it returns, its
 		cause an IOError, rather than throwing, which both questions' docs
 		said they did. A caller that caught a throw never saw it; one that
