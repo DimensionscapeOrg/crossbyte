@@ -54,6 +54,21 @@ class RouterServerTest extends utest.Test {
 		});
 	}
 
+	public function testAHeadRouteStatesTheLengthOfWhatItWouldSend(async:Async):Void {
+		// head()'s doc said respond() frames a HEAD as zero-length, so a route
+		// could not state its GET's size. It states the length of the body it
+		// is given, and sends none of it.
+		var router = new Router();
+		router.head("/report", ctx -> ctx.handler.respond(200, "text/plain", "the report's text"));
+
+		__roundTrip(router, "HEAD /report HTTP/1.1\r\nHost: localhost\r\n\r\n", function(response):Void {
+			Assert.equals(200, response.status);
+			Assert.equals("17", response.headers.get("content-length"));
+			Assert.equals("", response.body);
+			async.done();
+		});
+	}
+
 	public function testWrongMethodAnswers405WithAllow(async:Async):Void {
 		var router = new Router();
 		router.get("/users/:id", ctx -> ctx.handler.respond(200, "text/plain", "user"));
@@ -184,8 +199,10 @@ class RouterServerTest extends utest.Test {
 			done(result);
 		}
 
+		// A HEAD's answer ends at its header block, whatever length it states.
+		var headOnly:Bool = StringTools.startsWith(requestText, "HEAD ");
 		HTTPTestSupport.connectThen(client, server, function():Void {
-			HTTPTestSupport.pumpUntilAsync(() -> closeSeen || __isComplete(raw), 2.0, function(_):Void {
+			HTTPTestSupport.pumpUntilAsync(() -> closeSeen || __isComplete(raw, headOnly), 2.0, function(_):Void {
 				if (waitForClose) {
 					// The chain's error path closes the connection itself; give
 					// the close event time to arrive behind the response bytes.
@@ -198,8 +215,8 @@ class RouterServerTest extends utest.Test {
 		});
 	}
 
-	private static function __isComplete(raw:String):Bool {
-		return HTTPTestSupport.isResponseComplete(raw);
+	private static function __isComplete(raw:String, headOnly:Bool):Bool {
+		return HTTPTestSupport.isResponseComplete(raw, headOnly);
 	}
 
 	/**

@@ -1935,6 +1935,10 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `Router.head()` says what `respond()` does for a `HEAD`: states the
+  length of the body it is given and sends none of it. It said a `HEAD`
+  was framed as zero-length, which has not been so since `HEAD` answers
+  began stating their `GET`'s length.
 - A server's `HTTPStatusEvent.HTTP_RESPONSE_STATUS` says what was answered,
   as the event's doc has it: `responseURL` is the request's path and
   query, where it was the client's address (`remoteAddress` has that), and
