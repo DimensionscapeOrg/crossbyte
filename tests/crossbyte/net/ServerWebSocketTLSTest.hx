@@ -1,5 +1,7 @@
 package crossbyte.net;
 
+import crossbyte.errors.Error as CBError;
+import crossbyte.errors.IOError;
 import crossbyte.events.ServerSocketConnectEvent;
 import utest.Assert;
 import utest.Async;
@@ -17,6 +19,51 @@ import utest.Async;
 **/
 class ServerWebSocketTLSTest extends utest.Test {
 	#if (cpp || java || jvm || nodejs)
+	/**
+		A certificate assigned once the server is bound is refused, and a
+		secure server will not listen without one.
+
+		Natively the TLS configuration is built in `bind()`, so a `cert`
+		assigned afterwards was taken without a word and never presented, and
+		`listen()` did not ask whether there was one: the server listened, and
+		every handshake failed silently.
+	**/
+	public function testTheCertificateIsWantedBeforeBind():Void {
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
+			return;
+		}
+
+		var server = new ServerWebSocket(true);
+		server.bind(0, "127.0.0.1");
+		Assert.raises(() -> server.cert = {certificate: fixture.certificate, key: fixture.key}, CBError);
+		Assert.raises(() -> server.certAuthority = fixture.certificate, CBError);
+		Assert.raises(() -> server.listen(), IOError);
+		Assert.isFalse(server.listening, "a secure server with no certificate listened");
+		try server.close() catch (_:Dynamic) {}
+	}
+
+	/**
+		TLS settings on a plain server are refused rather than kept: a server
+		given a certificate it will never present is a mistake its owner
+		should hear about. `null` asks for nothing, and is let be.
+	**/
+	public function testTlsSettingsAreRefusedOnAPlainServer():Void {
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
+			return;
+		}
+
+		var server = new ServerWebSocket();
+		Assert.raises(() -> server.cert = {certificate: fixture.certificate, key: fixture.key}, CBError);
+		Assert.raises(() -> server.certAuthority = fixture.certificate, CBError);
+		server.certAuthority = null;
+		Assert.isNull(server.cert);
+		try server.close() catch (_:Dynamic) {}
+	}
+
 	/**
 		`certAuthority` asks every client for a certificate that authority
 		issued, and lets in only those that present one.

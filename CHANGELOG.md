@@ -79,6 +79,8 @@ entry below says how:
 - `ServerWebSocket.verifyCert` is gone: `certAuthority`, or
   `requireClientCertificate()`, asks clients for a certificate, natively
   now as well as on Node.
+- A `ServerWebSocket`'s `cert` and `certAuthority` are set before `bind()`,
+  on Node too, and only on a secure server; either throws otherwise.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1940,6 +1942,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `ServerWebSocket`'s `cert` is wanted before `bind()`, as its documentation
+  now says, and a secure server will not `listen()` without one. A native
+  server builds its TLS configuration in `bind()`, so a certificate
+  assigned afterwards was taken without a word and never presented, and
+  `listen()` did not ask whether there was one: the server listened and
+  every handshake failed silently. `cert` is now refused once bound, and on
+  a plain server, which would never present it.
 - A secure `ServerWebSocket` with `certAuthority` set asks every client for
   a certificate that authority issued, and refuses one that presents none,
   natively as on Node. Natively the authority was installed with
