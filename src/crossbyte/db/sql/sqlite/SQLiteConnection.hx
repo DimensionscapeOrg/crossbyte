@@ -55,6 +55,11 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	public static inline var isSupported:Bool = #if cpp true; #else false; #end
 
 	@:noCompletion private static inline var DEFAULT_CACHE_SIZE:UInt = 2000;
+	// What __enter() answers for a statement's work.
+	@:noCompletion private static inline var ENTER_RUN:Int = 0;
+	@:noCompletion private static inline var ENTER_WITHDRAWN:Int = 1;
+	@:noCompletion private static inline var ENTER_CANCELLED:Int = 2;
+	@:noCompletion private static inline var CANCELLED_REASON:String = "Cancelled: cancel() was called before it ran.";
 
 	/**
 		Whether the database gives the space of deleted rows back to the
@@ -216,8 +221,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	@:noCompletion private var __ready:Bool = false;
 	// How many times cancel() has been called, as each job was queued and as
 	// the worker reads it: work queued before the latest cancel is dropped.
-	// Written on the calling thread and read on the worker's, after the
-	// queue's own lock has passed it between them.
+	// Moved on under __lockRuns(), where the worker decides whether work
+	// runs.
 	@:noCompletion private var __cancelEpoch:Int = 0;
 	@:noCompletion private var __savepoints:Array<String> = [];
 	@:noCompletion private var __savepointSeq:Int = 0;
@@ -247,13 +252,29 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	// Array instead, pushed and popped with no lock at all.
 	#if !php
 	@:noCompletion private var __sqlQueue:Deque<SQLiteJob>;
-	// Guards what the worker and a waiting caller both decide: whether a
-	// call the caller has given up on runs (SQLiteCall).
-	@:noCompletion private var __sqlMutex:Mutex;
+	// Guards whether a call a caller has given up on runs (SQLiteCall), and
+	// off cpp what __lockRuns() guards. One for the connection's life, so
+	// what holds it outlives a reopen.
+	@:noCompletion private var __sqlMutex:Mutex = new Mutex();
 	// The worker's thread, which runs at once what it asks of the
 	// connection itself rather than queueing it behind itself.
 	@:noCompletion private var __sqlThread:Null<Thread> = null;
 	#end
+	// What a cancel() and the work it would stop decide between them, under
+	// __lockRuns(): the statement whose work is running on the connection
+	// now, on the worker, or on whichever thread executes a synchronous
+	// one, for its cancel() to interrupt SQLite only while it is, so it
+	// never stops another statement's work; whether work cancel() stops is
+	// running at all; and whether it has been stopped, so __leave() lets
+	// what runs next run. The lock on cpp is an atomic compare-and-swap, as
+	// Future's: a sys.thread.Mutex taken twice a statement cost the
+	// asynchronous path 15%. Apart from this object: see SQLiteRuns.
+	@:noCompletion private var __runs:SQLiteRuns = new SQLiteRuns();
+	// On the worker: the statement whose result was left with rows unread
+	// after its last page, until it is read to its end, run again or
+	// cancelled. A cancelled one's result is let go of before the next job,
+	// so its read ends and its rows are never read.
+	@:noCompletion private var __pagedStatement:Null<SQLiteStatement> = null;
 
 	public function new() {
 		super();
@@ -800,19 +821,41 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		}
 
 		if (!__async) {
-			__interrupt();
+			__stopWhatRuns(false);
 			__dispatchSQLEvent(SQLEvent.CANCEL);
 			return;
 		}
 
 		#if !php
-		// Counted before the interrupt and before CANCEL is queued: the
-		// worker drops whatever it takes up from now on that was queued
-		// before this.
-		__cancelEpoch++;
-		__interrupt();
+		// Counted before the interrupt and before CANCEL is queued, under the
+		// lock the worker decides under: it drops whatever it takes up from
+		// now on that was queued before this.
+		__stopWhatRuns(true);
 		__addToQueue(() -> __sqlWorker.sendProgress(new SQLEvent(SQLEvent.CANCEL)), SQLEvent.CANCEL, null, true);
 		#end
+	}
+
+	/**
+		`cancel()`'s interrupt. A statement's work running now is stopped
+		until that work ends, through the progress handler as well: an
+		interrupt alone, landing as the statement starts, was cleared there
+		by SQLite, and the statement ran on, in the first few of a hundred
+		and fifty tries.
+	**/
+	@:noCompletion private function __stopWhatRuns(count:Bool):Void {
+		__lockRuns();
+
+		if (count) {
+			__cancelEpoch++;
+		}
+
+		if (__runs.running) {
+			__stopRunner();
+		} else {
+			__interrupt();
+		}
+
+		__unlockRuns();
 	}
 
 	/** Stops the statement running now at its next step, where the target can. **/
@@ -848,6 +891,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				__native = null;
 				#end
 				__inTransaction = false;
+				__pagedStatement = null;
 
 				try {
 					if (connection != null) {
@@ -1295,7 +1339,6 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	private function __initSQLWorker():Void {
 		__sqlClosing = false;
 		#if !php
-		__sqlMutex = new Mutex();
 		__sqlQueue = new Deque();
 		#end
 		__sqlWorker = new Worker();
@@ -1321,12 +1364,33 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				continue;
 			}
 
-			if (!job.keep && job.epoch < __cancelEpoch) {
-				__refuse(job, "Cancelled: cancel() was called before it ran.", false);
+			if (__pagedStatement != null) {
+				__dropCancelledPage();
+			}
+
+			if (job.keep) {
+				job.run();
+				continue;
+			}
+
+			if (job.statement != null) {
+				// Checked again, under the lock, as its work starts (__enter).
+				if (job.epoch < __cancelEpoch) {
+					__refuse(job, CANCELLED_REASON, false);
+				} else {
+					job.run();
+				}
+
+				continue;
+			}
+
+			if (!__admit(job)) {
+				__refuse(job, CANCELLED_REASON, false);
 				continue;
 			}
 
 			job.run();
+			__leave();
 		}
 
 		// Queued behind the close, or behind an open that failed: each is
@@ -1371,7 +1435,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		#end
 
 		if (job.statement != null) {
-			var answer:SQLiteStatementMessage = new SQLiteStatementMessage(job.statement, false);
+			var answer:SQLiteStatementMessage = new SQLiteStatementMessage(job.statement, false, job.statementEpoch);
 			answer.fail(error);
 			__sqlWorker.sendProgress(answer);
 		} else {
@@ -1391,6 +1455,221 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	private function __addToQueue(run:Void->Void, operation:String, ?statement:SQLiteStatement, keep:Bool = false, ?call:SQLiteCall):Void {
 		#if !php
 		__sqlQueue.add(new SQLiteJob(run, operation, statement, __cancelEpoch, keep, call));
+		#end
+	}
+
+	/**
+		On the thread about to run work `statement` was asked for, under its
+		cancel count `epoch` and the connection's `connectionEpoch`:
+		`ENTER_WITHDRAWN` when the statement's `cancel()` has been called
+		since, `ENTER_CANCELLED` when the connection's has, either way the
+		work is dropped, and otherwise `ENTER_RUN`, marking it the work
+		running, for either `cancel()` to stop. Decided under the lock both
+		`cancel()`s count under, so one cannot slip between the check and the
+		work starting. `__leave()` follows a run.
+	**/
+	@:noCompletion private function __enter(statement:SQLiteStatement, epoch:Int, connectionEpoch:Int):Int {
+		__lockRuns();
+		var verdict:Int = ENTER_RUN;
+
+		if (connectionEpoch < __cancelEpoch) {
+			verdict = ENTER_CANCELLED;
+		} else if (statement.__cancels != epoch) {
+			verdict = ENTER_WITHDRAWN;
+		} else {
+			__runs.runner = statement;
+			__runs.running = true;
+		}
+
+		__unlockRuns();
+		return verdict;
+	}
+
+	/**
+		On the worker, before the connection's own work: `false` when a
+		`cancel()` since it was queued drops it, and otherwise marks it the
+		work running, for `cancel()` to stop. `__leave()` follows.
+	**/
+	@:noCompletion private function __admit(job:SQLiteJob):Bool {
+		__lockRuns();
+		var current:Bool = job.epoch >= __cancelEpoch;
+
+		if (current) {
+			__runs.running = true;
+		}
+
+		__unlockRuns();
+		return current;
+	}
+
+	/** On the worker: tells `statement` its work asked for under `epoch` will not run, as `__refuse` does. **/
+	@:noCompletion private function __refuseStatement(statement:SQLiteStatement, epoch:Int):Void {
+		var answer:SQLiteStatementMessage = new SQLiteStatementMessage(statement, false, epoch);
+		answer.fail(new SQLError(SQLEvent.RESULT, CANCELLED_REASON, CANCELLED_REASON));
+		__sqlWorker.sendProgress(answer);
+	}
+
+	/**
+		With `__lockRuns()` held: stops the statement whose work is running,
+		the interrupt within a step, and the progress handler even when the
+		interrupt lands as the statement starts, where SQLite clears an
+		interrupt, until `__leave()`.
+	**/
+	@:noCompletion private function __stopRunner():Void {
+		__runs.stopping = true;
+		#if cpp
+		var native:NativeSQLiteConnection = __native;
+
+		if (native != null) {
+			native.stopRunning(true);
+		}
+		#end
+		__interrupt();
+	}
+
+	/**
+		Takes the lock that decides between a `cancel()` and the work it
+		would stop: what is running, and whether work about to start was
+		cancelled first. Held for a few instructions at a time.
+	**/
+	@:noCompletion private inline function __lockRuns():Void {
+		#if cpp
+		if ((untyped __cpp__("_hx_atomic_compare_exchange(&{0}, 0, 1)", __runs.lock) : Int) != 0) {
+			__contendRuns();
+		}
+		#elseif !php
+		__sqlMutex.acquire();
+		#end
+	}
+
+	/** Lets go of `__lockRuns()`: on cpp an atomic store, which publishes what was written under it. **/
+	@:noCompletion private inline function __unlockRuns():Void {
+		#if cpp
+		untyped __cpp__("_hx_atomic_store(&{0}, 0)", __runs.lock);
+		#elseif !php
+		__sqlMutex.release();
+		#end
+	}
+
+	#if cpp
+	/**
+		Waits for another thread to let go of `__lockRuns()`, letting the
+		collector stop this one between tries, and yielding after a while in
+		case the holder is not running, as `Future` waits for its own.
+	**/
+	@:noCompletion private function __contendRuns():Void {
+		var tries:Int = 0;
+
+		while ((untyped __cpp__("_hx_atomic_compare_exchange(&{0}, 0, 1)", __runs.lock) : Int) != 0) {
+			cpp.vm.Gc.safePoint();
+
+			if (++tries >= 64) {
+				tries = 0;
+				crossbyte._internal.system.Sleep.sleep(0);
+			}
+		}
+	}
+	#end
+
+	/** After work `__enter` or `__admit` let run: nothing is running now. **/
+	@:noCompletion private function __leave():Void {
+		__lockRuns();
+		__runs.runner = null;
+		__runs.running = false;
+
+		if (__runs.stopping) {
+			__runs.stopping = false;
+			#if cpp
+			var native:NativeSQLiteConnection = __native;
+
+			if (native != null) {
+				native.stopRunning(false);
+			}
+			#end
+		}
+
+		__unlockRuns();
+	}
+
+	/**
+		On the thread about to run a statement: reads what another statement
+		left unread into its own hands first, as the statement's request would,
+		outside the statement's run, so that its `cancel()` cannot stop
+		that other statement's rows.
+	**/
+	@:noCompletion private inline function __settle():Void {
+		#if cpp
+		var native:NativeSQLiteConnection = __native;
+
+		if (native != null) {
+			native.settle();
+		}
+		#end
+	}
+
+	/**
+		`statement.cancel()`'s part here: moves its cancel count on, so the
+		work asked of it before is dropped, and interrupts SQLite when that
+		work is running now, only then, so no other statement's work is
+		stopped. Answers whether it was running.
+	**/
+	@:noCompletion private function __cancelStatement(statement:SQLiteStatement):Bool {
+		__lockRuns();
+		statement.__cancels++;
+		var running:Bool = __runs.runner == statement;
+
+		if (running) {
+			__stopRunner();
+		}
+
+		__unlockRuns();
+		return running;
+	}
+
+	/**
+		A cancelled statement's part on an asynchronous connection: the
+		worker lets go of the rows it left unread, after what it is running
+		now. Kept by a connection's `cancel()`: it costs nothing to run.
+	**/
+	@:noCompletion private function __dropPage():Void {
+		__addToQueue(() -> {
+			if (__pagedStatement != null) {
+				__dropCancelledPage();
+			}
+		}, SQLEvent.CANCEL, null, true);
+	}
+
+	/**
+		On the worker: lets go of the result of the statement left with rows
+		unread, when its `cancel()` has been called since, finalized, so
+		the read it holds ends now and its rows are never read.
+	**/
+	@:noCompletion private function __dropCancelledPage():Void {
+		var paged:SQLiteStatement = __pagedStatement;
+		__lockRuns();
+		var cancelled:Bool = paged.__cancels != paged.__resultEpoch;
+		__unlockRuns();
+
+		if (cancelled) {
+			__pagedStatement = null;
+			__letGo(paged.__resultSet);
+			paged.__resultSet = null;
+		}
+	}
+
+	/**
+		On the thread running the connection's work: ends `result` when it is
+		the statement SQLite is part way through, finalized, its read
+		ended, its rows unread, rather than leaving it for the next request
+		to read to its end first.
+	**/
+	@:noCompletion private function __letGo(result:ResultSet):Void {
+		#if cpp
+		var native:NativeSQLiteConnection = __native;
+
+		if (result != null && native != null) {
+			native.discard(result);
+		}
 		#end
 	}
 
