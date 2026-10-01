@@ -86,6 +86,8 @@ entry below says how:
   open with `UPDATE` to write.
 - `SQLiteConnection.totalChanges` is a `Float` and `FKViolation.rowid` a
   `Null<Float>`.
+- `PostgresConnection.request()` throws `SQLError` where it threw
+  `IOError` (a refused statement) or a `String` (no connection).
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1942,6 +1944,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `PostgresConnection.request()` throws an `SQLError` for a statement the
+  server refuses, as `requestParams()` and the other drivers' `request()`
+  do, and for a connection that is not open. It threw an `IOError` for the
+  one and a `String` for the other, so code catching `SQLError`, as
+  `MongoError` says the other drivers' failures are caught, caught
+  neither.
 - An SQLite database opened with `autoCompact` shrinks as rows are deleted,
   as AIR's does. It was made INCREMENTAL, which gives nothing back until
   `PRAGMA incremental_vacuum` runs, and nothing ran it: after 200 rows of

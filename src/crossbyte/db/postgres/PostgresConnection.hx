@@ -336,7 +336,14 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		__dispatchEvent(new SQLEvent(SQLEvent.RELEASE_SAVEPOINT));
 	}
 
-	public inline function request(sql:String):Dynamic {
+	/**
+		Runs `sql` and answers its rows. Throws an `SQLError` when the server
+		refuses it or the connection is not open, as `requestParams()` and
+		the other drivers' `request()` do; it threw an `IOError` for a refusal
+		and a `String` for a connection not open, so code catching `SQLError`
+		caught neither.
+	**/
+	public function request(sql:String):Dynamic {
 		__requireConnected();
 
 		#if cpp
@@ -345,7 +352,8 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		var parsed:Dynamic = Json.parse(rawJson == null || rawJson == "" ? "{\"rows\":[],\"affectedRows\":0,\"lastInsertRowID\":0}" : rawJson);
 		var errorMessage:Dynamic = Reflect.field(parsed, "error");
 		if (errorMessage != null) {
-			throw new IOError(Std.string(errorMessage));
+			var detail:String = Std.string(errorMessage);
+			throw new SQLError("request", detail, detail);
 		}
 
 		var rows:Array<Dynamic> = __toRows(Reflect.field(parsed, "rows"));
@@ -362,7 +370,8 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		try {
 			statement = __connection.query(sql);
 		} catch (e:Dynamic) {
-			throw new IOError(e);
+			var detail:String = Std.string(e);
+			throw new SQLError("request", detail, detail);
 		}
 
 		try {
@@ -374,7 +383,8 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 				var updated:Dynamic = __connection.exec(sql);
 				__lastAffectedRows = __toInt(updated);
 			} catch (e:Dynamic) {
-				throw new IOError(e);
+				var detail:String = Std.string(e);
+				throw new SQLError("request", detail, detail);
 			}
 		}
 
@@ -662,14 +672,14 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 	@:noCompletion private inline function __requireConnected():Void {
 		#if cpp
-		if (__nativeHandle == null) {
-			throw "PostgresConnection: no connection set.";
-		}
+		var open:Bool = __nativeHandle != null;
 		#else
-		if (__connection == null) {
-			throw "PostgresConnection: no connection set.";
-		}
+		var open:Bool = __connection != null;
 		#end
+
+		if (!open) {
+			throw new SQLError("request", "PostgresConnection: not open.", "PostgresConnection: not open.");
+		}
 	}
 
 	@:noCompletion private function __lastInsertId():Int {
