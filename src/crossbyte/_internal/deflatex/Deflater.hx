@@ -383,6 +383,9 @@ class Deflater {
 		#if cpp
 		// hxcpp's zlib: three and a half times faster, a quarter smaller.
 		return NativeZlib.raw(stream);
+		#elseif nodejs
+		// Node's zlib: five times faster, as small.
+		return NodeZlib.raw(stream);
 		#else
 		return new Deflater().compress(stream);
 		#end

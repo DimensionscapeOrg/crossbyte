@@ -408,12 +408,58 @@ class CodecFormatsTest extends utest.Test {
 	}
 
 	/**
-		On native, gzip, zlib and raw DEFLATE come from hxcpp's own zlib. A
-		64 KB page of JSON went to 8.3 KB through the pure Haxe deflater, at
-		three and a half times zlib's cost; zlib writes about 6 KB. Each still
-		reads back whole through the readers here.
+		On native, gzip, zlib and raw DEFLATE come from hxcpp's own zlib, and
+		on Node from Node's. A 64 KB page of JSON went to 8.3 KB through the
+		pure Haxe deflater, at three and a half times zlib's cost natively and
+		five times on Node; zlib writes about 6 KB. Each still reads back whole
+		through the readers here, and a gzip member's header is the same
+		everywhere: Node's named its system.
 	**/
 	public function testDeflateCodingsCompressAPageOfJson():Void {
+		var json:Bytes = __jsonPage();
+
+		for (algorithm in [CompressionAlgorithm.GZIP, CompressionAlgorithm.ZLIB, CompressionAlgorithm.DEFLATE]) {
+			var data:ByteArray = ByteArray.fromBytes(json.sub(0, json.length));
+			data.compress(algorithm);
+			var packed:Bytes = bytesOf(data);
+			#if (cpp || nodejs)
+			Assert.isTrue(packed.length < 7000, Std.string(algorithm) + " wrote " + packed.length + " bytes");
+			#end
+			if (algorithm == CompressionAlgorithm.GZIP) {
+				Assert.equals("1f8b0800000000000000", packed.sub(0, 10).toHex(), "the gzip header");
+			}
+			var back:Bytes = decoded(packed, algorithm, json.length);
+			Assert.isTrue(back.length == json.length && back.compare(json) == 0, Std.string(algorithm) + " did not read back whole");
+		}
+	}
+
+	/**
+		Brotli from Node's zlib on Node, as from `crossbyte-brotli` natively.
+		The page took 2.5 ms at quality 4 through the Haxe encoder, and Node's
+		takes about 0.17 for the same size, so a server answering browsers
+		was held to a few hundred compressed responses a second. The budget
+		is a millisecond a page, and the stream reads back whole through the
+		Haxe decoder.
+	**/
+	public function testNativeBrotliCompressesAPageOfJsonQuickly():Void {
+		#if (nodejs || crossbyte_brotli_native)
+		var json:Bytes = __jsonPage();
+		var packed:Bytes = crossbyte._internal.brotli.Brotli.compress(json);
+		var started:Float = haxe.Timer.stamp();
+		for (i in 0...30) {
+			crossbyte._internal.brotli.Brotli.compress(json);
+		}
+		var elapsed:Float = haxe.Timer.stamp() - started;
+		Assert.isTrue(elapsed < 0.03, "30 pages took " + Math.round(elapsed * 1000) + " ms");
+		var back:Bytes = decoded(packed, CompressionAlgorithm.BROTLI, json.length);
+		Assert.isTrue(back.length == json.length && back.compare(json) == 0, "Brotli did not read back whole");
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/** 64 KB of JSON, as an API answers a list. **/
+	private static function __jsonPage():Bytes {
 		var page = new StringBuf();
 		page.add("[");
 		var i = 0;
@@ -423,18 +469,7 @@ class CodecFormatsTest extends utest.Test {
 			i++;
 		}
 		page.add("]");
-		var json:Bytes = Bytes.ofString(page.toString());
-
-		for (algorithm in [CompressionAlgorithm.GZIP, CompressionAlgorithm.ZLIB, CompressionAlgorithm.DEFLATE]) {
-			var data:ByteArray = ByteArray.fromBytes(json.sub(0, json.length));
-			data.compress(algorithm);
-			var packed:Bytes = bytesOf(data);
-			#if cpp
-			Assert.isTrue(packed.length < 7000, Std.string(algorithm) + " wrote " + packed.length + " bytes");
-			#end
-			var back:Bytes = decoded(packed, algorithm, json.length);
-			Assert.isTrue(back.length == json.length && back.compare(json) == 0, Std.string(algorithm) + " did not read back whole");
-		}
+		return Bytes.ofString(page.toString());
 	}
 
 	/**

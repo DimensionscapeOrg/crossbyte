@@ -45,6 +45,10 @@ class GZCompressor {
 		if (!named) {
 			return NativeZlib.gzip(stream);
 		}
+		#elseif nodejs
+		if (!named) {
+			return NodeZlib.gzip(stream);
+		}
 		#end
 
 		var output:BitsOutput = new BitsOutput();
