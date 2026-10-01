@@ -1134,11 +1134,18 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		if (decision != null) {
+			// The rule's query, merged with the request's under QSA, whichever
+			// way the rule went: it reached a script only through the PHP
+			// flag, so a rule naming /index.php?route=$1 without it ran the
+			// script with the request's query and lost the route.
+			__queryString = decision.query;
 			if (decision.toPHP) {
-				__queryString = decision.query;
 				__servePhp(target, __method == "HEAD", __method == "POST" ? __requestBody : null, served);
 			} else if (__method == "POST") {
-				__handlePost(__filePath);
+				// Where the rules sent it. This was the path the request named,
+				// so a POST to a rewritten path was a 404 while its GET was
+				// served.
+				__handlePost(target);
 			} else if (decision.isStatic) {
 				__serveFile(target, __method == "HEAD");
 			} else {
