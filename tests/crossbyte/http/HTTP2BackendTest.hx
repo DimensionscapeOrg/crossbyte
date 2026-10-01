@@ -450,6 +450,31 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.equals('[::1]:${server.port}', server.requestHeaders.get(":authority"));
 	}
 
+	/**
+		The client supplies an `Accept-Encoding` when the caller has not, as
+		`URLRequest.requestHeaders` says and as the HTTP/1.1 client and Node
+		do: `identity`. Over HTTP/2 there was none, which RFC 9110 12.5.3
+		reads as any coding at all -- zstd included, which nothing here
+		decodes. The caller's own is the one sent.
+	**/
+	public function testAnAcceptEncodingIsSentUnlessTheCallerSentOne():Void {
+		var server = new H2RouteServer(_ -> {status: 200, chunks: ["ok"]});
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var unset = new Http('http://127.0.0.1:${server.port}/plain', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		unset.load();
+		var own = new Http('http://127.0.0.1:${server.port}/own', "GET", ["Accept-Encoding: gzip"], null, null, null, HttpVersion.HTTP_2, 5000);
+		own.load();
+		server.stop();
+
+		var requests = server.requests();
+		Assert.equals(2, requests.length);
+		if (requests.length == 2) {
+			Assert.equals("identity", requests[0].headers.get("accept-encoding"), "no Accept-Encoding was supplied");
+			Assert.equals("gzip", requests[1].headers.get("accept-encoding"), "the caller's Accept-Encoding was not the one sent");
+		}
+	}
+
 	public function testPostSendsABodyAndContentLength():Void {
 		var server = new H2cServer();
 		server.respond([new HpackHeader(":status", "201")], "created");

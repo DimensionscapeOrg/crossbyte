@@ -1945,6 +1945,10 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The HTTP/2 client sends `Accept-Encoding: identity` unless the caller
+  sent one, as `URLRequest.requestHeaders` says the client does and as the
+  HTTP/1.1 client and Node do. It sent none, which a server may read as
+  leave to use any coding at all, one the client cannot decode among them.
 - The native HTTP/1.1 client reports no informational status, as the
   client contract says: `URLLoader` dispatched `HTTP_STATUS` for a
   `100 Continue` ahead of the 200. And a body of unknown length, chunked
