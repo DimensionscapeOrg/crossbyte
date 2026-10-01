@@ -74,6 +74,50 @@ class LoggerTest extends utest.Test {
 		#end
 	}
 
+	/**
+		On Node, records go to stdout in one write a turn of the loop, not two
+		a line. Sys.println there writes the line and then its newline, and to
+		a file each is a synchronous system call: the access log's line a
+		request cost a Node server 15% of its time. A warning or an error goes
+		at once, after what was held, so the order holds.
+	**/
+	public function testOnNodeRecordsGoToStdoutInOneWriteATurn():Void {
+		#if nodejs
+		var stdout:Dynamic = js.Node.process.stdout;
+		var write:Dynamic = stdout.write;
+		var writes:Array<String> = [];
+		stdout.write = function(chunk:Dynamic, ?rest:Dynamic):Bool {
+			writes.push(Std.string(chunk));
+			return true;
+		};
+		Logger.sink = null;
+		var beforeFlush:Int = -1;
+		try {
+			Logger.info("first");
+			Logger.info("second");
+			beforeFlush = writes.length;
+			// As the runtime does at the end of a frame.
+			Logger.__flushStdout();
+			Logger.info("third");
+			Logger.warn("fourth");
+		} catch (e:Dynamic) {
+			stdout.write = write;
+			throw e;
+		}
+		stdout.write = write;
+
+		Assert.equals(0, beforeFlush, "an INFO record was written before the turn ended");
+		Assert.equals(2, writes.length, "the records took " + writes.length + " writes: " + writes);
+		if (writes.length == 2) {
+			Assert.isTrue(writes[0].indexOf("first") >= 0 && writes[0].indexOf("first") < writes[0].indexOf("second"), "held: " + writes[0]);
+			Assert.isTrue(writes[1].indexOf("third") >= 0 && writes[1].indexOf("third") < writes[1].indexOf("fourth"), "with the warning: " + writes[1]);
+			Assert.isTrue(StringTools.endsWith(writes[0], "\n") && StringTools.endsWith(writes[1], "\n"), "a record lost its line end");
+		}
+		#else
+		Assert.pass();
+		#end
+	}
+
 	private var captured:Array<String>;
 
 	public function setup():Void {

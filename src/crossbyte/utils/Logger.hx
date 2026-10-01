@@ -233,6 +233,28 @@ class Logger {
 	@:noCompletion private static var __unflushed:Bool = false;
 	#end
 
+	#if nodejs
+	// Records held for one write at the end of this turn of Node's loop; see
+	// __emit. Written past this many characters whatever the turn.
+	@:noCompletion private static inline var HELD_LIMIT:Int = 64 * 1024;
+	@:noCompletion private static var __held:String = "";
+	@:noCompletion private static var __heldTurn:Bool = false;
+	@:noCompletion private static var __exitHooked:Bool = false;
+
+	@:noCompletion private static function __writeHeld():Void {
+		if (__held.length > 0) {
+			var text:String = __held;
+			__held = "";
+			js.Node.process.stdout.write(text);
+		}
+	}
+
+	@:noCompletion private static function __writeHeldTurn():Void {
+		__heldTurn = false;
+		__writeHeld();
+	}
+	#end
+
 	/**
 		Flushes stdout if a record went to it since the last flush. The runtime
 		calls this once a frame, and as it exits; a warning or an error is
@@ -243,7 +265,9 @@ class Logger {
 		here instead, once for however many a frame wrote.
 	**/
 	@:noCompletion public static inline function __flushStdout():Void {
-		#if !js
+		#if nodejs
+		__writeHeld();
+		#elseif !js
 		if (__unflushed) {
 			__unflushed = false;
 			Sys.stdout().flush();
@@ -499,9 +523,26 @@ class Logger {
 		// log line that vanished would be worse here than anywhere else,
 		// this is the thing that reports everything else going wrong.
 		js.Browser.console.log(line);
+		#elseif nodejs
+		// One write a turn of Node's loop, not two a record: Sys.println there
+		// writes the line and then its newline, and to a file each is a
+		// synchronous system call, the access log's line a request cost a
+		// server 15% of its time. Held records go when the turn ends, when
+		// the runtime flushes, or as the process exits; a warning or an error
+		// goes at once, after them, so the order holds.
+		__held += line + "\n";
+		if (urgent || __held.length >= HELD_LIMIT) {
+			__writeHeld();
+		} else if (!__heldTurn) {
+			__heldTurn = true;
+			js.Node.setImmediate(__writeHeldTurn);
+			if (!__exitHooked) {
+				__exitHooked = true;
+				js.Node.process.on("exit", __writeHeld);
+			}
+		}
 		#else
 		Sys.println(line);
-		#if !nodejs
 		if (urgent) {
 			// A warning or an error is often the last thing a process says.
 			__unflushed = false;
@@ -509,7 +550,6 @@ class Logger {
 		} else {
 			__unflushed = true;
 		}
-		#end
 		#end
 	}
 }

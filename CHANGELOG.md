@@ -1129,6 +1129,15 @@ All notable changes to CrossByte will be documented in this file.
   character at a time on every response, the constant ones included: 4% of
   a native server's time. Small answers: 81,500 a second where it served
   77,700.
+- On Node, log records go to stdout in one write a turn of the event loop,
+  where each was two: `Sys.println` there writes the line and then its
+  newline, and to a file each is a synchronous system call. A warning or an
+  error is written at once, after whatever was held, so the order holds;
+  held records go when the turn ends, when the runtime flushes, and as the
+  process exits. Output written other ways in the same turn, `trace`,
+  `Sys.println`: can come out ahead of them. A Node server with the
+  access log on, the default, answers 54,300 small requests a second where
+  it answered 44,400.
 - `PostgresStatement` and `MongoStatement` throw a failed statement's
   `SQLError` after dispatching it as an `SQLErrorEvent`, as `MySQLStatement`
   does. They dispatched it and returned, so to a caller not listening, an
