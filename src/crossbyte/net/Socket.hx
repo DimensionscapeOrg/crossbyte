@@ -1353,12 +1353,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		if (objectEncoding == HXSF) {
-			return Unserializer.run(readUTF());
-		} else {
-			// TODO: Add support for AMF if haxelib "format" is included
-			return null;
-		}
+		// As a ByteArray reads one, in every encoding a ByteArray can, JSON
+		// always, AMF with -lib format, and one this build cannot do throws.
+		// Only HXSF was read: anything else read null, and said nothing.
+		__input.objectEncoding = objectEncoding;
+		return __input.readObject();
 	}
 
 	/**
@@ -1601,12 +1600,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		if (objectEncoding == HXSF) {
-			__output.writeUTF(Serializer.run(object));
-			__queueWrite();
-		} else {
-			// TODO: Add support for AMF if haxelib "format" is included
-		}
+		// As a ByteArray writes one; see readObject. Anything but HXSF wrote
+		// nothing, and said nothing.
+		__output.objectEncoding = objectEncoding;
+		__output.writeObject(object);
+		__queueWrite();
 	}
 
 	/**
