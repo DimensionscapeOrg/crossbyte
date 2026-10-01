@@ -870,7 +870,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
-		if (RuntimeHandOff.elsewhere(__transportRuntime(), close)) {
+		var runtime:Null<CrossByte> = __transportRuntime();
+		if (RuntimeHandOff.offThread(runtime) && runtime.post(close)) {
 			return;
 		}
 
@@ -922,7 +923,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
-		if (RuntimeHandOff.elsewhere(__transportRuntime(), abort)) {
+		var runtime:Null<CrossByte> = __transportRuntime();
+		if (RuntimeHandOff.offThread(runtime) && runtime.post(abort)) {
 			return;
 		}
 

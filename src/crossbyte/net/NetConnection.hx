@@ -753,7 +753,8 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 
 	override public function __closeWith(reason:Reason):Void {
 		// From another thread, on the socket's runtime; see `NetConnection.close`.
-		if (RuntimeHandOff.elsewhere(@:privateAccess __socket.__runtime(), () -> __closeWith(reason))) {
+		var runtime:Null<CrossByte> = @:privateAccess __socket.__runtime();
+		if (RuntimeHandOff.offThread(runtime) && runtime.post(() -> __closeWith(reason))) {
 			return;
 		}
 		__disposeLifecycle();
@@ -1035,7 +1036,8 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 
 	override public function __closeWith(reason:Reason):Void {
 		// From another thread, on the session's runtime; see `NetConnection.close`.
-		if (RuntimeHandOff.elsewhere(@:privateAccess __socket.__transportRuntime(), () -> __closeWith(reason))) {
+		var runtime:Null<CrossByte> = @:privateAccess __socket.__transportRuntime();
+		if (RuntimeHandOff.offThread(runtime) && runtime.post(() -> __closeWith(reason))) {
 			return;
 		}
 		__disposeLifecycle();
@@ -1281,7 +1283,8 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 	**/
 	override public function __closeWith(reason:Reason):Void {
 		// From another thread, on the session's runtime; see `NetConnection.close`.
-		if (RuntimeHandOff.elsewhere(@:privateAccess __socket.__runtime(), () -> __closeWith(reason))) {
+		var runtime:Null<CrossByte> = @:privateAccess __socket.__runtime();
+		if (RuntimeHandOff.offThread(runtime) && runtime.post(() -> __closeWith(reason))) {
 			return;
 		}
 		__disposeLifecycle();

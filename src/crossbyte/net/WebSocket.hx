@@ -255,13 +255,16 @@ class WebSocket extends Socket {
 	**/
 	override public function close():Void {
 		if (__webSocket != null) {
-			var session = __webSocket;
-			if (RuntimeHandOff.elsewhere(__runtime(), function():Void {
-				if (__webSocket == session) {
-					__cleanSocket();
+			var runtime:Null<CrossByte> = __runtime();
+			if (RuntimeHandOff.offThread(runtime)) {
+				var session = __webSocket;
+				if (runtime.post(function():Void {
+					if (__webSocket == session) {
+						__cleanSocket();
+					}
+				})) {
+					return;
 				}
-			})) {
-				return;
 			}
 			__cleanSocket();
 		} else {
@@ -309,7 +312,8 @@ class WebSocket extends Socket {
 		}
 
 		var session = __webSocket;
-		if (RuntimeHandOff.elsewhere(__runtime(), function():Void {
+		var runtime:Null<CrossByte> = __runtime();
+		if (RuntimeHandOff.offThread(runtime) && runtime.post(function():Void {
 			if (__webSocket == session) {
 				session.close(code, reason);
 			}
