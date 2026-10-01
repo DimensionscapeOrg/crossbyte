@@ -4,13 +4,15 @@ package crossbyte.db.sql.sqlite;
 #if !js
 
 import crossbyte.FieldStruct;
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.errors.SQLError;
-import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
 import crossbyte.db.sql.SQLResult;
+import crossbyte.db.sql._internal.ItemRows;
 import crossbyte.db.sql._internal.ParamBinder;
+import crossbyte.db.sql.sqlite._internal.SQLiteJob;
 import sys.db.Connection;
 import sys.db.ResultSet;
 
@@ -21,6 +23,13 @@ import sys.db.ResultSet;
 @:access(crossbyte.db.sql.sqlite.SQLiteConnection)
 class SQLiteStatement extends EventDispatcher {
 	public var executing(get, null):Bool;
+
+	/**
+		A class each row is made an instance of, as AIR's `itemClass`: made
+		with no arguments, and each field set from the column of its name. A
+		column the class has no field for fails the statement with an
+		`SQLError`. Null, the default, leaves rows anonymous objects.
+	**/
 	public var itemClass:Class<Dynamic>;
 	public var parameters(default, null):FieldStruct<String>;
 	public var sqlConnection(get, set):SQLiteConnection;
@@ -28,22 +37,24 @@ class SQLiteStatement extends EventDispatcher {
 
 	private var __sqlConnection:SQLiteConnection;
 	private var __executing:Bool = false;
-	private var __connection:Connection;
+	// The result being read. On an asynchronous connection it is the
+	// worker's alone: made, read and dropped there.
 	private var __resultSet:ResultSet;
-	private var __prefetch:Int = 0;
-	// Pages read and not yet taken by getResult(), oldest first. The
-	// asynchronous worker hands its result set back to the runtime thread,
-	// which reads the rows and queues them, so only one thread touches it
-	// and a plain Array serves every target. It was a Deque on cpp and,
-	// elsewhere, an Array read with pop(), which hands back the newest page
-	// first.
+	// Pages read and not yet taken by getResult(), oldest first. Only the
+	// thread that called the statement touches it, the worker sends its
+	// pages there, so a plain Array serves every target. It was a Deque on
+	// cpp and, elsewhere, an Array read with pop(), which hands back the
+	// newest page first.
 	private var __resultQueue:Array<Array<Dynamic>> = [];
-	private var __async:Bool = false;
-	// The connection's last rowid as this statement finished executing,
-	// read on the thread that executed it. It was read by getResult(), on
-	// the caller's thread while the worker might be running the next
-	// statement, and so reported whichever insert had happened last.
+	// The connection's last rowid as this statement finished, read on the
+	// thread that ran it once its rows were all read. It was read by
+	// getResult(), on the caller's thread while the worker might be running
+	// the next statement, and so reported whichever insert had happened last.
 	@:noCompletion private var __rowId:Float = 0;
+	// What the statement changed, from where it ran; see __affectedOf.
+	@:noCompletion private var __affected:Float = 0;
+	// Whether the page __readRows last read took the last row.
+	@:noCompletion private var __pageDone:Bool = false;
 
 	public function new() {
 		super();
@@ -53,9 +64,14 @@ class SQLiteStatement extends EventDispatcher {
 	public function cancel():Void {
 		if (executing) {
 			__executing = false;
-			__prefetch = 0;
 			__resultQueue = [];
-			__resultSet = null;
+
+			// The worker's, on an asynchronous connection: left for the next
+			// execute() to replace there.
+			if (__sqlConnection == null || !__sqlConnection.__async) {
+				__resultSet = null;
+			}
+
 			text = "";
 			clearParameters();
 		}
@@ -65,55 +81,113 @@ class SQLiteStatement extends EventDispatcher {
 		parameters = new FieldStruct();
 	}
 
+	/**
+		Runs `text`, with `parameters` substituted, and queues the first
+		`prefetch` rows (all of them for `-1`) for `getResult()`, then
+		dispatches `SQLEvent.RESULT`. A statement SQLite refuses is dispatched
+		as an `SQLErrorEvent` and thrown as its `SQLError`, as MySQL's and
+		Postgres's statements do; on an asynchronous connection it is only
+		dispatched, since the caller has returned by then.
+
+		A synchronous statement dispatched no `RESULT` at all, and a failed
+		one let the driver's raw `String` escape with no `SQLErrorEvent`.
+
+		@throws IllegalOperationError When `sqlConnection` is not set, or not
+		open.
+	**/
 	public function execute(prefetch:Int = -1):Void {
+		if (__sqlConnection == null || !__sqlConnection.__isOpen()) {
+			// Dereferenced: a statement with no open connection crashed.
+			throw new IllegalOperationError("SQLiteStatement: sqlConnection is not set, or is not open.");
+		}
+
+		var sql:String = __applyParameters(text);
+
 		__executing = true;
 		__resultQueue = [];
 
-		var sql:String = __applyParameters(text);
-		if (__async) {
-			__sqlConnection.__addToQueue(__executeAsync(sql, this, prefetch));
-		} else {
-			__prefetch = prefetch;
-			__resultSet = __connection.request(sql);
-			__rowId = __rowIdNow();
-			__queueResult();
+		if (__sqlConnection.__async) {
+			__sqlConnection.__addToQueue(__executeAsync(sql, prefetch), SQLEvent.RESULT, this);
+			return;
 		}
+
+		__rowId = 0;
+
+		try {
+			__resultSet = __sqlConnection.__connection.request(sql);
+			__affected = __affectedOf(__resultSet);
+			var rows:Array<Dynamic> = __readRows(__resultSet, prefetch);
+
+			if (prefetch != 0) {
+				__resultQueue.push(rows);
+			}
+
+			if (__pageDone) {
+				__executing = false;
+			}
+
+			__noteRowId();
+		} catch (e:Dynamic) {
+			__executing = false;
+			__resultSet = null;
+			__fail(e);
+		}
+
+		// Outside the try: a RESULT listener that throws has not made the
+		// statement fail, and must not be reported as though it had.
+		__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 	}
 
+	/**
+		Reports a failed statement both ways: as an `SQLErrorEvent`, and as
+		the `SQLError` it throws. What the driver threw is carried as text,
+		never as itself.
+	**/
+	@:noCompletion private function __fail(e:Dynamic):Void {
+		var error:SQLError = SQLiteConnection.__asSQLError(SQLEvent.RESULT, e);
+		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
+		throw error;
+	}
+
+	/**
+		`query` with `parameters` substituted. A parameter set to null is
+		written as `NULL`, as MySQL's statements write it. It was taken for one
+		never set and left as `:name`, which SQLite read as an unbound
+		parameter, NULL as well, by luck rather than by design.
+	**/
 	@:noCompletion private function __applyParameters(query:String):String {
 		var params:FieldStruct<String> = parameters;
-		return ParamBinder.substitute(query, function(name:String):Null<Dynamic> {
-			return FieldStruct.exists(params, name) ? FieldStruct.get(params, name) : null;
-		}, __escapeValue);
+		return ParamBinder.substituteWith(query, name -> FieldStruct.exists(params, name), name -> FieldStruct.get(params, name), __escapeValue,
+			false);
 	}
 
 	@:noCompletion private function __escapeValue(value:Dynamic):String {
-		var sb:StringBuf = new StringBuf();
-		__connection.addValue(sb, value);
-		return sb.toString();
+		return SQLiteConnection.__literal(value);
 	}
 
-	private function __executeAsync(sql:String, statement:SQLiteStatement, prefetch:Int):Function {
+	/**
+		The work `execute()` queues on an asynchronous connection: runs the
+		statement and reads its first page on the worker, then sends both to
+		the runtime's thread.
+	**/
+	private function __executeAsync(sql:String, prefetch:Int):Void->Void {
 		return function() {
-			var event:Event;
-			var results:ResultSet;
-			var rowId:Float = 0;
-			try {
-				results = __connection.request(sql);
-				rowId = __rowIdNow();
-				event = new SQLEvent(SQLEvent.RESULT);
-			} catch (e:Dynamic) {
-				results = null;
-				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.RESULT, Std.string(e), "Execution failed: " + Std.string(e)));
-			}
+			var message:SQLiteStatementMessage = new SQLiteStatementMessage(this, true);
 
-			var message:Object = new Object();
-			message.type = 0;
-			message.statement = statement;
-			message.event = event;
-			message.results = results;
-			message.rowId = rowId;
-			message.prefetch = prefetch;
+			try {
+				__resultSet = null;
+				// Read here, on the worker, when the job runs: the connection
+				// the worker opened.
+				__resultSet = __sqlConnection.__connection.request(sql);
+				message.affected = __affectedOf(__resultSet);
+				var rows:Array<Dynamic> = __readRows(__resultSet, prefetch);
+				message.rows = prefetch != 0 ? rows : null;
+				__finishPage(message);
+				message.event = new SQLEvent(SQLEvent.RESULT);
+			} catch (e:Dynamic) {
+				__resultSet = null;
+				message.fail(SQLiteConnection.__asSQLError(SQLEvent.RESULT, e));
+			}
 
 			__sqlConnection.__sqlWorker.sendProgress(message);
 		}
@@ -121,33 +195,97 @@ class SQLiteStatement extends EventDispatcher {
 
 	/** The connection's last rowid now, whole; see SQLiteConnection.__lastRowId. **/
 	@:noCompletion private function __rowIdNow():Float {
-		if (__sqlConnection != null) {
-			return __sqlConnection.__lastRowId();
-		}
-		return __connection != null ? __connection.lastInsertId() : 0;
+		return __sqlConnection != null ? __sqlConnection.__lastRowId() : 0;
 	}
 
-	private function __queueResult():Void {
-		var results:Array<Dynamic> = [];
+	/**
+		Takes the rowid for this statement's results, once its rows are all
+		read, never while some remain. Past 2^31 the rowid is a query of its
+		own, and hxcpp's glue starts one by finalizing the statement before
+		it: read as soon as a SELECT had started, it cut the SELECT to the one
+		row already stepped. A write has no rows, so its rowid is taken at
+		once.
+	**/
+	@:noCompletion private function __noteRowId():Void {
+		if (!__executing) {
+			__rowId = __rowIdNow();
+		}
+	}
 
-		if (__prefetch == -1) {
-			while (__resultSet.hasNext()) {
-				results.push(__resultSet.next());
+	/** On the worker: whether the page just read ended the rows, and the rowid then. **/
+	@:noCompletion private function __finishPage(message:SQLiteStatementMessage):Void {
+		message.done = __pageDone;
+
+		if (__pageDone) {
+			message.rowId = __rowIdNow();
+		}
+	}
+
+	/**
+		The rows a write changed: SQLite's own count for a statement with no
+		result columns, and 0 for one that returns rows, as AIR's
+		`SQLResult.rowsAffected` has it. Taken where the statement ran, before
+		its rows are read. `getResult()` asked the result set its length,
+		which for a SELECT stepped through the rest of its rows, on the
+		caller's thread even on an asynchronous connection, and reported
+		however many were left.
+	**/
+	@:noCompletion private static function __affectedOf(result:ResultSet):Float {
+		return result.nfields == 0 ? result.length : 0;
+	}
+
+	/**
+		Up to `prefetch` rows of `result`, all of them for `-1`, read on the
+		thread running the statement, and made instances of `itemClass` when
+		it is set. Sets `__pageDone` when none remain.
+	**/
+	@:noCompletion private function __readRows(result:ResultSet, prefetch:Int):Array<Dynamic> {
+		var rows:Array<Dynamic> = [];
+
+		if (prefetch == -1) {
+			while (result.hasNext()) {
+				rows.push(result.next());
 			}
-			__resultQueuePush(results);
-			__executing = false;
-		} else if (__prefetch > 0) {
-			for (i in 0...__prefetch) {
-				if (__resultSet.hasNext()) {
-					results.push(__resultSet.next());
-				} else {
-					__executing = false;
+
+			__pageDone = true;
+		} else if (prefetch > 0) {
+			__pageDone = false;
+
+			for (i in 0...prefetch) {
+				if (!result.hasNext()) {
+					__pageDone = true;
 					break;
 				}
+
+				rows.push(result.next());
 			}
-			__resultQueuePush(results);
+		} else {
+			__pageDone = !result.hasNext();
 		}
-		__prefetch = 0;
+
+		return ItemRows.make(rows, itemClass);
+	}
+
+	/**
+		On the runtime's thread: what the worker read and ran, queued and
+		reported here as a synchronous statement reports it.
+	**/
+	@:noCompletion private function __receive(message:SQLiteStatementMessage):Void {
+		if (message.rows != null) {
+			__resultQueue.push(message.rows);
+		}
+
+		if (message.executed) {
+			__affected = message.affected;
+			__rowId = 0;
+		}
+
+		if (message.done) {
+			__executing = false;
+			__rowId = message.rowId;
+		}
+
+		__dispatchEvent(message.event);
 	}
 
 	/**
@@ -163,82 +301,82 @@ class SQLiteStatement extends EventDispatcher {
 		var complete:Bool = !__executing && __resultQueue.length == 0;
 
 		if (results != null) {
-			var len:Int = (__resultSet != null) ? __resultSet.length : 0;
-			return new SQLResult(results, len, complete, __rowId);
+			return new SQLResult(results, __affected, complete, __rowId);
 		}
 		return null;
 	}
 
+	/**
+		Queues the next `prefetch` rows, or all that remain with `-1`, then
+		dispatches `SQLEvent.RESULT`, an empty page once none remain. A read
+		that fails is reported as `execute()` reports one.
+	**/
 	public function next(prefetch:Int = -1):Void {
-		if (__async) {
-			__sqlConnection.__addToQueue(__nextAsync(this, prefetch));
-		} else {
-			if (__resultSet != null) {
-				__prefetch = prefetch;
-
-				if (__resultSet.hasNext()) {
-					__queueResult();
-				} else {
-					__executing = false;
-					__prefetch = 0;
-				}
-			} else {
-				// Thrown: it was made and dropped, so next() on a statement that
-				// had not run did nothing at all, and said nothing.
-				throw new SQLError(SQLEvent.RESULT, "Invalid result set", "Invalid result set: execute() the statement first");
-			}
+		if (__sqlConnection != null && __sqlConnection.__async) {
+			__sqlConnection.__addToQueue(__nextAsync(prefetch), SQLEvent.RESULT, this);
+			return;
 		}
+
+		if (__resultSet == null) {
+			// Thrown: it was made and dropped, so next() on a statement that
+			// had not run did nothing at all, and said nothing.
+			throw new SQLError(SQLEvent.RESULT, "Invalid result set", "Invalid result set: execute() the statement first");
+		}
+
+		try {
+			var rows:Array<Dynamic> = __readRows(__resultSet, prefetch);
+
+			if (rows.length > 0) {
+				__resultQueue.push(rows);
+			}
+
+			if (__pageDone) {
+				__executing = false;
+			}
+
+			__noteRowId();
+		} catch (e:Dynamic) {
+			__executing = false;
+			__fail(e);
+		}
+
+		__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 	}
 
-	private function __nextAsync(statement:SQLiteStatement, prefetch:Int):Function {
+	/** The work `next()` queues on an asynchronous connection: the next page, read on the worker. **/
+	private function __nextAsync(prefetch:Int):Void->Void {
 		return function() {
-			var event:Event;
-			var results:ResultSet;
-			var isExecuting:Bool = false;
+			var message:SQLiteStatementMessage = new SQLiteStatementMessage(this, false);
 
 			try {
-				if (__resultSet != null) {
-					var hasNext:Bool = __resultSet.hasNext();
-
-					if (hasNext) {
-						isExecuting = true;
-					} else {
-						prefetch = 0;
-					}
+				if (__resultSet == null) {
+					throw new SQLError(SQLEvent.RESULT, "Invalid result set", "Invalid result set: execute() the statement first");
 				}
-				event = new SQLEvent(SQLEvent.RESULT);
-			} catch (e:Dynamic) {
-				isExecuting = false;
-				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.RESULT, Std.string(e), "Execution failed: " + Std.string(e)));
-			}
 
-			var message:Object = new Object();
-			message.type = 1;
-			message.statement = statement;
-			message.event = event;
-			message.prefetch = prefetch;
-			message.executing = isExecuting;
+				var rows:Array<Dynamic> = __readRows(__resultSet, prefetch);
+				message.rows = rows.length > 0 ? rows : null;
+				__finishPage(message);
+				message.event = new SQLEvent(SQLEvent.RESULT);
+			} catch (e:Dynamic) {
+				message.fail(SQLiteConnection.__asSQLError(SQLEvent.RESULT, e));
+			}
 
 			__sqlConnection.__sqlWorker.sendProgress(message);
 		}
-	}
-
-	@:noCompletion private inline function __resultQueuePush(rows:Array<Dynamic>):Void {
-		__resultQueue.push(rows);
 	}
 
 	private function get_executing():Bool {
 		return __executing;
 	}
 
+	/**
+		Only kept: whether the connection is open, and which way, is asked of
+		it each time the statement runs. Both were copied here when this was
+		set, so a statement given its connection before `open()`, or before
+		an asynchronous open had finished, held no connection at all, and one
+		kept across a `close()` and `open()` held the closed one.
+	**/
 	private function set_sqlConnection(value:SQLiteConnection):SQLiteConnection {
-		if (value != null) {
-			__async = value.__async;
-			__connection = value.__connection;
-		} else {
-			__connection = null;
-			__async = false;
-		}
 		return __sqlConnection = value;
 	}
 

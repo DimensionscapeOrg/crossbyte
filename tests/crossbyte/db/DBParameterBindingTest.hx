@@ -141,6 +141,34 @@ class DBParameterBindingTest extends utest.Test {
 		Assert.equals("a = NULL, b = :absent", result);
 	}
 
+	#if !js
+	// The statements are not built for JavaScript, which has no driver.
+	@:access(crossbyte.db.postgres.PostgresStatement)
+	@:access(crossbyte.db.sql.sqlite.SQLiteStatement)
+	public function testEveryDriverWritesANullParameterAsNull():Void {
+		// Postgres's and SQLite's statements took a parameter set to null for
+		// one never set, and left :email in the SQL, where MySQL's writes NULL.
+		// On Postgres the statement then failed at the server; SQLite reads an
+		// unbound :email as NULL, by luck. Mongo's refused it as "no parameter
+		// named email", though it was there (MongoCrudTest has that one).
+		var sql:String = "INSERT INTO users (name, email) VALUES (:name, :email)";
+
+		var postgres = new crossbyte.db.postgres.PostgresStatement();
+		postgres.parameters.name = "bob";
+		postgres.parameters.email = null;
+		Assert.equals("INSERT INTO users (name, email) VALUES ('bob', NULL)", postgres.__applyParameters(sql));
+
+		var sqlite = new crossbyte.db.sql.sqlite.SQLiteStatement();
+		sqlite.parameters.name = "bob";
+		sqlite.parameters.email = null;
+		Assert.equals("INSERT INTO users (name, email) VALUES ('bob', NULL)", sqlite.__applyParameters(sql));
+
+		// One never set is still left as it was written.
+		Assert.equals("SELECT :absent", sqlite.__applyParameters("SELECT :absent"));
+		Assert.equals("SELECT :absent", postgres.__applyParameters("SELECT :absent"));
+	}
+	#end
+
 	public function testBackslashEscapesAreReadWhenTheDialectHasThem():Void {
 		var params = lookupOf(["name" => "alpha"]);
 		var sql:String = "x = 'it\\'s :name' AND y = :name";
@@ -156,6 +184,63 @@ class DBParameterBindingTest extends utest.Test {
 		// literal, and not where MySQL reads statement text.
 		Assert.equals("x = 'it\\'s <<alpha>>' AND y = :name", ParamBinder.substitute(sql, params, wrapEscape));
 	}
+
+	public function testAPostgresEscapeStringHonoursItsBackslashes():Void {
+		// E'...' reads a backslash as an escape in PostgreSQL even with
+		// standard_conforming_strings on, so in E'it\'s :name' the quote
+		// after the backslash does not end the literal. The scan ended it
+		// there, substituted the :name the server reads as inside the
+		// literal, and a value with no quote of its own then ended the
+		// server's literal for it: what followed was statement text.
+		var params = lookupOf(["name" => "alpha"]);
+		var sql:String = "x = E'it\\'s :name' AND y = :name";
+
+		Assert.equals("x = E'it\\'s :name' AND y = <<alpha>>",
+			ParamBinder.substituteWith(sql, name -> params(name) != null, params, wrapEscape, false));
+		// An E that ends an identifier is not a prefix: a plain literal.
+		Assert.equals("SELECT typE'\\' AS <<alpha>>",
+			ParamBinder.substituteWith("SELECT typE'\\' AS :name", name -> params(name) != null, params, wrapEscape, false));
+		// A doubled backslash is one, and the quote after it ends the literal.
+		Assert.equals("x = e'\\\\' AND y = <<alpha>>",
+			ParamBinder.substituteWith("x = e'\\\\' AND y = :name", name -> params(name) != null, params, wrapEscape, false));
+	}
+
+	public function testAPostgresDollarQuotedStringIsNotSubstitutedInto():Void {
+		// Off unless asked: SQLite reads $name as a parameter of its own.
+		var params = lookupOf(["name" => "alpha"]);
+		var has = name -> params(name) != null;
+
+		Assert.equals("SELECT $$ it's :name $$, <<alpha>>",
+			ParamBinder.substituteWith("SELECT $$ it's :name $$, :name", has, params, wrapEscape, false, true));
+		// After the closing tag, a comment is still a comment.
+		Assert.equals("AS $fn$ BEGIN RETURN :name; END $fn$ -- :name",
+			ParamBinder.substituteWith("AS $fn$ BEGIN RETURN :name; END $fn$ -- :name", has, params, wrapEscape, false, true));
+		// Another tag inside does not close it.
+		Assert.equals("$a$ $b$ :name $b$ $a$ <<alpha>>",
+			ParamBinder.substituteWith("$a$ $b$ :name $b$ $a$ :name", has, params, wrapEscape, false, true));
+		// A positional parameter is not a tag, nor is a $ inside a name.
+		Assert.equals("WHERE a = $1 AND b = <<alpha>>",
+			ParamBinder.substituteWith("WHERE a = $1 AND b = :name", has, params, wrapEscape, false, true));
+		Assert.equals("SELECT foo$bar$ AS <<alpha>>",
+			ParamBinder.substituteWith("SELECT foo$bar$ AS :name", has, params, wrapEscape, false, true));
+		// Unterminated: nothing after the opening tag is substituted.
+		Assert.equals("SELECT $$ :name", ParamBinder.substituteWith("SELECT $$ :name", has, params, wrapEscape, false, true));
+		// Not asked for, as for SQLite and MySQL: substituted as before.
+		Assert.equals("SELECT $$ <<alpha>> $$", ParamBinder.substituteWith("SELECT $$ :name $$", has, params, wrapEscape, false));
+	}
+
+	#if !js
+	@:access(crossbyte.db.postgres.PostgresStatement)
+	public function testAPostgresStatementLeavesItsDollarQuotesAlone():Void {
+		// $$...$$ and $tag$...$tag$ quote everything up to the closing tag,
+		// quotes included. The scan did not know them, so a :name inside one
+		// was substituted, and a value holding the tag ended the string
+		// there, everything after it statement text.
+		var postgres = new crossbyte.db.postgres.PostgresStatement();
+		postgres.parameters.name = "$$; DROP TABLE users; --";
+		Assert.equals("SELECT $$ :name $$, '$$; DROP TABLE users; --'", postgres.__applyParameters("SELECT $$ :name $$, :name"));
+	}
+	#end
 
 	public function testDoubledQuoteInsideAnIdentifierDoesNotEndIt():Void {
 		// The same doubling rule the single-quote path already honoured; an

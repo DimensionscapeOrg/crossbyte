@@ -41,17 +41,20 @@ class ExtendedJson {
 		filter that is the query operator; write a regular expression value as
 		`{"$regularExpression": {"pattern": ..., "options": ...}}`.
 
-		@param parameters Looks up the value for a `:name` placeholder. A name
-		it answers `null` for is refused, as is any placeholder when this is
-		not given.
+		@param parameters Looks up the value for a `:name` placeholder. Any
+		placeholder is refused when this is not given.
+		@param exists Whether a parameter of that name exists. One that does
+		is bound even when its value is `null`, as BSON null, and one that
+		does not is refused. Without it, a name `parameters` answers `null`
+		for is refused, a parameter set to null among them.
 		@throws ArgumentError When `text` is not valid Extended JSON.
 	**/
-	public static function parse(text:String, ?parameters:String->Dynamic):Dynamic {
+	public static function parse(text:String, ?parameters:String->Dynamic, ?exists:String->Bool):Dynamic {
 		if (text == null) {
 			throw new ArgumentError("Extended JSON text is null.");
 		}
 
-		var parser:ExtendedJsonParser = new ExtendedJsonParser(text, parameters);
+		var parser:ExtendedJsonParser = new ExtendedJsonParser(text, parameters, exists);
 		return parser.parseDocumentText();
 	}
 
@@ -300,11 +303,13 @@ class ExtendedJsonParser {
 	private var __text:String;
 	private var __pos:Int = 0;
 	private var __parameters:String->Dynamic;
+	private var __exists:Null<String->Bool>;
 	private var __depth:Int = 0;
 
-	public function new(text:String, parameters:String->Dynamic) {
+	public function new(text:String, parameters:String->Dynamic, ?exists:String->Bool) {
 		__text = text;
 		__parameters = parameters;
+		__exists = exists;
 	}
 
 	/** One value, and nothing after it but white space. **/
@@ -689,6 +694,16 @@ class ExtendedJsonParser {
 
 		if (__parameters == null) {
 			__fail('placeholder ":$name" has no parameters to take a value from');
+		}
+
+		if (__exists != null) {
+			// Asked separately, so a parameter set to null is bound as BSON
+			// null; told only its value, a null cannot be told from absent.
+			if (!__exists(name)) {
+				__fail('no parameter named "$name"');
+			}
+
+			return __parameters(name);
 		}
 
 		var value:Dynamic = __parameters(name);

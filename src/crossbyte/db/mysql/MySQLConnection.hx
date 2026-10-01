@@ -87,6 +87,9 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	// when the connection opens, and read-only after.
 	@:noCompletion private var __config:MySQLConfig;
 	@:noCompletion private var __threadId:Float = 0;
+	// Off cpp: the last statement's generated id is not the one Haxe's
+	// driver kept, and has to be asked for; see request().
+	@:noCompletion private var __insertIdStale:Bool = false;
 
 	public function new() {
 		super();
@@ -654,13 +657,50 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 			}
 			#end
 
+			__insertIdStale = false;
 			var result:ResultSet = __connection.request(sql);
 			__noteStatement(sql);
 			return result;
 		} catch (e:Dynamic) {
+			#if (java || jvm)
+			if (__generatedKeyOverflowed(e, sql)) {
+				// The statement ran, and committed; only reading its key
+				// failed. The key is asked for in SQL when it is wanted.
+				__insertIdStale = true;
+				__noteStatement(sql);
+				return new NoRows();
+			}
+			#end
+
 			throw __error("request", e);
 		}
 	}
+
+	#if (java || jvm)
+	/**
+		Whether `e` is Haxe's JDBC binding failing to read an insert's
+		generated key as an `Int`: it reads a single insert's key with
+		`getInt`, after the insert has run, and Connector/J refuses a value
+		past 2^31 with SQLSTATE 22003 and no error number, so an insert
+		that had committed was reported as failed. The server's own 22003, a
+		value out of range for its column, carries MySQL's error number
+		(1264) and is a failure as before.
+	**/
+	@:noCompletion private static function __generatedKeyOverflowed(e:Dynamic, sql:String):Bool {
+		if (!Std.isOfType(e, java.sql.SQLException)) {
+			return false;
+		}
+
+		var failure:java.sql.SQLException = cast e;
+
+		if (failure.getSQLState() != "22003" || failure.getErrorCode() != 0 || sql == null) {
+			return false;
+		}
+
+		var verb:String = StringTools.trim(sql).substr(0, 7).toUpperCase();
+		return StringTools.startsWith(verb, "INSERT") || StringTools.startsWith(verb, "REPLACE");
+	}
+	#end
 
 	/**
 		What went wrong, as a `MySQLError`: the error number and SQLSTATE the
@@ -810,6 +850,11 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		with the statement's answer; each read used to be a `SELECT
 		LAST_INSERT_ID()`. An id past 2^31 reads as 2147483647 here;
 		`SQLResult.lastInsertRowID` holds it exactly to 2^53.
+
+		Elsewhere it comes from Haxe's driver, which holds an `Int`: one
+		that cannot be right there, negative, or 2^31 and past, is asked
+		for in SQL, as the SQLite driver does. On hl and neko, which read the
+		id in 32 bits, one past 2^32 can wrap back into range unnoticed.
 	**/
 	private function get_lastInsertRowID():Int {
 		#if cpp
@@ -818,7 +863,8 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		}
 		#end
 
-		return (__connection != null) ? __connection.lastInsertId() : 0;
+		var id:Float = __insertIdFloat();
+		return id >= 0x7FFFFFFF ? 0x7FFFFFFF : Std.int(id);
 	}
 
 	/**
@@ -870,7 +916,55 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		}
 		#end
 
-		return (__connection != null) ? __connection.lastInsertId() : 0;
+		if (__connection == null) {
+			return 0;
+		}
+
+		if (!__insertIdStale) {
+			var id:Null<Int> = null;
+
+			try {
+				id = __connection.lastInsertId();
+			} catch (_:Dynamic) {
+				// A driver whose own read of it overflowed.
+			}
+
+			if (id != null && id >= 0 && id < 0x7FFFFFFF) {
+				return id;
+			}
+		}
+
+		return __lastInsertIdBySQL();
+	}
+
+	/**
+		`LAST_INSERT_ID()`, asked as text so no driver narrows it on the way:
+		exact to 2^53. It was the driver's `Int`, wrapped past 2^31 on hl and
+		neko, and on the jvm thrown for, after the insert had run.
+	**/
+	@:noCompletion private function __lastInsertIdBySQL():Float {
+		var rows:ResultSet = request("SELECT CAST(LAST_INSERT_ID() AS CHAR) AS id");
+
+		if (rows == null || !rows.hasNext()) {
+			return 0;
+		}
+
+		var text:String = Std.string(Reflect.field(rows.next(), "id"));
+		// 0.0, not 0: eval does a Float seeded with an Int literal's
+		// arithmetic in wrapping Int, and 3000000000 came out -1294967296.
+		var id:Float = 0.0;
+
+		for (i in 0...text.length) {
+			var digit:Int = StringTools.fastCodeAt(text, i) - "0".code;
+
+			if (digit < 0 || digit > 9) {
+				return 0;
+			}
+
+			id = id * 10 + digit;
+		}
+
+		return id;
 	}
 
 	/**
@@ -945,9 +1039,15 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		return IsolationLevel.REPEATABLE_READ;
 	}
 
+	/**
+		Sets the level of the session's transactions from the next one on.
+		Throws the `MySQLError` the server refused it with, as every other
+		statement does: it went round `request()`, so what the driver threw
+		escaped as itself, on the jvm a `java.sql.SQLException`.
+	**/
 	private function set_isolationLevel(v:IsolationLevel):IsolationLevel {
 		if (__connection != null) {
-			__connection.request("SET SESSION TRANSACTION ISOLATION LEVEL " + v + ";");
+			request("SET SESSION TRANSACTION ISOLATION LEVEL " + v + ";");
 		}
 
 		return v;
@@ -984,4 +1084,51 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		throw error;
 	}
 }
+
+#if (java || jvm)
+/** What an insert answers: no rows, as Haxe's JDBC binding would have answered it. **/
+@:noCompletion
+private class NoRows implements ResultSet {
+	public var length(get, null):Int;
+	public var nfields(get, null):Int;
+
+	public function new() {}
+
+	private function get_length():Int {
+		return 0;
+	}
+
+	private function get_nfields():Int {
+		return 0;
+	}
+
+	public function hasNext():Bool {
+		return false;
+	}
+
+	public function next():Dynamic {
+		return null;
+	}
+
+	public function results():List<Dynamic> {
+		return new List();
+	}
+
+	public function getResult(n:Int):String {
+		throw "No rows.";
+	}
+
+	public function getIntResult(n:Int):Int {
+		throw "No rows.";
+	}
+
+	public function getFloatResult(n:Int):Float {
+		throw "No rows.";
+	}
+
+	public function getFieldsNames():Null<Array<String>> {
+		return null;
+	}
+}
+#end
 #end

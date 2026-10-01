@@ -25,7 +25,14 @@ import php.Global;
 import php.Syntax;
 #end
 
-/** PostgreSQL connection wrapper currently backed by PHP PDO on supported targets. */
+/**
+	A connection to PostgreSQL. Natively (cpp) it drives libpq, loaded when
+	the connection opens, from `PostgresConfig.libraryPath` or
+	`libraryPaths`, or where the system keeps it, with bound parameters
+	(`requestParams`), `cancel()` and the timeouts `PostgresConfig` sets. On
+	php it runs on PDO. No other target has a driver: `isSupported` is
+	`false` there, and `open()` throws.
+**/
 class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransactionalConnection {
 	public static final isSupported:Bool = #if php __checkSupport() #elseif cpp true #else false #end;
 
@@ -40,10 +47,37 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		borrower left open.
 	**/
 	public var inTransaction(get, null):Bool;
+	/**
+		The OID of the row the last single-row `INSERT` made, as libpq's
+		`PQoidValue` reports it, which PostgreSQL 12 and later never
+		assign, since tables there have no OIDs, so it reads 0. For the key
+		of a row inserted, ask the statement for it: `INSERT ... RETURNING
+		id`.
+	**/
 	public var lastInsertRowID(get, null):Int;
+
 	public var affectedRows(get, null):Int;
 	public var serverVersion(get, null):String;
+
+	/**
+		Whether each statement commits on its own, as it does by default.
+		Set `false`, a transaction begins before the next statement and stays
+		open until `commit()` or `rollback()` ends it, and the statement after
+		that begins another, as `autocommit` does on MySQL and in JDBC.
+		PostgreSQL has no such setting on the server, so the driver sends the
+		`BEGIN` itself. Set back to `true`, a transaction that is open is
+		committed first, as MySQL commits it. A new connection starts with it
+		on: `close()` resets it.
+
+		It was stored and never read: set `false`, every statement still
+		committed on its own.
+	**/
 	public var autocommit(get, set):Bool;
+
+	/**
+		The isolation level of the session's transactions, from the next one
+		on. Setting it throws the `SQLError` the server refused it with.
+	**/
 	public var isolationLevel(get, set):PostgresIsolationLevel;
 
 	@:noCompletion private var __connection:Dynamic;
@@ -68,11 +102,30 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		super();
 	}
 
+	/**
+		Connects, and dispatches `SQLEvent.OPEN`. On a connection already
+		open, the connection it had is closed first, dispatching `CLOSE`, as
+		`MySQLConnection.open()` does. It was replaced and left open,
+		unreachable, a server connection held for the life of the process
+		each time a reconnect or a pool factory opened twice.
+
+		@throws IOError When the server cannot be reached or refuses.
+	**/
 	public function open(cfg:PostgresConfig):Void {
 		__requireSupported();
 		if (cfg == null) {
 			throw "PostgresConnection: config is required.";
 		}
+
+		#if cpp
+		if (__nativeHandle != null) {
+			close();
+		}
+		#else
+		if (__connection != null) {
+			close();
+		}
+		#end
 
 		#if cpp
 		// Outside the try: a setting that cannot be expressed is a mistake in
@@ -147,6 +200,8 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 			NativePostgres.close(handle);
 			__inTransaction = false;
+			// The session it belonged to is gone; the next starts with it on.
+			__autocommit = true;
 			__dispatchEvent(new SQLEvent(SQLEvent.CLOSE));
 		}
 		#end
@@ -154,6 +209,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		if (__connection != null) {
 			__connection = null;
 			__inTransaction = false;
+			__autocommit = true;
 			__dispatchEvent(new SQLEvent(SQLEvent.CLOSE));
 		}
 	}
@@ -165,7 +221,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		// every connection answered false without the server being asked,
 		// and a pool validating with ping() would discard each one it made.
 		try {
-			request("SELECT 1;");
+			__request("SELECT 1;", false);
 			return true;
 		} catch (_:Dynamic) {
 			return false;
@@ -185,7 +241,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	**/
 	public function begin():Void {
 		try {
-			request("BEGIN;");
+			__request("BEGIN;", false);
 		} catch (e:Dynamic) {
 			__fail(SQLEvent.BEGIN, "Begin failed", e);
 		}
@@ -207,13 +263,13 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 		Either way the transaction is over afterwards, PostgreSQL ends it on
 		a failed COMMIT as surely as on a successful one, so `inTransaction`
-		is `false` whichever way this returns.
+		is `false` whichever way this returns, unless `autocommit` is off.
 	**/
 	public function commit():Void {
 		var failure:Dynamic = null;
 
 		try {
-			request("COMMIT;");
+			__request("COMMIT;", false);
 
 			if (__lastCommand == "ROLLBACK") {
 				failure = "a statement in the transaction had failed, so the server rolled it back instead of committing it";
@@ -236,7 +292,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		var failure:Dynamic = null;
 
 		try {
-			request("ROLLBACK;");
+			__request("ROLLBACK;", false);
 		} catch (e:Dynamic) {
 			failure = e;
 		}
@@ -264,7 +320,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		var sp:String = __sanitizeSavePoint(name);
 
 		try {
-			request('SAVEPOINT ' + sp + ';');
+			__request('SAVEPOINT ' + sp + ';', false);
 		} catch (e:Dynamic) {
 			__fail(SQLEvent.SET_SAVEPOINT, "Savepoint failed", e);
 		}
@@ -291,7 +347,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 		var sp:String = __takeSavepoint(name, true);
 		try {
-			request('ROLLBACK TO SAVEPOINT ' + sp + ';');
+			__request('ROLLBACK TO SAVEPOINT ' + sp + ';', false);
 		} catch (e:Dynamic) {
 			__fail(SQLEvent.ROLLBACK_TO_SAVEPOINT, "Rollback to savepoint failed", e);
 		}
@@ -309,7 +365,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		var sp:String = __takeSavepoint(name, false);
 
 		try {
-			request('RELEASE SAVEPOINT ' + sp + ';');
+			__request('RELEASE SAVEPOINT ' + sp + ';', false);
 		} catch (e:Dynamic) {
 			__fail(SQLEvent.RELEASE_SAVEPOINT, "Release savepoint failed", e);
 		}
@@ -317,8 +373,29 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		__dispatchEvent(new SQLEvent(SQLEvent.RELEASE_SAVEPOINT));
 	}
 
-	public inline function request(sql:String):Dynamic {
+	/**
+		Runs `sql` and answers its rows. Throws an `SQLError` when the server
+		refuses it or the connection is not open, as `requestParams()` and
+		the other drivers' `request()` do; it threw an `IOError` for a refusal
+		and a `String` for a connection not open, so code catching `SQLError`
+		caught neither.
+	**/
+	public function request(sql:String):Dynamic {
+		return __request(sql, true);
+	}
+
+	/**
+		`request()`, and the connection's own statements, its transaction
+		control, `ping()`, the settings it reads and writes, which pass
+		`implicitBegin` false: none of them may begin a transaction for
+		`autocommit` off.
+	**/
+	@:noCompletion private function __request(sql:String, implicitBegin:Bool):Dynamic {
 		__requireConnected();
+
+		if (implicitBegin && !__autocommit && !__inTransaction) {
+			__beginImplicitly();
+		}
 
 		#if cpp
 		var rawJson = NativePostgres.requestJson(__nativeHandle, sql);
@@ -326,7 +403,8 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		var parsed:Dynamic = Json.parse(rawJson == null || rawJson == "" ? "{\"rows\":[],\"affectedRows\":0,\"lastInsertRowID\":0}" : rawJson);
 		var errorMessage:Dynamic = Reflect.field(parsed, "error");
 		if (errorMessage != null) {
-			throw new IOError(Std.string(errorMessage));
+			var detail:String = Std.string(errorMessage);
+			throw new SQLError("request", detail, detail);
 		}
 
 		var rows:Array<Dynamic> = __toRows(Reflect.field(parsed, "rows"));
@@ -343,7 +421,8 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		try {
 			statement = __connection.query(sql);
 		} catch (e:Dynamic) {
-			throw new IOError(e);
+			var detail:String = Std.string(e);
+			throw new SQLError("request", detail, detail);
 		}
 
 		try {
@@ -355,7 +434,8 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 				var updated:Dynamic = __connection.exec(sql);
 				__lastAffectedRows = __toInt(updated);
 			} catch (e:Dynamic) {
-				throw new IOError(e);
+				var detail:String = Std.string(e);
+				throw new SQLError("request", detail, detail);
 			}
 		}
 
@@ -393,6 +473,10 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	**/
 	public function requestParams(sql:String, ?params:Array<PostgresParameter>):PostgresRawResult {
 		__requireConnected();
+
+		if (!__autocommit && !__inTransaction) {
+			__beginImplicitly();
+		}
 
 		#if cpp
 		var encoded:Bytes = PostgresWire.encodeParameters(params == null ? [] : params);
@@ -481,8 +565,26 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		#end
 	}
 
+	/**
+		True while `autocommit` is off as well, as MySQL documents a session
+		with autocommit off: every statement is part of a transaction that
+		only `commit()` or `rollback()` ends, and the next statement begins
+		another. `ConnectionPool` therefore rolls back, and retires, a
+		connection handed back that way.
+	**/
 	private function get_inTransaction():Bool {
-		return __inTransaction;
+		return __inTransaction || !__autocommit;
+	}
+
+	/**
+		Begins the transaction a statement runs in while `autocommit` is off.
+		PostgreSQL has had no setting for that on the server since 7.4, so
+		the client begins it, as JDBC and psql do.
+	**/
+	@:noCompletion private function __beginImplicitly():Void {
+		__request("BEGIN;", false);
+		__inTransaction = true;
+		__savepoints = [];
 	}
 
 	#if cpp
@@ -523,7 +625,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 	private function get_serverVersion():String {
 		try {
-			var rs = request("SHOW server_version;");
+			var rs = __request("SHOW server_version;", false);
 			if (!rs.hasNext()) {
 				return "";
 			}
@@ -552,13 +654,20 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	}
 
 	private function set_autocommit(v:Bool):Bool {
+		if (v && !__autocommit && __inTransaction) {
+			// Turned back on: what is open is committed, as MySQL commits it
+			// when autocommit is set again. A commit the server refused
+			// throws, and autocommit stays off.
+			commit();
+		}
+
 		__autocommit = v;
 		return v;
 	}
 
 	private function get_isolationLevel():PostgresIsolationLevel {
 		try {
-			var rs = request("SHOW transaction_isolation;");
+			var rs = __request("SHOW transaction_isolation;", false);
 			if (!rs.hasNext()) {
 				return __isolationLevel;
 			}
@@ -575,13 +684,19 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		return __isolationLevel;
 	}
 
+	/**
+		Sets the level of the session's transactions from the next one on,
+		as MySQL's setter does. Throws the `SQLError` when the server refuses,
+		inside a transaction a failed statement has aborted, say, where
+		it swallowed the refusal, so the level read as set while the session
+		went on at the old one. Never begins a transaction itself: one that
+		`autocommit` off began and then rolled back would take the setting
+		with it.
+	**/
 	private function set_isolationLevel(v:PostgresIsolationLevel):PostgresIsolationLevel {
-		try {
-			request("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL " + v + ";");
-			__isolationLevel = v;
-		} catch (_:Dynamic) {}
-
-		return __isolationLevel;
+		__request("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL " + v + ";", false);
+		__isolationLevel = v;
+		return v;
 	}
 
 	/**
@@ -643,14 +758,14 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 	@:noCompletion private inline function __requireConnected():Void {
 		#if cpp
-		if (__nativeHandle == null) {
-			throw "PostgresConnection: no connection set.";
-		}
+		var open:Bool = __nativeHandle != null;
 		#else
-		if (__connection == null) {
-			throw "PostgresConnection: no connection set.";
-		}
+		var open:Bool = __connection != null;
 		#end
+
+		if (!open) {
+			throw new SQLError("request", "PostgresConnection: not open.", "PostgresConnection: not open.");
+		}
 	}
 
 	@:noCompletion private function __lastInsertId():Int {

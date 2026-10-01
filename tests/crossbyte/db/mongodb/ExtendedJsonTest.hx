@@ -114,6 +114,16 @@ class ExtendedJsonTest extends utest.Test {
 		Assert.raises(() -> ExtendedJson.parse('{"_id": :sid}'), ArgumentError);
 	}
 
+	public function testAParameterThatExistsIsBoundEvenWhenNull():Void {
+		// Asked for a value alone, a null meant no such parameter, so one set
+		// to null was refused. Given whether it exists, it is bound as null.
+		var values:Map<String, Dynamic> = ["email" => null];
+		var parsed:BsonDocument = ExtendedJson.parse('{"email": :email}', name -> values.get(name), name -> values.exists(name));
+		Assert.same(["email"], parsed.keys());
+		Assert.isNull(parsed.get("email"));
+		Assert.raises(() -> ExtendedJson.parse('{"x": :missing}', name -> values.get(name), name -> values.exists(name)), ArgumentError);
+	}
+
 	public function testTheRegexQueryOperatorStaysAnOperator():Void {
 		// In a filter, {"$regex": ..., "$options": ...} is the operator, and
 		// has to reach the server as a document.

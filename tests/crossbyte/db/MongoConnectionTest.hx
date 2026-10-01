@@ -67,6 +67,76 @@ class MongoConnectionTest extends utest.Test {
 		Assert.isFalse(connection.connected);
 	}
 
+	public function testAServerThatNeverAnswersFailsTheOpenAtConnectTimeout():Void {
+		// connectTimeout bounded the connect alone; the hello and the login
+		// then waited on socketTimeout, which is 0, no limit, by default, and
+		// on the interpreter on nothing at all. A server that accepted and
+		// never answered held open() for good.
+		var listener:sys.net.Socket = new sys.net.Socket();
+		listener.bind(new sys.net.Host("127.0.0.1"), 0);
+		listener.listen(4);
+		var port:Int = listener.host().port;
+		var connection:MongoConnection = new MongoConnection();
+		var error:Dynamic = null;
+		var started:Float = haxe.Timer.stamp();
+
+		try {
+			// socketTimeout bounds the wait where it applies, so a failure here
+			// is a slow one rather than a suite that never ends.
+			connection.open({host: "127.0.0.1", port: port, connectTimeout: 0.5, socketTimeout: 8});
+		} catch (e:Dynamic) {
+			error = e;
+		}
+
+		var took:Float = haxe.Timer.stamp() - started;
+		listener.close();
+
+		Require.notNull(error);
+		var failure:IOError = Std.downcast(error, IOError);
+		Require.notNull(failure, "not an IOError: " + Std.string(error));
+		Assert.isTrue(took < 3.0, 'open() gave up after $took s, of a 0.5 s connectTimeout');
+		Assert.isTrue(failure.message.indexOf("0.5") >= 0, "the error does not say what ran out: " + failure.message);
+		Assert.isFalse(connection.connected);
+	}
+
+	#if !eval
+	public function testAConnectNobodyAnswersFailsAtConnectTimeout():Void {
+		// The connect itself had no limit where the system applies no send
+		// timeout to it, Windows natively, and on the jvm for TLS: 21 s to a
+		// host that drops the SYN. Here, a listener that never accepts with its
+		// one slot taken: the next SYN goes unanswered, on Linux for good and on
+		// Windows until it refuses a couple of seconds later. The interpreter
+		// connects with no limit at all (see MongoConfig.connectTimeout).
+		var listener:sys.net.Socket = new sys.net.Socket();
+		listener.bind(new sys.net.Host("127.0.0.1"), 0);
+		listener.listen(0);
+		var port:Int = listener.host().port;
+		var filler:sys.net.Socket = new sys.net.Socket();
+		filler.setTimeout(2.0);
+
+		try {
+			filler.connect(new sys.net.Host("127.0.0.1"), port);
+		} catch (_:Dynamic) {}
+
+		var connection:MongoConnection = new MongoConnection();
+		var error:Dynamic = null;
+		var started:Float = haxe.Timer.stamp();
+
+		try {
+			connection.open({host: "127.0.0.1", port: port, connectTimeout: 0.4});
+		} catch (e:Dynamic) {
+			error = e;
+		}
+
+		var took:Float = haxe.Timer.stamp() - started;
+		filler.close();
+		listener.close();
+
+		Require.notNull(error);
+		Assert.isTrue(took < 1.5, 'the connect was not bounded: $took s, of a 0.4 s connectTimeout');
+	}
+	#end
+
 	public function testAStatementWhoseConnectionFailsReachesItsListeners():Void {
 		var server = new FakeMongoServer().start();
 
