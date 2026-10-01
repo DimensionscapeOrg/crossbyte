@@ -906,22 +906,90 @@ class ServerWebSocket extends ServerSocket {
 	public var cert(default, set):{certificate:Certificate, key:Key};
 
 	@:noCompletion private function set_cert(value:{certificate:Certificate, key:Key}):{certificate:Certificate, key:Key} {
-		__requireUnboundTls("cert");
-		if (value == null || value.certificate == null || value.key == null) {
-			throw new ArgumentError("cert needs a certificate and its key.");
+		__installCertificate("cert", value == null ? null : value.certificate, value == null ? null : value.key);
+		return cert = value;
+	}
+
+	/**
+		Installs the certificate this server presents, with its private key:
+		the same as setting `cert`, which see.
+
+		@throws Error When this server is not secure, or is already bound.
+		@throws ArgumentError When the certificate or the key is missing.
+	**/
+	override public function setCertificate(certificate:Certificate, key:Key):Void {
+		__installCertificate("setCertificate", certificate, key);
+		@:bypassAccessor cert = {certificate: certificate, key: key};
+	}
+
+	/**
+		Adds a certificate presented to a client that asks, through Server
+		Name Indication, for a name `serverNameMatch` accepts: one listener
+		for several host names. A name no entry claims gets `cert`.
+
+		Before `bind()`, as `cert` is.
+
+		@throws Error When this server is not secure, or is already bound.
+		@throws ArgumentError When the predicate, the certificate or the key
+			is missing.
+	**/
+	override public function addSNICertificate(serverNameMatch:String->Bool, certificate:Certificate, key:Key):Void {
+		__requireUnboundTls("addSNICertificate");
+		if (serverNameMatch == null || certificate == null || key == null) {
+			throw new ArgumentError("addSNICertificate needs a predicate, a certificate and its key.");
 		}
 
 		#if nodejs
-		// Kept for listen(), which builds the server from it: Node takes a TLS
-		// server's key and certificate when it is created.
-		__tlsCertificate = value.certificate;
-		__tlsKey = value.key;
+		__tlsSni.push({match: serverNameMatch, certificate: certificate, key: key});
 		#else
-		__webServerSocket.setCertificate(value.certificate.__native, value.key.__native);
+		__webServerSocket.addSNICertificate(serverNameMatch, certificate.__native, key.__native);
 		#end
 		__hasCertificate = true;
+	}
 
-		return cert = value;
+	/**
+		Advertises `protocols` to clients during the TLS handshake, most
+		preferred first, as `ServerSocket.setALPN` does; each session reports
+		what it agreed in `alpnProtocol`. Does nothing where `alpnSupported`
+		is `false`.
+
+		Before `bind()`, as `cert` is.
+
+		@throws Error When this server is not secure, or is already bound.
+	**/
+	override public function setALPN(protocols:Null<Array<String>>):Void {
+		__requireUnboundTls("setALPN");
+
+		#if nodejs
+		__tlsAlpn = protocols;
+		#else
+		__webServerSocket.setALPN(protocols);
+		#end
+	}
+
+	/**
+		The certificate and key, onto the listener natively and kept for
+		listen() on Node, which takes a TLS server's key and certificate when
+		it is created.
+
+		The TLS methods this class inherits from `ServerSocket` reached into
+		the listener that class builds, which this one never does: natively a
+		null dereference, and on Node a setting this server's listener never
+		read. They are overridden here, each onto this class's own listener.
+	**/
+	@:noCompletion private function __installCertificate(field:String, certificate:Certificate, key:Key):Void {
+		__requireUnboundTls(field);
+		if (certificate == null || key == null) {
+			throw new ArgumentError('$field needs a certificate and its key.');
+		}
+
+		#if nodejs
+		__tlsCertificate = certificate;
+		__tlsKey = key;
+		#else
+		__webServerSocket.setCertificate(certificate.__native, key.__native);
+		#end
+		__hasCertificate = true;
 	}
 
 	#if nodejs
@@ -972,20 +1040,53 @@ class ServerWebSocket extends ServerSocket {
 		};
 
 		if (secure) {
-			if (cert == null) {
-				throw new IOError("A secure ServerWebSocket requires cert before listen().");
-			}
+			// Everything the TLS methods were given, where only `cert` and the
+			// authority were read: a certificate installed with
+			// setCertificate(), the SNI entries and the ALPN list were kept
+			// where this listener never looked.
+			var options:Dynamic = {};
 
-			var options:Dynamic = {key: cert.key.__pem, cert: cert.certificate.__pem};
-
-			if (cert.key.__passphrase != null) {
-				options.passphrase = cert.key.__passphrase;
+			if (__tlsCertificate != null && __tlsKey != null) {
+				options.key = __tlsKey.__pem;
+				options.cert = __tlsCertificate.__pem;
+				if (__tlsKey.__passphrase != null) {
+					options.passphrase = __tlsKey.__passphrase;
+				}
 			}
 
 			if (__tlsAuthority != null) {
 				options.ca = [__tlsAuthority.__pem];
 				options.requestCert = true;
 				options.rejectUnauthorized = true;
+			}
+
+			if (__tlsAlpn != null && __tlsAlpn.length > 0) {
+				options.ALPNProtocols = __tlsAlpn;
+			}
+
+			if (__tlsSni.length > 0) {
+				var sni = __tlsSni;
+				options.SNICallback = function(servername:String, callback:Dynamic):Void {
+					for (entry in sni) {
+						// A predicate that throws claims nothing: this runs from
+						// Node's own loop, where a throw ends the process.
+						var claimed:Bool = try entry.match(servername) catch (_:Dynamic) false;
+						if (claimed) {
+							// The key's passphrase too, which a context made from
+							// the key alone could not open.
+							var context:Dynamic = {key: entry.key.__pem, cert: entry.certificate.__pem};
+							if (entry.key.__passphrase != null) {
+								context.passphrase = entry.key.__passphrase;
+							}
+							callback(null, Tls.createSecureContext(context));
+							return;
+						}
+					}
+
+					// A name no entry claims gets the default certificate, as it
+					// does natively.
+					callback(null, null);
+				};
 			}
 
 			// tls.Server extends net.Server, so listen, close and address are

@@ -2310,6 +2310,31 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		return __localPort;
 	}
 
+	/**
+	 * The protocol this session's TLS handshake agreed through ALPN, or
+	 * `null`: on a plain connection, before the handshake is done, or where
+	 * nothing was agreed.
+	 */
+	public var alpnProtocol(get, never):Null<String>;
+
+	private function get_alpnProtocol():Null<String> {
+		if (__socket == null || !__tls) {
+			return null;
+		}
+
+		#if nodejs
+		// Node reports `false` rather than null when nothing was agreed.
+		var negotiated:Dynamic = (cast __socket : Dynamic).alpnProtocol;
+		return Std.isOfType(negotiated, String) ? negotiated : null;
+		#else
+		return try {
+			__socket.getALPN();
+		} catch (_:Dynamic) {
+			null;
+		}
+		#end
+	}
+
 	private function __armUpgradeDeadline():Void {
 		__disarmUpgradeDeadline();
 		if (__timeout <= 0) {

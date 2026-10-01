@@ -1072,6 +1072,12 @@ class WebSocket extends Socket {
 		return __port;
 	}
 
+	// The session's: a WebSocket's TLS is its session's, and the socket the
+	// base class would ask is never set.
+	@:noCompletion override private function get_alpnProtocol():Null<String> {
+		return __webSocket == null ? null : __webSocket.alpnProtocol;
+	}
+
 	@:noCompletion override private inline function get_registryClosed():Bool {
 		return __closed || __webSocket == null;
 	}
