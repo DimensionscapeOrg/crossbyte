@@ -2,6 +2,7 @@ package crossbyte.url._internal;
 
 import crossbyte._internal.http.CookieJar;
 import crossbyte.http.HTTPCancelToken;
+import crossbyte.http.HTTPVersion;
 import crossbyte.url.URLRequest;
 import crossbyte.url.URLRequestHeader;
 import crossbyte.url.URLVariables;
@@ -35,6 +36,9 @@ class JsHttpClient {
 
 	/** What a cancelled request reports, as the native client says it. */
 	private static inline var CANCELLED:String = "Request cancelled";
+
+	/** The `User-Agent` sent while `URLRequest.userAgent` is unset, as natively. */
+	private static inline var DEFAULT_USER_AGENT:String = "CrossByte";
 
 	/**
 	 * Issues `request`, reporting through the callbacks. Exactly one of
@@ -87,6 +91,13 @@ class JsHttpClient {
 		#if (js && !nodejs)
 		__sendBrowser(request, method, url, body, contentType, onStatus, onProgress, onComplete, onError, onResponse, token);
 		#elseif nodejs
+		// Node's http client speaks HTTP/1.1 and nothing else, and natively a
+		// version that cannot be had fails rather than falls back, HTTP/2
+		// speaks it or refuses. It was sent as HTTP/1.1 regardless.
+		if (request.httpVersion != null && request.httpVersion != HTTPVersion.HTTP_1_1) {
+			onError(request.httpVersion + " is not available to URLLoader on Node: its http client speaks HTTP/1.1 only. Use HTTPVersion.HTTP_1_1.");
+			return;
+		}
 		__sendNode(request, method, url, body, contentType, onStatus, onProgress, onComplete, onError, onResponse, token);
 		#end
 	}
@@ -99,7 +110,11 @@ class JsHttpClient {
 	 * as bytes so a binary response survives.
 	 *
 	 * The browser follows redirects itself and applies its own rules to them,
-	 * which are the rules the other clients copy.
+	 * which are the rules the other clients copy. What it leaves a page is
+	 * applied here where it can be, `userAgent`, `followInsecureRedirects`
+	 * and `maxDecompressedSize`, the last two once the browser has shown what
+	 * it did, and a request asking what a page cannot do is refused, saying
+	 * so, rather than sent as though it had been done.
 	 */
 	static function __sendBrowser(request:URLRequest, method:String, url:String, body:Dynamic, contentType:String, onStatus:Int->Void,
 			onProgress:Int->Int->Void, onComplete:Bytes->Void, onError:String->Void,
@@ -109,6 +124,13 @@ class JsHttpClient {
 		// unchecked, as on the targets whose TLS cannot say either.
 		if (__pins(request).length > 0) {
 			onError("Public key pinning is not available in a browser: it gives a page no access to the server's certificate");
+			return;
+		}
+		// The browser follows every redirect itself, and shows a page none of
+		// them: the 3xx asked for could not be handed back. Refused, where it
+		// went out and came back as whatever the redirect led to.
+		if (!request.followRedirects) {
+			onError("URLRequest.followRedirects = false is not available in a browser: the browser follows every redirect itself and shows a page none of them");
 			return;
 		}
 
@@ -171,11 +193,24 @@ class JsHttpClient {
 			if (contentType != null && contentType != "") {
 				xhr.setRequestHeader("Content-Type", contentType);
 			}
+
+			// Handed to the browser, which has the last word: some send it,
+			// and others keep their own and say so in the console. Unset, the
+			// browser's own goes, not "CrossByte", which most would refuse on
+			// every request. Not beside one the caller wrote, which a browser
+			// that sends it would join to this one.
+			if (request.userAgent != null && !__namesHeader(request, "user-agent")) {
+				xhr.setRequestHeader("User-Agent", request.userAgent);
+			}
 		} catch (e:Dynamic) {
 			settle();
 			onError("HTTP request failed: " + Std.string(e));
 			return;
 		}
+
+		// Whether the response came content-coded, which the browser has
+		// undone by the time a page sees it.
+		var coded:Bool = false;
 
 		xhr.onreadystatechange = function() {
 			if (settled) {
@@ -186,8 +221,19 @@ class JsHttpClient {
 			// is worth reporting, waiting for the body would hold it back
 			// behind however long the transfer takes.
 			if (xhr.readyState == 2) {
-				onStatus(xhr.status);
 				var finalUrl:String = (xhr.responseURL != null && xhr.responseURL != "") ? xhr.responseURL : url;
+				// The hop has been made by now, and the browser says so only
+				// here: what it led to is not handed on.
+				var refusal:Null<String> = __followedRefusal(url, finalUrl, request.followInsecureRedirects);
+				if (refusal != null) {
+					if (settle()) {
+						xhr.abort();
+						onError(refusal);
+					}
+					return;
+				}
+				coded = __isCoded(xhr.getResponseHeader("content-encoding"));
+				onStatus(xhr.status);
 				onResponse(xhr.status, __parseHeaderBlock(xhr.getAllResponseHeaders()), finalUrl, finalUrl != url);
 			}
 		};
@@ -206,6 +252,15 @@ class JsHttpClient {
 			}
 
 			var buffer:js.lib.ArrayBuffer = xhr.response;
+			// The browser decoded the body before a page could count it, so
+			// the limit is held to what it decoded to, once it is all here: a
+			// load past it fails as it would anywhere else, though the browser
+			// has spent the memory by then.
+			var limit:Int = request.maxDecompressedSize;
+			if (coded && limit > 0 && buffer != null && buffer.byteLength > limit) {
+				onError("Failed to decode response body: it decoded to " + buffer.byteLength + " bytes, more than the " + limit + " allowed");
+				return;
+			}
 			onComplete(buffer == null ? Bytes.alloc(0) : Bytes.ofData(buffer));
 		};
 
@@ -233,6 +288,58 @@ class JsHttpClient {
 
 		armIdle();
 		xhr.send(__body(body));
+	}
+
+	/**
+		Why a response the browser reached at `landed`, for a request made to
+		`requested`, may not be handed on, or null when it may: one that
+		redirects took from `https` to plain `http`, unless `followInsecure`
+		says so. Every other client refuses that hop before making it; a page
+		learns of it only once it has been made.
+	**/
+	@:noCompletion public static function __followedRefusal(requested:String, landed:String, followInsecure:Bool):Null<String> {
+		if (followInsecure || landed == requested) {
+			return null;
+		}
+		if (__protocolOf(requested) == "https:" && __protocolOf(landed) == "http:") {
+			return "Refused a redirect from https to http; set URLRequest.followInsecureRedirects to allow it";
+		}
+		return null;
+	}
+
+	/** `url`'s scheme with its colon, resolved against the page; empty when it is no URL. */
+	static function __protocolOf(url:String):String {
+		try {
+			return new js.html.URL(url, js.Browser.document.baseURI).protocol;
+		} catch (_:Dynamic) {
+			return "";
+		}
+	}
+
+	/** Whether `request.requestHeaders` names `name`, lowercase, whatever case it was written in. */
+	static function __namesHeader(request:URLRequest, name:String):Bool {
+		if (request.requestHeaders != null) {
+			for (header in request.requestHeaders) {
+				if (header != null && header.name != null && header.name.toLowerCase() == name) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	/** Whether a `Content-Encoding` field names a coding other than `identity`. */
+	@:noCompletion public static function __isCoded(header:Null<String>):Bool {
+		if (header == null) {
+			return false;
+		}
+		for (raw in header.split(",")) {
+			var token:String = StringTools.trim(raw).toLowerCase();
+			if (token != "" && token != "identity") {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** `getAllResponseHeaders()`, one field per line, as header objects. */
@@ -349,8 +456,12 @@ class JsHttpClient {
 			headers.set("Content-Type", contentType);
 		}
 
-		if (request.userAgent != null && request.userAgent != "") {
-			headers.set("User-Agent", request.userAgent);
+		// "CrossByte" while it is unset, as URLRequest.userAgent says and the
+		// native client sends: Node sends none of its own, so a request went
+		// out with no User-Agent at all. Node sends one, so one the caller
+		// wrote among its headers is that one, as over HTTP/2.
+		if (!__hasHeader(headers, "user-agent")) {
+			headers.set("User-Agent", request.userAgent != null ? request.userAgent : DEFAULT_USER_AGENT);
 		}
 
 		// What the native client asks for unless told otherwise. With none,

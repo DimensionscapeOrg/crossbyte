@@ -63,7 +63,7 @@ import haxe.io.Bytes;
  *
  * The request's `timeout` is an idle limit on its stream, as it is on the
  * HTTP/1.1 client's socket: the longest the response may go with nothing
- * arriving for it.
+ * arriving for it. `0` or less is none, as it is there.
  */
 class HTTP2Backend implements HTTPBackend {
 	/**
@@ -245,7 +245,8 @@ class HTTP2Backend implements HTTPBackend {
 			// Bracketed for an IPv6 host: 2001:db8::1:8080 cannot be split.
 			var authority:String = HttpSyntax.authority(url.host, port, secure ? 443 : 80);
 			var body:Null<Bytes> = __body(method, data);
-			var timeout:Float = context.timeout > 0 ? context.timeout / 1000 : 30;
+			// 0, for 0 or less, is none: see Http.__idleSeconds.
+			var timeout:Float = Http.__idleSeconds(context.timeout);
 			var cookie:Null<String> = cookies != null ? cookies.headerFor(url.host, secure) : null;
 			var fields:Array<HpackHeader> = __headers(headers, context.userAgent, contentType, body, cookie);
 
@@ -374,7 +375,7 @@ class HTTP2Backend implements HTTPBackend {
 
 		// An idle limit, as the HTTP/1.1 client sets on its socket: the
 		// handshake's reads give up after it, however many there are.
-		var timeout:Float = context.timeout > 0 ? context.timeout / 1000 : 30;
+		var timeout:Float = Http.__idleSeconds(context.timeout);
 		socket.setTimeout(timeout);
 
 		// Published to the token for as long as the connect runs, which is
