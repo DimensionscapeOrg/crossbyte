@@ -12,8 +12,8 @@ class EventsSupportTest extends utest.Test {
 		Assert.equals(FileListEvent.DIRECTORY_LISTING, fileEvent.type);
 		Assert.equals(1, fileEvent.files.length);
 
-		var threadEvent = cast new ThreadEvent(ThreadEvent.UPDATE, {message: "hello"}).clone();
-		Assert.equals(ThreadEvent.UPDATE, threadEvent.type);
+		var threadEvent = cast new ThreadEvent(ThreadEvent.PROGRESS, {message: "hello"}).clone();
+		Assert.equals(ThreadEvent.PROGRESS, threadEvent.type);
 		Assert.equals("hello", threadEvent.message.message);
 
 		var taskEvent = cast new TaskEvent<String>(TaskEvent.COMPLETE, null, "done").clone();

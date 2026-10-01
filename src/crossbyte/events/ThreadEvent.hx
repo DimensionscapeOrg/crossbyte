@@ -3,7 +3,6 @@ package crossbyte.events;
 /** Event used by worker and task primitives to deliver thread-side messages. */
 class ThreadEvent extends Event {
 	public static inline var COMPLETE:String = "complete";
-	public static inline var UPDATE:String = "update";
 	public static inline var PROGRESS:String = "progress";
 	public static inline var ERROR:String = "error";
 
