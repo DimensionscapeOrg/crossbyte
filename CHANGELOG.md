@@ -1945,6 +1945,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The RPC runtime lane carries a `ByteArray`, as the bytes it holds, in an
+  argument or an answer: the guide says it carries `haxe.io.Bytes`, and a
+  `ByteArray` is one. It was refused as "Unsupported runtime RPC value",
+  the codec matching the `Bytes` class exactly where a `ByteArray` is a
+  subclass of it at run time.
 - The HTTP/2 client sends `Accept-Encoding: identity` unless the caller
   sent one, as `URLRequest.requestHeaders` says the client does and as the
   HTTP/1.1 client and Node do. It sent none, which a server may read as
