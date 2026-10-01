@@ -192,6 +192,57 @@ class MetricsTest extends utest.Test {
 		Assert.isTrue(text.indexOf("request_seconds_sum 2.05") >= 0);
 	}
 
+	/**
+		Whole numbers past 2^31 print every digit, in every sample.
+
+		They went through `Std.int`, which holds 31 bits: a counter of bytes
+		sent at three billion printed -1294967296, a gauge at five billion
+		705032704, and on the jvm both stopped at 2147483647. A collector
+		reading a counter that falls takes it for a restart. Bucket bounds,
+		sums and counts are written the same way, so they are checked too.
+	**/
+	public function testWholeNumbersPast32BitsPrintEveryDigit():Void {
+		metrics.counter("bytes_sent_total").inc(3000000000.0);
+		metrics.gauge("disk_free_bytes").set(5000000000.0);
+		metrics.gauge("balance").set(-5000000000.0);
+		// The largest whole number a Float holds with every one below it.
+		metrics.gauge("largest_exact").set(9007199254740991.0);
+		// Past it, a Float rather than a count, which has to read back as one.
+		metrics.gauge("past_exact").set(18014398509481984.0);
+		var sizes = metrics.histogram("payload_bytes", [4294967296.0]);
+		sizes.observe(3000000000.0);
+		sizes.observe(5000000000.0);
+
+		var text = metrics.toPrometheus();
+
+		Assert.isTrue(text.indexOf("bytes_sent_total 3000000000\n") >= 0, text);
+		Assert.isTrue(text.indexOf("disk_free_bytes 5000000000\n") >= 0, text);
+		Assert.isTrue(text.indexOf("balance -5000000000\n") >= 0, text);
+		Assert.isTrue(text.indexOf("largest_exact 9007199254740991\n") >= 0, text);
+		Assert.equals(18014398509481984.0, __sample(text, "past_exact"));
+		Assert.isTrue(text.indexOf('payload_bytes_bucket{le="4294967296"} 1\n') >= 0, text);
+		Assert.isTrue(text.indexOf('payload_bytes_bucket{le="+Inf"} 2\n') >= 0, text);
+		Assert.isTrue(text.indexOf("payload_bytes_sum 8000000000\n") >= 0, text);
+		Assert.isTrue(text.indexOf("payload_bytes_count 2\n") >= 0, text);
+	}
+
+	/** Whole numbers that fit print as they always did, with no point. **/
+	public function testSmallWholeNumbersAndFractionsPrintAsBefore():Void {
+		metrics.gauge("zero").set(0);
+		metrics.gauge("negative_zero").set(-0.0);
+		metrics.gauge("small").set(-42);
+		metrics.gauge("billion").set(1000000000.0);
+		metrics.gauge("half").set(0.5);
+
+		var text = metrics.toPrometheus();
+
+		Assert.isTrue(text.indexOf("\nzero 0\n") >= 0, text);
+		Assert.isTrue(text.indexOf("negative_zero 0\n") >= 0, text);
+		Assert.isTrue(text.indexOf("small -42\n") >= 0, text);
+		Assert.isTrue(text.indexOf("billion 1000000000\n") >= 0, text);
+		Assert.isTrue(text.indexOf("half 0.5\n") >= 0, text);
+	}
+
 	public function testPrometheusEscapesLabelValuesAndEmitsOneHeaderPerName():Void {
 		metrics.counter("escaped", ["note" => 'say "hi"\\there'], "help").inc();
 		metrics.counter("multi", ["a" => "1"], "shared help").inc();
@@ -248,6 +299,16 @@ class MetricsTest extends utest.Test {
 		Assert.equals(2.0, latency.count());
 		Assert.equals(1.0, latency.bucketCounts()[0]);
 		Assert.isTrue(Math.isNaN(latency.sum()));
+	}
+
+	/** The value on the exposition line that starts with `series`, or NaN. **/
+	private static function __sample(text:String, series:String):Float {
+		for (line in text.split("\n")) {
+			if (StringTools.startsWith(line, series + " ")) {
+				return Std.parseFloat(line.substr(series.length + 1));
+			}
+		}
+		return Math.NaN;
 	}
 
 	#if target.threaded
@@ -341,16 +402,6 @@ class MetricsTest extends utest.Test {
 		var counts = latency.bucketCounts();
 		Assert.isTrue(counts[0] <= counts[1] && counts[1] <= latency.count());
 		Assert.equals(latency.count(), __sample(metrics.toPrometheus(), "scraped_seconds_count"));
-	}
-
-	/** The value on the exposition line that starts with `series`, or NaN. **/
-	private static function __sample(text:String, series:String):Float {
-		for (line in text.split("\n")) {
-			if (StringTools.startsWith(line, series + " ")) {
-				return Std.parseFloat(line.substr(series.length + 1));
-			}
-		}
-		return Math.NaN;
 	}
 
 	/**
