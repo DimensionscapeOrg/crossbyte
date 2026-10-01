@@ -1932,6 +1932,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `HTTPServerConfig.blacklist` and `whitelist` hold for every request that
+  ends at a file, whatever its method and however it got there. They were
+  checked only where a static file is served, so a blacklisted PHP script
+  was refused to a `GET` and run for a `POST`, or for a rewrite with the
+  `PHP` flag onto it. A `POST` to a listed file is answered `403` as a
+  `GET` is. Both fields had no documentation, and now say this.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened
