@@ -2160,6 +2160,9 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `ServerSocket`'s `handshakeTimeout` of 0 sets no deadline, as every
+  other timeout does and as `ServerWebSocket`'s does. It failed every TLS
+  handshake at the first accept tick natively, and at 1 ms on Node.
 - A WebSocket `NetConnection` whose connect or idle deadline passes ends
   as `Reason.Timeout`, as a TCP or reliable one does: `WebSocket`
   dispatches those `ioError`s with `IOErrorEvent.TIMEOUT_ERROR_ID`. They
