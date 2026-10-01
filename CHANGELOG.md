@@ -1254,6 +1254,9 @@ entry below says how:
 - accepted `wss://` sessions now run the deferred, timeout-guarded TLS handshake the client path already used; previously a server-side handshake happened implicitly on first read with no bound, so a peer that completed TCP then stalled mid-TLS held the socket indefinitely (`docs/proposals/0012-websocket-tls-handshake.md`)
 
 ### Removed
+- `WebSocket.toWebSocket`, which took an internal socket type and made a
+  session with no handshake deadline unless `ServerWebSocket` called it;
+  it is `ServerWebSocket`'s own now.
 - `DatagramSocket.timeout`. It set a read timeout on the socket underneath,
   which never blocks, every read waits on the registry's poll, and
   Node's datagram socket has no timeout at all, so it changed nothing on
