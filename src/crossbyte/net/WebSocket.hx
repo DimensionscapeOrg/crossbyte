@@ -836,20 +836,21 @@ class WebSocket extends Socket {
 		`ByteArray` copy takes whatever part of a range falls inside its
 		source and drops the rest, so a message cut short went without a word.
 	**/
-	@:noCompletion private static function __checkRange(bytes:ByteArray, offset:Int, length:Int):Void {
+	@:noCompletion private static inline function __checkRange(bytes:ByteArray, offset:Int, length:Int):Void {
+		// One branch on the way through, since every message sent passes
+		// here. Against what is left after `offset` rather than
+		// `offset + length`, which overflows for a large length and wraps
+		// negative.
+		if (bytes == null || offset < 0 || length < 0 || offset > bytes.length || length > bytes.length - offset) {
+			__refuseRange(bytes);
+		}
+	}
+
+	@:noCompletion private static function __refuseRange(bytes:ByteArray):Void {
 		if (bytes == null) {
 			throw new ArgumentError("One of the parameters is invalid");
 		}
-
-		var total:Int = bytes.length;
-		if (offset < 0 || offset > total) {
-			throw new RangeError("The supplied index is out of bounds.");
-		}
-		// Against what is left after `offset` rather than `offset + length`,
-		// which overflows for a large length and wraps negative.
-		if (length < 0 || length > total - offset) {
-			throw new RangeError("The supplied index is out of bounds.");
-		}
+		throw new RangeError("The supplied index is out of bounds.");
 	}
 
 	/**
