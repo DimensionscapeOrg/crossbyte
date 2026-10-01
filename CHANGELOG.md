@@ -1932,6 +1932,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `IceAgent.receive` returns true only for what is the agent's: a check
+  addressed to its credentials and signed with them, or an answer to a
+  check it sent. It returned true for every binding message, so a check
+  for another session or an answer to something it never asked was kept
+  from whatever else shared the socket.
 - `IceAgent.MAX_REMOTE_CANDIDATES` bounds the candidates an agent learns
   from where a peer's checks arrive, as it bounded those a peer advertised.
   Each check from a new address became a peer-reflexive candidate, paired
