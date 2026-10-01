@@ -1994,6 +1994,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On the jvm under Windows, writing a file that another handle has open
+  replaces its contents. The standard library's write deletes the file and
+  opens it afresh; Windows refuses the delete while the file is open, and
+  the old file was then opened without being cut -- so `File.save`,
+  `saveBytes`, `saveText`, `copyTo` onto it and a `FileStream` opened to
+  write overwrote its start, kept its old length, and said nothing. They
+  cut it through the handle they write with now.
 - A `File` path is taken literally on every platform. On Windows the first
   `%NAME%` in a path was replaced by that environment variable -- in
   `nativePath`, the constructor and every `resolvePath`, after

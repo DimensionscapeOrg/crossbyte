@@ -551,7 +551,7 @@ final class File extends EventDispatcher {
 	 */
 	public static function saveBytes(path:String, bytes:ByteArray):Void {
 		try {
-			HaxeFile.saveBytes(path, bytes);
+			FileOps.saveBytes(path, bytes);
 		} catch (e:Dynamic) {
 			throw __ioError('Could not write "$path": ${Std.string(e)}', 0);
 		}
@@ -566,7 +566,7 @@ final class File extends EventDispatcher {
 	 */
 	public static function saveText(path:String, text:String):Void {
 		try {
-			HaxeFile.saveContent(path, text);
+			FileOps.saveBytes(path, Bytes.ofString(text));
 		} catch (e:Dynamic) {
 			throw __ioError('Could not write "$path": ${Std.string(e)}', 0);
 		}
@@ -928,7 +928,12 @@ final class File extends EventDispatcher {
 				}
 
 				if (cancelled == null) {
+					#if jvm
+					// Its copy opens the destination as its write() does: see FileOps.write.
+					__copyFileInBlocks(source, target, () -> false);
+					#else
 					HaxeFile.copy(source, target);
+					#end
 				} else {
 					__copyFileInBlocks(source, target, cancelled);
 				}
@@ -956,7 +961,7 @@ final class File extends EventDispatcher {
 	**/
 	@:noCompletion private static function __copyFileInBlocks(source:String, target:String, cancelled:Void->Bool):Void {
 		var input = HaxeFile.read(source, true);
-		var output = try HaxeFile.write(target, true) catch (e:Dynamic) {
+		var output = try FileOps.write(target) catch (e:Dynamic) {
 			input.close();
 			throw e;
 		};
@@ -1974,7 +1979,7 @@ final class File extends EventDispatcher {
 		}
 
 		try {
-			HaxeFile.saveBytes(__path, (data : haxe.io.Bytes));
+			FileOps.saveBytes(__path, (data : haxe.io.Bytes));
 		} catch (e:Dynamic) {
 			throw __ioError('Could not write "$__path": ${Std.string(e)}', 0);
 		}
