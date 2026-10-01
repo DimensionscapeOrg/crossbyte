@@ -27,8 +27,26 @@ class Endpoint {
  * components. `local://` endpoints treat the remainder as a local pipe name.
  * WebSocket endpoints accept optional paths and infer port `80` or
  * `443` when omitted.
+ *
+ * Port 0 is refused: it names nowhere to connect to. A `NetHost` made from
+ * a URI reads it as a port the system chooses, as `ServerSocket.bind(0)`
+ * does.
  */
 function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoint:Endpoint):Endpoint {
+	return __parseURL(input, defaultProtocol, endpoint, false);
+}
+
+/**
+	`parseURL` for an endpoint to listen on, where port 0 is the system's
+	choice of a free port rather than nowhere: `NetHost`'s. It was read as
+	one to dial, and refused, so a host made from a URI could only be given
+	a port someone had found free a moment before.
+**/
+@:noCompletion function __parseListenURL(input:String):Endpoint {
+	return __parseURL(input, Protocol.TCP, null, true);
+}
+
+@:noCompletion function __parseURL(input:String, defaultProtocol:Protocol, endpoint:Null<Endpoint>, listening:Bool):Endpoint {
 	if (input == null) {
 		throw "empty url";
 	}
@@ -141,7 +159,7 @@ function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 			port = wasWss ? 443 : 80;
 		}
 
-		if (port == 0) {
+		if (port == 0 && !listening) {
 			throw "invalid port: 0";
 		}
 	} else {
@@ -149,7 +167,7 @@ function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 			throw "port required for tcp/udp/rudp";
 		}
 
-		if (port == 0) {
+		if (port == 0 && !listening) {
 			throw "invalid port: 0";
 		}
 	}
