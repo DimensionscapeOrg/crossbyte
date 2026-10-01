@@ -1937,6 +1937,16 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `PeerConnection.setRelayCredentials` with a new username leaves the
+  allocation held on the username it was made with, as its documentation
+  says, and uses the new one for the next relay asked. It compared the new
+  username with the held allocation's after rewriting the list entry that
+  allocation came from, so they always matched: the relay refused the next
+  Refresh with 441 and the allocation was lost, at the first renewal of
+  TURN REST credentials, whose usernames carry their expiry.
+  `TurnClient.setCredentials` now refuses a username other than the one
+  an allocation held or being made was signed with, where it took it and
+  lost the allocation the same way.
 - A `PeerConnection` gives up an ICE restart that has found no path within
   `readyTimeout` of beginning, or whose agent finds none, and goes on as it
   would have without it: over the old path while the peer answers consent

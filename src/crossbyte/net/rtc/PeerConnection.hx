@@ -1332,7 +1332,13 @@ class PeerConnection {
 			}
 		}
 
-		if (__turn != null && __turnServer != null && (server == null || __turnServer.address == server) && __turnServer.username == username) {
+		// Against the username the allocation was made with, kept apart. It was
+		// read from the list entry the allocation came from, after the loop
+		// above had rewritten it, so it always matched: a new username went to
+		// the allocation held, the relay refused its next Refresh with 441,
+		// and the allocation was lost, at the first renewal of TURN REST
+		// credentials, whose usernames carry their expiry.
+		if (__turn != null && __turnServer != null && (server == null || __turnServer.address == server) && __turnUsername == username) {
 			__turn.setCredentials(username, password);
 		}
 	}
@@ -1351,6 +1357,13 @@ class PeerConnection {
 	@:noCompletion private var __turn:TurnClient;
 
 	@:noCompletion private var __turnServer:TurnServer;
+
+	/**
+		The username `__turn` was made with, which a relay ties its allocation
+		to. Not `__turnServer.username`: that entry is rewritten by
+		`setRelayCredentials` for the relays asked from then on.
+	**/
+	@:noCompletion private var __turnUsername:String = null;
 
 	@:noCompletion private var __relayedCandidate:IceCandidate;
 
@@ -1403,6 +1416,7 @@ class PeerConnection {
 		#end
 		__turn = relay;
 		__turnServer = server;
+		__turnUsername = server.username;
 
 		if (relay.transport != UDP) {
 			// Over a connection of its own, which carries everything to and
@@ -1452,6 +1466,7 @@ class PeerConnection {
 
 			__turn = null;
 			__turnServer = null;
+			__turnUsername = null;
 			__closeTurnStream();
 			failures.push(relay.failure != null ? relay.failure : new TurnError(0, error, server.address + ":" + server.port));
 			__allocateFrom(index + 1, failures);
@@ -1507,6 +1522,7 @@ class PeerConnection {
 
 		__turn = null;
 		__turnServer = null;
+		__turnUsername = null;
 		__closeTurnStream();
 
 		if (__relayedCandidate != null) {
