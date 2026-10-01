@@ -63,5 +63,41 @@ class WebSocketClientTest extends utest.Test {
 			});
 		});
 	}
+
+	/**
+		A connection refused is reported as refused: an ioError that says
+		so, and no CONNECT. On Linux and macOS a refused connect leaves the
+		socket writable, which was taken for a connection, so the client sent
+		its upgrade into nothing and ended in a 1006 that did not say why.
+	**/
+	@:timeout(15000)
+	public function testARefusedConnectionSaysItWasRefused(async:Async):Void {
+		// A port nothing listens on, obtained rather than assumed.
+		var vacant = new ServerSocket();
+		vacant.bind(0, "127.0.0.1");
+		vacant.listen(1);
+
+		NetPump.until(() -> vacant.localPort != 0, 5.0, function(_) {
+			var port:Int = vacant.localPort;
+			try vacant.close() catch (_:Dynamic) {}
+
+			var client = new WebSocket();
+			var connected:Bool = false;
+			var closed:Bool = false;
+			var failure:String = null;
+			client.addEventListener(Event.CONNECT, function(_) connected = true);
+			client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) failure = e.text);
+			client.addEventListener(Event.CLOSE, function(_) closed = true);
+			client.connect("127.0.0.1", port);
+
+			NetPump.until(() -> connected || (failure != null && closed), 8.0, function(_) {
+				Assert.isFalse(connected, "a refused connection was reported as connected");
+				Assert.isTrue(failure != null && failure.toLowerCase().indexOf("refused") >= 0,
+					"the failure did not say the connection was refused: " + failure);
+				try client.close() catch (_:Dynamic) {}
+				async.done();
+			});
+		});
+	}
 	#end
 }

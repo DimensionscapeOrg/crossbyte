@@ -9,5 +9,6 @@ extern class NativeSocketAddress {
 	@:native("crossbyte_socket_peer_info") public static function peerInfo(socket:Dynamic):Array<Int>;
 	@:native("crossbyte_socket_send_to") public static function sendTo(socket:Dynamic, buffer:haxe.io.BytesData, position:Int, length:Int, address:Dynamic):Int;
 	@:native("crossbyte_socket_recv_from") public static function recvFrom(socket:Dynamic, buffer:haxe.io.BytesData, position:Int, length:Int, address:Dynamic):Int;
+	@:native("crossbyte_socket_connect_error") public static function connectError(socket:Dynamic):Null<String>;
 }
 #end
