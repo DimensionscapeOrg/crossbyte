@@ -29,6 +29,7 @@ import crossbyte._internal.socket.IPollableSocket;
 #if cpp
 import crossbyte._internal.socket.AlpnSocket;
 #end
+import crossbyte.net._internal.RuntimeHandOff;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IllegalOperationError;
 import crossbyte.errors.IOError;
@@ -657,11 +658,30 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		You can reuse the Socket object by calling the `connect()` method on
 		it again.
+
+		It may be called from any thread. From one that is not its runtime's,
+		the close is handed to the runtime, as `CrossByte.post` hands work
+		over, and happens there after this returns: `close` is dispatched on
+		the runtime's thread, and a connection that has ended meanwhile is
+		left as it is. A runtime's sockets and listeners are not thread-safe,
+		and a close made elsewhere told the listeners on the wrong thread.
 		@throws IOError The socket could not be closed, or the socket was not
 						open.
 	**/
 	public function close():Void {
 		if (__socket != null) {
+			var runtime:Null<CrossByte> = __runtime();
+			if (RuntimeHandOff.offThread(runtime)) {
+				var socket = __socket;
+				if (runtime.post(function():Void {
+					if (__socket == socket) {
+						close();
+					}
+				})) {
+					return;
+				}
+			}
+
 			// Mirror the remote-close path (see the read loop): an app-initiated
 			// close must also notify listeners via Event.CLOSE, otherwise code
 			// that releases per-connection resources on CLOSE (e.g. HTTPServer's

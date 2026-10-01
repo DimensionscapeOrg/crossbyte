@@ -15,7 +15,7 @@ import crossbyte._internal.net.Resolver;
 import sys.net.Host;
 #end
 import crossbyte.Function;
-import crossbyte.Timer as CBTimer;
+import crossbyte._internal.system.timer.TimerScheduler;
 import crossbyte.core.CrossByte;
 import crossbyte.crypto.SecureRandom;
 import crossbyte.events.Event;
@@ -479,8 +479,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 	}
 
-	private function __initSocket(?socket:#if nodejs NodeSocket #else FlexSocket #end):Void {
-		__runtime = CrossByte.current();
+	private function __initSocket(?socket:#if nodejs NodeSocket #else FlexSocket #end, ?runtime:CrossByte):Void {
+		__runtime = runtime != null ? runtime : CrossByte.current();
 		__input = new ByteArray();
 		__input.endian = BIG_ENDIAN;
 		__output = new ByteArray();
@@ -2403,7 +2403,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 
 		var remaining:Float = connectTimeout / 1000 - (haxe.Timer.stamp() - __timestamp);
-		__openDeadline = CBTimer.setTimeout(remaining > 0 ? remaining : 0, function():Void {
+		__openDeadline = __timers().setTimeout(remaining > 0 ? remaining : 0, function():Void {
 			__openDeadlineArmed = false;
 			if (readyState == CONNECTING) {
 				__onError(__openFailure(), crossbyte.events.IOErrorEvent.TIMEOUT_ERROR_ID);
@@ -2413,10 +2413,26 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		__openDeadlineArmed = true;
 	}
 
+	/**
+	 * The scheduler this session's deadlines and heartbeat run on: its own
+	 * runtime's, whichever thread arms or clears one. They were the calling
+	 * thread's, `crossbyte.Timer`'s, so a close from another thread threw
+	 * clearing the heartbeat half way through closing; and on Node, where a
+	 * socket's callbacks run as the application's, a child runtime's session
+	 * armed its heartbeat on the application's timers and cleared it on its
+	 * own.
+	 */
+	private function __timers():TimerScheduler {
+		if (__runtime == null) {
+			__runtime = CrossByte.current();
+		}
+		return @:privateAccess __runtime.__timer;
+	}
+
 	private function __disarmOpenDeadline():Void {
 		if (__openDeadlineArmed) {
 			__openDeadlineArmed = false;
-			CBTimer.clear(__openDeadline);
+			__timers().clear(__openDeadline);
 		}
 	}
 
@@ -2620,7 +2636,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		if (__closeDeadlineArmed) {
 			return;
 		}
-		__closeDeadline = CBTimer.setTimeout(CLOSE_TIMEOUT, function():Void {
+		__closeDeadline = __timers().setTimeout(CLOSE_TIMEOUT, function():Void {
 			__closeDeadlineArmed = false;
 			if (readyState == CLOSED) {
 				return;
@@ -2697,7 +2713,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		__stopHeartbeat();
 		if (__closeDeadlineArmed) {
 			__closeDeadlineArmed = false;
-			CBTimer.clear(__closeDeadline);
+			__timers().clear(__closeDeadline);
 		}
 
 		if (__socket != null) {
@@ -2825,14 +2841,14 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 		__heard = false;
 		__silentFor = 0;
-		__heartbeat = CBTimer.setInterval(period, period, __onHeartbeat);
+		__heartbeat = __timers().setInterval(period, period, __onHeartbeat);
 		__heartbeatArmed = true;
 	}
 
 	private function __stopHeartbeat():Void {
 		if (__heartbeatArmed) {
 			__heartbeatArmed = false;
-			CBTimer.clear(__heartbeat);
+			__timers().clear(__heartbeat);
 		}
 	}
 
@@ -3030,9 +3046,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	}
 
 	@:access(crossbyte._internal.websocket)
-	inline function fromAcceptedSocket(socket:#if nodejs NodeSocket #else FlexSocket #end):WebSocket {
+	inline function fromAcceptedSocket(socket:#if nodejs NodeSocket #else FlexSocket #end, ?runtime:CrossByte):WebSocket {
 		var acceptedSocket:WebSocket = new AcceptedWebSocket();
-		acceptedSocket.__initSocket(socket);
+		acceptedSocket.__initSocket(socket, runtime);
 
 		return acceptedSocket;
 	}
@@ -3067,10 +3083,15 @@ enum abstract WebSocketOpcode(Int) from Int to Int {
 	}
 }
 
+/**
+	A session for a connection a server accepted, run by `runtime`: the
+	server's, which on Node is not the one current in the connection's
+	callback when a child runtime runs the server.
+**/
 @:access(crossbyte._internal.websocket)
-inline function fromAcceptedSocket(socket:#if nodejs NodeSocket #else FlexSocket #end):WebSocket {
+inline function fromAcceptedSocket(socket:#if nodejs NodeSocket #else FlexSocket #end, ?runtime:CrossByte):WebSocket {
 	var acceptedSocket:WebSocket = new AcceptedWebSocket();
-	acceptedSocket.__initSocket(socket);
+	acceptedSocket.__initSocket(socket, runtime);
 
 	return acceptedSocket;
 }

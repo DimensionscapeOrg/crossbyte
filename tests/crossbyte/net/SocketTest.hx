@@ -579,16 +579,27 @@ class SocketTest extends utest.Test {
 		Windows in the exception set and never becomes writable, so nothing
 		noticed until the connect timeout, twenty seconds by default, for a
 		refusal the operating system had already reported. Measured at 20001ms
-		before this was fixed. The deadline here is far below that and far
-		above what the refusal actually costs.
+		before this was fixed. So what is checked is that the failure is the
+		refusal and not the socket's own deadline, and the wait runs past that
+		deadline rather than stopping short of it.
+
+		It stopped at eight seconds, which was the test deciding how long a
+		system may take to refuse: Windows retries a refused SYN, two
+		seconds on this machine, longer where its retransmission timer starts
+		higher, and a run that missed the eight seconds failed with the code
+		right.
 	**/
 	public function testARefusedConnectionIsReportedAsAFailureNotAClose():Void {
 		var client = new Socket();
 		var events:Array<String> = [];
+		var timedOut:Bool = false;
 
 		client.addEventListener(Event.CONNECT, _ -> events.push("connect"));
 		client.addEventListener(Event.CLOSE, _ -> events.push("close"));
-		client.addEventListener(IOErrorEvent.IO_ERROR, _ -> events.push("ioerror"));
+		client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) {
+			events.push("ioerror");
+			timedOut = e.errorID == IOErrorEvent.TIMEOUT_ERROR_ID;
+		});
 
 		// A port nothing listens on, obtained rather than assumed. This was
 		// port 1, which is only closed by convention, on a machine where
@@ -603,11 +614,15 @@ class SocketTest extends utest.Test {
 		closeServerQuietly(vacant);
 
 		try {
+			client.timeout = 20000;
 			client.connect("127.0.0.1", refusedPort);
-			pumpUntil(() -> events.length > 0, 8.0);
+			// Past the socket's own deadline, so the code under test ends the
+			// wait however long the system takes to refuse.
+			pumpUntil(() -> events.length > 0, 25.0);
 
 			Assert.isTrue(events.indexOf("ioerror") >= 0,
-				"a refused connection was not reported as a failure within the deadline: " + events);
+				"a refused connection was not reported as a failure, even at its deadline: " + events);
+			Assert.isFalse(timedOut, "the refusal went unnoticed until the connect's own deadline, twenty seconds");
 			Assert.isTrue(events.indexOf("close") < 0,
 				"a connection that never came up was reported as a hangup, which a caller cannot tell from a real one");
 			Assert.isTrue(events.indexOf("connect") < 0,
@@ -969,8 +984,8 @@ class SocketTest extends utest.Test {
 			pumpUntil(() -> peerCloseCount > 0, 3.0);
 
 			// Keep pumping well past the FIN: a repeat would land in here.
-			var settle:Float = Sys.time() + 0.5;
-			while (Sys.time() < settle) {
+			var settle:Float = haxe.Timer.stamp() + 0.5;
+			while (haxe.Timer.stamp() < settle) {
 				CrossByte.current().pump(1 / 60, 0);
 			}
 
@@ -1084,8 +1099,8 @@ class SocketTest extends utest.Test {
 
 	private static function pumpUntil(done:Void->Bool, timeout:Float):Void {
 		var runtime = CrossByte.current();
-		var deadline = Sys.time() + timeout;
-		while (!done() && Sys.time() < deadline) {
+		var deadline = haxe.Timer.stamp() + timeout;
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
 			crossbyte.sys.System.sleep(0.001);
 		}

@@ -235,7 +235,16 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.NetConnectionTcpTest());
 		// Also in PortableSuite: one end, told once, over TCP and WebSocket.
 		runner.addCase(new crossbyte.net.NetConnectionLifecycleTest());
+		// Also in PortableSuite: on Node a child runtime's clock is not the
+		// application's.
+		runner.addCase(new crossbyte.net.NetConnectionClockTest());
+		// Every threaded target: a close made from a second thread.
+		runner.addCase(new crossbyte.net.CrossThreadCloseTest());
+		// Reads the networking tests' own source: what they wait by.
+		runner.addCase(new crossbyte.net.NetTestClockTest());
 		runner.addCase(new crossbyte.net.NetHostTest());
+		// Also in PortableSuite: a URI host on port 0, which Node binds later.
+		runner.addCase(new crossbyte.net.NetHostUriTest());
 		// Also in PortableSuite, for Node's wss server.
 		runner.addCase(new crossbyte.net.NetHostTLSTest());
 		// Also in PortableSuite: Node is where a key kept its PEM in plain view.
@@ -364,6 +373,8 @@ class TestSuites {
 		// Node's event loop, which only Node has; reached through PortableSuite.
 		#if nodejs
 		runner.addCase(new crossbyte.net.NodeListenerFailureTest());
+		// A child runtime's sessions and the one thread; through PortableSuite.
+		runner.addCase(new crossbyte.net.ChildRuntimeSessionTest());
 		// Registered above for the native targets; one case is Node's alone.
 		runner.addCase(new crossbyte.net.ServerWebSocketTLSTest());
 		#end

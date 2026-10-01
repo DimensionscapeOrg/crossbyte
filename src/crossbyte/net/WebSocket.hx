@@ -13,6 +13,7 @@ import crossbyte._internal.websocket.FlexSocket;
 #end
 import crossbyte._internal.websocket.WebSocket as InternalWS;
 import crossbyte._internal.websocket.WebsocketEvent;
+import crossbyte.net._internal.RuntimeHandOff;
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
@@ -75,10 +76,13 @@ class WebSocket extends Socket {
 		var webSocket:WebSocket = new WebSocket();
 
 		// The server first: the session asks it about its upgrade, and the
-		// settings below are its.
+		// settings below are its. Its runtime too: on Node this is called
+		// from the server's connection callback, where `current()` is the
+		// application's runtime even for a server a child runtime runs.
 		webSocket.__server = server;
-		webSocket.__cbInstance = CrossByte.current();
-		webSocket.__webSocket = crossbyte._internal.websocket.WebSocket.fromAcceptedSocket(socket);
+		var runtime:Null<CrossByte> = server != null ? @:privateAccess server.__cbInstance : null;
+		webSocket.__cbInstance = runtime != null ? runtime : CrossByte.current();
+		webSocket.__webSocket = crossbyte._internal.websocket.WebSocket.fromAcceptedSocket(socket, webSocket.__cbInstance);
 		// Said, as a socket a secure ServerSocket accepted says it: every
 		// session a secure server accepted read false.
 		webSocket.secure = server != null ? server.secure : @:privateAccess webSocket.__webSocket.__tls;
@@ -235,8 +239,33 @@ class WebSocket extends Socket {
 		super();
 	}
 
+	/**
+		Closes the session at once: a close frame with 1000 if the socket
+		takes it straight away, and the connection gone. `closeWith` is the
+		close that waits for the peer's answer.
+
+		It may be called from any thread, as `Socket.close()` may: from one
+		that is not the session's runtime's, it is handed to the runtime and
+		happens there after this returns. It threw part way through there,
+		the close frame sent, the connection left open, the heartbeat left
+		running and `close` never dispatched, since the session's timers
+		were taken from the calling thread.
+
+		@throws IOError The session is not open.
+	**/
 	override public function close():Void {
 		if (__webSocket != null) {
+			var runtime:Null<CrossByte> = __runtime();
+			if (RuntimeHandOff.offThread(runtime)) {
+				var session = __webSocket;
+				if (runtime.post(function():Void {
+					if (__webSocket == session) {
+						__cleanSocket();
+					}
+				})) {
+					return;
+				}
+			}
 			__cleanSocket();
 		} else {
 			throw new IOError("Operation attempted on invalid socket.");
@@ -261,6 +290,11 @@ class WebSocket extends Socket {
 	 * 1005 or 1000 whatever the code, and closed at once, which on a native
 	 * target could drop both the frame and whatever was queued before it.
 	 *
+	 * It may be called from any thread, as `close()` may: from one that is
+	 * not the session's runtime's, the close is handed to the runtime and
+	 * begins there after this returns. It threw there, from the timer that
+	 * bounds the peer's answer, which was taken from the calling thread.
+	 *
 	 * @param code WebSocket close code: 1000 (normal), 1001 (going away), a
 	 *        code 1002-1014 names, or one of the ranges left to libraries,
 	 *        3000-3999, and to applications, 4000-4999.
@@ -277,7 +311,17 @@ class WebSocket extends Socket {
 			throw new crossbyte.errors.ArgumentError('$code is not a close code that may be sent; use 1000, 1001, 1002-1014 (but 1004-1006), or 3000-4999.');
 		}
 
-		__webSocket.close(code, reason);
+		var session = __webSocket;
+		var runtime:Null<CrossByte> = __runtime();
+		if (RuntimeHandOff.offThread(runtime) && runtime.post(function():Void {
+			if (__webSocket == session) {
+				session.close(code, reason);
+			}
+		})) {
+			return;
+		}
+
+		session.close(code, reason);
 	}
 
 	/**
