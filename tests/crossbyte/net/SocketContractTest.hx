@@ -69,6 +69,49 @@ class SocketContractTest extends utest.Test {
 		}, async);
 	}
 
+	/**
+		A `socketData` event's `bytesLoaded` is what arrived for it, as the
+		native read loop has always said; on Node and in a page it was
+		everything still unread, so an event for 4 bytes said 7 when the 3
+		before them were not yet read.
+	**/
+	@:timeout(15000)
+	public function testBytesLoadedIsWhatArrived(async:Async):Void {
+		var server = new ServerSocket();
+		var accepted:Socket = null;
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) accepted = e.socket);
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			var client = new Socket();
+			var loaded:Array<Int> = [];
+			// Read nothing, so what arrives first is still unread when the
+			// rest does.
+			client.addEventListener(ProgressEvent.SOCKET_DATA, function(e:ProgressEvent) loaded.push(e.bytesLoaded));
+			client.connect("127.0.0.1", server.localPort);
+
+			NetPump.until(() -> client.connected && accepted != null, 5.0, function(_) {
+				accepted.writeUTFBytes("abc");
+				accepted.flush();
+
+				NetPump.until(() -> loaded.length >= 1, 5.0, function(_) {
+					accepted.writeUTFBytes("defg");
+					accepted.flush();
+
+					NetPump.until(() -> client.bytesAvailable >= 7, 5.0, function(_) {
+						Assert.same([3, 4], loaded, "bytesLoaded was not what arrived for each event");
+						Assert.equals(7, client.bytesAvailable);
+						try client.close() catch (_:Dynamic) {}
+						try accepted.close() catch (_:Dynamic) {}
+						try server.close() catch (_:Dynamic) {}
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
 	@:timeout(15000)
 	public function testATimeoutOfZeroConnects(async:Async):Void {
 		__connected(function(client, peer, done) {
