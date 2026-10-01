@@ -8,9 +8,10 @@
 
 		The architecture-specific sources (AVX2, SSSE3, AES-NI, NEON and
 		so on) are safe to compile everywhere: each guards its whole body
-		on HAVE_*INTRIN_H macros that libsodium's own private/common.h
-		defines by compiler and target detection, so on a target without
-		the instruction set they reduce to empty translation units.
+		on HAVE_*INTRIN_H macros, which libsodium's own private/common.h
+		defines for MSVC by compiler and target detection. For gcc and
+		clang nothing defines them, crossbyte_sodium_config.h says why,
+		so there they reduce to empty translation units.
 
 		sodium/version.h is normally produced by configure; the generated
 		copy upstream ships for MSVC builds is vendored alongside the
@@ -33,6 +34,13 @@
 
 		<!-- MSVC otherwise rejects libsodium's C99 for its own CRT warnings. -->
 		<compilerflag value="-D_CRT_SECURE_NO_WARNINGS" if="windows"/>
+
+		<!--
+			What configure would have found, for gcc and clang; MSVC's
+			libsodium works out for itself. See crossbyte_sodium_config.h.
+		-->
+		<compilerflag value="-include" unless="isMsvc"/>
+		<compilerflag value="${this_dir}/crossbyte_sodium_config.h" unless="isMsvc"/>
 
 		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_aead/aegis128l/aead_aegis128l.c"/>
 		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_aead/aegis128l/aegis128l_aesni.c"/>
