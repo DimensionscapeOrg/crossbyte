@@ -1836,6 +1836,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `POLL` loop reads its sockets every frame. Poll was given only what was
+  left of a frame once that was at least a millisecond, so a runtime at
+  1,000 ticks a second, whose frames never have a whole millisecond left
+  once the tick has run, never accepted or read anything, and said
+  nothing; and a runtime whose tick ran past its deadline skipped its
+  sockets for every frame it stayed behind. A game server that fell behind
+  stopped reading its clients' inputs and acknowledgements, which only put
+  it further behind: 2,000 clients over TCP waited seconds for theirs.
+  Each frame now polls at least once, without waiting when there is no
+  budget left to wait in.
 - On Linux, a datagram socket bound to port 0 could be given a port
   another socket already held, and one of the two then received the
   other's datagrams: hxcpp set SO_REUSEADDR on every socket it bound, and
