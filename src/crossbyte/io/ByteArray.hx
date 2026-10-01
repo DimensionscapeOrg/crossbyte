@@ -89,13 +89,12 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		Denotes the default object encoding for the ByteArray class to use for a
 		new ByteArray instance. When you create a new ByteArray instance, the
 		encoding on that instance starts with the value of
-		`defaultObjectEncoding`. The `defaultObjectEncoding`
-		property is initialized to `ObjectEncoding.DEFAULT`. This value varies
-		between platforms.
+		`defaultObjectEncoding`. The `defaultObjectEncoding` property is
+		initialized to `ObjectEncoding.DEFAULT`, which is `HXSF` on every
+		target.
 		When an object is written to or read from binary data, the
-		`objectEncoding` value is used to determine whether the
-		Haxe, JavaScript, ActionScript 3.0, ActionScript 2.0 or ActionScript 1.0
-		format should be used. The value is a constant from the ObjectEncoding
+		`objectEncoding` value is used to determine whether HXSF, JSON, AMF3
+		or AMF0 is used. The value is a constant from the ObjectEncoding
 		class.
 	**/
 	public static var defaultObjectEncoding(get, set):ObjectEncoding;

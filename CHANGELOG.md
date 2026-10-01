@@ -1956,6 +1956,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `IDataInput` and `IDataOutput` describe CrossByte's defaults: values in
+  the object's `endian`, which for a `ByteArray` and the sockets starts as
+  `ByteArray.defaultEndian`, little-endian unless changed, and objects in
+  HXSF unless changed. They said big-endian and AMF, AIR's defaults, which
+  no class here has. `readUnsignedInt` says it returns the 32 bits as an
+  `Int`, negative from 2^31 up, where it promised 0 to 4294967295 in a type
+  that cannot hold them; and `ByteArray.defaultObjectEncoding` says it is
+  HXSF on every target, where it said it varied between platforms.
 - `ByteArray.clear()` says it keeps the memory the bytes took. Its doc,
   AIR's, said it freed it, which it never did: a byte array cleared and
   filled again reuses its buffer, which is what the sockets rely on when
