@@ -223,6 +223,133 @@ class URLLoaderNodeTest extends utest.Test {
 		});
 	}
 
+	/**
+		`close()` ends the load in flight, and the next load is the only one
+		heard from. `close()` only stopped the next load being refused as
+		busy: the request it closed went on, and its answer arrived after the
+		next load's, COMPLETE "FAST" and then COMPLETE "SLOW", on one loader,
+		while the server answered a request nobody wanted.
+	**/
+	public function testClosingALoadEndsItsRequestAndDropsItsAnswer(async:Async):Void {
+		var slow:SlowAnswer = {arrived: false, closed: false, answered: false};
+		serveWith(answerSlowly(slow), (port, close) -> {
+			var loader:URLLoader = new URLLoader();
+			var events:Array<String> = [];
+			listen(loader, events);
+			loader.load(new URLRequest('http://127.0.0.1:$port/slow'));
+			loader.close();
+			loader.load(new URLRequest('http://127.0.0.1:$port/fast'));
+
+			// Past the time the slow answer comes, so a request that went on
+			// regardless has been heard from.
+			var until:Float = haxe.Timer.stamp() + 0.8;
+			HTTPTestSupport.pumpUntilAsync(() -> haxe.Timer.stamp() >= until, 5.0, _ -> {
+				close();
+				Assert.same(["COMPLETE FAST"], events, "a closed load was heard from");
+				Assert.isFalse(slow.answered, "the server answered a closed load");
+				async.done();
+			});
+		});
+	}
+
+	/**
+		And a load the server already holds: the server sees the client go as
+		it is closed, rather than answering it later for nobody.
+	**/
+	public function testClosingALoadTheServerHoldsEndsItsRequest(async:Async):Void {
+		var slow:SlowAnswer = {arrived: false, closed: false, answered: false};
+		serveWith(answerSlowly(slow), (port, close) -> {
+			var loader:URLLoader = new URLLoader();
+			var events:Array<String> = [];
+			listen(loader, events);
+			loader.load(new URLRequest('http://127.0.0.1:$port/slow'));
+			HTTPTestSupport.pumpUntilAsync(() -> slow.arrived, 5.0, arrived -> {
+				loader.close();
+				HTTPTestSupport.pumpUntilAsync(() -> slow.closed || slow.answered, 5.0, _ -> {
+					close();
+					Assert.isTrue(arrived, "the request never reached the server");
+					Assert.isTrue(slow.closed, "the closed load's request went on");
+					Assert.isFalse(slow.answered, "the server answered a closed load");
+					Assert.same([], events, "a closed load was heard from");
+					async.done();
+				});
+			});
+		});
+	}
+
+	/**
+		A load's `cancelToken` cancels it: the request ends, and the load fails
+		saying it was cancelled, as it does natively. There was no token on
+		JavaScript; `cancelToken` stayed null.
+	**/
+	public function testCancellingALoadsTokenEndsIt(async:Async):Void {
+		var slow:SlowAnswer = {arrived: false, closed: false, answered: false};
+		serveWith(answerSlowly(slow), (port, close) -> {
+			var loader:URLLoader = new URLLoader();
+			var events:Array<String> = [];
+			listen(loader, events);
+			loader.load(new URLRequest('http://127.0.0.1:$port/slow'));
+			var token:Null<crossbyte.http.HTTPCancelToken> = loader.cancelToken;
+			if (token == null) {
+				close();
+				Assert.fail("a load on Node has no cancelToken");
+				async.done();
+				return;
+			}
+			HTTPTestSupport.pumpUntilAsync(() -> slow.arrived, 5.0, arrived -> {
+				token.cancel();
+				HTTPTestSupport.pumpUntilAsync(() -> slow.closed || slow.answered, 5.0, _ -> {
+					Assert.isTrue(arrived, "the request never reached the server");
+					Assert.same(["IO_ERROR Request cancelled"], events);
+					Assert.isTrue(slow.closed, "the cancelled load's request went on");
+					Assert.isFalse(slow.answered, "the server answered a cancelled load");
+
+					// And the loader takes its next load.
+					loader.load(new URLRequest('http://127.0.0.1:$port/fast'));
+					HTTPTestSupport.pumpUntilAsync(() -> events.length >= 2, 5.0, _ -> {
+						close();
+						Assert.same(["IO_ERROR Request cancelled", "COMPLETE FAST"], events);
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
+	/** Records what `loader` dispatches into `events`, as "COMPLETE <data>" or "IO_ERROR <text>". */
+	private static function listen(loader:URLLoader, events:Array<String>):Void {
+		loader.addEventListener(Event.COMPLETE, _ -> events.push("COMPLETE " + Std.string(loader.data)));
+		loader.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> events.push("IO_ERROR " + event.text));
+	}
+
+	/**
+		Answers `/slow` after 300 ms, unless the client has gone by then,
+		which `slow` records, and anything else at once with "FAST".
+	**/
+	private static function answerSlowly(slow:SlowAnswer):(request:Dynamic, body:js.node.Buffer, response:Dynamic) -> Void {
+		return (request, body, response) -> {
+			if (Std.string(request.url) != "/slow") {
+				response.writeHead(200, {"Content-Type": "text/plain"});
+				response.end("FAST");
+				return;
+			}
+			slow.arrived = true;
+			// Before the answer is written, a close is the client going.
+			response.on("close", () -> {
+				if (!slow.answered) {
+					slow.closed = true;
+				}
+			});
+			js.Node.setTimeout(() -> {
+				if (!slow.closed) {
+					slow.answered = true;
+					response.writeHead(200, {"Content-Type": "text/plain"});
+					response.end("SLOW");
+				}
+			}, 300);
+		};
+	}
+
 	/** Loads `url` as text, and calls `done` with "ok <data>" or "error <text>". */
 	private static function load(url:String, limit:Null<Int>, done:String->Void):Void {
 		loadWith(url, request -> {
@@ -356,5 +483,12 @@ class URLLoaderNodeTest extends utest.Test {
 			then(port, () -> server.close());
 		});
 	}
+}
+
+/** Whether `/slow` arrived, whether the client went before it was answered, and whether it was answered. */
+private typedef SlowAnswer = {
+	var arrived:Bool;
+	var closed:Bool;
+	var answered:Bool;
 }
 #end
