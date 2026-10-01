@@ -105,13 +105,15 @@ class IceAgent {
 	public static inline var CONSENT_TIMEOUT:Float = 30.0;
 
 	/**
-		The most remote candidates one agent will hold.
+		The most remote candidates one agent will hold: those the peer
+		advertised, and those learned from where its checks arrived.
 
 		Every remote candidate pairs with every local one, and `__rebuild`
 		scans the whole checklist for each pair it considers, so the work grows
 		faster than the list does, and the list is the peer's to choose. A
 		real peer offers a handful; RFC 8445 section 6.1.2.5 bounds the
-		checklist for the same reason.
+		checklist for the same reason. A check from a new place once the list
+		is full goes unanswered.
 	**/
 	public static inline var MAX_REMOTE_CANDIDATES:Int = 64;
 
@@ -608,6 +610,16 @@ class IceAgent {
 			return;
 		}
 
+		// A check from somewhere the peer never advertised makes that place a
+		// remote candidate, so `MAX_REMOTE_CANDIDATES` has to hold here as it
+		// does for the advertised ones: it did not, and a peer checking from
+		// 192 ports had 192 candidates paired and checked back. Past the cap
+		// the check goes unanswered, since an answer would make a pair at the
+		// peer's end, one it could nominate, that this end never formed.
+		if (__remoteAt(fromAddress, fromPort) == null && __remotes.length >= MAX_REMOTE_CANDIDATES) {
+			return;
+		}
+
 		// Before answering: the sender may have claimed the same role this
 		// agent holds, and one of the two has to give way before either can
 		// trust the ordering it computed.
@@ -1006,14 +1018,7 @@ class IceAgent {
 		the other end.
 	**/
 	@:noCompletion private function __pairFrom(address:String, port:Int, ?via:IceCandidate):Null<IceCandidatePair> {
-		var remote:IceCandidate = null;
-
-		for (candidate in __remotes) {
-			if (candidate.address == address && candidate.port == port) {
-				remote = candidate;
-				break;
-			}
-		}
+		var remote:IceCandidate = __remoteAt(address, port);
 
 		if (remote == null) {
 			remote = new IceCandidate(PEER_REFLEXIVE, address, port);
@@ -1042,6 +1047,17 @@ class IceAgent {
 		for (local in __locals) {
 			if (local.canReach(remote)) {
 				return new IceCandidatePair(local, remote, controlling);
+			}
+		}
+
+		return null;
+	}
+
+	/** The remote candidate at `address:port`, advertised or learned, or null. **/
+	@:noCompletion private function __remoteAt(address:String, port:Int):Null<IceCandidate> {
+		for (candidate in __remotes) {
+			if (candidate.address == address && candidate.port == port) {
+				return candidate;
 			}
 		}
 
