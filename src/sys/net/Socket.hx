@@ -1612,6 +1612,12 @@ class Socket {
 	// Which thread's select last asked about this socket, in which of its
 	// calls, and for what; see select.
 	@:noCompletion private var __selectState:SelectState = null;
+
+	/**
+		Why a non-blocking connect failed, as NIO said when `select` finished
+		it: what SO_ERROR answers natively. Null while it has not failed.
+	**/
+	@:noCompletion public var __connectFailure:Null<String> = null;
 	@:noCompletion private var __selectPass:Int = 0;
 	@:noCompletion private var __selectOps:Int = 0;
 	// The key this socket is registered under in the selector that last
@@ -1818,9 +1824,11 @@ class Socket {
 		s.__selectArmed = -1;
 		var done:Bool = try {
 			sc.finishConnect();
-		} catch (_:Dynamic) {
-			// NIO has closed the channel; the socket's next use says so.
+		} catch (e:Dynamic) {
+			// NIO has closed the channel; the socket's next use says so, and
+			// this says why, for a caller that reports it (__connectFailure).
 			refused = true;
+			s.__connectFailure = Std.string(e);
 			false;
 		}
 
