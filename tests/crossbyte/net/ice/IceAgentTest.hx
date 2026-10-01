@@ -141,6 +141,45 @@ class IceAgentTest extends utest.Test {
 	}
 
 	/**
+		And a peer cannot get round that by checking from new places rather
+		than advertising them.
+
+		Each check from an address the agent had not heard of became a
+		peer-reflexive candidate, paired and checked back, with nothing
+		bounding how many: the cap applied to what a description carried and
+		not to this, so checks from 192 ports left 192 candidates and drew 384
+		datagrams. Past the cap a check from a new place goes unanswered.
+	**/
+	public function testChecksFromNewPlacesAreBoundedLikeAdvertisedCandidates():Void {
+		if (unsupported()) return;
+
+		var alice = credentials("alice");
+		var bob = new IceAgent(false, credentials("bob"));
+		var sent:Int = 0;
+		bob.onSend = (_, _, _) -> sent++;
+		bob.addLocalCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		bob.start(alice, 0);
+
+		for (i in 0...(IceAgent.MAX_REMOTE_CANDIDATES * 3)) {
+			var check = new StunMessage(StunMessage.BINDING_REQUEST, crossbyte.crypto.SecureRandom.getSecureRandomBytes(12), [
+				StunMessage.username(IceCredentials.username(bob.localCredentials, alice)),
+				StunMessage.priority(IceCandidate.computePriority(PEER_REFLEXIVE)),
+				StunMessage.iceRole(true, Int64.make(0, 5))
+			]);
+
+			bob.receive(check.encodeSigned(bob.localCredentials.password), ALICE_ADDRESS, 40000 + i, 0);
+		}
+
+		var held:Int = @:privateAccess bob.__remotes.length;
+
+		Assert.equals(IceAgent.MAX_REMOTE_CANDIDATES, held, "checks from new places left " + held + " remote candidates");
+
+		// Each place taken was answered and checked back, two datagrams; the
+		// rest were not answered at all.
+		Assert.equals(IceAgent.MAX_REMOTE_CANDIDATES * 2, sent, "the agent sent " + sent + " datagrams");
+	}
+
+	/**
 		A candidate that is a name rather than an address is not dialled.
 
 		Browsers publish their host candidates as random .local mDNS names by
