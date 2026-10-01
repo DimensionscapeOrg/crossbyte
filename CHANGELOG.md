@@ -1961,6 +1961,16 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `MainLoopType.CUSTOM` loop body can run its runtime. It calls
+  `CrossByte.pump(delta, socketTimeout)`, public and documented now, for
+  a frame, what was posted, the timers, the tick, the sockets, which
+  waits up to `socketTimeout` for a socket to be ready or for a post.
+  `pump` refused every runtime that was not host-driven and the rest of a
+  frame was private, so a custom loop could run nothing but itself, though
+  `CUSTOM` promised a body that drives the timers and the sockets. `pump`
+  on a runtime that runs its own loop, or on a `CUSTOM` one from another
+  thread, throws an `IllegalOperationError` saying so, where it threw a
+  `String`.
 - A `Worker` cancelled after its work has sent its COMPLETE, but before
   its runtime has delivered it, ends `CANCELLED`. `cancel()` went by
   `completed`, which is set as the work sends, and left the state alone;
