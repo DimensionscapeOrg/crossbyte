@@ -32,7 +32,22 @@ class HpackHeader {
 		this.name = name;
 		this.value = value;
 		this.sensitive = sensitive;
-		this.tableSize = Bytes.ofString(name).length + Bytes.ofString(value).length + 32;
+		this.tableSize = __octets(name) + __octets(value) + 32;
+	}
+
+	/**
+		`Bytes.ofString(text).length`, without making the bytes when `text` is
+		ASCII -- as nearly every header is -- since then it is the length. Both
+		strings of every header were encoded only to be measured: on Node, a
+		seventh of an HTTP/2 server's time.
+	**/
+	static function __octets(text:String):Int {
+		for (i in 0...text.length) {
+			if (StringTools.fastCodeAt(text, i) >= 0x80) {
+				return Bytes.ofString(text).length;
+			}
+		}
+		return text.length;
 	}
 
 	public function toString():String {

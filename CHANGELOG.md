@@ -1168,6 +1168,14 @@ All notable changes to CrossByte will be documented in this file.
   microseconds of CPU each where it took 22 (Node's own `http2`: 111,000).
   Over TLS, as browsers use it: 175,000 where it answered 32,700 (Node:
   109,000). A Node server, cleartext: 60,000 where it answered 26,500.
+- An HTTP/2 frame is built in one allocation, and a DATA frame straight
+  from its stream's queue. Every frame was assembled in a `BytesBuffer`
+  that grew a byte at a time, and DATA was cut out of the queue first and
+  copied again; an HPACK header encoded its name and value only to measure
+  them, where an ASCII one -- nearly all -- is its length. A Node server
+  answering over HTTP/2 serves 99,000 small requests a second where it
+  served 65,000 (Node's own `http2`: 111,000); a native one, 204,000 where
+  it served 193,000.
 - `readBytes` into a `ByteArray` past its end zeroes only the gap before
   where the bytes land, where it zeroed everything it grew and then wrote
   over it; and on JavaScript a `ByteArray` zeroes natively, where Haxe's
