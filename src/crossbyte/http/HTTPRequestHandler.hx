@@ -3381,14 +3381,20 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// `message.indexOf("did not respond within") >= 0`, so rewording
 			// PHPTimeout would have turned every gateway timeout into a bad
 			// gateway with nothing to say it had.
+			//
+			// With a body unless the request was a HEAD. Both went out as a
+			// HEAD's answer whatever the method, which once meant an empty
+			// body; since a HEAD's answer states the length the GET would
+			// have, they promised the text in Content-Length and never sent it.
+			var bodiless:Bool = __method == "HEAD" || headOnly;
 			if (Std.isOfType(exchange.cause, PHPTimeout)) {
 				Logger.error("PHP backend timed out: " + message, ["path" => __requestPath]);
-				__dispatchResponse(504, "Gateway Timeout", null, "text/plain", "Gateway Timeout", true);
+				__dispatchResponse(504, "Gateway Timeout", null, "text/plain", "Gateway Timeout", bodiless);
 				return;
 			}
 
 			Logger.error("PHP backend failed: " + message, ["path" => __requestPath]);
-			__dispatchResponse(502, "Bad Gateway", null, "text/plain", "Bad Gateway", true);
+			__dispatchResponse(502, "Bad Gateway", null, "text/plain", "Bad Gateway", bodiless);
 		});
 	}
 
