@@ -1628,11 +1628,43 @@ class Socket {
 		var existing:Dynamic = __states.get();
 
 		if (existing == null) {
-			existing = new SelectState();
-			__states.set(existing);
+			var state:SelectState = new SelectState();
+			__states.set(state);
+			__keep(state);
+			existing = state;
 		}
 
 		return cast existing;
+	}
+
+	// Every thread's select state, so that those of threads that have ended
+	// can be closed. Java says nothing when a thread ends, and a state holds
+	// up to three selectors, an epoll descriptor and its wakeup pipe each
+	// on Linux, a loopback socket pair each on Windows, until they are
+	// closed: a server whose workers came and went kept every one of them.
+	@:noCompletion private static var __everyState:Array<SelectState> = [];
+	@:noCompletion private static var __everyStateLock:sys.thread.Mutex = new sys.thread.Mutex();
+
+	/**
+		Keeps `state`, closing any kept for a thread that has since ended.
+		Swept here, once per thread that ever selects, rather than on a
+		timer: a thread that starts is the only moment more can need it.
+	**/
+	@:noCompletion private static function __keep(state:SelectState):Void {
+		__everyStateLock.acquire();
+		var i:Int = 0;
+		while (i < __everyState.length) {
+			var kept:SelectState = __everyState[i];
+			if (kept.owner.isAlive()) {
+				i++;
+				continue;
+			}
+			kept.close();
+			__everyState[i] = __everyState[__everyState.length - 1];
+			__everyState.pop();
+		}
+		__everyState.push(state);
+		__everyStateLock.release();
 	}
 
 	/**
@@ -2104,7 +2136,24 @@ class Socket {
 	public var asked:Array<Socket> = [];
 	public var transients:Array<Socket> = [];
 
+	/** The thread these belong to; see Socket.__keep. **/
+	public final owner:java.lang.Thread = java.lang.Thread.currentThread();
+
 	public function new() {}
+
+	/** Closes the selectors, once their thread has ended. **/
+	public function close():Void {
+		for (selector in [main, probe, wait]) {
+			if (selector != null) {
+				try {
+					selector.close();
+				} catch (_:Dynamic) {}
+			}
+		}
+		main = null;
+		probe = null;
+		wait = null;
+	}
 
 	public function mainSelector():Selector {
 		if (main == null) {

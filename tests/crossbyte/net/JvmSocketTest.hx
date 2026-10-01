@@ -86,6 +86,40 @@ class JvmSocketTest extends utest.Test {
 		and ready since must neither be reported by a later call that did not
 		ask about it nor cut that call's wait short.
 	**/
+	/**
+		A thread's selectors are closed once it has ended, by the next thread
+		to select. Java says nothing when a thread ends, and every thread
+		that ever selected kept up to three, an epoll descriptor and its
+		wakeup pipe each, or on Windows a loopback socket pair each, for
+		the life of the process.
+	**/
+	public function testAnEndedThreadsSelectorsAreClosed():Void {
+		var made = new sys.thread.Lock();
+		var selector:java.nio.channels.Selector = null;
+		var owner:java.lang.Thread = null;
+		sys.thread.Thread.create(function() {
+			var state = @:privateAccess sys.net.Socket.__state();
+			selector = state.mainSelector();
+			owner = java.lang.Thread.currentThread();
+			made.release();
+		});
+		Assert.isTrue(made.wait(5.0), "the first thread never selected");
+
+		var deadline:Float = haxe.Timer.stamp() + 5.0;
+		while (owner != null && owner.isAlive() && haxe.Timer.stamp() < deadline) {
+			crossbyte.sys.System.sleep(0.01);
+		}
+		Assert.isTrue(selector != null && selector.isOpen(), "the thread's selector was closed before its thread ended");
+
+		var swept = new sys.thread.Lock();
+		sys.thread.Thread.create(function() {
+			@:privateAccess sys.net.Socket.__state();
+			swept.release();
+		});
+		Assert.isTrue(swept.wait(5.0), "the second thread never selected");
+		Assert.isFalse(selector.isOpen(), "the ended thread's selector is still open");
+	}
+
 	public function testSelectAnswersOnlyForTheSocketsItIsAskedAbout():Void {
 		var pairs = __pairs(2);
 		var a = pairs.servers[0];
