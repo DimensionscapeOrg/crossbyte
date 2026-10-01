@@ -173,7 +173,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	// When the current request's first byte arrived; the duration metric
 	// measures from here, never from connection accept, so request N is
 	// not billed for the idle time since request N-1.
-	@:noCompletion private var __requestStartedAt:Float;
+	@:noCompletion private var __requestStartedAt:Float = 0;
+	// An HTTP/2 request weighed at its headers, ahead of its body: see
+	// __admitDecodedRequest. Its body then continues it.
+	@:noCompletion private var __admitted:Bool = false;
 	// Pushed in by the server's drain(): the in-flight response goes out
 	// with Connection: close so shutdown does not sever it mid-work.
 	@:noCompletion private var __closeAfterResponse:Bool = false;
@@ -258,15 +261,18 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__headers = new Map<String, String>();
 		__requestBody = new ByteArray();
 
+		__php = php;
+
 		// Only the HTTP/1.1 path parses this socket. Under HTTP/2 the frame
 		// layer owns every read and hands whole requests over already decoded,
-		// so subscribing here would have two readers racing one socket.
+		// so subscribing here would have two readers racing one socket. Its
+		// request is timed from its HEADERS, which the frame layer stamped,
+		// and its deadline is the stream's, which the frame layer keeps.
 		if (writer == null) {
 			__setup();
+			__requestStartedAt = haxe.Timer.stamp();
+			__receiveDeadline = config.requestTimeout > 0 ? __requestStartedAt + config.requestTimeout : 0;
 		}
-		__php = php;
-		__requestStartedAt = haxe.Timer.stamp();
-		__receiveDeadline = config.requestTimeout > 0 ? haxe.Timer.stamp() + config.requestTimeout : 0;
 	}
 
 	/** Returns the named cookie value, or `null` when the cookie is absent. */
@@ -830,22 +836,43 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * where that finishes.
 	 */
 	@:noCompletion private function __serveDecodedRequest(method:String, requestPath:String, queryString:String, headers:Map<String, String>,
-			body:ByteArray, tooLarge:Bool = false, headersTooLarge:Bool = false):Void {
-		__method = method;
-		__queryString = queryString;
-		__headers = headers;
-		__requestBody = body != null ? body : new ByteArray();
-		// HTTP/2 carries no version token; the value only reaches logging and
-		// the HTTP/1.1 keep-alive rules, neither of which applies here.
-		__httpVersion = "HTTP/2";
-
+			body:ByteArray, tooLarge:Bool = false, headersTooLarge:Bool = false, timedOut:Bool = false, startedAt:Float = 0):Void {
 		// A header section past the limit, answered as the HTTP/1.1 parser
 		// answers one: before anything reads the headers, since they are not
 		// all here.
 		if (headersTooLarge) {
+			__takeDecodedRequest(method, queryString, headers, startedAt);
 			__sendErrorResponse(431, "Request Header Fields Too Large");
 			return;
 		}
+
+		// Nothing is left to arrive, so nothing is invited: no 100 Continue.
+		if (!__admitDecodedRequest(method, requestPath, queryString, headers, startedAt, false)) {
+			return;
+		}
+
+		__continueDecodedRequest(body, tooLarge, timedOut);
+	}
+
+	/**
+	 * Weighs a request the HTTP/2 layer has decoded the headers of, as the
+	 * HTTP/1.1 parser weighs one at the end of its header block: the path
+	 * settled (`400`), the rate limiter asked (`429`), the content codings
+	 * read (`415`), and, with a body still to come, its declared length held
+	 * to the limit (`413`) and an `Expect` answered -- `onExpectContinue`
+	 * asked, and `100 Continue` sent if it lets the body come.
+	 *
+	 * Called when the header section arrives, for a request with a body to
+	 * follow, and then `__continueDecodedRequest` when it has. HTTP/2 used to
+	 * see a request only once its body was in, so none of this could refuse
+	 * one before it was sent, and `onExpectContinue` was never asked at all.
+	 *
+	 * @return Whether the request may go on; false once it has been answered.
+	 */
+	@:noCompletion private function __admitDecodedRequest(method:String, requestPath:String, queryString:String, headers:Map<String, String>,
+			startedAt:Float, bodyToCome:Bool):Bool {
+		__takeDecodedRequest(method, queryString, headers, startedAt);
+		__admitted = true;
 
 		// The same settling the HTTP/1.1 parser applies, and for the same
 		// reasons: it is what keeps a request target inside the document
@@ -854,7 +881,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var settled:Null<String> = __settlePath(requestPath);
 		if (settled == null) {
 			__sendErrorResponse(400, "Bad Request");
-			return;
+			return false;
 		}
 		__requestPath = settled;
 		__filePath = null;
@@ -864,6 +891,35 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// requests on one connection were all answered 200 where HTTP/1.1
 		// refused the fourth, and a gzip body reached middleware compressed.
 		if (__refusedByLimiter()) {
+			return false;
+		}
+
+		__requestContentEncodings = __parseContentEncodingHeader();
+		if (__requestContentEncodings == null) {
+			return false;
+		}
+
+		if (bodyToCome) {
+			// Too big is said before a byte of it is sent, as over HTTP/1.1.
+			// The frame layer read the field already, so it is a number.
+			var declared:Null<String> = headers.get("content-length");
+			if (declared != null && __parseContentLength(declared) > __config.maxRequestBodySize) {
+				__sendErrorResponse(413, "Payload Too Large");
+				return false;
+			}
+		}
+
+		return __admitExpectation(bodyToCome);
+	}
+
+	/** The rest of a request `__admitDecodedRequest` let through: its body, decoded, then dispatch. */
+	@:noCompletion private function __continueDecodedRequest(body:ByteArray, tooLarge:Bool, timedOut:Bool):Void {
+		__requestBody = body != null ? body : new ByteArray();
+
+		// The body did not arrive within requestTimeout of the headers. The
+		// HTTP/1.1 answer, on this stream alone.
+		if (timedOut) {
+			__sendErrorResponse(408, "Request Timeout");
 			return;
 		}
 
@@ -872,12 +928,72 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		__requestContentEncodings = __parseContentEncodingHeader();
-		if (__requestContentEncodings == null || !__decodeRequestBody()) {
+		if (!__decodeRequestBody()) {
 			return;
 		}
 
 		__dispatchParsedRequest();
+	}
+
+	@:noCompletion private function __takeDecodedRequest(method:String, queryString:String, headers:Map<String, String>, startedAt:Float):Void {
+		__method = method;
+		__queryString = queryString;
+		__headers = headers;
+		// HTTP/2 carries no version token; the value only reaches logging and
+		// the HTTP/1.1 keep-alive rules, neither of which applies here.
+		__httpVersion = "HTTP/2";
+		if (startedAt > 0) {
+			__requestStartedAt = startedAt;
+		}
+	}
+
+	/**
+	 * Answers an `Expect` the request carries: `417` for anything but
+	 * `100-continue`, then `HTTPServerConfig.onExpectContinue`, then, when the
+	 * body may come and is still to come, `100 Continue`.
+	 *
+	 * @return Whether the request may go on; false once it has been answered.
+	 */
+	@:noCompletion private function __admitExpectation(bodyToCome:Bool):Bool {
+		var expect:Null<String> = __headers.get("expect");
+		if (expect == null) {
+			return true;
+		}
+
+		if (StringTools.trim(expect.toLowerCase()) != "100-continue") {
+			__sendErrorResponse(417, "Expectation Failed");
+			return false;
+		}
+
+		// Asked before the client is told to send: the point of the
+		// expectation is that a request refused on its headers -- no
+		// credentials, say -- never has its body sent at all. The server
+		// used to say go ahead before any middleware had seen the request.
+		if (__config.onExpectContinue != null) {
+			var proceed:Bool = false;
+			try {
+				proceed = __config.onExpectContinue(this);
+			} catch (error:Dynamic) {
+				Logger.error("HTTPServerConfig.onExpectContinue threw: " + Std.string(error), ["method" => __method, "path" => __requestPath]);
+			}
+
+			if (!proceed) {
+				if (!__responded) {
+					__sendErrorResponse(417, "Expectation Failed");
+				}
+				return false;
+			}
+		}
+
+		if (__responded || !__writer.connected) {
+			return false;
+		}
+
+		if (bodyToCome) {
+			__writer.writeContinue();
+			__writer.flush();
+		}
+		return true;
 	}
 
 	@:noCompletion private function __runMiddleware(index:Int, onComplete:Void->Void):Void {
@@ -2377,6 +2493,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__queryString = "";
 		__requestPath = "/";
 		__requestContentEncodings = null;
+		__admitted = false;
 		__awaitingBody = false;
 		__expectBody = 0;
 		__bodyBuf = null;
@@ -3581,39 +3698,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 			}
 		}
 
-		var expect:String = __headers.exists("expect") ? __headers.get("expect") : null;
-		if (expect != null) {
-			var expectValue:String = StringTools.trim(expect.toLowerCase());
-			if (expectValue != "100-continue") {
-				__sendErrorResponse(417, "Expectation Failed");
-				return true;
-			}
-
-			// Asked before the client is told to send: the point of the
-			// expectation is that a request refused on its headers -- no
-			// credentials, say -- never has its body sent at all. The server
-			// used to say go ahead before any middleware had seen the request.
-			if (__config.onExpectContinue != null) {
-				var proceed:Bool = false;
-				try {
-					proceed = __config.onExpectContinue(this);
-				} catch (error:Dynamic) {
-					Logger.error("HTTPServerConfig.onExpectContinue threw: " + Std.string(error), ["method" => __method, "path" => __requestPath]);
-				}
-
-				if (!proceed) {
-					if (!__responded) {
-						__sendErrorResponse(417, "Expectation Failed");
-					}
-					return true;
-				}
-			}
-
-			if (__responded || !__origin.connected) {
-				return true;
-			}
-			__origin.writeUTFBytes("HTTP/1.1 100 Continue\r\n\r\n");
-			__origin.flush();
+		// The interim 100 goes out whatever the length, as it always has here.
+		if (!__admitExpectation(true)) {
+			return true;
 		}
 
 		if (!chunked && contentLength == 0) {

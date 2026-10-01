@@ -491,6 +491,10 @@ private class CountingWriter implements crossbyte._internal.http.HTTPResponseWri
 		return __onAbandoned = value;
 	}
 
+	public function writeContinue():Void {
+		__unflushed += 25;
+	}
+
 	public function writeHead(head:crossbyte._internal.http.HTTPResponseHead):Void {
 		__unflushed += 64;
 	}

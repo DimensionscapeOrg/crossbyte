@@ -664,10 +664,11 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
-	public function testAStalledHttp2RequestIsReapedAfterRequestTimeout(async:Async):Void {
-		// Headers promising a body that never comes. The stream stays open, so
-		// this is requestTimeout's to close, as it is for an HTTP/1.1 request
-		// that stops arriving.
+	public function testAStalledHttp2RequestIsAnswered408AfterRequestTimeout(async:Async):Void {
+		// Headers promising a body that never comes. It is requestTimeout's to
+		// end, as it is for an HTTP/1.1 request that stops arriving: answered
+		// 408, on its own stream. The connection carries everything else, so
+		// it is not the connection that goes.
 		var session = new H2Session(config -> {
 			config.requestTimeout = 1;
 			config.keepAliveTimeout = 10;
@@ -675,12 +676,248 @@ class HTTPServerH2Test extends utest.Test {
 
 		session.start(() -> {
 			session.request(1, "POST", "/upload", false);
+			var opened:Float = haxe.Timer.stamp();
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				var took:Float = session.finishedAt(1) - opened;
+				session.request(3, "GET", "/index.html", true);
+				session.until(() -> session.finished(3) || session.ended, () -> {
+					session.close();
+					Assert.equals(408, session.status(1), "a stalled HTTP/2 request was not answered 408");
+					Assert.isTrue(took >= 1 - SLACK, 'answered after ${took}s, inside its 1s requestTimeout');
+					Assert.equals(200, session.status(3), "the connection went with the stalled request");
+					async.done();
+				});
+			}, 5.0);
+		});
+	}
+
+	public function testAnHttp2BodyTrickledInIsHeldToRequestTimeout(async:Async):Void {
+		// One byte of body every 0.4 s, under a requestTimeout of one second.
+		// Every frame read refreshed the connection's clock, so the request
+		// was still open at 3.6 s and answered 200, where HTTP/1.1 answered
+		// 408 at 1.05 s. The deadline is the stream's own now, set when its
+		// headers arrive, and nothing it sends moves it.
+		var reached:Bool = false;
+		var session = new H2Session(config -> {
+			config.requestTimeout = 1;
+			config.keepAliveTimeout = 10;
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.method == "POST") {
+						reached = true;
+					}
+					handler.respond(200, "text/plain", "received " + handler.requestBody.length);
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false);
+			var opened:Float = haxe.Timer.stamp();
+
+			function drip():Void {
+				if (session.finished(1) || session.ended || haxe.Timer.stamp() - opened > 4.0) {
+					var took:Float = session.finishedAt(1) - opened;
+					session.request(3, "GET", "/index.html", true);
+					session.until(() -> session.finished(3) || session.ended, () -> {
+						session.close();
+						Assert.equals(408, session.status(1), "a trickled body was not held to requestTimeout");
+						Assert.isTrue(took >= 1 - SLACK && took < 2.5, 'answered after ${took}s under a 1s requestTimeout');
+						Assert.isFalse(reached, "a request that missed its deadline reached middleware");
+						Assert.equals(200, session.status(3), "the connection went with the late request");
+						async.done();
+					});
+					return;
+				}
+				session.trickle(1, "x");
+				session.pause(0.4, drip);
+			}
+			drip();
+		});
+	}
+
+	public function testPingsDoNotKeepAnIdleHttp2ConnectionOpen(async:Async):Void {
+		// Any frame counted as activity, so a peer sending nothing but PING
+		// held a connection past keepAliveTimeout for as long as it liked.
+		var session = new H2Session(config -> {
+			config.keepAliveTimeout = 1;
+			config.requestTimeout = 10;
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/index.html", true);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				var idleFrom:Float = session.finishedAt(1);
+
+				function keepPinging():Void {
+					if (session.ended || haxe.Timer.stamp() - idleFrom > 4.0) {
+						var after:Float = (session.goAwayAt >= 0 ? session.goAwayAt : session.droppedAt) - idleFrom;
+						session.close();
+						Assert.equals(200, session.status(1));
+						Assert.isTrue(session.ended, "PINGs held an idle HTTP/2 connection open past keepAliveTimeout");
+						Assert.isTrue(after >= 1 - SLACK && after < 2.5, 'closed ${after}s after its last request, under a 1s keepAliveTimeout');
+						async.done();
+						return;
+					}
+					session.ping();
+					session.pause(0.4, keepPinging);
+				}
+				keepPinging();
+			});
+		});
+	}
+
+	public function testKeepAliveMaxRequestsEndsAnHttp2Connection(async:Async):Void {
+		// HTTP/2 took no notice of keepAliveMaxRequests, so a connection served
+		// requests for as long as its client kept it. Now the stream that
+		// reaches the limit is the last one taken: a GOAWAY names it, a stream
+		// opened past it is refused, and the connection closes once it ends.
+		var session = new H2Session(config -> config.keepAliveMaxRequests = 2);
+
+		session.start(() -> {
+			session.request(1, "GET", "/index.html", true);
+			session.request(3, "GET", "/index.html", true);
+			session.request(5, "GET", "/index.html", true);
+			session.until(() -> (session.finished(1) && session.finished(3) && session.finished(5) && session.dropped) || session.dropped, () -> {
+				session.close();
+				Assert.equals(200, session.status(1));
+				Assert.equals(200, session.status(3));
+				Assert.equals(7, session.resetCode(5), "a stream past the limit was not refused");
+				Assert.equals(3, session.goAwayLastStream, "the GOAWAY did not name the last stream taken");
+				Assert.equals(H2ErrorCode.NO_ERROR, session.goAwayCode);
+				Assert.isTrue(session.dropped, "the connection outlived its last request");
+				async.done();
+			});
+		});
+	}
+
+	public function testKeepAliveOffEndsAnHttp2ConnectionAfterOneRequest(async:Async):Void {
+		var session = new H2Session(config -> config.keepAlive = false);
+
+		session.start(() -> {
+			session.request(1, "GET", "/index.html", true);
+			session.request(3, "GET", "/index.html", true);
 			session.until(() -> session.dropped, () -> {
 				session.close();
-				Assert.isTrue(session.dropped, "a stalled HTTP/2 request was never closed");
-				Assert.isTrue(session.silence() >= 1 - SLACK, 'closed after ${session.silence()}s of silence, inside its 1s requestTimeout');
+				Assert.equals(200, session.status(1));
+				Assert.equals(7, session.resetCode(3), "a second stream was taken with keepAlive off");
+				Assert.equals(1, session.goAwayLastStream);
+				Assert.isTrue(session.dropped, "the connection outlived its one request");
 				async.done();
-			}, 5.0);
+			});
+		});
+	}
+
+	public function testAnHttp2ContentLengthPastTheLimitIsRefusedAtItsHeaders(async:Async):Void {
+		// The limit was held per DATA frame only, so a request that declared
+		// a body far past it was invited to send the first megabyte of it.
+		var reached:Bool = false;
+		var session = new H2Session(config -> {
+			config.maxRequestBodySize = 10;
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.method == "POST") {
+						reached = true;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", "1000")]);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.request(3, "GET", "/index.html", true);
+				session.until(() -> session.finished(3) || session.ended, () -> {
+					session.close();
+					Assert.equals(413, session.status(1), "a declared body past the limit was not refused before it was sent");
+					Assert.equals(0, session.resetCode(1), "the upload was not told to stop");
+					Assert.isFalse(reached);
+					Assert.equals(200, session.status(3));
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testOnExpectContinueIsAskedOfAnHttp2Request(async:Async):Void {
+		// Only the HTTP/1.1 parser asked it. An HTTP/2 request reached the
+		// hook's job -- refusing before the body is sent -- only once the whole
+		// body had arrived, and never asked it at all.
+		var asked:Int = 0;
+		var session = new H2Session(config -> {
+			config.onExpectContinue = handler -> {
+				asked++;
+				handler.respond(401, "text/plain", "sign in first");
+				return false;
+			};
+			config.middleware = [(handler, next) -> handler.respond(200, "text/plain", "uploaded")];
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("expect", "100-continue"), new HpackHeader("content-length", "4")]);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.request(3, "GET", "/index.html", true);
+				session.until(() -> session.finished(3) || session.ended, () -> {
+					session.close();
+					Assert.equals(1, asked, "onExpectContinue was not asked");
+					Assert.equals(401, session.status(1));
+					Assert.equals("sign in first", session.body(1));
+					Assert.equals(0, session.resetCode(1), "the body was not refused");
+					Assert.equals(200, session.status(3));
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testAnHttp2RequestLetThroughIsToldToContinue(async:Async):Void {
+		var session = new H2Session(config -> {
+			config.onExpectContinue = handler -> handler.getHeader("authorization") == "Bearer ok";
+			config.middleware = [(handler, next) -> handler.respond(200, "text/plain", "uploaded " + handler.requestText)];
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [
+				new HpackHeader("expect", "100-continue"),
+				new HpackHeader("authorization", "Bearer ok"),
+				new HpackHeader("content-length", "4")
+			]);
+			session.until(() -> session.statuses(1).length > 0 || session.ended, () -> {
+				session.data(1, "body");
+				session.until(() -> session.finished(1) || session.ended, () -> {
+					session.close();
+					Assert.same([100, 200], session.statuses(1), "expected a 100 and then the answer");
+					Assert.equals("uploaded body", session.body(1));
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testAnHttp2RequestIsTimedFromItsHeaders(async:Async):Void {
+		// The handler was made once the body had arrived, and the duration was
+		// measured from there, so an upload that took a second was recorded as
+		// taking none. HTTP/1.1 measures from the request's first byte.
+		var metrics = new crossbyte.metrics.Metrics();
+		var session = new H2Session(config -> {
+			config.metrics = metrics;
+			config.middleware = [(handler, next) -> handler.respond(200, "text/plain", "ok")];
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false);
+			session.pause(0.5, () -> {
+				session.data(1, "late");
+				session.until(() -> session.finished(1) || session.ended, () -> {
+					session.close();
+					var seconds = metrics.histogram("http_request_seconds");
+					Assert.equals(200, session.status(1));
+					Assert.equals(1.0, seconds.count(), "the request was not timed");
+					Assert.isTrue(seconds.sum() >= 0.5 - SLACK, 'recorded ${seconds.sum()}s for a request that took half a second to arrive');
+					async.done();
+				});
+			});
 		});
 	}
 
@@ -1147,6 +1384,9 @@ private class H2Session {
 	/** The error code that GOAWAY carried, or -1. */
 	public var goAwayCode(default, null):Int = -1;
 
+	/** The last stream that GOAWAY said the server would process, or -1. */
+	public var goAwayLastStream(default, null):Int = -1;
+
 	/**
 	 * When the far end closed the socket, or -1. Never set by `close()`: the
 	 * socket dispatches `Event.CLOSE` for a local close too, and counting that
@@ -1175,8 +1415,11 @@ private class H2Session {
 	private var __settingsArrived:Bool = false;
 	private var __closing:Bool = false;
 	private final __status:Map<Int, Int> = new Map();
+	// Every :status each stream was sent, interim ones included, in order.
+	private final __statuses:Map<Int, Array<Int>> = new Map();
 	private final __bodies:Map<Int, Bytes> = new Map();
 	private final __finished:Map<Int, Bool> = new Map();
+	private final __finishedAt:Map<Int, Float> = new Map();
 	private final __headers:Map<Int, Map<String, String>> = new Map();
 	private final __resets:Map<Int, Int> = new Map();
 	// Names each stream's response sent never-indexed (RFC 7541 6.2.3).
@@ -1340,26 +1583,56 @@ private class H2Session {
 		__send(out);
 	}
 
-	/** Pumps until `done` holds or `timeout` seconds pass, then continues. */
+	/** Sends `text` on `streamId` and leaves the stream open for more. */
+	public function trickle(streamId:Int, text:String):Void {
+		var out = new BytesBuffer();
+		__writeFrame(out, H2FrameType.DATA, 0, streamId, Bytes.ofString(text));
+		__send(out);
+	}
+
+	/** Sends a PING, which asks the server only for its acknowledgement. */
+	public function ping():Void {
+		var out = new BytesBuffer();
+		__writeFrame(out, H2FrameType.PING, 0, 0, Bytes.alloc(8));
+		__send(out);
+	}
+
+	/** Every `:status` the server sent on `streamId`, interim ones first. */
+	public function statuses(streamId:Int):Array<Int> {
+		return __statuses.exists(streamId) ? __statuses.get(streamId).copy() : [];
+	}
+
+	/** When `streamId` was answered in full or reset, or -1. */
+	public function finishedAt(streamId:Int):Float {
+		return __finishedAt.exists(streamId) ? __finishedAt.get(streamId) : -1;
+	}
+
+	/**
+	 * Pumps until `done` holds or `timeout` seconds pass, then continues. On
+	 * the wall's clock, for the reason `pause` gives: several cases here wait
+	 * for the server to enforce a deadline.
+	 */
 	public function until(done:Void->Bool, then:Void->Void, timeout:Float = 5.0):Void {
-		HTTPTestSupport.pumpUntilAsync(done, timeout, _ -> then());
+		HTTPTestSupport.pumpWallUntilAsync(done, timeout, _ -> then());
 	}
 
 	/**
 	 * Pumps for `seconds` without sending anything. Cut short if the server
 	 * ends the connection, since then there is nothing left to wait for.
 	 *
-	 * Each pump advances the runtime by a millisecond, the time pumpUntil
-	 * sleeps between them. At its default step of a sixtieth the runtime's
-	 * clock ran about fifteen times faster than the wall clock this waits on
-	 * wherever a millisecond's sleep takes one -- Linux, not Windows -- and
-	 * utest's timeout runs on the runtime's clock: the 1.5 s pause of the long
-	 * poll case came to some 24 s of it, and the case timed out on CI with its
-	 * answer on the way.
+	 * Each pump advances the runtime by the wall time it took. At the default
+	 * step of a sixtieth the runtime's clock ran about fifteen times faster
+	 * than the wall clock this waits on wherever a millisecond's sleep takes
+	 * one -- Linux, not Windows -- and utest's timeout runs on the runtime's
+	 * clock: the 1.5 s pause of the long poll case came to some 24 s of it,
+	 * and the case timed out on CI with its answer on the way. A step of a
+	 * millisecond, which mended that, ran it as much slower on Windows, where
+	 * the sleep takes a timer tick, so the server's sweep came seconds late to
+	 * a deadline a case was waiting on.
 	 */
 	public function pause(seconds:Float, then:Void->Void):Void {
 		var resumeAt:Float = haxe.Timer.stamp() + seconds;
-		HTTPTestSupport.pumpUntilAsync(() -> ended || haxe.Timer.stamp() >= resumeAt, seconds + 5.0, _ -> then(), 0.001);
+		HTTPTestSupport.pumpWallUntilAsync(() -> ended || haxe.Timer.stamp() >= resumeAt, seconds + 5.0, _ -> then());
 	}
 
 	/** The server this session talks to. */
@@ -1471,7 +1744,12 @@ private class H2Session {
 			var hidden:Array<String> = [];
 			for (field in __decoder.decode(frame.payload)) {
 				if (field.name == ":status") {
-					__status.set(frame.streamId, Std.parseInt(field.value));
+					var code:Int = Std.parseInt(field.value);
+					__status.set(frame.streamId, code);
+					if (!__statuses.exists(frame.streamId)) {
+						__statuses.set(frame.streamId, []);
+					}
+					__statuses.get(frame.streamId).push(code);
 				} else {
 					fields.set(field.name, field.value);
 				}
@@ -1495,15 +1773,23 @@ private class H2Session {
 			// Refused rather than answered, which is also the end of it.
 			var payload:Bytes = frame.payload;
 			__resets.set(frame.streamId, (payload.get(0) << 24) | (payload.get(1) << 16) | (payload.get(2) << 8) | payload.get(3));
-			__finished.set(frame.streamId, true);
+			__finish(frame.streamId);
 		} else if (frame.type == H2FrameType.GOAWAY && goAwayAt < 0) {
 			goAwayAt = haxe.Timer.stamp();
 			var payload:Bytes = frame.payload;
+			goAwayLastStream = ((payload.get(0) & 0x7f) << 24) | (payload.get(1) << 16) | (payload.get(2) << 8) | payload.get(3);
 			goAwayCode = (payload.get(4) << 24) | (payload.get(5) << 16) | (payload.get(6) << 8) | payload.get(7);
 		}
 
 		if ((frame.type == H2FrameType.HEADERS || frame.type == H2FrameType.DATA) && frame.has(H2Flags.END_STREAM)) {
-			__finished.set(frame.streamId, true);
+			__finish(frame.streamId);
+		}
+	}
+
+	private function __finish(streamId:Int):Void {
+		if (!__finished.exists(streamId)) {
+			__finished.set(streamId, true);
+			__finishedAt.set(streamId, haxe.Timer.stamp());
 		}
 	}
 

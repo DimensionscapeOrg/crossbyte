@@ -35,7 +35,8 @@ class HTTPServerConfig {
 		Bytes a request body may reach, on the wire and once decoded, over
 		HTTP/1.1 and HTTP/2 alike. A larger one is answered `413 Payload Too
 		Large` -- as soon as a `Content-Length` says so, before any of the body
-		is read. Defaults to `DEFAULT_MAX_REQUEST_BODY`.
+		is read, on either protocol; over HTTP/2 it was found only once that
+		much had arrived. Defaults to `DEFAULT_MAX_REQUEST_BODY`.
 
 		The limit used to be fixed at a megabyte that counted the request's
 		headers too, and a `Content-Length` past it was answered `400`, which
@@ -63,6 +64,11 @@ class HTTPServerConfig {
 		request, so an unauthenticated upload was invited and read in full
 		before it could be refused. Left `null`, a request within
 		`maxRequestBodySize` is told to go ahead, as before.
+
+		Over HTTP/2 too, when the request's headers arrive: a refusal answers
+		its stream and resets it, which asks the client not to send the body,
+		and going ahead sends an interim `100`. It used not to be asked of an
+		HTTP/2 request at all.
 	**/
 	public var onExpectContinue:(handler:HTTPRequestHandler) -> Bool = null;
 
@@ -343,23 +349,18 @@ class HTTPServerConfig {
 		that misses the deadline is answered with `408 Request Timeout`
 		and closed.
 
+		Over HTTP/2 each request has its own deadline, counted from its
+		HEADERS, and nothing sent after them moves it: a request whose body
+		has not all arrived by then is answered `408` on its stream, which is
+		then reset, and the connection carries its other requests on. A header
+		block still unfinished then closes the connection, since nothing else
+		on it can be read until the block ends.
+
 		Enforced by the owning server's sweep, which runs a few times a
 		second, so the deadline is precise to roughly a quarter second.
 	**/
 	public var requestTimeout:Float;
 
-	/**
-		Whether one connection may carry more than one request.
-
-		Off, every response ends its connection, so every request pays TCP
-		setup — and a full TLS handshake when `tlsEnabled` is set — to be
-		answered: a page, its stylesheet and its favicon are three
-		handshakes. On, a response whose framing allows it leaves the
-		connection open for the next request, which is what HTTP/1.1
-		specifies and what every client already expects. Defaults to
-		`true`; `false` restores the one-shot close-per-request behavior
-		exactly.
-	**/
 	/**
 		Offer HTTP/2 on this listener, alongside HTTP/1.1.
 
@@ -395,6 +396,24 @@ class HTTPServerConfig {
 	/** Seconds the `http2MaxResetStreams` budget is measured over. **/
 	public var http2ResetWindowSeconds:Float;
 
+	/**
+		Whether one connection may carry more than one request.
+
+		Off, every response ends its connection, so every request pays TCP
+		setup — and a full TLS handshake when `tlsEnabled` is set — to be
+		answered: a page, its stylesheet and its favicon are three
+		handshakes. On, a response whose framing allows it leaves the
+		connection open for the next request, which is what HTTP/1.1
+		specifies and what every client already expects. Defaults to
+		`true`; `false` restores the one-shot close-per-request behavior
+		exactly.
+
+		Off, an HTTP/2 connection takes one stream: a GOAWAY naming it goes
+		out as it opens, a stream opened after it is refused with
+		`REFUSED_STREAM` -- safe for the client to send again elsewhere --
+		and the connection closes once that one has been answered. It used to
+		make no difference to HTTP/2 at all.
+	**/
 	public var keepAlive:Bool;
 
 	/**
@@ -408,6 +427,11 @@ class HTTPServerConfig {
 		deadline is the normal end of its life, not a client fault, so it
 		is closed without a `408`. Enforced by the same sweep as
 		`requestTimeout`, so precision is roughly a quarter second.
+
+		An HTTP/2 connection is idle while it has no stream open, counted
+		from when its last one ended. Its PINGs, SETTINGS and WINDOW_UPDATEs
+		ask nothing of the server and do not count: they used to, so a client
+		sending only PINGs held a connection for as long as it liked.
 	**/
 	public var keepAliveTimeout:Float;
 
@@ -420,6 +444,11 @@ class HTTPServerConfig {
 		a load balancer a periodic chance to rebalance. A limit of 1,000
 		yields exactly 1,000 responses, the 1,000th carrying
 		`Connection: close`.
+
+		Over HTTP/2, the streams one connection takes: the GOAWAY goes out as
+		the last of them opens and names it, a stream opened after it is
+		refused with `REFUSED_STREAM`, and the connection closes once the
+		ones it took have been answered. HTTP/2 used to take no notice of it.
 
 		Each close costs the client a new connection, and over HTTPS a new
 		handshake. It defaulted to 100, and a native HTTPS server with 64

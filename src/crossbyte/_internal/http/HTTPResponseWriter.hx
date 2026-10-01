@@ -55,6 +55,13 @@ interface HTTPResponseWriter {
 	 */
 	var onAbandoned(get, set):Null<Void->Void>;
 
+	/**
+	 * Tells a client that sent `Expect: 100-continue` to send its body: an
+	 * interim `100 Continue`, ahead of the response, which goes out later
+	 * through `writeHead` as usual.
+	 */
+	function writeContinue():Void;
+
 	/** Writes the status and header fields. Called once per response. */
 	function writeHead(head:HTTPResponseHead):Void;
 
