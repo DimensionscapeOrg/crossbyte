@@ -14,21 +14,29 @@ import crossbyte.core.CrossByte;
 	elsewhere -- a worker that decides a connection has to go -- and it
 	used to throw part way through, or tell the connection's listeners on
 	the wrong thread.
+
+	Asked first, then posted, so a close on the runtime's own thread -- every
+	close but these -- builds no closure to post: a caller writes
+
+	```haxe
+	if (RuntimeHandOff.offThread(runtime) && runtime.post(() -> close())) {
+		return;
+	}
+	```
+
+	and does the work itself when the runtime has exited, which takes
+	nothing posted since nothing would run it.
 **/
 class RuntimeHandOff {
 	/**
-		Posts `work` to `runtime` when the calling thread is not the one it
-		runs on, and says whether it did. False on the runtime's own thread,
-		with no runtime, and when the runtime has exited, where nothing would
-		run it: the caller then does the work itself. Always false without
-		threads.
+		Whether the calling thread is not the one `runtime` runs on. False
+		with no runtime and without threads. The thread's own runtime is
+		looked at first, a thread-local read, so the answer on the runtime's
+		thread costs no lookup of the thread itself.
 	**/
-	public static function elsewhere(runtime:Null<CrossByte>, work:Void->Void):Bool {
+	public static inline function offThread(runtime:Null<CrossByte>):Bool {
 		#if target.threaded
-		if (runtime == null || runtime.__isOwnThread()) {
-			return false;
-		}
-		return runtime.post(work);
+		return runtime != null && CrossByte.__currentOrNull() != runtime && !runtime.__isOwnThread();
 		#else
 		return false;
 		#end
