@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -329,6 +330,64 @@ double crossbyte_file_created(::String path) {
 	}
 
 	return status != 0 ? -2 : -1;
+#endif
+}
+
+::String crossbyte_file_real_path(::String path) {
+	// The path the file system itself gives the file: every link followed and
+	// every name in the case it has on disk.
+#if defined(_WIN32)
+	std::wstring file = toWide(path);
+	std::wstring real;
+
+	{
+		hx::AutoGCFreeZone zone;
+		HANDLE handle = CreateFileW(file.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+			FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+
+		if (handle != INVALID_HANDLE_VALUE) {
+			DWORD needed = GetFinalPathNameByHandleW(handle, nullptr, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+
+			if (needed > 0) {
+				std::wstring buffer(needed, L'\0');
+				DWORD written = GetFinalPathNameByHandleW(handle, &buffer[0], needed, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+
+				if (written > 0 && written < needed) {
+					real.assign(buffer.c_str(), written);
+				}
+			}
+
+			CloseHandle(handle);
+		}
+	}
+
+	if (real.empty()) {
+		return ::String("");
+	}
+
+	// \\?\C:\x is C:\x, and \\?\UNC\server\share is \\server\share.
+	if (real.compare(0, 8, L"\\\\?\\UNC\\") == 0) {
+		real = L"\\\\" + real.substr(8);
+	} else if (real.compare(0, 4, L"\\\\?\\") == 0) {
+		real = real.substr(4);
+	}
+
+	return ::String::create(real.c_str(), static_cast<int>(real.size()));
+#else
+	std::string file = toNarrow(path);
+	std::string real;
+
+	{
+		hx::AutoGCFreeZone zone;
+		char* resolved = realpath(file.c_str(), nullptr);
+
+		if (resolved != nullptr) {
+			real = resolved;
+			free(resolved);
+		}
+	}
+
+	return real.empty() ? ::String("") : ::String::create(real.c_str(), static_cast<int>(real.size()));
 #endif
 }
 

@@ -46,6 +46,31 @@ class FileTest extends utest.Test {
 		Assert.equals(original.nativePath, copy.nativePath);
 	}
 
+	public function testACloneAsksTheDiskNothing():Void {
+		// clone() copied every property through its getter, to set it on a
+		// clone that cannot be given most of them: each clone started a
+		// process for spaceAvailable, `fsutil` on Windows, `df` elsewhere,
+		// and read the file's size and dates. 200 clones took 1.2 s on the
+		// interpreter; they take too little to measure now.
+		var dir = File.createTempDirectory();
+		var file = dir.resolvePath("a.txt");
+		HaxeFile.saveContent(file.nativePath, "x");
+		var last:File = null;
+		var started:Float = haxe.Timer.stamp();
+
+		for (_ in 0...200) {
+			last = file.clone();
+		}
+
+		var took:Float = haxe.Timer.stamp() - started;
+		Assert.equals(file.nativePath, last.nativePath);
+		Assert.equals("a.txt", last.name);
+		Assert.equals("txt", last.extension);
+		Assert.isTrue(took < 0.25, '200 clones took $took s');
+
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
 	public function testSpaceAvailableReportsFreeBytes():Void {
 		// Nothing ever called this, which is how it came to be wrong on every
 		// target at once: it reported a Windows volume's total capacity rather
@@ -953,6 +978,59 @@ class FileTest extends utest.Test {
 		try dir.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
+	public function testAFileThatIsOpenIsCopiedButOnWindowsNotMoved():Void {
+		// The documentation said, after AIR, that on Windows a file that is
+		// open could not be copied, nor a directory with one inside it.
+		// CrossByte locks nothing, and a reader stops no copy. A move is
+		// another matter: Windows refuses one while a handle without delete
+		// sharing is open, which FileStream's is on every target but Node.
+		var dir = File.createTempDirectory();
+		var inner = dir.resolvePath("inner");
+		inner.createDirectory();
+		var file = inner.resolvePath("open.txt");
+		HaxeFile.saveContent(file.nativePath, "contents");
+		var stream = new FileStream();
+		stream.open(file, FileMode.READ);
+		var copied:Array<String> = [];
+
+		try {
+			file.copyTo(dir.resolvePath("copy.txt"));
+			copied.push(HaxeFile.getContent(dir.resolvePath("copy.txt").nativePath));
+			inner.copyTo(dir.resolvePath("innerCopy"));
+			copied.push(HaxeFile.getContent(dir.resolvePath("innerCopy").resolvePath("open.txt").nativePath));
+		} catch (e:Dynamic) {
+			copied.push("threw " + Std.string(e));
+		}
+
+		var moved:Dynamic = null;
+
+		try {
+			file.moveTo(dir.resolvePath("moved.txt"));
+			moved = true;
+		} catch (e:Dynamic) {
+			moved = e;
+		}
+
+		stream.close();
+		Assert.same(["contents", "contents"], copied);
+
+		#if nodejs
+		var refused:Bool = false;
+		#else
+		var refused:Bool = System.isWindows;
+		#end
+
+		if (refused) {
+			Assert.isTrue(Std.isOfType(moved, crossbyte.errors.IOError), Std.string(moved));
+			Assert.isTrue(file.exists);
+		} else {
+			Assert.equals(true, moved);
+			Assert.isTrue(dir.resolvePath("moved.txt").exists);
+		}
+
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
 	public function testGetRelativePathAnswersNullForWhatIsNotBelow():Void {
 		// A sibling came back as its bare name, "c", which reads as a child.
 		var root = File.createTempDirectory();
@@ -1523,6 +1601,149 @@ class FileTest extends utest.Test {
 		try root.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
+	public function testANameWithNoDotHasNoExtension():Void {
+		// As documented: null. It was "", which reads as an extension that is
+		// empty, as "name." has.
+		var dir = File.createTempDirectory();
+		Assert.isNull(dir.resolvePath("README").extension);
+		Assert.isNull(dir.resolvePath("README").type);
+		Assert.equals("txt", dir.resolvePath("notes.txt").extension);
+		Assert.equals("gz", dir.resolvePath("archive.tar.gz").extension);
+		Assert.equals("", dir.resolvePath("name.").extension);
+		Assert.equals("bashrc", dir.resolvePath(".bashrc").extension);
+		// A dot in a directory's name is not the file's extension.
+		Assert.isNull(dir.resolvePath("v1.2").resolvePath("README").extension);
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testDataBeforeASuccessfulLoadThrows():Void {
+		// As documented. It answered null.
+		var dir = File.createTempDirectory();
+		var file = dir.resolvePath("payload.txt");
+		HaxeFile.saveContent(file.nativePath, "payload");
+
+		Assert.raises(() -> file.data, crossbyte.errors.IllegalOperationError);
+		file.load();
+		Assert.equals("payload", file.data.toString());
+
+		// A load that fails leaves nothing from the one before it.
+		file.deleteFile();
+		Assert.raises(() -> file.load(), crossbyte.errors.IOError);
+		Assert.raises(() -> file.data, crossbyte.errors.IllegalOperationError);
+
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testAFileUrlNamesItsPath():Void {
+		// As the constructor documents. "file:///C:/x" was taken for a native
+		// path and became "file:\C:\x", which names nothing.
+		var dir = File.createTempDirectory();
+		var file = dir.resolvePath("a b+c.txt");
+		HaxeFile.saveContent(file.nativePath, "x");
+
+		var url:String = "file://" + (System.isWindows ? "/" : "") + StringTools.replace(StringTools.replace(file.nativePath, "\\", "/"), " ", "%20");
+		var fromUrl = new File(url);
+		Assert.equals(file.nativePath, fromUrl.nativePath, url);
+		Assert.isTrue(fromUrl.exists, url);
+
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testUrlFormsOnEachPlatform():Void {
+		var path = (url:String, windows:Bool) -> @:privateAccess File.__pathOfUrl(url, windows);
+
+		Assert.equals("C:/Windows/win.ini", path("file:///C:/Windows/win.ini", true));
+		Assert.equals("C:/a b/c+d.txt", path("file:///C:/a%20b/c+d.txt", true));
+		Assert.equals("\\\\server\\share\\x.txt", path("file://server/share/x.txt", true));
+		Assert.equals("C:/x", path("file://localhost/C:/x", true));
+		Assert.equals("/home/u/\u00E9t\u00E9.txt", path("file:///home/u/%C3%A9t%C3%A9.txt", false));
+		Assert.equals("/tmp/x", path("file://localhost/tmp/x", false));
+		Assert.equals("/tmp/100%", path("file:///tmp/100%", false));
+	}
+
+	public function testCanonicalizeFollowsALink():Void {
+		// As documented. Only the case of each name was corrected, by listing
+		// each directory on the way down; a link was left as it was.
+		#if (eval || neko || hl)
+		if (System.isWindows) {
+			// Their standard library resolves no link there, as documented.
+			Assert.pass();
+			return;
+		}
+		#end
+
+		var root = File.createTempDirectory();
+		var target = root.resolvePath("target");
+		var link = root.resolvePath("link");
+		target.createDirectory();
+
+		var made:Int = System.isWindows ? __quietlyThroughShell('mklink /J "${link.nativePath}" "${target.nativePath}"') : __quietly("ln",
+			["-s", target.nativePath, link.nativePath]);
+
+		if (made != 0 || !link.exists) {
+			Assert.pass();
+			try root.deleteDirectory(true) catch (_:Dynamic) {}
+			return;
+		}
+
+		var through = link.resolvePath("inside.txt");
+		HaxeFile.saveContent(through.nativePath, "x");
+		var canonical = new File(through.nativePath);
+		canonical.canonicalize();
+
+		var expected = new File(target.resolvePath("inside.txt").nativePath);
+		expected.canonicalize();
+		Assert.equals(expected.nativePath, canonical.nativePath);
+		Assert.equals(-1, canonical.nativePath.indexOf("link"), canonical.nativePath);
+		Assert.equals("inside.txt", canonical.name);
+
+		// The link, not what it points to.
+		if (System.isWindows) {
+			__quietlyThroughShell('rmdir "${link.nativePath}"');
+		} else {
+			sys.FileSystem.deleteFile(link.nativePath);
+		}
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testCanonicalizeCorrectsTheCase():Void {
+		if (!System.isWindows) {
+			// Names are names on a case-sensitive file system.
+			Assert.pass();
+			return;
+		}
+
+		var root = File.createTempDirectory();
+		root.resolvePath("Mixed Case").createDirectory();
+		var asked = new File(root.resolvePath("MIXED CASE").nativePath);
+		asked.canonicalize();
+		Assert.isTrue(StringTools.endsWith(asked.nativePath, "Mixed Case"), asked.nativePath);
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	/** Runs a command line through the shell, as one string: cmd's own commands need that. **/
+	private static function __quietlyThroughShell(line:String):Int {
+		#if nodejs
+		// No sys.io.Process on Node.
+		try {
+			js.node.ChildProcess.execSync(line, cast {stdio: "ignore"});
+			return 0;
+		} catch (_:Dynamic) {
+			return -1;
+		}
+		#end
+		try {
+			var process = new sys.io.Process(line);
+			process.stdout.readAll();
+			process.stderr.readAll();
+			var code:Int = process.exitCode();
+			process.close();
+			return code;
+		} catch (_:Dynamic) {
+			return -1;
+		}
+	}
+
 	private static function __pumpFor(seconds:Float):Void {
 		var runtime = CrossByte.current();
 		var until:Float = haxe.Timer.stamp() + seconds;
@@ -1534,6 +1755,15 @@ class FileTest extends utest.Test {
 
 	/** Runs a command with its output kept out of the test report. **/
 	private static function __quietly(command:String, args:Array<String>):Int {
+		#if nodejs
+		// No sys.io.Process on Node.
+		try {
+			js.node.ChildProcess.execFileSync(command, args, cast {stdio: "ignore"});
+			return 0;
+		} catch (_:Dynamic) {
+			return -1;
+		}
+		#end
 		try {
 			var process = new sys.io.Process(command, args);
 			process.stdout.readAll();
