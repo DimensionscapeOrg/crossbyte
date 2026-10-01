@@ -132,7 +132,8 @@ class JWT {
 	 * shape, the header's `alg`, `typ` and `kid`, the signature, and then the
 	 * claims -- `exp` (required), `iat`, `nbf`, `iss` and `aud`. Nothing in a
 	 * refused token is returned, so claims are never read before the signature
-	 * over them has been checked.
+	 * over them has been checked. A header or claims whose objects and arrays
+	 * nest more than 32 deep is `MALFORMED`, refused before it is parsed.
 	 *
 	 * @param now As for `verifyToken`.
 	 */
@@ -361,10 +362,25 @@ class JWT {
 		return copy != null ? copy : claims;
 	}
 
+	/**
+		The deepest a token's header or claims may nest, objects and arrays
+		together. Real claims nest a few levels: an address, roles under a
+		client.
+	**/
+	@:noCompletion private static inline var MAX_NESTING:Int = 32;
+
 	/** Decodes one segment into a JSON object, or null for anything else. */
 	@:noCompletion private static function __decodeObject(segment:String):Null<Dynamic> {
 		var text:Null<String> = safeBase64UrlEncodeString(segment);
 		if (text == null) {
+			return null;
+		}
+
+		// Measured before parsing, which takes a frame per level. The header
+		// is parsed before the signature is checked, so a token needed no key
+		// to be nested 6,000 deep in 16 KB -- within a raised maxTokenLength --
+		// and natively that overflowed the stack and ended the process.
+		if (!__nestsWithin(text, MAX_NESTING)) {
 			return null;
 		}
 
@@ -379,6 +395,40 @@ class JWT {
 			return null;
 		}
 		return value;
+	}
+
+	/**
+		Whether the objects and arrays in `json` nest no deeper than `limit`.
+		Brackets inside strings are text, escaped quotes included. One pass,
+		allocating nothing.
+	**/
+	@:noCompletion private static function __nestsWithin(json:String, limit:Int):Bool {
+		var depth:Int = 0;
+		var inString:Bool = false;
+		var i:Int = 0;
+		var length:Int = json.length;
+		while (i < length) {
+			var code:Int = StringTools.fastCodeAt(json, i);
+			if (inString) {
+				if (code == "\\".code) {
+					// Whatever is escaped, a quote included, is not structure.
+					i++;
+				} else if (code == '"'.code) {
+					inString = false;
+				}
+			} else if (code == '"'.code) {
+				inString = true;
+			} else if (code == "{".code || code == "[".code) {
+				depth++;
+				if (depth > limit) {
+					return false;
+				}
+			} else if (code == "}".code || code == "]".code) {
+				depth--;
+			}
+			i++;
+		}
+		return true;
 	}
 
 	@:noCompletion private static function __audMatches(expected:String, aud:Dynamic):Bool {
