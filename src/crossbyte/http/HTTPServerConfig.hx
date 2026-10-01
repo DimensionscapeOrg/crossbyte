@@ -294,10 +294,16 @@ class HTTPServerConfig {
 		4. the remaining entries here, in order
 
 		The consequence worth knowing is that **an existing file wins over a
-		rewrite**, whatever the rules say. This is Apache's `RewriteCond !-f`
-		idiom applied for you rather than written out; to invert it for a
-		given rule, give that rule a `FileExists` condition with `negate` set
-		and it will run before the file is looked for. It is not nginx's
+		rewrite** unless the rule asks about files. For a request that names
+		a file or a directory with an index, every rule without a
+		`FileExists` or `DirExists` condition is passed over and the file is
+		served: Apache's `RewriteCond !-f` idiom applied for you rather than
+		written out. A rule with one of those conditions asks for itself and
+		is tried in its place even then, so to have a rule win over a file
+		that exists, give it a `FileExists` condition without `negate`: it
+		then applies to exactly the requests that name an existing file.
+		(This doc used to say `negate` set, which asks the opposite, and no
+		rule could win over an existing file at all.) It is not nginx's
 		model, where `try_files` runs after the rewrite phase in the order
 		written.
 
@@ -324,8 +330,10 @@ class HTTPServerConfig {
 	public var tryFiles:Array<String>;
 
 	/**
-		Rewrite rules, applied in order after `tryFiles` has failed to resolve
-		the request against an existing file or directory index.
+		Rewrite rules, applied in order to a request that names no existing
+		file or directory index. One that does is tried only against the rules
+		that ask about files, a `FileExists` or `DirExists` condition, and
+		served its file when none of them applies; see `tryFiles`.
 
 		Empty by default. A rule carrying the `PHP` flag needs `phpEnabled`,
 		and the two shipped out of step until 1.0.0-rc.2: the defaults rewrote
@@ -585,9 +593,9 @@ class HTTPServerConfig {
 
 		`$uri` and `$uri/` are
 		tested by the resolver before it reads this list at all, before the
-		rewrite rules, and whether or not the list mentions them, so any
-		spelling other than those two first describes something that does not
-		happen. Listing a literal ahead of them does not give it priority;
+		rewrite rules look at the request, and whether or not the list
+		mentions them, so any spelling other than those two first describes
+		something that does not happen. Listing a literal ahead of them does not give it priority;
 		leaving them out does not switch direct file serving off, which is the
 		reading most likely to be mistaken for a restriction.
 

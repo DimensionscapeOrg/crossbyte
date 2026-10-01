@@ -1932,6 +1932,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A rewrite rule with a `FileExists` or `DirExists` condition can win over
+  a file the request names, as `HTTPServerConfig.tryFiles` says: it is
+  tried in its place even then, and with `FileExists` (not negated) it
+  applies to exactly those requests. Every rule ran only once the request
+  had been found to name no file or directory index, so none could, and
+  the doc's recipe, `negate` set, asked the opposite. Rules without such
+  a condition are passed over for a request naming a file, as before.
 - A rewrite's `Header` condition matches its field in any case, as HTTP
   names one. Both parsers store a request's fields lowercase, and the key
   was looked up as written, so `X-Test` matched nothing a client could
