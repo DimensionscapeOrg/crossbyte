@@ -848,6 +848,62 @@ class IceAgentTest extends utest.Test {
 	}
 
 	/**
+		The same, under the default deadline, after the start a real path
+		can have: the preferred pair's first checks lost, as a NAT drops what
+		arrives before its own side has sent anything, so it answers at the
+		retransmission three and a half seconds in.
+
+		A nomination is a check, given up on 39.5 seconds after it goes out,
+		and the default deadline was 40 seconds from `start`: a moment past
+		one check's schedule, so the agent gave up just before its unanswered
+		nomination would have been, and the move to another pair this class
+		promises happened only on a path that answered within half a second.
+	**/
+	public function testANominationLostAfterASlowStartMovesOnWithinTheDefaultDeadline():Void {
+		if (unsupported()) return;
+
+		var alice = new IceAgent(true, credentials("alice"));
+		var bob = new IceAgent(false, credentials("bob"));
+		var failure:String = null;
+		alice.connected.then(_ -> {}, error -> failure = error);
+		bob.connected.then(_ -> {}, _ -> {});
+
+		var wire = new Wire(alice, ALICE_ADDRESS, bob, BOB_ADDRESS);
+		var second:String = "10.0.0.4";
+		wire.loseNominationsTo.push(BOB_ADDRESS + ":" + PORT);
+
+		alice.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		bob.addLocalCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		bob.addLocalCandidate(IceCandidate.host(second, PORT));
+		alice.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		alice.addRemoteCandidate(new IceCandidate(HOST, second, PORT, IceCandidate.COMPONENT_RTP, IceCandidate.computePriority(HOST, 100)));
+		bob.addRemoteCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		alice.start(bob.localCredentials, 0);
+		bob.start(alice.localCredentials, 0);
+
+		// The preferred pair's first three checks are lost, and the one 3.5
+		// seconds in is answered, and nominated at once, and that lost. The
+		// other pair is reached only once that nomination is out, so it is
+		// the one to move on to.
+		var preferred:String = BOB_ADDRESS + ":" + PORT;
+		var other:String = second + ":" + PORT;
+		wire.unreachable.push(preferred);
+		wire.unreachable.push(other);
+		var now:Float = wire.advance(0, 1.6, 0.05);
+		wire.unreachable.remove(preferred);
+		now = wire.advance(now, 3.4, 0.05);
+		Assert.isTrue(wire.nominationsFrom(alice) > 0, "the preferred pair was not nominated as it answered");
+		wire.unreachable.remove(other);
+		wire.advance(now, IceAgent.DEFAULT_TIMEOUT + 6.0 - now, 0.05);
+
+		Assert.equals(IceAgentState.CONNECTED, alice.state, "the controlling agent gave up before its unanswered nomination did: " + failure);
+		Assert.equals(IceAgentState.CONNECTED, bob.state, "the controlled agent was never nominated");
+		if (alice.selectedPair != null) {
+			Assert.equals(second, alice.selectedPair.remote.address, "the pair selected is not the one that answered");
+		}
+	}
+
+	/**
 		A late copy of the answer that proved a pair is not taken for the
 		answer to its nomination.
 
