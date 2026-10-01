@@ -175,6 +175,19 @@ class HTTPHardeningTest extends utest.Test {
 		Assert.equals("X-Foo", HttpSyntax.sanitizeHeaderName("X-\tFoo"));
 	}
 
+	/**
+		A clean header comes back as it was, read before anything is built,
+		non-ASCII included; one whose only fault is its last character is
+		still caught.
+	**/
+	public function testSanitizeReadsToTheLastCharacter():Void {
+		Assert.equals("café 中", HttpSyntax.sanitizeHeaderValue("café 中"));
+		Assert.equals("abc", HttpSyntax.sanitizeHeaderValue("abc\r"));
+		Assert.equals("abc", HttpSyntax.sanitizeHeaderValue("abc" + String.fromCharCode(127)));
+		Assert.equals("X-Name", HttpSyntax.sanitizeHeaderName("X-Name:"));
+		Assert.equals("X-Name", HttpSyntax.sanitizeHeaderName("X-Name "));
+	}
+
 	public function testSanitizeHeaderNameHandlesNullAndEmpty():Void {
 		Assert.equals("", HttpSyntax.sanitizeHeaderName(null));
 		// A name made entirely of illegal characters yields an empty token,
