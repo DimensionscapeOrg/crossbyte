@@ -979,38 +979,50 @@ class ServerWebSocket extends ServerSocket {
 	}
 
 	/**
-		Closes sessions that were accepted and never finished arriving.
+		Takes one connection from the listen queue, or `null` when none is
+		waiting or the system would not hand one over.
 
-		Without this a peer completes the TCP connection, stalls, and holds a
-		socket for as long as it likes, bounded only by the operating
-		system's own limits, which is a slow way to lose a server rather than
-		a fast one. `handshakeTimeout` is inherited from `ServerSocket` and
-		means the same thing here.
+		A refusal, the process out of descriptors (`EMFILE`), the system
+		out of memory, is `ServerSocket`'s accept failure: counted in
+		`acceptFailures`, reported once for a run of them, and the server
+		goes on listening, with the connection left in the kernel's queue to
+		be taken once a descriptor frees. Here hxcpp's refusal, a bare string,
+		was swallowed without a trace, and the jvm's, an I/O error, closed the
+		server.
 	**/
 	@:noCompletion private function __acceptPending():FlexSocket {
+		#if eval
+		// eval cannot make a socket non-blocking, its setBlocking does
+		// nothing, so an accept with no connection waiting would hold
+		// the runtime until one came. Asked first, as ServerSocket does.
 		try {
-			#if eval
-			// eval cannot make a socket non-blocking, its setBlocking does
-			// nothing, so an accept with no connection waiting would hold
-			// the runtime until one came. Asked first, as ServerSocket does.
 			if (sys.net.Socket.select([__webServerSocket], [], [], 0).read.length == 0) {
 				return null;
 			}
-			#end
-			return __webServerSocket.accept();
-		} catch (e:Error) {
-			// One predicate, and no per-target branch: the enum switch that
-			// needed a jvm workaround here (VerifyError: bad type on operand
-			// stack, from matching inside a catch) now lives in a plain
-			// static function where that mis-compile does not apply.
-			if (!crossbyte._internal.socket.BlockedError.isBlocked(e)) {
-				close();
-				dispatchEvent(new Event(Event.CLOSE));
-			}
+		} catch (_:Dynamic) {
+			return null;
+		}
+		#end
+
+		// Answered from inside the try rather than through a local, for the
+		// jvm reason noted on this_onTick.
+		try {
+			var socket:FlexSocket = __takeConnection();
+			__acceptFailing = false;
+			return socket;
 		} catch (e:Dynamic) {
-			// Do nothing.
+			// One predicate for every spelling of "none waiting": the typed
+			// error, and the bare string a TLS layer raises.
+			if (!crossbyte._internal.socket.BlockedError.isBlocked(e)) {
+				__onAcceptFailed(e);
+			}
 		}
 		return null;
+	}
+
+	/** Takes one connection from this server's own listener. **/
+	@:noCompletion override private function __takeConnection():sys.net.Socket {
+		return __webServerSocket.accept();
 	}
 	#end
 
