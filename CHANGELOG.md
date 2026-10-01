@@ -85,6 +85,12 @@ entry below says how:
   choosing: bind first, to port 0 for one the system picks.
 
 ### Added
+- `new NetHost("wss://...")` takes the certificate and key it presents,
+  as `cert`, and installs them before it binds. It bound its
+  `ServerWebSocket` with no way to reach `cert` first, so every TLS
+  handshake failed and nothing said why; a `wss://` host without `cert`
+  is now an `ArgumentError`, as is `cert` given to a host that would not
+  use it.
 - `IOErrorEvent.TIMEOUT_ERROR_ID`, the `errorID` of a `Socket`'s `ioError`
   for a connect not made within its `timeout`, so a listener can tell a
   deadline from a refusal without reading the text. A `NetConnection`
