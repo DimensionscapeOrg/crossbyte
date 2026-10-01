@@ -2045,9 +2045,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (ACCESS_LOG.isEnabled(LogLevel.INFO)) {
 			ACCESS_LOG.info('Client ' + __origin.remoteAddress + ' ' + __method + ' ' + __requestPath + ' - Status: ' + statusCode);
 		}
+		// What was answered, as HTTPStatusEvent says: the URL asked for and the
+		// fields the response carries. These were the client's address and
+		// only the fields a caller had added -- for a static file, no
+		// Content-Type, Date or Server. The client's address is
+		// remoteAddress. Both cost nothing for a request with no query.
 		var statusEvent:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, statusCode, false);
-		statusEvent.responseURL = __origin.remoteAddress;
-		statusEvent.responseHeaders = headers;
+		statusEvent.responseURL = (__queryString == null || __queryString == "") ? __requestPath : __requestPath + "?" + __queryString;
+		statusEvent.responseHeaders = fields;
 		dispatchEvent(statusEvent);
 
 		// A body the output buffer cannot hold goes out as a file does, in
