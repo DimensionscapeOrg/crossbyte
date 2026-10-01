@@ -251,6 +251,38 @@ class HTTPPhpTest extends utest.Test {
 		world.close();
 	}
 
+	public function testABackendThatFailsIsAnsweredWithAWholeResponse():Void {
+		// The 502 and the 504 were written as a HEAD's answer: a Content-Length
+		// counting the text, and no text. The client was left waiting for
+		// bytes that never came until the connection closed under it.
+		var backend = new FakeFastCGI();
+		var world = new PhpWorld(backend);
+
+		world.send("GET /index.php HTTP/1.1\r\nHost: localhost\r\n\r\n");
+		backend.hangUp();
+		HTTPTestSupport.pumpUntil(() -> world.responseCount() > 0, 3.0);
+
+		var response = HTTPTestSupport.parseResponse(world.raw);
+		Assert.equals(502, response.status, "not the 502: " + world.raw);
+		Assert.equals("Bad Gateway", response.body);
+		Assert.equals("11", response.headers.get("content-length"));
+		world.close();
+	}
+
+	public function testABackendThatTimesOutIsAnsweredWithAWholeResponse():Void {
+		var backend = new FakeFastCGI();
+		var world = new PhpWorld(backend, (config, _) -> config.phpTimeout = 0.5);
+
+		// Never answered: the bridge's own deadline ends the exchange.
+		world.send("GET /index.php HTTP/1.1\r\nHost: localhost\r\n\r\n");
+		HTTPTestSupport.pumpUntil(() -> world.responseCount() > 0, 5.0, 0.001);
+
+		var response = HTTPTestSupport.parseResponse(world.raw);
+		Assert.equals(504, response.status, "not the 504: " + world.raw);
+		Assert.equals("Gateway Timeout", response.body);
+		world.close();
+	}
+
 	/**
 	 * Every Set-Cookie value in the first response, in order.
 	 *
@@ -343,6 +375,15 @@ private class FakeFastCGI {
 
 		peer.writeBytes(out, 0, out.length);
 		peer.flush();
+	}
+
+	/** Closes the connection the bridge opened, before any answer. */
+	public function hangUp():Void {
+		if (peer != null) {
+			try {
+				peer.close();
+			} catch (_:Dynamic) {}
+		}
 	}
 
 	public function close():Void {
