@@ -1932,6 +1932,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `Metrics.shared` is one registry however many threads read it first.
+  It was made at the first read, with nothing to stop two threads from
+  both finding it missing: on the jvm, eight threads reading it first got
+  eight registries, and the counters registered in the seven that were
+  dropped never appeared in a scrape. It is made when the class
+  initializes now, so reading it costs nothing more than before.
 - `Metrics.toPrometheus()` prints whole numbers past 2^31 as they are.
   They went through `Std.int`, which holds 31 bits: a counter of bytes
   sent at three billion printed -1294967296 (2147483647 on the jvm), a

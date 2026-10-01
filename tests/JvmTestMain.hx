@@ -26,6 +26,13 @@
  */
 class JvmTestMain {
 	public static function main():Void {
+		// Run as a child by a test that needs a process's first moments: the
+		// first reads of a process-wide registry, in MetricsTest.
+		if (Sys.args().indexOf(crossbyte.metrics.MetricsTest.FIRST_READ_CHILD) >= 0) {
+			crossbyte.metrics.MetricsTest.firstReadChild();
+			return;
+		}
+
 		crossbyte.test.TestHarness.run(function(runner) {
 			crossbyte.test.TestSuites.addAll(runner);
 		});

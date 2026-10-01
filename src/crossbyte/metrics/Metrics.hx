@@ -45,12 +45,16 @@ class Metrics {
 	 */
 	public static var shared(get, never):Metrics;
 
-	@:noCompletion private static var __shared:Metrics;
+	// Made when the class initializes, which every target does once and
+	// before any thread can ask -- the jvm under its class-initialization
+	// lock. It was made at the first read, with nothing stopping two threads
+	// from both finding it missing: on the jvm, eight threads reading it
+	// first got eight registries, and the counters registered into the seven
+	// that were dropped never appeared in a scrape. A lock taken at every
+	// read would cost each lookup as much as the lookup's own.
+	@:noCompletion private static var __shared:Metrics = new Metrics();
 
-	@:noCompletion private static function get_shared():Metrics {
-		if (__shared == null) {
-			__shared = new Metrics();
-		}
+	@:noCompletion private static inline function get_shared():Metrics {
 		return __shared;
 	}
 
