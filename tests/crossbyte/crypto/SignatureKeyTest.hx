@@ -30,9 +30,18 @@ class SignatureKeyTest extends utest.Test {
 		#if cpp
 		Assert.isTrue(PublicKeySignature.isAvailable());
 		#else
+		var pem:String = "-----BEGIN PUBLIC KEY-----\n-----END PUBLIC KEY-----";
 		Assert.isFalse(PublicKeySignature.isAvailable());
-		Assert.raises(() -> SignatureKey.fromPublicPem("-----BEGIN PUBLIC KEY-----\n-----END PUBLIC KEY-----"));
-		Assert.equals(PublicKeyType.UNKNOWN, PublicKeySignature.keyType("-----BEGIN PUBLIC KEY-----\n-----END PUBLIC KEY-----"));
+		Assert.raises(() -> SignatureKey.fromPublicPem(pem), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> SignatureKey.fromPrivatePem(""), crossbyte.errors.IllegalOperationError);
+		// Each answered as though the key or signature were at fault: UNKNOWN,
+		// -1, and false -- the answer for a forged signature, so every
+		// signature was refused, genuine ones included.
+		Assert.raises(() -> PublicKeySignature.keyType(pem), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> PublicKeySignature.joseSignatureLength(pem), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> PublicKeySignature.verify(pem, Bytes.ofString("m"), Bytes.alloc(64)), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> PublicKeySignature.verify(null, null, null), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> PublicKeySignature.sign(null, null), crossbyte.errors.IllegalOperationError);
 		#end
 	}
 

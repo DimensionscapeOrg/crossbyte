@@ -82,6 +82,11 @@ entry below says how:
   `Ed25519.isAvailable()` first.
 - `SharedObject.sync()` throws an `IOError` for a payload the build cannot
   read, where it set `data` to `{}`.
+- Off native cpp the crypto classes, the EdDSA, RS256 and ES256 JWT
+  signers and the IPC classes throw an `IllegalOperationError`, where they
+  threw a String or an `ArgumentError`; `Aead.decrypt` and
+  `PublicKeySignature.verify`, `keyType` and `joseSignatureLength` throw
+  there where they answered. Check `isAvailable()` or `isSupported` first.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1143,6 +1148,20 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A crypto or IPC member that cannot work on the target throws an
+  `IllegalOperationError` naming the target, before looking at its
+  arguments: `Aead`, `GenericHash`, `HKDF`, `X25519`, `KeyExchange`,
+  `Blake3`, `PublicKeySignature`, `SignatureKey`, `Argon2id` (which names
+  the Node version where Node is too old), the EdDSA, RS256 and ES256 JWT
+  signers, `LocalConnection`, `SharedChannel` and `SharedObject`. They
+  threw a String there, or for the IPC classes an `ArgumentError`, which
+  says the arguments were at fault. `Aead.decrypt` and
+  `PublicKeySignature.verify` throw there instead of answering `null` and
+  `false`, the answers for a forged message and a forged signature, as
+  `Ed25519.verifyDetached` does; `PublicKeySignature.keyType` and
+  `joseSignatureLength` throw instead of answering `UNKNOWN` and `-1` for
+  every key. Each class's doc says so, and `isSupported` on the IPC classes
+  says where they work.
 - `Ed25519.verifyDetached` throws on a target with no Ed25519 backend --
   anything but native cpp -- instead of answering `false`, which is the
   answer for a forged signature: code checking signed messages there

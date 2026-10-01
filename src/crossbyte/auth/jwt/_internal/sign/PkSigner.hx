@@ -9,6 +9,9 @@ import crossbyte.crypto.SignatureKey;
 import haxe.crypto.Base64;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
+#if !cpp
+import crossbyte.crypto._internal.NativeOnly;
+#end
 
 /**
  * JWT signer for the asymmetric SHA-256 algorithms backed by mbedTLS:
@@ -57,7 +60,11 @@ class PkSigner implements IJWTSigner {
 			throw 'PkSigner supports RS256 and ES256, not "$algorithm"';
 		}
 		if (!PublicKeySignature.isAvailable()) {
-			throw "PkSigner requires the native mbedTLS backend, which is only available on supported native cpp targets.";
+			#if cpp
+			throw "PkSigner requires the native mbedTLS backend, which this hxcpp does not expose.";
+			#else
+			throw NativeOnly.error(algorithm + " JWT signing and verification");
+			#end
 		}
 		if (publicKeys == null) {
 			throw "PkSigner: publicKeys must not be null";

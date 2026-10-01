@@ -18,9 +18,11 @@ class SharedObjectTest extends utest.Test {
 		Assert.isTrue(SharedObject.isSupported);
 		#else
 		var name:String = "crossbyte_sharedobject_test_" + Std.int(Timer.stamp() * 1000);
-		Assert.isTrue(throws(function() {
+		// Not an ArgumentError, which says the arguments were wrong: nothing
+		// here could have made them right.
+		Assert.raises(function() {
 			new SharedObject(name);
-		}));
+		}, crossbyte.errors.IllegalOperationError);
 		#end
 	}
 

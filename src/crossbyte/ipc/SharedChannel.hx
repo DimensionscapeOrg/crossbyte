@@ -6,6 +6,9 @@ package crossbyte.ipc;
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IllegalOperationError;
+#if !cpp
+import crossbyte.crypto._internal.NativeOnly;
+#end
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.StatusEvent;
 import crossbyte.events.TickEvent;
@@ -32,6 +35,11 @@ import sys.thread.Thread;
 @:access(haxe.Serializer)
 @:access(crossbyte.ipc.LocalConnection)
 class SharedChannel extends EventDispatcher {
+	/**
+	 * Whether this target has the transport underneath, `LocalConnection`:
+	 * natively (cpp) on Windows, Linux and macOS. Elsewhere `connect` and
+	 * `send` throw an `IllegalOperationError` naming the target.
+	 */
 	public static inline var isSupported:Bool = LocalConnection.isSupported;
 
 	/**
@@ -391,9 +399,9 @@ class SharedChannel extends EventDispatcher {
 	}
 
 	@:noCompletion private static inline function __requireSupported():Void {
-		if (!isSupported) {
-			throw new ArgumentError("SharedChannel is only supported on native cpp targets.");
-		}
+		#if !cpp
+		throw NativeOnly.error("SharedChannel");
+		#end
 	}
 
 	/** Test hook that forwards through the low-level native helper. */
