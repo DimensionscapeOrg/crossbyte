@@ -650,6 +650,56 @@ class DatagramSocketTest extends utest.Test {
 	}
 
 	/**
+		Datagrams past what one pass takes are read in the same frame.
+
+		A socket takes at most 1,024 a pass, so that a flood cannot hold the
+		loop, and the registry asks it once a pass: a runtime polled once a
+		frame -- the DEFAULT loop, or a host's pump -- took no more than
+		1,024 a frame, 12,288 a second at twelve ticks, however many were
+		arriving, and the rest overflowed the kernel's buffer.
+	**/
+	public function testDatagramsPastOnePassesShareAreReadInTheSameFrame():Void {
+		#if (cpp || jvm)
+		if (!requireDatagramSupport()) return;
+
+		var receiver = new DatagramSocket();
+		var flood = new FloodUdpSocket();
+		var sender = new DatagramSocket();
+		var received:Int = 0;
+
+		try {
+			flood.setBlocking(false);
+			try receiver.__socket.close() catch (_:Dynamic) {}
+			flood.custom = receiver;
+			receiver.__socket = flood;
+			receiver.bind(0, "127.0.0.1");
+			receiver.addEventListener(DatagramSocketDataEvent.DATA, function(_) received++);
+			receiver.receive();
+
+			sender.bind(0, "127.0.0.1");
+			// One datagram really sent, read only once the flood is: it keeps
+			// the socket readable for as long as the flood lasts.
+			sender.send(bytesOf("x"), 0, 0, "127.0.0.1", receiver.localPort);
+			crossbyte.sys.System.sleep(0.05);
+			flood.remaining = 3000;
+
+			CrossByte.current().pump(0.25, 0);
+
+			Assert.equals(3001, received, 'one frame read $received of the 3,001 datagrams waiting');
+		} catch (e:Dynamic) {
+			closeQuietly(sender);
+			closeQuietly(receiver);
+			throw e;
+		}
+
+		closeQuietly(sender);
+		closeQuietly(receiver);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
 		Datagrams from two peers in turn, each reported as from its own: the
 		source a datagram names is kept from one to the next, and must not be
 		kept past a change of sender.
@@ -788,6 +838,31 @@ private class CountingUdpSocket extends sys.net.UdpSocket {
 	override public function host():{host:sys.net.Host, port:Int} {
 		asked++;
 		return super.host();
+	}
+}
+#end
+
+#if (cpp || jvm)
+/**
+	A UDP socket whose reads find `remaining` one-byte datagrams from the
+	loopback before anything really sent: a peer sending faster than they
+	are read, which a real one only sometimes manages and whose kernel buffer
+	would not hold the flood on Linux anyway.
+**/
+private class FloodUdpSocket extends sys.net.UdpSocket {
+	static final LOOPBACK:sys.net.Host = new sys.net.Host("127.0.0.1");
+
+	public var remaining:Int = 0;
+
+	override public function readFrom(buf:haxe.io.Bytes, pos:Int, len:Int, addr:sys.net.Address):Int {
+		if (remaining <= 0) {
+			return super.readFrom(buf, pos, len, addr);
+		}
+		remaining--;
+		buf.set(pos, 0x2A);
+		addr.host = LOOPBACK.ip;
+		addr.port = 9;
+		return 1;
 	}
 }
 #end

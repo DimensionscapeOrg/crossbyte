@@ -254,6 +254,89 @@ class SocketTest extends utest.Test {
 		Assert.isTrue(copies <= 5, 'the backlog was copied into a new buffer $copies times in $flushes flushes');
 	}
 
+	/**
+		A peer that keeps every read full is read a megabyte a pass, and the
+		rest on the passes after, not for as long as it keeps sending.
+
+		The read loop went round for as long as each read filled the buffer,
+		so a client uploading faster than the server copied held the runtime
+		inside that one socket -- no timer ran and no other socket was read
+		while it lasted -- and everything it read was held at once: over
+		loopback a single uploader's unread backlog reached 365 MB before
+		the listener saw any of it.
+	**/
+	public function testAPeerThatKeepsSendingIsReadAMegabyteAPass():Void {
+		var total:Int = 8 * 1024 * 1024;
+		var delivered:Array<Int> = readFlood(false, total, 64 * 1024);
+
+		var largest:Int = 0;
+		var sum:Int = 0;
+		for (n in delivered) {
+			sum += n;
+			if (n > largest) {
+				largest = n;
+			}
+		}
+		Assert.equals(total, sum, "not everything sent was delivered");
+		Assert.isTrue(largest <= 1024 * 1024, 'one pass read $largest bytes from a peer that kept sending, in ${delivered.length} passes');
+	}
+
+	/**
+		What a connected socket delivers, pass by pass, from a peer flooding
+		`total` bytes `perCall` at a time: one entry per SOCKET_DATA, each
+		checked against what was sent in its place.
+	**/
+	private function readFlood(secure:Bool, total:Int, perCall:Int):Array<Int> {
+		var socket = new Socket();
+		socket.secure = secure;
+		socket.__connected = true;
+		socket.__output = new ByteArray();
+		socket.__output.endian = socket.__endian;
+		socket.__input = new ByteArray();
+		socket.__input.endian = socket.__endian;
+
+		var pattern = haxe.io.Bytes.alloc(251);
+		for (i in 0...pattern.length) {
+			pattern.set(i, i);
+		}
+		var raw = new SysSocket();
+		var original = raw.input;
+		var flood = new FloodInput(pattern, total, perCall);
+		@:privateAccess raw.input = flood;
+		socket.__socket = raw;
+
+		var delivered:Array<Int> = [];
+		var offset:Int = 0;
+		var wrong:Int = 0;
+		var chunk = new ByteArray();
+		socket.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
+			var n:Int = socket.bytesAvailable;
+			delivered.push(n);
+			chunk.clear();
+			socket.readBytes(chunk, 0, n);
+			for (i in 0...n) {
+				if (chunk[i] != (offset + i) % 251) {
+					wrong++;
+				}
+			}
+			offset += n;
+		});
+
+		var passes:Int = 0;
+		while (flood.available > 0 && passes < 100) {
+			socket.this_onTick();
+			passes++;
+		}
+
+		socket.__socket = null;
+		@:privateAccess raw.input = original;
+		try raw.close() catch (_:Dynamic) {}
+
+		Assert.equals(0, wrong, '$wrong bytes arrived as something other than what was sent in their place');
+		Assert.equals(total, offset, "the flood was not all read");
+		return delivered;
+	}
+
 	public function testZeroByteFlushRetainsAllBytes():Void {
 		var socket = socketWithOutput("abcdef");
 

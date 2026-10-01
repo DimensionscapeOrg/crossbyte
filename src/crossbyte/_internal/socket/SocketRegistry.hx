@@ -43,6 +43,14 @@ final class SocketRegistry {
 	/** Seconds spent blocked in select since last taken; see NativeSocketRegistry. **/
 	@:noCompletion public var __waited:Float = 0.0;
 
+	/**
+		Whether a socket stopped reading in this update with its share of
+		the pass taken and more likely waiting (see `Socket.READ_BUDGET`).
+		The loops poll again at once while it is set, rather than wait the
+		frame out with data in hand. Cleared as each update begins.
+	**/
+	@:noCompletion public var __moreToRead:Bool = false;
+
 	private inline function get_capacity():Int {
 		return __capacity;
 	}
@@ -132,6 +140,7 @@ final class SocketRegistry {
 		}
 	}
 	public #if final inline #end function update(timeout:Float = 0):Void {
+		__moreToRead = false;
 		if (!__writableQueue.isEmpty) {
 			// Swapped before draining: a socket that is still blocked
 			// re-queues itself from inside this dispatch, and clearing the

@@ -1848,6 +1848,24 @@ All notable changes to CrossByte will be documented in this file.
   read where it lies instead of into a buffer made for each frame. One
   uploader: 650 to 930 MB/s at about 1.05 ms a megabyte; four: 700 to
   820 MB/s.
+- A peer sending faster than the server reads no longer holds the runtime
+  or the server's memory. `Socket` and the WebSocket session read for as
+  long as their reads came back full, which a client uploading over a fast
+  link keeps them doing: no timer ran and no other socket was read until
+  it paused, and everything read meanwhile was held before any listener
+  saw it. Over loopback, one TCP uploader's backlog reached 2 GB of heap
+  and four uploaders' 450 to 950 MB. Each socket now reads at most a
+  megabyte a pass, sixteen full reads, as Netty reads sixteen a wakeup.
+  The rest stays in the kernel, and the loop polls again at once rather
+  than waiting the frame out while any socket stopped that way. That
+  holds for the `POLL` loop, the `DEFAULT` loop and a host's `pump`, which
+  polls again while the frame it was given lasts. A `DatagramSocket` at
+  its 1,024-datagram cap a pass tells the loop the same, where a runtime
+  polled once a frame took no more than that a frame: 12,288 datagrams a
+  second at twelve ticks, however many arrived. Heap during the same
+  uploads is now 3 to 10 MB, and throughput stays within the range it
+  varied over before: Windows loopback swings by half from run to run,
+  with or without the cap.
 - A `POLL` loop reads its sockets every frame. Poll was given only what was
   left of a frame once that was at least a millisecond, so a runtime at
   1,000 ticks a second -- whose frames never have a whole millisecond left

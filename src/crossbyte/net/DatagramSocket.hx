@@ -1053,6 +1053,14 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 
 			processed++;
 		}
+
+		// Stopped at the cap, not at an empty socket: the loop is told, so
+		// the rest are read before it waits rather than a frame later. A
+		// server polled once a frame otherwise took at most 1,024 datagrams
+		// a frame -- 12,288 a second at twelve ticks -- however many came.
+		if (processed >= MAX_DATAGRAMS_PER_TICK && __cbInstance != null) {
+			@:privateAccess __cbInstance.__noteMoreToRead();
+		}
 	}
 
 	public inline function registryOnWritable():Void {}
