@@ -2004,6 +2004,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `File.copyTo` merging a directory into one that holds another name for
+  one of its own files -- a hard link -- leaves that file as it is. The
+  copy truncated the destination before reading the source, which was
+  the same file, and its data was gone, on every target. On neko and
+  HashLink under Windows, which cannot tell two names of one file apart,
+  a copy onto a hard link to the file itself is spared the same way,
+  where it emptied the file.
 - `System.totalSystemMemory()` and `freeSystemMemory()` ask the system:
   `GlobalMemoryStatusEx` natively on Windows, the HotSpot bean on the
   jvm, `/proc/meminfo` on Linux, `sysctl` and `vm_stat` on macOS. Each
