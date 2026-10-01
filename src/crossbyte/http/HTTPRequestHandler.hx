@@ -3227,8 +3227,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// the handler-side change. execute() used to block here -- inside a
 		// tick, so for the duration of a PHP script nothing else on this
 		// runtime ran: no other request read, no response written, no timer
-		// advanced. maxConnections defaults to 256, so one slow page stalled
-		// up to 255 clients that had nothing to do with it.
+		// advanced, so one slow page stalled every other client on the runtime,
+		// none of which had anything to do with it.
 		var exchange = __php.execute(phpReq);
 
 		exchange.then(function(phpRes:PHPResponse):Void {
