@@ -87,17 +87,19 @@ class URLLoader extends EventDispatcher {
 		A body that is not UTF-8 read as text threw, on JavaScript a
 		RangeError out of `getString`, inside the loader's completion, which
 		on Node ended the process. It is an `IO_ERROR` now, and `data` holds
-		the bytes as they came.
+		the bytes as they came. On JavaScript the text is read by the
+		platform's decoder, which refuses any malformed sequence; Haxe's
+		refused only some, and read the rest as other characters.
 	**/
 	@:noCompletion private function __parseData(dataBytes:Bytes):Null<String> {
 		try {
 			switch (dataFormat) {
 				case URLLoaderDataFormat.TEXT:
-					data = dataBytes.getString(0, dataBytes.length);
+					data = crossbyte._internal.Utf8.stringOf(dataBytes, 0, dataBytes.length, true);
 				case URLLoaderDataFormat.BINARY:
 					data = dataBytes;
 				case URLLoaderDataFormat.VARIABLES:
-					var s:String = dataBytes.getString(0, dataBytes.length);
+					var s:String = crossbyte._internal.Utf8.stringOf(dataBytes, 0, dataBytes.length, true);
 					data = new URLVariables(s);
 			}
 		} catch (error:Dynamic) {
