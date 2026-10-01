@@ -1949,6 +1949,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `ConcurrencyLimiter.tryAcquire` no longer keeps capacity nobody can
+  release. It took the capacity before delivering what its sweep had
+  decided for waiters, so a refusal callback that threw carried its
+  exception out with the permit just made: held for good, and in the
+  hands of no caller. It delivers first now.
 - `NetConnection.close()` on a WebSocket connection whose peer had closed
   it no longer throws "Operation attempted on invalid socket"; on any
   connection that has ended it does nothing.
