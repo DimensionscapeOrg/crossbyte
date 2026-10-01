@@ -317,7 +317,7 @@ The repository CI covers:
 - the whole suite on HashLink and Neko, on Windows and Linux (`hl-neko.yml`)
 - sibling extension jobs for the optional native modules
 
-The CI is currently configured to use the `dimensionscape/hxcpp` `socket-fixes` branch so CrossByte can validate against the poll/index fixes it depends on.
+CI builds against the `production` branch of the `dimensionscape/hxcpp` fork, which is also what a local native build should use: the poll/index fixes CrossByte depends on, and the fork's other corrections since. `socket-fixes` is the narrow branch the upstream pull request lives on; the note in `ci.yml` says why CI does not follow it.
 
 Each CI run now also publishes a `crossbyte-api-docs` artifact containing the generated dox site for that revision.
 
