@@ -27,6 +27,8 @@ class ZlibCompressor {
 		#if cpp
 		// hxcpp's zlib writes the stream whole; see NativeZlib.
 		return NativeZlib.zlib(stream);
+		#elseif nodejs
+		return NodeZlib.zlib(stream);
 		#else
 		var deflated:Bytes = new Deflater().compress(stream);
 		var out:Bytes = Bytes.alloc(2 + deflated.length + 4);
