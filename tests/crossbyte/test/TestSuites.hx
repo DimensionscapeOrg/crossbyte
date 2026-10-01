@@ -234,6 +234,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.StunMessageTest());
 		runner.addCase(new crossbyte.net.StunQueryTest());
 		runner.addCase(new crossbyte.net.TurnClientTest());
+		// Real sockets, so not portable: a relay reached over TCP or TLS.
+		runner.addCase(new crossbyte.net.TurnStreamTest());
 		runner.addCase(new crossbyte.net.rtc.DtlsCertificateTest());
 		runner.addCase(new crossbyte.net.rtc.DtlsTransportTest());
 		runner.addCase(new crossbyte.net.rtc.ClientHelloAssemblyTest());

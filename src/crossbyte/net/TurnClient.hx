@@ -328,6 +328,14 @@ class TurnClient {
 	/** Whether the relay has answered, and `serverAddress` is the address it answered from. **/
 	@:noCompletion private var __pinned:Bool = false;
 
+	/**
+		The host a stream to the relay is opened to, for a `transport` of TCP
+		or TLS: `serverAddress`, unless a 300 Try Alternate over TLS named the
+		alternate's domain (ALTERNATE-DOMAIN), which its certificate is checked
+		against, a relay's certificate rarely names its address.
+	**/
+	@:noCompletion @:allow(crossbyte.net._internal.stun.TurnStream) private var __streamHost:String;
+
 	/** Every server this allocation has been asked of, as "address:port", so a redirection back to one is caught. **/
 	@:noCompletion private var __asked:Array<String> = [];
 
@@ -435,6 +443,7 @@ class TurnClient {
 			__pinned = true;
 		}
 
+		__streamHost = this.serverAddress;
 		__asked.push(this.serverAddress + ":" + serverPort);
 	}
 
@@ -1469,7 +1478,7 @@ class TurnClient {
 			var alternate = message.alternateServerAddress();
 
 			if (alternate != null) {
-				__redirect(request, alternate, phrase != null ? phrase : "", now);
+				__redirect(request, alternate, message.textOf(StunMessage.ATTR_ALTERNATE_DOMAIN), phrase != null ? phrase : "", now);
 				return;
 			}
 		}
@@ -1489,8 +1498,18 @@ class TurnClient {
 		back to one ignored and the transaction failed, which is what stops two
 		relays sending a client back and forth for good, and neither is a
 		fifth, however many different ones are named.
+
+		Over TCP or TLS the alternate is reached over a connection of its own,
+		which the stream carrying this client opens when the retry is sent to
+		an address that is not the one it is connected to: the request went
+		down the old connection to the server that had redirected it, and was
+		redirected again. Over TLS the alternate's certificate is checked
+		against its ALTERNATE-DOMAIN when the relay gave one, and its address
+		otherwise.
+
+		@param domain The ALTERNATE-DOMAIN, or null.
 	**/
-	@:noCompletion private function __redirect(request:TurnTransaction, alternate:ReflexiveAddress, phrase:String, now:Float):Void {
+	@:noCompletion private function __redirect(request:TurnTransaction, alternate:ReflexiveAddress, domain:Null<String>, phrase:String, now:Float):Void {
 		var address:String = IPv6.compress(alternate.address);
 		var target:String = address + ":" + alternate.port;
 
@@ -1505,6 +1524,7 @@ class TurnClient {
 		serverAddress = address;
 		serverPort = alternate.port;
 		__pinned = true;
+		__streamHost = transport == TLS && domain != null && domain.length > 0 ? domain : address;
 
 		// Another server's realm, nonce and features, which it will state.
 		__realm = null;

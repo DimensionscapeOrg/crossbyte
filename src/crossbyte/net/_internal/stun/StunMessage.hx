@@ -149,6 +149,13 @@ class StunMessage {
 	public static inline var ATTR_ALTERNATE_SERVER:Int = 0x8023;
 
 	/**
+		`ALTERNATE-DOMAIN`: the name the server a 300 points at is checked
+		against when it is reached over TLS, since ALTERNATE-SERVER gives only
+		its address, RFC 8489 section 14.16.
+	**/
+	public static inline var ATTR_ALTERNATE_DOMAIN:Int = 0x8003;
+
+	/**
 		XORed into the CRC so a STUN fingerprint cannot be mistaken for the
 		start of some other protocol that also begins with a checksum. RFC 5389
 		section 15.5 picks the ASCII of "STUN" for it.
