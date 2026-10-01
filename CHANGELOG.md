@@ -1709,6 +1709,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On Node, logging no longer syncs stdout. The runtime's flush after each
+  frame that logged, and every warning and error, called
+  `Sys.stdout().flush()`, which is `fs.fsyncSync` there: Linux refuses it
+  for a pipe, Docker's, systemd's, a `| tee`, so a warning threw from
+  inside whatever reported it, and to a file it was a disk sync a frame.
+  A Node server with the access log on, the default, answered 18,300 small
+  requests a second; it answers 39,000, and 46,500 with the log off.
 - A native or jvm `Socket` reads its peer's address and port once per
   connection. Each `remoteAddress` or `remotePort` was a `getpeername`
   call, a `Host` and a string, and the HTTP server asks for the address on
