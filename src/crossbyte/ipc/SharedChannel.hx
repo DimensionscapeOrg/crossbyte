@@ -15,7 +15,7 @@ import crossbyte.events.TickEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.Object;
 import haxe.Timer;
-import haxe.Unserializer;
+import crossbyte.ipc._internal.BoundedUnserializer;
 import haxe.Serializer;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
@@ -45,6 +45,10 @@ class SharedChannel extends EventDispatcher {
 	/**
 	 * The object that handles incoming messages.
 	 * This should contain methods matching the message names sent by peers.
+	 *
+	 * A message naming no method of it, or whose arguments cannot be read,
+	 * not Haxe serialization, naming a class this build does not have, or
+	 * nested more than 256 deep, is dropped.
 	 */
 	public var client:Object;
 	/**
@@ -302,7 +306,9 @@ class SharedChannel extends EventDispatcher {
 			offset += 4;
 
 			var serialization = received.getString(offset, serializationLength);
-			var args:Array<Dynamic> = Unserializer.run(serialization);
+			// Bounded: natively a peer's arguments nested 6,000 deep overflowed
+			// the stack and ended this process. See BoundedUnserializer.
+			var args:Array<Dynamic> = BoundedUnserializer.run(serialization);
 			var field:Dynamic = Reflect.field(client, method);
 			if (!Reflect.isFunction(field)) {
 				return;
