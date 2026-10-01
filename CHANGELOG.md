@@ -88,6 +88,9 @@ entry below says how:
   `Null<Float>`.
 - `PostgresConnection.request()` throws `SQLError` where it threw
   `IOError` (a refused statement) or a `String` (no connection).
+- `PostgresConnection.autocommit = false` takes effect, where it did
+  nothing: statements then wait for `commit()`. Remove it from code that
+  set it and relied on each statement committing.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
