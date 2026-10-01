@@ -659,7 +659,7 @@ class WebSocket extends Socket {
 
 	/**
 		Reads an object from the socket, in whichever format `objectEncoding`
-		names -- not AMF unless it says so -- as a `ByteArray` reads one. An
+		names, as a `ByteArray` reads one: `HXSF` unless it was changed. An
 		encoding this build cannot do throws.
 		@return The deserialized object
 		@throws EOFError There is insufficient data available to read.
@@ -915,7 +915,7 @@ class WebSocket extends Socket {
 
 	/**
 		Writes an object to the socket, in whichever format `objectEncoding`
-		names -- not AMF unless it says so -- as a `ByteArray` writes one. An
+		names, as a `ByteArray` writes one: `HXSF` unless it was changed. An
 		encoding this build cannot do throws.
 		@param object The object to be serialized.
 		@throws IOError An I/O error occurred on the socket, or the socket is
