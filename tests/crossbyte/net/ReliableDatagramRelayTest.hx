@@ -215,6 +215,45 @@ class ReliableDatagramRelayTest extends utest.Test {
 	}
 
 	/**
+		The same relay is used once the server is told not to check its
+		certificate, as a test against a throwaway one needs. The server let
+		an authority through to its relay client and not `verifyCert`, so a
+		relay like this could be reached only by naming its authority.
+	**/
+	public function testARelayOverTlsCanBeReachedWithItsCertificateUnchecked():Void {
+		if (unsupported()) return;
+
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the TURN over TLS case did not run");
+			return;
+		}
+
+		var relay = new FakeTurnRelaySocket();
+		var alice = new ReliableDatagramServerSocket();
+
+		try {
+			relay.start();
+			relay.startTcp(fixture.certificate, fixture.key);
+			alice.bind(0, "127.0.0.2");
+			alice.listen();
+
+			var granted:Bool = false;
+			var failure:String = null;
+			Assert.isTrue(alice.relayVerifyCert, "a relay's certificate was not checked by default");
+			alice.relayVerifyCert = false;
+			alice.allocateRelay("127.0.0.1", relay.tcpPort, "user", "secret", false, TLS).then(_ -> granted = true, e -> failure = Std.string(e));
+			pumpUntil(() -> granted || failure != null, 8.0);
+
+			Assert.isTrue(granted, "a relay whose certificate was not to be checked was refused: " + failure);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		__closeAll(relay, [alice]);
+	}
+
+	/**
 		The same with one server reaching the relay over TCP, as one behind a
 		network that lets nothing else out would: what the relay relays is UDP
 		either way, and the session does not know the difference.
