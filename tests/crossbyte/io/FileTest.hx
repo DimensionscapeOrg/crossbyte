@@ -584,10 +584,13 @@ class FileTest extends utest.Test {
 		var file = File.createTempFile();
 		var output = HaxeFile.write(file.nativePath, true);
 
-		// To 3 GB in two steps, because seek takes an Int. A sparse file on
-		// the filesystems that have them, so this costs no disk.
-		output.seek(0x7FFFFFFF, sys.io.FileSeek.SeekBegin);
-		output.seek(0x40000000, sys.io.FileSeek.SeekCur);
+		// To 3 GB a gigabyte at a time, because seek takes an Int and neko's
+		// Int is 31 bits: 0x3FFFFFFF is the most it holds, and a larger step
+		// failed inside neko's file_seek. A sparse file on the filesystems
+		// that have them, so this costs no disk.
+		output.seek(0x3FFFFFFF, sys.io.FileSeek.SeekBegin);
+		output.seek(0x3FFFFFFF, sys.io.FileSeek.SeekCur);
+		output.seek(0x3FFFFFFF, sys.io.FileSeek.SeekCur);
 		output.writeByte(1);
 		output.close();
 
