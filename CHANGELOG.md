@@ -1057,6 +1057,17 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- Native TLS servers resume a returning client's session (TLS 1.2 session
+  tickets, from the hxcpp fork's `production`). Every connection was a full
+  handshake, 3.9 ms of CPU for ECDSA and 6.9 ms for RSA on an MSVC build,
+  on the runtime's own thread, and a browser reconnects whenever it comes
+  back after the keep-alive timeout. Returning clients, a connection per
+  request: 7,700 connections a second where it managed 257 (ECDSA) and 145
+  (RSA). Each server has its own ticket key, random, in memory only and
+  rotated hourly, so a ticket opens only on the server that issued it and
+  for an hour at most. A resumed TLS 1.2 session reuses the keys it began
+  with rather than agreeing new ones, as nginx's and Node's do by default;
+  build with `-D HXCPP_SSL_NO_TICKETS` to keep every handshake a full one.
 - On native, gzip, zlib and raw DEFLATE, `ByteArray.compress`, and the
   HTTP server's `gzip` and `deflate`, come from hxcpp's own zlib at its
   default level, where they came from the Deflater written in Haxe. 64 KB
