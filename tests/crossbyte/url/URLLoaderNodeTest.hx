@@ -196,6 +196,33 @@ class URLLoaderNodeTest extends utest.Test {
 		});
 	}
 
+	/**
+		A `ByteArray` body goes out as the bytes it holds. Node was handed the
+		buffer under it, which runs on past `length` into the room it keeps to
+		grow, and into whatever it held before it was cleared: "hello" went
+		out as nine bytes, and written after a secret, with the rest of the
+		secret behind it.
+	**/
+	public function testAByteArrayBodyGoesOutAsItsLength(async:Async):Void {
+		var body:crossbyte.io.ByteArray = new crossbyte.io.ByteArray();
+		body.writeUTFBytes("a secret, written first and then cleared away");
+		body.clear();
+		body.writeUTFBytes("hello");
+		serveWith((request, received, response) -> {
+			response.writeHead(200, {"Content-Type": "text/plain"});
+			response.end(Std.string(Reflect.field(request.headers, "content-length")) + " " + received.toString("hex"));
+		}, (port, close) -> {
+			loadWith('http://127.0.0.1:$port/echo', request -> {
+				request.method = URLRequestMethod.POST;
+				request.data = body;
+			}, outcome -> {
+				close();
+				Assert.equals("ok 5 68656c6c6f", outcome, "the body went out past its length: " + outcome);
+				async.done();
+			});
+		});
+	}
+
 	/** Loads `url` as text, and calls `done` with "ok <data>" or "error <text>". */
 	private static function load(url:String, limit:Null<Int>, done:String->Void):Void {
 		loadWith(url, request -> {
@@ -264,6 +291,28 @@ class URLLoaderNodeTest extends utest.Test {
 		var begin:String = "-----BEGIN CERTIFICATE-----";
 		var body:String = pem.substring(pem.indexOf(begin) + begin.length, pem.indexOf("-----END CERTIFICATE-----"));
 		return crossbyte._internal.http.PublicKeyPins.pinOf(haxe.crypto.Base64.decode(~/\s/g.replace(body, "")));
+	}
+
+	/**
+		Node's http server, answering each request with what `answer` makes of
+		it once its body has arrived. `close` also ends kept connections,
+		which would hold the process open.
+	**/
+	private static function serveWith(answer:(request:Dynamic, body:js.node.Buffer, response:Dynamic) -> Void,
+			then:(port:Int, close:Void->Void) -> Void):Void {
+		var server:Dynamic = js.Lib.require("http").createServer(function(request:Dynamic, response:Dynamic):Void {
+			var chunks:Array<js.node.Buffer> = [];
+			request.on("data", (chunk:js.node.Buffer) -> chunks.push(chunk));
+			request.on("end", () -> answer(request, js.node.Buffer.concat(chunks), response));
+		});
+		server.listen(0, "127.0.0.1", function():Void {
+			then(server.address().port, () -> {
+				server.close();
+				if (server.closeAllConnections != null) {
+					server.closeAllConnections();
+				}
+			});
+		});
 	}
 
 	/** Starts Node's http server with the answers this suite asks for. */
