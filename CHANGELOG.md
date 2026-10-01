@@ -1969,6 +1969,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `ByteArrayOutput` grows as its doc says, in every writer. The
+  fixed-size ones -- byte, short, int, float, double, bytes -- only
+  checked, outside `final`, and threw, so a `new ByteArrayOutput()` could
+  not take `writeInt(1)` without a `reserve(4)` first; in a `final` build
+  they did not check at all and wrote past the end of the chunk. A writer
+  short of room takes a new chunk at least as large as what the output
+  already holds, so value after value takes a handful of chunks;
+  `reserve()` still takes one of exactly the size asked for.
 - On Windows, closing the console window, logging off or shutting down
   runs the `onShutdown` callbacks of `ProcessLifecycle`. Windows ends the
   process as soon as the console handler for those returns, and the
