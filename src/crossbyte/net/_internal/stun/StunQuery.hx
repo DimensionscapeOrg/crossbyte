@@ -36,6 +36,21 @@ class StunQuery {
 	**/
 	public static inline var RETRANSMIT_FIRST:Float = 0.5;
 
+	/**
+		How long a question is asked for when its caller gives a timeout of 0
+		or less, in milliseconds. Not "no deadline", as 0 is for a connection:
+		UDP reports nothing when a datagram is dropped, so a deadline is the
+		only thing that ends a question nobody answers.
+	**/
+	public static inline var DEFAULT_TIMEOUT_MS:Int = 3000;
+
+	/**
+		How long this question is asked for, in milliseconds: the timeout it
+		was given, or `DEFAULT_TIMEOUT_MS` for one of 0 or less -- what a
+		failure should say it waited.
+	**/
+	public var timeoutMs(default, null):Int;
+
 	/** The request, whose transaction is what a reply is believed by. **/
 	public var request(default, null):StunMessage;
 
@@ -57,8 +72,9 @@ class StunQuery {
 
 	/**
 		@param now The caller's clock, whatever it consistently uses.
-		@param timeoutMs How long to keep asking. Non-positive means three
-		seconds, which is what every caller here passed for it.
+		@param timeoutMs How long to keep asking. 0 or less means
+		`DEFAULT_TIMEOUT_MS`, three seconds, which is what every caller here
+		passed for it.
 		@param attributes More for the request to carry: a CHANGE-REQUEST.
 	**/
 	public function new(now:Float, timeoutMs:Int, ?attributes:Array<StunAttribute>) {
@@ -70,7 +86,8 @@ class StunQuery {
 			}
 		}
 
-		__deadline = now + (timeoutMs > 0 ? timeoutMs / 1000 : 3.0);
+		this.timeoutMs = timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS;
+		__deadline = now + this.timeoutMs / 1000;
 		__interval = RETRANSMIT_FIRST;
 		__nextAttempt = now + __interval;
 	}

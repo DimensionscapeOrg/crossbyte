@@ -130,6 +130,42 @@ class StunClientTest extends utest.Test {
 	}
 
 	/**
+		A timeout of 0 asks for the default, three seconds, and the failure
+		says how long that was.
+
+		0 cannot mean no deadline here, as it does for a connection: nothing
+		but a deadline ends a question UDP may never answer. It was read as
+		the default already, saying so nowhere, and the failure blamed the
+		server for not answering "within 0ms".
+	**/
+	public function testATimeoutOfZeroAsksForTheDefaultAndSaysSo():Void {
+		if (unsupported()) return;
+
+		var server = new FakeStunServer();
+		var answer = new Outcome();
+
+		try {
+			server.ignoreEverything = true;
+			server.start();
+
+			var started:Float = haxe.Timer.stamp();
+			StunClient.discover("127.0.0.1", server.port, 0).then(answer.succeed, answer.fail);
+			pumpUntil(answer.settled, 8.0);
+			var took:Float = haxe.Timer.stamp() - started;
+
+			Assert.notNull(answer.error, "a question with a timeout of 0 never ended");
+			Assert.isTrue(took >= 2.5, "a timeout of 0 gave the question up after " + took + " s, short of the default three");
+			if (answer.error != null) {
+				Assert.isTrue(answer.error.indexOf("3000ms") >= 0, "the failure does not say how long it waited: " + answer.error);
+			}
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		server.close();
+	}
+
+	/**
 		A server name that does not resolve fails the question at once. Names
 		are looked up off the runtime's thread now, so the failure arrives as
 		the socket's ioError after the send returns -- and nothing listened
