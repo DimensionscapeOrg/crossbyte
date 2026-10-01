@@ -141,6 +141,8 @@ class DBParameterBindingTest extends utest.Test {
 		Assert.equals("a = NULL, b = :absent", result);
 	}
 
+	#if !js
+	// The statements are not built for JavaScript, which has no driver.
 	@:access(crossbyte.db.postgres.PostgresStatement)
 	@:access(crossbyte.db.sql.sqlite.SQLiteStatement)
 	public function testEveryDriverWritesANullParameterAsNull():Void {
@@ -165,6 +167,7 @@ class DBParameterBindingTest extends utest.Test {
 		Assert.equals("SELECT :absent", sqlite.__applyParameters("SELECT :absent"));
 		Assert.equals("SELECT :absent", postgres.__applyParameters("SELECT :absent"));
 	}
+	#end
 
 	public function testBackslashEscapesAreReadWhenTheDialectHasThem():Void {
 		var params = lookupOf(["name" => "alpha"]);
