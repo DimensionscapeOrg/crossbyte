@@ -255,15 +255,17 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	}
 
 	/**
-	 * Reads a LEB128-style variable-length **unsigned** integer (0 to 2^31-1) and advances by 1–5 bytes.
+	 * Reads a LEB128-style variable-length **unsigned** integer (0 to 0xFFFFFFFF) and advances by 1–5 bytes.
 	 *
 	 * Each byte contributes 7 payload bits; the high bit (0x80) indicates continuation.
 	 *
-	 * @return The decoded unsigned value as `UInt` (stored in an `Int` domain).
+	 * @return The decoded unsigned value as `UInt` (stored in an `Int` domain). Held in
+	 *         an `Int`, a value from 2^31 up is negative: check for that where the value
+	 *         is a length or a count.
 	 * @throws String If more than 5 bytes are encountered (`"varuint too long"`), if
-	 *                the decoded value does not fit (`"varuint overflow"`), or if the
-	 *                buffer ends mid-varint (`"ByteArrayInput underflow"`). Checked in
-	 *                every build, including `final`.
+	 *                the decoded value does not fit in 32 bits (`"varuint overflow"`), or
+	 *                if the buffer ends mid-varint (`"ByteArrayInput underflow"`). Checked
+	 *                in every build, including `final`. `position` does not move.
 	 *
 	 * @example
 	 * ```haxe
@@ -271,34 +273,32 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 * ```
 	 */
 	public inline function readVarUInt():UInt {
+		var at:Int = this.position;
+		var end:Int = this.length;
 		var shift:Int = 0;
 		var result:Int = 0;
 		while (true) {
 			// Checked in every build, unlike the rest of this class. These
 			// bytes are whatever a remote peer sent, so a truncated or hostile
 			// varint has to be an error rather than a read past the buffer.
-			if (this.position >= this.length) {
+			if (at >= end) {
 				throw "ByteArrayInput underflow";
 			}
-			var b:Int = this.get(this.position++);
-			result |= (b & 0x7F) << shift;
-			if ((b & 0x80) == 0){
-				break;
-			}				
-			shift += 7;
-			// 28 is the last shift a 32 bit value can use, so this bounds the
-			// loop at the five bytes the format allows and keeps the shift
-			// under the word size. Haxe leaves `<<` unspecified at or above
-			// that, and most targets mask the amount, so a sixth byte folded
-			// silently back over the value rather than overflowing. The old
-			// bound of 35 admitted that sixth byte.
-			if (shift > 28) {
-				throw "varuint too long";
+			var b:Int = this.get(at++);
+			if (shift == 28 && b > 0x0F) {
+				// The fifth byte carries the last four bits of 32 and has to
+				// end the varint. Bits above those were shifted off the top
+				// -- 2^32 + 1 read as 1 -- and a continuation bit asks for a
+				// sixth byte, which a 32-bit value never needs.
+				throw (b & 0x80) != 0 ? "varuint too long" : "varuint overflow";
 			}
+			result |= (b & 0x7F) << shift;
+			if ((b & 0x80) == 0) {
+				break;
+			}
+			shift += 7;
 		}
-		if (result < 0) {
-			throw "varuint overflow";
-		}
+		this.position = at;
 		return result;
 	}
 
@@ -318,8 +318,9 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	public inline function readVarUTF():String {
 		var len:Int = readVarUInt();
 		// Same reason as the decoder above: the length is the peer's, and
-		// readUTFBytes only bounds itself outside `final`.
-		if (len > this.length - this.position) {
+		// readUTFBytes only bounds itself outside `final`. Negative is a
+		// length from 2^31 up, which no buffer holds.
+		if (len < 0 || len > this.length - this.position) {
 			throw "ByteArrayInput underflow";
 		}
 		return readUTFBytes(len);

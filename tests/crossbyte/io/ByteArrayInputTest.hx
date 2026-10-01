@@ -126,6 +126,24 @@ class ByteArrayInputTest extends utest.Test {
 	}
 
 	public function testReadVarUIntRejectsOverflow():Void {
+		// A fifth byte holds the last four bits of 32. Past them -- 2^32 + 1
+		// here -- the bits were shifted off the top, and this read 1.
+		for (top in [0x10, 0x7F]) {
+			var bytes = Bytes.alloc(5);
+			bytes.set(0, 0x81);
+			bytes.set(1, 0x80);
+			bytes.set(2, 0x80);
+			bytes.set(3, 0x80);
+			bytes.set(4, top);
+
+			var input:ByteArrayInput = ByteArray.fromBytes(bytes);
+			Assert.raises(() -> input.readVarUInt(), String);
+		}
+	}
+
+	public function testReadVarUIntReadsTheTopOfTheUnsignedRange():Void {
+		// 0xFFFFFFFF, which the writer can send: the reader used to stop at
+		// 2^31 - 1, so a ZigZag value that far out could not be read.
 		var bytes = Bytes.alloc(5);
 		bytes.set(0, 0xFF);
 		bytes.set(1, 0xFF);
@@ -134,7 +152,25 @@ class ByteArrayInputTest extends utest.Test {
 		bytes.set(4, 0x0F);
 
 		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
-		Assert.raises(() -> input.readVarUInt(), String);
+		var value:Int = input.readVarUInt();
+		Assert.equals(0xFFFFFFFF, value);
+		Assert.isTrue(input.eof());
+	}
+
+	public function testReadVarUTFRejectsALengthPast31Bits():Void {
+		// 0xFFFFFFFF as a length, which is -1 once it is an Int. Measured as
+		// an Int it is shorter than any buffer, and readUTFBytes checks its
+		// length only outside `final`.
+		var bytes = Bytes.alloc(6);
+		bytes.set(0, 0xFF);
+		bytes.set(1, 0xFF);
+		bytes.set(2, 0xFF);
+		bytes.set(3, 0xFF);
+		bytes.set(4, 0x0F);
+		bytes.set(5, 0x41);
+
+		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
+		Assert.raises(() -> input.readVarUTF(), String);
 	}
 
 	public function testReadVarUIntRejectsAVarintTheBufferEndsInside():Void {
