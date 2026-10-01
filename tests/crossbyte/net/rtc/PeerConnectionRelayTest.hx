@@ -1018,6 +1018,60 @@ class PeerConnectionRelayTest extends utest.Test {
 		server.close();
 	}
 
+	/**
+		A relay reached over TLS can be told not to have its certificate
+		checked, for a test against one with a throwaway certificate, as
+		`TurnClient.verifyCert` allows, and is checked otherwise.
+
+		`TurnServer` carried `certAuthority` and not this, so through
+		`PeerConnection` the check could not be turned off at all.
+	**/
+	public function testARelaysCertificateCheckCanBeTurnedOffForATest():Void {
+		if (unsupported()) return;
+
+		var fixture = crossbyte.net.TLSTestFixture.trusted();
+
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the TURN over TLS case did not run");
+			return;
+		}
+
+		var server = relayServer();
+		var checked = new PeerConnection(true);
+		var unchecked = new PeerConnection(true);
+
+		try {
+			server.start();
+			server.startTcp(fixture.certificate, fixture.key);
+			checked.bind(0, "127.0.0.1");
+			unchecked.bind(0, "127.0.0.1");
+
+			// The fixture's authority is trusted by nothing unless named.
+			var refused:String = null;
+			checked.gatherRelayedFrom([
+				{address: "127.0.0.1", port: server.tcpPort, username: USERNAME, password: PASSWORD, transport: TLS}
+			]).then(_ -> {}, error -> refused = error);
+
+			var gathered:IceCandidate = null;
+			var failure:String = null;
+			unchecked.gatherRelayedFrom([
+				{address: "127.0.0.1", port: server.tcpPort, username: USERNAME, password: PASSWORD, transport: TLS, verifyCert: false}
+			]).then(candidate -> gathered = candidate, error -> failure = error);
+
+			pumpUntil(() -> refused != null && (gathered != null || failure != null), 10.0);
+
+			Assert.notNull(refused, "a relay whose certificate nothing vouches for was used with the check on");
+			Assert.isNull(failure, "the check was not turned off: " + failure);
+			Assert.notNull(gathered, "no relayed candidate with the check off");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		checked.close();
+		unchecked.close();
+		server.close();
+	}
+
 	/** There is no socket to allocate through before `bind`. **/
 	public function testRelayingBeforeBindingIsRefused():Void {
 		if (unsupported()) return;
