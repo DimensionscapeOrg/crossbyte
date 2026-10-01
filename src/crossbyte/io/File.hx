@@ -883,7 +883,9 @@ final class File extends EventDispatcher {
 		another case on Windows, a hard link to it, or a path to it through a junction or a symbolic link is
 		the same file, and copying a file onto itself is refused whatever `overwrite` says. A directory
 		copied onto an existing directory with `overwrite` is merged into it: its files replace those of
-		the same name, and the others stay.
+		the same name, and the others stay; a file there that is one of its own under another name is
+		left as it is. On neko and HashLink under Windows, which cannot tell two names of one file apart,
+		a copy onto another name for the file itself does nothing, rather than being refused.
 
 		@param newLocation The target location of the new file. Note that this File object specifies the
 		resulting (copied) file or directory, not the path to the containing directory.
@@ -1013,6 +1015,13 @@ final class File extends EventDispatcher {
 					FileSystem.createDirectory(newDirectory);
 				}
 
+				if (FileSystem.exists(target) && __alreadyThere(source, target)) {
+					// Nothing to copy, and copying would have emptied it: the
+					// copy truncates the destination before it reads the
+					// source, and they are one file.
+					return;
+				}
+
 				if (cancelled == null) {
 					#if jvm
 					// Its copy opens the destination as its write() does: see FileOps.write.
@@ -1039,6 +1048,90 @@ final class File extends EventDispatcher {
 			throw __ioError('Unable to copy "$source" to "$target": ${Std.string(e)}', 3006);
 		}
 	}
+
+	/**
+		Whether the file at `target` already is the file at `source`, so that
+		copying one onto the other has nothing to do, and would empty it.
+
+		copyTo refuses its own two ends when they are one file, but a
+		directory merged into another can find a second name of one of its
+		own files there, a hard link, and that copy truncated the file before
+		reading it. Where the target cannot tell two files apart, neko and
+		hl under Windows, whose `stat` has no file index, two files with
+		the same bytes count as one: copying either onto the other changes
+		nothing, and a second name of one file always has the same bytes.
+	**/
+	@:noCompletion private static function __alreadyThere(source:String, target:String):Bool {
+		var windows:Bool = System.isWindows;
+
+		if (FileOps.sameFile(source, target, windows)) {
+			return true;
+		}
+
+		#if (neko || hl)
+		if (windows && (FileOps.identity(source) == null || FileOps.identity(target) == null)) {
+			return __sameBytes(source, target);
+		}
+		#end
+
+		return false;
+	}
+
+	#if (neko || hl)
+	/** Whether two files hold the same bytes, read a block at a time. **/
+	@:noCompletion private static function __sameBytes(a:String, b:String):Bool {
+		if (FileSystem.stat(a).size != FileSystem.stat(b).size) {
+			return false;
+		}
+
+		var left = HaxeFile.read(a, true);
+		var right = try HaxeFile.read(b, true) catch (e:Dynamic) {
+			left.close();
+			throw e;
+		};
+		var one:Bytes = Bytes.alloc(__COPY_BLOCK);
+		var two:Bytes = Bytes.alloc(__COPY_BLOCK);
+		var same:Bool = true;
+
+		try {
+			while (same) {
+				var got:Int = __fill(left, one);
+				if (got != __fill(right, two)) {
+					same = false;
+				} else if (got == 0) {
+					break;
+				} else {
+					same = one.sub(0, got).compare(two.sub(0, got)) == 0;
+				}
+			}
+		} catch (e:Dynamic) {
+			left.close();
+			right.close();
+			throw e;
+		}
+
+		left.close();
+		right.close();
+		return same;
+	}
+
+	/** As many bytes as `input` has, up to `block`'s length. **/
+	@:noCompletion private static function __fill(input:haxe.io.Input, block:Bytes):Int {
+		var got:Int = 0;
+
+		try {
+			while (got < block.length) {
+				var read:Int = input.readBytes(block, got, block.length - got);
+				if (read <= 0) {
+					break;
+				}
+				got += read;
+			}
+		} catch (_:haxe.io.Eof) {}
+
+		return got;
+	}
+	#end
 
 	/**
 		A file's copy, a block at a time, asking `cancelled` before each;
