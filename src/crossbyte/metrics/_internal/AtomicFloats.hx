@@ -23,11 +23,17 @@ package crossbyte.metrics._internal;
 	Once made, an array used here is read and written only through here. A
 	plain read racing one of these could see half an update; a plain write
 	could lose one.
+
+	Calls, not inline: what they hold needs `<atomic>`, which this file
+	includes, and inlined into a caller it compiled only where something
+	else had included that, the hxcpp fork's headers did, a stock
+	hxcpp's do not.
 **/
 @:noCompletion
+@:cppFileCode("#include <atomic>")
 class AtomicFloats {
 	/** Adds `amount` to `cells[index]`. **/
-	public static inline function add(cells:Array<Float>, index:Int, amount:Float):Void {
+	public static function add(cells:Array<Float>, index:Int, amount:Float):Void {
 		// Named so that no Haxe local the arguments mention can be one of them.
 		// The assertion is the layout this relies on: an atomic double that is
 		// a double and nothing more, needing no stricter alignment than 8.
@@ -36,13 +42,13 @@ class AtomicFloats {
 	}
 
 	/** The current value of `cells[index]`. **/
-	public static inline function load(cells:Array<Float>, index:Int):Float {
+	public static function load(cells:Array<Float>, index:Int):Float {
 		return (untyped __cpp__("reinterpret_cast< ::std::atomic<double> *>(((double *){0}->getBase()) + {1})->load(::std::memory_order_relaxed)", cells,
 			index) : Float);
 	}
 
 	/** Replaces `cells[index]` with `value`. **/
-	public static inline function store(cells:Array<Float>, index:Int, value:Float):Void {
+	public static function store(cells:Array<Float>, index:Int, value:Float):Void {
 		untyped __cpp__("reinterpret_cast< ::std::atomic<double> *>(((double *){0}->getBase()) + {1})->store({2}, ::std::memory_order_relaxed)", cells, index,
 			value);
 	}
