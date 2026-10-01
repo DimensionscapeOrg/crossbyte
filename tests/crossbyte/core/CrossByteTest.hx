@@ -48,6 +48,28 @@ class CrossByteTest extends utest.Test {
 	}
 	#end
 
+	#if (cpp && windows)
+	/**
+		The process keeps the priority it was started with unless asked to
+		run high. Every native Windows build raised itself to
+		HIGH_PRIORITY_CLASS as the runtime loaded, unasked and undocumented.
+	**/
+	public function testTheProcessIsRaisedToHighPriorityOnlyWhenAsked():Void {
+		var high:Int = 0x80; // HIGH_PRIORITY_CLASS
+		var before:Int = crossbyte.core._internal.NativeWindowsRuntime.getPriorityClass();
+		Assert.isFalse(CrossByte.windowsHighPriority);
+		Assert.notEquals(high, before, "the process ran at high priority unasked");
+
+		CrossByte.windowsHighPriority = true;
+		var raised:Int = crossbyte.core._internal.NativeWindowsRuntime.getPriorityClass();
+		CrossByte.windowsHighPriority = false;
+		var lowered:Int = crossbyte.core._internal.NativeWindowsRuntime.getPriorityClass();
+
+		Assert.equals(high, raised);
+		Assert.equals(before, lowered, "set back, the process did not return to its class");
+	}
+	#end
+
 	public function testMakeRequiresPrimordialRuntime():Void {
 		var primordial = CrossByte.__primordial;
 		CrossByte.__primordial = null;

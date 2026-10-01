@@ -207,6 +207,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.sys.SysSupportTest());
 		runner.addCase(new crossbyte.sys.WorkerTest());
 		runner.addCase(new crossbyte.sys.TaskPoolTest());
+		// JavaScript's, reached there through PortableSuite; empty elsewhere.
+		runner.addCase(new crossbyte.sys.BackgroundDeliveryTest());
 	}
 
 	public static function addNet(runner:Runner):Void {

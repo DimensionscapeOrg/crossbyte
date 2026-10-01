@@ -29,9 +29,28 @@ enum MainLoopType {
 	/**
 	 * Caller-provided loop body, invoked in place of either built-in.
 	 *
-	 * The callback owns the whole frame: dispatching the tick, advancing
-	 * timers, servicing the socket registry, and whatever pacing it wants.
-	 * Nothing above supplies any of that for it.
+	 * The runtime calls `loop` over and over on its own thread for as long
+	 * as it runs, having dispatched `INIT` first, and dispatches `EXIT` once
+	 * `exit()` has been called and `loop` has returned. The body does a
+	 * frame's work by calling the runtime's `pump(delta, socketTimeout)`:
+	 * what other threads posted, the timers, the tick, the sockets and what
+	 * they send. When it calls that, and what else it does around it, is the
+	 * body's to decide, a simulation stepping at its own rate, a loop that
+	 * waits on readiness alone.
+	 *
+	 * So is the pacing. `pump` waits up to `socketTimeout` for a socket to be
+	 * ready or for something to be posted, and no longer; a body that does
+	 * not wait there or sleep spins a core. On JavaScript, which cannot block,
+	 * the body is called once a frame, at the runtime's `tps`.
+	 *
+	 * ```haxe
+	 * var last:Float = haxe.Timer.stamp();
+	 * CrossByte.make(CUSTOM(() -> {
+	 *     var now:Float = haxe.Timer.stamp();
+	 *     CrossByte.current().pump(now - last, 0.005);
+	 *     last = now;
+	 * }));
+	 * ```
 	 */
 	CUSTOM(loop:Void->Void);
 }

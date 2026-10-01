@@ -83,6 +83,25 @@ final class CrossByte extends EventDispatcher {
 	 */
 	public static var defaultSocketCapacity:Int = 1024;
 
+	/**
+		Whether a native Windows build runs its whole process at
+		`HIGH_PRIORITY_CLASS`, ahead of everything else on the machine at
+		normal priority. Off by default.
+
+		It used to be raised unasked, by every native Windows build, as the
+		runtime loaded: a library has no business deciding that for the
+		process it is part of, and a busy server at high priority can starve
+		the rest of the machine, its shell and its debugger included. Ask
+		for it where frame timing matters more than the rest of the machine,
+		a game server on a box of its own.
+
+		Takes effect when it is set, before or after the application is
+		created; set back to `false`, the process returns to the class it
+		had before. It names Windows because the class is Windows': on every
+		other target it does nothing.
+	**/
+	public static var windowsHighPriority(default, set):Bool = false;
+
 	// ==== Private Static Variables ====
 	@:noCompletion private static inline var DEFAULT_TICKS_PER_SECOND:UInt = 12;
 
@@ -178,6 +197,13 @@ final class CrossByte extends EventDispatcher {
 	 * a process whose primordial runtime has exited ends rather than waiting
 	 * on children nobody is going to stop.
 	 *
+	 * On JavaScript, which has one thread, the child's loop is a chain of
+	 * the platform's timers beside the application's, started in a later
+	 * turn. While its own work runs, INIT, its ticks and timers, EXIT,
+	 * `current()` is the child and `crossbyte.Timer` schedules on it; the
+	 * rest of the time, a socket's callbacks included, they are the
+	 * application's.
+	 *
 	 * ```haxe
 	 * var simulation = CrossByte.make(DEFAULT, WHEEL, child -> {
 	 *     child.tps = 60;
@@ -219,7 +245,11 @@ final class CrossByte extends EventDispatcher {
 		}
 
 		if (instance.__getRunning()) {
+			#if js
+			instance.__startLoopLater();
+			#else
 			EntryPoint.addThread(instance.__runEventLoop);
+			#end
 		} else {
 			// Exited from inside configure: there is nothing to start.
 			instance.__finalizeExit();
@@ -237,7 +267,10 @@ final class CrossByte extends EventDispatcher {
 	 * On every threaded target, native, the jvm, the interpreter, hl and
 	 * neko, a thread with no runtime of its own is refused rather than
 	 * handed the primordial one: anything it registered there would be
-	 * touched from two threads. JavaScript has one thread and one runtime.
+	 * touched from two threads. JavaScript has one thread: there this is the
+	 * child runtime whose own work is running, its INIT, ticks, timers and
+	 * EXIT, and the primordial runtime the rest of the time, a socket's
+	 * callbacks included.
 	 *
 	 * @return The current thread's CrossByte instance, or the primordial
 	 *         application runtime when called from the primordial thread.
@@ -262,6 +295,9 @@ final class CrossByte extends EventDispatcher {
 			}
 		}
 		return instance;
+		#elseif js
+		var running:CrossByte = __jsRunning;
+		return running != null ? running : __primordial;
 		#else
 		return __primordial;
 		#end
@@ -281,6 +317,9 @@ final class CrossByte extends EventDispatcher {
 		var primordial:CrossByte = __primordial;
 		var primordialThread:Thread = __primordialThread;
 		return (primordial != null && primordialThread != null && Thread.current() == primordialThread) ? primordial : null;
+		#elseif js
+		var running:CrossByte = __jsRunning;
+		return running != null ? running : __primordial;
 		#else
 		return __primordial;
 		#end
@@ -303,10 +342,16 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private static function __onCrossByteInit():Bool {
 		#if (cpp && windows)
 		NativeWindowsRuntime.beginTimingPeriod(1);
-		NativeWindowsRuntime.setHighPriorityProcess();
 		#end
 
 		return true;
+	}
+
+	@:noCompletion private static function set_windowsHighPriority(value:Bool):Bool {
+		#if (cpp && windows)
+		NativeWindowsRuntime.setHighPriorityProcess(value);
+		#end
+		return windowsHighPriority = value;
 	}
 
 	// ==== Public Variables ====
@@ -462,6 +507,12 @@ final class CrossByte extends EventDispatcher {
 	#if js
 	@:noCompletion private var __passFlushScheduled:Bool = false;
 	@:noCompletion private var __passFlushTurn:Void->Void = null;
+
+	// The runtime whose own work is running, on the one thread JavaScript
+	// has, and what was there before it; see __enterJs.
+	@:noCompletion private static var __jsRunning:CrossByte = null;
+	@:noCompletion private var __jsOuterRunning:CrossByte = null;
+	@:noCompletion private var __jsOuterTimer:TimerScheduler = null;
 	#end
 
 	#if cpp
@@ -587,9 +638,65 @@ final class CrossByte extends EventDispatcher {
 		}
 	}
 
-	@:noCompletion public function pump(delta:Float, socketTimeout:Float = 0.0):Void {
+	/**
+		Runs one frame of this runtime: what other threads posted, the timers
+		due once `delta` more seconds have passed, a `TickEvent` carrying
+		`delta`, the sockets, waiting up to `socketTimeout` seconds for one
+		to be ready, or for something to be posted, and what all of that
+		asked to send.
+
+		For a runtime that does not loop by itself. A `HostApplication`'s
+		host calls it through `HostApplication.advance`, from whichever
+		thread it runs on. A `MainLoopType.CUSTOM` loop body calls it on the
+		runtime's own thread, each time round:
+
+		```haxe
+		var last:Float = haxe.Timer.stamp();
+		var runtime:CrossByte = CrossByte.make(CUSTOM(() -> {
+			var now:Float = haxe.Timer.stamp();
+			CrossByte.current().pump(now - last, 0.005);
+			last = now;
+			// ...and whatever else the loop is for.
+		}));
+		```
+
+		The wait is the only one `pump` makes: a frame of work with no socket
+		ready and nothing posted ends as soon as its work is done, so a
+		custom loop that wants a steady rate waits the rest itself. On
+		JavaScript there is nothing to wait in, and `socketTimeout` is
+		ignored.
+
+		@param delta Seconds since the last frame, by which the timers and the
+		       tick advance. Pass what really elapsed, or timers fire early or
+		       late.
+		@param socketTimeout Seconds the sockets may be waited on; `0`, the
+		       default, looks at them without waiting.
+		@throws IllegalOperationError On a runtime that runs its own loop,
+		        `DEFAULT` or `POLL`, whose frames are its own; or on a
+		        `CUSTOM` runtime from any thread but its own.
+	**/
+	public function pump(delta:Float, socketTimeout:Float = 0.0):Void {
 		if (!__usesHostLoop) {
-			throw "CrossByte.pump(delta) is only available for host-driven application instances.";
+			// A custom loop body's frame. Its loop bound the thread and
+			// dispatched INIT before calling the body, and finishes the exit
+			// once the body returns, so this does only the frame. pump used
+			// to refuse it, and everything else that runs a frame is private,
+			// so a custom loop could run nothing but itself.
+			if (!__loopType.match(CUSTOM(_))) {
+				throw new IllegalOperationError("CrossByte.pump() runs a frame of a runtime that does not loop by itself, a HostApplication's, or a MainLoopType.CUSTOM body's, and this one runs its own.");
+			}
+			if (!__isOwnThread()) {
+				throw new IllegalOperationError("A MainLoopType.CUSTOM runtime is pumped by its own loop body, on its own thread.");
+			}
+			if (!__getRunning()) {
+				return;
+			}
+			try {
+				__stepHost(delta, socketTimeout);
+			} catch (error:Dynamic) {
+				__uncaught(error, UncaughtErrorEvent.LOOP);
+			}
+			return;
 		}
 
 		#if cpp
@@ -1024,6 +1131,39 @@ final class CrossByte extends EventDispatcher {
 		__passFlushScheduled = false;
 		__flushHeld();
 	}
+
+	/**
+		Runs `callback` in a later turn of the platform's event loop: what a
+		thread elsewhere hands to a runtime's post queue, where there is no
+		other thread to hand it from. A `Task`'s events and a `Worker`'s
+		messages are delivered this way.
+
+		What it throws is reported as a posted callback's failure is, logged,
+		and dispatched as `UncaughtErrorEvent.UNCAUGHT_ERROR` on the runtime
+		current then, rather than thrown into the platform's loop, which on
+		Node ends the process.
+	**/
+	@:noCompletion public static function __nextTurn(callback:Void->Void):Void {
+		var run = function():Void {
+			try {
+				callback();
+			} catch (error:Dynamic) {
+				var runtime:Null<CrossByte> = __currentOrNull();
+				if (runtime != null) {
+					runtime.__uncaught(error, UncaughtErrorEvent.POSTED);
+				} else {
+					try {
+						Logger.error("A callback run in a later turn threw: " + Std.string(error));
+					} catch (_:Dynamic) {}
+				}
+			}
+		};
+		#if nodejs
+		js.Node.setImmediate(run);
+		#else
+		js.Browser.window.setTimeout(run, 0);
+		#end
+	}
 	#end
 
 	@:noCompletion private function __flushHeld():Void {
@@ -1251,7 +1391,11 @@ final class CrossByte extends EventDispatcher {
 		}
 
 		if (__isPrimordial) {
+			#if js
+			__startLoopLater();
+			#else
 			EntryPoint.runInMainThread(__runEventLoop);
+			#end
 			#if target.threaded
 			// Publish primordial state under the lock before any child runtimes
 			// (and their threads) can be created, establishing happens-before for
@@ -1364,12 +1508,18 @@ final class CrossByte extends EventDispatcher {
 		__ownerThread = Thread.current();
 		__threadLocalStorage.value = this;
 		#end
+		#if js
+		__enterJs();
+		#else
 		CBTimer.bindCurrentThread(__timer);
+		#end
 
 		#if !js
 		// Made here, on the loop's own thread, since the registry is not
-		// thread-safe; see WakeSocket.
-		if (__loopType.match(POLL)) {
+		// thread-safe; see WakeSocket. A custom loop waits in pump's poll
+		// the way the POLL loop waits in its own, and a post has to end that
+		// wait too.
+		if (__loopType.match(POLL) || __loopType.match(CUSTOM(_))) {
 			__armWakeSocket();
 		}
 		#end
@@ -1386,6 +1536,7 @@ final class CrossByte extends EventDispatcher {
 		__lastFrameStamp = Timer.stamp();
 		__frameDeadline = __lastFrameStamp + __tickInterval;
 		__scheduleFrame();
+		__leaveJs();
 		#else
 		while (__getRunning()) {
 			// Each callback the loop runs is contained where it runs; this is
@@ -1472,8 +1623,10 @@ final class CrossByte extends EventDispatcher {
 		js.Browser.window.clearTimeout(__frameTimeout);
 		#end
 
+		__enterJs();
 		if (!__getRunning()) {
 			__finalizeExit();
+			__leaveJs();
 			return;
 		}
 
@@ -1494,6 +1647,7 @@ final class CrossByte extends EventDispatcher {
 
 			if (!__getRunning()) {
 				__finalizeExit();
+				__leaveJs();
 				return;
 			}
 
@@ -1503,7 +1657,60 @@ final class CrossByte extends EventDispatcher {
 			}
 		}
 
+		__leaveJs();
 		__scheduleFrame();
+	}
+
+	/**
+		Starts this runtime's loop in a later turn, after whatever the code
+		that made it does next, as a thread would start elsewhere.
+
+		Both an application's loop and a child's went through haxe.EntryPoint,
+		which runs what it is handed only while its own loop goes on: on Node,
+		until the program has started. So a runtime made once the program was
+		running, an application made after an asynchronous load, a child
+		made from a tick, never started at all.
+	**/
+	@:noCompletion private function __startLoopLater():Void {
+		#if nodejs
+		js.Node.setImmediate(__runEventLoop);
+		#else
+		js.Browser.window.setTimeout(__runEventLoop, 0);
+		#end
+	}
+
+	/**
+		Makes this runtime the one whose work is running, until `__leaveJs`:
+		`current()` answers it and `crossbyte.Timer` schedules on it, as they
+		do on a runtime's own thread elsewhere.
+
+		JavaScript has one thread, so a child runtime's loop is a chain of the
+		platform's timers beside the application's, and the timers'
+		`bindCurrentThread` binds them for the whole program. A child's loop
+		did that as it started and never gave them back: a timer the
+		application armed from then on was the child's, and never ran once the
+		child had exited. A runtime's own work, its INIT, its frames, its
+		EXIT, is bracketed by these instead, and whatever was there before
+		is put back after.
+	**/
+	@:noCompletion private function __enterJs():Void {
+		__jsOuterRunning = __jsRunning;
+		__jsOuterTimer = CBTimer.currentOrNull();
+		__jsRunning = this;
+		CBTimer.bindCurrentThread(__timer);
+	}
+
+	@:noCompletion private function __leaveJs():Void {
+		__jsRunning = __jsOuterRunning;
+		var outer:TimerScheduler = __jsOuterTimer;
+		__jsOuterRunning = null;
+		__jsOuterTimer = null;
+		// Unless what was there was this runtime's own: then it is still
+		// bound, or an exit has just handed the timers back, and either way
+		// what is there now is right.
+		if (outer != __timer) {
+			CBTimer.bindCurrentThread(outer);
+		}
 	}
 	#end
 

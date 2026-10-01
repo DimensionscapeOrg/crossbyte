@@ -1532,7 +1532,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		return __input.readVarInt();
+		return __input.readVarUInt();
 	}
 
 	/**

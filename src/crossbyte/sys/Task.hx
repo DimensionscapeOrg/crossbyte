@@ -26,6 +26,11 @@ private enum TaskDispatch<T> {
 	every tick, and adding and removing one copied the runtime's whole list of
 	them, so submitting a burst of tasks took time in proportion to the square
 	of its size and every idle tick paid for every task still waiting.
+
+	On JavaScript, which has no threads, the job runs on the one thread there
+	is, inside `TaskPool.submit`, and the task's `state` is final when
+	`submit` returns. Its events still come in a later turn, as they do from
+	a pool thread, so a listener added right after `submit` hears them.
 **/
 class Task<T> extends EventDispatcher {
 	public var state(default, null):TaskState;
@@ -292,6 +297,13 @@ class Task<T> extends EventDispatcher {
 	}
 
 	@:noCompletion private function __dispatchTerminalEvent(event:TaskDispatch<T>):Void {
+		#if js
+		// In a later turn, as a pool thread's completion arrives elsewhere.
+		// With no thread the job runs inside submit(), and this was delivered
+		// there too: before submit() had returned the task, so no listener
+		// could be on it yet, and none ever heard it.
+		CrossByte.__nextTurn(() -> __deliver(event));
+		#else
 		#if target.threaded
 		var runtime:CrossByte = __runtime;
 		if (runtime != null && !runtime.__isOwnThread()) {
@@ -304,6 +316,7 @@ class Task<T> extends EventDispatcher {
 		}
 		#end
 		__deliver(event);
+		#end
 	}
 
 	@:noCompletion private function __deliver(event:TaskDispatch<T>):Void {

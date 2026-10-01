@@ -129,6 +129,15 @@ entry below says how:
   now as well as on Node.
 - A `ServerWebSocket`'s `cert` and `certAuthority` are set before `bind()`,
   on Node too, and only on a secure server; either throws otherwise.
+- `ByteArrayInput.readVarUInt` reads values from 2^31 up, as a negative
+  `Int`, where it threw; check for one where the value is a length.
+- `ByteArray.readVarInt` and `writeVarInt` are `readVarUInt` and
+  `writeVarUInt`, in the same format.
+- `writeObject` puts a 32-bit length before an HXSF or JSON object, where
+  rc.1 put 16 bits: an object written by rc.1 does not read back, so both
+  peers, and anything stored, move to 1.0 together.
+- A native Windows build runs at the priority it was started with; set
+  `CrossByte.windowsHighPriority = true` for the high class it took itself.
 
 ### Added
 - `ReliableDatagramServerSocket.relayVerifyCert`, for a TURN relay reached
@@ -168,6 +177,11 @@ entry below says how:
   reports it as `Reason.Timeout`, to `onError` and `onClose`, and a
   `NetHost` to `onDisconnect`: `Reason.Timeout` was declared, and nothing
   ever reported it.
+- `crossbyte.utils.Checksum`: a `ChecksumAlgorithm`'s checksum of some
+  bytes, or of a range of them, as the bytes of its value (`compute`) or
+  as hexadecimal (`hex`), CRC-32, Adler-32, MD5, SHA-1 and XOR. The enum
+  named the five and nothing anywhere took one: it was left from an RPC
+  header field that was never built.
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
   `DETACH DATABASE`, and `loadSchema()` with `getSchemaResult()`: a
   database's tables with their columns, views, indices and triggers.
@@ -1236,6 +1250,13 @@ entry below says how:
   `verifyCert` could only switch that off again natively, or demand
   certificates from the system's authorities where Node had no such
   setting.
+- `ByteArray.readVarInt` and `writeVarInt`, which are `readVarUInt` and
+  `writeVarUInt`: the names `ByteArrayInput` and `ByteArrayOutput` give the
+  same unsigned format, and `Socket.readVarUInt` reads. Those two classes
+  call ZigZag, a signed format, `readVarInt` and `writeVarInt`, so code
+  moved from one class to another compiled and read every negative number
+  wrong. The old names are gone rather than given to ZigZag, so a call to
+  one stops compiling instead of changing format.
 - `ThreadEvent.UPDATE`. Nothing dispatched it, and no worker or task had
   anything it could have meant; `PROGRESS` carries a worker's messages.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
@@ -1310,6 +1331,22 @@ entry below says how:
   after an error was told `Reason.Closed`, or a WebSocket's 1006, rather
   than the error; and closing a TCP connection told `onClose` again each
   time, and once more after its peer's close.
+- A native Windows build no longer raises its process to
+  `HIGH_PRIORITY_CLASS`. Every one did, unasked and undocumented, as the
+  runtime loaded, a library deciding for the process it is part of, and
+  a busy server at that class can starve the rest of the machine. It is
+  `CrossByte.windowsHighPriority = true` now, which takes effect when set
+  and, set back, returns the process to the class it had.
+- `writeObject` frames an HXSF or JSON object as the length in bytes of
+  its text, an unsigned 32-bit integer in the stream's `endian`, then the
+  text as UTF-8, on a `ByteArray` and on `Socket`, `WebSocket` and
+  `ReliableDatagramSocket`, which write through one. It was framed as
+  `writeUTF` frames a string, behind a 16-bit length, so an object past
+  65,535 bytes of text, a list of a few thousand records, was refused
+  with a `RangeError`, and nothing documented a limit. `readObject` reads
+  the new framing, and an object only part of which has arrived leaves
+  `position` where it was, so a socket's reader can try again; it left it
+  past the length. Objects written by 1.0.0-rc.1 do not read back.
 - Reliable UDP sends what a pass produces from one socket in as few system
   calls as the system allows. Each datagram was a `sendto` of its own,
   which was nearly all a server sending reliable UDP spent: 5.9 us a
@@ -2579,6 +2616,135 @@ entry below says how:
   certificates let in clients that had none. `requireClientCertificate()`,
   which dereferenced a listener a `ServerWebSocket` never builds, now does
   the same thing, and both are refused on a plain server and once bound.
+- On Node an application made once the program is running runs. Its loop
+  went through `haxe.EntryPoint`, as a child runtime's did, which runs
+  what it is handed only until the program has started; an `Application`
+  made after an asynchronous load never got an INIT or a tick. It starts
+  in a later turn now, as a child does.
+- A `NativeProcess`'s output keeps a character a read cuts in two whole,
+  natively, on the jvm, hl and neko. Each read of the child's output was
+  decoded on its own, so a UTF-8 character split between two reads, at
+  a 4,096-byte boundary, or wherever the pipe handed back less, arrived
+  as replacement characters. Node decoded across reads already.
+- `ByteArray.fromBytes`, and assigning a `Bytes` to a `ByteArray`, say
+  what they make: a ByteArray over the `Bytes`' own storage, where a change
+  through either shows in the other until the ByteArray grows, on every
+  target but the interpreter, which copies. The doc said "a new
+  ByteArray".
+- `ByteArrayOutput` grows as its doc says, in every writer. The
+  fixed-size ones, byte, short, int, float, double, bytes, only
+  checked, outside `final`, and threw, so a `new ByteArrayOutput()` could
+  not take `writeInt(1)` without a `reserve(4)` first; in a `final` build
+  they did not check at all and wrote past the end of the chunk. A writer
+  short of room takes a new chunk at least as large as what the output
+  already holds, so value after value takes a handful of chunks;
+  `reserve()` still takes one of exactly the size asked for.
+- On Windows, closing the console window, logging off or shutting down
+  runs the `onShutdown` callbacks of `ProcessLifecycle`. Windows ends the
+  process as soon as the console handler for those returns, and the
+  handler returned at once, so the process was gone before the runtime's
+  next tick saw the request: only Ctrl+C and Ctrl+Break shut down cleanly.
+  The handler now holds the event while the runtime shuts down, for as
+  long as Windows allows, about five seconds for a closed window, and at
+  most 20, and the process ending lets it go.
+- A `MainLoopType.CUSTOM` loop body can run its runtime. It calls
+  `CrossByte.pump(delta, socketTimeout)`, public and documented now, for
+  a frame, what was posted, the timers, the tick, the sockets, which
+  waits up to `socketTimeout` for a socket to be ready or for a post.
+  `pump` refused every runtime that was not host-driven and the rest of a
+  frame was private, so a custom loop could run nothing but itself, though
+  `CUSTOM` promised a body that drives the timers and the sockets. `pump`
+  on a runtime that runs its own loop, or on a `CUSTOM` one from another
+  thread, throws an `IllegalOperationError` saying so, where it threw a
+  `String`.
+- A `Worker` cancelled after its work has sent its COMPLETE, but before
+  its runtime has delivered it, ends `CANCELLED`. `cancel()` went by
+  `completed`, which is set as the work sends, and left the state alone;
+  the delivery was then discarded as cancelled, and the worker read
+  `RUNNING` for good, so `run()` refused it as already running.
+- On JavaScript a `Task`'s events and a `Worker`'s messages arrive in a
+  later turn, as they do from a thread elsewhere. With no threads the job
+  runs inside `TaskPool.submit`, and a worker's work inside `run()`, and
+  everything it reported was dispatched there too: before `submit` had
+  returned the task, so a listener added to it never heard anything. The
+  work still holds the one thread while it runs, as `TaskPool`, `Task` and
+  `Worker` now say, and a listener that throws is reported as a posted
+  callback's failure is rather than thrown into Node's loop.
+- On JavaScript a child runtime made once the program is running runs.
+  `CrossByte.make()` handed its loop to `haxe.EntryPoint`, which on Node
+  runs what it is given only until the program has started, so a child
+  made later never started: no INIT, no tick. And a child no longer takes
+  the program's timers. There is one thread, and a child's loop bound
+  `crossbyte.Timer` to itself as it started and never gave it back, so a
+  timer the application armed from then on ran on the child's scheduler,
+  and never at all once the child had exited. While a child's own work
+  runs, INIT, its ticks and timers, EXIT, `CrossByte.current()` is the
+  child and `crossbyte.Timer` schedules on it, as on a child's own thread
+  elsewhere; the rest of the time they are the application's.
+- `TickEvent.delta` says what the first tick reports: the time since the
+  runtime's loop started, which is zero natively, on the jvm, hl, neko and
+  the interpreter, where the loop ticks as it starts, and about one tick
+  interval on JavaScript, where the first tick waits for the platform's
+  timer. It said zero everywhere, and JavaScript's first was 83 ms.
+- `Timer.fromWallClock` and `toWallClock` convert at the present: the
+  scheduler's time now is the clock's now, and other times follow by the
+  difference. Both counted the scheduler's time on top of when it started,
+  so a runtime that had run for an hour put every wall time an hour out.
+  `Timer.stamp()` with no application throws an `IllegalOperationError`
+  that says so, where it was a null access, natively, in a release
+  build, a crash, and `Timer` on a thread with no runtime throws one, as
+  `CrossByte.current()` does there, where it threw a `String`. The class
+  doc pointed at a `CrossByte.runThread()` that does not exist.
+- `NativeProcess` starts a child process on the jvm. Its support check
+  asked for an OS define, which only native builds have, so the jvm
+  refused though it can; it asks for threads now. The jvm's `exitCode()`
+  buffers away whatever output is left before it waits, so the output is
+  read to its end first, everywhere, and the child's id is looked up as
+  the jvm's own `getPid()`, which answered -1, did not (Java 8 on Windows
+  keeps none, as `pid` says). The interpreter still cannot, its process
+  calls hold every thread while they wait, so a quiet child stopped the
+  program, and `start` says so with an `IllegalOperationError` naming
+  it, where it threw an `ArgumentError`. `isSupported` and the README say
+  where it runs.
+- `EventDispatcher.addEventListener` documents `priority` as what it is:
+  higher runs first, and equal priorities run in the order added. It called
+  it an insertion index, clamped to the list's length, with lower values
+  "inserted earlier (i.e. called later)". `Application.removeGlobalListener`
+  says its `priority` is not used, where it asked for the one a listener
+  was added with.
+- `EOFError` keeps the message and id it is given, as its doc says; given
+  none, they are still Flash's "End of file was encountered" and 2030. It
+  replaced both whatever was passed, so `FileStream`'s account of what ran
+  out, "Asked for 8 bytes with 3 left in the file", reached nobody.
+- `IDataInput` and `IDataOutput` describe CrossByte's defaults: values in
+  the object's `endian`, which for a `ByteArray` and the sockets starts as
+  `ByteArray.defaultEndian`, little-endian unless changed, and objects in
+  HXSF unless changed. They said big-endian and AMF, AIR's defaults, which
+  no class here has. `readUnsignedInt` says it returns the 32 bits as an
+  `Int`, negative from 2^31 up, where it promised 0 to 4294967295 in a type
+  that cannot hold them; and `ByteArray.defaultObjectEncoding` says it is
+  HXSF on every target, where it said it varied between platforms.
+- `ByteArray.clear()` says it keeps the memory the bytes took. Its doc,
+  AIR's, said it freed it, which it never did: a byte array cleared and
+  filled again reuses its buffer, which is what the sockets rely on when
+  they clear theirs after every message. Dropping the byte array is what
+  gives the memory back.
+- The varint writers write every value they take. `ByteArray.writeVarInt`
+  (`writeVarUInt` now, under Removed) and `ByteArrayOutput.writeVarUInt`
+  looped while a signed `v > 0x7F`, so a value with bit 31 set went out as
+  one byte: 0x80000000 read back as 0, and 0xFFFFFFFF as a varint that
+  never ended. `ByteArrayOutput.writeVarInt` sent every ZigZag value from
+  2^30 up in magnitude that way, and
+  `varUIntSize` sized them at one byte. The readers refuse a value past 32
+  bits, where they shifted the extra bits off the top and read 2^32 + 1 as
+  1: a `RangeError` from a `ByteArray`, an `IOError` from
+  `ByteDelta.decode`, "varuint overflow" from a `ByteArrayInput`. And
+  `ByteArrayInput.readVarUInt` reads the whole unsigned range it is
+  documented for, where it stopped at 2^31 - 1, so `readVarInt` reads every
+  `Int` back. A varint a `ByteArray` holds only part of leaves its
+  `position` where it was, so it can be read again once the rest arrives;
+  one whose fifth byte asks for a sixth is a `RangeError`, not an
+  `EOFError` that says to wait for more.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened

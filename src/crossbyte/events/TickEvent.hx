@@ -40,7 +40,12 @@ class TickEvent extends Event {
 	 *
 	 * A runtime driven by `pump()` reports the delta its caller passed.
 	 *
-	 * The first tick of a runtime reports zero.
+	 * The first tick of a runtime's own loop reports the time since the loop
+	 * started. That is zero natively, on the jvm, hl, neko and the
+	 * interpreter, where the loop ticks as it starts; on JavaScript it is
+	 * about one tick interval, since the first tick there waits for the
+	 * platform's timer like every other. Either way the ticks' deltas add up
+	 * to the time the loop has run.
 	 */
 	public var delta:Float;
 
