@@ -13,6 +13,10 @@ import php.Syntax;
 #if nodejs
 import js.node.Crypto;
 #end
+#if !(cpp || php || java || jvm || js)
+import crossbyte.crypto._internal.NativeOnly;
+import crossbyte.errors.IllegalOperationError;
+#end
 
 #if cpp
 @:cppFileCode('
@@ -47,8 +51,9 @@ final class SecureRandom {
 	/**
 	 * Returns `length` bytes from the platform CSPRNG.
 	 *
-	 * On unsupported targets this throws rather than silently falling back to a
-	 * non-cryptographic generator.
+	 * @throws IllegalOperationError On a target without one, the
+	 *         interpreter, neko, HashLink, naming it, rather than falling
+	 *         back to a generator that only looks random.
 	 */
 	public static function getSecureRandomBytes(length:Int):ByteArray {
 		#if cpp
@@ -65,7 +70,8 @@ final class SecureRandom {
 		#elseif js
 		return __getSecureRandomBytesBrowser(length);
 		#else
-		throw "Secure random bytes are not available on this target, and this will not fall back to a generator that only looks random.";
+		throw new IllegalOperationError("Secure random bytes are not available on " + NativeOnly.TARGET
+			+ ", and this will not fall back to a generator that only looks random.");
 		#end
 	}
 
