@@ -1,5 +1,6 @@
 package crossbyte.auth.jwt;
 
+import crossbyte.auth._internal.JsonNesting;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
 
@@ -58,10 +59,16 @@ class JWKSet {
 	/**
 	 * Parses a JWK Set document.
 	 *
-	 * Throws only when the document itself is unusable — not JSON, or
-	 * without a `keys` array. Individual keys that cannot be used are
-	 * collected into `ignored` instead, so one unrecognised entry cannot
-	 * cost a service the rest of its keys.
+	 * Throws only when the document itself is unusable — not JSON, nested
+	 * more than 32 levels deep, or without a `keys` array. Individual keys
+	 * that cannot be used are collected into `ignored` instead, so one
+	 * unrecognised entry cannot cost a service the rest of its keys.
+	 *
+	 * The nesting, objects and arrays together, is measured before the
+	 * document is parsed; a real set nests three or four levels. Parsing
+	 * takes a frame per level, and natively a document nested 6,000 deep --
+	 * 12 KB from a provider's endpoint, or from whoever can answer for it --
+	 * overflowed the stack and ended the process.
 	 *
 	 * @param json The JWK Set document.
 	 * @throws String If the document is not a JWK Set.
@@ -69,6 +76,10 @@ class JWKSet {
 	public static function parse(json:String):JWKSet {
 		if (json == null || StringTools.trim(json) == "") {
 			throw "JWKS document is empty";
+		}
+
+		if (!JsonNesting.within(json, JsonNesting.LIMIT)) {
+			throw 'JWKS document nests more than ${JsonNesting.LIMIT} levels deep';
 		}
 
 		var root:Dynamic;

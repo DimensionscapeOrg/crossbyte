@@ -30,7 +30,50 @@ class ProcessLifecycleTest extends utest.Test {
 	}
 	#end
 
+	#if nodejs
+	/**
+		A SIGHUP on Node runs the same shutdown. Node ended the process on it
+		-- a terminal gone, or on Windows a console window closing, which Node
+		delivers as SIGHUP -- with no callbacks. On macOS, where Node cannot
+		see whether nohup ignored it, it is left to Node's default.
+	**/
+	public function testASighupOnNodeLatchesTheRequest():Void {
+		var ran = false;
+		ProcessLifecycle.onShutdown(() -> ran = true);
+		Assert.isTrue(ProcessLifecycle.installDefaultHandlers());
+
+		var listening:Bool = js.Node.process.listenerCount("SIGHUP") > 0;
+		if (js.Node.process.platform == "win32") {
+			Assert.isTrue(listening, "nothing listens for SIGHUP on Windows");
+		}
+		if (listening) {
+			js.Node.process.emit("SIGHUP");
+			Assert.isTrue(ProcessLifecycle.shutdownRequested);
+			Assert.isTrue(ProcessLifecycle.poll());
+			Assert.isTrue(ran);
+		}
+	}
+	#end
+
 	#if (java || jvm)
+	/**
+		A HUP on the jvm runs the same shutdown; the JVM halted on it. A JVM
+		on Windows has no HUP, and installing still arms TERM and INT there.
+	**/
+	public function testAHangupOnTheJvmLatchesTheRequest():Void {
+		Assert.isTrue(ProcessLifecycle.installDefaultHandlers(), "this JVM has no signal hook");
+		if (Sys.systemName() == "Windows") {
+			return;
+		}
+
+		crossbyte.sys._internal.JvmSignals.JvmSignal.raise(new crossbyte.sys._internal.JvmSignals.JvmSignal("HUP"));
+		var deadline = haxe.Timer.stamp() + 5;
+		while (!ProcessLifecycle.shutdownRequested && haxe.Timer.stamp() < deadline) {
+			crossbyte.sys.System.sleep(0.01);
+		}
+		Assert.isTrue(ProcessLifecycle.shutdownRequested, "the HUP did not reach the handler");
+	}
+
 	public function testASignalOnTheJvmLatchesTheRequest():Void {
 		// The JVM's default for SIGINT and SIGTERM halts it after its
 		// shutdown hooks, so a jvm service skipped the drain.
@@ -61,7 +104,7 @@ class ProcessLifecycleTest extends utest.Test {
 		var runtime = crossbyte.core.CrossByte.current();
 		var heldWhileRunning:Null<Bool> = null;
 		ProcessLifecycle.onShutdown(() -> {
-			heldWhileRunning = crossbyte.sys._internal.NativeLifecycle.consoleHandlersHolding() > 0;
+			heldWhileRunning = crossbyte.sys._internal.NativeLifecycle.holding() > 0;
 		});
 		Assert.isTrue(ProcessLifecycle.installDefaultHandlers());
 
@@ -76,12 +119,123 @@ class ProcessLifecycleTest extends utest.Test {
 		}
 
 		Assert.equals(true, heldWhileRunning, "the close was let go before the shutdown ran: " + heldWhileRunning);
+		letTheHoldGo();
+	}
 
-		// Let the held handler go before the next test: its bound ends it.
-		deadline = haxe.Timer.stamp() + 5;
-		while (crossbyte.sys._internal.NativeLifecycle.consoleHandlersHolding() > 0 && haxe.Timer.stamp() < deadline) {
+	/**
+		A process that has loaded user32.dll hears of a logoff or a shutdown
+		through a window: Windows no longer calls its console handler for
+		them. A hidden one runs the shutdown and holds the session's end while
+		it runs, as the console handler holds a close. Such a process -- a
+		GUI toolkit's, or one calling a Shell function -- had no window, and
+		the session ended it with no onShutdown.
+
+		user32 is loaded here as such a process loads it; the test process
+		loads none of it otherwise. The logoff is the one Windows sends:
+		WM_QUERYENDSESSION, then WM_ENDSESSION.
+	**/
+	public function testALogoffReachesAProcessThatLoadedUser32ThroughAWindow():Void {
+		var runtime = crossbyte.core.CrossByte.current();
+		var heldWhileRunning:Null<Bool> = null;
+		ProcessLifecycle.onShutdown(() -> {
+			heldWhileRunning = crossbyte.sys._internal.NativeLifecycle.holding() > 0;
+		});
+
+		Assert.isTrue(crossbyte.sys._internal.NativeLifecycle.loadUser32ForTest());
+		Assert.isTrue(ProcessLifecycle.installDefaultHandlers());
+		var deadline:Float = haxe.Timer.stamp() + 5;
+		while (!crossbyte.sys._internal.NativeLifecycle.sessionWindowReady() && haxe.Timer.stamp() < deadline) {
 			crossbyte.sys.System.sleep(0.01);
 		}
+		if (!crossbyte.sys._internal.NativeLifecycle.sessionWindowReady()) {
+			Assert.fail("no window was made for a process that loaded user32");
+			return;
+		}
+
+		Assert.equals(1, crossbyte.sys._internal.NativeLifecycle.deliverSessionEnd(1000), "the window did not take the logoff");
+		deadline = haxe.Timer.stamp() + 5;
+		while (heldWhileRunning == null && haxe.Timer.stamp() < deadline) {
+			runtime.pump(1 / 60, 0);
+			crossbyte.sys.System.sleep(0.005);
+		}
+
+		Assert.equals(true, heldWhileRunning, "the session's end was let go before the shutdown ran: " + heldWhileRunning);
+		letTheHoldGo();
+	}
+
+	/**
+		Windows sends a logoff to services whenever anyone signs out, and does
+		not end them, so a process in session 0 ignores it. It shut down: a
+		service, or a process a service started, stopped serving whenever a
+		user went home. Delivered here as though in session 0 (a test hook),
+		and then outside it, where a logoff is still a shutdown.
+	**/
+	public function testALogoffInSessionZeroIsIgnored():Void {
+		Assert.isTrue(ProcessLifecycle.installDefaultHandlers());
+		var CTRL_LOGOFF_EVENT:Int = 5;
+
+		crossbyte.sys._internal.NativeLifecycle.forceServiceSessionForTest(1);
+		Assert.isTrue(crossbyte.sys._internal.NativeLifecycle.deliverConsoleEvent(CTRL_LOGOFF_EVENT, 300));
+		crossbyte.sys.System.sleep(0.5);
+		Assert.isFalse(ProcessLifecycle.shutdownRequested, "a logoff in session 0 shut the process down");
+		Assert.equals(0, crossbyte.sys._internal.NativeLifecycle.holding());
+
+		crossbyte.sys._internal.NativeLifecycle.forceServiceSessionForTest(0);
+		Assert.isTrue(crossbyte.sys._internal.NativeLifecycle.deliverConsoleEvent(CTRL_LOGOFF_EVENT, 300));
+		var deadline:Float = haxe.Timer.stamp() + 5;
+		while (!ProcessLifecycle.shutdownRequested && haxe.Timer.stamp() < deadline) {
+			crossbyte.sys.System.sleep(0.01);
+		}
+		Assert.isTrue(ProcessLifecycle.shutdownRequested, "a logoff outside session 0 did not shut down");
+		letTheHoldGo();
+	}
+
+	// Waits out a held close, logoff or shutdown before the next test: its
+	// bound ends it.
+	private static function letTheHoldGo():Void {
+		var deadline:Float = haxe.Timer.stamp() + 5;
+		while (crossbyte.sys._internal.NativeLifecycle.holding() > 0 && haxe.Timer.stamp() < deadline) {
+			crossbyte.sys.System.sleep(0.01);
+		}
+	}
+	#end
+
+	#if (cpp && !windows)
+	// The same number on Linux and macOS.
+	static inline var SIGHUP:Int = 1;
+
+	/**
+		A SIGHUP -- the terminal a server was started from going away -- runs
+		the same shutdown as SIGTERM. Its default ended the process at once,
+		with no onShutdown and no drain.
+	**/
+	public function testAHangupShutsDownGracefully():Void {
+		var ran = false;
+		ProcessLifecycle.onShutdown(() -> ran = true);
+		Assert.isTrue(ProcessLifecycle.installDefaultHandlers());
+
+		Assert.isTrue(crossbyte.sys._internal.NativeLifecycle.raiseForTest(SIGHUP));
+		Assert.isTrue(ProcessLifecycle.shutdownRequested);
+		Assert.isTrue(ProcessLifecycle.poll());
+		Assert.isTrue(ran);
+	}
+
+	/**
+		A SIGHUP ignored when the handlers are installed -- nohup, which asks
+		for the process to outlive its terminal -- stays ignored.
+	**/
+	public function testAHangupIgnoredByNohupStaysIgnored():Void {
+		crossbyte.sys._internal.NativeLifecycle.uninstallForTest();
+		Assert.isTrue(crossbyte.sys._internal.NativeLifecycle.ignoreForTest(SIGHUP, true));
+		Assert.isTrue(ProcessLifecycle.installDefaultHandlers());
+
+		Assert.isTrue(crossbyte.sys._internal.NativeLifecycle.raiseForTest(SIGHUP));
+		Assert.isFalse(ProcessLifecycle.shutdownRequested);
+
+		// As it was: SIGHUP to its default, and the handlers installed over it.
+		crossbyte.sys._internal.NativeLifecycle.uninstallForTest();
+		crossbyte.sys._internal.NativeLifecycle.ignoreForTest(SIGHUP, false);
+		Assert.isTrue(ProcessLifecycle.installDefaultHandlers());
 	}
 	#end
 

@@ -10,7 +10,7 @@ import crossbyte.errors.IOError;
 import crossbyte.crypto._internal.NativeOnly;
 #end
 import haxe.Serializer;
-import haxe.Unserializer;
+import crossbyte.ipc._internal.BoundedUnserializer;
 import haxe.io.Bytes;
 import haxe.io.BytesData;
 #if cpp
@@ -34,15 +34,16 @@ private typedef SharedObjectHandle = Dynamic;
  * Each `flush()` replaces the whole payload, and each `sync()` reads one whole
  * payload, under a lock every participant takes: a sync never sees part of a
  * flush. The last flush wins; nothing merges what two participants changed.
+ * The lock is waited for at most `lockTimeout`, five seconds by default.
  *
  * How long a region lives differs by OS. On Windows it goes when the last handle
  * to it closes, in whichever process, and the next process to open the name finds
  * it empty. On Linux and macOS it stays, holding what was last flushed and its
- * capacity in shared memory, until the machine restarts: `clear()` empties it,
- * and nothing here removes it. Name regions so that a fixed set is reused rather
- * than a new one made for each run. On macOS each name also has a small lock file,
- * `/tmp/cbso_<hash>.lock`, which stays with it: macOS cannot lock a region
- * itself.
+ * capacity in shared memory, until `remove(name)` takes it away or the machine
+ * restarts: `clear()` only empties it. Name regions so that a fixed set is reused
+ * rather than a new one made for each run, or remove each when done with it. On
+ * macOS each name also has a small lock file, `/tmp/cbso_<hash>.lock`, which
+ * stays with the region and goes with it: macOS cannot lock a region itself.
  */
 #if cpp
 @:access(crossbyte.ipc._internal.NativeSharedObject)
@@ -61,6 +62,24 @@ class SharedObject {
 	/** Shared object payload. */
 	public var data:Object;
 
+	/**
+		The longest, in milliseconds, that `flush()`, `sync()` and `clear()`
+		wait for the region's lock. A participant holds it while it copies a
+		payload in or out, which takes it microseconds; one stopped while
+		holding it -- suspended in a debugger, sent SIGSTOP, starved on a
+		loaded machine -- stopped every other participant with it, for as
+		long as it stayed stopped. Past the deadline the call throws an
+		`IOError` saying the region's lock was not released in time, and
+		reads, writes and clears nothing.
+
+		0 means no deadline. The default is 5,000 (five seconds), which is
+		also as long as the constructor waits. A participant that dies
+		holding the lock releases it, on every OS.
+	**/
+	public var lockTimeout:Int = DEFAULT_LOCK_TIMEOUT;
+
+	@:noCompletion private static inline var DEFAULT_LOCK_TIMEOUT:Int = 5000;
+
 	@:noCompletion private var __capacity:Int;
 	@:noCompletion private var __serializer:Serializer;
 	@:noCompletion private var __handle:SharedObjectHandle;
@@ -74,8 +93,11 @@ class SharedObject {
 	 * @param maxSize     Optional maximum payload size for new regions (bytes).
 	 * @param defaultData Optional object to start from when the region holds nothing,
 	 *                    or nothing this build can read -- another program's bytes,
-	 *                    or a value naming a class this build does not have. A flush
-	 *                    then replaces what the region held.
+	 *                    a value naming a class this build does not have, or values
+	 *                    nested more than 256 deep. A flush then replaces what the
+	 *                    region held.
+	 * @throws IOError When another participant holds the region's lock for longer
+	 *         than `lockTimeout`'s default, five seconds.
 	 */
 	public function new(name:String, maxSize:Int = 65536, ?defaultData:Dynamic) {
 		__requireSupported();
@@ -90,27 +112,42 @@ class SharedObject {
 		__serializer = new Serializer();
 		__serializer.useCache = false;
 
-		__handle = __open(name, maxSize);
+		__handle = __open(name, maxSize, lockTimeout);
 		if (__handle == null) {
+			if (__lockTimedOut()) {
+				throw __lockNotReleased();
+			}
 			throw new ArgumentError("Failed to create or open shared object");
 		}
 
-		__capacity = __getCapacity(__handle);
+		__capacity = __getCapacity(__handle, lockTimeout);
 		if (__capacity <= 0) {
+			if (__lockTimedOut()) {
+				close();
+				throw __lockNotReleased();
+			}
 			__capacity = maxSize;
 		}
 
 		// What the region holds when it can be read, and `defaultData`
 		// otherwise. A payload that failed to parse -- or that a flush
 		// elsewhere had cut short, when the length and the bytes were two
-		// reads -- gave `{}` here, and `defaultData` was dropped.
+		// reads -- gave `{}` here, and `defaultData` was dropped. A lock not
+		// released in time is not a region holding nothing: starting from
+		// `defaultData` then, a flush would write it over what is there.
+		var payload:Null<String>;
 		try {
-			var payload:String = __readPayload();
-			if (payload.length > 0) {
-				data = Unserializer.run(payload);
+			payload = __readPayload();
+		} catch (e:IOError) {
+			close();
+			throw e;
+		}
+		if (payload != null && payload.length > 0) {
+			try {
+				data = BoundedUnserializer.run(payload);
+			} catch (_:Dynamic) {
+				data = null;
 			}
-		} catch (_:Dynamic) {
-			data = null;
 		}
 
 		if (data == null) {
@@ -118,7 +155,12 @@ class SharedObject {
 		}
 	}
 
-	/** Flushes `data` into shared memory immediately. */
+	/**
+	 * Flushes `data` into shared memory immediately.
+	 *
+	 * @throws IOError When another participant holds the region's lock for
+	 *         longer than `lockTimeout`. Nothing is written.
+	 */
 	public function flush():Void {
 		__requireConnected();
 
@@ -133,7 +175,10 @@ class SharedObject {
 			throw new ArgumentError("Shared payload is larger than shared region capacity");
 		}
 
-		if (!__write(__handle, payload.getData(), payload.length)) {
+		if (!__write(__handle, payload.getData(), payload.length, lockTimeout)) {
+			if (__lockTimedOut()) {
+				throw __lockNotReleased();
+			}
 			throw new ArgumentError("Failed to write SharedObject payload");
 		}
 	}
@@ -143,14 +188,22 @@ class SharedObject {
 	 * flush left it. An empty region gives `{}`.
 	 *
 	 * @throws IOError When the region holds a payload this build cannot read --
-	 *         another program's bytes, or a value naming a class this build does
-	 *         not have. `data` keeps what it had: an empty object in its place
-	 *         would be written over the region by the next flush.
+	 *         another program's bytes, a value naming a class this build does not
+	 *         have, or values nested more than 256 deep -- or when another
+	 *         participant holds the region's lock for longer than `lockTimeout`.
+	 *         `data` keeps what it had: an empty object in its place would be
+	 *         written over the region by the next flush. The nesting is bounded
+	 *         because reading takes a frame per level: natively a payload nested
+	 *         6,000 deep, which any process writing the region could leave,
+	 *         overflowed the stack and ended the process reading it.
 	 */
 	public function sync():Void {
 		__requireConnected();
 
-		var payload:String = __readPayload();
+		var payload:Null<String> = __readPayload();
+		if (payload == null) {
+			throw new IOError('SharedObject "$name" could not be read from shared memory.');
+		}
 		if (payload.length == 0) {
 			data = {};
 			return;
@@ -158,17 +211,25 @@ class SharedObject {
 
 		var parsed:Dynamic;
 		try {
-			parsed = Unserializer.run(payload);
+			parsed = BoundedUnserializer.run(payload);
 		} catch (e:Dynamic) {
 			throw new IOError('SharedObject "$name" holds a payload this build cannot read: $e');
 		}
 		data = parsed == null ? {} : parsed;
 	}
 
-	/** Clears the shared payload and resets local state. */
+	/**
+	 * Clears the shared payload and resets local state.
+	 *
+	 * @throws IOError When another participant holds the region's lock for
+	 *         longer than `lockTimeout`. Nothing is cleared, and `data` keeps
+	 *         what it had.
+	 */
 	public function clear():Void {
 		__requireConnected();
-		__clear(__handle);
+		if (!__clear(__handle, lockTimeout)) {
+			throw __lockTimedOut() ? __lockNotReleased() : new IOError('SharedObject "$name" could not be cleared.');
+		}
 		data = {};
 	}
 
@@ -178,6 +239,41 @@ class SharedObject {
 			__close(__handle);
 			__handle = null;
 		}
+	}
+
+	/**
+		Takes the region `name` away, so that the next `SharedObject` opened
+		under the name starts a new, empty one. Handles already open on it, in
+		this process or another, keep the region they have and go on sharing it
+		until they close.
+
+		On Linux and macOS a region outlives every handle until the machine
+		restarts, and this is how it goes sooner -- on macOS with its lock file.
+		On Windows a region goes when its last handle closes, in whichever
+		process, and has no name to take away while one is open: `remove`
+		does nothing there and answers `false`.
+
+		@param name The name the region was opened under.
+		@return Whether a region was removed: `false` when none had the name.
+		@throws IOError When a region has the name and cannot be removed --
+		        another user's, say -- or, on macOS, when another participant
+		        holds its lock for longer than `lockTimeout`'s default, five
+		        seconds.
+	**/
+	public static function remove(name:String):Bool {
+		__requireSupported();
+		if (name == null || name.length == 0) {
+			throw new ArgumentError("SharedObject name cannot be empty");
+		}
+		#if cpp
+		var removed:Int = NativeSharedObject.__remove(name, DEFAULT_LOCK_TIMEOUT);
+		if (removed < 0) {
+			throw __lockTimedOut() ? __lockError(name, DEFAULT_LOCK_TIMEOUT) : new IOError('SharedObject "$name" could not be removed.');
+		}
+		return removed > 0;
+		#else
+		return false;
+		#end
 	}
 
 	@:noCompletion private function __resetSerializer():Void {
@@ -194,14 +290,20 @@ class SharedObject {
 	 * Read into a buffer the size the last read found; one that is too small
 	 * learns the length from the same call, and the third try takes the whole
 	 * capacity, which every payload fits.
+	 *
+	 * Null when the region cannot be read; throws the `IOError` of a lock not
+	 * released within `lockTimeout`.
 	 */
-	@:noCompletion private function __readPayload():String {
+	@:noCompletion private function __readPayload():Null<String> {
 		var size:Int = __expectedLength;
 		for (attempt in 0...3) {
 			var buffer:Bytes = Bytes.alloc(size < 1 ? 1 : size);
-			var length:Int = __read(__handle, buffer.getData(), buffer.length);
+			var length:Int = __read(__handle, buffer.getData(), buffer.length, lockTimeout);
 			if (length < 0) {
-				break;
+				if (__lockTimedOut()) {
+					throw __lockNotReleased();
+				}
+				return null;
 			}
 			if (length <= buffer.length) {
 				__expectedLength = length;
@@ -209,7 +311,7 @@ class SharedObject {
 			}
 			size = attempt == 0 ? length : __capacity;
 		}
-		throw new IOError('SharedObject "$name" could not be read from shared memory.');
+		return null;
 	}
 
 	@:noCompletion private function __requireConnected():Void {
@@ -218,9 +320,26 @@ class SharedObject {
 		}
 	}
 
-	@:noCompletion private static function __open(name:String, maxSize:Int):SharedObjectHandle {
+	@:noCompletion private function __lockNotReleased():IOError {
+		return __lockError(name, lockTimeout);
+	}
+
+	@:noCompletion private static function __lockError(name:String, timeout:Int):IOError {
+		return new IOError('SharedObject "$name": the region\'s lock was not released within $timeout ms');
+	}
+
+	/** Whether the last native call on this thread failed for a lock not released in time. */
+	@:noCompletion private static function __lockTimedOut():Bool {
 		#if cpp
-		return NativeSharedObject.__open(name, maxSize);
+		return NativeSharedObject.__lastError() == NativeSharedObject.ERROR_LOCK_TIMEOUT;
+		#else
+		return false;
+		#end
+	}
+
+	@:noCompletion private static function __open(name:String, maxSize:Int, lockTimeout:Int):SharedObjectHandle {
+		#if cpp
+		return NativeSharedObject.__open(name, maxSize, lockTimeout);
 		#else
 		return null;
 		#end
@@ -233,31 +352,34 @@ class SharedObject {
 	}
 
 	/** The payload's length, and the payload copied into `buffer` when it fits; -1 when it cannot be read. */
-	@:noCompletion private static function __read(handle:SharedObjectHandle, buffer:BytesData, size:Int):Int {
+	@:noCompletion private static function __read(handle:SharedObjectHandle, buffer:BytesData, size:Int, lockTimeout:Int):Int {
 		#if cpp
-		return NativeSharedObject.__readPayload(handle, Pointer.ofArray(buffer), size);
+		return NativeSharedObject.__readPayload(handle, Pointer.ofArray(buffer), size, lockTimeout);
 		#else
 		return -1;
 		#end
 	}
 
-	@:noCompletion private static function __write(handle:SharedObjectHandle, buffer:BytesData, size:Int):Bool {
+	@:noCompletion private static function __write(handle:SharedObjectHandle, buffer:BytesData, size:Int, lockTimeout:Int):Bool {
 		#if cpp
-		return NativeSharedObject.__write(handle, Pointer.ofArray(buffer), size);
+		return NativeSharedObject.__write(handle, Pointer.ofArray(buffer), size, lockTimeout);
 		#else
 		return false;
 		#end
 	}
 
-	@:noCompletion private static function __clear(handle:SharedObjectHandle):Void {
+	/** Whether the region's lock was taken. */
+	@:noCompletion private static function __clear(handle:SharedObjectHandle, lockTimeout:Int):Bool {
 		#if cpp
-		NativeSharedObject.__clear(handle);
+		return NativeSharedObject.__clear(handle, lockTimeout);
+		#else
+		return false;
 		#end
 	}
 
-	@:noCompletion private static function __getCapacity(handle:SharedObjectHandle):Int {
+	@:noCompletion private static function __getCapacity(handle:SharedObjectHandle, lockTimeout:Int):Int {
 		#if cpp
-		return NativeSharedObject.__getCapacity(handle);
+		return NativeSharedObject.__getCapacity(handle, lockTimeout);
 		#else
 		return 0;
 		#end

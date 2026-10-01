@@ -68,6 +68,43 @@ class OAuthExchangeTest extends utest.Test {
 		}
 	}
 
+	/**
+		A token endpoint's answer nested deeper than any real one is a failure,
+		refused before it is parsed: parsing takes a frame per level, and
+		natively an answer nested 6,000 deep -- 12 KB -- overflowed the stack
+		and ended the process. So did an error document that deep, read for
+		the provider's reason. The bound is 32 levels, objects and arrays
+		together: here the answer's object, then a member nesting the rest.
+	**/
+	public function testADeeplyNestedAnswerIsRefusedBeforeItIsParsed():Void {
+		function nested(levels:Int):String {
+			return StringTools.lpad("", "[", levels) + StringTools.lpad("", "]", levels);
+		}
+
+		// 32 levels: a token.
+		var delivered:Null<OAuthToken> = null;
+		var failure:Null<String> = null;
+		OAuth.__handleTokenResponse("exchange", '{"access_token":"at","authorization_details":${nested(31)}}', token -> delivered = token,
+			message -> failure = message);
+		Assert.isNull(failure);
+		Assert.equals("at", delivered == null ? null : delivered.accessToken);
+		Assert.equals("invalid_grant", @:privateAccess OAuth.__errorBody('{"error":"invalid_grant","x":${nested(31)}}', "HTTP error 400"));
+
+		// 33 levels, which every parser here reads without trouble, and 6,000.
+		for (levels in [32, 5999]) {
+			delivered = null;
+			failure = null;
+			OAuth.__handleTokenResponse("exchange", '{"access_token":"at","authorization_details":${nested(levels)}}', token -> delivered = token,
+				message -> failure = message);
+			Assert.isNull(delivered, (levels + 1) + " levels delivered a token");
+			Assert.isTrue(failure != null && failure.indexOf("malformed response: nested more than 32 levels deep") >= 0, (levels + 1) + " levels: " + failure);
+
+			// The provider's reason cannot be read; the transport's is given.
+			Assert.equals("HTTP error 400", @:privateAccess OAuth.__errorBody('{"error":"invalid_grant","x":${nested(levels)}}', "HTTP error 400"),
+				(levels + 1) + " levels");
+		}
+	}
+
 	#if (sys || nodejs)
 	public function testTheExchangeRunsOffTheRuntimeAndSendsTheVerifier(async:Async):Void {
 		serve(0.4, 200, TOKEN_RESPONSE, endpoint -> {
