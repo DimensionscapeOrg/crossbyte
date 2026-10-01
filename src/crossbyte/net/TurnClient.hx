@@ -97,10 +97,11 @@ import haxe.io.Bytes;
 	that a saving of thirty-two bytes is not worth a connection that dies
 	silently against a relay nobody checked first.
 
-	Once on, it happens on its own. The first datagram for a peer goes as an
-	indication and asks for a channel at the same time; once the relay agrees,
-	the rest go as `ChannelData`. A relay that refuses the bind outright is the
-	safe case -- the indications simply keep working.
+	Once on, it happens on its own. The first datagram `sendTo` sends to a
+	peer goes as an indication and asks for a channel at the same time; once
+	the relay agrees, the rest go as `ChannelData`. A relay that refuses the
+	bind outright is the safe case -- the indications simply keep working.
+	The peer still needs `permit`, since the indications meanwhile do.
 
 	Channels last ten minutes and are rebound at eight. A rebind the relay
 	refuses leaves the binding it has until its ten minutes are up, and the
@@ -612,6 +613,13 @@ class TurnClient {
 		if (channel != null && channel.bound && __clock - channel.boundAt < CHANNEL_LIFETIME) {
 			onSend(__channelData(channel.number, payload, offset, length), serverAddress, serverPort);
 			return;
+		}
+
+		// With channels on, the first datagram to a peer asks for one, as the
+		// class documentation says it happens: on its own. Only callers that
+		// asked themselves ever got one -- this client never did.
+		if (useChannels && (channel == null || (!channel.bound && !channel.pending && !channel.refused))) {
+			bindChannel(peerAddress, peerPort, __clock);
 		}
 
 		var data = new ByteArray();

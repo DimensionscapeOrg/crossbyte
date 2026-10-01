@@ -928,6 +928,40 @@ class TurnClientTest extends utest.Test {
 		Assert.isTrue(network.relay.count("send-relayed") > 0, "the traffic did not go back to indications");
 	}
 
+	/**
+		With channels on, sending is enough: the first datagram to a peer asks
+		for a channel, and once the relay agrees the rest go as ChannelData.
+
+		The class documentation said so -- "once on, it happens on its own" --
+		and only callers that asked for the channel themselves ever got one.
+		A client used directly sent every datagram as an indication.
+	**/
+	public function testWithChannelsOnSendingAsksForOne():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.useChannels = true;
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		client.permit(PEER, network.now);
+		network.run(() -> network.relay.count("permitted") > 0, 5);
+
+		for (i in 0...10) {
+			var payload = new ByteArray();
+			payload.writeUTFBytes("datagram " + i);
+			payload.position = 0;
+			client.sendTo(payload, PEER, PEER_PORT);
+			network.advance(0.25);
+		}
+
+		Assert.equals(1, network.relay.requestsOf("bind"), "sending asked for " + network.relay.requestsOf("bind") + " channels");
+		Assert.isTrue(network.relay.count("channeldata-relayed") > 0, "nothing went over the channel once it was bound");
+		Assert.isTrue(network.relay.count("send-relayed") > 0, "the first datagram did not go as an indication while the bind was asked for");
+	}
+
 	// ------------------------------------------------------------------
 	// Redirections, reasons and credentials
 	// ------------------------------------------------------------------

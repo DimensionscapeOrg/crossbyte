@@ -81,6 +81,10 @@ entry below says how:
   advertise it, is not asked, and keeps its end open as before.
 
 ### Added
+- `TurnServer.verifyCert`, so a relay `PeerConnection.gatherRelayedFrom`
+  reaches over TLS can have its certificate check turned off for a test
+  against a throwaway one, as `TurnClient.verifyCert` allows. Through
+  `PeerConnection` it could not be turned off at all.
 - `IceAgent.onStateChanged`, called as the agent moves to CHECKING,
   CONNECTED and FAILED. Losing consent set `state` and called nothing, so
   a caller holding an agent -- one attached to a
@@ -1940,6 +1944,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- With `TurnClient.useChannels` on, the first datagram `sendTo` sends to a
+  peer asks for a channel, and once the relay binds it the rest go as
+  ChannelData, as the class documentation said they would "on its own".
+  Only callers that asked for the channel themselves got one: a client
+  used directly sent every datagram as a thirty-six-byte indication.
 - A TURN relay reached over TCP or TLS that answers 300 Try Alternate is
   followed to the relay it names, over a connection of its own -- for
   `PeerConnection.gatherRelayedFrom` and

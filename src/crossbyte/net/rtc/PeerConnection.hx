@@ -1294,7 +1294,8 @@ class PeerConnection {
 					password: server.password,
 					transport: server.transport != null ? server.transport : UDP
 					#if !(macro || (js && !nodejs)),
-					certAuthority: server.certAuthority
+					certAuthority: server.certAuthority,
+					verifyCert: server.verifyCert
 					#end
 				}
 		];
@@ -1413,6 +1414,10 @@ class PeerConnection {
 		relay.useChannels = __relayUseChannels;
 		#if !(macro || (js && !nodejs))
 		relay.certAuthority = server.certAuthority;
+
+		// It could not be turned off through here, for a test against a relay
+		// with a throwaway certificate, as it can on the client itself.
+		relay.verifyCert = server.verifyCert != false;
 		#end
 		__turn = relay;
 		__turnServer = server;
@@ -1581,13 +1586,11 @@ class PeerConnection {
 		// that only receives keeps its peer permitted.
 		__turn.permit(address, now);
 
-		// And a channel, which costs four bytes a datagram where an indication
-		// costs thirty-six. Asked for every time and ignored when one is
-		// already fresh; until the relay agrees, `sendTo` keeps using
-		// indications, so a relay that will not bind is a connection at the old
-		// price rather than no connection.
-		__turn.bindChannel(address, port, now);
-
+		// A channel, four bytes a datagram where an indication costs
+		// thirty-six, is asked for by `sendTo` itself when the relay was told
+		// to use them; until the relay agrees indications carry the traffic,
+		// so a relay that will not bind is a connection at the old price
+		// rather than no connection.
 		__turn.sendTo(payload, address, port);
 	}
 
