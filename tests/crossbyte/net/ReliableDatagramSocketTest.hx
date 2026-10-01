@@ -1062,6 +1062,49 @@ class ReliableDatagramSocketTest extends utest.Test {
 		closeDatagramQuietly(unused);
 	}
 
+	/**
+		A timeout of zero is no deadline: the attempt goes on until the peer
+		answers or the caller closes it, as it does for a `Socket` on Node.
+		It armed a timer of zero instead, which gave the attempt up at the
+		first pass -- by address, and by name once looked up.
+	**/
+	public function testATimeoutOfZeroIsNoDeadline():Void {
+		if (!requireDatagramSupport()) return;
+
+		var silent = new DatagramSocket();
+		var byAddress = new ReliableDatagramSocket();
+		var byName = new ReliableDatagramSocket();
+		var failures:Array<String> = [];
+
+		try {
+			// Takes every CONNECT and answers none.
+			silent.bind(0, "127.0.0.1");
+			silent.receive();
+
+			byAddress.timeout = 0;
+			byAddress.addEventListener(IOErrorEvent.IO_ERROR, (e:IOErrorEvent) -> failures.push("by address: " + e.text));
+			byAddress.connect("127.0.0.1", silent.localPort);
+
+			byName.timeout = 0;
+			byName.addEventListener(IOErrorEvent.IO_ERROR, (e:IOErrorEvent) -> failures.push("by name: " + e.text));
+			byName.connect("localhost", silent.localPort);
+
+			// Long past the moment a deadline of zero comes due.
+			pumpUntil(() -> failures.length > 0, 0.5);
+
+			Assert.same([], failures, "an attempt with no deadline was given up");
+			Assert.isFalse(byAddress.connected);
+			Assert.equals(-1, byAddress.__connectionTimeoutHandle, "an attempt with no deadline armed one");
+			Assert.equals(-1, byName.__connectionTimeoutHandle, "an attempt by name with no deadline armed one");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		closeQuietly(byAddress);
+		closeQuietly(byName);
+		closeDatagramQuietly(silent);
+	}
+
 	public function testConnectsFromNewAddressesAreBoundedWhileUnanswered():Void {
 		if (!requireDatagramSupport()) return;
 

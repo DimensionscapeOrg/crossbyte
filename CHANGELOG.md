@@ -1942,6 +1942,10 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `ReliableDatagramSocket` whose `timeout` is zero has no deadline: it
+  goes on trying until the peer answers or it is closed, as a `Socket` on
+  Node does. It set a timer of zero, which gave the attempt up at the
+  first pass, by address and by name alike.
 - `ReliableDatagramSocket.close()` delivers what was sent before it. It
   sent the frames gathered in the pass and a FIN, and let the rest go:
   frames the congestion window was holding back, frames lost and waiting
