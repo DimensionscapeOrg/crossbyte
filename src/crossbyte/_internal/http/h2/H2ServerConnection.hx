@@ -1026,6 +1026,13 @@ class H2ServerConnection {
 		var content:Bytes = frame.has(H2Flags.PADDED) ? H2Frame.stripPadding(frame.payload, frame.streamId) : frame.payload;
 
 		var target:Null<H2Stream> = __streams.get(frame.streamId);
+		if (target != null && target.endOfStream) {
+			// 5.1: the peer ended this stream, so it is half-closed on its
+			// side and DATA on it is a stream error. It was appended, and a
+			// second END_STREAM delivered the request again -- a second
+			// handler answering a stream the first was answering.
+			throw new H2StreamError(frame.streamId, H2ErrorCode.STREAM_CLOSED, "DATA after the end of the stream");
+		}
 		if (target != null && !target.overflowed) {
 			if (maxRequestBodySize >= 0 && target.bodyLength + content.length > maxRequestBodySize) {
 				__refuseOversized(target);
