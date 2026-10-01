@@ -23,13 +23,18 @@ import haxe.io.Bytes;
 /**
  * An HTTP/2 backend for `HTTPBackendRegistry`.
  *
- * Not registered by default. HTTP/2 is opt-in so that a program which never
- * asks for it does not link the framing layer, and so that registering a
- * different implementation stays possible:
+ * Registered on first use: the registry resolves HTTP/2 to this backend the
+ * first time a request asks for it, unless
+ * `HTTPBackendRegistry.autoRegisterBundled` was turned off before then.
+ * Register one yourself only in that case, or to give it settings of its
+ * own; a backend registered later takes precedence over the bundled one:
  *
  * ```haxe
  * HTTPBackendRegistry.register(new HTTP2Backend());
  * ```
+ *
+ * A build that never asks for HTTP/2 and should not link the framing layer
+ * is compiled with `-D crossbyte_no_http2`; see `autoRegisterBundled`.
  *
  * `http://` uses prior-knowledge h2c: the client opens with the connection
  * preface and assumes the server speaks HTTP/2. That is the only cleartext

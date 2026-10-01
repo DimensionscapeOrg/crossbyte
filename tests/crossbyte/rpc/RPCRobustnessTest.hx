@@ -212,6 +212,39 @@ class RPCRobustnessTest extends utest.Test {
 		Assert.isNull(session.__runtimePendingResponse);
 	}
 
+	/**
+		What `stop()` says it does: the calls waiting fail, on both lanes,
+		saying the session stopped; an answer arriving for one afterwards is
+		dropped; and the session, and its connection, carry on, a call made
+		after it is answered as ever.
+	**/
+	public function testStopFailsTheCallsWaitingAndLeavesTheSessionUsable():Void {
+		var link = LinkedConnection.pair();
+		link.client.bufferInbound = true;
+		var commands = new RobustCommands();
+		var client = new RPCSession<RobustCommands>(link.client, commands);
+		var server = new RPCSession(link.server, null, new RobustHandler());
+		server.register(50, args -> "runtime");
+
+		var compiled = commands.getName(1);
+		var runtime:RPCResponse<Dynamic> = client.request(50, []);
+		Assert.isFalse(compiled.completed, "an answer arrived before it was let through");
+
+		client.stop();
+		Assert.equals("RPC session stopped", compiled.error);
+		Assert.equals("RPC session stopped", runtime.error);
+
+		// Their answers come now, and find nobody waiting.
+		link.client.flushBufferedReads();
+		Assert.isFalse(compiled.succeeded);
+		Assert.isFalse(runtime.succeeded);
+
+		link.client.bufferInbound = false;
+		var after = commands.getName(2);
+		Assert.isTrue(link.client.open, "stop() closed the connection");
+		Assert.equals("name-2", after.result);
+	}
+
 	// ---- the connection ending ----
 
 	public function testACallWaitingWhenItsConnectionClosesFails():Void {
@@ -296,6 +329,14 @@ private class RobustCommands extends RPCCommands {
 	public function new() {}
 
 	@:rpc public function getName(id:Int):RPCResponse<String> {}
+}
+
+private class RobustHandler extends RPCHandler {
+	public function new() {}
+
+	@:rpc public function getName(id:Int):String {
+		return "name-" + id;
+	}
 }
 
 /**

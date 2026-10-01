@@ -1945,6 +1945,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An `HTTPBackend` is handed a request's headers as `"Name: value"`, as
+  `HTTPRequestContext.headers` says; `URLLoader` passed them as
+  `URLRequestHeader.toString()` writes them, with no space. And the client
+  and RPC documentation says what the code does: HTTP/2 registers itself
+  on first use, where `HTTP2Backend`, `HTTPVersion` and
+  `URLRequest.httpVersion` said it had to be registered; `URLRequest`'s
+  `contentType` and `data` say what each sends, where `data` pointed at a
+  note that did not exist; `RPCSession.stop()` says it fails the calls
+  waiting; and `onHandlerError` has its description back.
 - The RPC runtime lane carries a `ByteArray`, as the bytes it holds, in an
   argument or an answer: the guide says it carries `haxe.io.Bytes`, and a
   `ByteArray` is one. It was refused as "Unsupported runtime RPC value",
