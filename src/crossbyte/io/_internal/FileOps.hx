@@ -132,9 +132,10 @@ class FileOps {
 		opens it afresh, Windows refuses the delete while any other handle has
 		the file open, and the old file is then opened without being cut,
 		its start overwritten, its old length kept, and nothing said. Cut here
-		through the handle, which Windows allows.
+		through the handle, which Windows allows. Dynamic in a browser, where
+		the sys package cannot be named.
 	**/
-	public static function write(path:String):sys.io.FileOutput {
+	public static function write(path:String):#if (js && !nodejs) Dynamic #else sys.io.FileOutput #end {
 		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("Cannot write " + path + ": this target has no filesystem.");
 		#else
