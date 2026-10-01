@@ -40,7 +40,7 @@ class ErrorsTest extends utest.Test {
 		// build has none without -D HXCPP_STACK_TRACE, and there every stack
 		// here is legitimately empty. Where there are frames at all, check that
 		// each error names its own site.
-		if (atThrow.length > 0) {
+		if (atThrow.length > 0 && __recordsTheMakingFrame()) {
 			Assert.isTrue(__names(atThrow, "__throwFromHere", __throwLine),
 				"expected the throw site in the stack, got: " + atThrow);
 			// Never thrown, and it still knows where it was made. This was
@@ -68,6 +68,26 @@ class ErrorsTest extends utest.Test {
 	private static function __nextLine(?pos:haxe.PosInfos):Int {
 		return pos.lineNumber + 1;
 	}
+
+	/**
+		Whether this runtime puts the frame that makes an exception in its
+		stack. The HashLink 1.14.0 release CI installs leaves it out of every
+		`haxe.Exception`'s, CrossByte's or not, so there no error can name its
+		own site; other builds of the same version keep it.
+	**/
+	private static function __recordsTheMakingFrame():Bool {
+		#if hl
+		return __makeProbe().stack.toString().indexOf("__makeProbe") >= 0;
+		#else
+		return true;
+		#end
+	}
+
+	#if hl
+	private static function __makeProbe():haxe.Exception {
+		return new haxe.Exception("probe");
+	}
+	#end
 
 	/**
 		Whether `stack` names a site: by its method, or where frames carry no
