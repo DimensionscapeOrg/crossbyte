@@ -18,6 +18,7 @@ import utest.Async;
 **/
 @:access(crossbyte.core.CrossByte)
 @:access(crossbyte.events.EventDispatcher)
+@:access(crossbyte.net.Socket)
 class BrowserSocketTest extends utest.Test {
 	#if (js && !nodejs)
 	private static inline var ECHO_PATH:String = "crossbyte-echo";
@@ -59,12 +60,30 @@ class BrowserSocketTest extends utest.Test {
 		}, async);
 	}
 
+	/**
+		The server's close is reported once, and the socket stops: its own
+		tick, which flushes it, comes off the runtime.
+
+		This counted every TICK listener the runtime had, before and after,
+		so another component's listener arriving or leaving meanwhile broke
+		it, a Future failing with nothing listening adds one for a tick, to
+		report it, whatever this socket did. It looks for the socket's own
+		now, with one such listener of another's coming and going during the
+		case to show that it does not count.
+	**/
 	@:timeout(15000)
 	public function testTheServerClosingIsReportedOnceAndTheSocketStops(async:Async):Void {
-		var before:Int = __tickListeners();
+		var runtime:CrossByte = CrossByte.current();
+		var passing:TickEvent->Void = null;
+		passing = function(_:TickEvent):Void {
+			runtime.removeEventListener(TickEvent.TICK, passing);
+		};
+		runtime.addEventListener(TickEvent.TICK, passing);
 
+		var tickedWhileOpen:Bool = false;
 		__session(function(socket, peer) {
 			socket.addEventListener(Event.CONNECT, function(_) {
+				tickedWhileOpen = __ticking(socket);
 				socket.writeUTFBytes("close-me");
 				socket.flush();
 			});
@@ -73,7 +92,8 @@ class BrowserSocketTest extends utest.Test {
 				NetPump.wait(0.3, function() {
 					Assert.equals(1, peer.closes, "the server's close was not reported exactly once");
 					Assert.isFalse(socket.connected, "the socket still says it is connected after the server closed");
-					Assert.equals(before, __tickListeners(), "the closed socket is still flushed from every tick");
+					Assert.isTrue(tickedWhileOpen, "the open socket was not on the runtime's tick, so its absence says nothing");
+					Assert.isFalse(__ticking(socket), "the closed socket is still flushed from every tick");
 					done();
 				});
 			});
@@ -185,9 +205,19 @@ class BrowserSocketTest extends utest.Test {
 		});
 	}
 
-	private static function __tickListeners():Int {
-		var listeners:Array<Dynamic> = CrossByte.current().__eventMap == null ? null : CrossByte.current().__eventMap.get(TickEvent.TICK);
-		return listeners == null ? 0 : listeners.length;
+	/** Whether `socket`'s own tick listener, which flushes it, is on the runtime's tick. **/
+	private static function __ticking(socket:Socket):Bool {
+		var map = CrossByte.current().__eventMap;
+		var listeners:Array<Dynamic> = map == null ? null : map.get(TickEvent.TICK);
+		if (listeners == null) {
+			return false;
+		}
+		for (entry in listeners) {
+			if (Reflect.compareMethods(entry.listener, socket.this_onTick)) {
+				return true;
+			}
+		}
+		return false;
 	}
 	#end
 }
