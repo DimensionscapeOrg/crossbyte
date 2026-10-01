@@ -1944,6 +1944,17 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Off cpp, a MySQL insert id past 2^31 reads back whole in
+  `SQLResult.lastInsertRowID`, and `MySQLConnection.lastInsertRowID`
+  holds at 2147483647 as it does natively. Haxe's drivers keep it in an
+  `Int`: hl and neko wrapped it, and on the jvm Haxe's JDBC binding read a
+  single insert's key with `getInt` after the insert had run, so a
+  committed insert was reported as failed. An id that cannot be right is
+  asked for with `SELECT LAST_INSERT_ID()`, as text, as the SQLite driver
+  does; on the jvm that `getInt` failure, SQLSTATE 22003 with no error
+  number, from an `INSERT` or `REPLACE`, is taken for the success it was.
+  And `MySQLStatement.parameters` says per target how a `DATETIME` written
+  from a `Date` reads back, which is as UTC natively only.
 - `MongoConfig.connectTimeout` bounds the whole of `open()` with each
   server, the connect, TLS, the hello and the login, as MySQL's bounds
   its login. It was only a socket timeout set before the connect, which
