@@ -12,6 +12,15 @@ import utest.Assert;
 import crossbyte.test.Require;
 
 class FileTest extends utest.Test {
+	/** The storage directory is created when first asked for: somewhere temporary, then. **/
+	public function setupClass():Void {
+		StorageSandbox.enter();
+	}
+
+	public function teardownClass():Void {
+		StorageSandbox.leave();
+	}
+
 	public function testACloneHasListenersOfItsOwn():Void {
 		// The documentation says registrations are not copied. The clone shared
 		// the original's listener map instead, so a listener on either reached

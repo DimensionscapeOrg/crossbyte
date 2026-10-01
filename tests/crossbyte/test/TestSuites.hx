@@ -206,6 +206,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.sys.ProcessLifecycleTest());
 		runner.addCase(new crossbyte.sys.ChildProcessSocketTest());
 		runner.addCase(new crossbyte.sys.SysSupportTest());
+		runner.addCase(new crossbyte.sys.SystemTest());
 		runner.addCase(new crossbyte.sys.WorkerTest());
 		runner.addCase(new crossbyte.sys.TaskPoolTest());
 	}

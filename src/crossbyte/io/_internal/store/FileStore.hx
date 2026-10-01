@@ -10,7 +10,10 @@ import sys.io.File as SysFile;
  * A `Store` over a directory, for every target with a filesystem.
  *
  * One file per key, under a directory named for the store, inside the
- * application storage directory. A single index file was the alternative and
+ * application storage directory: `<storage>/stores/<name>`, where `<storage>`
+ * is `System.appStorageDir`, the application's own directory. It was the
+ * account's root, `%APPDATA%` or `$HOME`, which every CrossByte program on
+ * the account shared. A single index file was the alternative and
  * is worse: every write would rewrite the whole index, and a value larger than
  * memory could never be streamed in later without changing the format. A
  * directory is also inspectable, which matters the first time someone has to

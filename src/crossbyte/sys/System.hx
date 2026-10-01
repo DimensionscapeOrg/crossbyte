@@ -103,6 +103,47 @@ class System {
 
 	public static var appDir(get, never):String;
 
+	/**
+		The name this application's data is kept under: the last part of
+		`appStorageDir`, so what keeps one application's `Store` apart from
+		another's.
+
+		The `crossbyte_app_id` define when the build sets one,
+		`-D crossbyte_app_id=com.example.chat`: which may hold letters,
+		digits, `.`, `-`, `_` and spaces, starting with a letter or a digit;
+		the build refuses anything else. Otherwise the main class's full
+		name, as `com.example.Chat`, which is the same whichever target the
+		application is built for, so its native, jvm and Node builds share
+		their data. A build with no main class, a library loaded by
+		something else, uses the program's file name without its
+		extension.
+
+		Two applications whose main classes have one name, `Main` is a
+		common one, share their storage. Give each a name of its own with
+		the define.
+	**/
+	public static var applicationId(get, never):String;
+
+	/**
+		The application storage directory, which
+		`File.applicationStorageDirectory` refers to and `Store` keeps its
+		files in: `applicationId` inside the directory each operating system
+		keeps applications' data in.
+
+		- Windows: `%APPDATA%\<id>`, as
+		  `C:\Users\<user>\AppData\Roaming\<id>`.
+		- macOS: `~/Library/Application Support/<id>`.
+		- Linux and other POSIX systems: `$XDG_DATA_HOME/<id>`, or
+		  `~/.local/share/<id>` where that is not set to an absolute path.
+
+		Created, with any parent it needs, the first time it is asked for.
+
+		@throws IOError The environment names no such directory, no
+		`APPDATA` or `USERPROFILE` on Windows, no `HOME` elsewhere, or it
+		cannot be created.
+		@throws IllegalOperationError In a browser, which has no file
+		system; `Store` keeps its data in IndexedDB there.
+	**/
 	public static var appStorageDir(get, never):String;
 
 	public static var documentsDir(get, never):String;
@@ -182,9 +223,10 @@ class System {
 	}
 	#end
 
-	private static inline var APPLICATION_DIR:String = "Crossbyte";
 	@:noCompletion private static var __appDirPath:String;
+	@:noCompletion private static var __applicationId:String;
 	@:noCompletion private static var __appStorageDirPath:String;
+	@:noCompletion private static var __appStorageDirMade:Bool = false;
 	@:noCompletion private static var __desktopDirPath:String;
 	@:noCompletion private static var __documentsDirPath:String;
 	@:noCompletion private static var __userDirPath:String;
@@ -320,24 +362,135 @@ class System {
 		#end
 	}
 
-	@:noCompletion private static inline function get_appStorageDir():String {
+	@:noCompletion private static function get_applicationId():String {
+		if (__applicationId == null) {
+			var id:Null<String> = crossbyte.io._internal.ApplicationIdentity.defined;
+
+			if (id == null) {
+				id = crossbyte.io._internal.ApplicationIdentity.mainClass();
+			}
+
+			#if !(js && !nodejs)
+			if (id == null) {
+				id = __programName();
+			}
+			#end
+
+			if (id == null || id == "") {
+				throw new crossbyte.errors.IllegalOperationError("Nothing names this application: there is no main class and no program file. Build it with -D crossbyte_app_id=<name>.");
+			}
+
+			__applicationId = id;
+		}
+
+		return __applicationId;
+	}
+
+	#if !(js && !nodejs)
+	/** The program's file name without its extension, or null. **/
+	@:noCompletion private static function __programName():Null<String> {
+		try {
+			var name:String = Path.withoutExtension(Path.withoutDirectory(Sys.programPath()));
+			return name == "" ? null : name;
+		} catch (_:Dynamic) {
+			return null;
+		}
+	}
+	#end
+
+	@:noCompletion private static function get_appStorageDir():String {
+		#if (js && !nodejs)
+		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
+		#else
+		var path:String = __storagePath();
+
+		if (!__appStorageDirMade) {
+			// AIR's "created when you first access it", which nothing did:
+			// this was the profile root itself, which exists anyway.
+			try {
+				if (!sys.FileSystem.exists(path)) {
+					sys.FileSystem.createDirectory(path);
+				}
+			} catch (e:Dynamic) {
+				throw new crossbyte.errors.IOError('Could not create the application storage directory $path: ${Std.string(e)}');
+			}
+
+			__appStorageDirMade = true;
+		}
+
+		return path;
+		#end
+	}
+
+	/**
+		The application storage directory's path, worked out once, without
+		creating it.
+
+		It was `APPDATA`, or `HOME`, itself: the account's root, shared by
+		every CrossByte program on it, so two applications that opened a
+		`Store` of the same name opened one store, where `Store` promised
+		each its own. It is the application's own directory inside that now.
+
+		Before that it had been wrong on Node: under Windows the old
+		`#if windows` was false there, so it read HOME, the profile root
+		when Git Bash had set it, a different place than a native build used
+		for the same data, and the literal string "undefined" when nothing
+		had. The platform is asked at run time.
+	**/
+	@:noCompletion private static function __storagePath():String {
 		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
 		#else
 		if (__appStorageDirPath == null) {
-			// This decides where `Store` keeps its files, so getting it wrong
-			// is not cosmetic: on Node under Windows the old `#if windows`
-			// was false, so it read HOME. With HOME set, Git Bash sets it,
-			// that is the profile root rather than AppData, so a store written
-			// by a native build was invisible to a Node one on the same
-			// machine. With HOME unset, which is the normal state for a
-			// Windows service, `getEnv` returns null and the path became the
-			// literal string "undefined", relative to the working directory.
-			__appStorageDirPath = isWindows ? Sys.getEnv("APPDATA") : Sys.getEnv("HOME");
+			var base:Null<String> = __storageBase(PLATFORM, Sys.getEnv);
+
+			if (base == null) {
+				var wanted:String = isWindows ? "APPDATA or USERPROFILE" : "HOME, or XDG_DATA_HOME";
+				throw new crossbyte.errors.IOError('There is no application storage directory: the environment sets neither $wanted.');
+			}
+
+			__appStorageDirPath = Path.removeTrailingSlashes(base) + (isWindows ? "\\" : "/") + applicationId;
 		}
 
 		return __appStorageDirPath;
 		#end
+	}
+
+	/**
+		Where `platform` keeps applications' data, read from `env`, or null
+		when the environment does not say. Separate so that every platform's
+		rule is tested on whichever one runs the test.
+	**/
+	@:noCompletion private static function __storageBase(platform:String, env:String->Null<String>):Null<String> {
+		inline function given(name:String):Null<String> {
+			var value:Null<String> = env(name);
+			return value == null || StringTools.trim(value) == "" ? null : value;
+		}
+
+		switch (platform) {
+			case "windows":
+				var appData:Null<String> = given("APPDATA");
+				if (appData != null) {
+					return appData;
+				}
+
+				var profile:Null<String> = given("USERPROFILE");
+				return profile == null ? null : Path.removeTrailingSlashes(profile) + "\\AppData\\Roaming";
+
+			case "mac":
+				var home:Null<String> = given("HOME");
+				return home == null ? null : Path.removeTrailingSlashes(home) + "/Library/Application Support";
+
+			default:
+				// XDG: a relative value is invalid and is to be ignored.
+				var data:Null<String> = given("XDG_DATA_HOME");
+				if (data != null && StringTools.startsWith(data, "/")) {
+					return data;
+				}
+
+				var home:Null<String> = given("HOME");
+				return home == null ? null : Path.removeTrailingSlashes(home) + "/.local/share";
+		}
 	}
 
 	/**
@@ -350,7 +503,7 @@ class System {
 		return null;
 		#else
 		try {
-			return appStorageDir;
+			return __storagePath();
 		} catch (_:Dynamic) {
 			return null;
 		}

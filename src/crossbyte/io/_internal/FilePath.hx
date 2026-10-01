@@ -225,6 +225,28 @@ class FilePath {
 		return out.join("/");
 	}
 
+	/**
+		Why `name` cannot be one directory's name on every platform, or null
+		when it can: letters, digits, `.`, `-`, `_` and spaces, starting with
+		a letter or a digit, and not ending in a dot or a space, which Windows
+		drops from a name. What `-D crossbyte_app_id` is held to.
+	**/
+	public static function portableNameProblem(name:String):Null<String> {
+		if (name == null || name == "") {
+			return "it is empty";
+		}
+
+		if (!~/^[A-Za-z0-9][A-Za-z0-9._ -]*$/.match(name)) {
+			return "use letters, digits, '.', '-', '_' and spaces, starting with a letter or a digit";
+		}
+
+		if (StringTools.endsWith(name, ".") || StringTools.endsWith(name, " ")) {
+			return "Windows drops a trailing dot or space from a name";
+		}
+
+		return null;
+	}
+
 	private static inline function __isLetter(code:Null<Int>):Bool {
 		return code != null && ((code >= "A".code && code <= "Z".code) || (code >= "a".code && code <= "z".code));
 	}
