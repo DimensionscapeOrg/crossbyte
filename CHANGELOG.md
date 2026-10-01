@@ -101,6 +101,10 @@ entry below says how:
   stream reading numbers that rc.1's synchronous `FileStream` wrote. Its
   `writeObject` frames HXSF and JSON with a 32-bit length, so objects in
   files written by rc.1 do not read back.
+- `File.data` throws an `IllegalOperationError` until a load has
+  succeeded, where it answered `null`: check for a load first, or catch
+  it. `File.extension` and `type` are `null` for a name with no dot, where
+  they were `""`.
 
 ### Added
 - `System.applicationId`, the name an application's storage directory and
@@ -1994,6 +1998,39 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `File.canonicalize()` follows links, as documented, to the path the file
+  system gives for the file, natively and on Node through the system's
+  own call, on the jvm `toRealPath`, and on the interpreter, neko and
+  HashLink under Linux and macOS `realpath`, so a symbolic link or a
+  junction on the way is resolved. It only corrected the case of each
+  name, which it still does for a path with nothing at the end, and on
+  the interpreter, neko and HashLink under Windows, which resolve no link.
+- `new File("file:///C:/x")` names `C:\x`, as the constructor documents a
+  URL to: a `file:` URL was taken for a native path, `file:\C:\x`, which
+  names nothing. `file:///home/x` is `/home/x`, `file://server/share/x`
+  the share, and `%XX` escapes are decoded as UTF-8.
+- `File.extension` and `type` are `null` for a name with no dot, as
+  documented, where they were `""`, the extension of a name ending in a
+  dot.
+- `File.data` throws an `IllegalOperationError` until a `load()` or
+  `loadAsync()` has succeeded, as documented, where it answered `null`.
+  A load unsets it first, so one that fails or is cancelled no longer
+  leaves the previous load's bytes in place, looking like its own.
+- `File.documentsDirectory` and `desktopDirectory` follow xdg-user-dirs on
+  Linux and the BSDs, as documented: a desktop in another language, or a
+  user, can keep them somewhere other than `~/Documents` and `~/Desktop`,
+  which was all that was looked at.
+- `File.clone()` copies the File's path and names, and starts no process.
+  It read every property through its getter to set it on the clone, so
+  each clone ran `fsutil` or `df` for `spaceAvailable` and read the file's
+  size and dates: 200 clones took 1.2 s on the interpreter and 3.5 s on
+  the jvm.
+- `File`'s documentation no longer promises what AIR does and CrossByte
+  does not: no `SecurityError` is thrown or `securityError` dispatched,
+  `copyTo` copies a file's contents and not its attributes, and a file
+  that is open can be copied, what Windows refuses, unless the program
+  that has the file open allowed it, is moving or deleting it, which it
+  says now.
 - On the jvm under Windows, writing a file that another handle has open
   replaces its contents. The standard library's write deletes the file and
   opens it afresh; Windows refuses the delete while the file is open, and

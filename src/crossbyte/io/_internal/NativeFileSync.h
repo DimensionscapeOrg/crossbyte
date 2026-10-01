@@ -31,3 +31,7 @@ int crossbyte_file_create_exclusive(::String path, bool directory);
 // When the file at `path` was created, in milliseconds since 1970; -1 if the
 // system keeps no creation time for it, -2 if it cannot be examined.
 double crossbyte_file_created(::String path);
+
+// The file system's own path for `path`, links followed and names in their
+// case on disk, or an empty string if there is no such file.
+::String crossbyte_file_real_path(::String path);

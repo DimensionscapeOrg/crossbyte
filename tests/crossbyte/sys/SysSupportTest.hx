@@ -91,8 +91,11 @@ class SysSupportTest extends utest.Test {
 		// it expected HOME and got HOME, and the two were wrong together. A
 		// test that reproduces the bug it is checking for cannot see it.
 		var expectedUser = System.isWindows ? Sys.getEnv("USERPROFILE") : Sys.getEnv("HOME");
-		var expectedDesktop = expectedUser + File.separator + "Desktop";
-		var expectedDocuments = expectedUser + File.separator + "Documents";
+		// Linux's xdg-user-dirs when the user has one; SystemTest reads it.
+		var xdgDesktop:Null<String> = @:privateAccess System.__xdgUserDir("XDG_DESKTOP_DIR");
+		var xdgDocuments:Null<String> = @:privateAccess System.__xdgUserDir("XDG_DOCUMENTS_DIR");
+		var expectedDesktop = xdgDesktop != null ? xdgDesktop : expectedUser + File.separator + "Desktop";
+		var expectedDocuments = xdgDocuments != null ? xdgDocuments : expectedUser + File.separator + "Documents";
 
 		// The program's own directory, not the working directory; SystemTest
 		// checks which.

@@ -165,8 +165,10 @@ class System {
 	**/
 	public static var appStorageDir(get, never):String;
 
+	/** The user's documents directory, as `File.documentsDirectory` describes it. **/
 	public static var documentsDir(get, never):String;
 
+	/** The user's desktop directory, as `File.desktopDirectory` describes it. **/
 	public static var desktopDir(get, never):String;
 
 	public static var userDir(get, never):String;
@@ -567,7 +569,8 @@ class System {
 		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
 		#else
 		if (__desktopDirPath == null) {
-			__desktopDirPath = userDir + File.separator + "Desktop";
+			var configured:Null<String> = __xdgUserDir("XDG_DESKTOP_DIR");
+			__desktopDirPath = configured != null ? configured : userDir + File.separator + "Desktop";
 		}
 
 		return __desktopDirPath;
@@ -579,11 +582,79 @@ class System {
 		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
 		#else
 		if (__documentsDirPath == null) {
-			__documentsDirPath = userDir + File.separator + "Documents";
+			// xdg-user-dirs, as File.documentsDirectory documents, which was
+			// never read: a desktop in another language, or one moved, keeps
+			// its documents somewhere other than ~/Documents.
+			var configured:Null<String> = __xdgUserDir("XDG_DOCUMENTS_DIR");
+			__documentsDirPath = configured != null ? configured : userDir + File.separator + "Documents";
 		}
 
 		return __documentsDirPath;
 		#end
+	}
+
+	#if !(js && !nodejs)
+	/**
+		`key` from the user's xdg-user-dirs file, on Linux and the BSDs, or
+		null: elsewhere, with no such file, or with the key unset.
+	**/
+	@:noCompletion private static function __xdgUserDir(key:String):Null<String> {
+		if (isWindows || PLATFORM == "mac") {
+			return null;
+		}
+
+		var home:Null<String> = Sys.getEnv("HOME");
+		if (home == null || home == "") {
+			return null;
+		}
+
+		var config:Null<String> = Sys.getEnv("XDG_CONFIG_HOME");
+		if (config == null || !StringTools.startsWith(config, "/")) {
+			config = Path.removeTrailingSlashes(home) + "/.config";
+		}
+
+		try {
+			var file:String = config + "/user-dirs.dirs";
+			return sys.FileSystem.exists(file) ? __parseUserDirs(sys.io.File.getContent(file), key, home) : null;
+		} catch (_:Dynamic) {
+			return null;
+		}
+	}
+	#end
+
+	/**
+		The directory `key` names in the text of a user-dirs.dirs file, with
+		`$HOME` expanded, or null. Lines are `KEY="$HOME/Name"` or
+		`KEY="/absolute/path"`, as xdg-user-dirs writes them.
+	**/
+	@:noCompletion private static function __parseUserDirs(content:String, key:String, home:String):Null<String> {
+		for (line in content.split("\n")) {
+			var text:String = StringTools.trim(line);
+
+			if (StringTools.startsWith(text, "#") || !StringTools.startsWith(text, key + "=")) {
+				continue;
+			}
+
+			var value:String = StringTools.trim(text.substr(key.length + 1));
+
+			if (value.length >= 2 && StringTools.startsWith(value, "\"") && StringTools.endsWith(value, "\"")) {
+				value = value.substr(1, value.length - 2);
+			}
+
+			if (StringTools.startsWith(value, "$HOME")) {
+				value = Path.removeTrailingSlashes(home) + value.substr(5);
+			}
+
+			if (!StringTools.startsWith(value, "/")) {
+				// Neither form the file has: not ours to guess at.
+				return null;
+			}
+
+			var directory:String = Path.removeTrailingSlashes(value);
+			return directory == "" ? "/" : directory;
+		}
+
+		return null;
 	}
 
 	@:noCompletion private static inline function get_userDir():String {
