@@ -21,8 +21,18 @@ import crossbyte.net.rtc._internal.NativeDtlsSession;
 	connectivity checks used.
 
 	```haxe
-	var transport = new DtlsTransport(certificate, theirFingerprint, controlling);
-	transport.onSend = (payload) -> server.sendTo(payload, peer.address, peer.port);
+	// Given certificate:DtlsCertificate, theirFingerprint:String, isClient:Bool, socket:crossbyte.net.DatagramSocket, peerAddress:String, peerPort:Int, message:crossbyte.io.ByteArray.
+	import crossbyte.core.CrossByte;
+	import crossbyte.events.DatagramSocketDataEvent;
+	import crossbyte.events.TickEvent;
+
+	var transport = new DtlsTransport(certificate, theirFingerprint, isClient);
+	transport.onSend = payload -> socket.send(payload, 0, payload.length, peerAddress, peerPort);
+
+	// What the peer sends goes to `receive`, and `poll` runs the handshake's
+	// retransmissions on the tick.
+	socket.addEventListener(DatagramSocketDataEvent.DATA, e -> transport.receive(e.data, haxe.Timer.stamp()));
+	CrossByte.current().addEventListener(TickEvent.TICK, _ -> transport.poll(haxe.Timer.stamp()));
 
 	transport.established.then(function(_) {
 		transport.send(message);
@@ -40,9 +50,14 @@ import crossbyte.net.rtc._internal.NativeDtlsSession;
 
 	## Who is the client
 
-	DTLS has one, ICE does not. The controlling agent takes the client role by
-	convention, which is what a browser does, and both peers must agree or both
-	will wait for the other to open the handshake.
+	DTLS has one, and neither ICE role says which peer it is. The session
+	description decides, with `a=setup` (RFC 5763, RFC 8842): an offer says
+	`actpass`, leaving it to the answer, and the answer conventionally takes
+	`active`, the client, which is what a browser answering does. So the
+	client is usually the answerer, the ICE-controlled peer, and not the
+	controlling one. `PeerConnection` and `SessionDescription.answerSetupFor`
+	settle it; a caller using this directly has to, and both peers must agree,
+	or both wait for the other to open the handshake.
 
 	## Verification is by fingerprint, and it is not optional
 
@@ -141,8 +156,8 @@ class DtlsTransport {
 		@param expectedFingerprint What the far side signalled. Required: a
 		session that does not check it is not authenticated at all.
 		@param isClient Whether this peer opens the handshake. The two peers must
-		pass opposite values; by convention the controlling ICE agent is the
-		client.
+		pass opposite values, as the description's `a=setup` settles them: the
+		answerer, which is the ICE-controlled peer, is the client by convention.
 	**/
 	public function new(certificate:DtlsCertificate, expectedFingerprint:String, isClient:Bool) {
 		if (certificate == null) {
