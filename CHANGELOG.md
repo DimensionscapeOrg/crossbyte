@@ -156,6 +156,10 @@ entry below says how:
 - `HTTPServerConfig.validate()`, and so `new HTTPServer`, refuses a
   `tlsCertificatePath` without a `tlsKeyPath` or the reverse, which was
   served as plain HTTP, and an `errorDocument` that is not there.
+- `SharedObject`'s constructor, `flush()`, `sync()` and `clear()` throw an
+  `IOError` when another participant holds the region's lock past
+  `lockTimeout` (five seconds), where they waited without end; set
+  `lockTimeout` to 0 to keep waiting.
 
 ### Added
 - `ReliableDatagramServerSocket.relayVerifyCert`, for a TURN relay reached
@@ -2168,6 +2172,17 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `SharedObject` waits at most `lockTimeout` for its region's lock, five
+  seconds by default, then throws an `IOError` saying the lock was not
+  released in time, having read, written and cleared nothing. The wait had
+  no deadline, so a participant stopped while holding the lock --
+  suspended in a debugger, sent SIGSTOP -- stopped every other participant
+  with it. 0 means no deadline. The constructor waits as long as the
+  default allows, and a lock it cannot take is an `IOError`, not an empty
+  region to start from `defaultData` in. A free lock is taken without
+  entering a GC-free zone: natively on Windows a sync racing a flush on
+  another thread ran five times as fast (1.27 M syncs a second, from
+  0.25 M).
 - `JWKSet.parse` and `OAuth`'s token exchange refuse JSON whose objects
   and arrays nest more than 32 levels deep, measured before it is parsed,
   as `JWT.verify` refuses such a header. Parsing takes a frame per level,

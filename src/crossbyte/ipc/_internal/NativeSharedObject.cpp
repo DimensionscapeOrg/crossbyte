@@ -10,11 +10,13 @@
 #if defined(_WIN32)
 #include <Windows.h>
 #else
+#include <chrono>
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 #endif
 
@@ -22,6 +24,19 @@ namespace
 {
 	constexpr uint32_t SHARED_OBJECT_MAGIC = 0x4F424A53; // 'OJBS'
 	constexpr size_t MAX_SAFE_NAME_LENGTH = 160;
+
+	// Why the last call on this thread failed: what
+	// native_sharedObjectLastError answers, so that a caller can tell a lock
+	// another participant did not release in time from a region that cannot
+	// be used.
+	thread_local int lastError = SHARED_OBJECT_ERROR_NONE;
+
+#if !defined(_WIN32)
+	// flock() has no timed form, so a wait with a deadline asks again and
+	// again without blocking, pausing between asks: briefly at first, since
+	// a live holder keeps the lock for one copy, then up to this long.
+	constexpr long LOCK_POLL_MAX_US = 1000;
+#endif
 
 #if !defined(_WIN32)
 	// macOS caps a shared memory object's name at 31 characters (PSHMNAMLEN)
@@ -195,15 +210,35 @@ namespace
 	// reach: a collection another thread of this process started does not
 	// wait on a thread that is waiting on another process. Nothing the
 	// collector owns is touched until the wait is over.
+	//
+	// The wait ends after `timeoutMs`, or never with 0 or less. It never
+	// ended, so a participant stopped while holding the lock -- suspended in
+	// a debugger, sent SIGSTOP, starved on a loaded machine -- stopped every
+	// other participant with it, for as long as it stayed stopped. One that
+	// dies releases it: Windows abandons a dead owner's mutex to the next
+	// waiter, and a process's flock() locks go with its descriptors.
 #if defined(_WIN32)
-	bool lockForHandle(SharedObjectState* state)
+	bool lockForHandle(SharedObjectState* state, int timeoutMs)
 	{
-		if (state != nullptr && state->mutex != nullptr)
+		if (state == nullptr || state->mutex == nullptr)
+		{
+			lastError = SHARED_OBJECT_ERROR_FAILED;
+			return false;
+		}
+
+		// Free, nearly always: taken without entering the zone.
+		DWORD lockResult = WaitForSingleObject(state->mutex, 0);
+		if (lockResult == WAIT_TIMEOUT)
 		{
 			hx::AutoGCFreeZone waiting;
-			DWORD lockResult = WaitForSingleObject(state->mutex, INFINITE);
-			return (lockResult == WAIT_OBJECT_0 || lockResult == WAIT_ABANDONED);
+			lockResult = WaitForSingleObject(state->mutex, timeoutMs > 0 ? static_cast<DWORD>(timeoutMs) : INFINITE);
 		}
+		if (lockResult == WAIT_OBJECT_0 || lockResult == WAIT_ABANDONED)
+		{
+			return true;
+		}
+
+		lastError = lockResult == WAIT_TIMEOUT ? SHARED_OBJECT_ERROR_LOCK_TIMEOUT : SHARED_OBJECT_ERROR_FAILED;
 		return false;
 	}
 
@@ -215,25 +250,84 @@ namespace
 		}
 	}
 #else
-	bool lockDescriptor(int fd)
+	// Whether the lock was refused only because someone holds it.
+	bool lockIsBusy()
+	{
+		return errno == EWOULDBLOCK || errno == EAGAIN || errno == EINTR;
+	}
+
+	bool lockDescriptor(int fd, int timeoutMs)
 	{
 		if (fd < 0)
 		{
+			lastError = SHARED_OBJECT_ERROR_FAILED;
+			return false;
+		}
+
+		// Free, nearly always: taken with no clock read and no wait.
+		if (flock(fd, LOCK_EX | LOCK_NB) == 0)
+		{
+			return true;
+		}
+		if (!lockIsBusy())
+		{
+			lastError = SHARED_OBJECT_ERROR_FAILED;
 			return false;
 		}
 
 		hx::AutoGCFreeZone waiting;
-		int result;
-		do
+		if (timeoutMs <= 0)
 		{
-			result = flock(fd, LOCK_EX);
-		} while (result != 0 && errno == EINTR);
-		return result == 0;
+			int result;
+			do
+			{
+				result = flock(fd, LOCK_EX);
+			} while (result != 0 && errno == EINTR);
+			if (result != 0)
+			{
+				lastError = SHARED_OBJECT_ERROR_FAILED;
+			}
+			return result == 0;
+		}
+
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+		long pauseUs = 50;
+		while (true)
+		{
+			auto now = std::chrono::steady_clock::now();
+			if (now >= deadline)
+			{
+				lastError = SHARED_OBJECT_ERROR_LOCK_TIMEOUT;
+				return false;
+			}
+
+			long leftUs = static_cast<long>(std::chrono::duration_cast<std::chrono::microseconds>(deadline - now).count());
+			std::this_thread::sleep_for(std::chrono::microseconds(pauseUs < leftUs ? pauseUs : leftUs));
+			if (pauseUs < LOCK_POLL_MAX_US)
+			{
+				pauseUs = pauseUs * 2 < LOCK_POLL_MAX_US ? pauseUs * 2 : LOCK_POLL_MAX_US;
+			}
+
+			if (flock(fd, LOCK_EX | LOCK_NB) == 0)
+			{
+				return true;
+			}
+			if (!lockIsBusy())
+			{
+				lastError = SHARED_OBJECT_ERROR_FAILED;
+				return false;
+			}
+		}
 	}
 
-	bool lockForHandle(SharedObjectState* state)
+	bool lockForHandle(SharedObjectState* state, int timeoutMs)
 	{
-		return state != nullptr && lockDescriptor(state->lockFd);
+		if (state == nullptr)
+		{
+			lastError = SHARED_OBJECT_ERROR_FAILED;
+			return false;
+		}
+		return lockDescriptor(state->lockFd, timeoutMs);
 	}
 
 	void unlockForHandle(SharedObjectState* state)
@@ -257,8 +351,16 @@ namespace
 #endif
 }
 
-extern "C" void* native_sharedObjectOpen(const char* name, int maxSize)
+extern "C" int native_sharedObjectLastError()
 {
+	return lastError;
+}
+
+extern "C" void* native_sharedObjectOpen(const char* name, int maxSize, int lockTimeoutMs)
+{
+	// Anything below that does not say otherwise failed outright.
+	lastError = SHARED_OBJECT_ERROR_FAILED;
+
 	if (maxSize < 1)
 	{
 		maxSize = static_cast<int>(defaultCapacity());
@@ -319,7 +421,7 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize)
 	state->mutex = mutex;
 	state->payloadRoom = static_cast<size_t>(viewInfo.RegionSize) - sizeof(SharedObjectHeader);
 
-	if (!lockForHandle(state))
+	if (!lockForHandle(state, lockTimeoutMs))
 	{
 		delete state;
 		CloseHandle(mutex);
@@ -335,6 +437,7 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize)
 	}
 
 	unlockForHandle(state);
+	lastError = SHARED_OBJECT_ERROR_NONE;
 	return state;
 #else
 	int fd = shm_open(sharedName.c_str(), O_RDWR | O_CREAT, 0666);
@@ -360,7 +463,7 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize)
 			return nullptr;
 		}
 	}
-	if (!lockDescriptor(lockFd))
+	if (!lockDescriptor(lockFd, lockTimeoutMs))
 	{
 		if (lockFd != fd)
 		{
@@ -413,6 +516,7 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize)
 	}
 
 	unlockForHandle(state);
+	lastError = SHARED_OBJECT_ERROR_NONE;
 	return state;
 #endif
 }
@@ -459,15 +563,16 @@ extern "C" void native_sharedObjectClose(void* handle)
 	delete state;
 }
 
-extern "C" int native_sharedObjectGetCapacity(void* handle)
+extern "C" int native_sharedObjectGetCapacity(void* handle, int lockTimeoutMs)
 {
+	lastError = SHARED_OBJECT_ERROR_FAILED;
 	auto* state = static_cast<SharedObjectState*>(handle);
 	if (state == nullptr || state->view == nullptr)
 	{
 		return -1;
 	}
 
-	if (!lockForHandle(state))
+	if (!lockForHandle(state, lockTimeoutMs))
 	{
 		return -1;
 	}
@@ -481,18 +586,20 @@ extern "C" int native_sharedObjectGetCapacity(void* handle)
 
 	int capacity = static_cast<int>(payloadLimit(state, header));
 	unlockForHandle(state);
+	lastError = SHARED_OBJECT_ERROR_NONE;
 	return capacity;
 }
 
-extern "C" bool native_sharedObjectWrite(void* handle, const unsigned char* data, int dataSize)
+extern "C" bool native_sharedObjectWrite(void* handle, const unsigned char* data, int dataSize, int lockTimeoutMs)
 {
+	lastError = SHARED_OBJECT_ERROR_FAILED;
 	auto* state = static_cast<SharedObjectState*>(handle);
 	if (state == nullptr || state->view == nullptr || data == nullptr || dataSize < 0)
 	{
 		return false;
 	}
 
-	if (!lockForHandle(state))
+	if (!lockForHandle(state, lockTimeoutMs))
 	{
 		return false;
 	}
@@ -507,6 +614,7 @@ extern "C" bool native_sharedObjectWrite(void* handle, const unsigned char* data
 	std::memcpy(payloadFromHandle(state->view), data, static_cast<size_t>(dataSize));
 	header->payloadSize = static_cast<uint32_t>(dataSize);
 	unlockForHandle(state);
+	lastError = SHARED_OBJECT_ERROR_NONE;
 	return true;
 }
 
@@ -517,15 +625,16 @@ extern "C" bool native_sharedObjectWrite(void* handle, const unsigned char* data
 //
 // The length and the bytes were two calls, each locking for itself, and a
 // flush between them left a copy cut to the old length or short of the new.
-extern "C" int native_sharedObjectReadPayload(void* handle, unsigned char* buffer, int bufferSize)
+extern "C" int native_sharedObjectReadPayload(void* handle, unsigned char* buffer, int bufferSize, int lockTimeoutMs)
 {
+	lastError = SHARED_OBJECT_ERROR_FAILED;
 	auto* state = static_cast<SharedObjectState*>(handle);
 	if (state == nullptr || state->view == nullptr || buffer == nullptr || bufferSize < 0)
 	{
 		return -1;
 	}
 
-	if (!lockForHandle(state))
+	if (!lockForHandle(state, lockTimeoutMs))
 	{
 		return -1;
 	}
@@ -544,20 +653,24 @@ extern "C" int native_sharedObjectReadPayload(void* handle, unsigned char* buffe
 	}
 
 	unlockForHandle(state);
+	lastError = SHARED_OBJECT_ERROR_NONE;
 	return dataSize;
 }
 
-extern "C" void native_sharedObjectClear(void* handle)
+// Whether the lock was taken: a region whose header is not one of ours has
+// nothing to clear, and is left as it is.
+extern "C" bool native_sharedObjectClear(void* handle, int lockTimeoutMs)
 {
+	lastError = SHARED_OBJECT_ERROR_FAILED;
 	auto* state = static_cast<SharedObjectState*>(handle);
 	if (state == nullptr || state->view == nullptr)
 	{
-		return;
+		return false;
 	}
 
-	if (!lockForHandle(state))
+	if (!lockForHandle(state, lockTimeoutMs))
 	{
-		return;
+		return false;
 	}
 
 	auto* header = headerFromHandle(state->view);
@@ -567,4 +680,21 @@ extern "C" void native_sharedObjectClear(void* handle)
 	}
 
 	unlockForHandle(state);
+	lastError = SHARED_OBJECT_ERROR_NONE;
+	return true;
+}
+
+// Tests only: the region's lock, taken through `handle` on the calling thread
+// with no deadline and kept until native_sharedObjectReleaseLockForTest -- a
+// participant stopped while holding it. Windows' mutex belongs to the thread
+// that took it, so another thread of the same process waits on it as another
+// process would, and the same thread releases it.
+extern "C" bool native_sharedObjectHoldLockForTest(void* handle)
+{
+	return lockForHandle(static_cast<SharedObjectState*>(handle), 0);
+}
+
+extern "C" void native_sharedObjectReleaseLockForTest(void* handle)
+{
+	unlockForHandle(static_cast<SharedObjectState*>(handle));
 }

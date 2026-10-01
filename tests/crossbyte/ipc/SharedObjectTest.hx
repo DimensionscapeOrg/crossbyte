@@ -230,7 +230,7 @@ class SharedObjectTest extends utest.Test {
 		// What another program, or a build knowing a class this one does
 		// not, might leave in the region.
 		var garbage = haxe.io.Bytes.ofString("#not a serialized value");
-		Assert.isTrue(SharedObject.__write(other.__handle, garbage.getData(), garbage.length));
+		Assert.isTrue(SharedObject.__write(other.__handle, garbage.getData(), garbage.length, other.lockTimeout));
 
 		var raised:Dynamic = null;
 		try {
@@ -258,7 +258,7 @@ class SharedObjectTest extends utest.Test {
 		var name:String = uniqueName("defaults");
 		var holder = new SharedObject(name, 8192);
 		var garbage = haxe.io.Bytes.ofString("#not a serialized value");
-		Assert.isTrue(SharedObject.__write(holder.__handle, garbage.getData(), garbage.length));
+		Assert.isTrue(SharedObject.__write(holder.__handle, garbage.getData(), garbage.length, holder.lockTimeout));
 
 		var opened = new SharedObject(name, 8192, {fallback: true});
 		Assert.equals(true, opened.data.fallback);
@@ -398,6 +398,115 @@ class SharedObjectTest extends utest.Test {
 		#end
 	}
 
+	/**
+		A participant stopped while holding the region's lock fails the others'
+		waits at `lockTimeout`, with an `IOError` saying so, and they read,
+		write and clear nothing. The wait had no deadline, so a holder
+		suspended in a debugger or sent SIGSTOP stopped every participant for
+		as long as it stayed stopped.
+
+		The holder is a second handle whose lock is taken on a thread of its
+		own -- on Windows a mutex belongs to the thread that takes it, so
+		another thread waits on it as another process would -- and kept until
+		the case lets it go.
+	**/
+	@:timeout(60000)
+	public function testALockHeldPastTheDeadlineFailsTheWait():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var name:String = uniqueName("held");
+		var shared = new SharedObject(name, 8192);
+		shared.data = {kept: "before"};
+		shared.flush();
+		var holder = new HeldLock(new SharedObject(name, 8192));
+
+		try {
+			shared.lockTimeout = 200;
+			shared.data = {kept: "during"};
+			for (operation in ["sync", "flush", "clear"]) {
+				var started:Float = Timer.stamp();
+				var raised:Dynamic = null;
+				try {
+					switch (operation) {
+						case "sync":
+							shared.sync();
+						case "flush":
+							shared.flush();
+						default:
+							shared.clear();
+					}
+				} catch (e:Dynamic) {
+					raised = e;
+				}
+				var waited:Float = Timer.stamp() - started;
+				Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), '$operation threw ' + raised);
+				Assert.isTrue(Std.string(raised).indexOf("lock was not released within 200 ms") >= 0, '$operation threw ' + raised);
+				Assert.isTrue(waited >= 0.18 && waited < 3, '$operation waited $waited s');
+			}
+			// Nothing synced over it or cleared it.
+			Assert.equals("during", shared.data.kept);
+
+			// The constructor, which waits as long as the default allows.
+			var started:Float = Timer.stamp();
+			var raised:Dynamic = null;
+			try {
+				new SharedObject(name, 8192);
+			} catch (e:Dynamic) {
+				raised = e;
+			}
+			var waited:Float = Timer.stamp() - started;
+			Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), "new threw " + raised);
+			Assert.isTrue(Std.string(raised).indexOf("lock was not released within 5000 ms") >= 0, "new threw " + raised);
+			Assert.isTrue(waited >= 4.9 && waited < 20, 'new waited $waited s');
+		} catch (e:Dynamic) {
+			holder.release();
+			shared.close();
+			throw e;
+		}
+
+		holder.release();
+		// Released, the region holds what the last flush left.
+		shared.sync();
+		Assert.equals("before", shared.data.kept);
+		shared.close();
+		#else
+		Assert.isFalse(SharedObject.isSupported);
+		#end
+	}
+
+	/**
+		A lock its holder lets go of in time is taken, with a deadline and with
+		none (0). On Linux and macOS a wait with a deadline asks again and
+		again rather than blocking, so this is also the case that it notices
+		the lock coming free.
+	**/
+	@:timeout(60000)
+	public function testALockReleasedInTimeIsTaken():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var name:String = uniqueName("released");
+		var shared = new SharedObject(name, 8192);
+		shared.data = {n: 0};
+		shared.flush();
+
+		for (deadline in [5000, 0]) {
+			shared.lockTimeout = deadline;
+			var holder = new HeldLock(new SharedObject(name, 8192), 0.3);
+			var started:Float = Timer.stamp();
+			shared.data = {n: deadline};
+			shared.flush();
+			var waited:Float = Timer.stamp() - started;
+			holder.release();
+
+			// It waited for the holder, then wrote.
+			Assert.isTrue(waited >= 0.2 && waited < 5, 'lockTimeout $deadline: waited $waited s');
+			shared.sync();
+			Assert.equals(deadline, shared.data.n);
+		}
+		shared.close();
+		#else
+		Assert.isFalse(SharedObject.isSupported);
+		#end
+	}
+
 	private static function uniqueName(label:String):String {
 		return "crossbyte_sharedobject_" + label + "_" + Std.int(Timer.stamp() * 1000) + "_" + Std.random(1000000);
 	}
@@ -417,3 +526,57 @@ class SharedObjectTest extends utest.Test {
 		}
 	}
 }
+
+#if cpp
+/**
+	A region's lock held through `shared` on a thread of its own: until
+	`release()`, or for `holdFor` seconds when given. Either way `release()`
+	waits for the thread to let it go, then closes `shared`.
+**/
+@:access(crossbyte.ipc.SharedObject)
+@:access(crossbyte.ipc._internal.NativeSharedObject)
+private class HeldLock {
+	private var shared:SharedObject;
+	private var letGo:sys.thread.Deque<Bool> = new sys.thread.Deque<Bool>();
+	private var gone:sys.thread.Deque<Bool> = new sys.thread.Deque<Bool>();
+	private var released:Bool = false;
+
+	public function new(shared:SharedObject, ?holdFor:Float) {
+		this.shared = shared;
+		var taken = new sys.thread.Deque<Bool>();
+		var handle = shared.__handle;
+		var letGo = this.letGo;
+		var gone = this.gone;
+		sys.thread.Thread.create(function():Void {
+			var holding:Bool = crossbyte.ipc._internal.NativeSharedObject.__holdLockForTest(handle);
+			taken.add(holding);
+			if (holding) {
+				if (holdFor == null) {
+					letGo.pop(true);
+				} else {
+					crossbyte.sys.System.sleep(holdFor);
+				}
+				// On the thread that took it: a Windows mutex is released by
+				// its owner or not at all.
+				crossbyte.ipc._internal.NativeSharedObject.__releaseLockForTest(handle);
+			}
+			gone.add(true);
+		});
+		if (!taken.pop(true)) {
+			gone.pop(true);
+			shared.close();
+			throw "the region's lock could not be taken";
+		}
+	}
+
+	public function release():Void {
+		if (released) {
+			return;
+		}
+		released = true;
+		letGo.add(true);
+		gone.pop(true);
+		shared.close();
+	}
+}
+#end
