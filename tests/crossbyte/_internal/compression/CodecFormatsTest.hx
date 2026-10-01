@@ -117,11 +117,12 @@ class CodecFormatsTest extends utest.Test {
 		Assert.isTrue(streamed < raw, 'streamed $streamed bytes against $raw raw');
 	}
 
-	#if (java || jvm || nodejs)
+	#if (java || jvm || nodejs || cpp)
 	/**
 		What each write returns can be inflated before the stream ends: the
 		sync flush is what lets a client show a streamed response as it
-		arrives rather than when it is done.
+		arrives rather than when it is done. On native the pieces come from
+		zlib, which flushes only when told to.
 	**/
 	public function testEachWriteCanBeInflatedAsItArrives():Void {
 		var encoder = new crossbyte._internal.deflatex.StreamEncoder(false);
@@ -146,6 +147,13 @@ class CodecFormatsTest extends utest.Test {
 		var n:Int = inflater.inflate(out.getData(), 0, out.length);
 		inflater.end();
 		return out.getString(0, n);
+		#elseif cpp
+		var inflater = new haxe.zip.Uncompress();
+		inflater.setFlushMode(haxe.zip.FlushMode.SYNC);
+		var out:Bytes = Bytes.alloc(65536);
+		var r = inflater.execute(data, 0, out, 0);
+		inflater.close();
+		return out.getString(0, r.write);
 		#else
 		var zlibModule:Dynamic = js.Lib.require("zlib");
 		var buffer:Dynamic = js.node.Buffer.from(data.getData());
@@ -456,6 +464,31 @@ class CodecFormatsTest extends utest.Test {
 		#else
 		Assert.pass();
 		#end
+	}
+
+	/**
+		A body compressed as it is streamed comes from hxcpp's zlib on native,
+		as a whole body does. The page streamed as gzip in 8 KB pieces came to
+		8.4 KB through the Haxe deflater, at three times zlib's cost; zlib
+		writes 5.8 KB. It still reads back whole.
+	**/
+	public function testAStreamedBodyIsDeflatedByZlibOnNative():Void {
+		var json:Bytes = __jsonPage();
+		var encoder = new crossbyte._internal.deflatex.StreamEncoder(true);
+		var out = new haxe.io.BytesBuffer();
+		var at:Int = 0;
+		while (at < json.length) {
+			var n:Int = json.length - at < 8192 ? json.length - at : 8192;
+			out.add(encoder.write(json, at, n));
+			at += n;
+		}
+		out.add(encoder.finish());
+		var packed:Bytes = out.getBytes();
+		#if cpp
+		Assert.isTrue(packed.length < 7000, "the stream came to " + packed.length + " bytes");
+		#end
+		var back:Bytes = decoded(packed, CompressionAlgorithm.GZIP, json.length);
+		Assert.isTrue(back.length == json.length && back.compare(json) == 0, "the stream did not read back whole");
 	}
 
 	/** 64 KB of JSON, as an API answers a list. **/

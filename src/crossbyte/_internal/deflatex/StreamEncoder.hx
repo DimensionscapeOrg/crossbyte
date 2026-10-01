@@ -14,7 +14,9 @@ import haxe.io.BytesBuffer;
 	own compressed bytes, which the client can inflate as they come.
 **/
 class StreamEncoder {
-	private var deflate:DeflateStream = new DeflateStream();
+	// hxcpp's zlib on native, three times as fast and a third smaller; see
+	// NativeDeflateStream.
+	private var deflate:#if cpp NativeDeflateStream #else DeflateStream #end = #if cpp new NativeDeflateStream() #else new DeflateStream() #end;
 	private var gzip:Bool;
 	private var started:Bool = false;
 	private var crc:CRC32;
