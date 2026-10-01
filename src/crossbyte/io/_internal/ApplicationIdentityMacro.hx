@@ -65,22 +65,39 @@ class ApplicationIdentityMacro {
 		The class whose static `main` the program starts at. The main
 		expression is that call alone, or, in a build that uses the event
 		loop, as CrossByte does, a block of it and `haxe.EntryPoint.run()`.
+
+		Aedifex, CrossByte's build tool, starts every application at a
+		`ProgramMain` of its own that constructs the project's main class:
+		that class is the one meant, or every application Aedifex built
+		would have the one name.
 	**/
 	private static function mainClass():Null<String> {
-		return mainOf(Context.getMainExpr());
+		var cls:Null<ClassType> = mainOf(Context.getMainExpr());
+
+		if (cls == null) {
+			return null;
+		}
+
+		if (cls.pack.length == 0 && cls.name == "ProgramMain") {
+			var started:Null<ClassType> = constructedBy(cls);
+			if (started != null) {
+				cls = started;
+			}
+		}
+
+		return cls.pack.length == 0 ? cls.name : cls.pack.join(".") + "." + cls.name;
 	}
 
-	private static function mainOf(expr:Null<TypedExpr>):Null<String> {
+	private static function mainOf(expr:Null<TypedExpr>):Null<ClassType> {
 		if (expr == null) {
 			return null;
 		}
 
 		return switch (expr.expr) {
 			case TCall({expr: TField(_, FStatic(ref, field))}, _) if (field.get().name == "main"):
-				var cls:ClassType = ref.get();
-				cls.pack.length == 0 ? cls.name : cls.pack.join(".") + "." + cls.name;
+				ref.get();
 			case TBlock(exprs):
-				var found:Null<String> = null;
+				var found:Null<ClassType> = null;
 				for (inner in exprs) {
 					found = mainOf(inner);
 					if (found != null) {
@@ -93,6 +110,35 @@ class ApplicationIdentityMacro {
 			default:
 				null;
 		}
+	}
+
+	/** The first class `cls.main` constructs, or null. **/
+	private static function constructedBy(cls:ClassType):Null<ClassType> {
+		var found:Null<ClassType> = null;
+
+		function look(expr:TypedExpr):Void {
+			if (found != null) {
+				return;
+			}
+
+			switch (expr.expr) {
+				case TNew(ref, _, _):
+					found = ref.get();
+				default:
+					haxe.macro.TypedExprTools.iter(expr, look);
+			}
+		}
+
+		for (field in cls.statics.get()) {
+			if (field.name == "main") {
+				var body:Null<TypedExpr> = field.expr();
+				if (body != null) {
+					look(body);
+				}
+			}
+		}
+
+		return found;
 	}
 }
 #end

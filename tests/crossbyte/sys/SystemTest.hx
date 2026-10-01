@@ -114,6 +114,44 @@ class SystemTest extends utest.Test {
 		StorageSandbox.leave();
 	}
 
+	#if eval
+	/**
+		What the build decides, checked by building: a small program from
+		tests/fixtures/appid, compiled and run three times. Once only, on the
+		interpreter, the choice is the compiler's, the same for every
+		target, and each target's reading of it is the case above.
+	**/
+	public function testTheIdIsChosenWhenTheApplicationIsBuilt():Void {
+		// tests/TestMain.hx, on the interpreter: the repository is above it.
+		var root:String = haxe.io.Path.directory(haxe.io.Path.directory(Sys.programPath()));
+
+		function build(defines:Array<String>):{code:Int, output:String} {
+			var args:Array<String> = ["--cwd", root, "-cp", "src", "-cp", "tests/fixtures/appid", "-main", "ProgramMain", "--interp"].concat(defines);
+			var process = new sys.io.Process("haxe", args);
+			var output:String = process.stdout.readAll().toString() + process.stderr.readAll().toString();
+			var code:Int = process.exitCode();
+			process.close();
+			return {code: code, output: output};
+		}
+
+		// Aedifex starts every application at a ProgramMain of its own. Its
+		// main class was the id, so every application it built had one name
+		// and one storage directory; the class ProgramMain starts is meant.
+		var aedifex = build([]);
+		Assert.equals(0, aedifex.code, aedifex.output);
+		Assert.isTrue(aedifex.output.indexOf("applicationId=example.AppIdProbe") >= 0, aedifex.output);
+
+		var named = build(["-D", "crossbyte_app_id=com.example.chat"]);
+		Assert.equals(0, named.code, named.output);
+		Assert.isTrue(named.output.indexOf("applicationId=com.example.chat") >= 0, named.output);
+
+		// A name that is not a directory's is a build error, not a path.
+		var refused = build(["-D", "crossbyte_app_id=../escape"]);
+		Assert.notEquals(0, refused.code, refused.output);
+		Assert.isTrue(refused.output.indexOf("cannot name a directory") >= 0, refused.output);
+	}
+	#end
+
 	public function testAnIdTheBuildRefuses():Void {
 		// What -D crossbyte_app_id is held to: a name every platform can give
 		// a directory.

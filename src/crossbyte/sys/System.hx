@@ -114,8 +114,10 @@ class System {
 		the build refuses anything else. Otherwise the main class's full
 		name, as `com.example.Chat`, which is the same whichever target the
 		application is built for, so its native, jvm and Node builds share
-		their data. A build with no main class, a library loaded by
-		something else, uses the program's file name without its
+		their data. Built with Aedifex, which starts every application at a
+		generated `ProgramMain`, it is the class `ProgramMain` starts: the
+		project's own main class. A build with no main class, a library
+		loaded by something else, uses the program's file name without its
 		extension.
 
 		Two applications whose main classes have one name, `Main` is a

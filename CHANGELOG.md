@@ -95,8 +95,10 @@ entry below says how:
   stores are kept under: the `crossbyte_app_id` define
   (`-D crossbyte_app_id=com.example.chat`), which the build refuses unless
   every platform can give a directory that name, or else the main class's
-  full name, the same whichever target the application is built for. A
-  build with no main class uses the program's file name.
+  full name, the same whichever target the application is built for,
+  and for an Aedifex build the project's main class, which Aedifex's
+  generated `ProgramMain` starts. A build with no main class uses the
+  program's file name.
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
   `DETACH DATABASE`, and `loadSchema()` with `getSchemaResult()`: a
   database's tables with their columns, views, indices and triggers.
