@@ -1932,6 +1932,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `URLLoader.close()` ends the load in flight on Node and in a browser,
+  and `cancelToken` cancels one there. `close()` only stopped the next
+  load being refused as busy: the request it closed went on, and its
+  COMPLETE arrived after the next load's, on the same loader. And there
+  was no token at all. The request is now aborted where it stands, which
+  the server sees at once, and what a closed load still reports is
+  dropped; cancelling the token fails the load with "Request cancelled",
+  as it does natively.
 - `URLLoader` on Node and in a browser sends a `ByteArray` body as the
   bytes it holds. Both clients sent the buffer beneath it, which runs on
   past `length` into the room it keeps to grow, and into whatever it held
