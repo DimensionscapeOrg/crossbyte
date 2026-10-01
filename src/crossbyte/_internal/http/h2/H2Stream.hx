@@ -87,6 +87,23 @@ class H2Stream {
 	public var request:Null<H2ServerRequest> = null;
 
 	/**
+		On the server, set once a final response's head has been written on
+		this stream: an interim `100` does not count. What a refusal is told
+		apart by -- answered, or failed before anything went out.
+	**/
+	public var answered:Bool = false;
+
+	/** Set once the stream has been reset, by either end. */
+	public var wasReset:Bool = false;
+
+	/**
+		On the server, set for a stream whose request was refused while the
+		refusal was still going out, held by flow control: once that has
+		ended, the stream is reset NO_ERROR to stop the rest of the body.
+	**/
+	public var stopBodyAtEnd:Bool = false;
+
+	/**
 	 * Response bytes accepted from the application but not yet permitted onto
 	 * the wire by flow control.
 	 *

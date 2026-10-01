@@ -124,10 +124,10 @@ class H2ServerConnection {
 	 * stream could make the server hold as much as it cared to send: a 3 MB
 	 * upload reached a route the HTTP/1.1 path would have refused. Past this,
 	 * the request is delivered at once with `tooLarge` set and no body, so it
-	 * can be answered `413`; the stream is then reset with NO_ERROR, which is
-	 * §8.1's way of asking a client to stop sending, its window is never
-	 * topped up again, and what still arrives is counted for the connection's
-	 * window and dropped.
+	 * can be answered `413`; once that has gone out the stream is reset with
+	 * NO_ERROR, which is §8.1's way of asking a client to stop sending, its
+	 * window is never topped up again, and what still arrives is counted for
+	 * the connection's window and dropped.
 	 */
 	public var maxRequestBodySize:Int = -1;
 
@@ -150,10 +150,11 @@ class H2ServerConnection {
 	/**
 	 * Called when a request's header section has arrived and its body has
 	 * not, so it can be refused before the body is sent: answered, and
-	 * `false` returned. The stream is then reset with NO_ERROR, which asks the
-	 * client to stop sending it, as for a body past `maxRequestBodySize`.
-	 * `true` lets the body come, and the request reaches `onRequest` once it
-	 * has, carrying whatever this put in its `context`.
+	 * `false` returned. Once the answer has gone out the stream is reset with
+	 * NO_ERROR, which asks the client to stop sending the body, as for a body
+	 * past `maxRequestBodySize`; with no answer written at all it is reset
+	 * INTERNAL_ERROR. `true` lets the body come, and the request reaches
+	 * `onRequest` once it has, carrying whatever this put in its `context`.
 	 *
 	 * HTTP/1.1 refuses a request on its headers -- too large by its
 	 * `Content-Length`, or turned away by `Expect: 100-continue` -- before a
@@ -370,6 +371,9 @@ class H2ServerConnection {
 			block.push(header);
 		}
 
+		if (status >= 200) {
+			target.answered = true;
+		}
 		__writeHeaderBlock(streamId, __encoder.encode(block), endStream);
 
 		if (endStream) {
@@ -525,6 +529,11 @@ class H2ServerConnection {
 		target.close();
 		__forget(target.id);
 		__writable.remove(target.id);
+
+		if (target.stopBodyAtEnd) {
+			// A refusal, now all gone: see __stopBody.
+			resetStream(target.id, H2ErrorCode.NO_ERROR);
+		}
 	}
 
 	/**
@@ -626,9 +635,9 @@ class H2ServerConnection {
 		__markDelivered(target);
 		onRequest(request);
 
-		// As for a body past the limit: the answer has ended the stream on
-		// this side, and this asks the client to stop sending the rest.
-		resetStream(target.id, H2ErrorCode.NO_ERROR);
+		// As for a body past the limit: the client is asked to stop sending
+		// the rest.
+		__stopBody(target);
 	}
 
 	/**
@@ -650,6 +659,7 @@ class H2ServerConnection {
 		if (target != null) {
 			// Taken before __forget drops it.
 			var abandoned:Null<Void->Void> = __abandoned.get(streamId);
+			target.wasReset = true;
 			target.close();
 			__forget(streamId);
 			__writable.remove(streamId);
@@ -967,8 +977,8 @@ class H2ServerConnection {
 
 		if (!onRequestHead(request)) {
 			// Answered, or turned away, before its body. What arrives of it is
-			// counted and dropped once the stream is gone.
-			resetStream(target.id, H2ErrorCode.NO_ERROR);
+			// counted and dropped.
+			__stopBody(target);
 		}
 	}
 
@@ -1028,7 +1038,7 @@ class H2ServerConnection {
 		onRequest(request);
 
 		if (!endStream) {
-			resetStream(target.id, H2ErrorCode.NO_ERROR);
+			__stopBody(target);
 		}
 	}
 
@@ -1097,8 +1107,47 @@ class H2ServerConnection {
 		__markDelivered(target);
 		onRequest(request);
 
-		// The answer has ended the stream on this side; this tells the client
-		// the rest of its body is not wanted, without calling it an error.
+		// This tells the client the rest of its body is not wanted, without
+		// calling it an error.
+		__stopBody(target);
+	}
+
+	/**
+		Asks the client to stop sending the body of a request refused before
+		it all arrived, once the refusal has been answered: a reset, NO_ERROR,
+		which §8.1 allows after a complete response. What arrives for the
+		stream meanwhile is counted for the connection's window and dropped.
+
+		Sent the moment the refusal was handed over, the reset ended the
+		stream there, and with it whatever of the answer flow control was
+		still holding: an error page past the client's window was cut off
+		after its first 64 KB. It now waits for the answer to end. And a
+		refusal whose answer threw before anything went out -- its `500`
+		too -- was reset NO_ERROR all the same, telling the client a response
+		was complete that never began: that is INTERNAL_ERROR, as for a
+		request whose serving throws after its body is in.
+	**/
+	private function __stopBody(target:H2Stream):Void {
+		if (target.wasReset) {
+			// The answer failed partway, or the client gave up first.
+			return;
+		}
+
+		if (!target.answered) {
+			resetStream(target.id, H2ErrorCode.INTERNAL_ERROR);
+			return;
+		}
+
+		if (__streams.get(target.id) == target) {
+			// Still going out. Its end resets the stream (__finishStream), and
+			// until then it waits on its answer, not on the client's request.
+			target.overflowed = true;
+			target.takeBody();
+			__markDelivered(target);
+			target.stopBodyAtEnd = true;
+			return;
+		}
+
 		resetStream(target.id, H2ErrorCode.NO_ERROR);
 	}
 
@@ -1137,6 +1186,7 @@ class H2ServerConnection {
 
 		var abandoned:Null<Void->Void> = __abandoned.get(frame.streamId);
 
+		target.wasReset = true;
 		target.close();
 		__forget(frame.streamId);
 		__writable.remove(frame.streamId);

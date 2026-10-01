@@ -1442,6 +1442,73 @@ class HTTPServerH2Test extends utest.Test {
 		}
 	}
 
+	public function testARefusalWhoseAnswerThrowsIsResetAsAnError(async:Async):Void {
+		// A request refused at its headers -- a Content-Length past the limit
+		// -- whose 413 threw, and whose 500 then threw as well, had no answer
+		// at all, and its stream was reset NO_ERROR: §8.1's way of saying a
+		// response is complete and the rest of the body is not wanted. It is
+		// reset INTERNAL_ERROR, as one whose serving throws after its body is.
+		var session = new H2Session(config -> {
+			config.maxRequestBodySize = 10;
+			config.rateLimitKey = handler -> {
+				if (handler.requestPath == "/upload") {
+					handler.addEventListener(crossbyte.events.HTTPStatusEvent.HTTP_RESPONSE_STATUS, _ -> throw "the listener broke");
+				}
+				return null;
+			};
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", "100")]);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.request(3, "GET", "/index.html", true);
+				session.until(() -> session.finished(3) || session.ended, () -> {
+					session.close();
+					Assert.equals(-1, session.status(1), "an answer went out after all, so this shows nothing");
+					Assert.equals(2, session.resetCode(1), "a stream refused with no answer was reset " + session.resetCode(1));
+					Assert.equals(200, session.status(3), "the connection did not carry on");
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testARefusalIsCompleteBeforeItsStreamIsReset(async:Async):Void {
+		// A refusal at the headers asks the client to stop sending its body
+		// with a reset, NO_ERROR, which §8.1 allows after a complete response.
+		// It went out straight after the answer was handed over, so an answer
+		// the client's window could not take whole -- an errorDocument of 100
+		// KB -- was cut off by the reset that followed its first 64 KB. The
+		// reset now waits for the answer to end.
+		var page = new ByteArray();
+		for (i in 0...100 * 1024) {
+			page.writeByte(0x61 + (i % 26));
+		}
+		var session = new H2Session(config -> {
+			config.maxRequestBodySize = 10;
+			var document = config.rootDirectory.resolvePath("error.html");
+			document.save(page);
+			config.errorDocument = document;
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", "100")]);
+			session.until(() -> session.received(1) >= 65535 || session.finished(1) || session.ended, () -> {
+				var resetEarly:Int = session.resetCode(1);
+				session.windowUpdate(0, 1 << 20);
+				session.windowUpdate(1, 1 << 20);
+				session.until(() -> session.resetCode(1) >= 0 || session.ended, () -> {
+					session.close();
+					Assert.equals(413, session.status(1));
+					Assert.equals(-1, resetEarly, "the stream was reset before its answer had all gone out");
+					Assert.equals(page.length, session.received(1), "the answer was cut short");
+					Assert.equals(0, session.resetCode(1), "the stream was not reset NO_ERROR once answered");
+					async.done();
+				});
+			});
+		});
+	}
+
 	/**
 		The frames written for stream 1 of one GET for `/index.html` through an
 		`H2ConnectionHandler`, on a socket that throws when the response's
