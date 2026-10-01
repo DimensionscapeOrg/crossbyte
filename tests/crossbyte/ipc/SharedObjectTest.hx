@@ -5,6 +5,21 @@ import utest.Assert;
 
 @:access(crossbyte.ipc.SharedObject)
 class SharedObjectTest extends utest.Test {
+	// Every name a case opened, so teardown can take the regions away: on
+	// Linux and macOS they outlived the run, one more set each time.
+	private static var __names:Array<String> = [];
+
+	public function teardown():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		for (name in __names) {
+			try {
+				SharedObject.remove(name);
+			} catch (_:Dynamic) {}
+		}
+		#end
+		__names = [];
+	}
+
 	public function testSupportFlagMatchesTarget():Void {
 		#if (cpp && (windows || linux || mac || macos))
 		Assert.isTrue(SharedObject.isSupported);
@@ -76,9 +91,9 @@ class SharedObjectTest extends utest.Test {
 		var second:SharedObject = null;
 		var third:SharedObject = null;
 		try {
-			first = new SharedObject(base + "/same", 8192);
-			second = new SharedObject(base + ":same", 8192);
-			third = new SharedObject(base + "_same", 8192);
+			first = new SharedObject(tracked(base + "/same"), 8192);
+			second = new SharedObject(tracked(base + ":same"), 8192);
+			third = new SharedObject(tracked(base + "_same"), 8192);
 
 			first.data = {value: "slash"};
 			second.data = {value: "colon"};
@@ -350,25 +365,51 @@ class SharedObjectTest extends utest.Test {
 
 	/**
 		Where Linux keeps a region: the name the native side gives it, the
-		name made safe, then its FNV-1a hash, as a file under /dev/shm. The
-		native side seeds the hash with 1469598103934665603, not FNV's own
-		14695981039346656037; any seed hashes, and changing it would part a
-		process built before the change from one built after.
+		name made safe, then its hash (`nameHash`), as a file under
+		/dev/shm.
 	**/
 	private static function posixRegionPath(name:String):String {
 		var bytes = haxe.io.Bytes.ofString(name);
-		var hash:haxe.Int64 = haxe.Int64.make(0x14650fb0, 0x739d0383);
-		var prime:haxe.Int64 = haxe.Int64.make(0x100, 0x000001b3);
 		var safe = new StringBuf();
 		for (i in 0...bytes.length) {
 			var c:Int = bytes.get(i);
-			hash = (hash ^ haxe.Int64.ofInt(c)) * prime;
 			var kept:Bool = (c >= "a".code && c <= "z".code) || (c >= "A".code && c <= "Z".code) || (c >= "0".code && c <= "9".code) || c == "-".code
 				|| c == "_".code;
 			safe.addChar(kept ? c : "_".code);
 		}
-		var hex:String = (StringTools.hex(hash.high, 8) + StringTools.hex(hash.low, 8)).toLowerCase();
-		return "/dev/shm/crossbyte_shared_object_" + safe.toString() + "_" + hex;
+		return "/dev/shm/crossbyte_shared_object_" + safe.toString() + "_" + nameHash(name);
+	}
+	#end
+
+	#if (cpp && !windows)
+	/**
+		What a region leaves on the file system: its file under /dev/shm by
+		Linux's name and by macOS's (which a Linux build switched to macOS's
+		names uses), and macOS's lock file. A real macOS has no /dev/shm.
+	**/
+	private static function leftBehind(name:String):Array<String> {
+		var hash:String = nameHash(name);
+		var paths:Array<String> = ["/dev/shm/cbso_" + hash, "/tmp/cbso_" + hash + ".lock"];
+		#if linux
+		paths.push(posixRegionPath(name));
+		#end
+		return paths;
+	}
+
+	/**
+		The FNV-1a hash the native side gives a name, as 16 hex digits. It
+		seeds the hash with 1469598103934665603, not FNV's own
+		14695981039346656037; any seed hashes, and changing it would part a
+		process built before the change from one built after.
+	**/
+	private static function nameHash(name:String):String {
+		var bytes = haxe.io.Bytes.ofString(name);
+		var hash:haxe.Int64 = haxe.Int64.make(0x14650fb0, 0x739d0383);
+		var prime:haxe.Int64 = haxe.Int64.make(0x100, 0x000001b3);
+		for (i in 0...bytes.length) {
+			hash = (hash ^ haxe.Int64.ofInt(bytes.get(i))) * prime;
+		}
+		return (StringTools.hex(hash.high, 8) + StringTools.hex(hash.low, 8)).toLowerCase();
 	}
 	#end
 
@@ -507,8 +548,78 @@ class SharedObjectTest extends utest.Test {
 		#end
 	}
 
+	/**
+		`remove` takes a region away on Linux and macOS, where it otherwise
+		outlives every handle until the machine restarts: the next handle
+		opened under the name starts a new, empty region, while those open
+		keep the old one between them. On Windows a region goes with its last
+		handle and has no name to take away, so `remove` answers false.
+	**/
+	public function testRemoveTakesARegionAwayOnLinuxAndMacOS():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var name:String = uniqueName("removed");
+		var first = new SharedObject(name, 8192);
+		var second = new SharedObject(name, 8192);
+		first.data = {left: "behind"};
+		first.flush();
+
+		#if windows
+		Assert.isFalse(SharedObject.remove(name));
+		second.sync();
+		Assert.equals("behind", second.data.left);
+		#else
+		Assert.isTrue(SharedObject.remove(name));
+
+		// Those open keep the region, between them.
+		second.sync();
+		Assert.equals("behind", second.data.left);
+		second.data = {left: "still shared"};
+		second.flush();
+		first.sync();
+		Assert.equals("still shared", first.data.left);
+
+		// The next one opened under the name starts a new region.
+		var third = new SharedObject(name, 8192, {fresh: true});
+		Assert.equals(true, third.data.fresh);
+		Assert.isNull(third.data.left);
+		third.flush();
+		first.sync();
+		Assert.isNull(first.data.fresh);
+		third.close();
+
+		Assert.isTrue(SharedObject.remove(name), "the new region was not removed");
+		Assert.isFalse(SharedObject.remove(name), "a region no one has was removed");
+		// Nothing left under the name: on Linux the region's file, on macOS
+		// (and on Linux with the native side switched to its names) the
+		// region's and its lock file.
+		for (path in leftBehind(name)) {
+			Assert.isFalse(sys.FileSystem.exists(path), path + " is still there");
+		}
+		#end
+		first.close();
+		second.close();
+		#else
+		Assert.isFalse(SharedObject.isSupported);
+		#end
+	}
+
+	public function testRemoveRefusesAnEmptyName():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		Assert.raises(() -> SharedObject.remove(""), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> SharedObject.remove(null), crossbyte.errors.ArgumentError);
+		#else
+		Assert.raises(() -> SharedObject.remove("anything"), crossbyte.errors.IllegalOperationError);
+		#end
+	}
+
 	private static function uniqueName(label:String):String {
-		return "crossbyte_sharedobject_" + label + "_" + Std.int(Timer.stamp() * 1000) + "_" + Std.random(1000000);
+		return tracked("crossbyte_sharedobject_" + label + "_" + Std.int(Timer.stamp() * 1000) + "_" + Std.random(1000000));
+	}
+
+	// A name whose region teardown removes.
+	private static function tracked(name:String):String {
+		__names.push(name);
+		return name;
 	}
 
 	private static function closeIfOpen(shared:SharedObject):Void {

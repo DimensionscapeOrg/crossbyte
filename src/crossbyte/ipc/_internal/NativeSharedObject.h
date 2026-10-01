@@ -23,6 +23,9 @@ bool native_sharedObjectWrite(void* handle, const unsigned char* data, int dataS
 bool native_sharedObjectClear(void* handle, int lockTimeoutMs);
 int native_sharedObjectGetCapacity(void* handle, int lockTimeoutMs);
 int native_sharedObjectLastError();
+// 1 when a region had the name and lost it, 0 when none had it (and always on
+// Windows), -1 when it could not be done.
+int native_sharedObjectRemove(const char* name, int lockTimeoutMs);
 
 // Tests only: takes the region's lock on the calling thread and keeps it
 // until native_sharedObjectReleaseLockForTest, called on the same thread.
