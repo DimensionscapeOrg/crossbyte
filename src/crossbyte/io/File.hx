@@ -76,7 +76,6 @@ import haxe.io.Bytes;
 	@event directoryListing 	Dispatched when a directory list is available as a result of a
 	call to the getDirectoryListingAsync() method.
 	@event ioError  			Dispatched when an error occurs during an asynchronous file operation.
-	@event securityError  		Dispatched when an operation violates a security constraint.
 
 **/
 #if !crossbyte_debug
@@ -115,19 +114,16 @@ final class File extends EventDispatcher {
 		The ByteArray object representing the data from the loaded file after
 		a successful call to the `load()` method.
 
-		@throws IOError               If the file cannot be opened or read, or
-									  if a similar error is encountered in
-									  accessing the file, an exception is
-									  thrown with a message indicating a file
-									  I/O error. In this case, the value of
-									  the `data` property is `null`.
+		A load starts by unsetting it, so a load that fails -- `load()`
+		throwing its `IOError`, `loadAsync()` dispatching `ioError` -- or one
+		cancelled leaves no data from an earlier one. `save()` sets it to what
+		it saved.
+
 		@throws IllegalOperationError If the `load()` method was not called
 									  successfully, an exception is thrown
 									  with a message indicating that functions
 									  were called in the incorrect sequence or
-									  an earlier call was unsuccessful. In
-									  this case, the value of the `data`
-									  property is `null`.
+									  an earlier call was unsuccessful.
 	**/
 	public var data(get, null):ByteArray;
 
@@ -258,6 +254,10 @@ final class File extends EventDispatcher {
 		set a File object to reference the desktop directory using the nativePath property, it will only work on the
 		platform for which that path is valid.
 
+		On Windows it is the Desktop directory in the user's profile (a Desktop moved elsewhere is not
+		followed), on macOS ~/Desktop, and on Linux and the BSDs the directory xdg-user-dirs names,
+		`XDG_DESKTOP_DIR` in `~/.config/user-dirs.dirs`, or ~/Desktop where that names none.
+
 		If an operating system does not support a desktop directory, a suitable directory in the file system is used instead.
 
 		The following code outputs a list of files and directories contained in the user's desktop directory.
@@ -278,9 +278,11 @@ final class File extends EventDispatcher {
 	/**
 		The user's documents directory.
 
-		On Windows, this is the My Documents directory (for example, C:\Documents and Settings\userName\My
-		Documents). On Mac OS, the default location is /Users/userName/Documents. On Linux, the default location
-		is /home/userName/Documents (on an English system), and the property observes the xdg-user-dirs setting.
+		On Windows, this is the Documents directory in the user's profile (for example,
+		C:\Users\userName\Documents); a Documents folder moved elsewhere, through its properties or by OneDrive,
+		is not followed. On Mac OS, it is /Users/userName/Documents. On Linux and the BSDs it is the directory
+		xdg-user-dirs names -- `XDG_DOCUMENTS_DIR` in `~/.config/user-dirs.dirs`, which a desktop in another
+		language or the user may have moved -- and /home/userName/Documents where that names none.
 
 		The documentsDirectory property provides a way to reference the documents directory that works across
 		platforms.
@@ -396,7 +398,6 @@ final class File extends EventDispatcher {
 		with no directory component.
 
 		@throws ArgumentError The syntax of the path is invalid.
-		@throws SecurityError The caller is not in the application security sandbox.
 
 		The following code shows a native path for an example Windows computer.
 
@@ -610,7 +611,8 @@ final class File extends EventDispatcher {
 		```
 
 		@param path	The path to the file. You can specify the path by using either a URL or native path (platform-specific)
-		notation.
+		notation. A URL is a `file:` URL: `file:///C:/x` is `C:\x` on Windows, `file:///home/x` is `/home/x`,
+		`file://server/share/x` is the share `\\server\share\x`, and `%XX` escapes are decoded as UTF-8.
 		@throws ArgumentError The syntax of the path parameter is invalid.
 	**/
 	public function new(path:String = null) {
@@ -620,12 +622,85 @@ final class File extends EventDispatcher {
 			return;
 		}
 
+		// A URL, as documented: it was taken for a native path, so
+		// "file:///C:/x" became "file:\C:\x", which names nothing.
+		if (path.length >= 5 && path.substr(0, 5).toLowerCase() == "file:") {
+			path = __pathOfUrl(path, System.isWindows);
+		}
+
 		nativePath = path;
 
 		if (name.length == 0) {
 			var dirs:Array<String> = Path.directory(__path).split(separator);
 			name = dirs[dirs.length - 1];
 		}
+	}
+
+	/**
+		The native path a `file:` URL names: `file:///C:/x` is `C:\x` on Windows,
+		`file:///home/x` is `/home/x`, `file://server/share/x` is the share
+		`\\server\share\x`, and `%XX` escapes are decoded as UTF-8 -- `+` is a
+		plus sign in a path, not a space.
+	**/
+	@:noCompletion private static function __pathOfUrl(url:String, windows:Bool):String {
+		var rest:String = url.substr(5);
+		var host:String = "";
+
+		if (StringTools.startsWith(rest, "//")) {
+			rest = rest.substr(2);
+			var slash:Int = rest.indexOf("/");
+			host = slash < 0 ? rest : rest.substr(0, slash);
+			rest = slash < 0 ? "/" : rest.substr(slash);
+
+			if (host.toLowerCase() == "localhost") {
+				host = "";
+			}
+		}
+
+		var path:String = __percentDecode(rest);
+
+		if (host != "") {
+			return windows ? "\\\\" + host + StringTools.replace(path, "/", "\\") : "//" + host + path;
+		}
+
+		if (windows && ~/^\/[A-Za-z]:/.match(path)) {
+			path = path.substr(1);
+		}
+
+		return path;
+	}
+
+	@:noCompletion private static function __percentDecode(text:String):String {
+		if (text.indexOf("%") < 0) {
+			return text;
+		}
+
+		var out:haxe.io.BytesBuffer = new haxe.io.BytesBuffer();
+		var i:Int = 0;
+
+		while (i < text.length) {
+			var code:Int = StringTools.fastCodeAt(text, i);
+
+			if (code == "%".code && i + 2 < text.length && __isHex(text.charCodeAt(i + 1)) && __isHex(text.charCodeAt(i + 2))) {
+				out.addByte(Std.parseInt("0x" + text.substr(i + 1, 2)));
+				i += 3;
+				continue;
+			}
+
+			// One character, as UTF-8; a surrogate pair is two code units.
+			var length:Int = 1;
+			if (code >= 0xD800 && code <= 0xDBFF && i + 1 < text.length) {
+				length = 2;
+			}
+			out.addString(text.substr(i, length));
+			i += length;
+		}
+
+		return out.getBytes().toString();
+	}
+
+	@:noCompletion private static inline function __isHex(code:Null<Int>):Bool {
+		return code != null && ((code >= "0".code && code <= "9".code) || (code >= "a".code && code <= "f".code) || (code >= "A".code && code <= "F".code));
 	}
 
 	/**
@@ -641,7 +716,7 @@ final class File extends EventDispatcher {
 		  volumes the copy stops and is removed, and the source and whatever the move was replacing are
 		  as they were.
 		- `deleteDirectoryAsync` stops between entries: what it had deleted stays deleted.
-		- `loadAsync` stops reading, and `data` is as it was.
+		- `loadAsync` stops reading, and `data` stays unset, as for a load that failed.
 		- `getDirectoryListingAsync` and `deleteFileAsync` dispatch nothing more.
 
 		With nothing pending this does nothing, and dispatches nothing.
@@ -710,10 +785,15 @@ final class File extends EventDispatcher {
 
 		If the File object represents an existing file or directory, canonicalization adjusts the path so that it
 		matches the case of the actual file or directory name. If the File object is a symbolic link,
-		canonicalization adjusts the path so that it matches the file or directory that the link points to,
-		regardless of whether the file or directory that is pointed to exists. On case sensitive file systems (such
-		as Linux), when multiple files exist with names differing only in case, the canonicalize() method adjusts
-		the path to match the first file found (in an order determined by the file system).
+		canonicalization adjusts the path so that it matches the file or directory that the link points to.
+
+		The path is the one the file system gives for the file -- natively and on Node through the system's own
+		call (`GetFinalPathNameByHandle`, `realpath`), on the jvm `toRealPath`, and on the interpreter, neko and
+		HashLink under Linux and macOS `realpath` -- so every link on the way, a junction on Windows included, is
+		followed. Two cases fall back to correcting the case of each name that exists, listing each directory on
+		the way down, without following links: a path with nothing at the end of it -- AIR follows a link to a
+		target that does not exist, and this does not -- and the interpreter, neko and HashLink under Windows,
+		whose standard library resolves no link.
 
 		The following code shows how to use the canonicalize() method to find the correct capitalization of a
 		directory name. Before running this example, create a directory named CrossByte Test on the desktop of your computer.
@@ -728,6 +808,17 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function canonicalize():Void {
+		// The file system's own path, where it can be asked: links followed,
+		// as documented, which nothing did -- only the case of each name was
+		// corrected, by listing each directory on the way down.
+		var real:Null<String> = __realPath(__path);
+
+		if (real != null) {
+			__path = real;
+			__updateNames(real);
+			return;
+		}
+
 		var segs:Array<String> = __path.split(separator);
 
 		var cPath:String = __driveLetters[__driveLetters.indexOf(segs[0].toUpperCase() + separator)];
@@ -752,46 +843,28 @@ final class File extends EventDispatcher {
 		File object. To copy a file, use the copyTo() method.
 	**/
 	public function clone():File {
-		var fileClass:Class<File> = File;
-
-		var fileClone:Dynamic = Type.createEmptyInstance(fileClass);
-
-		// The file's own state, not the dispatcher's. Every instance field was
-		// copied, EventDispatcher's included, so the clone shared the original's
-		// listener map -- a listener added to either reached both -- and on the
-		// dynamic targets the original's bound methods were copied onto the
-		// clone too, so `clone.addEventListener` registered on the original.
-		var dispatcherFields:Array<String> = Type.getInstanceFields(EventDispatcher);
-		var fields:Array<String> = Type.getInstanceFields(fileClass);
-		for (field in fields) {
-			if (dispatcherFields.indexOf(field) != -1) {
-				continue;
-			}
-			try {
-				var value:Dynamic = Reflect.getProperty(this, field);
-				if (!Reflect.isFunction(value)) {
-					Reflect.setProperty(fileClone, field, value);
-				}
-			} catch (e:Dynamic) {}
-		}
-
-		// What EventDispatcher's constructor would have set.
-		var clone:File = fileClone;
-		@:privateAccess {
-			clone.__eventMap = null;
-			clone.__targetDispatcher = null;
-			clone.__nextListenerOrder = 0;
-			clone.__walking = 0;
-			// Its own operations: the original's are not the clone's to cancel.
-			clone.__pending = [];
-		}
+		// The File's own state, set on a File made the ordinary way. It copied
+		// every instance field by reflection: EventDispatcher's too, so the
+		// clone shared the original's listeners (fixed by skipping those), and
+		// every property through its getter -- `isHidden`, which runs
+		// `attrib` on Windows, `spaceAvailable`, which runs fsutil or df, and
+		// size and both dates, which read the disk -- to set them on a clone
+		// that cannot be set.
+		var clone:File = new File();
+		clone.__path = __path;
+		clone.name = name;
+		clone.extension = extension;
+		clone.type = type;
+		clone.creator = creator;
+		clone.__data = __data;
 		return clone;
 	}
 
 	/**
 		Copies the file or directory at the location specified by this File object to the location
 		specified by the newLocation parameter. The copy process creates any required parent directories
-		(if possible). When overwriting files using copyTo(), the file attributes are also overwritten.
+		(if possible). Only the contents are copied, not the attributes AIR copies: a new copy gets the
+		permissions a new file gets, one written over a file keeps that file's, and either was modified now.
 
 		The source and destination are compared as files, not only as names: a name for the same file in
 		another case on Windows, a hard link to it, or a path to it through a junction or a symbolic link is
@@ -805,8 +878,8 @@ final class File extends EventDispatcher {
 		exists. If true, the operation overwrites existing file or directory of the same name.
 		@throws IOError The source does not exist; or the source could not be copied to the target; or
 		the source and destination refer to the same file or folder; or a directory would be copied into
-		itself. On Windows, you cannot copy a file that is open or a directory that contains a file that
-		is open.
+		itself. A file that is open is copied as it stands on disk, and so is a directory with one inside
+		it, unless whatever has the file open refused other readers, as a program can on Windows.
 		@throws ArgumentError `newLocation` is null.
 
 		The following code shows how to use the copyTo() method to copy a file. Before running this code,
@@ -1052,10 +1125,9 @@ final class File extends EventDispatcher {
 		exists. If true, the operation overwrites existing file or directory of the same name.
 		@event complete Dispatched when the file or directory has been successfully copied.
 		@event ioError The source does not exist; or the source could not be copied to the target; or the source
-		and destination refer to the same file or folder and overwrite is set to true. On Windows, you cannot
-		copy a file that is open or a directory that contains a
-		file that is open.
-		@throws SecurityError The application does not have the necessary permissions to write to the destination.
+		and destination refer to the same file or folder. A file that is open is copied as it stands on
+		disk, and so is a directory with one inside it, unless whatever has the file open refused other
+		readers, as a program can on Windows.
 
 		The following code shows how to use the copyToAsync() method to copy a file. Before running this code,
 		be sure to create a test1.txt file in the CrossByte Test subdirectory of the documents directory on your computer.
@@ -1091,7 +1163,6 @@ final class File extends EventDispatcher {
 		no action is taken.
 
 		@throws	IOError The directory did not exist and could not be created.
-		@throws SecurityError The application does not have the necessary permissions.
 
 		The following code moves a file named test.txt on the desktop to the CrossByte Test subdirectory of the
 		documents directory. The call to the createDirectory() method ensures that the CrossByte Test directory
@@ -1122,9 +1193,9 @@ final class File extends EventDispatcher {
 		@param deleteDirectoryContents Specifies whether or not to delete a directory that contains files or
 		subdirectories. When false, if the directory contains files or directories, a call to this method throws
 		an exception.
-		@throws	IOError The directory does not exist, or the directory could not be deleted. On Windows, you
-		cannot delete a directory that contains a file that is open.
-		@throws SecurityError The application does not have the necessary permissions to delete the directory.
+		@throws	IOError The directory does not exist, or the directory could not be deleted. On Windows a
+		directory with a file open inside it cannot be deleted, unless whatever has the file open allowed
+		that: most programs do not, nor does `FileStream` except on Node.
 
 		The following code creates an empty directory and then uses the deleteDirectory() method to delete the directory.
 
@@ -1180,12 +1251,12 @@ final class File extends EventDispatcher {
 		Deletes the directory asynchronously.
 
 		@param deleteDirectoryContents Specifies whether or not to delete a directory that contains files or
-		subdirectories. When false, if the directory contains files or directories, a call to this method throws
-		an exception.
+		subdirectories. When false, a directory that contains files or directories is reported as an
+		`ioError`.
 		@events complete Dispatched when the directory has been deleted successfully.
-		@events ioError The directory does not exist or could not be deleted. On Windows, you cannot delete a
-		directory that contains a file that is open.
-		@throws SecurityError The application does not have the necessary permissions to delete the directory.
+		@events ioError The directory does not exist or could not be deleted. On Windows a directory with a
+		file open inside it cannot be deleted, unless whatever has the file open allowed that: most programs
+		do not, nor does `FileStream` except on Node.
 
 	**/
 	public function deleteDirectoryAsync(deleteDirectoryContents:Bool = false):Void {
@@ -1198,9 +1269,9 @@ final class File extends EventDispatcher {
 	/**
 		Deletes the file.
 
-		@throws	IOError The directory does not exist, or the directory could not be deleted. On Windows, you
-		cannot delete a directory that contains a file that is open.
-		@throws SecurityError The application does not have the necessary permissions to delete the directory.
+		@throws	IOError The file does not exist (3003), is a directory (3006), or could not be deleted
+		(3012). On Windows a file that is open cannot be deleted, unless whatever has it open allowed that:
+		most programs do not, nor does `FileStream` except on Node.
 
 		The following code creates a temporary file and then calls the deleteFile() method to delete it.
 
@@ -1232,10 +1303,10 @@ final class File extends EventDispatcher {
 	/**
 		Deletes the file asynchronously.
 
-		@events complete Dispatched when the directory has been deleted successfully.
-		@events ioError The directory does not exist or could not be deleted. On Windows, you cannot delete a
-		directory that contains a file that is open.
-		@throws SecurityError The application does not have the necessary permissions to delete the directory.
+		@events complete Dispatched when the file has been deleted successfully.
+		@events ioError The file does not exist, is a directory, or could not be deleted. On Windows a file
+		that is open cannot be deleted, unless whatever has it open allowed that: most programs do not, nor
+		does `FileStream` except on Node.
 	**/
 	public function deleteFileAsync():Void {
 		__startAsync(_ -> {
@@ -1396,6 +1467,8 @@ final class File extends EventDispatcher {
 		@throws IOError The file does not exist (3003) or cannot be read.
 	**/
 	public function load():Void {
+		// Unset first: a load that fails leaves no data from an earlier one.
+		__data = null;
 		__data = getFileBytes(__path);
 	}
 
@@ -1407,6 +1480,7 @@ final class File extends EventDispatcher {
 		@event ioError The file does not exist or cannot be read.
 	**/
 	public function loadAsync():Void {
+		__data = null;
 		__startAsync(cancelled -> {
 			// A block at a time, so that a cancel stops it, into one buffer of
 			// the file's size.
@@ -1474,8 +1548,9 @@ final class File extends EventDispatcher {
 		@throws	IOError  The source does not exist; or the destination exists and overwrite is set to
 		false; or the source file or directory could not be moved to the target location; or the source
 		and destination refer to the same file or folder (other than by a name changed only in case); or
-		a directory would be moved into itself. On Windows, you cannot move a file that is open or a
-		directory that contains a file that is open.
+		a directory would be moved into itself. On Windows a file that is open cannot be moved, nor a
+		directory with one inside it, unless whatever has the file open allowed that: most programs do
+		not, nor does `FileStream` except on Node.
 		@throws ArgumentError `newLocation` is null.
 
 		The following code shows how to use the moveTo() method to rename a file. The original filename
@@ -1657,9 +1732,9 @@ final class File extends EventDispatcher {
 			@event complete Dispatched when the file or directory has been successfully moved.
 			@event ioError The source does not exist; or the destination exists and overwrite is false; or
 			the source could not be moved to the target; or the source and destination refer to the same file
-			or folder and overwrite is set to true. On Windows, you cannot move a file that is open or a directory
-			that contains a file that is open.
-			@throws SecurityError The application does not have the necessary permissions to move the file.
+			or folder (other than by a name changed only in case). On Windows a file that is open cannot be
+			moved, nor a directory with one inside it, unless whatever has the file open allowed that: most
+			programs do not, nor does `FileStream` except on Node.
 
 			The following code shows how to use the moveToAsync() method to rename a file. The original filename
 			is test1.txt and the resulting name is test2.txt. Since both the source and destination File object
@@ -2081,6 +2156,44 @@ final class File extends EventDispatcher {
 		return rootDirs;
 	}
 
+	/**
+		The file system's own path for `path` -- every link followed, each
+		name in its case on disk -- or null when there is no such file, or no
+		way here to ask: the interpreter, neko and hl under Windows, whose
+		`fullPath` follows no link.
+	**/
+	@:noCompletion private static function __realPath(path:String):Null<String> {
+		#if (js && !nodejs)
+		return null;
+		#elseif cpp
+		var real:String = crossbyte.io._internal.NativeFileSync.realPath(path);
+		return real == null || real == "" ? null : real;
+		#elseif jvm
+		try {
+			return java.nio.file.Paths.get(path).toRealPath().toString();
+		} catch (_:Dynamic) {
+			return null;
+		}
+		#elseif nodejs
+		try {
+			return js.Syntax.code("require('fs').realpathSync.native({0})", path);
+		} catch (_:Dynamic) {
+			return null;
+		}
+		#else
+		if (System.isWindows || !FileSystem.exists(path)) {
+			return null;
+		}
+
+		try {
+			// realpath, on POSIX.
+			return FileSystem.fullPath(path);
+		} catch (_:Dynamic) {
+			return null;
+		}
+		#end
+	}
+
 	@:noCompletion private function __canonicalize(cpath:String, seg:String):String {
 		seg = seg.toLowerCase();
 		var items:Array<String> = FileSystem.readDirectory(Path.directory(cpath));
@@ -2364,9 +2477,11 @@ final class File extends EventDispatcher {
 		its file was written reported a size of 0 for good.
 	**/
 	@:noCompletion private function __updateNames(path:String):Void {
-		extension = Path.extension(path);
-		type = extension;
 		name = Path.withoutDirectory(path);
+		// null for a name with no dot, as documented. It was "", which reads
+		// as an extension that happens to be empty, as "name." has.
+		extension = name.indexOf(".") < 0 ? null : Path.extension(path);
+		type = extension;
 	}
 
 	/** The file's stat, or an IOError saying why there is none. **/
@@ -2499,7 +2614,12 @@ final class File extends EventDispatcher {
 		#end
 	}
 
-	@:noCompletion private inline function get_data():ByteArray {
+	@:noCompletion private function get_data():ByteArray {
+		// As documented: an error rather than null when nothing has been
+		// loaded, or the load failed.
+		if (__data == null) {
+			throw new IllegalOperationError("No data: load() or loadAsync() has not completed on this File.");
+		}
 		return __data;
 	}
 

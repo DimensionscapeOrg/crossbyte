@@ -195,6 +195,68 @@ class SystemTest extends utest.Test {
 			crossbyte.Resources.resourcesDir);
 	}
 
+	public function testXdgUserDirsAreRead():Void {
+		// File.documentsDirectory says it observes xdg-user-dirs on Linux,
+		// which nothing read: ~/Documents, whatever the desktop's language or
+		// the user's choice.
+		var file:String = '# written by xdg-user-dirs-update\nXDG_DESKTOP_DIR="$$HOME/Schreibtisch"\nXDG_DOCUMENTS_DIR="/data/docs/"\nXDG_MUSIC_DIR="$$HOME"\n';
+
+		Assert.equals("/home/u/Schreibtisch", System.__parseUserDirs(file, "XDG_DESKTOP_DIR", "/home/u"));
+		Assert.equals("/data/docs", System.__parseUserDirs(file, "XDG_DOCUMENTS_DIR", "/home/u/"));
+		Assert.equals("/home/u", System.__parseUserDirs(file, "XDG_MUSIC_DIR", "/home/u"));
+		Assert.isNull(System.__parseUserDirs(file, "XDG_VIDEOS_DIR", "/home/u"));
+		Assert.isNull(System.__parseUserDirs('XDG_DESKTOP_DIR="relative"', "XDG_DESKTOP_DIR", "/home/u"));
+		Assert.isNull(System.__parseUserDirs('#XDG_DESKTOP_DIR="/x"', "XDG_DESKTOP_DIR", "/home/u"));
+	}
+
+	public function testDocumentsAndDesktopFollowXdgUserDirs():Void {
+		// End to end, through a user-dirs.dirs where XDG_CONFIG_HOME points.
+		// Linux and the BSDs read it; Windows and macOS keep folders of their
+		// own and do not.
+		#if (jvm || java)
+		// Sys.putEnv throws on the jvm. testXdgUserDirsAreRead covers the
+		// reading there.
+		Assert.pass();
+		#else
+		var config = File.createTempDirectory();
+		var saved:Null<String> = Sys.getEnv("XDG_CONFIG_HOME");
+		sys.io.File.saveContent(config.resolvePath("user-dirs.dirs").nativePath,
+			'XDG_DOCUMENTS_DIR="/srv/papers"\nXDG_DESKTOP_DIR="$$HOME/Schreibtisch"\n');
+		Sys.putEnv("XDG_CONFIG_HOME", config.nativePath);
+		System.__documentsDirPath = null;
+		System.__desktopDirPath = null;
+		var documents:String = System.documentsDir;
+		var desktop:String = System.desktopDir;
+		__restoreEnv("XDG_CONFIG_HOME", saved);
+		System.__documentsDirPath = null;
+		System.__desktopDirPath = null;
+		try config.deleteDirectory(true) catch (_:Dynamic) {}
+
+		var home:String = System.userDir;
+
+		if (System.isWindows || System.PLATFORM == "mac") {
+			Assert.equals(home + File.separator + "Documents", documents);
+			Assert.equals(home + File.separator + "Desktop", desktop);
+		} else {
+			Assert.equals("/srv/papers", documents);
+			Assert.equals(haxe.io.Path.removeTrailingSlashes(home) + "/Schreibtisch", desktop);
+		}
+		#end
+	}
+
+	#if !(jvm || java)
+	static function __restoreEnv(name:String, value:Null<String>):Void {
+		#if nodejs
+		// Node's putEnv stores null as the text "null".
+		if (value == null) {
+			js.Syntax.code("delete process.env[{0}]", name);
+			return;
+		}
+		#end
+		Sys.putEnv(name, value);
+	}
+	#end
+
 	public function testAnIdTheBuildRefuses():Void {
 		// What -D crossbyte_app_id is held to: a name every platform can give
 		// a directory.
