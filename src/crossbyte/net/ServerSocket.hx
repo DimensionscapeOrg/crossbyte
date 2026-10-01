@@ -158,7 +158,8 @@ class ServerSocket extends EventDispatcher {
 		The first failure after a success is also dispatched as an `ioError`
 		event, so a run of them is reported once rather than every tick. Each
 		used to be swallowed natively -- no event, no count, and a server out
-		of descriptors looked idle -- or, on the jvm, closed the server.
+		of descriptors looked idle -- or, on the jvm and Node, closed the
+		server.
 	**/
 	public var acceptFailures(default, null):Int = 0;
 
@@ -219,9 +220,9 @@ class ServerSocket extends EventDispatcher {
 	@:noCompletion private var __pollRuntime:CrossByte = null;
 	// What the poll set calls when the listener has connections waiting.
 	@:noCompletion private var __listenerPoll:ListenerPoll = null;
+	#end
 	// Whether the last accept failed, so a run of failures is reported once.
 	@:noCompletion private var __acceptFailing:Bool = false;
-	#end
 	@:noCompletion private var __hasCertificate:Bool = false;
 	#if !nodejs
 	@:noCompletion private var __pendingHandshakes:Array<PendingHandshake>;
@@ -235,13 +236,16 @@ class ServerSocket extends EventDispatcher {
 	@:noCompletion private var __tlsAuthority:Certificate;
 	@:noCompletion private var __tlsSni:Array<{match:String->Bool, certificate:Certificate, key:Key}> = [];
 	@:noCompletion private var __tlsAlpn:Array<String>;
+	// Whether Node has said the server is listening: an error before that is
+	// the listen failing, and one after it a connection it could not take.
+	@:noCompletion private var __nodeListening:Bool = false;
 	#end
 
 	/**
 		Creates a ServerSocket object.
 
 		@param secure When `true`, the server terminates TLS: a certificate
-			must be installed with `setCertificate()` before `listen()`, and
+			must be installed with `setCertificate()` before `bind()`, and
 			`connect` events are dispatched only after each client's handshake
 			completes. Handshakes progress across ticks and never block the
 			runtime loop.
@@ -329,11 +333,15 @@ class ServerSocket extends EventDispatcher {
 
 	/**
 		Installs the certificate chain and private key this server presents to
-		clients. Must be called on a secure server before `listen()`.
+		clients. Must be called on a secure server before `bind()`: the TLS
+		configuration is made when the listener is bound, and material
+		installed afterwards would never be presented. `listen()` refuses a
+		secure server that has none.
 
 		@param cert The certificate chain to present.
 		@param key The matching private key.
-		@throws Error When this server was not constructed with `secure` set.
+		@throws Error When this server was not constructed with `secure` set,
+			or when it is already bound.
 	**/
 	public function setCertificate(cert:Certificate, key:Key):Void {
 		__requireSecure("setCertificate");
@@ -349,11 +357,14 @@ class ServerSocket extends EventDispatcher {
 
 	/**
 		Adds an additional certificate selected by Server Name Indication,
-		allowing one listener to serve several hostnames.
+		allowing one listener to serve several hostnames. Before `bind()`,
+		as `setCertificate()`.
 
 		@param serverNameMatch Predicate matching the client-offered hostname.
 		@param cert The certificate chain to present on a match.
 		@param key The matching private key.
+		@throws Error When this server was not constructed with `secure` set,
+			or when it is already bound.
 	**/
 	public function addSNICertificate(serverNameMatch:String->Bool, cert:Certificate, key:Key):Void {
 		__requireSecure("addSNICertificate");
@@ -459,6 +470,14 @@ class ServerSocket extends EventDispatcher {
 							  the application is running under a user account that does not have the privileges necessary to bind to the port. Privilege issues typically occur when attempting to bind to well known ports (localPort < 1024)
 							  this ServerSocket object is already bound. (Call close() before binding to a different socket.)
 							  when localAddress is not a valid local address.
+
+		On Node a server takes its address when it starts listening, and
+		says whether it could only afterwards: this records the endpoint and
+		cannot fail, and `listen()` claims it. A port in use, or an address
+		that is not local, is then dispatched as an `ioError` saying so,
+		followed by `close`, as a `DatagramSocket`'s bind is; `listening` is
+		`true` from `listen()` until then. A port of 0 reads 0 in `localPort`
+		until the server is listening.
 	**/
 	public function bind(localPort:Int = 0, localAddress:String = "0.0.0.0"):Void {
 		if (localPort > 65535 || localPort < 0) {
@@ -470,9 +489,10 @@ class ServerSocket extends EventDispatcher {
 		// address when it starts, and reports a refusal -- a port in use, an
 		// address that is not local -- as an event once it has tried. So this
 		// records the endpoint and listen() is where it is claimed, which means
-		// two visible differences on Node: a bind failure arrives as a close
-		// event rather than out of this call, and a port of 0 stays 0 in
-		// localPort until listen() has been able to ask what was assigned.
+		// two visible differences on Node: a bind failure arrives as an
+		// ioError and a close event rather than out of this call, and a port
+		// of 0 stays 0 in localPort until listen() has been able to ask what
+		// was assigned.
 		this.localAddress = localAddress;
 		this.localPort = localPort;
 		bound = true;
@@ -502,11 +522,6 @@ class ServerSocket extends EventDispatcher {
 		#end
 	}
 
-	/**
-		Closes the socket and stops listening for connections.
-		Closed sockets cannot be reopened. Create a new ServerSocket instance instead.
-		@throws Error This error occurs if the socket could not be closed, or the socket was not open.
-	**/
 	#if nodejs
 	/**
 	 * Builds the listener, plain or TLS, and wires what both need.
@@ -522,6 +537,17 @@ class ServerSocket extends EventDispatcher {
 		}
 
 		var accept = function(connection:NodeSocket):Void {
+			if (__closed || !listening || __cbInstance == null) {
+				// Arrived after close() or stopAccepting(): a TLS handshake
+				// that was under way finishes after Node has stopped
+				// listening. It was adopted anyway -- with no runtime, since
+				// close() had let go of it -- and announced as a connection
+				// to a server that had stopped; it is let go of, as a
+				// handshake in flight is natively.
+				connection.destroy();
+				return;
+			}
+
 			if (!__hasListener) {
 				// Node has already accepted this; there is no way to tell it
 				// not to, the way a native server leaves a connection sitting
@@ -540,6 +566,7 @@ class ServerSocket extends EventDispatcher {
 				return;
 			}
 
+			__acceptFailing = false;
 			var socket:CBSocket = @:privateAccess CBSocket.__adoptNodeSocket(connection, __cbInstance);
 			// Said, as a native server's accepted socket says it: on Node one
 			// a TLS listener accepted reported false.
@@ -614,6 +641,11 @@ class ServerSocket extends EventDispatcher {
 			// by its peerShutdownPolicy, rather than Node's to answer with its
 			// own.
 			options.allowHalfOpen = true;
+			// handshakeTimeout, which Node takes in milliseconds. It was not
+			// passed, so Node's own two minutes applied: a client that opened
+			// a connection and never sent its half of the handshake held it
+			// twelve times longer than the server was configured to allow.
+			options.handshakeTimeout = Std.int(Math.max(1, handshakeTimeout * 1000));
 			__serverSocket = Tls.createServer(options, accept);
 
 			// The raw TCP connection, before TLS starts on it: the point where
@@ -638,13 +670,33 @@ class ServerSocket extends EventDispatcher {
 
 		// A port already in use, or an address that is not local, reaches a
 		// Node server as an event rather than as a failed call -- see bind().
-		__serverSocket.on("error", function(_):Void {
+		// So does a connection Node could not take once listening, a process
+		// out of descriptors, which closed the server: natively and on the
+		// jvm the server goes on, and so it does here.
+		__serverSocket.on("error", function(error:Dynamic):Void {
 			if (__closed) {
 				return;
 			}
 
-			close();
-			dispatchEvent(new Event(Event.CLOSE));
+			var message:Dynamic = error == null ? null : Reflect.field(error, "message");
+			try {
+				if (__nodeListening) {
+					__onAcceptFailed(message == null ? "unknown error" : message);
+					return;
+				}
+
+				// The listen failed, so there is no server: an ioError saying
+				// why, then CLOSE, as a DatagramSocket's bind reports it. It was
+				// CLOSE alone, which said the server had stopped and not that
+				// it never started, nor why.
+				close();
+				dispatchEvent(new crossbyte.events.IOErrorEvent(crossbyte.events.IOErrorEvent.IO_ERROR,
+					"Could not listen on " + localAddress + ":" + localPort + ": " + Std.string(message)));
+				dispatchEvent(new Event(Event.CLOSE));
+			} catch (e:Dynamic) {
+				// Contained: this runs from Node's own loop.
+				CrossByte.__socketListenerThrew(e, this, "A listener of a server that failed threw");
+			}
 		});
 	}
 
@@ -661,6 +713,13 @@ class ServerSocket extends EventDispatcher {
 	}
 	#end
 
+	/**
+		Closes the socket and stops listening for connections. A connection
+		still completing its TLS handshake is dropped, and no `close` event is
+		dispatched: that is for the system closing the listener.
+		Closed sockets cannot be reopened. Create a new ServerSocket instance instead.
+		@throws Error This error occurs if the socket could not be closed, or the socket was not open.
+	**/
 	public function close():Void {
 		#if !nodejs
 		__dropPendingHandshakes();
@@ -700,7 +759,10 @@ class ServerSocket extends EventDispatcher {
 		instead. No means for discovering the actual backlog value is provided. (The
 		system-maximum value is determined by the SOMAXCONN setting of the TCP network
 		subsystem on the host computer.)
-		@throws RangeError	There is insufficient data available to read.
+
+		On Node a port that cannot be had is reported after this returns, as
+		an `ioError` and then `close`; see `bind()`.
+		@throws RangeError	The backlog is negative.
 		@throws IOError		This error occurs if the socket is not open or bound.
 							This error also occurs if the call to listen() fails for any
 							other reason.
@@ -713,22 +775,28 @@ class ServerSocket extends EventDispatcher {
 			if (__closed) {
 				throw new IOError("Operation attempted on invalid socket.");
 			}
+			// Natively too, where it was left to the system: Windows refused
+			// a listen on a socket never bound, and Linux and macOS bound it
+			// to a port of their choosing and listened there, so the same
+			// call failed on one system and served a port nobody had asked
+			// for -- and that localPort did not report -- on the others.
+			if (!bound) {
+				throw new IOError("Operation attempted on invalid socket: listen() needs bind() first.");
+			}
 			if (secure && !__hasCertificate) {
 				throw new IOError("A secure ServerSocket requires setCertificate() before bind().");
 			}
 			if (backlog < 0) {
-				throw new RangeError("The supplied index is out of bounds.");
+				throw new RangeError("A listen backlog cannot be negative: " + backlog + ".");
 			} else if (backlog == 0) {
 				backlog = DEFAULT_BACKLOG;
 			}
 
 			#if nodejs
-			if (!bound) {
-				throw new IOError("Operation attempted on invalid socket.");
-			}
-
 			__makeNodeServer();
+			__nodeListening = false;
 			__serverSocket.listen({port: localPort, host: localAddress, backlog: backlog}, function():Void {
+				__nodeListening = true;
 				// Where a port of 0 becomes the port the operating system
 				// picked. It cannot be known earlier: bind() only wrote the
 				// request down, and nothing had asked for a port yet.
@@ -913,30 +981,6 @@ class ServerSocket extends EventDispatcher {
 	}
 
 	/**
-		A connection the system would not hand over, though one was waiting:
-		counted, and reported once for a run of them. The server stays up. The
-		connection stays in the kernel's queue and is asked for again next
-		tick, which is all there is to do about a process out of descriptors.
-
-		hxcpp raises this as a bare string, which the catch-all here swallowed
-		without a word; the jvm raises it as an I/O error, which closed the
-		server -- over a condition that passes as soon as a descriptor frees.
-	**/
-	@:noCompletion private function __onAcceptFailed(error:Dynamic):Void {
-		acceptFailures++;
-
-		if (__acceptFailing) {
-			return;
-		}
-		__acceptFailing = true;
-
-		var message:String = "Could not accept a connection waiting on port " + localPort + ": " + Std.string(error)
-			+ ". The server is still listening, and takes it once the system will hand it over.";
-		crossbyte.utils.Logger.warn(message);
-		dispatchEvent(new crossbyte.events.IOErrorEvent(crossbyte.events.IOErrorEvent.IO_ERROR, message));
-	}
-
-	/**
 		Asks `admit` about a connection just accepted, and closes it if the
 		answer is no -- or if asking threw.
 	**/
@@ -958,6 +1002,33 @@ class ServerSocket extends EventDispatcher {
 	}
 
 	#end
+
+	/**
+		A connection the system would not hand over, though one was waiting:
+		counted, and reported once for a run of them. The server stays up. The
+		connection stays in the kernel's queue and is asked for again next
+		tick, which is all there is to do about a process out of descriptors.
+
+		On Node it arrives as the server's error event, and closed the
+		server; it is counted and reported here the same way.
+
+		hxcpp raises this as a bare string, which the catch-all here swallowed
+		without a word; the jvm raises it as an I/O error, which closed the
+		server -- over a condition that passes as soon as a descriptor frees.
+	**/
+	@:noCompletion private function __onAcceptFailed(error:Dynamic):Void {
+		acceptFailures++;
+
+		if (__acceptFailing) {
+			return;
+		}
+		__acceptFailing = true;
+
+		var message:String = "Could not accept a connection waiting on port " + localPort + ": " + Std.string(error)
+			+ ". The server is still listening, and takes it once the system will hand it over.";
+		crossbyte.utils.Logger.warn(message);
+		dispatchEvent(new crossbyte.events.IOErrorEvent(crossbyte.events.IOErrorEvent.IO_ERROR, message));
+	}
 
 	override public function addEventListener(type:String, listener:Dynamic->Void, priority:Int = 0):Void {
 		super.addEventListener(type, listener, priority);
@@ -1122,11 +1193,15 @@ class ServerSocket extends EventDispatcher {
 	/**
 		Number of connections currently completing their TLS handshake.
 		Always `0` on a plain server.
+
+		On Node always `0` as well, secure or not: Node completes each
+		handshake itself and hands the server a connection only once it is
+		done, without saying how many are under way. `handshakeTimeout`
+		still bounds each, and `handshakeFailures` still counts the ones that
+		fail or run out of time.
 	**/
 	public function pendingHandshakeCount():Int {
 		#if nodejs
-		// Always zero, and not because none are in flight: a Node server never
-		// terminates TLS, so there is no handshake for it to be counting.
 		return 0;
 		#else
 		return __pendingHandshakes == null ? 0 : __pendingHandshakes.length;
@@ -1144,8 +1219,12 @@ class ServerSocket extends EventDispatcher {
 		caller closes those connections itself.
 
 		Safe to call more than once, and safe to call on a server that was
-		never listening. Unlike `close()`, no `close` event is dispatched
-		and the server is not marked as closed.
+		never listening. Neither this nor `close()` dispatches `close`, which
+		is for the system closing the listener; unlike `close()`, this does
+		not mark the server closed.
+
+		On Node a handshake under way finishes after the listener has
+		stopped, and is closed as it does, as one in flight is natively.
 	**/
 	public function stopAccepting():Void {
 		if (!listening && !bound) {

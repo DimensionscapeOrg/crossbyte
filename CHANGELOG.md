@@ -80,6 +80,9 @@ entry below says how:
   `onError`, and `onClose` after an error is given the error's reason.
   Code that took `onClose` to mean a connection had been up checks for
   `onReady` instead.
+- `ServerSocket.listen()` throws an `IOError` for a server never bound,
+  on Linux and macOS too, where it listened on a port of the system's
+  choosing: bind first, to port 0 for one the system picks.
 
 ### Added
 - `IOErrorEvent.TIMEOUT_ERROR_ID`, the `errorID` of a `Socket`'s `ioError`
@@ -1949,6 +1952,21 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On Node a TLS `ServerSocket` drops a client that has not finished its
+  handshake within `handshakeTimeout`; Node's own two minutes applied. A
+  handshake that finished after `close()` or `stopAccepting()` is closed,
+  where it was adopted, with no runtime, and announced to the stopped
+  server.
+- On Node a `ServerSocket` that cannot have its port -- in use, or an
+  address that is not local -- dispatches an `ioError` saying why before
+  `close`, as a `DatagramSocket` does; it dispatched `close` alone. A
+  connection Node could not accept once listening, a process out of
+  descriptors, is counted in `acceptFailures` and reported once, as
+  natively, where it closed the server.
+- `ServerSocket.listen()` on a server never bound is the `IOError` its
+  doc promises, on every target. Windows threw "Listen failed", the jvm
+  a string, eval stopped altogether, and Linux and macOS listened on a
+  port of the system's choosing that `localPort` did not report.
 - `ConcurrencyLimiter.tryAcquire` no longer keeps capacity nobody can
   release. It took the capacity before delivering what its sweep had
   decided for waiters, so a refusal callback that threw carried its
