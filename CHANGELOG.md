@@ -1124,6 +1124,11 @@ All notable changes to CrossByte will be documented in this file.
   serves 9,260 a second where it served 1,390, and browsers 64 KB of
   compressed JSON 4,450 where it served 1,100; a native one answering
   64 KB serves 34,200 where it served 28,300, and small answers 5% more.
+- The HTTP server reads a response's header names and values before
+  rebuilding them, and sends a clean one as it is. Every one was rebuilt a
+  character at a time on every response, the constant ones included: 4% of
+  a native server's time. Small answers: 81,500 a second where it served
+  77,700.
 - `PostgresStatement` and `MongoStatement` throw a failed statement's
   `SQLError` after dispatching it as an `SQLErrorEvent`, as `MySQLStatement`
   does. They dispatched it and returned, so to a caller not listening -- an
