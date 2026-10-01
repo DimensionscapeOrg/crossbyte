@@ -32,7 +32,7 @@ haxelib git hxcpp https://github.com/dimensionscape/hxcpp.git production
 
 It carries the socket, poll and TLS corrections CrossByte depends on, ALPN for HTTP/2, TLS session resumption and the bundled MySQL client, and it exposes hxcpp's mbedTLS to libraries, which CrossByte's RSA and ECDSA build against. hxcpp 4.3.2, the release on haxelib, has none of these and cannot build CrossByte's crypto. CI builds against the same branch.
 
-The JVM, Node, HashLink, Neko and the interpreter need nothing else; Node needs `hxnodejs`.
+The JVM, Node, HashLink, Neko and the interpreter need nothing else to install; Node needs `hxnodejs`. What a target cannot do it says at the member: the interpreter, for one, cannot start a child process (`NativeProcess.isSupported` is false there).
 
 Install the published CrossByte task runner with:
 
@@ -79,7 +79,7 @@ CrossByte currently includes:
   - Ed25519
   - secure random bytes
   - password hashing helpers
-- workers, task pools, and native process helpers
+- workers, task pools, and `NativeProcess`, which starts a child process and reads its output natively, on the jvm, HashLink, Neko and Node; not on the interpreter, whose process calls hold every thread while they wait, nor in a browser
 - data structures and utility packages
 - database surfaces for:
   - SQLite
