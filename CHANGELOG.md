@@ -87,6 +87,8 @@ entry below says how:
   threw a String or an `ArgumentError`; `Aead.decrypt` and
   `PublicKeySignature.verify`, `keyType` and `joseSignatureLength` throw
   there where they answered. Check `isAvailable()` or `isSupported` first.
+- A `JWT` verifying tokens that carry `aud` needs `expectedAudience` set to
+  the audience it is; with none, those tokens are refused.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1148,6 +1150,12 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A JWT verifier with no `expectedAudience` refuses a token that names an
+  audience, as `WRONG_AUDIENCE`. RFC 7519 has a recipient that does not
+  identify itself with a token's `aud` reject it; accepting one let a token
+  minted for another service of the same issuer and key be replayed here.
+  A token naming no audience is accepted as before. `expectedIssuer`,
+  `expectedAudience` and `leeway` are documented.
 - A crypto or IPC member that cannot work on the target throws an
   `IllegalOperationError` naming the target, before looking at its
   arguments: `Aead`, `GenericHash`, `HKDF`, `X25519`, `KeyExchange`,
