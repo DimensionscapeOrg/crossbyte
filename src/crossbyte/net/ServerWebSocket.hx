@@ -46,12 +46,21 @@ import sys.net.Host;
 class ServerWebSocket extends ServerSocket {
 	// Note: use chrome://flags/#allow-insecure-localhost to allow local host certificates in chrome!
 
-	// The TLS surface as a whole. A Node server cannot present a certificate
-	// -- that needs sys.ssl -- so the constructor refuses a secure server
-	// there and none of this is built, rather than standing as an API that
-	// takes types which do not exist.
 	/**
-		The Certificate Authoritiy responsible for signing the SSL Certificate for a Secure WebSocket Server.
+		The authority a client's certificate has to be issued by: mutual TLS.
+
+		Set, every client is asked for a certificate during the TLS handshake,
+		and one that presents none, or one this authority did not issue, fails
+		the handshake and never becomes a session. That is every browser,
+		unless its user has installed a certificate for this server. `null`,
+		the default, asks clients for nothing.
+
+		The same as `requireClientCertificate()`, and the same on every
+		target. Set it before `bind()`, where a native server builds its TLS
+		configuration; it is refused afterwards.
+
+		@throws Error When this server is not secure, unless the value is
+			`null`, or when it is already bound.
 	**/
 	public var certAuthority(default, set):Certificate;
 
@@ -59,13 +68,6 @@ class ServerWebSocket extends ServerSocket {
 		Indicates whether or not ServerSocket features are supported in the run-time environment.
 	**/
 	public static var isSupported(default, null):Bool = #if html5 false #else true #end;
-
-	#if !nodejs
-	/**
-		Determines whether or not the Websocket Server should verify the Certificate.
-	**/
-	public var verifyCert(default, set):Null<Bool>;
-	#end
 
 	/**
 		Applied to every session this server accepts as its
@@ -227,31 +229,58 @@ class ServerWebSocket extends ServerSocket {
 	@:noCompletion private var __pendingUpgrades:Array<PendingUpgrade> = [];
 
 	@:noCompletion private function set_certAuthority(value:Certificate):Certificate {
-		if (secure) {
-			#if nodejs
-			// Kept for listen(), which builds the server from it. __tlsAuthority
-			// is ServerSocket's, and requireClientCertificate() fills the same
-			// field -- one place, so the two cannot disagree about which
-			// authority a client is checked against.
-			__tlsAuthority = value;
-			#else
-			__webServerSocket.setCA(value.__native);
-			#end
+		// Nothing asked of a plain server, so nothing to refuse.
+		if (value == null && !secure) {
+			return certAuthority = null;
 		}
+		__requireUnboundTls("certAuthority");
+
+		#if nodejs
+		// Kept for listen(), which builds the server from it: ca with
+		// requestCert and rejectUnauthorized.
+		__tlsAuthority = value;
+		#else
+		// The authority and the demand together. Natively the authority alone
+		// was installed, with verification left off as the constructor set
+		// it, so a server told to require client certificates let in a client
+		// that presented none -- where Node asked and refused.
+		if (value != null) {
+			__webServerSocket.setCA(value.__native);
+		}
+		__webServerSocket.verifyCert = value != null;
+		#end
 
 		return certAuthority = value;
 	}
 
-	#if !nodejs
-	@:noCompletion private function set_verifyCert(value:Bool):Bool {
-		if (secure) {
-			return verifyCert = __webServerSocket.verifyCert = value;
-		}
+	/**
+		Requires connecting clients to present a certificate `ca` issued
+		(mutual TLS): the same as setting `certAuthority`, which see.
 
-		return verifyCert = value;
+		@param ca The authority client certificates must be issued by.
+		@throws Error When this server is not secure, when `ca` is `null`,
+			or when it is already bound.
+	**/
+	override public function requireClientCertificate(ca:Certificate):Void {
+		if (ca == null) {
+			throw new CBError("requireClientCertificate requires a certificate authority.");
+		}
+		certAuthority = ca;
 	}
 
-	#end
+	/**
+		Refuses TLS configuration on a plain server, and once this server is
+		bound: a native server builds its TLS configuration in `bind()`, so
+		anything assigned later would silently never apply.
+	**/
+	@:noCompletion private function __requireUnboundTls(field:String):Void {
+		if (!secure) {
+			throw new CBError('$field is only available on a ServerWebSocket constructed with secure = true.');
+		}
+		if (bound || listening || __listenerReleased || __closed) {
+			throw new CBError('$field must be set before bind(), where the TLS configuration is built.');
+		}
+	}
 
 	/**
 		Client connections that have completed their handshake and not yet
@@ -434,7 +463,11 @@ class ServerWebSocket extends ServerSocket {
 		__webServerSocket = new FlexSocket(secure);
 
 		if (secure) {
-			verifyCert = false;
+			// A TLS socket verifies its peer unless told otherwise, which on a
+			// server means demanding a certificate from every client -- every
+			// browser refused. Clients are asked for one only once
+			// certAuthority says to.
+			__webServerSocket.verifyCert = false;
 		}
 
 		__webServerSocket.setBlocking(false);
