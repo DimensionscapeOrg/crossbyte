@@ -1932,6 +1932,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `NetConnection` dialled over TCP works on Node and in a browser. It
+  stamped each send and each arrival with the uptime of the socket's
+  runtime, read from a field only a native connect sets: every send threw
+  a TypeError, and on Node the first bytes to arrive threw inside Node's
+  data callback, which closed the connection, so `RPCSession.dial` with
+  a `tcp://` address could never carry a call there.
 - A `Key` loads from every form a key file comes in, with its password,
   on every target. The jvm read an unencrypted PKCS#8 key alone: an
   encrypted one, or a PKCS#1 or SEC1 key, what `openssl genrsa` and
