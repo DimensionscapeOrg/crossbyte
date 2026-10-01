@@ -1225,8 +1225,26 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__sendError(403, "Forbidden", "403 Forbidden");
 	}
 
+	/**
+	 * Whether `file`, made from `path`, names something other than `path`.
+	 *
+	 * On Windows a `File` reads `%NAME%` in its path from the environment,
+	 * and every check a request's path has been through, its dotfiles, its
+	 * root, was made on the path as written. So `/%25X%25` was checked as
+	 * `/%X%` and served as whatever `X` held: a dotfile's name, or `..` steps
+	 * out of the root. A path the `File` rewrote is not the path that was
+	 * checked, and is answered as one that is not there.
+	 */
+	@:noCompletion private static inline function __rewrittenByFile(file:File, path:String):Bool {
+		return file.nativePath != path;
+	}
+
 	@:noCompletion private function __serveFile(filePath:String, headOnly:Bool = false):Void {
 		var file:File = new File(filePath);
+		if (__rewrittenByFile(file, filePath)) {
+			__sendNotFound();
+			return;
+		}
 
 		if (__keptBack(file.nativePath)) {
 			__sendForbidden();
@@ -4123,6 +4141,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private function __handlePost(filePath:String):Void {
 		var file:File = new File(filePath);
+		if (__rewrittenByFile(file, filePath)) {
+			__sendNotFound();
+			return;
+		}
+
 		// The same answer a GET for it gets, before anything says whether it
 		// is there or what it is.
 		if (__keptBack(file.nativePath)) {
