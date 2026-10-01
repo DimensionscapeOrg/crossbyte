@@ -97,6 +97,10 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	 * on the calling thread: how long, in milliseconds, 0 for a single try.
 	 * `LocalConnection.timeout` when left out. The other transports connect
 	 * without waiting and ignore it.
+	 * @throws crossbyte.errors.ArgumentError For `local://`, when no listener
+	 * took the connection within `connectTimeout`, where the other
+	 * transports report a failed connect through `onError` and `onClose`
+	 * alone.
 	 */
 	public inline function new(uri:String, ?onData:ByteArrayInput->Void, ?onReady:Void->Void, ?onClose:Reason->Void, ?onError:Reason->Void,
 			readEnabled:Bool = false, ?connectTimeout:Int):Void {
