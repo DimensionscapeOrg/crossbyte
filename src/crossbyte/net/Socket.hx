@@ -388,6 +388,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private static inline var READ_BUDGET:Int = 16 * READ_CHUNK;
 
 	/**
+	 * The most plaintext one TLS record carries (RFC 8446 5.1, and mbedTLS's
+	 * input buffer). A TLS read returns one record at most, so one that
+	 * returned this much was cut off by the record, not by the end of what
+	 * had arrived, and is read on from as a full plain read is.
+	 */
+	@:noCompletion private static inline var TLS_RECORD:Int = 16 * 1024;
+
+	/**
 	 * Consumed bytes tolerated at the front of `__input` before the unread
 	 * tail is moved down. Compacting on every arrival, which is what
 	 * rebuilding the buffer per read amounted to, costs a copy of the whole
@@ -2282,8 +2290,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					// The eval gate below runs inside this try on purpose: a
 					// select failure on a dying socket lands in the catches and
 					// closes the connection, the same as a failed read.
+					//
+					// A full TLS record reads on as a full buffer does: it
+					// never fills the buffer, so every TLS read used to end
+					// its pass, and an upload was read a record a pass. Not on
+					// eval, whose sockets block: a read past the last record
+					// there waits for the peer's next one.
 				} while (bLength < READ_BUDGET
-					&& l == scratch.length
+					&& (l == scratch.length #if !eval || (secure && l >= TLS_RECORD) #end)
 					#if eval && __evalShouldKeepReading() #end);
 			} catch (e:Eof) {
 				// The peer sent FIN. That is all this says: it will send no
