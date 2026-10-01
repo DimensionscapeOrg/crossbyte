@@ -44,11 +44,21 @@ class H2ResponseWriter implements HTTPResponseWriter {
 	// response is being written in the middle of; see H2ConnectionHandler.
 	private final __flush:Void->Void;
 
-	public function new(connection:H2ServerConnection, socket:Socket, streamId:Int, ?flush:Void->Void) {
+	// Where sweepWith registers: the connection handler's own sweep.
+	private final __sweepWith:Null<(Int, Null<Float->Void>) -> Void>;
+
+	public function new(connection:H2ServerConnection, socket:Socket, streamId:Int, ?flush:Void->Void, ?sweepWith:(Int, Null<Float->Void>) -> Void) {
 		__connection = connection;
 		__socket = socket;
 		__streamId = streamId;
 		__flush = flush != null ? flush : socket.flush;
+		__sweepWith = sweepWith;
+	}
+
+	public function sweepWith(check:Null<Float->Void>):Void {
+		if (__sweepWith != null) {
+			__sweepWith(__streamId, check);
+		}
 	}
 
 	// The stream as well as the connection: a stream the client has reset

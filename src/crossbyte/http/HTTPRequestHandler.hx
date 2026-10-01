@@ -1699,6 +1699,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// not mid-transfer.
 		__writer.onDrain = __pumpStream;
 
+		// The stall deadline, from whichever sweep reaches this response, and
+		// the client giving up on it without closing the connection: an
+		// HTTP/2 reset of its stream, which drops the drain this pump waits
+		// on, so nothing else would ever stop it.
+		__writer.sweepWith(__checkStreamStall);
+		__watchClient();
+
 		// First burst goes out now rather than a drain later.
 		__pumpStream();
 	}
@@ -1882,9 +1889,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		Logger.error('Streamed response to ${__requestPath} stalled; closing.');
 		__stopStream();
-		if (__origin.connected) {
-			__origin.close();
-		}
+		__abandonResponse();
 	}
 
 	/**
@@ -1910,6 +1915,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// teardown would otherwise re-enter the pump with a half-released
 		// transfer.
 		__writer.onDrain = null;
+		__writer.sweepWith(null);
 		__origin.removeEventListener(Event.CLOSE, __onStreamSocketGone);
 		__origin.removeEventListener(IOErrorEvent.IO_ERROR, __onStreamSocketGone);
 
@@ -2404,6 +2410,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__clientLeft = true;
 		__unwatchClient();
 		__detachOpenStream();
+		// A file going out to it, too: the pump would wait on a drain that is
+		// not coming, with the file open.
+		__stopStream();
 		dispatchEvent(new Event(Event.CLOSE));
 	}
 

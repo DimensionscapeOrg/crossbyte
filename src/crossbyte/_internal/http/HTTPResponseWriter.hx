@@ -56,6 +56,15 @@ interface HTTPResponseWriter {
 	var onAbandoned(get, set):Null<Void->Void>;
 
 	/**
+	 * Has whoever sweeps this connection call `check` with the sweep's
+	 * `haxe.Timer.stamp()` while a body is pumped out, so a transfer the peer
+	 * has stopped taking has a deadline; `null` stops it. The HTTP/1.1 sweep
+	 * visits the handler itself, so its writer ignores this. Under HTTP/2 the
+	 * sweep visits the connection, which knew nothing of its streams' pumps.
+	 */
+	function sweepWith(check:Null<Float->Void>):Void;
+
+	/**
 	 * Tells a client that sent `Expect: 100-continue` to send its body: an
 	 * interim `100 Continue`, ahead of the response, which goes out later
 	 * through `writeHead` as usual.

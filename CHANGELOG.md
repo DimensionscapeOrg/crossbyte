@@ -1935,6 +1935,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An HTTP/2 file download lets go of its file when its client resets the
+  stream, and is held to the 30 s stall deadline when its client stops
+  taking it. The pump waits on its stream's writable callback, which a
+  reset drops, and only the socket closing stopped it, so each download a
+  client reset or simply never opened its window for held a file open
+  until the connection closed; the stall deadline was checked by the
+  HTTP/1.1 sweep alone. A stalled one is reset, and the connection
+  carries on.
 - `Router.head()` says what `respond()` does for a `HEAD`: states the
   length of the body it is given and sends none of it. It said a `HEAD`
   was framed as zero-length, which has not been so since `HEAD` answers

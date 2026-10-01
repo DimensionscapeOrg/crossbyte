@@ -64,6 +64,9 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 		return __onAbandoned = value;
 	}
 
+	// The server's sweep reaches the handler itself; see HTTPResponseWriter.
+	public function sweepWith(check:Null<Float->Void>):Void {}
+
 	public function writeContinue():Void {
 		__socket.writeUTFBytes("HTTP/1.1 100 Continue\r\n\r\n");
 	}
