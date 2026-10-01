@@ -118,12 +118,12 @@ class Router {
 	 * Registers `handler` for `HEAD` requests matching `pattern`. Returns
 	 * `this` so calls chain.
 	 *
-	 * `respond()` frames `HEAD` responses as zero-length, so a `head()`
-	 * route cannot advertise the entity size the matching `GET` would have
-	 * returned; a truthful `Content-Length` needs the byte-level response
-	 * path and is future work. Do not pass `Content-Length` through the
-	 * `headers` argument of `respond()`, it would duplicate the header
-	 * `respond()` already writes.
+	 * Answer it with the body the matching `GET` would send: `respond()`
+	 * answers a `HEAD` with that body's `Content-Length` and none of the body,
+	 * and `respondBytes()` likewise. Do not pass `Content-Length` through the
+	 * `headers` argument, it would duplicate the one `respond()` writes.
+	 * (This said `respond()` framed a `HEAD` as zero-length, which it did
+	 * once.)
 	 */
 	public function head(pattern:String, handler:RouteContext->Void):Router {
 		return __add("HEAD", pattern, handler);
