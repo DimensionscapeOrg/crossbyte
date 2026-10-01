@@ -167,6 +167,39 @@ class NativeProcessTest extends utest.Test {
 		#end
 	}
 
+	/**
+		A character a read cuts in two arrives whole. Each read of a child's
+		output was decoded on its own, so a UTF-8 character split across two
+		-- at a 4096-byte boundary, or wherever the pipe hands back less --
+		came out as two replacement characters. Node decodes across reads
+		already. Here the output arrives a byte per read.
+	**/
+	@:access(crossbyte.sys.NativeProcess)
+	public function testACharacterSplitBetweenReadsArrivesWhole():Void {
+		#if (sys && target.threaded && !eval && !hl)
+		var expected:String = "aé€\u{1F600}b";
+		var proc = new NativeProcess();
+		var text:String = "";
+		var closed = false;
+		proc.addEventListener(NativeProcessEvent.STANDARD_OUTPUT_DATA, event -> text += event.text);
+		proc.addEventListener(NativeProcessEvent.STANDARD_OUTPUT_CLOSE, _ -> closed = true);
+
+		proc.__running = true;
+		proc.__worker = new Worker();
+		proc.__worker.addEventListener(crossbyte.events.ThreadEvent.PROGRESS, proc.__onWorkerProgress);
+		proc.__worker.doWork = _ -> proc.__readStream(NativeProcess.STREAM_STDOUT, new ByteAtATime(Bytes.ofString(expected)));
+		proc.__worker.run();
+
+		pumpUntil(() -> closed, TIMEOUT);
+		proc.__running = false;
+
+		Assert.isTrue(closed);
+		Assert.equals(expected, text);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testExitEventDispatchesOnOwningRuntimeTick():Void {
 		#if (sys && target.threaded && !eval)
 		var primordial = CrossByte.current();
@@ -240,5 +273,30 @@ class NativeProcessTest extends utest.Test {
 		} catch (_:Dynamic) {
 			return true;
 		}
+	}
+}
+
+/** A child's output that arrives one byte per read, then ends. **/
+private class ByteAtATime extends haxe.io.Input {
+	private final source:Bytes;
+	private var at:Int = 0;
+
+	public function new(source:Bytes) {
+		this.source = source;
+	}
+
+	override public function readByte():Int {
+		if (at >= source.length) {
+			throw new haxe.io.Eof();
+		}
+		return source.get(at++);
+	}
+
+	override public function readBytes(buffer:Bytes, pos:Int, len:Int):Int {
+		if (at >= source.length) {
+			throw new haxe.io.Eof();
+		}
+		buffer.set(pos, source.get(at++));
+		return 1;
 	}
 }
