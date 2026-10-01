@@ -64,6 +64,10 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 		return __onAbandoned = value;
 	}
 
+	public function writeContinue():Void {
+		__socket.writeUTFBytes("HTTP/1.1 100 Continue\r\n\r\n");
+	}
+
 	public function writeHead(head:HTTPResponseHead):Void {
 		var response:String = "HTTP/1.1 " + head.statusCode + " " + head.statusMessage + "\r\n";
 		response += "Connection: " + (head.keepAlive ? Connection.KEEP_ALIVE : Connection.CLOSE) + "\r\n";
