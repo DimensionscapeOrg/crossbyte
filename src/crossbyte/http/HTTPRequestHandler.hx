@@ -158,6 +158,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 	// A response has been written for the current request slot; a second
 	// one would corrupt the stream. Cleared only where a new slot opens.
 	@:noCompletion private var __responded:Bool = false;
+	// The current request's head has gone to the writer, until the request
+	// after it. Set ahead of __responded, which waits for the response to be
+	// written: a write that throws between the two leaves a head out with
+	// no response finished behind it, and a second head would go in after.
+	@:noCompletion private var __headOut:Bool = false;
 	// The keep/close decision, made once at header-write time and acted
 	// on at finish, so the Connection header and the socket action can
 	// never disagree.
@@ -1948,11 +1953,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private function __dispatchResponseBytes(statusCode:Int, statusMessage:String, headers:Array<URLRequestHeader>, contentType:String,
 			data:ByteArray, headOnly:Bool = false, ?contentLength:Int, open:Bool = false, mayEncode:Bool = true):Void {
 		// A response for this request slot has already been written (a
-		// middleware that called respond() and then next() anyway); a
-		// second one would corrupt the stream. Suppressed before the log
-		// and the status event so it neither logs, counts, nor touches
-		// the socket.
-		if (__responded) {
+		// middleware that called respond() and then next() anyway), or begun
+		// and cut short by a write that threw; a second one would corrupt
+		// the stream. Suppressed before the log and the status event so it
+		// neither logs, counts, nor touches the socket.
+		if (__responded || __headOut) {
 			return;
 		}
 
@@ -2089,6 +2094,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			__streamPending = true;
 		}
 
+		__headOut = true;
 		__writer.writeHead({
 			statusCode: statusCode,
 			statusMessage: statusMessage,
@@ -2650,6 +2656,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// window per megabyte a client happened to POST.
 		__requestBody = new ByteArray();
 		__requestConsumed = false;
+		__headOut = false;
 		// Unconditionally, same invariant as everywhere else: scan
 		// offsets die with the buffer they pointed into.
 		__resetHeaderScan();
@@ -2686,6 +2693,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * HTTP/2 makes a malformed response.
 	 */
 	@:noCompletion private function __sendError(statusCode:Int, statusMessage:String, text:String, ?headers:Array<URLRequestHeader>):Void {
+		if (__headOut && !__responded) {
+			// A head is out and the write after it threw: no status can follow
+			// it, and this one would have gone into the body it began. The
+			// response is given up instead, the connection closed under
+			// HTTP/1.1, the stream reset under HTTP/2, which the client can
+			// tell from the length the head promised. HTTP/1.1 wrote a second
+			// status line into the body, and HTTP/2 the second body's text.
+			__abandonResponse();
+			return;
+		}
+
 		var page:Null<ErrorPage> = __config.errorDocument != null ? __errorPage() : null;
 		if (page != null) {
 			// HTTPServerConfig.errorDocument, as read once. Never compressed:

@@ -1314,6 +1314,132 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	public function testAThrowServingAnHttp2RequestIsAnswered500(async:Async):Void {
+		// What a request's serving throws outside any middleware, here the
+		// rate limiter's key, is answered 500 over HTTP/1.1. Over HTTP/2 the
+		// stream was reset INTERNAL_ERROR instead, so the client got no status
+		// at all for a request the server could still answer.
+		var session = new H2Session(config -> {
+			config.rateLimitKey = handler -> {
+				if (handler.requestPath == "/broken") {
+					throw "the key broke";
+				}
+				return null;
+			};
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/broken", true);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.request(3, "GET", "/index.html", true);
+				session.until(() -> session.finished(3) || session.ended, () -> {
+					session.close();
+					Assert.equals(-1, session.resetCode(1), "the stream was reset rather than answered");
+					Assert.equals(500, session.status(1));
+					Assert.equals(200, session.status(3), "the connection did not carry on");
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testAThrowServingAnHttp2RequestAfterItsBodyIsAnswered500(async:Async):Void {
+		// The same for a request weighed at its headers and carried on when
+		// its body arrives: there it was reset too. The throw is a status
+		// listener's, on the response the request was first given.
+		var thrown:Bool = false;
+		var session = new H2Session(config -> {
+			config.onExpectContinue = handler -> {
+				handler.addEventListener(crossbyte.events.HTTPStatusEvent.HTTP_RESPONSE_STATUS, _ -> {
+					if (!thrown) {
+						thrown = true;
+						throw "the listener broke";
+					}
+				});
+				return true;
+			};
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("expect", "100-continue")]);
+			session.until(() -> session.statuses(1).length > 0 || session.ended, () -> {
+				session.data(1, "the body");
+				session.until(() -> session.finished(1) || session.ended, () -> {
+					session.close();
+					Assert.isTrue(thrown, "the listener never threw, so this shows nothing");
+					Assert.equals(-1, session.resetCode(1), "the stream was reset rather than answered");
+					Assert.equals("100,500", session.statuses(1).join(","));
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testAnHttp2ResponseCutShortIsResetNotAnsweredAgain():Void {
+		// A write that throws after a response's head has gone out leaves no
+		// status to say so with: a 500 now would go in behind the head. From a
+		// middleware, the 500's text went out as the 200's body, ended as
+		// though whole; from the files, outside any middleware, the stream
+		// was reset, which is what both do now.
+		for (routed in [true, false]) {
+			var frames:Array<H2Frame> = __servedThroughABreakingWrite(routed);
+			var types:Array<String> = [for (frame in frames) frame.type.toString()];
+			var label:String = routed ? "from a middleware" : "from the files";
+			Assert.equals("HEADERS,RST_STREAM", types.join(","), label + ": stream 1 got " + types.join(","));
+			var reset:Null<H2Frame> = frames.length > 0 ? frames[frames.length - 1] : null;
+			if (reset != null && reset.type == H2FrameType.RST_STREAM) {
+				Assert.equals(2, reset.payload.get(3), label + ": the stream was reset with " + reset.payload.get(3));
+			}
+		}
+	}
+
+	/**
+		The frames written for stream 1 of one GET for `/index.html` through an
+		`H2ConnectionHandler`, on a socket that throws when the response's
+		first DATA is written: answered by a middleware, or, with none, by the
+		files.
+	**/
+	private static function __servedThroughABreakingWrite(routed:Bool):Array<H2Frame> {
+		var root = File.createTempDirectory();
+		var fixture = new ByteArray();
+		fixture.writeUTFBytes("Hello over h2");
+		root.resolvePath("index.html").save(fixture);
+
+		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"]);
+		config.http2Enabled = true;
+		if (routed) {
+			config.middleware.push((handler, next) -> handler.respond(200, "text/plain", "routed"));
+		}
+		var socket = new BreakingDataSocket(1);
+		var connection = new crossbyte._internal.http.H2ConnectionHandler(socket, config);
+
+		var out = new BytesBuffer();
+		out.addString(H2Connection.PREFACE);
+		writeFrame(out, H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0));
+		var block = new HpackEncoder(4096).encode([
+			new HpackHeader(":method", "GET"),
+			new HpackHeader(":scheme", "http"),
+			new HpackHeader(":authority", "127.0.0.1"),
+			new HpackHeader(":path", "/index.html")
+		]);
+		writeFrame(out, H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, 1, block);
+		socket.arrive(out.getBytes());
+		connection.close();
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+
+		var written = socket.writtenSoFar();
+		var frames:Array<H2Frame> = [];
+		var position = 0;
+		while (position + H2Frame.HEADER_SIZE <= written.length) {
+			var frame = H2Frame.read(written, position);
+			position += H2Frame.HEADER_SIZE + H2Frame.lengthOf(written, position);
+			if (frame.streamId == 1) {
+				frames.push(frame);
+			}
+		}
+		return frames;
+	}
+
 	// ---------------------------------------------------------------- driver
 
 	/**
@@ -1656,6 +1782,34 @@ private class FlushCountingSocket extends Socket {
 	}
 
 	override public function close():Void {}
+}
+
+/**
+	A `FlushCountingSocket` whose write of the first DATA frame on one stream
+	throws, as a socket refusing a write mid-response does: one past its
+	output cap under `OutputOverflowPolicy.THROW`, say. Each frame is one
+	write here, so the frame's type and stream are the first bytes given.
+**/
+private class BreakingDataSocket extends FlushCountingSocket {
+	private final __streamId:Int;
+	private var __broken:Bool = false;
+
+	public function new(streamId:Int) {
+		super();
+		__streamId = streamId;
+	}
+
+	override public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+		var count:Int = length == 0 ? bytes.length - offset : length;
+		if (!__broken && count >= H2Frame.HEADER_SIZE && bytes[offset + 3] == (H2FrameType.DATA : Int)) {
+			var streamId:Int = ((bytes[offset + 5] & 0x7F) << 24) | (bytes[offset + 6] << 16) | (bytes[offset + 7] << 8) | bytes[offset + 8];
+			if (streamId == __streamId) {
+				__broken = true;
+				throw new crossbyte.errors.IOError("the write broke");
+			}
+		}
+		super.writeBytes(bytes, offset, length);
+	}
 }
 
 /** A limiter that throws: something the parse path calls outside any middleware. */

@@ -2163,6 +2163,18 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- What serving an HTTP/2 request throws outside any middleware, the rate
+  limiter's key, a listener on the response, the static files, is
+  answered `500` on its stream, as over HTTP/1.1. The stream was reset
+  `INTERNAL_ERROR`, so the client got no status for a request the server
+  could still answer. And a response whose head has gone out is never
+  answered again, on either protocol: when a write after the head throws,
+  a socket past its output cap under `OutputOverflowPolicy.THROW`,
+  the response is given up, the connection closed under HTTP/1.1 and the
+  stream reset under HTTP/2, which the client can tell from the length the
+  head promised. HTTP/1.1 wrote the `500`'s status line into the middle of
+  the first response's body, and HTTP/2, from a middleware, sent the
+  `500`'s text as that body, ended as though whole.
 - An HTTP/2 stream the server resets ends its response as one its client
   resets does: a handler listening for `Event.CLOSE` hears it, once, and a
   file being sent on it is let go. Only the client's reset was passed on,
