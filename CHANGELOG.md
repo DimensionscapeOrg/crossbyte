@@ -1961,6 +1961,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `TickEvent.delta` says what the first tick reports: the time since the
+  runtime's loop started, which is zero natively, on the jvm, hl, neko and
+  the interpreter, where the loop ticks as it starts, and about one tick
+  interval on JavaScript, where the first tick waits for the platform's
+  timer. It said zero everywhere, and JavaScript's first was 83 ms.
 - `Timer.fromWallClock` and `toWallClock` convert at the present: the
   scheduler's time now is the clock's now, and other times follow by the
   difference. Both counted the scheduler's time on top of when it started,
