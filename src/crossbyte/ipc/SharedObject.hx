@@ -39,11 +39,11 @@ private typedef SharedObjectHandle = Dynamic;
  * How long a region lives differs by OS. On Windows it goes when the last handle
  * to it closes, in whichever process, and the next process to open the name finds
  * it empty. On Linux and macOS it stays, holding what was last flushed and its
- * capacity in shared memory, until the machine restarts: `clear()` empties it,
- * and nothing here removes it. Name regions so that a fixed set is reused rather
- * than a new one made for each run. On macOS each name also has a small lock file,
- * `/tmp/cbso_<hash>.lock`, which stays with it: macOS cannot lock a region
- * itself.
+ * capacity in shared memory, until `remove(name)` takes it away or the machine
+ * restarts: `clear()` only empties it. Name regions so that a fixed set is reused
+ * rather than a new one made for each run, or remove each when done with it. On
+ * macOS each name also has a small lock file, `/tmp/cbso_<hash>.lock`, which
+ * stays with the region and goes with it: macOS cannot lock a region itself.
  */
 #if cpp
 @:access(crossbyte.ipc._internal.NativeSharedObject)
@@ -76,7 +76,9 @@ class SharedObject {
 		also as long as the constructor waits. A participant that dies
 		holding the lock releases it, on every OS.
 	**/
-	public var lockTimeout:Int = 5000;
+	public var lockTimeout:Int = DEFAULT_LOCK_TIMEOUT;
+
+	@:noCompletion private static inline var DEFAULT_LOCK_TIMEOUT:Int = 5000;
 
 	@:noCompletion private var __capacity:Int;
 	@:noCompletion private var __serializer:Serializer;
@@ -234,6 +236,41 @@ class SharedObject {
 		}
 	}
 
+	/**
+		Takes the region `name` away, so that the next `SharedObject` opened
+		under the name starts a new, empty one. Handles already open on it, in
+		this process or another, keep the region they have and go on sharing it
+		until they close.
+
+		On Linux and macOS a region outlives every handle until the machine
+		restarts, and this is how it goes sooner -- on macOS with its lock file.
+		On Windows a region goes when its last handle closes, in whichever
+		process, and has no name to take away while one is open: `remove`
+		does nothing there and answers `false`.
+
+		@param name The name the region was opened under.
+		@return Whether a region was removed: `false` when none had the name.
+		@throws IOError When a region has the name and cannot be removed --
+		        another user's, say -- or, on macOS, when another participant
+		        holds its lock for longer than `lockTimeout`'s default, five
+		        seconds.
+	**/
+	public static function remove(name:String):Bool {
+		__requireSupported();
+		if (name == null || name.length == 0) {
+			throw new ArgumentError("SharedObject name cannot be empty");
+		}
+		#if cpp
+		var removed:Int = NativeSharedObject.__remove(name, DEFAULT_LOCK_TIMEOUT);
+		if (removed < 0) {
+			throw __lockTimedOut() ? __lockError(name, DEFAULT_LOCK_TIMEOUT) : new IOError('SharedObject "$name" could not be removed.');
+		}
+		return removed > 0;
+		#else
+		return false;
+		#end
+	}
+
 	@:noCompletion private function __resetSerializer():Void {
 		__serializer = new Serializer();
 		__serializer.useCache = false;
@@ -279,7 +316,11 @@ class SharedObject {
 	}
 
 	@:noCompletion private function __lockNotReleased():IOError {
-		return new IOError('SharedObject "$name": the region\'s lock was not released within $lockTimeout ms');
+		return __lockError(name, lockTimeout);
+	}
+
+	@:noCompletion private static function __lockError(name:String, timeout:Int):IOError {
+		return new IOError('SharedObject "$name": the region\'s lock was not released within $timeout ms');
 	}
 
 	/** Whether the last native call on this thread failed for a lock not released in time. */

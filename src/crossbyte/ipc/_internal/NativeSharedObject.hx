@@ -38,6 +38,8 @@ extern class NativeSharedObject {
 	@:native('native_sharedObjectGetCapacity') private static function __getCapacity(handle:VoidPointer, lockTimeoutMs:Int):Int;
 	/** Why the last call on this thread failed: one of the `ERROR_` values. **/
 	@:native('native_sharedObjectLastError') private static function __lastError():Int;
+	/** 1 when a region had the name and lost it, 0 when none had it (and always on Windows), -1 when it could not be done. **/
+	@:native('native_sharedObjectRemove') private static function __remove(name:String, lockTimeoutMs:Int):Int;
 
 	// Tests only: the region's lock, held on the calling thread until released
 	// on the same thread -- a participant stopped while holding it.

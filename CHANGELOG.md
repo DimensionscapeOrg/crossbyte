@@ -162,6 +162,15 @@ entry below says how:
   `lockTimeout` to 0 to keep waiting.
 
 ### Added
+- `SharedObject.remove(name)` takes a region away on Linux and macOS --
+  with, on macOS, its lock file -- where it otherwise outlives every
+  handle until the machine restarts, and nothing could remove it. Handles
+  open on it keep it between them; the next one opened under the name
+  starts a new, empty region. On Windows a region goes with its last
+  handle, and `remove` does nothing and answers `false`. On macOS a
+  handle now takes the lock file before it opens the region, so a removal
+  cannot come between the two. `SharedObjectTest` removes the regions it
+  makes, which piled up under `/dev/shm` on every Linux run.
 - `ReliableDatagramServerSocket.relayVerifyCert`, for a TURN relay reached
   over TLS whose certificate should not be checked -- a test against a
   throwaway one. The server passed its relay client an authority

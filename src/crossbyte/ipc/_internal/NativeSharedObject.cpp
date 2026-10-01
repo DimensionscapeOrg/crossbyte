@@ -348,6 +348,43 @@ namespace
 		}
 		close(fd);
 	}
+
+	// macOS: the lock file's descriptor with its lock held, checked once held
+	// to be the file at `path` still. native_sharedObjectRemove takes the
+	// region and its lock file away under that lock, so a file opened before
+	// a removal and locked after it stands for no region: it is let go, and
+	// the file at the path -- a new one, if need be -- taken instead. Every
+	// participant of a region locks the same file.
+	int takeLockFile(const std::string& path, int timeoutMs)
+	{
+		for (int attempt = 0; attempt < 8; attempt++)
+		{
+			// Opened for reading, which is all flock() needs, so a participant
+			// running as another user opens what the first one made.
+			int lockFd = open(path.c_str(), O_RDONLY | O_CREAT | O_CLOEXEC, 0666);
+			if (lockFd < 0)
+			{
+				lastError = SHARED_OBJECT_ERROR_FAILED;
+				return -1;
+			}
+			if (!lockDescriptor(lockFd, timeoutMs))
+			{
+				close(lockFd);
+				return -1;
+			}
+
+			struct stat held;
+			struct stat named;
+			if (fstat(lockFd, &held) == 0 && stat(path.c_str(), &named) == 0 && held.st_dev == named.st_dev && held.st_ino == named.st_ino)
+			{
+				return lockFd;
+			}
+			flock(lockFd, LOCK_UN);
+			close(lockFd);
+		}
+		lastError = SHARED_OBJECT_ERROR_FAILED;
+		return -1;
+	}
 #endif
 }
 
@@ -440,37 +477,45 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize, int lock
 	lastError = SHARED_OBJECT_ERROR_NONE;
 	return state;
 #else
-	int fd = shm_open(sharedName.c_str(), O_RDWR | O_CREAT, 0666);
-	if (fd < 0)
-	{
-		return nullptr;
-	}
-
 	// Sized and set up under the region's lock, by whichever participant
 	// takes it first. The creator sized it before taking the lock, so one
 	// opening the name in that moment found it empty and failed -- or, if it
 	// took the lock before the creator did, wrote its own maxSize into the
 	// header, past the end of a smaller mapping.
-	int lockFd = fd;
+	//
+	// On macOS the lock file is taken first, and the region opened under its
+	// lock: a removal, which holds that lock, then cannot come between the
+	// two and leave this participant a removed region's lock with a new
+	// region, or a new lock with the removed region.
+	int lockFd = -1;
 	if (SHORT_NAME_AND_LOCK_FILE)
 	{
-		// Opened for reading, which is all flock() needs, so a participant
-		// running as another user opens what the first one made.
-		lockFd = open(makeLockPath(name).c_str(), O_RDONLY | O_CREAT | O_CLOEXEC, 0666);
+		lockFd = takeLockFile(makeLockPath(name), lockTimeoutMs);
 		if (lockFd < 0)
+		{
+			return nullptr;
+		}
+	}
+
+	int fd = shm_open(sharedName.c_str(), O_RDWR | O_CREAT, 0666);
+	if (fd < 0)
+	{
+		if (lockFd >= 0)
+		{
+			flock(lockFd, LOCK_UN);
+			close(lockFd);
+		}
+		return nullptr;
+	}
+
+	if (!SHORT_NAME_AND_LOCK_FILE)
+	{
+		lockFd = fd;
+		if (!lockDescriptor(lockFd, lockTimeoutMs))
 		{
 			close(fd);
 			return nullptr;
 		}
-	}
-	if (!lockDescriptor(lockFd, lockTimeoutMs))
-	{
-		if (lockFd != fd)
-		{
-			close(lockFd);
-		}
-		close(fd);
-		return nullptr;
 	}
 
 	struct stat sharedInfo;
@@ -682,6 +727,54 @@ extern "C" bool native_sharedObjectClear(void* handle, int lockTimeoutMs)
 	unlockForHandle(state);
 	lastError = SHARED_OBJECT_ERROR_NONE;
 	return true;
+}
+
+// Takes the name `name` away from its region: 1 when one had it, 0 when none
+// did, -1 when it could not be done (native_sharedObjectLastError says why).
+// Handles open on the region keep it, between them, until they close; the
+// next open of the name makes a new one.
+//
+// Windows has no name to take away while a handle is open, and none to take
+// once the last one closes: a region goes with its last handle. 0 there.
+extern "C" int native_sharedObjectRemove(const char* name, int lockTimeoutMs)
+{
+#if defined(_WIN32)
+	lastError = SHARED_OBJECT_ERROR_NONE;
+	return 0;
+#else
+	lastError = SHARED_OBJECT_ERROR_FAILED;
+	std::string sharedName = makeSharedName(name);
+
+	// On macOS under the lock file's lock, which every open takes before it
+	// opens the region; see native_sharedObjectOpen. The lock file goes with
+	// the region. On Linux the lock is the region's own, and an open that
+	// found the region before it lost its name shares it with the rest.
+	std::string lockPath;
+	int lockFd = -1;
+	if (SHORT_NAME_AND_LOCK_FILE)
+	{
+		lockPath = makeLockPath(name);
+		lockFd = takeLockFile(lockPath, lockTimeoutMs);
+		if (lockFd < 0)
+		{
+			return -1;
+		}
+	}
+
+	int removed = shm_unlink(sharedName.c_str()) == 0 ? 1 : (errno == ENOENT ? 0 : -1);
+
+	if (lockFd >= 0)
+	{
+		unlink(lockPath.c_str());
+		flock(lockFd, LOCK_UN);
+		close(lockFd);
+	}
+	if (removed >= 0)
+	{
+		lastError = SHARED_OBJECT_ERROR_NONE;
+	}
+	return removed;
+#endif
 }
 
 // Tests only: the region's lock, taken through `handle` on the calling thread
