@@ -3,7 +3,7 @@ package crossbyte.auth.jwt;
 import haxe.io.Bytes;
 import haxe.crypto.Base64;
 import haxe.Json;
-import crossbyte.auth._internal.JsonNesting;
+import crossbyte._internal.serial.JsonNesting;
 import crossbyte.auth.jwt._internal.sign.IJWTSigner;
 import crossbyte.auth.jwt._internal.sign.HS256Signer;
 import crossbyte.auth.jwt._internal.sign.Ed25519Signer;

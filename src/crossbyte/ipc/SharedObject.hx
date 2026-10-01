@@ -10,7 +10,7 @@ import crossbyte.errors.IOError;
 import crossbyte.crypto._internal.NativeOnly;
 #end
 import haxe.Serializer;
-import crossbyte.ipc._internal.BoundedUnserializer;
+import crossbyte._internal.serial.BoundedUnserializer;
 import haxe.io.Bytes;
 import haxe.io.BytesData;
 #if cpp

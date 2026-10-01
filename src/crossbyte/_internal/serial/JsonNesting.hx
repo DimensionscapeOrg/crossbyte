@@ -1,4 +1,4 @@
-package crossbyte.auth._internal;
+package crossbyte._internal.serial;
 
 /**
 	How deep a JSON document's objects and arrays nest, measured before it is
@@ -6,8 +6,10 @@ package crossbyte.auth._internal;
 
 	`haxe.Json` parses a frame per level, so natively a document nested a few
 	thousand deep -- 12 KB of brackets -- overflows the stack and ends the
-	process, where no catch can see it. The JSON auth reads from elsewhere is
-	measured first: a token's header, a JWK Set, a token endpoint's answer.
+	process, where no catch can see it. JSON read from elsewhere is measured
+	first: a token's header, a JWK Set and a token endpoint's answer at
+	`LIMIT`, and an object `ByteArray.readObject` reads at
+	`BoundedUnserializer.LIMIT`.
 **/
 class JsonNesting {
 	/**

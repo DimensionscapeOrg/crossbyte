@@ -1,6 +1,6 @@
 package crossbyte.auth;
 
-import crossbyte.auth._internal.JsonNesting;
+import crossbyte._internal.serial.JsonNesting;
 import crossbyte.crypto.SecureRandom;
 import crossbyte.events.Event;
 import crossbyte.events.HTTPStatusEvent;

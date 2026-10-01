@@ -1,6 +1,7 @@
 package crossbyte.io;
 
 import crossbyte.errors.EOFError;
+import crossbyte.errors.IOError;
 import crossbyte.net.ObjectEncoding;
 import haxe.io.Bytes;
 import utest.Assert;
@@ -229,6 +230,65 @@ class ByteArrayIOTest extends utest.Test {
 			part.position = 0;
 			Assert.equals("crossbyte", part.readObject().name);
 		}
+	}
+
+	/**
+		An object nested more than 256 levels deep is refused with an
+		IOError, in every encoding, and its bytes are consumed; one within the
+		limit reads. Unbounded, a peer's object nested a few thousand deep --
+		12 KB -- overflowed the stack natively and ended the process reading
+		it, through any socket's `readObject`.
+	**/
+	public function testAnObjectNestedTooDeepIsRefused():Void {
+		for (encoding in [ObjectEncoding.HXSF, ObjectEncoding.JSON]) {
+			for (depth in [300, 6000]) {
+				var input = __framed(__nested(encoding, depth));
+				input.objectEncoding = encoding;
+				Assert.raises(() -> input.readObject(), IOError, 'encoding $encoding, $depth deep');
+				Assert.equals(input.length, input.position, 'encoding $encoding, $depth deep: the refused object was not consumed');
+			}
+
+			var within = __framed(__nested(encoding, 200));
+			within.objectEncoding = encoding;
+			Assert.notNull(within.readObject(), 'encoding $encoding: an object 200 deep was refused');
+		}
+
+		#if format
+		// AMF0: a strict array of one, nested; the innermost holds null.
+		var amf = new ByteArray();
+		amf.endian = Endian.BIG_ENDIAN;
+		for (_ in 0...6000) {
+			amf.writeByte(0x0A);
+			amf.writeUnsignedInt(1);
+		}
+		amf.writeByte(0x05);
+		amf.position = 0;
+		amf.objectEncoding = ObjectEncoding.AMF0;
+		Assert.raises(() -> amf.readObject(), IOError, "AMF0, 6000 deep");
+		#end
+	}
+
+	/** The text of arrays nested `depth` deep, the innermost empty. **/
+	private static function __nested(encoding:ObjectEncoding, depth:Int):String {
+		var open:String = encoding == ObjectEncoding.JSON ? "[" : "a";
+		var close:String = encoding == ObjectEncoding.JSON ? "]" : "h";
+		var text = new StringBuf();
+		for (_ in 0...depth) {
+			text.add(open);
+		}
+		for (_ in 0...depth) {
+			text.add(close);
+		}
+		return text.toString();
+	}
+
+	/** ASCII `text` framed as `writeObject` frames an object's text. **/
+	private static function __framed(text:String):ByteArray {
+		var out = new ByteArray();
+		out.writeUnsignedInt(text.length);
+		out.writeUTFBytes(text);
+		out.position = 0;
+		return out;
 	}
 
 	public function testAnEncodingThisBuildCannotDoIsRefused():Void {
