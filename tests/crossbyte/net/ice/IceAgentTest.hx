@@ -3,6 +3,7 @@ package crossbyte.net.ice;
 import crossbyte.io.ByteArray;
 import haxe.Int64;
 import crossbyte.net._internal.stun.StunMessage;
+import crossbyte.test.Require;
 import utest.Assert;
 
 /**
@@ -525,8 +526,10 @@ class IceAgentTest extends utest.Test {
 			StunMessage.username(IceCredentials.username(credentials("alice"), bob.localCredentials))
 		]);
 
-		Assert.isTrue(bob.receive(backwards.encodeSigned(bob.localCredentials.password), ALICE_ADDRESS, PORT, 0),
-			"a STUN message should still be consumed even when it is not answered");
+		// Nor taken: it is not this agent's, and whatever else shares the
+		// socket is entitled to see it. It was reported taken.
+		Assert.isFalse(bob.receive(backwards.encodeSigned(bob.localCredentials.password), ALICE_ADDRESS, PORT, 0),
+			"a check addressed to another session was reported as taken");
 		Assert.equals(0, sent.length, "a check addressed to another session was answered");
 
 		// And the same message addressed correctly is answered, so what the
@@ -535,8 +538,54 @@ class IceAgentTest extends utest.Test {
 			StunMessage.username(IceCredentials.username(bob.localCredentials, credentials("alice")))
 		]);
 
-		bob.receive(forwards.encodeSigned(bob.localCredentials.password), ALICE_ADDRESS, PORT, 0);
+		Assert.isTrue(bob.receive(forwards.encodeSigned(bob.localCredentials.password), ALICE_ADDRESS, PORT, 0),
+			"a check addressed to this agent was not reported as taken");
 		Assert.isTrue(sent.length > 0, "a correctly addressed check went unanswered");
+	}
+
+	/**
+		Only what is this agent's is reported taken.
+
+		`receive` says whether the datagram was the agent's, so whatever else
+		shares the socket can have the rest -- and it answered yes to every
+		binding message there was: a check signed with someone else's
+		password, an answer to a transaction it never sent, a refusal of one.
+	**/
+	public function testOnlyItsOwnTrafficIsReportedTaken():Void {
+		if (unsupported()) return;
+
+		var alice = credentials("alice");
+		var bob = new IceAgent(true, credentials("bob"));
+		bob.addLocalCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		bob.addRemoteCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		bob.start(alice, 0);
+
+		var forged = new StunMessage(StunMessage.BINDING_REQUEST, StunMessage.bindingRequest().transactionId, [
+			StunMessage.username(IceCredentials.username(bob.localCredentials, alice))
+		]);
+
+		Assert.isFalse(bob.receive(forged.encodeSigned("not-the-password-of-anyone-here"), ALICE_ADDRESS, PORT, 0),
+			"a check signed with another password was reported as taken");
+
+		var unasked = new StunMessage(StunMessage.BINDING_SUCCESS, StunMessage.bindingRequest().transactionId, []);
+		Assert.isFalse(bob.receive(unasked.encodeSigned(alice.password), ALICE_ADDRESS, PORT, 0),
+			"an answer to a check this agent never sent was reported as taken");
+
+		var refusal = new StunMessage(StunMessage.BINDING_ERROR, StunMessage.bindingRequest().transactionId, [
+			StunMessage.errorCode(400, "Bad Request")
+		]);
+		Assert.isFalse(bob.receive(refusal.encodeSigned(alice.password), ALICE_ADDRESS, PORT, 0),
+			"a refusal of a check this agent never sent was reported as taken");
+
+		// And an answer to one it did send is.
+		var sent:Array<ByteArray> = [];
+		bob.onSend = (payload, _, _) -> sent.push(payload);
+		bob.poll(0);
+
+		var check = Require.notNull(sent.length > 0 ? StunMessage.decode(sent[0]) : null, "the agent sent no check to answer");
+		var answer = new StunMessage(StunMessage.BINDING_SUCCESS, check.transactionId, []);
+		Assert.isTrue(bob.receive(answer.encodeSigned(alice.password), ALICE_ADDRESS, PORT, 0),
+			"an answer to this agent's own check was not reported as taken");
 	}
 
 	/**
