@@ -100,6 +100,130 @@ class ChildRuntimeTest extends utest.Test {
 		Assert.equals(0, inits);
 		Assert.equals(1, exits);
 	}
+
+	/**
+		A `CUSTOM` loop body runs its runtime by calling `pump`: what was
+		posted, the timers, the tick and the sockets. `pump` refused every
+		runtime but a host-driven one, and everything else that does a frame's
+		work is private, so a custom loop body could run nothing but itself.
+	**/
+	public function testACustomLoopRunsItsRuntimeThroughPump():Void {
+		var finished = new Lock();
+		var ticks = 0;
+		var timerFired = false;
+		var posted = false;
+		var accepted = false;
+		var connected = false;
+		var failure:Dynamic = null;
+		var deadline:Float = haxe.Timer.stamp() + 10;
+		var last:Float = -1;
+
+		var child = CrossByte.make(CUSTOM(() -> {
+			var runtime = CrossByte.current();
+			var now:Float = haxe.Timer.stamp();
+			try {
+				// Its own pacing: pump waits up to 10 ms for a socket, or for
+				// something posted.
+				runtime.pump(last < 0 ? 0 : now - last, 0.01);
+			} catch (error:Dynamic) {
+				failure = error;
+				runtime.exit();
+				return;
+			}
+			last = now;
+			if ((ticks >= 3 && timerFired && posted && accepted && connected) || now > deadline) {
+				runtime.exit();
+			}
+		}), HEAP, configured -> {
+			configured.addEventListener(crossbyte.events.TickEvent.TICK, _ -> ticks++);
+			configured.addEventListener(Event.INIT, _ -> {
+				crossbyte.Timer.setTimeout(0.05, () -> timerFired = true);
+				var server = new crossbyte.net.ServerSocket();
+				server.addEventListener(crossbyte.events.ServerSocketConnectEvent.CONNECT, event -> {
+					accepted = true;
+					event.socket.close();
+					server.close();
+				});
+				server.bind(0, "127.0.0.1");
+				server.listen();
+				var client = new crossbyte.net.Socket();
+				client.addEventListener(Event.CONNECT, _ -> {
+					connected = true;
+					client.close();
+				});
+				client.connect("127.0.0.1", server.localPort);
+			});
+			configured.addEventListener(Event.EXIT, _ -> finished.release());
+		});
+		child.post(() -> posted = true);
+
+		var ended:Bool = finished.wait(20);
+		if (!ended) {
+			child.exit();
+		}
+		Assert.isTrue(ended, "the custom loop never exited");
+		Assert.isNull(failure, "pump refused the custom loop: " + failure);
+		Assert.isTrue(ticks >= 3, "the custom loop ticked " + ticks + " times");
+		Assert.isTrue(timerFired, "a timer never fired");
+		Assert.isTrue(posted, "posted work never ran");
+		Assert.isTrue(accepted && connected, "the sockets were never serviced: accepted " + accepted + ", connected " + connected);
+	}
+
+	public function testPumpRefusesARuntimeThatLoopsByItself():Void {
+		// A DEFAULT runtime runs its own frames; pumping it from outside would
+		// run them from two threads at once.
+		var child = CrossByte.make();
+		Assert.raises(() -> child.pump(0, 0), crossbyte.errors.IllegalOperationError);
+		child.exit();
+
+		// A CUSTOM runtime is pumped by its own body, on its own thread.
+		var blocked = new Lock();
+		var custom = CrossByte.make(CUSTOM(() -> {
+			blocked.wait(0.005);
+		}));
+		Assert.raises(() -> custom.pump(0, 0), crossbyte.errors.IllegalOperationError);
+		custom.exit();
+	}
+	#end
+
+	#if js
+	/**
+		A `CUSTOM` loop body runs its runtime by calling `pump`: posted work,
+		the timers and the tick. On JavaScript the body is called once a
+		frame, at the runtime's tick rate.
+	**/
+	@:timeout(5000)
+	public function testACustomLoopRunsItsRuntimeThroughPump(async:utest.Async):Void {
+		var ticks = 0;
+		var timerFired = false;
+		var posted = false;
+		var failure:Dynamic = null;
+		var last:Float = -1;
+		var child:CrossByte = null;
+		child = CrossByte.make(CUSTOM(() -> {
+			var now:Float = haxe.Timer.stamp();
+			try {
+				child.pump(last < 0 ? 0 : now - last);
+			} catch (error:Dynamic) {
+				failure = error;
+			}
+			last = now;
+		}), HEAP, configured -> {
+			configured.tps = 100;
+			configured.addEventListener(crossbyte.events.TickEvent.TICK, _ -> ticks++);
+			configured.addEventListener(Event.INIT, _ -> crossbyte.Timer.setTimeout(0.05, () -> timerFired = true));
+		});
+		child.post(() -> posted = true);
+
+		__waitThen(() -> failure != null || (ticks >= 3 && timerFired && posted), () -> {
+			child.exit();
+			Assert.isNull(failure, "pump refused the custom loop: " + failure);
+			Assert.isTrue(ticks >= 3, "the custom loop ticked " + ticks + " times");
+			Assert.isTrue(timerFired, "a timer never fired");
+			Assert.isTrue(posted, "posted work never ran");
+			async.done();
+		});
+	}
 	#end
 
 	#if js
