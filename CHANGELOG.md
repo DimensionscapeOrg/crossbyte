@@ -1942,6 +1942,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `DeliveryMode.RELIABLE` and `ReliableDatagramSocket.send()` say how
+  large a reliable message can be: as large as the receiving session's
+  `maxMessageSize`, eight megabytes unless changed, past which the
+  receiver ends the session with an `ioError` and both sides close. They
+  said "however large" and "of any size".
 - `ReliableDatagramServerSocket.connect()` says what a dialled session
   does: it dispatches `Event.CONNECT` itself when its handshake completes.
   The documentation promised the server's

@@ -151,6 +151,18 @@ class ReliableDatagramDeliveryTest extends utest.Test {
 		Assert.equals(1, errors.length);
 		Assert.isTrue(errors.length == 1 && errors[0].indexOf("maxMessageSize") >= 0, errors.join("; "));
 		Assert.isFalse(pair.receiver.connected);
+
+		// And the sender is told the session is over, at once: it closes,
+		// with no error of its own, as `DeliveryMode.RELIABLE` says.
+		var senderErrors:Int = 0;
+		var senderClosed:Bool = false;
+		pair.sender.addEventListener(IOErrorEvent.IO_ERROR, _ -> senderErrors++);
+		pair.sender.addEventListener(crossbyte.events.Event.CLOSE, _ -> senderClosed = true);
+		for (frame in pair.receiver.take()) {
+			pair.sender.__acceptFrame(frame);
+		}
+		Assert.isTrue(senderClosed, "the sender of a message too large was never told");
+		Assert.equals(0, senderErrors);
 		pair.close();
 	}
 
