@@ -19,11 +19,34 @@ import crossbyte.net.Endpoint.parseURL;
  * and later disconnects are forwarded to `onDisconnect`.
  */
 abstract NetHost(INetHost) from INetHost to INetHost {
-	/** Creates and optionally starts a host from a transport URI. */
+	/**
+		Creates a host from a transport URI, `tcp://`, `ws://`, `wss://` or
+		`rudp://`: binds it, and starts it listening if asked.
+
+		A `wss://` host terminates TLS, and needs the certificate it presents
+		and its key in `cert`, which is installed before the host binds, as
+		a TLS server's material has to be. For anything more, client
+		certificates, SNI, make the `ServerWebSocket` and wrap it with
+		`fromServerWebSocket`.
+
+		@throws crossbyte.errors.ArgumentError For a `wss://` host without a
+			`cert`, and for `cert` given to a host of any other scheme, which
+			would not use it.
+	**/
 	public inline function new(uri:String, ?onAccept:INetConnection->Void, ?onDisconnect:(INetConnection, Reason) -> Void, ?onError:Reason->Void,
-			startListening:Bool = false):Void {
+			startListening:Bool = false, ?cert:{certificate:Certificate, key:Key}):Void {
 		var endpoint:Endpoint = parseURL(uri);
 		var secureWebSocket = __isSecureWebSocketUri(uri);
+		// Before anything is bound. A wss:// host bound in this constructor
+		// with no way to reach its certificate: every handshake failed, and
+		// nothing said why.
+		if (secureWebSocket && cert == null) {
+			throw new crossbyte.errors.ArgumentError("A wss:// host needs the certificate it presents: pass `cert` to NetHost's constructor, or make "
+				+ "the ServerWebSocket yourself and wrap it with NetHost.fromServerWebSocket.");
+		}
+		if (!secureWebSocket && cert != null) {
+			throw new crossbyte.errors.ArgumentError("Only a wss:// host takes a certificate; " + uri + " would not use it.");
+		}
 		this = switch (endpoint.protocol) {
 			case TCP:
 				var server = new ServerSocket();
@@ -31,6 +54,9 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 				fromServerSocket(server, onAccept, onDisconnect, onError);
 			case WEBSOCKET:
 				var server = new ServerWebSocket(secureWebSocket);
+				if (cert != null) {
+					server.cert = cert;
+				}
 				server.bind(endpoint.port, endpoint.address);
 				fromServerWebSocket(server, onAccept, onDisconnect, onError);
 			case RUDP:
