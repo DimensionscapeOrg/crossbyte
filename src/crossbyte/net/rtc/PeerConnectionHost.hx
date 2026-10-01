@@ -205,7 +205,12 @@ class PeerConnectionHost {
 
 	/**
 		Moves every connection forward. Driven from the runtime tick once
-		bound; public so a test can drive it with a clock of its own.
+		bound.
+
+		@param now `haxe.Timer.stamp()`'s time, as `PeerConnection.poll` takes
+		it: what arrives on the socket is handled on that clock, so one of the
+		caller's own would disagree with it. Public so a test can pass a later
+		time on it.
 	**/
 	public function poll(now:Float):Void {
 		// Backwards, so a connection that closes during its own poll, and
