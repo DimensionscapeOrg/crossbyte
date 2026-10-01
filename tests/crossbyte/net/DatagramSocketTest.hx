@@ -36,6 +36,50 @@ class DatagramSocketTest extends utest.Test {
 		#end
 	}
 
+	/**
+		A number written into a new ByteArray reads back as itself from the
+		datagram that carried it. Datagram payloads came big-endian, where a
+		ByteArray an application makes -- and every other CrossByte socket -- is
+		little-endian, so a message built with `new ByteArray()` arrived with
+		its integers byte-swapped.
+	**/
+	public function testANumberSentIsTheNumberRead():Void {
+		if (!DatagramSocket.isSupported) {
+			Assert.isFalse(DatagramSocket.isSupported);
+			return;
+		}
+
+		var listener = new DatagramSocket();
+		var sender = new DatagramSocket();
+		var number:Null<Int> = null;
+		var fraction:Null<Float> = null;
+
+		try {
+			listener.bind(0, "127.0.0.1");
+			listener.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
+				e.data.position = 0;
+				number = e.data.readInt();
+				fraction = e.data.readDouble();
+			});
+			listener.receive();
+			sender.bind(0, "127.0.0.1");
+
+			var message = new ByteArray();
+			message.writeInt(0x01020304);
+			message.writeDouble(-1.25);
+			sender.send(message, 0, message.length, "127.0.0.1", listener.localPort);
+
+			pumpUntil(() -> number != null, 2.0);
+			Assert.equals(0x01020304, number, "the int came back as " + StringTools.hex(number == null ? 0 : number, 8));
+			Assert.equals(-1.25, fraction);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try listener.close() catch (_:Dynamic) {}
+		try sender.close() catch (_:Dynamic) {}
+	}
+
 	public function testAFailedSendDoesNotDeafenTheSocket():Void {
 		if (!DatagramSocket.isSupported) {
 			Assert.isFalse(DatagramSocket.isSupported);

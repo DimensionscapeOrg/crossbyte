@@ -105,9 +105,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	/**
 		Indicates the byte order for the data. Possible values are constants
-		from the openfl.utils.Endian class, `Endian.BIG_ENDIAN` or
+		from the crossbyte.io.Endian class, `Endian.BIG_ENDIAN` or
 		`Endian.LITTLE_ENDIAN`.
-		@default Endian.BIG_ENDIAN
+
+		`ByteArray.defaultEndian` when the socket is made, as every CrossByte
+		socket's is -- little-endian unless the application changed it -- so a
+		number written into a new ByteArray at one end reads back as itself at
+		the other. Set `Endian.BIG_ENDIAN` for a protocol in network byte order.
+		@default ByteArray.defaultEndian
 	**/
 	public var endian(get, set):Endian;
 
@@ -532,7 +537,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	public function new(host:String = null, port:Int = 0) {
 		super();
 
-		endian = Endian.LITTLE_ENDIAN;
+		endian = ByteArray.defaultEndian;
 		timeout = 20000;
 		__connected = false;
 		__closed = false;
