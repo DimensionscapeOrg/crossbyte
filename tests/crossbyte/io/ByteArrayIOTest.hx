@@ -1,5 +1,6 @@
 package crossbyte.io;
 
+import crossbyte.errors.EOFError;
 import crossbyte.net.ObjectEncoding;
 import haxe.io.Bytes;
 import utest.Assert;
@@ -158,6 +159,75 @@ class ByteArrayIOTest extends utest.Test {
 			var back = out.readObject();
 			Assert.equals("crossbyte", back.name);
 			Assert.equals(3, back.count);
+		}
+	}
+
+	/**
+		An object of any size, in either endian. HXSF and JSON text was framed
+		as writeUTF frames a string, behind a 16-bit length, so writeObject
+		threw a RangeError for anything past 65,535 bytes of it -- a list of a
+		few thousand records -- and nothing documented a limit.
+	**/
+	public function testAMegabyteObjectRoundTrips():Void {
+		var text:String = StringTools.lpad("", "abcdefgh", 1 << 20);
+		for (encoding in [ObjectEncoding.HXSF, ObjectEncoding.JSON]) {
+			for (endian in [Endian.LITTLE_ENDIAN, Endian.BIG_ENDIAN]) {
+				var out = new ByteArray();
+				out.endian = endian;
+				out.objectEncoding = encoding;
+				out.writeObject({text: text, count: 3});
+				out.writeInt(0x5EED);
+
+				out.position = 0;
+				var back = out.readObject();
+				Assert.equals(text.length, back.text.length, 'encoding $encoding, $endian');
+				Assert.isTrue(back.text == text, 'encoding $encoding, $endian: the text came back changed');
+				Assert.equals(3, back.count);
+				Assert.equals(0x5EED, out.readInt(), 'encoding $encoding, $endian: the object was not read to its end');
+			}
+		}
+	}
+
+	/**
+		The frame: the text's length in bytes as an unsigned 32-bit integer,
+		in the stream's endian, then the text as UTF-8.
+	**/
+	public function testAnObjectIsAThirtyTwoBitLengthThenItsText():Void {
+		for (endian in [Endian.LITTLE_ENDIAN, Endian.BIG_ENDIAN]) {
+			var out = new ByteArray();
+			out.endian = endian;
+			out.objectEncoding = ObjectEncoding.JSON;
+			out.writeObject("ab");
+
+			Assert.equals(8, out.length);
+			out.position = 0;
+			Assert.equals(4, out.readUnsignedInt(), 'length in $endian');
+			Assert.equals('"ab"', out.readUTFBytes(4));
+		}
+	}
+
+	/**
+		An object only part of which has arrived reads as an EOFError and
+		leaves `position` where it was, so a socket's reader can try again
+		when the rest comes, as it can with a truncated readInt.
+	**/
+	public function testATruncatedObjectLeavesThePositionAlone():Void {
+		for (encoding in [ObjectEncoding.HXSF, ObjectEncoding.JSON]) {
+			var whole = new ByteArray();
+			whole.objectEncoding = encoding;
+			whole.writeObject({name: "crossbyte"});
+
+			var part = new ByteArray();
+			part.objectEncoding = encoding;
+			part.writeBytes(whole, 0, whole.length - 1);
+			part.position = 0;
+			Assert.raises(() -> part.readObject(), EOFError, 'encoding $encoding');
+			Assert.equals(0, part.position, 'encoding $encoding: a truncated object moved the position');
+
+			part.position = part.length;
+			part.writeByte(whole[whole.length - 1]);
+			part.position = 0;
+			Assert.equals("crossbyte", part.readObject().name);
 		}
 	}
 
