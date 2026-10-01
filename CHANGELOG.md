@@ -2178,6 +2178,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `ReliableDatagramServerSocket.close()` may be called from any thread
+  too, and is handed to the server's runtime as a session's close is.
+  Made elsewhere, it took the runtime its ticks run on from the calling
+  thread, which threw there and was swallowed: an attached agent's, a
+  relay's or a waiting public-address question's tick stayed on the
+  runtime for good, and the question was failed on the closing thread.
+  The server's ticks are added to and taken off its own runtime now,
+  whichever is current.
 - `ReliableDatagramServerSocket.attachIceAgent` says when the agent's
   `connected` fails, every pair failed, or none selected within the
   agent's `timeout`, 80 seconds by default, and its example handles the
