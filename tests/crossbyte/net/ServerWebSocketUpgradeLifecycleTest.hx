@@ -1,6 +1,8 @@
 package crossbyte.net;
 
 import crossbyte.errors.ArgumentError;
+import crossbyte.events.Event;
+import crossbyte.events.IOErrorEvent;
 import crossbyte.events.ServerSocketConnectEvent;
 import haxe.io.Bytes;
 import utest.Assert;
@@ -174,6 +176,43 @@ class ServerWebSocketUpgradeLifecycleTest extends utest.Test {
 		});
 	}
 
+	#if !nodejs
+	/**
+		The system refusing twice to hand over a waiting connection, as it
+		does when the process is out of descriptors, then relenting: counted,
+		reported once, and the server carries on, as `ServerSocket` does with
+		its own accepts. hxcpp raises it as a bare string, which was
+		swallowed without a trace; the jvm as an I/O error, which closed the
+		server.
+	**/
+	@:timeout(15000)
+	public function testAnAcceptThatFailsIsReportedOnceAndTheServerCarriesOn(async:Async):Void {
+		var server = new RefusingServerWebSocket(2);
+		var errors:Array<String> = [];
+		var closed:Bool = false;
+		server.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) errors.push(e.text));
+		server.addEventListener(Event.CLOSE, function(_) closed = true);
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			var peer = new WirePeer(server.localPort);
+
+			NetPump.until(() -> __pending(server) > 0 || closed, 5.0, function(_) {
+				Assert.isFalse(closed, "a failed accept closed the server");
+				Assert.isTrue(server.listening, "a failed accept stopped the server listening");
+				Assert.equals(2, server.acceptFailures, "the failed accepts were not counted");
+				Assert.equals(1, errors.length, "a run of failed accepts was not reported exactly once: " + errors);
+				Assert.isTrue(errors.length > 0 && errors[0].indexOf("Too many open files") >= 0, "the report did not carry the reason: " + errors[0]);
+				Assert.equals(1, __pending(server), "the waiting connection was never taken once the system relented");
+				peer.close();
+				try server.close() catch (_:Dynamic) {}
+				async.done();
+			});
+		});
+	}
+	#end
+
 	/**
 		A plain server with one peer connected and saying nothing; `body`
 		runs once the server is waiting on it, and closes everything with
@@ -210,3 +249,31 @@ class ServerWebSocketUpgradeLifecycleTest extends utest.Test {
 		return @:privateAccess server.__pendingUpgrades.length;
 	}
 }
+
+#if !nodejs
+/**
+	A server whose system refuses the first `refusals` connections it is
+	asked for, the way one out of descriptors does, hxcpp raises that as a
+	bare string, the jvm as an I/O error, then hands them over.
+**/
+private class RefusingServerWebSocket extends ServerWebSocket {
+	private var __refusals:Int;
+
+	public function new(refusals:Int) {
+		super();
+		__refusals = refusals;
+	}
+
+	override private function __takeConnection():sys.net.Socket {
+		if (__refusals > 0) {
+			__refusals--;
+			#if cpp
+			throw "Too many open files";
+			#else
+			throw haxe.io.Error.Custom("Too many open files");
+			#end
+		}
+		return super.__takeConnection();
+	}
+}
+#end
