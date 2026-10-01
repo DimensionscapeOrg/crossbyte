@@ -2172,6 +2172,26 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `ProcessLifecycle.installDefaultHandlers()` handles SIGHUP -- the
+  terminal a server was started from going away -- with the same graceful
+  shutdown as SIGTERM: natively on Linux and macOS, on the jvm, and on
+  Node, where it is also how a Windows console window closing arrives.
+  SIGHUP's default ended the process at once, with no `onShutdown` and no
+  drain. One ignored as the process started (`nohup`) or handled by
+  something else is left alone; Node on macOS, which cannot tell, leaves
+  it to its default.
+- Natively on Windows, a process that has loaded user32.dll -- a window, a
+  GUI toolkit, a Shell function -- shuts down gracefully at a logoff or a
+  system shutdown. Windows tells such a process through its windows, not
+  its console, and it had none: the session ended it with no `onShutdown`.
+  `installDefaultHandlers()` gives it a hidden window that runs the
+  shutdown and holds the session's end while it runs, as the console
+  handler holds a close. CrossByte loads no user32 itself, so it is only
+  made where something else has.
+- A Windows service, or a process one started, keeps serving when a user
+  logs off. Windows sends services a logoff whenever anyone signs out and
+  does not end them, and `ProcessLifecycle` shut down on it; in session 0,
+  where no one logs on, it is now ignored.
 - A `SharedObject` waits at most `lockTimeout` for its region's lock, five
   seconds by default, then throws an `IOError` saying the lock was not
   released in time, having read, written and cleared nothing. The wait had
