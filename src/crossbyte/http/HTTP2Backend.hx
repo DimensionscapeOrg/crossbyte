@@ -576,6 +576,7 @@ class HTTP2Backend implements HTTPBackend {
 		var seenContentType:Bool = false;
 		var seenUserAgent:Bool = false;
 		var seenCookie:Bool = false;
+		var seenAcceptEncoding:Bool = false;
 
 		if (lines != null) {
 			for (raw in lines) {
@@ -602,6 +603,8 @@ class HTTP2Backend implements HTTPBackend {
 						seenUserAgent = true;
 					case "cookie":
 						seenCookie = true;
+					case "accept-encoding":
+						seenAcceptEncoding = true;
 					case _:
 				}
 
@@ -619,6 +622,13 @@ class HTTP2Backend implements HTTPBackend {
 		}
 		if (!seenUserAgent && userAgent != null) {
 			out.push(new HpackHeader("user-agent", HttpSyntax.sanitizeHeaderValue(userAgent)));
+		}
+		// What the HTTP/1.1 client and Node ask for unless told otherwise, as
+		// URLRequest.requestHeaders says the client does. With none, RFC 9110
+		// 12.5.3 lets a server pick any coding, one this client cannot decode
+		// among them. Indexed after the first request, so it costs a byte.
+		if (!seenAcceptEncoding) {
+			out.push(new HpackHeader("accept-encoding", crossbyte._internal.http.headers.AcceptEncoding.IDENTITY));
 		}
 		if (!seenContentType && contentType != null && body != null) {
 			out.push(new HpackHeader("content-type", HttpSyntax.sanitizeHeaderValue(contentType)));
