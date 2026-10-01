@@ -1985,6 +1985,9 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `JWT.secureCompare` answers `false` for a null on either side, where it
+  read the null's length: a header or cookie that was not sent threw from
+  inside the check, and natively a null dereference need not throw.
 - `OAuth.getAuthorizationUrl` adds the flow's parameters after a query the
   authorization endpoint carries of its own. They followed a second `?`,
   so a parameter put in the endpoint, Google's `access_type=offline`,
