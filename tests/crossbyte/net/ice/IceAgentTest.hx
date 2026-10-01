@@ -782,6 +782,12 @@ class IceAgentTest extends utest.Test {
 		var failure:String = null;
 		bob.connected.then(_ -> {}, error -> failure = error);
 
+		// Alice fails too, her nomination never answered. Observed, because an
+		// unobserved failure is reported on the next tick by a listener added
+		// for it, one that outlives this case and is counted by any later
+		// case that counts the runtime's tick listeners.
+		alice.connected.then(_ -> {}, _ -> {});
+
 		alice.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
 		bob.addLocalCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
 		alice.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
