@@ -32,7 +32,9 @@ package crossbyte._internal.socket._jvm;
 extern class SecureRandom {}
 
 @:native("java.security.Key")
-extern interface Key {}
+extern interface Key {
+	function getEncoded():java.NativeArray<java.types.Int8>;
+}
 
 @:native("java.security.PrivateKey")
 extern interface PrivateKey extends Key {
@@ -140,6 +142,62 @@ extern interface KeySpec {}
 @:native("java.security.spec.PKCS8EncodedKeySpec")
 extern class PKCS8EncodedKeySpec implements KeySpec {
 	function new(encoded:java.NativeArray<java.types.Int8>);
+	function getEncoded():java.NativeArray<java.types.Int8>;
+}
+
+// What an encrypted private key takes to read: PKCS#8's own encryption
+// through the JDK's password-based ciphers, and the older OpenSSL one,
+// a block cipher keyed from the password with MD5, through its plain ones.
+
+@:native("java.security.spec.AlgorithmParameterSpec")
+extern interface AlgorithmParameterSpec {}
+
+@:native("java.security.AlgorithmParameters")
+extern class AlgorithmParameters {
+	function getAlgorithm():String;
+	function toString():String;
+}
+
+@:native("javax.crypto.EncryptedPrivateKeyInfo")
+extern class EncryptedPrivateKeyInfo {
+	overload function new(encoded:java.NativeArray<java.types.Int8>);
+	function getAlgName():String;
+	function getAlgParameters():AlgorithmParameters;
+	overload function getKeySpec(cipher:Cipher):PKCS8EncodedKeySpec;
+}
+
+@:native("javax.crypto.SecretKey")
+extern interface SecretKey extends Key {}
+
+@:native("javax.crypto.SecretKeyFactory")
+extern class SecretKeyFactory {
+	overload static function getInstance(algorithm:String):SecretKeyFactory;
+	function generateSecret(spec:KeySpec):SecretKey;
+}
+
+@:native("javax.crypto.spec.PBEKeySpec")
+extern class PBEKeySpec implements KeySpec {
+	overload function new(password:java.NativeArray<java.types.Char16>);
+}
+
+@:native("javax.crypto.spec.SecretKeySpec")
+extern class SecretKeySpec implements KeySpec implements SecretKey {
+	overload function new(key:java.NativeArray<java.types.Int8>, algorithm:String);
+	function getEncoded():java.NativeArray<java.types.Int8>;
+}
+
+@:native("javax.crypto.spec.IvParameterSpec")
+extern class IvParameterSpec implements AlgorithmParameterSpec {
+	overload function new(iv:java.NativeArray<java.types.Int8>);
+}
+
+@:native("javax.crypto.Cipher")
+extern class Cipher {
+	static final DECRYPT_MODE:Int;
+	overload static function getInstance(transformation:String):Cipher;
+	overload function init(opmode:Int, key:Key, params:AlgorithmParameters):Void;
+	overload function init(opmode:Int, key:Key, spec:AlgorithmParameterSpec):Void;
+	overload function doFinal(input:java.NativeArray<java.types.Int8>):java.NativeArray<java.types.Int8>;
 }
 
 @:native("java.security.KeyFactory")

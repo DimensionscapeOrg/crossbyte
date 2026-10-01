@@ -52,6 +52,135 @@ class KeyTest extends utest.Test {
 		}
 	}
 
+	/**
+		Every form a key file comes in loads, with its password where it has
+		one, on every target that has keys. The jvm refused all but an
+		unencrypted PKCS#8, a key encrypted, or written as PKCS#1 or SEC1,
+		which is what `openssl genrsa` and `openssl ecparam -genkey` write,
+		was an error saying to convert the file, where native and Node load
+		them all. There each is checked to be the same key as the PKCS#8
+		one, not merely a key.
+	**/
+	public function testEveryFormOfAKeyLoads():Void {
+		var forms = KeyFormFixture.make();
+		if (forms == null) {
+			Assert.pass();
+			return;
+		}
+
+		// Every openssl writes this one; the older forms depend on which.
+		var names:Array<String> = [for (form in forms.forms) form.name];
+		Assert.isTrue(names.indexOf("rsa-pkcs8-encrypted.pem") >= 0, "the fixture made no encrypted key: " + names.join(", "));
+
+		for (form in forms.forms) {
+			var key:Key = null;
+			try {
+				key = Key.fromPem(form.pem, form.encrypted ? KeyFormFixture.PASSPHRASE : null);
+			} catch (e:Dynamic) {
+				Assert.fail('${form.name} did not load: $e');
+				continue;
+			}
+			Assert.notNull(key, '${form.name} loaded as nothing');
+
+			#if (java || jvm)
+			var plain:KeyForm = KeyFormFixture.plainOf(forms, form);
+			Assert.equals(__encoded(Key.fromPem(plain.pem)), __encoded(key), '${form.name} read as a different key from ${plain.name}');
+			#end
+		}
+	}
+
+	/**
+		And an encrypted one does not load with the wrong password, or none.
+		Not on Node, which decrypts a key when it is used rather than when it
+		is read.
+	**/
+	public function testAnEncryptedKeyNeedsItsPassword():Void {
+		#if nodejs
+		Assert.pass();
+		#else
+		var forms = KeyFormFixture.make();
+		if (forms == null) {
+			Assert.pass();
+			return;
+		}
+
+		var encrypted:Int = 0;
+		for (form in forms.forms) {
+			if (!form.encrypted) {
+				continue;
+			}
+			encrypted++;
+			Assert.raises(() -> Key.fromPem(form.pem, "not the passphrase"), '${form.name} loaded with the wrong password');
+			Assert.raises(() -> Key.fromPem(form.pem), '${form.name} loaded with no password');
+		}
+		Assert.isTrue(encrypted > 0, "the fixture made no encrypted key");
+		#end
+	}
+
+	#if (java || jvm)
+	private static function __encoded(key:Key):String {
+		return haxe.io.Bytes.ofData(@:privateAccess key.__native.native.getEncoded()).toHex();
+	}
+	#end
+
+	#if nodejs
+	/**
+		A certificate a server presents for one name, by SNI, with a key that
+		is encrypted. Node's SNI path made the name's context without the
+		key's passphrase, so every handshake asking for that name failed,
+		where the default certificate's key, given the same way, worked.
+	**/
+	@:timeout(15000)
+	public function testAnSniKeyIsDecryptedWithItsPassphrase(async:utest.Async):Void {
+		var forms = KeyFormFixture.make();
+		var fallback = TLSTestFixture.selfSigned();
+		var encrypted:KeyForm = null;
+		if (forms != null) {
+			for (form in forms.forms) {
+				if (form.name == "rsa-pkcs8-encrypted.pem") {
+					encrypted = form;
+				}
+			}
+		}
+		if (fallback == null || encrypted == null || forms.rsaCertificate == null) {
+			Assert.pass();
+			async.done();
+			return;
+		}
+
+		var server = new ServerSocket(true);
+		server.setCertificate(fallback.certificate, fallback.key);
+		server.addSNICertificate(name -> name == KeyFormFixture.COMMON_NAME, Certificate.fromPem(forms.rsaCertificate),
+			Key.fromPem(encrypted.pem, KeyFormFixture.PASSPHRASE));
+		server.addEventListener(crossbyte.events.ServerSocketConnectEvent.CONNECT, function(_) {});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			var presented:String = null;
+			var failure:String = null;
+			var client:Dynamic = null;
+			client = js.node.Tls.connect(cast {
+				port: server.localPort,
+				host: "127.0.0.1",
+				servername: KeyFormFixture.COMMON_NAME,
+				rejectUnauthorized: false
+			}, function() {
+				var certificate:Dynamic = client.getPeerCertificate();
+				presented = certificate == null || certificate.subject == null ? "" : certificate.subject.CN;
+				client.destroy();
+			});
+			client.on("error", function(error:Dynamic) failure = Std.string(error == null ? null : error.message));
+
+			NetPump.until(() -> presented != null || failure != null, 5.0, function(_) {
+				Assert.equals(KeyFormFixture.COMMON_NAME, presented, 'the name\'s certificate was not presented: $failure');
+				try server.close() catch (_:Dynamic) {}
+				async.done();
+			});
+		});
+	}
+	#end
+
 	private static function __assertShowsNothing(text:String, form:KeyForm):Void {
 		// A slice of the key's own base64, from within one line of it, which
 		// no printing of anything else would happen to contain.
