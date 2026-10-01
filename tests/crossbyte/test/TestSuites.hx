@@ -287,6 +287,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.SocketRegistryScaleTest());
 		runner.addCase(new crossbyte.net.NameLookupTest());
 		runner.addCase(new crossbyte.net.ServerSocketAcceptTest());
+		// Also in PortableSuite: most of it is Node's listener.
+		runner.addCase(new crossbyte.net.ServerSocketListenTest());
 		runner.addCase(new crossbyte.net.ServerSocketBacklogTest());
 		// A child runtime's real POLL loop, so every threaded target.
 		runner.addCase(new crossbyte.net.SocketReadinessTest());
