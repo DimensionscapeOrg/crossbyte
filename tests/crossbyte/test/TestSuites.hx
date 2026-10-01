@@ -232,6 +232,9 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.NetConnectionTcpTest());
 		// Also in PortableSuite: one end, told once, over TCP and WebSocket.
 		runner.addCase(new crossbyte.net.NetConnectionLifecycleTest());
+		// Also in PortableSuite: on Node a child runtime's clock is not the
+		// application's.
+		runner.addCase(new crossbyte.net.NetConnectionClockTest());
 		runner.addCase(new crossbyte.net.NetHostTest());
 		// Also in PortableSuite: a URI host on port 0, which Node binds later.
 		runner.addCase(new crossbyte.net.NetHostUriTest());

@@ -105,6 +105,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.NetConnectionTcpTest());
 		// How a NetConnection ends, told once, the same over each transport.
 		runner.addCase(new crossbyte.net.NetConnectionLifecycleTest());
+		// Whose clock a NetConnection's stamps are, in a child runtime.
+		runner.addCase(new crossbyte.net.NetConnectionClockTest());
 		// A wss:// NetHost given its certificate.
 		runner.addCase(new crossbyte.net.NetHostTLSTest());
 		// A NetHost made from a URI on port 0, which Node binds a turn later.

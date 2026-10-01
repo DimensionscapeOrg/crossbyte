@@ -2163,6 +2163,16 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A reliable or WebSocket `NetConnection` stamps `inTimestamp` and
+  `outTimestamp` with the uptime of the runtime its socket runs on, read
+  off the socket. It asked `CrossByte.current()` on every message, a
+  thread-local lookup each way, about 5 ns natively, some 1.5% of what a
+  small reliable message costs, and on Node got the application's
+  runtime rather than a child's whenever a socket's callback sent or
+  received, so a child's `RPCSession` heartbeat read the connection
+  against a clock that was not its own. A session a `ServerWebSocket`
+  accepts runs on its server's runtime on Node too, where it took the
+  application's.
 - A `NetHost` made from a URI on port 0, `tcp://127.0.0.1:0`, and
   `ws://`, `wss://` and `rudp://` alike, listens on a port the system
   chooses, as `ServerSocket.bind(0)` does, and `localPort` says which. The
