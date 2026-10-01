@@ -29,7 +29,62 @@ import utest.Async;
 @:access(crossbyte.core.CrossByte)
 @:access(crossbyte.events.EventDispatcher)
 @:access(crossbyte.net.WebSocket)
+@:access(crossbyte._internal.websocket.WebSocket)
 class WebSocketSessionTest extends utest.Test {
+	/**
+		What one turn of Node's event loop sends a session goes to its socket
+		in one write when the turn ends. Each frame was a `write` of its own,
+		and a server relaying a chat room's messages to everyone in it made one
+		for every message to every member.
+	**/
+	public function testWhatOneTurnSendsGoesToTheSocketInOneWrite():Void {
+		#if nodejs
+		var writes:Array<Bytes> = [];
+		var socket:Dynamic = {
+			write: function(buffer:js.node.Buffer):Bool {
+				writes.push(Bytes.ofData(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.length)));
+				return true;
+			},
+			writableLength: 0
+		};
+		var ws:crossbyte._internal.websocket.WebSocket = Type.createEmptyInstance(crossbyte._internal.websocket.WebSocket);
+		ws.readyState = crossbyte._internal.websocket.WebSocket.OPEN;
+		ws.__socket = socket;
+		ws.__connected = true;
+		ws.__isClient = false;
+		// An empty instance has no field initialisers run, and on JavaScript an
+		// Int left so is undefined rather than 0.
+		ws.__pendingSent = 0;
+		ws.__passFlushQueued = false;
+		ws.maxOutputBufferSize = 0;
+		ws.__output = new ByteArray();
+		ws.__output.endian = BIG_ENDIAN;
+		ws.__pendingOutput = new ByteArray();
+		ws.__pendingOutput.endian = BIG_ENDIAN;
+		ws.__outgoingMessageBuffer = new ByteArray();
+		ws.__outgoingMessageBuffer.endian = BIG_ENDIAN;
+		ws.__runtime = CrossByte.current();
+
+		for (i in 0...10) {
+			ws.sendString("message " + i);
+		}
+		CrossByte.current().__flushHeld();
+
+		Assert.equals(1, writes.length, "ten messages sent in one turn went in " + writes.length + " writes");
+		var sent:Bytes = writes.length > 0 ? writes[0] : Bytes.alloc(0);
+		Assert.equals(110, sent.length, "ten frames of 11 bytes did not all go");
+		if (sent.length == 110) {
+			for (i in 0...10) {
+				Assert.equals(0x81, sent.get(i * 11), "frame " + i + " is not a final text frame");
+				Assert.equals(9, sent.get(i * 11 + 1), "frame " + i + " has the wrong length");
+				Assert.equals("message " + i, sent.getString(i * 11 + 2, 9));
+			}
+		}
+		#else
+		Assert.pass();
+		#end
+	}
+
 	#if (cpp || java || jvm || nodejs)
 	// ---- The upgrade ----------------------------------------------------
 
