@@ -181,12 +181,32 @@ class OAuth {
 
 	/**
 	 * A public client -- one using PKCE with no secret -- sends none. An empty
-	 * `client_secret` is refused as a wrong one by some providers.
+	 * `client_secret` is refused as a wrong one by some providers. With Basic
+	 * authentication the secret goes in a header instead; see
+	 * `__authorization`.
 	 */
 	@:noCompletion private function __addClientSecret(params:Array<String>):Void {
-		if (config.clientSecret != null && config.clientSecret != "") {
+		if (__hasSecret() && config.clientAuthentication != SECRET_BASIC) {
 			params.push("client_secret=" + __encode(config.clientSecret));
 		}
+	}
+
+	@:noCompletion private inline function __hasSecret():Bool {
+		return config.clientSecret != null && config.clientSecret != "";
+	}
+
+	/**
+	 * The `Authorization` header for Basic client authentication, or null:
+	 * RFC 6749 2.3.1, the client id and the secret each form-encoded, joined
+	 * by a colon, in base64. The secret went in the body whatever the
+	 * provider took, and one configured for Basic alone refused it.
+	 */
+	@:noCompletion private function __authorization():Null<String> {
+		if (!__hasSecret() || config.clientAuthentication != SECRET_BASIC) {
+			return null;
+		}
+		var credentials:String = __encode(config.clientId) + ":" + __encode(config.clientSecret);
+		return "Basic " + Base64.encode(Bytes.ofString(credentials));
 	}
 
 	@:noCompletion private function __requestToken(operation:String, params:Array<String>, callback:(OAuthToken) -> Void,
@@ -196,6 +216,10 @@ class OAuth {
 		request.contentType = "application/x-www-form-urlencoded";
 		request.data = params.join("&");
 		request.requestHeaders.push(new URLRequestHeader("Accept", "application/json"));
+		var authorization:Null<String> = __authorization();
+		if (authorization != null) {
+			request.requestHeaders.push(new URLRequestHeader("Authorization", authorization));
+		}
 		// The client's own idle limit as a backstop; the deadline below is what
 		// bounds the whole exchange, drip-fed answers included.
 		request.idleTimeout = Std.int(Math.max(1, timeout) * 1000);

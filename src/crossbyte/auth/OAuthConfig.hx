@@ -24,6 +24,14 @@ class OAuthConfig {
 	public var redirectUri:String;
 
 	/**
+	 * Where the client secret goes in a token request: the body
+	 * (`SECRET_POST`, the default) or an HTTP Basic header (`SECRET_BASIC`).
+	 * Set it to what the provider was configured for; one configured for
+	 * Basic alone refuses the body as `invalid_client`.
+	 */
+	public var clientAuthentication:OAuthClientAuthentication = SECRET_POST;
+
+	/**
 	 * Constructs a new OAuthConfig instance.
 	 *
 	 * @param clientId The client ID.
