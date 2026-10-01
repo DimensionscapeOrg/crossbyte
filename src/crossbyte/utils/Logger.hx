@@ -221,10 +221,15 @@ class Logger {
 		__emit(line, (recordLevel : Int) >= (LogLevel.WARN : Int));
 	}
 
-	#if !(js && !nodejs)
+	#if !js
 	// Whether a record has gone to stdout since it was last flushed. Set by
 	// whichever thread logs and cleared before each flush, so a race costs a
 	// flush a frame early or late, never a record.
+	//
+	// Not on Node. Sys.println there is process.stdout.write, which holds
+	// nothing back, and Sys.stdout().flush() is fs.fsyncSync: refused for a
+	// pipe on Linux, so a warning threw from inside whatever reported it, and
+	// a disk sync a frame to a file.
 	@:noCompletion private static var __unflushed:Bool = false;
 	#end
 
@@ -238,7 +243,7 @@ class Logger {
 		here instead, once for however many a frame wrote.
 	**/
 	@:noCompletion public static inline function __flushStdout():Void {
-		#if !(js && !nodejs)
+		#if !js
 		if (__unflushed) {
 			__unflushed = false;
 			Sys.stdout().flush();
@@ -496,6 +501,7 @@ class Logger {
 		js.Browser.console.log(line);
 		#else
 		Sys.println(line);
+		#if !nodejs
 		if (urgent) {
 			// A warning or an error is often the last thing a process says.
 			__unflushed = false;
@@ -503,6 +509,7 @@ class Logger {
 		} else {
 			__unflushed = true;
 		}
+		#end
 		#end
 	}
 }
