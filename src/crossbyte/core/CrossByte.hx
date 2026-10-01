@@ -1694,9 +1694,17 @@ final class CrossByte extends EventDispatcher {
 		var remaining:Float = __frameDeadline - Timer.stamp();
 		__socketRegistry.__waited = 0.0;
 
-		while (remaining >= MIN_POLL_WAIT && __getRunning()) {
+		// At least one pass a frame, without a wait when there is no budget
+		// left to wait in. A frame shorter than the floor -- 1,000 ticks a
+		// second -- or one whose tick ran past its deadline used to skip the
+		// sockets altogether: a server at that rate never accepted or read,
+		// and one that fell behind stopped reading its clients until it
+		// caught up, which reading them is part of.
+		var polled:Bool = false;
+		while ((remaining >= MIN_POLL_WAIT || !polled) && __getRunning()) {
+			polled = true;
 			#if !js
-			__socketRegistry.update(remaining);
+			__socketRegistry.update(remaining >= MIN_POLL_WAIT ? remaining : 0);
 			#end
 			// Handed over from another thread, which wrote to the wake socket
 			// so that the poll above returned for it.

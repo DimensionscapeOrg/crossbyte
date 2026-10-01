@@ -20,6 +20,68 @@ import sys.net.Socket;
 @:access(crossbyte.core.CrossByte)
 class RuntimeHealthTest extends utest.Test {
 	#if target.threaded
+	/**
+		A frame shorter than the poll floor still reads its sockets. Poll was
+		given only what was left of a frame once that was at least a
+		millisecond, so at 1,000 ticks a second -- a frame of exactly one,
+		less the tick's own work -- the sockets were never polled: a server
+		at that rate accepted nothing and read nothing, and said nothing.
+	**/
+	public function testAFrameShorterThanThePollFloorStillReadsItsSockets():Void {
+		var ready = BusySocket.create(0);
+		if (ready == null) {
+			Assert.fail("could not open a loopback connection");
+			return;
+		}
+
+		var runtime = new CrossByte(false, POLL, true);
+		runtime.tps = 1000;
+		runtime.registerSocket(ready.reader);
+		ready.poke();
+		crossbyte.sys.System.sleep(0.01);
+		runtime.__frameDeadline = Timer.stamp() + runtime.__tickInterval;
+		runtime.__pollBasedMainLoop();
+		runtime.deregisterSocket(ready.reader);
+		runtime.exit();
+		ready.close();
+
+		Assert.isTrue(ready.calls > 0, "a frame at 1,000 ticks a second never polled its sockets");
+	}
+
+	/**
+		A frame whose tick ran past its deadline still reads its sockets. With
+		nothing left of the frame, poll was skipped, so a server that fell
+		behind -- a game whose step took longer than its tick -- stopped
+		reading its clients for as long as it stayed behind: their inputs and
+		acknowledgements waited, which only put it further behind.
+	**/
+	public function testAFrameThatRanPastItsDeadlineStillReadsItsSockets():Void {
+		var ready = BusySocket.create(0);
+		if (ready == null) {
+			Assert.fail("could not open a loopback connection");
+			return;
+		}
+
+		var runtime = new CrossByte(false, POLL, true);
+		runtime.tps = 20;
+		var overrun = function(_:TickEvent):Void {
+			var end = Timer.stamp() + 0.06;
+			while (Timer.stamp() < end) {}
+		};
+		runtime.addEventListener(TickEvent.TICK, overrun);
+		runtime.registerSocket(ready.reader);
+		ready.poke();
+		crossbyte.sys.System.sleep(0.01);
+		runtime.__frameDeadline = Timer.stamp() + runtime.__tickInterval;
+		runtime.__pollBasedMainLoop();
+		runtime.removeEventListener(TickEvent.TICK, overrun);
+		runtime.deregisterSocket(ready.reader);
+		runtime.exit();
+		ready.close();
+
+		Assert.isTrue(ready.calls > 0, "a frame whose tick took 60 ms of a 50 ms frame never polled its sockets");
+	}
+
 	public function testAPollLoopCountsTheTimeItsSocketHandlersTake():Void {
 		// The load was measured before the poll, so a POLL server's socket
 		// handlers -- nearly all of what it does -- never counted: busy half
