@@ -200,51 +200,6 @@ class SQLiteCall {
 }
 
 /**
-	What a connection's `cancel()`s and the work they would stop decide
-	between them: the lock, which work is running, and whether it has been
-	stopped. Kept apart from the connection, padded onto cache lines of its
-	own: the thread running the work writes here twice for every statement,
-	and the runtime's thread reads the connection's own fields for every
-	statement it queues. Held on the connection itself, the line went back
-	and forth between the two cores at each write, which cost 20% of an
-	asynchronous statement.
-**/
-@:noCompletion
-class SQLiteRuns {
-	@:noCompletion private var __before0:Float = 0;
-	@:noCompletion private var __before1:Float = 0;
-	@:noCompletion private var __before2:Float = 0;
-	@:noCompletion private var __before3:Float = 0;
-	@:noCompletion private var __before4:Float = 0;
-	@:noCompletion private var __before5:Float = 0;
-	@:noCompletion private var __before6:Float = 0;
-	@:noCompletion private var __before7:Float = 0;
-
-	/** On cpp, 0 free and 1 held, taken by an atomic compare-and-swap. **/
-	public var lock:Int = 0;
-
-	/** The statement whose work is running, if it is a statement's. **/
-	public var runner:Null<SQLiteStatement> = null;
-
-	/** Whether work a `cancel()` stops is running. **/
-	public var running:Bool = false;
-
-	/** Whether that work has been stopped, so what runs next is let run. **/
-	public var stopping:Bool = false;
-
-	@:noCompletion private var __after0:Float = 0;
-	@:noCompletion private var __after1:Float = 0;
-	@:noCompletion private var __after2:Float = 0;
-	@:noCompletion private var __after3:Float = 0;
-	@:noCompletion private var __after4:Float = 0;
-	@:noCompletion private var __after5:Float = 0;
-	@:noCompletion private var __after6:Float = 0;
-	@:noCompletion private var __after7:Float = 0;
-
-	public function new() {}
-}
-
-/**
 	A result read whole where it ran, so that whoever it is handed to reads
 	it without touching the connection: what `request()` answers on an
 	asynchronous connection, whose worker read it. `length` is the rows read,
