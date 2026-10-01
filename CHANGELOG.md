@@ -1944,6 +1944,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `itemClass` works on every statement, SQLite, MySQL, Postgres and
+  MongoDB, as AIR's does: each row is made an instance of the class, with
+  no arguments, and each field set from the column of its name, and a
+  column the class has no field for fails the statement with an
+  `SQLError`. It was declared on all four and read by none, so every row
+  was an anonymous object whatever it said.
 - A statement parameter set to `null` is written as `NULL` by Postgres's
   and SQLite's statements, as MySQL's has been, and bound as BSON null by
   MongoDB's. Postgres and SQLite took it for a parameter never set and left
