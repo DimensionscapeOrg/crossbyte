@@ -40,6 +40,12 @@ class GZCompressor {
 		// wants: there is no file, and inventing a name for one spends five
 		// bytes per response saying so.
 		var named:Bool = file_name != null && file_name.length > 0;
+		#if cpp
+		// An unnamed member, which is what HTTP sends, from hxcpp's zlib.
+		if (!named) {
+			return NativeZlib.gzip(stream);
+		}
+		#end
 
 		var output:BitsOutput = new BitsOutput();
 		output.writeByte(0x1f);

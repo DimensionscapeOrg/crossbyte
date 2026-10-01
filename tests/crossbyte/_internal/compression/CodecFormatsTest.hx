@@ -407,6 +407,73 @@ class CodecFormatsTest extends utest.Test {
 		}
 	}
 
+	/**
+		On native, gzip, zlib and raw DEFLATE come from hxcpp's own zlib. A
+		64 KB page of JSON went to 8.3 KB through the pure Haxe deflater, at
+		three and a half times zlib's cost; zlib writes about 6 KB. Each still
+		reads back whole through the readers here.
+	**/
+	public function testDeflateCodingsCompressAPageOfJson():Void {
+		var page = new StringBuf();
+		page.add("[");
+		var i = 0;
+		while (page.length < 64 * 1024) {
+			if (i > 0) page.add(",");
+			page.add('{"id":$i,"name":"item number $i","price":${i * 3 % 1000}.99,"tags":["alpha","beta","gamma"],"inStock":${i % 3 != 0}}');
+			i++;
+		}
+		page.add("]");
+		var json:Bytes = Bytes.ofString(page.toString());
+
+		for (algorithm in [CompressionAlgorithm.GZIP, CompressionAlgorithm.ZLIB, CompressionAlgorithm.DEFLATE]) {
+			var data:ByteArray = ByteArray.fromBytes(json.sub(0, json.length));
+			data.compress(algorithm);
+			var packed:Bytes = bytesOf(data);
+			#if cpp
+			Assert.isTrue(packed.length < 7000, Std.string(algorithm) + " wrote " + packed.length + " bytes");
+			#end
+			var back:Bytes = decoded(packed, algorithm, json.length);
+			Assert.isTrue(back.length == json.length && back.compare(json) == 0, Std.string(algorithm) + " did not read back whole");
+		}
+	}
+
+	/**
+		CRC-32 eight bytes at a time agrees with the definition a bit at a
+		time, at every length and alignment the eight-byte step can miss.
+	**/
+	public function testCrc32AgreesWithTheBitwiseDefinition():Void {
+		var data:Bytes = Bytes.alloc(4096 + 64);
+		var s:Int = 12345;
+		for (i in 0...data.length) {
+			s = (s * 1103515245 + 12345) & 0x7FFFFFFF;
+			data.set(i, (s >> 16) & 0xFF);
+		}
+		for (offset in 0...9) {
+			for (length in [0, 1, 2, 3, 7, 8, 9, 15, 16, 17, 31, 64, 65, 1000, 4096]) {
+				var crc = new crossbyte._internal.deflatex.CRC32();
+				crc.updateBytes(data, offset, length);
+				Assert.equals(__bitwiseCrc32(data, offset, length), crc.value, 'offset $offset, length $length');
+			}
+		}
+		// Updated in pieces, it is the CRC of the whole.
+		var pieces = new crossbyte._internal.deflatex.CRC32();
+		pieces.updateBytes(data, 0, 13);
+		pieces.updateBytes(data, 13, 1000);
+		pieces.updateBytes(data, 1013, 3000);
+		Assert.equals(__bitwiseCrc32(data, 0, 4013), pieces.value);
+	}
+
+	private static function __bitwiseCrc32(data:Bytes, offset:Int, length:Int):Int {
+		var crc:Int = 0xFFFFFFFF;
+		for (i in offset...offset + length) {
+			crc ^= data.get(i);
+			for (k in 0...8) {
+				crc = (crc & 1) != 0 ? (crc >>> 1) ^ 0xEDB88320 : crc >>> 1;
+			}
+		}
+		return ~crc;
+	}
+
 	public function testEveryCodecThrowsRangeErrorPastItsLimit():Void {
 		var zeros:Bytes = Bytes.alloc(256 * 1024);
 		for (algorithm in [

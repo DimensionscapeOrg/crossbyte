@@ -1208,7 +1208,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		// A refusal of every coding is the ordinary path's to answer, 406.
-		var decision:ResponseEncodingDecision = __resolveResponseEncoding(200, baseHeaders);
+		// Kept once encoded, so Brotli first.
+		var decision:ResponseEncodingDecision = __resolveResponseEncoding(200, baseHeaders, false, true);
 		if (decision.encoding == null) {
 			return false;
 		}
@@ -2509,7 +2510,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 	}
 
-	@:noCompletion private function __resolveResponseEncoding(statusCode:Int, headers:Array<URLRequestHeader>, streamable:Bool = false):ResponseEncodingDecision {
+	/**
+		@param kept Whether the encoded body is kept and served again, as a
+		       static file's is. A body encoded for one response is put to
+		       gzip before Brotli when the client takes both equally, every
+		       browser lists them so, unless Brotli is native: Brotli in
+		       Haxe took 1.3 ms for 64 KB of JSON where gzip from native zlib
+		       takes 0.2, and a server answering browsers was held to about
+		       800 compressed responses a second. A kept body is encoded once,
+		       so it goes as Brotli, the smallest.
+	**/
+	@:noCompletion private function __resolveResponseEncoding(statusCode:Int, headers:Array<URLRequestHeader>, streamable:Bool = false, kept:Bool = false):ResponseEncodingDecision {
 		// A body that is already encoded, a PHP script's under
 		// zlib.output_compression, a route's own gzip, is not encoded again.
 		if (statusCode == 206 || __hasResponseHeader(headers, "Content-Range") || __hasResponseHeader(headers, "Content-Encoding")) {
@@ -2579,10 +2590,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var supported = streamable ? [
 			{name: HTTPContentCoding.GZIP, algorithm: CompressionAlgorithm.GZIP},
 			{name: HTTPContentCoding.DEFLATE, algorithm: CompressionAlgorithm.ZLIB}
-		] : [
+		] : (kept || crossbyte._internal.brotli.Brotli.isNativeAvailable()) ? [
 			{name: HTTPContentCoding.BR, algorithm: CompressionAlgorithm.BROTLI},
 			{name: HTTPContentCoding.GZIP, algorithm: CompressionAlgorithm.GZIP},
 			{name: HTTPContentCoding.DEFLATE, algorithm: CompressionAlgorithm.ZLIB},
+			{name: HTTPContentCoding.LZ4, algorithm: CompressionAlgorithm.LZ4}
+		] : [
+			// First among equals wins: see `kept`.
+			{name: HTTPContentCoding.GZIP, algorithm: CompressionAlgorithm.GZIP},
+			{name: HTTPContentCoding.DEFLATE, algorithm: CompressionAlgorithm.ZLIB},
+			{name: HTTPContentCoding.BR, algorithm: CompressionAlgorithm.BROTLI},
 			{name: HTTPContentCoding.LZ4, algorithm: CompressionAlgorithm.LZ4}
 		];
 

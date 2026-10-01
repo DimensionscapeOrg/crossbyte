@@ -24,6 +24,10 @@ class ZlibCompressor {
 	private static inline var FLG:Int = 0x9C;
 
 	public static function compress(stream:Bytes):Bytes {
+		#if cpp
+		// hxcpp's zlib writes the stream whole; see NativeZlib.
+		return NativeZlib.zlib(stream);
+		#else
 		var deflated:Bytes = new Deflater().compress(stream);
 		var out:Bytes = Bytes.alloc(2 + deflated.length + 4);
 		out.set(0, CMF);
@@ -37,6 +41,7 @@ class ZlibCompressor {
 		out.set(at + 2, (adler >>> 8) & 0xFF);
 		out.set(at + 3, adler & 0xFF);
 		return out;
+		#end
 	}
 
 	/**

@@ -189,6 +189,45 @@ class HTTPCompressionTest extends utest.Test {
 		});
 	}
 
+	/**
+		A browser's list, gzip, deflate, br, zstd, all equal, gets gzip for
+		a body encoded for one response, unless Brotli is native: Brotli in
+		Haxe took 1.3 ms for 64 KB of JSON where gzip from native zlib takes
+		0.2, and a server answering browsers was held to about 800 compressed
+		responses a second. A static file is encoded once and kept, so it
+		still goes as br, the smallest; and a client whose q-values prefer br
+		gets br.
+	**/
+	public function testABrowserGetsGzipPerResponseAndBrForAKeptFile(async:Async):Void {
+		var text:String = __text(8192);
+		var server:HTTPServer = __serve(config -> config.middleware.push((handler, next) -> {
+			if (handler.requestPath == "/dynamic") {
+				handler.respond(200, "text/plain", text);
+			} else {
+				next();
+			}
+		}), root -> __write(root, "app.js", text));
+
+		HTTPTestSupport.exchangeEach(server, [
+			"GET /dynamic HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip, deflate, br, zstd\r\n\r\n",
+			"GET /app.js HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip, deflate, br, zstd\r\n\r\n",
+			"GET /dynamic HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip;q=0.5, br\r\n\r\n"
+		], function(responses:Array<HTTPTestResponse>):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			#if crossbyte_brotli_native
+			Assert.equals("br", responses[0].headers.get("content-encoding"), "native Brotli was passed over");
+			#else
+			Assert.equals("gzip", responses[0].headers.get("content-encoding"), "a browser's per-response body did not go as gzip");
+			Assert.isTrue(__decode(responses[0].bodyBytes, CompressionAlgorithm.GZIP) == text, "the gzip body was not the text");
+			#end
+			Assert.equals("br", responses[1].headers.get("content-encoding"), "a kept file did not go as br");
+			Assert.isTrue(__decode(responses[1].bodyBytes, CompressionAlgorithm.BROTLI) == text, "the br file was not the text");
+			Assert.equals("br", responses[2].headers.get("content-encoding"), "a client preferring br did not get it");
+			async.done();
+		});
+	}
+
 	public function testAStaticFileIsCompressedOnceAndKept(async:Async):Void {
 		// Compressed again for every request: a 150 KB script served 863
 		// requests a second as it was, and 64 as Brotli, natively.
