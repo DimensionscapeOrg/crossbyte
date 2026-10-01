@@ -55,6 +55,13 @@ jobs:
       - name: Run interpreter test suite
         run: haxe ci/interp-tests.hxml
 
+      # `-D final`, Lime's -final defines it, inlines the loop's and the
+      # socket registry's hot functions, and no build defined it, so a
+      # return added mid-function stopped every final build compiling and
+      # nothing noticed. Type-checked here and in the native suite job.
+      - name: Type-check a final build
+        run: haxe ci/interp-tests.hxml -D final --no-output
+
       # Every sample's check.hxml begins with --cwd ../.., so it runs from
       # its own directory, which is what --cwd reproduces here.
       - name: Validate sample builds
@@ -375,6 +382,9 @@ jobs:
           key: hxcpp-posix-native-${{ matrix.os }}-${{ env.HXCPP_REF }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             hxcpp-posix-native-${{ matrix.os }}-${{ env.HXCPP_REF }}-
+
+      - name: Type-check a final build
+        run: haxe ci/posix-native-tests.hxml -D final --no-output
 
       - name: Build native suite
         run: haxe ci/posix-native-tests.hxml
