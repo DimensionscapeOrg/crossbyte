@@ -420,9 +420,9 @@ class PeerConnectionGatheringTest extends utest.Test {
 
 	private static function pumpUntil(done:Void->Bool, timeout:Float):Void {
 		var runtime = CrossByte.current();
-		var deadline = Sys.time() + timeout;
+		var deadline = haxe.Timer.stamp() + timeout;
 
-		while (!done() && Sys.time() < deadline) {
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
 			crossbyte.sys.System.sleep(0.001);
 		}
