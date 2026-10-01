@@ -397,6 +397,47 @@ class WebSocketSessionTest extends utest.Test {
 		}, async);
 	}
 
+	/**
+		`socketData`'s `bytesLoaded` is what has just arrived, as a plain
+		socket reports it now on every target. A WebSocket reported
+		everything unread, so a reader that left the first message in the
+		stream was told the second was both together.
+	**/
+	@:timeout(15000)
+	public function testSocketDataReportsTheBytesThatJustArrived(async:Async):Void {
+		__serve(null, function(server, sessions, finish) {
+			var client = new WebSocket();
+			var loaded:Array<Float> = [];
+			var opened:Bool = false;
+			client.addEventListener(Event.CONNECT, function(_) opened = true);
+			client.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(e:crossbyte.events.ProgressEvent) loaded.push(e.bytesLoaded));
+			client.connect("127.0.0.1", server.localPort);
+
+			NetPump.until(() -> opened && sessions.length > 0, 5.0, function(_) {
+				if (sessions.length == 0) {
+					Assert.fail("no session");
+					finish();
+					return;
+				}
+
+				var five = new ByteArray();
+				five.length = 5;
+				var seven = new ByteArray();
+				seven.length = 7;
+				sessions[0].sendBinary(five);
+				sessions[0].sendBinary(seven);
+
+				// Nothing is read between the two.
+				NetPump.until(() -> loaded.length >= 2, 5.0, function(_) {
+					Assert.same([5.0, 7.0], loaded, "socketData did not report each message's own bytes");
+					Assert.equals(12, client.bytesAvailable, "the stream did not hold both messages");
+					try client.close() catch (_:Dynamic) {}
+					finish();
+				});
+			});
+		}, async);
+	}
+
 	// ---- Liveness -------------------------------------------------------
 
 	@:timeout(15000)

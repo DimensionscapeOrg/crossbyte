@@ -1076,10 +1076,14 @@ class WebSocket extends Socket {
 		// kept until a reader happens to take everything.
 		__compactInput();
 
+		var arrived:Int = newData.length;
 		newData.readBytes(__input, __input.length);
 
-		if (__input.bytesAvailable > 0) {
-			dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, __input.bytesAvailable, 0));
+		// What has just arrived, as a plain socket reports it on every target;
+		// this reported everything unread, so a reader that had left one
+		// message in the stream was told the next was both together.
+		if (arrived > 0) {
+			dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, arrived, 0));
 		}
 	}
 
