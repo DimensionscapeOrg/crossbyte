@@ -2168,6 +2168,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `JWKSet.parse` and `OAuth`'s token exchange refuse JSON whose objects
+  and arrays nest more than 32 levels deep, measured before it is parsed,
+  as `JWT.verify` refuses such a header. Parsing takes a frame per level,
+  so natively a JWK Set, a token endpoint's answer or its error document
+  nested 6,000 deep, 12 KB from the provider, or from whoever could
+  answer for it, overflowed the stack and ended the process. `parse`
+  throws, and the exchange fails as a malformed response.
 - A `-D final` build compiles again, Lime's `-final` defines `final`,
   on every sys target. `final` inlines the socket registry's `update()`,
   and a return added in the middle of it for a failing poll backend
