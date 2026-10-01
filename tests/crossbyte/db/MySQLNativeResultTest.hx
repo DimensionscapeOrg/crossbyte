@@ -194,6 +194,26 @@ class MySQLNativeResultTest extends utest.Test {
 		Assert.equals(-149040000000.0, DateTools.makeUtc(1965, 3, 12, 0, 0, 0));
 	}
 
+	public function testCountsPastThirtyTwoBitsAreWhole():Void {
+		// The client reads both from the statement's answer, as an Int64 past
+		// 2^31, and the connection held them at 2^31 - 1: affectedRows and
+		// lastInsertRowID were Ints.
+		__server.onQuery = function(session, sql) {
+			if (StringTools.startsWith(sql, "UPDATE")) {
+				session.ok(3000000000.0, 5000000001.0);
+				return true;
+			}
+
+			return false;
+		};
+		__server.start();
+		var connection:MySQLConnection = __open();
+		connection.request("UPDATE users SET name = 'x'");
+		Assert.equals(3000000000.0, connection.affectedRows);
+		Assert.equals(5000000001.0, connection.lastInsertRowID);
+		connection.close();
+	}
+
 	public function testResultsCostNoExtraRoundTrips():Void {
 		// Every getResult() sent SELECT LAST_INSERT_ID(), 20 pages, 21
 		// extra statements, after which affectedRows, itself a SELECT
