@@ -76,6 +76,9 @@ entry below says how:
   `ThreadEvent.UPDATE` are gone.
 - `BCrypt.hash` makes `$2b$` hashes, and Postgres, MySQL and MongoDB
   statements throw what the server refused.
+- `ServerWebSocket.verifyCert` is gone: `certAuthority`, or
+  `requireClientCertificate()`, asks clients for a certificate, natively
+  now as well as on Node.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1132,6 +1135,11 @@ entry below says how:
 - accepted `wss://` sessions now run the deferred, timeout-guarded TLS handshake the client path already used; previously a server-side handshake happened implicitly on first read with no bound, so a peer that completed TCP then stalled mid-TLS held the socket indefinitely (`docs/proposals/0012-websocket-tls-handshake.md`)
 
 ### Removed
+- `ServerWebSocket.verifyCert`, which existed natively only. `certAuthority`
+  asks clients for a certificate on every target now; beside it,
+  `verifyCert` could only switch that off again natively, or demand
+  certificates from the system's authorities where Node had no such
+  setting.
 - `ThreadEvent.UPDATE`. Nothing dispatched it, and no worker or task had
   anything it could have meant; `PROGRESS` carries a worker's messages.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
@@ -1932,6 +1940,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A secure `ServerWebSocket` with `certAuthority` set asks every client for
+  a certificate that authority issued, and refuses one that presents none,
+  natively as on Node. Natively the authority was installed with
+  verification left off, as the constructor set it so that ordinary
+  clients would not be asked, so a server told to require client
+  certificates let in clients that had none. `requireClientCertificate()`,
+  which dereferenced a listener a `ServerWebSocket` never builds, now does
+  the same thing, and both are refused on a plain server and once bound.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened
