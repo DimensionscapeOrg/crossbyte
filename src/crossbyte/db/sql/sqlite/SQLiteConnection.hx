@@ -12,6 +12,7 @@ import crossbyte.errors.IOError;
 import crossbyte.errors.SQLError;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
+import crossbyte.events.EventType;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
 import crossbyte.events.ThreadEvent;
@@ -270,6 +271,149 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	 */
 	public function tableList():Array<String> {
 		return __getTables();
+	}
+
+	/**
+		Opens another database in this connection under `name`, as SQLite's
+		`ATTACH DATABASE`: its tables are then reached as `name.table` from
+		this connection's statements, joins included, and written in the same
+		transactions as the main database. `reference` is a path or a `File`,
+		as `open` takes; null attaches a new in-memory database. Dispatches
+		`SQLEvent.ATTACH`, or for an asynchronous connection
+		`SQLErrorEvent.ERROR` when SQLite refuses -- a name in use, a file it
+		cannot open.
+
+		`SQLEvent.ATTACH` was declared, as AIR's `SQLConnection` has it, and
+		nothing could make one: there was no way to attach a database at all.
+	**/
+	public function attach(name:String, reference:Object = null):Void {
+		var path:String = ":memory:";
+		if (reference != null && reference != ":memory:") {
+			if (Std.isOfType(reference, String)) {
+				path = new File(reference).nativePath;
+			} else if (Std.isOfType(reference, File)) {
+				var file:File = reference;
+				path = file.nativePath;
+			} else {
+				throw new ArgumentError("The reference argument is neither a String to a path or a File Object.");
+			}
+		}
+		__run("ATTACH DATABASE " + __quoteLiteral(path) + " AS " + __quoteIdentifier(name) + ";", SQLEvent.ATTACH);
+	}
+
+	/** Closes a database `attach` opened. Dispatches `SQLEvent.DETACH`. **/
+	public function detach(name:String):Void {
+		__run("DETACH DATABASE " + __quoteIdentifier(name) + ";", SQLEvent.DETACH);
+	}
+
+	/**
+		Reads what `database` holds -- `"main"`, or one `attach` opened -- for
+		`getSchemaResult()`: its tables with their columns, and its views,
+		indices and triggers, as SQLite records them. Dispatches
+		`SQLEvent.SCHEMA` when read.
+	**/
+	public function loadSchema(database:String = "main"):Void {
+		if (__async) {
+			__addToQueue(function() {
+				var event:Event;
+				try {
+					__schemaResult = __readSchema(database);
+					event = new SQLEvent(SQLEvent.SCHEMA);
+				} catch (e:Dynamic) {
+					event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.SCHEMA, Std.string(e), "Execution failed: " + Std.string(e)));
+				}
+				__sqlWorker.sendProgress(event);
+			});
+		} else {
+			__schemaResult = __readSchema(database);
+			__dispatchSQLEvent(SQLEvent.SCHEMA);
+		}
+	}
+
+	/** What the last `loadSchema` read, or null before one has finished. **/
+	public function getSchemaResult():Null<SQLSchemaResult> {
+		return __schemaResult;
+	}
+
+	@:noCompletion private var __schemaResult:Null<SQLSchemaResult> = null;
+
+	@:noCompletion private function __readSchema(database:String):SQLSchemaResult {
+		var schema:String = __quoteIdentifier(database == null || database == "" ? "main" : database);
+		var result:SQLSchemaResult = {tables: [], views: [], indices: [], triggers: []};
+		var rows:ResultSet = __connection.request("SELECT type, name, tbl_name, sql FROM " + schema
+			+ ".sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name;");
+		var entries:Array<Dynamic> = [];
+		while (rows.hasNext()) {
+			entries.push(rows.next());
+		}
+
+		for (entry in entries) {
+			var name:String = Std.string(Reflect.field(entry, "name"));
+			var table:String = Std.string(Reflect.field(entry, "tbl_name"));
+			var sql:Dynamic = Reflect.field(entry, "sql");
+			var text:Null<String> = sql == null ? null : Std.string(sql);
+			switch (Std.string(Reflect.field(entry, "type"))) {
+				case "table":
+					result.tables.push({name: name, sql: text, columns: __readColumns(schema, name)});
+				case "view":
+					result.views.push({name: name, sql: text});
+				case "index":
+					result.indices.push({name: name, table: table, sql: text});
+				case "trigger":
+					result.triggers.push({name: name, table: table, sql: text});
+				default:
+			}
+		}
+		return result;
+	}
+
+	@:noCompletion private function __readColumns(schema:String, table:String):Array<SQLColumnSchema> {
+		var columns:Array<SQLColumnSchema> = [];
+		var rows:ResultSet = __connection.request("PRAGMA " + schema + ".table_info(" + __quoteIdentifier(table) + ");");
+		while (rows.hasNext()) {
+			var row:Dynamic = rows.next();
+			var fallback:Dynamic = Reflect.field(row, "dflt_value");
+			columns.push({
+				name: Std.string(Reflect.field(row, "name")),
+				dataType: Std.string(Reflect.field(row, "type")),
+				allowNull: __wholeNumber(Reflect.field(row, "notnull")) == 0,
+				primaryKey: __wholeNumber(Reflect.field(row, "pk")) > 0,
+				defaultValue: fallback == null ? null : Std.string(fallback)
+			});
+		}
+		return columns;
+	}
+
+	/** `sql` now, or on the worker for an asynchronous connection, then `type`. **/
+	@:noCompletion private function __run(sql:String, type:EventType<SQLEvent>):Void {
+		if (__async) {
+			__addToQueue(function() {
+				var event:Event;
+				try {
+					__connection.request(sql);
+					event = new SQLEvent(type);
+				} catch (e:Dynamic) {
+					event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(type, Std.string(e), "Execution failed: " + Std.string(e)));
+				}
+				__sqlWorker.sendProgress(event);
+			});
+		} else {
+			__connection.request(sql);
+			__dispatchSQLEvent(type);
+		}
+	}
+
+	/** `name` as an SQL identifier, quoted, so any name -- one with a space or a quote -- is one. **/
+	@:noCompletion private static inline function __quoteIdentifier(name:String):String {
+		if (name == null || name == "") {
+			throw new ArgumentError("A database name is required.");
+		}
+		return '"' + name.split('"').join('""') + '"';
+	}
+
+	/** `text` as an SQL string literal. **/
+	@:noCompletion private static inline function __quoteLiteral(text:String):String {
+		return "'" + text.split("'").join("''") + "'";
 	}
 
 	public function analyze():Void {
@@ -1182,6 +1326,49 @@ typedef FKViolation = {
 	var rowid:Int;
 	var parent:String;
 	var fkid:Int;
+}
+
+/** What `SQLiteConnection.loadSchema` read: a database's tables, views, indices and triggers. **/
+typedef SQLSchemaResult = {
+	var tables:Array<SQLTableSchema>;
+	var views:Array<SQLViewSchema>;
+	var indices:Array<SQLIndexSchema>;
+	var triggers:Array<SQLTriggerSchema>;
+}
+
+typedef SQLTableSchema = {
+	var name:String;
+	/** The `CREATE TABLE` statement, as SQLite keeps it. **/
+	var sql:Null<String>;
+	var columns:Array<SQLColumnSchema>;
+}
+
+typedef SQLColumnSchema = {
+	var name:String;
+	/** The declared type, as written; SQLite's affinity follows from it. **/
+	var dataType:String;
+	var allowNull:Bool;
+	var primaryKey:Bool;
+	/** The default, as the SQL text of its expression, or null for none. **/
+	var defaultValue:Null<String>;
+}
+
+typedef SQLViewSchema = {
+	var name:String;
+	var sql:Null<String>;
+}
+
+typedef SQLIndexSchema = {
+	var name:String;
+	var table:String;
+	/** Null for an index SQLite made itself, for a UNIQUE or PRIMARY KEY constraint. **/
+	var sql:Null<String>;
+}
+
+typedef SQLTriggerSchema = {
+	var name:String;
+	var table:String;
+	var sql:Null<String>;
 }
 
 typedef DBStats = {
