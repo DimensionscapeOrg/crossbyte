@@ -33,6 +33,9 @@ class WebSocketTLSTest extends utest.Test {
 			Assert.isFalse(outcome.connected, "a self-signed certificate was accepted without being trusted");
 			Assert.isTrue(outcome.ended, "the refused connection was never reported as ended");
 			Assert.isTrue(__isCertificateRefusal(outcome.failure), "the connection failed, but not over the certificate: " + outcome.failure);
+			// A failed connect, as a browser reports one, on every target:
+			// natively a TLS failure closed with 1015, on Node with 1006.
+			Assert.equals(1006, outcome.closeCode, "a refused certificate did not end the connect as a failed one");
 			Assert.equals(0, outcome.sessions, "the server completed an upgrade the client should have refused");
 		}, async);
 	}
@@ -64,6 +67,9 @@ class WebSocketTLSTest extends utest.Test {
 			Assert.isFalse(outcome.connected, "a certificate naming another host was accepted");
 			Assert.isTrue(outcome.ended, "the refused connection was never reported as ended");
 			Assert.isTrue(__isCertificateRefusal(outcome.failure), "the connection failed, but not over the certificate: " + outcome.failure);
+			// A failed connect, as a browser reports one, on every target:
+			// natively a TLS failure closed with 1015, on Node with 1006.
+			Assert.equals(1006, outcome.closeCode, "a refused certificate did not end the connect as a failed one");
 			Assert.equals(0, outcome.sessions, "the server completed an upgrade the client should have refused");
 		}, async);
 	}
@@ -197,7 +203,7 @@ class WebSocketTLSTest extends utest.Test {
 		server.cert = {certificate: fixture.certificate, key: fixture.key};
 		server.handshakeTimeout = 5;
 
-		var outcome:TLSOutcome = {connected: false, ended: false, endedAfter: -1.0, sessions: 0, failure: null};
+		var outcome:TLSOutcome = {connected: false, ended: false, endedAfter: -1.0, sessions: 0, failure: null, closeCode: -1};
 		var started:Float = 0.0;
 		var sessions:Array<WebSocket> = [];
 
@@ -222,6 +228,7 @@ class WebSocketTLSTest extends utest.Test {
 		client.addEventListener(Event.CLOSE, function(e:Event) {
 			ended();
 			var close = Std.downcast(e, WebSocketCloseEvent);
+			outcome.closeCode = close == null ? 0 : close.code;
 			if (outcome.failure == null && close != null) {
 				outcome.failure = "closed with " + close.code + " (" + close.reason + ")";
 			}
@@ -265,4 +272,5 @@ private typedef TLSOutcome = {
 	var endedAfter:Float;
 	var sessions:Int;
 	var failure:String;
+	var closeCode:Int;
 }

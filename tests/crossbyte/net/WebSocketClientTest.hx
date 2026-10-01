@@ -65,6 +65,154 @@ class WebSocketClientTest extends utest.Test {
 	}
 
 	/**
+		A `wss://` server that accepts the connection and never answers the
+		TLS handshake is given up on at `timeout`.
+
+		Natively the handshake had a fixed three seconds of its own, whatever
+		`timeout` said, and on Node nothing bounded a connect until it had
+		opened: a client there waited on a silent server for good.
+	**/
+	@:timeout(20000)
+	public function testATlsHandshakeNobodyAnswersIsGivenUpOnAtTheTimeout(async:Async):Void {
+		__againstASilentServer(true, 400, function(outcome) {
+			Assert.isFalse(outcome.connected, "a TLS handshake nobody answered was reported as connected");
+			Assert.isTrue(outcome.closed, "a client whose TLS handshake went unanswered was never given up on");
+			Assert.isTrue(outcome.took >= 0.3 && outcome.took < 2.0, 'gave up after ${outcome.took} s against a timeout of 0.4 s');
+			Assert.notNull(outcome.failure, "the client was not told why the connect failed");
+		}, async);
+	}
+
+	/**
+		A `timeout` of 0 waits as long as it takes, as the upgrade did and as
+		Node did. Natively a connect still looking its host up failed at
+		once, and a TLS handshake still gave up at its own three seconds.
+	**/
+	@:timeout(20000)
+	public function testATimeoutOfZeroWaits(async:Async):Void {
+		__againstASilentServer(true, 0, function(outcome) {
+			Assert.isFalse(outcome.closed, "a connect with no deadline was given up on: " + outcome.failure);
+			Assert.isNull(outcome.failure, "a connect with no deadline failed: " + outcome.failure);
+		}, async, 3.6);
+	}
+
+	/**
+		A server that answers the upgrade with a refusal fails the connect as
+		any other failure does, and as a browser's WebSocket does: `ioError`
+		saying so, then `close` with 1006. It closed with 1002 and no error,
+		as if an open session had broken the protocol.
+	**/
+	@:timeout(15000)
+	public function testARefusedUpgradeIsAFailedConnect(async:Async):Void {
+		var server = new ServerWebSocket();
+		server.upgrade = function(request:WebSocketRequest):Bool {
+			request.status = 403;
+			return false;
+		};
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		__failedConnect(() -> server.localPort, function(events, failure) {
+			Assert.same(["ioError", "close 1006"], events, "a refused upgrade did not end as a failed connect");
+			Assert.isTrue(failure != null && failure.indexOf("403") >= 0, "the failure did not carry the server's answer: " + failure);
+			try server.close() catch (_:Dynamic) {}
+		}, async);
+	}
+
+	/**
+		A server that hangs up before answering the upgrade is a failed
+		connect too. It closed with 1006 and said nothing at all.
+	**/
+	@:timeout(15000)
+	public function testAServerHangingUpBeforeTheUpgradeIsAFailedConnect(async:Async):Void {
+		var server = new ServerSocket();
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
+			try e.socket.close() catch (_:Dynamic) {}
+		});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		__failedConnect(() -> server.localPort, function(events, failure) {
+			Assert.same(["ioError", "close 1006"], events, "a hang-up before the upgrade did not end as a failed connect");
+			Assert.notNull(failure, "the client was not told why the connect failed");
+			try server.close() catch (_:Dynamic) {}
+		}, async);
+	}
+
+	/**
+		Connects a `WebSocket` to the port `port` names once it is known, and
+		calls `check` with the events it dispatched -- `connect`, `ioError`
+		and `close` with its code, in order -- and the ioError's text.
+	**/
+	private function __failedConnect(port:Void->Int, check:(Array<String>, String)->Void, async:Async):Void {
+		var client = new WebSocket();
+		var events:Array<String> = [];
+		var failure:String = null;
+		client.addEventListener(Event.CONNECT, function(_) events.push("connect"));
+		client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) {
+			events.push("ioError");
+			failure = e.text;
+		});
+		client.addEventListener(Event.CLOSE, function(e:Event) {
+			var close = Std.downcast(e, crossbyte.events.WebSocketCloseEvent);
+			events.push("close " + (close == null ? "?" : Std.string(close.code)));
+		});
+
+		NetPump.until(() -> port() != 0, 5.0, function(_) {
+			client.connect("127.0.0.1", port());
+			NetPump.until(() -> events.indexOf("connect") >= 0 || events.length >= 2, 8.0, function(_) {
+				// A little longer, for anything dispatched after.
+				NetPump.wait(0.2, function() {
+					check(events, failure);
+					try client.close() catch (_:Dynamic) {}
+					async.done();
+				});
+			});
+		});
+	}
+
+	/**
+		Connects a `WebSocket` with `timeout` to a server that accepts and
+		then says nothing, and reports what became of it after `wait`
+		seconds, or once it has closed.
+	**/
+	private function __againstASilentServer(secure:Bool, timeout:Int, check:SilentOutcome->Void, async:Async, wait:Float = 8.0):Void {
+		var server = new ServerSocket();
+		var held:Array<Socket> = [];
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) held.push(e.socket));
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		var client = new WebSocket();
+		client.secure = secure;
+		client.verifyCert = false;
+		client.timeout = timeout;
+
+		var outcome:SilentOutcome = {connected: false, closed: false, failure: null, took: -1.0};
+		var started:Float = 0.0;
+		client.addEventListener(Event.CONNECT, function(_) outcome.connected = true);
+		client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) outcome.failure = e.text);
+		client.addEventListener(Event.CLOSE, function(_) {
+			outcome.closed = true;
+			outcome.took = haxe.Timer.stamp() - started;
+		});
+
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			started = haxe.Timer.stamp();
+			client.connect("127.0.0.1", server.localPort);
+
+			NetPump.until(() -> outcome.closed || outcome.connected, wait, function(_) {
+				check(outcome);
+				for (socket in held) {
+					try socket.close() catch (_:Dynamic) {}
+				}
+				try client.close() catch (_:Dynamic) {}
+				try server.close() catch (_:Dynamic) {}
+				async.done();
+			});
+		});
+	}
+
+	/**
 		A connection refused is reported as refused: an ioError that says
 		so, and no CONNECT. On Linux and macOS a refused connect leaves the
 		socket writable, which was taken for a connection, so the client sent
@@ -100,4 +248,11 @@ class WebSocketClientTest extends utest.Test {
 		});
 	}
 	#end
+}
+
+private typedef SilentOutcome = {
+	var connected:Bool;
+	var closed:Bool;
+	var failure:String;
+	var took:Float;
 }

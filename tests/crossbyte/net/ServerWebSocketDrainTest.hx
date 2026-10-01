@@ -68,8 +68,13 @@ class ServerWebSocketDrainTest extends utest.Test {
 			server.listen();
 			client.connect("127.0.0.1", server.localPort);
 
+			// The effect, not the list: the session is still waited on, and its
+			// peer still connected. It is listed all the same -- counted against
+			// maxPendingHandshakes, and dropped by stopAccepting() -- where it
+			// used to be left off, uncounted and beyond anything's reach.
 			pumpUntil(() -> false, 0.8);
-			Assert.equals(0, @:privateAccess server.__pendingUpgrades.length, "a deadline was recorded when none was asked for");
+			Assert.equals(1, server.pendingHandshakeCount(), "the session was not still being waited on");
+			Assert.isTrue(client.connected, "a session with no deadline was closed");
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}

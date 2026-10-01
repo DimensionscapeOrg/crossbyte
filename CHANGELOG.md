@@ -124,6 +124,11 @@ entry below says how:
   out of range, as documented, where they clamped or did nothing.
 - A TCP or WebSocket `NetHost`'s `discoverPublicAddress` and
   `allocateRelay` fail the `Future` they return rather than throwing.
+- `ServerWebSocket.verifyCert` is gone: `certAuthority`, or
+  `requireClientCertificate()`, asks clients for a certificate, natively
+  now as well as on Node.
+- A `ServerWebSocket`'s `cert` and `certAuthority` are set before `bind()`,
+  on Node too, and only on a secure server; either throws otherwise.
 
 ### Added
 - `ReliableDatagramServerSocket.relayVerifyCert`, for a TURN relay reached
@@ -1226,6 +1231,11 @@ entry below says how:
   no `JWTSigner` makes them, and `JWT.verify` refuses them as
   `UNSUPPORTED_ALGORITHM`. The type now names HS256, RS256, ES256, EdDSA
   and `none`, and says which verify where.
+- `ServerWebSocket.verifyCert`, which existed natively only. `certAuthority`
+  asks clients for a certificate on every target now; beside it,
+  `verifyCert` could only switch that off again natively, or demand
+  certificates from the system's authorities where Node had no such
+  setting.
 - `ThreadEvent.UPDATE`. Nothing dispatched it, and no worker or task had
   anything it could have meant; `PROGRESS` carries a worker's messages.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
@@ -2461,6 +2471,114 @@ entry below says how:
   `JSON.stringify` and `console.log` each printed both, so one debugging
   line put a server's private key, and the password protecting it, in a
   log. It prints as `[Key: redacted]` on every target now.
+- A `WebSocket`'s `socketData` event reports in `bytesLoaded` the bytes of
+  the message that has just arrived, as a `Socket`'s does. It reported
+  everything unread, so a reader that had left one message in the stream
+  was told the next was both together.
+- `WebSocket.readMultiByte` and `writeMultiByte` say what they do, as
+  `ByteArray`'s already did: the character set is ignored, and the bytes
+  are UTF-8. They promised `"shift_jis"` and the rest. Its `readObject` and
+  `writeObject` say they use `objectEncoding`, where they said AMF.
+- `WebSocket.writeBytes` and `sendBinary` refuse a range outside the bytes
+  given, with a `RangeError` (an `ArgumentError` for `null`), as
+  `writeBytes` promised and as `DatagramSocket.send` does. They wrote
+  whatever part of the range fell inside and said nothing, so a message
+  cut short went out as if whole.
+- A `WebSocket`'s output limit honours `outputOverflowPolicy`, as a
+  `Socket`'s does: `CLOSE` dispatches an `ioError` saying why and then
+  closes the session with 1011, and `THROW` throws an `IOError` from the
+  send that left more than `maxOutputBufferSize` waiting and keeps the
+  session. Whatever the policy, the session closed with 1011 and said
+  nothing; and on Node it ended its socket rather than destroying it, so
+  what was queued for the peer that was not reading stayed queued.
+  `shutdown()`, which on a `WebSocket` returned having done nothing,
+  throws an `IllegalOperationError`: a session has no half-close, and the
+  class now says `peerShutdownPolicy` is not consulted either.
+- On Node a `ServerWebSocket` that cannot listen -- a port in use, an
+  address that is not local -- dispatches an `ioError` saying so and then
+  `close`, as a `DatagramSocket` reports a failed bind there, and as
+  `bind()` now documents. Node claims the address only once `listen()`
+  starts, so the failure cannot come out of `bind()` as it does natively,
+  and it was dispatched as `close` alone.
+- A session a secure `ServerWebSocket` accepted says it is `secure`, as a
+  socket a secure `ServerSocket` accepted does. It read `false`.
+- `ServerWebSocket.listen()` throws an `IOError` for a server that is not
+  bound, as its doc says, natively as on Node. Natively it never asked:
+  Windows refused the listen with an error of the socket's own, and Linux
+  and macOS bound the socket to a port of their own choosing and listened
+  there.
+- A `ServerWebSocket` survives a connection the system will not hand over
+  -- the process out of descriptors, the system out of memory -- as
+  `ServerSocket` does: counted in `acceptFailures`, reported once as an
+  `ioError` for a run of them, and the server goes on listening, taking
+  the connection once a descriptor frees. It missed that fix: hxcpp's
+  refusal, a bare string, was swallowed without a trace, and the jvm's
+  closed the server.
+- A `WebSocket` client's failed connect ends one way, however it failed,
+  as a browser's WebSocket does and as the class now says: `ioError` saying
+  why, then `close` with 1006. A TLS failure closed with 1015 natively, an
+  upgrade the server refused closed with 1002 and no error, as if an open
+  session had broken the protocol, and a server that hung up before
+  answering closed with 1006 and said nothing.
+- A `WebSocket` client's `timeout` bounds the whole of a connect, as one
+  deadline from `connect()`: the host's lookup, the TCP connect, a
+  `wss://` TLS handshake and the upgrade. Natively the TLS handshake gave
+  up at a fixed three seconds whatever `timeout` said, and on Node nothing
+  bounded a connect until the transport was up, so a client of a server
+  that never answered TLS waited for good. A `timeout` of 0 waits for as
+  long as it takes, as it did on Node, where natively it failed a lookup
+  at once and still gave TLS its three seconds.
+- A `ServerWebSocket` lets go of the sessions still upgrading when it
+  stops: `stopAccepting()`, `drain()` and `close()` close each one, as
+  `ServerSocket` drops a TLS handshake in flight. None did, and the
+  deadline on those sessions is kept from the tick they take away, so a
+  peer caught mid-upgrade was held with no deadline at all, and one that
+  finished upgrading afterwards opened -- and was announced -- on a server
+  that had stopped or was draining. On Node a TLS handshake that finishes
+  after the server stopped is refused for the same reason. `drain()`
+  refuses a close code that may not be sent before it stops anything:
+  each session's `closeWith` refused it and the refusals were swallowed,
+  so no session was told why it was dropped.
+- A secure `ServerWebSocket` gives a session all of `handshakeTimeout` from
+  accept, over its TLS handshake and its upgrade together. Natively an
+  accepted session gave its TLS handshake a fixed three seconds whatever
+  `handshakeTimeout` said; on Node the TLS server was never given it, so a
+  peer that connected and said nothing held its descriptor for Node's
+  default of two minutes.
+- `ServerWebSocket.pendingHandshakeCount()` is the sessions still arriving,
+  in their TLS handshake or their upgrade -- what `maxPendingHandshakes`
+  bounds -- and `handshakeFailures` counts those that never arrive: a TLS
+  handshake or upgrade request that failed, a peer gone first, or
+  `handshakeTimeout` run out. Both stayed at 0 on every `ServerWebSocket`.
+  A refusal by `upgrade` is not counted, nor a session stopping or closing
+  the server let go of. A session under a `handshakeTimeout` of 0 is
+  counted and dropped like the rest; it had been left off the list.
+- A `ServerWebSocket` takes the TLS methods it inherits from `ServerSocket`:
+  `setCertificate()`, `addSNICertificate()` and `setALPN()`, as well as
+  `requireClientCertificate()`. Each reached into the listener
+  `ServerSocket` builds, which a `ServerWebSocket` never does -- natively a
+  null dereference, which on hxcpp ends the process -- and on Node each was
+  kept where this server's listener never looked: a certificate given to
+  `setCertificate()` left `listen()` refusing for want of one, and the SNI
+  entries and ALPN list were ignored. On Node each SNI certificate's
+  context is made once, with the server, and opens a key's passphrase. A
+  session reports what its handshake agreed in `alpnProtocol`, which read
+  `null` on every `WebSocket`.
+- A `ServerWebSocket`'s `cert` is wanted before `bind()`, as its
+  documentation now says, and a secure server will not `listen()` without
+  one. A native server builds its TLS configuration in `bind()`, so a
+  certificate assigned afterwards was taken without a word and never
+  presented, and `listen()` did not ask whether there was one: the server
+  listened and every handshake failed silently. `cert` is now refused once
+  bound, and on a plain server, which would never present it.
+- A secure `ServerWebSocket` with `certAuthority` set asks every client for
+  a certificate that authority issued, and refuses one that presents none,
+  natively as on Node. Natively the authority was installed with
+  verification left off, as the constructor set it so that ordinary
+  clients would not be asked, so a server told to require client
+  certificates let in clients that had none. `requireClientCertificate()`,
+  which dereferenced a listener a `ServerWebSocket` never builds, now does
+  the same thing, and both are refused on a plain server and once bound.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened
