@@ -30,7 +30,9 @@ class KeyFormFixture {
 		}
 		__attempted = true;
 
-		var directory:String = haxe.io.Path.join([__tempDirectory(), "crossbyte-key-forms-" + Std.random(0x7FFFFFFF)]);
+		// Below 2^30: neko's integers are 31 bits, and Std.random refuses one
+		// it cannot hold.
+		var directory:String = haxe.io.Path.join([__tempDirectory(), "crossbyte-key-forms-" + Std.random(0x3FFFFFFF)]);
 		try {
 			sys.FileSystem.createDirectory(directory);
 			var forms:Array<KeyForm> = [];
