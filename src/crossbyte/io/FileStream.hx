@@ -1815,7 +1815,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 					if (dirPath != "" && !FileSystem.exists(dirPath)) {
 						FileSystem.createDirectory(dirPath);
 					}
-					__output = HaxeFile.write(path, true);
+					__output = FileOps.write(path);
 				case APPEND:
 					__output = HaxeFile.append(path, true);
 					__output.seek(0, FileSeek.SeekEnd);
@@ -2033,7 +2033,7 @@ private class AsyncFile {
 				if (directory != "" && !FileSystem.exists(directory)) {
 					FileSystem.createDirectory(directory);
 				}
-				output = HaxeFile.write(path, true);
+				output = FileOps.write(path);
 			case APPEND:
 				output = HaxeFile.append(path, true);
 				output.seek(0, FileSeek.SeekEnd);

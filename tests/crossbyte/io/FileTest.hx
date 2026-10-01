@@ -911,6 +911,48 @@ class FileTest extends utest.Test {
 		try dir.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
+	public function testWritingAFileAnotherHandleHasOpenReplacesItsContents():Void {
+		// On the jvm under Windows the standard library's write deletes the
+		// file and opens it afresh; Windows refuses the delete while another
+		// handle has the file open, and the old file was then opened without
+		// being cut: "0123456789" saved over with "ab" read "ab23456789", and
+		// nothing said so.
+		var dir = File.createTempDirectory();
+		var file = dir.resolvePath("held.txt");
+		var copySource = dir.resolvePath("source.txt");
+		HaxeFile.saveContent(file.nativePath, "0123456789");
+		HaxeFile.saveContent(copySource.nativePath, "gh");
+		var reader = HaxeFile.read(file.nativePath, true);
+		var seen:Array<String> = [];
+
+		try {
+			file.save(ByteArray.fromBytes(Bytes.ofString("ab")), true);
+			seen.push(HaxeFile.getContent(file.nativePath));
+
+			File.saveText(file.nativePath, "cd");
+			seen.push(HaxeFile.getContent(file.nativePath));
+
+			File.saveBytes(file.nativePath, ByteArray.fromBytes(Bytes.ofString("xy")));
+			seen.push(HaxeFile.getContent(file.nativePath));
+
+			var stream = new FileStream();
+			stream.open(file, FileMode.WRITE);
+			stream.writeUTFBytes("ef");
+			stream.close();
+			seen.push(HaxeFile.getContent(file.nativePath));
+
+			copySource.copyTo(file, true);
+			seen.push(HaxeFile.getContent(file.nativePath));
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		reader.close();
+		Assert.same(["ab", "cd", "xy", "ef", "gh"], seen);
+
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
 	public function testGetRelativePathAnswersNullForWhatIsNotBelow():Void {
 		// A sibling came back as its bare name, "c", which reads as a child.
 		var root = File.createTempDirectory();
