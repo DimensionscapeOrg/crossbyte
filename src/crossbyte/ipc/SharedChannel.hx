@@ -15,7 +15,7 @@ import crossbyte.events.TickEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.Object;
 import haxe.Timer;
-import crossbyte.ipc._internal.BoundedUnserializer;
+import crossbyte._internal.serial.BoundedUnserializer;
 import haxe.Serializer;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;

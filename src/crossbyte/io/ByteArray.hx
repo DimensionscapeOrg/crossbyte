@@ -34,7 +34,12 @@ import format.amf3.Reader as AMF3Reader;
 import format.amf3.Tools as AMF3Tools;
 import format.amf3.Value as AMF3Value;
 import format.amf3.Writer as AMF3Writer;
+import crossbyte._internal.serial.BoundedAMF.BoundedAMFReader;
+import crossbyte._internal.serial.BoundedAMF.BoundedAMF3Reader;
 #end
+import crossbyte._internal.serial.BoundedUnserializer;
+import crossbyte._internal.serial.JsonNesting;
+import crossbyte.errors.IOError;
 
 /**
 	The ByteArray class provides methods and properties to optimize reading,
@@ -403,6 +408,12 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 				read can be tried again once the rest has arrived.
 		@throws RangeError An `HXSF` or `JSON` object declares 2^31 bytes or
 				more, which no ByteArray holds.
+		@throws IOError The object nests values within values more than 256
+				levels deep (128 in `AMF0` or `AMF3`, whose levels take more
+				stack). It is refused before reading it could exhaust the
+				stack: a peer's object, read through a socket's `readObject`,
+				nested a few thousand deep ended the process. Its bytes are
+				consumed.
 	**/
 	public inline function readObject():Dynamic {
 		return this.readObject();
@@ -1023,24 +1034,31 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			#if format
 			case AMF0:
 				var input = new BytesInput(this, position);
-				var reader = new AMFReader(input);
+				var reader = new BoundedAMFReader(input);
 				var data = unwrapAMFValue(reader.read());
 				position = input.position;
 				return data;
 
 			case AMF3:
 				var input = new BytesInput(this, position);
-				var reader = new AMF3Reader(input);
+				var reader = new BoundedAMF3Reader(input);
 				var data = unwrapAMF3Value(reader.read());
 				position = input.position;
 				return data;
 			#end
 
+			// Bounded, every encoding: an object is what a peer sends a
+			// socket, and natively one nested a few thousand deep, 12 KB,
+			// overflowed the stack reading it and ended the process.
 			case HXSF:
-				return Unserializer.run(__readObjectText());
+				return BoundedUnserializer.run(__readObjectText());
 
 			case JSON:
-				return Json.parse(__readObjectText());
+				var text:String = __readObjectText();
+				if (!JsonNesting.within(text, BoundedUnserializer.LIMIT)) {
+					throw new IOError('nested more than ${BoundedUnserializer.LIMIT} levels deep');
+				}
+				return Json.parse(text);
 
 			default:
 				throw new Exception(__unsupportedEncoding(objectEncoding));
