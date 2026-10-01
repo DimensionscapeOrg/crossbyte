@@ -12,19 +12,27 @@ import crossbyte.events.SQLErrorEvent;
 	`run` does the work on the worker's thread and reports how it went.
 	`operation` -- the `SQLEvent` type it reports -- and `statement`, the
 	statement it reports to or `null` for the connection's own work, say whom
-	to tell when it never runs: queued behind a `close()`, or behind an open
-	that failed.
+	to tell when it never runs: queued behind a `close()`, behind an open
+	that failed, or before a `cancel()`.
+
+	`epoch` is the connection's count of `cancel()` calls when the job was
+	queued: one queued before the latest is dropped. A job that `keep`s --
+	an open, a close, a cancel's own report -- is never dropped.
 **/
 @:noCompletion
 class SQLiteJob {
 	public var run(default, null):Void->Void;
 	public var operation(default, null):String;
 	public var statement(default, null):Null<SQLiteStatement>;
+	public var epoch(default, null):Int;
+	public var keep(default, null):Bool;
 
-	public function new(run:Void->Void, operation:String, statement:Null<SQLiteStatement>) {
+	public function new(run:Void->Void, operation:String, statement:Null<SQLiteStatement>, epoch:Int, keep:Bool) {
 		this.run = run;
 		this.operation = operation;
 		this.statement = statement;
+		this.epoch = epoch;
+		this.keep = keep;
 	}
 }
 

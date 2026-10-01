@@ -158,6 +158,11 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	// arrives the old worker still holds its connection, and an open now
 	// would race it.
 	@:noCompletion private var __closing:Bool = false;
+	// How many times cancel() has been called, as each job was queued and as
+	// the worker reads it: work queued before the latest cancel is dropped.
+	// Written on the calling thread and read on the worker's, after the
+	// queue's own lock has passed it between them.
+	@:noCompletion private var __cancelEpoch:Int = 0;
 	@:noCompletion private var __savepoints:Array<String> = [];
 	@:noCompletion private var __savepointSeq:Int = 0;
 	@:noCompletion private var __inTransaction:Bool = false;
@@ -623,26 +628,63 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		}
 	}
 
-	public function cancel():Void {
-		if (__async) {
-			__sqlWorker.cancel();
+	/**
+		Stops what this connection is doing and what it has been asked to do,
+		then dispatches `SQLEvent.CANCEL` once that has taken effect, as AIR's
+		`cancel()` does. The connection stays open and usable: what is asked
+		of it after the call runs as usual.
 
-			#if !php
-			// Drained rather than replaced. The worker is parked inside
-			// pop(true) holding a reference to this queue, so swapping in a
-			// fresh one left it waiting on a queue nobody would ever add to
-			// again -- a thread parked for the life of the process, while
-			// every later job went to a queue with no consumer and silently
-			// never ran. Draining keeps the one the worker is waiting on, and
-			// the null wakes it so it can see it has been cancelled.
-			__sqlMutex.acquire();
-			while (__sqlQueue.pop(false) != null) {}
-			__sqlMutex.release();
-			__sqlQueue.add(null);
-			#end
+		On an asynchronous connection the statement running now is
+		interrupted -- SQLite stops it at its next step and it fails with
+		"interrupted" -- and everything queued before the call is dropped,
+		each reporting an `SQLErrorEvent` that says so, to its statement or
+		to this connection, so nothing waiting on one waits for ever. `CANCEL`
+		follows them. An open or a close already asked for is not dropped.
+
+		On a synchronous connection nothing is queued: a statement running on
+		another thread is interrupted, and `CANCEL` is dispatched at once.
+
+		SQLite takes a whole transaction back when a write inside it is
+		interrupted, and leaves one open otherwise: `inTransaction` says which.
+		On targets other than cpp a statement already running is not
+		interrupted, and finishes first. Does nothing on a connection that is
+		not open.
+
+		It cancelled the connection's worker instead: the statement running
+		finished with nothing left to report it, the work queued was dropped
+		without a word, `CANCEL` came at once, and `close()` never closed,
+		holding the connection and its file lock for the life of the process.
+	**/
+	public function cancel():Void {
+		if (!__isOpen()) {
+			return;
 		}
 
-		__dispatchSQLEvent(SQLEvent.CANCEL);
+		if (!__async) {
+			__interrupt();
+			__dispatchSQLEvent(SQLEvent.CANCEL);
+			return;
+		}
+
+		#if !php
+		// Counted before the interrupt and before CANCEL is queued: the
+		// worker drops whatever it takes up from now on that was queued
+		// before this.
+		__cancelEpoch++;
+		__interrupt();
+		__addToQueue(() -> __sqlWorker.sendProgress(new SQLEvent(SQLEvent.CANCEL)), SQLEvent.CANCEL, null, true);
+		#end
+	}
+
+	/** Stops the statement running now at its next step, where the target can. **/
+	@:noCompletion private function __interrupt():Void {
+		#if cpp
+		var native:NativeSQLiteConnection = __native;
+
+		if (native != null) {
+			native.interrupt();
+		}
+		#end
 	}
 
 	public function close():Void {
@@ -682,7 +724,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				// arrive. The loop sends the worker's Complete once it has told
 				// what was queued behind this that it will not run.
 				__sqlClosing = true;
-			}, SQLEvent.CLOSE);
+			}, SQLEvent.CLOSE, null, true);
 		} else {
 			var connection:Connection = __connection;
 
@@ -805,7 +847,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		__async = true;
 		__opened = true;
 		__initSQLWorker();
-		__addToQueue(__openAsync(reference, openMode, autoCompact, pageSize), SQLEvent.OPEN);
+		__addToQueue(__openAsync(reference, openMode, autoCompact, pageSize), SQLEvent.OPEN, null, true);
 	}
 
 	/**
@@ -1067,7 +1109,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	private function __sqlWork(m:Dynamic):Void {
 		#if !php
-		while (!__sqlWorker.canceled && !__sqlClosing) {
+		while (!__sqlClosing) {
 			// Blocks until there is work. The Array path this replaces spun:
 			// an empty queue fell through to haxe.Timer.delay(fn, 0), which
 			// schedules rather than waits, so an idle async connection burned
@@ -1078,15 +1120,26 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				continue;
 			}
 
+			if (!job.keep && job.epoch < __cancelEpoch) {
+				__refuse(job, "Cancelled: cancel() was called before it ran.");
+				continue;
+			}
+
 			job.run();
 		}
 
 		// Queued behind the close, or behind an open that failed: each is
-		// told it will never run, where it waited for ever.
+		// told it will never run, where it waited for ever. A cancel's own
+		// report still goes out.
 		var left:SQLiteJob = __sqlQueue.pop(false);
 
 		while (left != null) {
-			__refuse(left, "The connection is closed.");
+			if (left.keep) {
+				left.run();
+			} else {
+				__refuse(left, "The connection is closed.");
+			}
+
 			left = __sqlQueue.pop(false);
 		}
 
@@ -1116,15 +1169,16 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	/**
 		The one place work is handed to the worker: `run`, which reports as
-		`operation` to `statement`, or to this connection when it is null.
+		`operation` to `statement`, or to this connection when it is null --
+		dropped by a `cancel()` made after it was queued unless it `keep`s.
 
 		Every caller routes through here rather than opening the queue itself.
 		The queue is a Deque, which locks for itself; this took the mutex
 		around it as well, which nothing needed.
 	**/
-	private function __addToQueue(run:Void->Void, operation:String, ?statement:SQLiteStatement):Void {
+	private function __addToQueue(run:Void->Void, operation:String, ?statement:SQLiteStatement, keep:Bool = false):Void {
 		#if !php
-		__sqlQueue.add(new SQLiteJob(run, operation, statement));
+		__sqlQueue.add(new SQLiteJob(run, operation, statement, __cancelEpoch, keep));
 		#end
 	}
 
