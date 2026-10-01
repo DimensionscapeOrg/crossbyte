@@ -1932,6 +1932,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `Metrics.toPrometheus()` prints whole numbers past 2^31 as they are.
+  They went through `Std.int`, which holds 31 bits: a counter of bytes
+  sent at three billion printed -1294967296 (2147483647 on the jvm), a
+  gauge at five billion 705032704, and a counter that falls reads to a
+  collector as the process restarting. Every sample is written the same
+  way, counters, gauges, histogram bounds, sums and counts, and every
+  whole number up to 2^53 now prints exactly.
 - `SnowflakeId` no longer hands out the same identifier twice when its
   clock reads fractions of a millisecond, as its default clock does
   natively: microseconds on Linux and macOS, and on Windows a thousandth

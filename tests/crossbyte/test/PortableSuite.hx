@@ -238,6 +238,9 @@ class PortableSuite {
 		// Int64 arithmetic on an injected clock, which JavaScript does with
 		// two Ints of its own.
 		runner.addCase(new crossbyte.cluster.SnowflakeIdTest());
+		// The exposition's numbers: a whole number past 2^31 went through
+		// Std.int, which wraps on JavaScript as it does on eval and cpp.
+		runner.addCase(new crossbyte.metrics.MetricsTest());
 		// Where a Haxe Int does not wrap at 32 bits by itself.
 		runner.addCase(new crossbyte.foundation.Seq32Test());
 		// PrimitiveValue's numbers, which Std.parseInt and Std.int read
