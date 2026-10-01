@@ -9,6 +9,7 @@ import crossbyte.net.rtc._internal.sctp.SctpDataChunk;
 import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 import crossbyte.net.rtc._internal.sctp.SctpPacket;
 import crossbyte.net.rtc._internal.sctp.SctpPacket.SctpChunk;
+import crossbyte.net.rtc._internal.sctp.SctpParameter;
 import utest.Assert;
 
 /**
@@ -1843,6 +1844,312 @@ class SctpDataTransferTest extends utest.Test {
 		the counter rolls over, which is the sort of fault that reaches
 		production because nothing short of a long run finds it.
 	**/
+	// ------------------------------------------------------------------
+	// Stream reset, RFC 6525
+	// ------------------------------------------------------------------
+
+	/** A RE-CONFIG chunk carrying one parameter. **/
+	private function reconfig(type:Int, fields:Array<Int>, streams:Array<Int>):SctpChunk {
+		var value = new ByteArray();
+		value.endian = Endian.BIG_ENDIAN;
+
+		for (field in fields) {
+			value.writeInt(field);
+		}
+
+		for (streamId in streams) {
+			value.writeShort(streamId);
+		}
+
+		value.position = 0;
+
+		var parameter = new ByteArray();
+		SctpParameter.writeAll(parameter, [new SctpParameter(type, value)]);
+		parameter.position = 0;
+		return new SctpChunk(SctpPacket.CHUNK_RECONFIG, 0, parameter);
+	}
+
+	/** Every RE-CONFIG parameter in a packet, as its type and its fields read as 32-bit numbers. **/
+	private function reconfigIn(packet:ByteArray):Array<{type:Int, fields:Array<Int>, streams:Array<Int>}> {
+		var found = [];
+		var decoded = SctpPacket.decode(packet, false);
+
+		if (decoded == null) {
+			return found;
+		}
+
+		for (chunk in decoded.chunks) {
+			if (chunk.type != SctpPacket.CHUNK_RECONFIG) {
+				continue;
+			}
+
+			for (parameter in SctpParameter.readAll(chunk.value, 0, chunk.value.length)) {
+				var value = parameter.value;
+				value.endian = Endian.BIG_ENDIAN;
+				value.position = 0;
+
+				var fixed:Int = switch (parameter.type) {
+					case SctpParameter.OUTGOING_SSN_RESET: 3;
+					case SctpParameter.INCOMING_SSN_RESET: 1;
+					default: Std.int(value.length / 4);
+				}
+
+				var fields:Array<Int> = [for (_ in 0...fixed) value.readInt()];
+				var streams:Array<Int> = [];
+
+				while (value.position + 2 <= value.length) {
+					streams.push(value.readUnsignedShort());
+				}
+
+				found.push({type: parameter.type, fields: fields, streams: streams});
+			}
+		}
+
+		return found;
+	}
+
+	/**
+		A stream reset goes out in RFC 6525's form: an Outgoing SSN Reset
+		Request numbered from this end's initial TSN, answering the last
+		request the peer would have made, naming the last TSN assigned and
+		the stream.
+
+		And both ends say in their INIT and INIT ACK that they understand
+		RE-CONFIG, which a browser looks for before it will reset anything
+		toward this end, or accept a reset from it.
+	**/
+	public function testAStreamResetIsAskedForInRfc6525sForm():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		Assert.isTrue(pair.client.peerSupportsReconfig && pair.server.peerSupportsReconfig, "the INIT exchange did not say RE-CONFIG is understood");
+
+		var asked:Array<{type:Int, fields:Array<Int>, streams:Array<Int>}> = [];
+		pair.watchClient(packet -> for (found in reconfigIn(packet)) asked.push(found));
+
+		pair.clientData.send(3, text("before"), SctpDataChunk.PPID_STRING, true, pair.now);
+		var lastTsn:Int = (@:privateAccess pair.clientData.__nextTsn - 1) | 0;
+		Assert.isTrue(pair.clientData.resetStreams([3], pair.now), "the reset was not asked for");
+
+		Assert.equals(1, asked.length, "the request did not go at once");
+
+		if (asked.length == 1) {
+			Assert.equals(SctpParameter.OUTGOING_SSN_RESET, asked[0].type);
+			Assert.equals(pair.client.localTsn, asked[0].fields[0], "the request is not numbered from the initial TSN");
+			Assert.equals((pair.server.localTsn - 1) | 0, asked[0].fields[1], "the request does not answer the peer's last request");
+			Assert.equals(lastTsn, asked[0].fields[2], "the request does not name the last TSN assigned");
+			Assert.equals("3", asked[0].streams.join(","));
+		}
+	}
+
+	/**
+		A peer's reset is performed only once everything it sent before has
+		arrived, and answered In progress until then.
+
+		Here the message ahead of it is lost and the request overtakes it, as
+		it can over UDP. The receiver answers In progress, the sender asks
+		again, the message is resent and delivered, and only then is the
+		stream reset and the far end told.
+	**/
+	public function testAResetWaitsForWhatWasSentBeforeIt():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var events:Array<String> = [];
+		var answers:Array<Int> = [];
+
+		pair.serverData.onMessage = (_, payload, _) -> {
+			payload.position = 0;
+			events.push(payload.readUTFBytes(payload.length));
+		};
+		pair.serverData.onStreamsReset = streams -> events.push("reset " + streams.join(","));
+		pair.watchServer(packet -> for (found in reconfigIn(packet)) if (found.type == SctpParameter.RECONFIG_RESPONSE) answers.push(found.fields[1]));
+
+		pair.dropNextToServer = 1;
+		pair.clientData.send(3, text("ahead of the reset"), SctpDataChunk.PPID_STRING, true, pair.now);
+		pair.clientData.resetStreams([3], pair.now);
+
+		Assert.isTrue(pair.run(() -> events.length >= 2 && @:privateAccess pair.clientData.__resetRequest == null), "the reset never completed");
+		Assert.equals("ahead of the reset,reset 3", events.join(","), "the stream was reset before what was sent ahead of it arrived");
+		Assert.equals(6, answers[0], "the first answer was not In progress");
+		Assert.equals(1, answers[answers.length - 1], "the last answer was not Performed");
+	}
+
+	/**
+		A request repeated is answered as it stands now, and one out of
+		sequence is refused as such (RFC 6525 section 5.2.1).
+	**/
+	public function testAResetRequestIsAnsweredBySequence():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var answers:Array<String> = [];
+		pair.watchServer(packet -> for (found in reconfigIn(packet)) if (found.type == SctpParameter.RECONFIG_RESPONSE) answers.push(found.fields[0] + ":" + found.fields[1]));
+
+		var first:Int = pair.client.localTsn;
+		var lastTsn:Int = (pair.client.localTsn - 1) | 0;
+		var request = reconfig(SctpParameter.OUTGOING_SSN_RESET, [first, (pair.server.localTsn - 1) | 0, lastTsn], [3]);
+
+		pair.chunksToServer([request]);
+		pair.chunksToServer([request]);
+		pair.chunksToServer([reconfig(SctpParameter.OUTGOING_SSN_RESET, [(first + 5) | 0, 0, lastTsn], [3])]);
+
+		Assert.equals(first + ":1," + first + ":1," + ((first + 5) | 0) + ":5", answers.join(","),
+			"a request, its repeat and one out of sequence were answered " + answers.join(","));
+	}
+
+	/**
+		After a peer resets a stream, its next message on it is sequence zero,
+		and is delivered.
+
+		What a browser does: its stream sequence numbers start again when it
+		resets a stream, and a channel it opens on that number afterwards
+		begins at zero. With the reset unread, this end went on expecting the
+		old stream's next number and held the new channel's messages for one
+		that would never come.
+	**/
+	public function testAfterAPeersResetAStreamStartsAgainFromZero():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var heard:Array<String> = [];
+		pair.serverData.onMessage = (_, payload, _) -> {
+			payload.position = 0;
+			heard.push(payload.readUTFBytes(payload.length));
+		};
+
+		pair.clientData.send(5, text("one"), SctpDataChunk.PPID_STRING, true, pair.now);
+		pair.clientData.send(5, text("two"), SctpDataChunk.PPID_STRING, true, pair.now);
+		Assert.isTrue(pair.run(() -> heard.length == 2), "the first two never arrived");
+
+		// The peer resets stream 5 and starts again on it, as a browser does,
+		// with the next TSN it has.
+		var tsn:Int = @:privateAccess pair.clientData.__nextTsn;
+		pair.chunksToServer([
+			reconfig(SctpParameter.OUTGOING_SSN_RESET, [pair.client.localTsn, (pair.server.localTsn - 1) | 0, (tsn - 1) | 0], [5]),
+			new SctpDataChunk(tsn, 5, 0, SctpDataChunk.PPID_STRING, text("again"), SctpDataChunk.FLAG_BEGINNING | SctpDataChunk.FLAG_ENDING).toChunk()
+		]);
+
+		Assert.equals("one,two,again", heard.join(","), "the first message after the peer's reset was held for a sequence that will never come");
+	}
+
+	/**
+		A peer that did not say it understands RE-CONFIG is asked nothing: a
+		CrossByte peer from before 1.0.
+	**/
+	public function testAPeerWithoutReconfigIsAskedNothing():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var asked:Int = 0;
+		pair.watchClient(packet -> asked += reconfigIn(packet).length);
+		@:privateAccess pair.client.peerSupportsReconfig = false;
+
+		Assert.isFalse(pair.clientData.resetStreams([3], pair.now), "a reset was promised to a peer that cannot do one");
+		pair.run(() -> false);
+		Assert.equals(0, asked, "a RE-CONFIG went to a peer that never said it understands one");
+	}
+
+	/**
+		A peer asking this end to reset its streams is answered by the reset
+		itself, which names the request it answers (RFC 6525 section 5.2.3);
+		one asking for streams nothing here sends on is told there was nothing
+		to do.
+	**/
+	public function testAnIncomingResetRequestIsAnsweredByTheReset():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var said:Array<{type:Int, fields:Array<Int>, streams:Array<Int>}> = [];
+		pair.watchServer(packet -> for (found in reconfigIn(packet)) said.push(found));
+
+		// Stands in for the data channels: what the peer asks to close, closes.
+		var sending:Array<Int> = [7];
+		pair.serverData.onStreamsReset = function(streams:Null<Array<Int>>):Void {
+			pair.serverData.resetStreams([for (streamId in streams) if (sending.indexOf(streamId) >= 0) streamId], pair.now);
+		};
+
+		var first:Int = pair.client.localTsn;
+		pair.chunksToServer([reconfig(SctpParameter.INCOMING_SSN_RESET, [first], [7])]);
+
+		Assert.equals(1, said.length, "the request was not answered");
+
+		if (said.length == 1) {
+			Assert.equals(SctpParameter.OUTGOING_SSN_RESET, said[0].type, "the answer was not the reset");
+			Assert.equals(first, said[0].fields[1], "the reset does not name the request it answers");
+			Assert.equals("7", said[0].streams.join(","));
+		}
+
+		pair.chunksToServer([reconfig(SctpParameter.INCOMING_SSN_RESET, [(first + 1) | 0], [9])]);
+
+		Assert.equals(2, said.length, "a request for streams nothing sends on was not answered");
+
+		if (said.length == 2) {
+			Assert.equals(SctpParameter.RECONFIG_RESPONSE, said[1].type);
+			Assert.equals(0, said[1].fields[1], "it was not answered Success - Nothing to do");
+		}
+	}
+
+	/**
+		A reset nobody answers is asked again on a backed-off timer until it
+		is, and each unanswered ask counts against the association like a data
+		timeout, a wait that ends.
+	**/
+	public function testAnUnansweredResetIsAskedAgain():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var asked:Int = 0;
+		pair.watchClient(packet -> asked += reconfigIn(packet).length);
+
+		pair.cutToServer = true;
+		pair.clientData.resetStreams([3], pair.now);
+
+		for (_ in 0...30) {
+			pair.clientData.poll(pair.now);
+			pair.step();
+		}
+
+		Assert.isTrue(asked >= 3, "an unanswered reset was asked " + asked + " times in seven seconds");
+		Assert.isTrue(@:privateAccess pair.clientData.__errorCount > 0, "unanswered resets did not count against the association");
+
+		pair.cutToServer = false;
+		Assert.isTrue(pair.run(() -> @:privateAccess pair.clientData.__resetRequest == null), "the reset was never answered once the path came back");
+	}
+
+	/**
+		Once the peer has asked to shut down, no reset is asked for: a request
+		waiting, or one the peer never answered, is dropped rather than sent
+		into a shutdown, where RFC 6525 has none made.
+	**/
+	public function testNoResetIsAskedForOnceThePeerShutsDown():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var asked:Int = 0;
+		pair.watchClient(packet -> for (found in reconfigIn(packet)) if (found.type == SctpParameter.OUTGOING_SSN_RESET) asked++);
+
+		// One in flight, never answered, and another waiting behind it.
+		pair.cutToServer = true;
+		pair.clientData.resetStreams([3], pair.now);
+		pair.clientData.resetStreams([5], pair.now);
+		Assert.equals(1, asked, "the first request did not go");
+
+		// The peer asks to shut down, everything sent having been acknowledged.
+		var shutdown = new ByteArray();
+		shutdown.endian = Endian.BIG_ENDIAN;
+		shutdown.writeInt((@:privateAccess pair.clientData.__nextTsn - 1) | 0);
+		shutdown.position = 0;
+		pair.sackToClient(new SctpChunk(SctpPacket.CHUNK_SHUTDOWN, 0, shutdown));
+
+		for (_ in 0...30) {
+			pair.clientData.poll(pair.now);
+			pair.now += 0.25;
+		}
+
+		Assert.equals(1, asked, "a reset was asked for " + (asked - 1) + " more times during the shutdown");
+	}
+
 	public function testSequenceComparisonSurvivesWrapping():Void {
 		Assert.isTrue(SctpDataChunk.isEarlier(1, 2));
 		Assert.isFalse(SctpDataChunk.isEarlier(2, 1));
@@ -1939,6 +2246,19 @@ private class Pair {
 			watch(payload);
 			toServer.push(payload);
 		};
+	}
+
+	/** Sees every packet the server sends, which still goes on to the client. **/
+	public function watchServer(watch:ByteArray->Void):Void {
+		server.onSend = function(payload:ByteArray):Void {
+			watch(payload);
+			toClient.push(payload);
+		};
+	}
+
+	/** Hands the server chunks as though the client had sent them, in one packet. **/
+	public function chunksToServer(chunks:Array<SctpChunk>):Void {
+		server.receive(client.packetFor(chunks), now);
 	}
 
 	private function deliver():Void {

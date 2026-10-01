@@ -82,6 +82,14 @@ entry below says how:
   sequence, which a peer from before 1.0 does not know, so both ends need
   1.0 for what was sent before a close to arrive before it.
 - `DatagramSocket.timeout` is gone; it did nothing, so delete what sets it.
+- A closed `DataChannel` resets its SCTP stream, so the peer's end closes
+  too. That needs RE-CONFIG at both ends: a peer on 1.0.0-rc.1 does not
+  advertise it, is not asked, and keeps its end open as before.
+- `PeerConnection.addLocalCandidate` throws for a relayed candidate, which
+  never worked from there: ask `gatherRelayed` or `gatherRelayedFrom`.
+- An `IceAgent` fails when it has selected no pair 40 seconds after
+  `start` (`timeout`), where it waited without end; set `timeout` to 0 to
+  keep waiting.
 
 ### Added
 - `ReliableDatagramServerSocket.relayVerifyCert`, for a TURN relay reached
@@ -89,6 +97,15 @@ entry below says how:
   throwaway one. The server passed its relay client an authority
   (`relayCertAuthority`) and nothing else, so `TurnClient.verifyCert`
   could not be reached.
+- `TurnServer.verifyCert`, so a relay `PeerConnection.gatherRelayedFrom`
+  reaches over TLS can have its certificate check turned off for a test
+  against a throwaway one, as `TurnClient.verifyCert` allows. Through
+  `PeerConnection` it could not be turned off at all.
+- `IceAgent.onStateChanged`, called as the agent moves to CHECKING,
+  CONNECTED and FAILED. Losing consent set `state` and called nothing, so
+  a caller holding an agent, one attached to a
+  `ReliableDatagramServerSocket`: had to poll `state` every tick to learn
+  that its path had gone.
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
   `DETACH DATABASE`, and `loadSchema()` with `getSchemaResult()`: a
   database's tables with their columns, views, indices and triggers.
@@ -1152,6 +1169,21 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- Off native, `DtlsCertificate`'s constructor, `generate`, `fingerprintOf`
+  and `matches` throw an `IllegalOperationError` naming the target, and
+  each says so in its documentation. The constructor threw "That
+  certificate could not be read" whatever it was given, `generate` a bare
+  String, and `fingerprintOf` and `matches` answered null and false, a
+  certificate that would not parse, a mismatch.
+- `PeerConnection.addLocalCandidate` and `PeerConnectionHost.
+  addLocalCandidate` refuse a relayed candidate with an `ArgumentError`
+  naming `gatherRelayed` and `gatherRelayedFrom`. A relayed address works
+  only through the allocation that lent it, made from the connection's own
+  socket; one added from outside was taken in silence, and its checks went
+  straight at the peer while the peer was told to answer the relay. The
+  `TurnClient` and `IceAgent` examples now show the wiring a relayed
+  candidate needs, the way to send through the relay, and what it
+  forwards handed back, and call methods that exist.
 - Reliable UDP sends what a pass produces from one socket in as few system
   calls as the system allows. Each datagram was a `sendto` of its own,
   which was nearly all a server sending reliable UDP spent: 5.9 us a
@@ -1992,6 +2024,93 @@ entry below says how:
   session at once, as `close()` did. A server's own `close()` and
   `releaseRelay()` end their sessions that way, and so do a message past
   `maxMessageSize` and an output queue past its limit.
+- `PeerConnection.poll` and `PeerConnectionHost.poll` say `now` must be
+  `haxe.Timer.stamp()`'s time. They said a test could drive them with a
+  clock of its own, which cannot work: what arrives on the socket comes
+  with no time and is handled on `haxe.Timer.stamp()`, so timers armed on
+  one clock and checked on the other fire at once or never.
+- `DtlsTransport`'s documentation says which peer is the DTLS client as
+  `PeerConnection` and `SessionDescription` do: the description's
+  `a=setup` decides (RFC 5763, RFC 8842), and the answerer, the
+  ICE-controlled peer, takes the client role by convention, as a browser
+  answering does. It said the controlling agent was the client, the
+  opposite. Its example calls methods that exist.
+- The `PeerConnection` class example advertises an address: it binds the
+  wildcard, which names no interface, and now asks `LocalAddress` for the
+  default route and adds it, where it advertised nothing a peer could
+  check. The class documentation said such a peer ended up advertising
+  loopback; it advertises no address at all.
+- With `TurnClient.useChannels` on, the first datagram `sendTo` sends to a
+  peer asks for a channel, and once the relay binds it the rest go as
+  ChannelData, as the class documentation said they would "on its own".
+  Only callers that asked for the channel themselves got one: a client
+  used directly sent every datagram as a thirty-six-byte indication.
+- A TURN relay reached over TCP or TLS that answers 300 Try Alternate is
+  followed to the relay it names, over a connection of its own, for
+  `PeerConnection.gatherRelayedFrom` and
+  `ReliableDatagramServerSocket.allocateRelay` alike. The connection was
+  opened once, so the retry reached the relay that had just redirected it,
+  which redirected it again, and the allocation failed as a redirection
+  back to a relay already asked. Over TLS the alternate's certificate is
+  checked against the ALTERNATE-DOMAIN the relay names (RFC 8489 section
+  14.16), and its address when it names none.
+- Closing a `DataChannel` closes it at both ends, by resetting its stream
+  as RFC 8831 section 6.7 has it (RFC 6525's RE-CONFIG), and a peer's
+  close, a browser's `channel.close()`, reaches `onClose` here. What
+  was sent before a close arrives before it. There was no stream reset:
+  `close()` was this end's alone, the peer went on sending into a channel
+  nothing read, a browser's channel never finished closing, and a
+  browser's close was never heard. Checked against Chrome in both
+  directions by `ci/interop/run.js`.
+- `PeerConnection.setRelayCredentials` with a new username leaves the
+  allocation held on the username it was made with, as its documentation
+  says, and uses the new one for the next relay asked. It compared the new
+  username with the held allocation's after rewriting the list entry that
+  allocation came from, so they always matched: the relay refused the next
+  Refresh with 441 and the allocation was lost, at the first renewal of
+  TURN REST credentials, whose usernames carry their expiry.
+  `TurnClient.setCredentials` now refuses a username other than the one
+  an allocation held or being made was signed with, where it took it and
+  lost the allocation the same way.
+- A `PeerConnection` gives up an ICE restart that has found no path within
+  `readyTimeout` of beginning, or whose agent finds none, and goes on as it
+  would have without it: over the old path while the peer answers consent
+  checks there, closing when it does not. Nothing ended a restart the peer
+  never answered, and while one was under way lost consent closed
+  nothing, so `restartIce()` toward a peer that had gone held the
+  connection open for good, and no later restart could begin. A restart
+  that found no path also failed the connection however well the old path
+  was doing.
+- An `IceAgent` gives up when it has not selected a pair within `timeout`
+  seconds of `start`, 40 by default, 0 for none, and `connected` fails
+  saying what it was waiting for. It could wait for ever: with no pair to
+  check (a peer offering only names, and no check arriving), as a
+  controlled agent whose pairs answered and was never nominated, or as a
+  controlling agent whose nomination went unanswered while another pair
+  had answered, which now nominates that pair instead. A nomination also
+  goes out under a transaction of its own, so a late copy of the answer
+  that proved the pair is no longer taken for the nomination's.
+- An `IceAgent` that has failed stays failed, answering and sending
+  nothing, as RFC 7675 has a sender whose consent expired stop. A check
+  nominating a pair brought one whose consent had run out back to
+  CONNECTED, through the path meant for the first selection, with nothing
+  reported. `connected`'s documentation said an agent that connected stays
+  connected until closed; it says now how the path can change and end.
+- `IceAgent.receive` returns true only for what is the agent's: a check
+  addressed to its credentials and signed with them, or an answer to a
+  check it sent. It returned true for every binding message, so a check
+  for another session or an answer to something it never asked was kept
+  from whatever else shared the socket.
+- `IceAgent.MAX_REMOTE_CANDIDATES` bounds the candidates an agent learns
+  from where a peer's checks arrive, as it bounded those a peer advertised.
+  Each check from a new address became a peer-reflexive candidate, paired
+  and checked back, so checks from 192 ports left 192 candidates and drew
+  384 datagrams. Past the cap a check from a new address goes unanswered.
+- An ICE candidate pair nothing answers is given up on 39.5 seconds after
+  its first check, as RFC 8489 gives up a transaction: seven transmissions
+  over 31.5 seconds, and sixteen times the first timeout for the last to be
+  answered. `IceAgent` waited one more doubling after the last and gave up
+  at 63.5, where its documentation said half a minute.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened

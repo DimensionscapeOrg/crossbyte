@@ -13,6 +13,7 @@ import crossbyte.net.DatagramSocket;
 import crossbyte.net.ice.IceAgent;
 import crossbyte.net.ice.IceCandidate;
 import crossbyte.net.ice.IceCandidatePair;
+import crossbyte.net.ice.IceCandidateType;
 import crossbyte.net.ice.IceAgentState;
 import crossbyte.net.ice.IceCredentials;
 import crossbyte.net.TurnClient;
@@ -38,13 +39,28 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 	one port can carry all of it.
 
 	```haxe
+	// Given weOffer:Bool, sendToPeer:PeerDescription->Void.
+	import crossbyte.net.LocalAddress;
+	import crossbyte.net.ice.IceCandidate;
+
 	var connection = new PeerConnection(weOffer);
 	connection.bind(0, "0.0.0.0");
 
-	// `description()` goes to the peer over whatever channel the application
-	// already has; the peer's comes back the same way.
-	signalling.send(connection.description());
-	signalling.onDescription = remote -> connection.connect(remote);
+	// A wildcard bind is every interface and so names none: ask which one
+	// carries the default route, and advertise that. Without it the
+	// description carries no address at all.
+	LocalAddress.primary().then(function(address) {
+		connection.addLocalCandidate(IceCandidate.host(address, connection.localPort));
+
+		// `description()` goes to the peer over whatever channel the
+		// application already has...
+		sendToPeer(connection.description());
+	});
+
+	// ...and the peer's comes back the same way.
+	function onPeerDescription(remote:PeerDescription):Void {
+		connection.connect(remote);
+	}
 
 	connection.ready.then(function(_) {
 		var chat = connection.createDataChannel("chat");
@@ -134,8 +150,9 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 	The one thing this does require is that this peer advertise an address the
 	browser can reach. Gathering only toward the candidates a browser offered
 	yields nothing at all, since none of them resolve, ask `LocalAddress` for
-	the default route as well, or the peer ends up advertising loopback and
-	reachable only from its own machine.
+	the default route as well, as the example above does. A connection bound
+	to the wildcard and told no address advertises none: the browser has
+	nothing to check, and nothing here can reach a name, so they never meet.
 
 	## Many on one port
 
@@ -230,7 +247,9 @@ class PeerConnection {
 
 	/**
 		How long, in seconds from `connect`, the whole stack has to come up
-		before the connection gives up and fails `ready`.
+		before the connection gives up and fails `ready`, and how long an
+		ICE restart has, from `restartIce` or the peer's restart offer, to
+		find its path before it is given up (see `restartIce`).
 
 		Every phase had its own ending except the ones that waited on the
 		peer to go first: a DTLS server waits for a ClientHello with no timer
@@ -299,6 +318,16 @@ class PeerConnection {
 		once it has one. Null when no restart is under way.
 	**/
 	@:noCompletion private var __restartAgent:IceAgent = null;
+
+	/** When the restart under way began, for `readyTimeout`. **/
+	@:noCompletion private var __restartStartedAt:Float = 0;
+
+	/**
+		What the restart under way replaced, put back if it is given up: this
+		side's credentials, whether its next description is an offer, and the
+		peer's description.
+	**/
+	@:noCompletion private var __beforeRestart:{credentials:IceCredentials, offering:Bool, remote:PeerDescription} = null;
 
 	/** Whether `connect` has started things, and when, for `readyTimeout`. **/
 	@:noCompletion private var __connecting:Bool = false;
@@ -424,8 +453,9 @@ class PeerConnection {
 		host candidate. A wildcard bind does not, `0.0.0.0` names every
 		interface and so names none, so a caller behind one should ask
 		`LocalAddress` which interface reaches the peer and pass the answer to
-		`addLocalCandidate`. Reflexive and relayed candidates go in the same
-		way, but nothing here discovers them yet; see the class documentation.
+		`addLocalCandidate`, or the description carries no address at all.
+		Reflexive and relayed candidates come from `gatherReflexive` and
+		`gatherRelayed`.
 	**/
 	public function bind(localPort:Int = 0, localAddress:String = "0.0.0.0"):Void {
 		if (__host != null) {
@@ -470,12 +500,26 @@ class PeerConnection {
 	}
 
 	/**
-		Adds an address this peer can be reached at.
+		Adds an address this peer can be reached at: the interface
+		`LocalAddress` says reaches the peer, a public address a server knows
+		it has, a reflexive one learned elsewhere.
 
-		`bind` adds the socket's own when it names one; reflexive and relayed
-		candidates arrive here from whatever gathered them.
+		`bind` adds the socket's own when it names one, and `gatherReflexive`
+		and `gatherRelayed` add what they find.
+
+		@throws ArgumentError For a relayed candidate. A relayed address works
+		only through the allocation that lent it, made from this connection's
+		socket: checks from it are wrapped for the relay to forward, and what
+		the relay forwards comes back through it. One added here had neither.
+		It was taken in silence and its checks went straight at the peer from
+		this socket, while the peer was told to answer the relay. Ask
+		`gatherRelayed` or `gatherRelayedFrom` for one.
 	**/
 	public function addLocalCandidate(candidate:IceCandidate):Void {
+		if (candidate != null && candidate.type == IceCandidateType.RELAYED) {
+			throw new ArgumentError("A relayed candidate works only through the allocation that lent it, made from this connection's socket; one added from outside would send its checks straight at the peer. Use gatherRelayed or gatherRelayedFrom.");
+		}
+
 		agent.addLocalCandidate(candidate);
 
 		if (__restartAgent != null) {
@@ -659,6 +703,16 @@ class PeerConnection {
 		given to `connect`, restarts this side, and `description()` is then
 		the answer to send back. A browser does that after `restartIce()`.
 
+		A restart that has not found a path within `readyTimeout` seconds of
+		beginning, the peer never answered the offer, or its checks failed,
+		is given up, and the connection is where it would be without it:
+		carrying on over the old path while the peer answers consent checks
+		there, and closing when it does not. `iceRestarting` goes false with
+		`agent` unchanged, and `description()` describes the session as it
+		was. Nothing ended a restart before, and while one was under way the
+		old path's consent closed nothing, so a restart toward a peer that had
+		gone held the connection open for good.
+
 		@throws ArgumentError Before `connect`, or once closed.
 	**/
 	public function restartIce():Void {
@@ -694,6 +748,8 @@ class PeerConnection {
 		var fresh:IceCredentials = __host != null ? @:privateAccess __host.__freshCredentials(this) : IceCredentials.generate();
 		var restarting = __makeAgent(offering, fresh);
 
+		__beforeRestart = {credentials: credentials, offering: __offering, remote: __remote};
+		__restartStartedAt = __clock();
 		__offering = offering;
 		credentials = fresh;
 		__restartAgent = restarting;
@@ -706,9 +762,12 @@ class PeerConnection {
 			}
 		}
 
+		// One that cannot find a path is given up, and the old path decides,
+		// as it would have without a restart. It used to fail the connection,
+		// however well the old path was still doing.
 		restarting.connected.then(pair -> __onRestarted(restarting, pair), function(error:String):Void {
 			if (restarting == __restartAgent) {
-				__fail("The ICE restart found no path to the peer: " + error);
+				__abandonRestart("The ICE restart found no path to the peer: " + error);
 			}
 		});
 
@@ -771,6 +830,7 @@ class PeerConnection {
 		var previous = agent;
 		agent = restarting;
 		__restartAgent = null;
+		__beforeRestart = null;
 		iceControlling = restarting.controlling;
 
 		if (__host != null) {
@@ -786,6 +846,51 @@ class PeerConnection {
 			__onPathFound(pair);
 		} else {
 			__route(pair);
+		}
+	}
+
+	/**
+		Gives up the restart under way: its agent is closed, and this side's
+		credentials, role in the exchange and record of the peer's are put
+		back as they were before it.
+
+		The old path then decides, as it would have with no restart: the
+		session carries on there while the peer answers consent checks, and
+		the connection closes if it has stopped. That is the case a deadline
+		was missing for, a restart toward a peer that had gone, which held
+		the connection open for good, since consent lost on the old path
+		closes nothing while a restart is under way.
+	**/
+	@:noCompletion private function __abandonRestart(reason:String):Void {
+		var restarting = __restartAgent;
+
+		if (__closed || restarting == null) {
+			return;
+		}
+
+		// Cleared first: closing it fails its future, whose handler would
+		// otherwise find it still the restart under way.
+		__restartAgent = null;
+		restarting.close();
+
+		if (__beforeRestart != null) {
+			credentials = __beforeRestart.credentials;
+			__offering = __beforeRestart.offering;
+
+			if (__beforeRestart.remote != null) {
+				__remote = __beforeRestart.remote;
+			}
+
+			__beforeRestart = null;
+		}
+
+		if (__host != null) {
+			@:privateAccess __host.__retire(this, restarting.localCredentials.usernameFragment);
+		}
+
+		if (agent.state == IceAgentState.FAILED) {
+			__shutdown(reason + " " + (agent.selectedPair != null ? "The peer had stopped answering consent checks on the path before it, too." : "No path was found before it either."),
+				false, false);
 		}
 	}
 
@@ -813,8 +918,15 @@ class PeerConnection {
 	}
 
 	/**
-		Moves every layer forward. Driven from the runtime tick once bound;
-		public so a test can drive it with a clock of its own.
+		Moves every layer forward. Driven from the runtime tick once bound.
+
+		@param now `haxe.Timer.stamp()`'s time, the one clock every layer here
+		is driven from (see "One clock" above), not a clock of the caller's
+		own, which this used to say would do. A datagram arrives with no time
+		attached, so the paths it takes read `haxe.Timer.stamp()` themselves,
+		and a clock of another epoch would put every retransmission due at
+		once or never. Public so a test can pass a later time on it, and move
+		every timer past its deadline in one call.
 	**/
 	public function poll(now:Float):Void {
 		if (__closed) {
@@ -848,6 +960,15 @@ class PeerConnection {
 			if (__closed) {
 				return;
 			}
+
+			// Given as long to find its path as a connection is to come up.
+			if (__restartAgent != null && now - __restartStartedAt >= readyTimeout) {
+				__abandonRestart("The ICE restart found no path to the peer within " + readyTimeout + " seconds.");
+
+				if (__closed) {
+					return;
+				}
+			}
 		}
 
 		// Consent is the agent's to lose and this connection's to act on, and
@@ -859,7 +980,8 @@ class PeerConnection {
 		//
 		// Except while an ICE restart is under way. The old path going is often
 		// why there is one, and the new agent decides: it replaces this one if
-		// it finds a path, and fails the connection if it cannot.
+		// it finds a path, and if it cannot, or runs out of time, it is given
+		// up and this decides after all.
 		if (agent.state == IceAgentState.FAILED && __restartAgent == null) {
 			__shutdown(connected ? "The peer stopped answering consent checks, so the path to it is no longer usable." : "The peer stopped answering consent checks before the connection was ready.",
 				false, false);
@@ -1211,7 +1333,8 @@ class PeerConnection {
 					password: server.password,
 					transport: server.transport != null ? server.transport : UDP
 					#if !(macro || (js && !nodejs)),
-					certAuthority: server.certAuthority
+					certAuthority: server.certAuthority,
+					verifyCert: server.verifyCert
 					#end
 				}
 		];
@@ -1249,7 +1372,13 @@ class PeerConnection {
 			}
 		}
 
-		if (__turn != null && __turnServer != null && (server == null || __turnServer.address == server) && __turnServer.username == username) {
+		// Against the username the allocation was made with, kept apart. It was
+		// read from the list entry the allocation came from, after the loop
+		// above had rewritten it, so it always matched: a new username went to
+		// the allocation held, the relay refused its next Refresh with 441,
+		// and the allocation was lost, at the first renewal of TURN REST
+		// credentials, whose usernames carry their expiry.
+		if (__turn != null && __turnServer != null && (server == null || __turnServer.address == server) && __turnUsername == username) {
 			__turn.setCredentials(username, password);
 		}
 	}
@@ -1268,6 +1397,13 @@ class PeerConnection {
 	@:noCompletion private var __turn:TurnClient;
 
 	@:noCompletion private var __turnServer:TurnServer;
+
+	/**
+		The username `__turn` was made with, which a relay ties its allocation
+		to. Not `__turnServer.username`: that entry is rewritten by
+		`setRelayCredentials` for the relays asked from then on.
+	**/
+	@:noCompletion private var __turnUsername:String = null;
 
 	@:noCompletion private var __relayedCandidate:IceCandidate;
 
@@ -1317,9 +1453,14 @@ class PeerConnection {
 		relay.useChannels = __relayUseChannels;
 		#if !(macro || (js && !nodejs))
 		relay.certAuthority = server.certAuthority;
+
+		// It could not be turned off through here, for a test against a relay
+		// with a throwaway certificate, as it can on the client itself.
+		relay.verifyCert = server.verifyCert != false;
 		#end
 		__turn = relay;
 		__turnServer = server;
+		__turnUsername = server.username;
 
 		if (relay.transport != UDP) {
 			// Over a connection of its own, which carries everything to and
@@ -1369,6 +1510,7 @@ class PeerConnection {
 
 			__turn = null;
 			__turnServer = null;
+			__turnUsername = null;
 			__closeTurnStream();
 			failures.push(relay.failure != null ? relay.failure : new TurnError(0, error, server.address + ":" + server.port));
 			__allocateFrom(index + 1, failures);
@@ -1424,6 +1566,7 @@ class PeerConnection {
 
 		__turn = null;
 		__turnServer = null;
+		__turnUsername = null;
 		__closeTurnStream();
 
 		if (__relayedCandidate != null) {
@@ -1482,13 +1625,11 @@ class PeerConnection {
 		// that only receives keeps its peer permitted.
 		__turn.permit(address, now);
 
-		// And a channel, which costs four bytes a datagram where an indication
-		// costs thirty-six. Asked for every time and ignored when one is
-		// already fresh; until the relay agrees, `sendTo` keeps using
-		// indications, so a relay that will not bind is a connection at the old
-		// price rather than no connection.
-		__turn.bindChannel(address, port, now);
-
+		// A channel, four bytes a datagram where an indication costs
+		// thirty-six, is asked for by `sendTo` itself when the relay was told
+		// to use them; until the relay agrees indications carry the traffic,
+		// so a relay that will not bind is a connection at the old price
+		// rather than no connection.
 		__turn.sendTo(payload, address, port);
 	}
 

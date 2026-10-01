@@ -130,7 +130,12 @@ class DataChannel {
 	/** Called with each binary message. **/
 	public dynamic function onBytes(payload:ByteArray):Void {}
 
-	/** Called when the channel is closed, by either end. **/
+	/**
+		Called once when the channel closes, by either end: `close()` here, or
+		the peer resetting the stream it sends on, which is how a browser's
+		`channel.close()` arrives, after every message the peer sent before
+		it. Also when the connection under the channel ends.
+	**/
 	public dynamic function onClose():Void {}
 
 	@:noCompletion private var __transfer:SctpDataTransfer;
@@ -217,6 +222,22 @@ class DataChannel {
 		__transfer.send(id, payload, SctpDataChunk.PPID_BINARY, ordered, __now(), __retransmits, __lifetime);
 	}
 
+	/**
+		Closes the channel at both ends, as RFC 8831 section 6.7 has a data
+		channel closed: the stream this end sends on is reset (RFC 6525), and
+		the peer's end closes when the reset reaches it and resets its own in
+		answer.
+
+		Messages already handed to `send` go first: the reset follows them,
+		and the peer acts on it only once it has everything sent before. Here,
+		`onClose` runs at once, and what arrives on the channel afterwards is
+		dropped, as a browser drops what arrives on a channel it is closing.
+
+		A peer without stream reconfiguration, a CrossByte peer from before
+		1.0, is not told, and its end stays open. It was so for every peer:
+		the close was this end's alone, the peer went on sending into a
+		channel nothing read, and a browser's own `close()` was never heard.
+	**/
 	public function close():Void {
 		if (__closed) {
 			return;

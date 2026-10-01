@@ -25,15 +25,45 @@ import haxe.io.Bytes;
 	at all.
 
 	```haxe
+	// Given agent:IceAgent, socket:DatagramSocket.
+	import crossbyte.events.DatagramSocketDataEvent;
+	import crossbyte.net.ice.IceAgent;
+	import crossbyte.net.ice.IceCandidate;
+
 	var relay = new TurnClient("turn.example.com", 3478, "user", "secret");
-	relay.onSend = (payload, address, port) -> server.sendTo(payload, address, port);
+	relay.onSend = (payload, address, port) -> socket.send(payload, 0, payload.length, address, port);
 
 	relay.allocated.then(function(relayed) {
-		agent.addLocalCandidate(new IceCandidate(RELAYED, relayed.address, relayed.port));
+		var candidate = new IceCandidate(RELAYED, relayed.address, relayed.port);
+
+		// The relayed candidate sends through the relay: its checks are
+		// wrapped for the relay to forward, to a peer permitted first. What
+		// the relay forwards back is the agent's, as having arrived on that
+		// candidate, so the answer goes back the same way.
+		agent.addLocalCandidate(candidate, function(payload, address, port) {
+			relay.permit(address, haxe.Timer.stamp());
+			relay.sendTo(payload, address, port);
+		});
+
+		relay.onData = (payload, address, port) -> agent.receive(payload, address, port, haxe.Timer.stamp(), candidate);
+	});
+
+	// The relay's answers and what it forwards arrive on the same socket as
+	// everything else: offered to it first, and the rest to the agent. And
+	// `relay.poll` on the tick, as `agent.poll`.
+	socket.addEventListener(DatagramSocketDataEvent.DATA, function(e) {
+		if (!relay.receive(e.data, e.srcAddress, e.srcPort, haxe.Timer.stamp())) {
+			agent.receive(e.data, e.srcAddress, e.srcPort, haxe.Timer.stamp());
+		}
 	});
 
 	relay.allocate(haxe.Timer.stamp());
 	```
+
+	A relayed candidate without the way to send through the relay is a
+	candidate whose checks go straight at the peer, from the socket, while
+	the peer is told to answer the relay. `PeerConnection.gatherRelayed` does
+	all of this for a peer connection.
 
 	## No socket, for the same reason as the agent
 
@@ -97,10 +127,11 @@ import haxe.io.Bytes;
 	that a saving of thirty-two bytes is not worth a connection that dies
 	silently against a relay nobody checked first.
 
-	Once on, it happens on its own. The first datagram for a peer goes as an
-	indication and asks for a channel at the same time; once the relay agrees,
-	the rest go as `ChannelData`. A relay that refuses the bind outright is the
-	safe case, the indications simply keep working.
+	Once on, it happens on its own. The first datagram `sendTo` sends to a
+	peer goes as an indication and asks for a channel at the same time; once
+	the relay agrees, the rest go as `ChannelData`. A relay that refuses the
+	bind outright is the safe case, the indications simply keep working.
+	The peer still needs `permit`, since the indications meanwhile do.
 
 	Channels last ten minutes and are rebound at eight. A rebind the relay
 	refuses leaves the binding it has until its ten minutes are up, and the
@@ -328,6 +359,14 @@ class TurnClient {
 	/** Whether the relay has answered, and `serverAddress` is the address it answered from. **/
 	@:noCompletion private var __pinned:Bool = false;
 
+	/**
+		The host a stream to the relay is opened to, for a `transport` of TCP
+		or TLS: `serverAddress`, unless a 300 Try Alternate over TLS named the
+		alternate's domain (ALTERNATE-DOMAIN), which its certificate is checked
+		against, a relay's certificate rarely names its address.
+	**/
+	@:noCompletion @:allow(crossbyte.net._internal.stun.TurnStream) private var __streamHost:String;
+
 	/** Every server this allocation has been asked of, as "address:port", so a redirection back to one is caught. **/
 	@:noCompletion private var __asked:Array<String> = [];
 
@@ -435,6 +474,7 @@ class TurnClient {
 			__pinned = true;
 		}
 
+		__streamHost = this.serverAddress;
 		__asked.push(this.serverAddress + ":" + serverPort);
 	}
 
@@ -449,14 +489,20 @@ class TurnClient {
 
 		A relay ties an allocation to the username that made it and refuses a
 		request on it signed with another (441), so a new username is for the
-		next allocation; a new password for the same username applies to this
-		one.
+		next allocation, another client, and a new password for the same
+		username applies to this one.
 
-		@throws ArgumentError When either is null.
+		@throws ArgumentError When either is null, or when `username` is not
+		the one an allocation held or being made was signed with. It was taken,
+		and the relay refused the next Refresh with 441, ending the allocation.
 	**/
 	public function setCredentials(username:String, password:String):Void {
 		if (username == null || password == null) {
 			throw new ArgumentError("A relay needs credentials: it forwards traffic on somebody's behalf and has to know whose.");
+		}
+
+		if (username != __username && (active || (__allocating && __key != null))) {
+			throw new ArgumentError("This client's allocation was made under another username, and a relay refuses a request on it signed as anyone else (441). A new username is for a new client.");
 		}
 
 		__username = username;
@@ -597,6 +643,13 @@ class TurnClient {
 		if (channel != null && channel.bound && __clock - channel.boundAt < CHANNEL_LIFETIME) {
 			onSend(__channelData(channel.number, payload, offset, length), serverAddress, serverPort);
 			return;
+		}
+
+		// With channels on, the first datagram to a peer asks for one, as the
+		// class documentation says it happens: on its own. Only callers that
+		// asked themselves ever got one, this client never did.
+		if (useChannels && (channel == null || (!channel.bound && !channel.pending && !channel.refused))) {
+			bindChannel(peerAddress, peerPort, __clock);
 		}
 
 		var data = new ByteArray();
@@ -1463,7 +1516,7 @@ class TurnClient {
 			var alternate = message.alternateServerAddress();
 
 			if (alternate != null) {
-				__redirect(request, alternate, phrase != null ? phrase : "", now);
+				__redirect(request, alternate, message.textOf(StunMessage.ATTR_ALTERNATE_DOMAIN), phrase != null ? phrase : "", now);
 				return;
 			}
 		}
@@ -1483,8 +1536,18 @@ class TurnClient {
 		back to one ignored and the transaction failed, which is what stops two
 		relays sending a client back and forth for good, and neither is a
 		fifth, however many different ones are named.
+
+		Over TCP or TLS the alternate is reached over a connection of its own,
+		which the stream carrying this client opens when the retry is sent to
+		an address that is not the one it is connected to: the request went
+		down the old connection to the server that had redirected it, and was
+		redirected again. Over TLS the alternate's certificate is checked
+		against its ALTERNATE-DOMAIN when the relay gave one, and its address
+		otherwise.
+
+		@param domain The ALTERNATE-DOMAIN, or null.
 	**/
-	@:noCompletion private function __redirect(request:TurnTransaction, alternate:ReflexiveAddress, phrase:String, now:Float):Void {
+	@:noCompletion private function __redirect(request:TurnTransaction, alternate:ReflexiveAddress, domain:Null<String>, phrase:String, now:Float):Void {
 		var address:String = IPv6.compress(alternate.address);
 		var target:String = address + ":" + alternate.port;
 
@@ -1499,6 +1562,7 @@ class TurnClient {
 		serverAddress = address;
 		serverPort = alternate.port;
 		__pinned = true;
+		__streamHost = transport == TLS && domain != null && domain.length > 0 ? domain : address;
 
 		// Another server's realm, nonce and features, which it will state.
 		__realm = null;

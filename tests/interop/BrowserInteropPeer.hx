@@ -72,6 +72,10 @@ class BrowserInteropPeer {
 			}
 		}
 
+		if (instruction.close == true && connection.connected) {
+			closeBothWays();
+		}
+
 		say({event: "done", echoed: echoed});
 		connection.close();
 
@@ -124,6 +128,76 @@ class BrowserInteropPeer {
 
 		pumpWhile(() -> !echoedAfterRestart);
 		say({event: "restarted", switched: connection.agent != before && !connection.iceRestarting, echoed: echoedAfterRestart, path: path()});
+	}
+
+	/** Every channel there has been, by label, and the labels of those that have closed here. **/
+	static var channels:Map<String, DataChannel> = new Map();
+
+	static var closedHere:Map<String, Bool> = new Map();
+
+	static function keep(channel:DataChannel):Void {
+		channels.set(channel.label, channel);
+		channel.onClose = function():Void {
+			closedHere.set(channel.label, true);
+		};
+	}
+
+	/**
+		A data channel closed each way, which RFC 8831 section 6.7 has done by
+		resetting its streams (RFC 6525). The browser closes one, and this end
+		has to hear it and reset its own stream in answer, or the browser's
+		channel never finishes closing; then this end closes one, and the
+		browser's has to close. Nothing here did either: a close was local, and
+		RE-CONFIG went unread.
+
+		Kept pumping a while afterwards, so the browser finishes its half
+		before the connection, whose end would close its channels anyway, is
+		torn down.
+	**/
+	static function closeBothWays():Void {
+		var line:Dynamic = haxe.Json.parse(Sys.stdin().readLine());
+		var theirs:String = line.theirs;
+		var ours:DataChannel = channels.get(line.ours);
+
+		say({event: "close-ready"});
+
+		pumpWhile(() -> !closedHere.exists(theirs) || !settled());
+		say({event: "closed-by-browser", label: theirs, heard: closedHere.exists(theirs), settled: settled()});
+
+		if (ours != null) {
+			ours.close();
+		}
+
+		pumpWhile(() -> ours == null || !settled() || !resetByPeer(ours.id));
+		say({event: "closed-toward-browser", label: line.ours, done: ours != null && settled() && resetByPeer(ours.id)});
+
+		var until = haxe.Timer.stamp() + 2;
+		pumpWhile(() -> haxe.Timer.stamp() < until);
+	}
+
+	/** Whether this end has no stream reset waiting, unanswered, or owed an answer. **/
+	static function settled():Bool {
+		var transfer = @:privateAccess connection.__transfer;
+
+		if (transfer == null) {
+			return false;
+		}
+
+		return @:privateAccess transfer.__resetRequest == null && @:privateAccess transfer.__resetWanted.length == 0
+			&& @:privateAccess transfer.__answersOwed.length == 0;
+	}
+
+	/** Whether the peer's latest reset, performed here, was of `streamId`: its answer to this end's. **/
+	static function resetByPeer(streamId:Int):Bool {
+		var transfer = @:privateAccess connection.__transfer;
+		var reset:Dynamic = transfer == null ? null : @:privateAccess transfer.__peerReset;
+
+		if (reset == null || reset.result != 1) {
+			return false;
+		}
+
+		var streams:Array<Int> = reset.streams;
+		return streams == null || streams.indexOf(streamId) >= 0;
 	}
 
 	/** Pumps while `waiting` holds, for at most twenty seconds. **/
@@ -200,7 +274,8 @@ class BrowserInteropPeer {
 			var channel = connection.createDataChannel("interop");
 
 			// The terms CrossByte writes into DCEP, for the browser to read back.
-			connection.createDataChannel("state", false, "", 0);
+			keep(connection.createDataChannel("state", false, "", 0));
+			keep(channel);
 
 			offeredChannel = channel;
 
@@ -315,6 +390,7 @@ class BrowserInteropPeer {
 
 		connection.onChannel = function(opened:DataChannel):Void {
 			say({event: "channel", label: opened.label});
+			keep(opened);
 
 			// The browser's partially reliable channels: reported as read, so
 			// the harness can hold them to what the browser asked for.
