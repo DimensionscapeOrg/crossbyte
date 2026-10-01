@@ -372,6 +372,10 @@ class FakeTurnRelay {
 				attributes.push(FakeTurnRelay.alternateServer(allocateError.alternate.address, allocateError.alternate.port));
 			}
 
+			if (allocateError.alternateDomain != null) {
+				attributes.push(StunMessage.text(StunMessage.ATTR_ALTERNATE_DOMAIN, allocateError.alternateDomain));
+			}
+
 			events.push("allocate-error");
 			__send(__sign(new StunMessage(StunMessage.ALLOCATE_ERROR, message.transactionId, attributes), credential), from, fromPort, now);
 			return;
@@ -907,7 +911,10 @@ typedef RelayEndpoint = {address:String, port:Int};
 typedef RelayRefusal = {
 	code:Int,
 	reason:String,
-	?alternate:RelayEndpoint
+	?alternate:RelayEndpoint,
+
+	/** ALTERNATE-DOMAIN, which a 300 over TLS names for the alternate's certificate to be checked against. **/
+	?alternateDomain:String
 }
 
 /** One client's allocation, as the relay keeps it. **/
