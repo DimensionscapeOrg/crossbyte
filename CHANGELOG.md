@@ -1932,6 +1932,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `Socket` and `WebSocket` start in `ObjectEncoding.DEFAULT`, accepted
+  sockets included, as `ByteArray` and `ReliableDatagramSocket` do.
+  `objectEncoding` was never set: natively and on the jvm it read 0,
+  which is AMF0 and throws without `-lib format`, and elsewhere null, so
+  `readObject` and `writeObject` threw on every socket until the
+  application chose an encoding.
 - A `NetConnection` dialled over TCP works on Node and in a browser. It
   stamped each send and each arrival with the uptime of the socket's
   runtime, read from a field only a native connect sets: every send threw

@@ -128,7 +128,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	public var localPort(get, never):Int;
 
 	/**
-		Controls the version of AMF used when writing or reading an object.
+		Which serialization format `readObject` and `writeObject` use, a
+		constant from `ObjectEncoding`: `ObjectEncoding.DEFAULT` (HXSF) when
+		the socket is made, accepted ones included. `JSON` is always
+		available too; `AMF0` and `AMF3` only on a build with `-lib format`.
 	**/
 	public var objectEncoding:ObjectEncoding;
 
@@ -580,6 +583,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		super();
 
 		endian = ByteArray.defaultEndian;
+		// It was never set: 0 natively and on the jvm, which is AMF0 and
+		// throws without -lib format, and null elsewhere, which throws too,
+		// so readObject and writeObject threw until an application chose.
+		objectEncoding = ObjectEncoding.DEFAULT;
 		timeout = 20000;
 		__connected = false;
 		__closed = false;
@@ -1342,7 +1349,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	/**
-		Reads an object from the socket, encoded in AMF serialized format.
+		Reads an object from the socket, in whichever format `objectEncoding`
+		names: HXSF unless it was changed, not AMF.
 		@return The deserialized object
 		@throws EOFError There is insufficient data available to read.
 		@throws IOError  An I/O error occurred on the socket, or the socket is
@@ -1590,7 +1598,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	/**
-		Write an object to the socket in AMF serialized format.
+		Writes an object to the socket, in whichever format `objectEncoding`
+		names: HXSF unless it was changed, not AMF.
 		@param object The object to be serialized.
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
