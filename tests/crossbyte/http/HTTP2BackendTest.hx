@@ -1341,6 +1341,41 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.equals("COMPLETED abcde", outcome);
 	}
 
+	/**
+		A timeout of `0` is no limit, as `URLRequest.idleTimeout` says and as
+		it is on JavaScript: a stream waits for its answer however long it
+		takes. The session took `0` as a wait of none and failed the stream
+		at once, so the backend could not pass it on and waited 30 seconds
+		instead, one setting, two meanings, depending on the target.
+	**/
+	public function testAStreamWithNoIdleLimitWaitsForItsAnswer():Void {
+		var server = new H2RouteServer(_ -> {status: 200, chunks: ["late"], gap: 0.4});
+		var socket = new crossbyte._internal.socket.FlexSocket(false);
+		socket.connect("127.0.0.1", server.port);
+		var session = new crossbyte._internal.http.h2.H2ClientSession('http://127.0.0.1:${server.port}', socket,
+			new H2Connection(socket.input, socket.output, new H2Settings()));
+		var direct:String;
+		try {
+			var stream = session.execute("GET", "http", '127.0.0.1:${server.port}', "/late", [], null, 0);
+			direct = stream.endOfStream ? "ended " + stream.takeBody().toString() : "not ended";
+		} catch (e:Dynamic) {
+			direct = "failed: " + Std.string(e);
+		}
+		session.close();
+
+		// And through the backend, which passes the request's 0 on now.
+		HTTPBackendRegistry.register(new HTTP2Backend());
+		var outcome:String = null;
+		var http = new Http('http://127.0.0.1:${server.port}/late', "GET", null, null, null, null, HttpVersion.HTTP_2, 0);
+		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+		http.onError = (message, ?data) -> outcome = message;
+		http.load();
+		server.stop();
+
+		Assert.equals("ended late", direct, "a stream with no idle limit did not wait for its answer");
+		Assert.equals("COMPLETED late", outcome);
+	}
+
 	public function testAnHttp2ResponseThatStopsTimesOutFromItsLastFrame():Void {
 		// Two pieces, then nothing: the timeout runs from the last of them.
 		var server = new H2RouteServer(_ -> {status: 200, chunks: ["a", "b"], gap: 0.3, hold: true});

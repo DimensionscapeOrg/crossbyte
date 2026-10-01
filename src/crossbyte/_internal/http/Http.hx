@@ -1021,7 +1021,7 @@ class Http {
 			__connected = true;
 			__reusedSocket = true;
 			try {
-				kept.setTimeout(__timeout > 0 ? __timeout / 1000 : 30);
+				kept.setTimeout(__idleSeconds(__timeout));
 			} catch (_:Dynamic) {
 				// Closed under this thread, which only a cancel does.
 				__close();
@@ -1050,8 +1050,8 @@ class Http {
 			}
 			// Seconds, where `timeout` is milliseconds: it was passed as it came,
 			// so a 30 second idle timeout waited 30,000 seconds. The same
-			// conversion, and the same 30 second fallback, as the HTTP/2 backend.
-			socket.setTimeout(__timeout > 0 ? __timeout / 1000 : 30);
+			// conversion as the HTTP/2 backend's; see __idleSeconds.
+			socket.setTimeout(__idleSeconds(__timeout));
 			if (hopTls != null) {
 				hopTls.configure(socket);
 			}
@@ -1064,7 +1064,7 @@ class Http {
 			// where the WebSocket client beside this one said which. A timeout
 			// is said as one: natively it would read "Blocked".
 			__fail("Connection Failed: "
-				+ (__isTimeout(e) ? '${__url.host}:${__url.port} did not answer within ${__timeout > 0 ? __timeout / 1000 : 30} s' : __describe(e)));
+				+ (__isTimeout(e) ? '${__url.host}:${__url.port} did not answer' + (__timeout > 0 ? ' within ${__idleSeconds(__timeout)} s' : '') : __describe(e)));
 			return;
 		}
 
@@ -1090,6 +1090,17 @@ class Http {
 
 		__handleRequest();
 		__handleResponse();
+	}
+
+	/**
+		The socket timeout, in seconds, for an idle timeout of `milliseconds`:
+		`0`, which a socket takes as none, for `0` or less. It was 30 seconds
+		here and none on JavaScript, so one setting meant two things; it is
+		none everywhere now, as `0` is on every socket and WebSocket.
+	**/
+	@:allow(crossbyte.http.HTTP2Backend)
+	private static inline function __idleSeconds(milliseconds:Int):Float {
+		return milliseconds > 0 ? milliseconds / 1000 : 0;
 	}
 
 	/**
