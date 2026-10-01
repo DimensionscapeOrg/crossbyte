@@ -1955,6 +1955,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `DtlsTransport`'s documentation says which peer is the DTLS client as
+  `PeerConnection` and `SessionDescription` do: the description's
+  `a=setup` decides (RFC 5763, RFC 8842), and the answerer -- the
+  ICE-controlled peer -- takes the client role by convention, as a browser
+  answering does. It said the controlling agent was the client, the
+  opposite. Its example calls methods that exist.
 - The `PeerConnection` class example advertises an address: it binds the
   wildcard, which names no interface, and now asks `LocalAddress` for the
   default route and adds it, where it advertised nothing a peer could
