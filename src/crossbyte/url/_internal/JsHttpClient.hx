@@ -221,7 +221,11 @@ class JsHttpClient {
 			// is worth reporting, waiting for the body would hold it back
 			// behind however long the transfer takes.
 			if (xhr.readyState == 2) {
-				var finalUrl:String = (xhr.responseURL != null && xhr.responseURL != "") ? xhr.responseURL : url;
+				// Both absolute, as the browser reports where a response came
+				// from: compared with the URL as written, a relative one said
+				// every response to it had been redirected.
+				var requested:String = __absolute(url);
+				var finalUrl:String = (xhr.responseURL != null && xhr.responseURL != "") ? xhr.responseURL : requested;
 				// The hop has been made by now, and the browser says so only
 				// here: what it led to is not handed on.
 				var refusal:Null<String> = __followedRefusal(url, finalUrl, request.followInsecureRedirects);
@@ -234,7 +238,7 @@ class JsHttpClient {
 				}
 				coded = __isCoded(xhr.getResponseHeader("content-encoding"));
 				onStatus(xhr.status);
-				onResponse(xhr.status, __parseHeaderBlock(xhr.getAllResponseHeaders()), finalUrl, finalUrl != url);
+				onResponse(xhr.status, __parseHeaderBlock(xhr.getAllResponseHeaders()), finalUrl, finalUrl != requested);
 			}
 		};
 
@@ -305,6 +309,21 @@ class JsHttpClient {
 			return "Refused a redirect from https to http; set URLRequest.followInsecureRedirects to allow it";
 		}
 		return null;
+	}
+
+	/**
+		`url` resolved against the page, without a fragment, which is how the
+		browser reports where a response came from; `url` itself when it is
+		no URL.
+	**/
+	static function __absolute(url:String):String {
+		try {
+			var resolved = new js.html.URL(url, js.Browser.document.baseURI);
+			resolved.hash = "";
+			return resolved.href;
+		} catch (_:Dynamic) {
+			return url;
+		}
 	}
 
 	/** `url`'s scheme with its colon, resolved against the page; empty when it is no URL. */
