@@ -1836,6 +1836,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On the jvm, a thread's selectors are closed once the thread has ended.
+  Java says nothing when a thread ends, and each thread that ever selected
+  kept up to three selectors -- an epoll descriptor and wakeup pipe each
+  on Linux, a loopback socket pair each on Windows -- for the life of the
+  process, so a server whose workers came and went leaked them a thread
+  at a time. The next thread to select closes those of threads that have
+  ended.
 - `HTTPCancelToken.removeHandler` removes a bound method handed back to it.
   It compared by identity, and on eval and the jvm each mention of
   `object.method` is a new closure, so the handler stayed registered and
