@@ -126,6 +126,23 @@ class JWTVerifyTest extends utest.Test {
 		Assert.isTrue(jwt.verify(forge('{"alg":"HS256","typ":"JWT"}', withClaim(claims(), roles))).valid);
 	}
 
+	/**
+		A token whose `crit` header names extensions is refused: they are ones
+		it must not be accepted without, this verifier implements none, and RFC
+		7515 makes such a token invalid for it. `"b64":false` (RFC 7797) is
+		one: the payload travels unencoded, and was taken as though it were
+		base64url. A header member nobody marked critical is still ignored.
+	**/
+	public function testATokenNamingCriticalExtensionsIsRefused():Void {
+		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]), ISSUER, "api");
+		expectRefused(jwt, forge('{"alg":"HS256","typ":"JWT","b64":false,"crit":["b64"]}', claims()), UNSUPPORTED_CRITICAL);
+		expectRefused(jwt, forge('{"alg":"HS256","typ":"JWT","exp":1,"crit":["exp"]}', claims()), UNSUPPORTED_CRITICAL);
+		expectRefused(jwt, forge('{"alg":"HS256","typ":"JWT","crit":[]}', claims()), UNSUPPORTED_CRITICAL);
+		expectRefused(jwt, forge('{"alg":"HS256","typ":"JWT","crit":"b64"}', claims()), UNSUPPORTED_CRITICAL);
+
+		Assert.isTrue(jwt.verify(forge('{"alg":"HS256","typ":"JWT","x5t":"abc","custom":1}', claims())).valid);
+	}
+
 	public function testKeysRotateWithoutRebuildingTheVerifier():Void {
 		var jwt:JWT = JWT.make(HS256([{secret: "old-secret-old-secret-old-secret-01"}]), ISSUER, "api", 0);
 		jwt.acceptedTypes = ["JWT"];

@@ -1965,6 +1965,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `JWT.verify` refuses a token whose header carries `crit`, as
+  `UNSUPPORTED_CRITICAL`, a new `JWTRejection`. The extensions it names
+  are ones the token may not be accepted without, none is implemented
+  here, and RFC 7515 makes such a token invalid; `crit` was ignored, so a
+  token with `"b64":false` (RFC 7797), whose payload travels unencoded,
+  was read as though it were base64url and accepted.
 - A JWT nested deeply enough no longer ends the process verifying it. JSON
   is parsed a frame per level and a token's header is parsed before its
   signature is checked, so no key was needed: natively a 16 KB token --

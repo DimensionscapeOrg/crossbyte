@@ -129,11 +129,14 @@ class JWT {
 	 * refused.
 	 *
 	 * Checks run cheapest first and the first failure is the answer: size and
-	 * shape, the header's `alg`, `typ` and `kid`, the signature, and then the
-	 * claims -- `exp` (required), `iat`, `nbf`, `iss` and `aud`. Nothing in a
-	 * refused token is returned, so claims are never read before the signature
-	 * over them has been checked. A header or claims whose objects and arrays
-	 * nest more than 32 deep is `MALFORMED`, refused before it is parsed.
+	 * shape, the header's `alg`, `crit`, `typ` and `kid`, the signature, and
+	 * then the claims -- `exp` (required), `iat`, `nbf`, `iss` and `aud`.
+	 * Nothing in a refused token is returned, so claims are never read before
+	 * the signature over them has been checked. A header or claims whose
+	 * objects and arrays nest more than 32 deep is `MALFORMED`, refused before
+	 * it is parsed. A header with `crit` is `UNSUPPORTED_CRITICAL`: no
+	 * extension is implemented here, and RFC 7515 makes such a token invalid
+	 * where its extensions are not.
 	 *
 	 * @param now As for `verifyToken`.
 	 */
@@ -165,6 +168,14 @@ class JWT {
 		}
 		if ((alg : String) != (signer.algorithm : String)) {
 			return JWTVerification.refused(ALGORITHM_MISMATCH);
+		}
+
+		// RFC 7515 4.1.11: the extensions `crit` names are ones the token may
+		// not be accepted without, and none is implemented here. It was
+		// ignored, so a token with `"b64":false` -- its payload unencoded --
+		// was read as though its payload were base64url.
+		if (Reflect.hasField(header, "crit")) {
+			return JWTVerification.refused(UNSUPPORTED_CRITICAL);
 		}
 
 		var typ:Dynamic = Reflect.field(header, "typ");
