@@ -102,6 +102,104 @@ class ServerWebSocketTLSTest extends utest.Test {
 		}, async);
 	}
 
+	/**
+		`setCertificate()`, inherited from `ServerSocket`, installs the
+		certificate a `ServerWebSocket` presents, and `cert` reads it back.
+
+		It reached into the listener `ServerSocket` builds, which a
+		`ServerWebSocket` never does, a null dereference natively, which on
+		hxcpp ends the process, and on Node it was stored where this
+		server's listener never looked, so listen() refused for want of a
+		certificate it had been given.
+	**/
+	@:timeout(30000)
+	public function testSetCertificateServesWss(async:Async):Void {
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
+			async.done();
+			return;
+		}
+
+		__serve(function(server) {
+			server.setCertificate(fixture.certificate, fixture.key);
+			Assert.notNull(server.cert, "cert does not read back what setCertificate() installed");
+		}, function(server, sessions, finish) {
+			TlsProbe.run(server.localPort, {upgrade: true, trust: fixture.certificate}, function(outcome) {
+				NetPump.until(() -> sessions.length > 0, 2.0, function(_) {
+					Assert.isNull(outcome.error, "a client trusting the certificate installed could not connect: " + outcome.error);
+					Assert.isTrue(__upgraded(outcome), "the upgrade was not answered with 101: " + outcome.status);
+					Assert.equals(1, sessions.length, "no session opened");
+					finish();
+				});
+			});
+		}, async);
+	}
+
+	/**
+		`addSNICertificate()` presents the certificate for the name a client
+		asks for, and the default for any other.
+
+		Checked by the client verifying what it is shown: a certificate
+		naming `alt.example` verifies only when asked for by that name, so a
+		server that ignored the name, or never installed the entry, is
+		refused.
+	**/
+	@:timeout(30000)
+	public function testSniPresentsTheCertificateForTheNameAsked(async:Async):Void {
+		var fixture = TLSTestFixture.trusted();
+		var alternate = TLSTestFixture.trusted(["alt.example"]);
+		if (fixture == null || alternate == null) {
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
+			async.done();
+			return;
+		}
+
+		__serve(function(server) {
+			server.cert = {certificate: fixture.certificate, key: fixture.key};
+			server.addSNICertificate(name -> name == "alt.example", alternate.certificate, alternate.key);
+		}, function(server, sessions, finish) {
+			TlsProbe.run(server.localPort, {serverName: "alt.example", trust: alternate.certificate}, function(claimed) {
+				TlsProbe.run(server.localPort, {serverName: "localhost", trust: fixture.certificate}, function(unclaimed) {
+					Assert.isNull(claimed.error, "the certificate for the name asked for was not presented: " + claimed.error);
+					Assert.isNull(unclaimed.error, "a name no entry claims did not get the default certificate: " + unclaimed.error);
+					finish();
+				});
+			});
+		}, async);
+	}
+
+	/**
+		`setALPN()` reaches the handshake, and the session reports what was
+		agreed in `alpnProtocol`.
+	**/
+	@:timeout(30000)
+	public function testAlpnIsNegotiatedAndReportedBySessions(async:Async):Void {
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
+			async.done();
+			return;
+		}
+
+		// Read as the session opens: the probe hangs up once it has its answer.
+		var reported:Array<String> = [];
+		__serve(function(server) {
+			server.cert = {certificate: fixture.certificate, key: fixture.key};
+			server.setALPN(["http/1.1"]);
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) reported.push(e.socket.alpnProtocol));
+		}, function(server, sessions, finish) {
+			TlsProbe.run(server.localPort, {upgrade: true, alpn: ["h2", "http/1.1"]}, function(outcome) {
+				NetPump.until(() -> sessions.length > 0, 2.0, function(_) {
+					Assert.isNull(outcome.error, "the client could not connect: " + outcome.error);
+					Assert.equals("http/1.1", outcome.alpn, "the client and server did not agree on the protocol the server offers");
+					Assert.same(["http/1.1"], reported, "the session does not report the protocol it agreed");
+					finish();
+				});
+			});
+		}, async);
+	}
+
 	/** Whether the server answered a probe's upgrade with 101. **/
 	private static function __upgraded(outcome:TlsProbe.TlsProbeOutcome):Bool {
 		return outcome.status != null && outcome.status.indexOf(" 101 ") >= 0;
