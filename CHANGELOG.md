@@ -1935,6 +1935,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On Windows, a request path that names an environment variable,
+  `/%25X%25`: reaches no file but one of that name. A `File` reads
+  `%NAME%` in its path from the environment, and the server made one from
+  the request path after the dotfile and root checks had been made on the
+  path as written, so the request was served whatever `X` held: a
+  dotfile's name, or `..` steps to a file outside the root. A path the
+  `File` rewrites is now answered as one that is not there.
 - An HTTP/2 file download lets go of its file when its client resets the
   stream, and is held to the 30 s stall deadline when its client stops
   taking it. The pump waits on its stream's writable callback, which a
