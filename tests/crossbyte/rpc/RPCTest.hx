@@ -238,6 +238,44 @@ class RPCTest extends utest.Test {
 		Assert.isNull(captured[5]);
 	}
 
+	/**
+		A `ByteArray` goes on the runtime lane as the bytes it holds, as the
+		guide says `haxe.io.Bytes` does, and a `ByteArray` is one. It was
+		refused, "Unsupported runtime RPC value", in an argument and in an
+		answer alike: the codec matched the `Bytes` class exactly, and at run
+		time a `ByteArray` is a subclass of it.
+	**/
+	public function testTheRuntimeLaneCarriesAByteArray():Void {
+		var link = LinkedConnection.pair();
+		var serverSession = new RPCSession(link.server);
+		var captured:Array<Dynamic> = null;
+		serverSession.register(104, args -> {
+			captured = args;
+			var answer = new ByteArray();
+			answer.writeUTFBytes("got " + (cast args[0] : Bytes).toString());
+			return answer;
+		});
+		var clientSession = new RPCSession(link.client);
+
+		// Written over what it held before, which must not go with it.
+		var bytes = new ByteArray();
+		bytes.writeUTFBytes("written first and then cleared away");
+		bytes.clear();
+		bytes.writeUTFBytes("abc");
+
+		var response:RPCResponse<Bytes> = null;
+		try {
+			response = clientSession.request(104, [bytes]);
+		} catch (error:Dynamic) {
+			Assert.fail("a ByteArray was refused: " + Std.string(error));
+			return;
+		}
+		Require.notNull(captured);
+		Assert.equals("abc", (cast captured[0] : Bytes).toString());
+		Assert.isTrue(response.succeeded, response.error);
+		Assert.equals("got abc", response.result == null ? null : response.result.toString());
+	}
+
 	public function testRuntimeRequestCompletesTypedResponse():Void {
 		var link = LinkedConnection.pair();
 		var clientSession = new RPCSession(link.client);
