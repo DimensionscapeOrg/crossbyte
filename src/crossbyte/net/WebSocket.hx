@@ -60,7 +60,11 @@ class WebSocket extends Socket {
 	}
 
 	private var __webSocket:crossbyte._internal.websocket.WebSocket;
+	// The server that accepted this session, until it opens or ends.
 	private var __server:ServerWebSocket;
+	// Whether the server's `upgrade` hook turned this session down, which
+	// the server does not count as a failed handshake.
+	@:noCompletion private var __upgradeRefused:Bool = false;
 
 	/**
 		The subprotocols a client asks for, most preferred first. Set before
@@ -889,6 +893,14 @@ class WebSocket extends Socket {
 		__connected = false;
 		__webSocket = null;
 
+		// Ended before it opened: its server stops waiting on it, and counts
+		// it if it failed to arrive.
+		if (__server != null) {
+			var server:ServerWebSocket = __server;
+			__server = null;
+			@:privateAccess server.__upgradeEnded(this);
+		}
+
 		// The session underneath knows why it ended; this used to drop that
 		// on the floor and dispatch a bare Event.CLOSE, so an application
 		// could not tell a peer disconnecting from a peer being dropped for
@@ -977,8 +989,11 @@ class WebSocket extends Socket {
 		// what makes the server's CONNECT mean "ready to send" and not merely
 		// "attached".
 		if (__server != null) {
-			__server.dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, this));
+			// Let go of first, so a listener closing the session at once is
+			// not taken for an upgrade that failed.
+			var server:ServerWebSocket = __server;
 			__server = null;
+			server.dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, this));
 		}
 	}
 
@@ -1002,7 +1017,12 @@ class WebSocket extends Socket {
 		if (__server != null) {
 			var server:ServerWebSocket = __server;
 			__webSocket.onupgrade = function(request:WebSocketRequest):Bool {
-				return server.upgrade(request);
+				// Refused unless the hook says otherwise: one that throws
+				// refuses too.
+				__upgradeRefused = true;
+				var accepted:Bool = server.upgrade(request);
+				__upgradeRefused = !accepted;
+				return accepted;
 			};
 		}
 	}

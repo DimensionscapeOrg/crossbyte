@@ -41,6 +41,13 @@ import sys.net.Host;
  * queue. On Node, which accepts as connections arrive and has no queue to
  * leave them in, a connection that would pass that bound is refused.
  *
+ * Here a handshake is the whole of a session's arrival, its TLS handshake
+ * and its upgrade together: `handshakeTimeout` bounds it from accept,
+ * `pendingHandshakeCount()` counts the sessions still in it, and
+ * `handshakeFailures` those that never came out of it, on a plain server
+ * too. `stopAccepting()`, `drain()` and `close()` drop the sessions still in
+ * it.
+ *
  * @author Christopher Speciale
  */
 class ServerWebSocket extends ServerSocket {
@@ -293,6 +300,23 @@ class ServerWebSocket extends ServerSocket {
 	}
 
 	/**
+		Sessions accepted and still arriving: completing their TLS handshake
+		or their upgrade, together the WebSocket opening handshake. It is
+		what `maxPendingHandshakes` bounds, and `handshakeTimeout` times from
+		accept. On Node, which completes its own TLS handshakes, a session is
+		counted once Node hands it over.
+
+		One that never arrives, its TLS handshake or its upgrade request
+		failed, its peer left first, or `handshakeTimeout` ran out, is
+		counted in `handshakeFailures`, on a plain server too. One that
+		`upgrade` refused, or that `stopAccepting()`, `drain()` or `close()`
+		let go of, is not. Both used to stay at 0 on every `ServerWebSocket`.
+	**/
+	override public function pendingHandshakeCount():Int {
+		return __pendingUpgrades.length;
+	}
+
+	/**
 		Whether `drain()` has been called and shutdown is in progress.
 	**/
 	public var draining(default, null):Bool = false;
@@ -369,11 +393,73 @@ class ServerWebSocket extends ServerSocket {
 	}
 	#end
 
-	@:noCompletion private function __clearPendingUpgrade(session:WebSocket):Void {
+	/** Takes `session` off the list of those upgrading; whether it was on it. **/
+	@:noCompletion private function __clearPendingUpgrade(session:WebSocket):Bool {
 		for (pending in __pendingUpgrades) {
 			if (pending.session == session) {
 				__pendingUpgrades.remove(pending);
-				return;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+		When a session accepted at `since` is given up on: `handshakeTimeout`
+		later, or never for a timeout of zero. Every session is listed either
+		way, it is what `maxPendingHandshakes` counts and what stopping drops,
+		where one with no deadline used to be left off, uncounted and
+		undroppable.
+	**/
+	@:noCompletion private inline function __upgradeDeadline(since:Float):Float {
+		return handshakeTimeout > 0 ? since + handshakeTimeout : Math.POSITIVE_INFINITY;
+	}
+
+	/**
+		A session that ended before its upgrade completed, told as it closes.
+
+		Nothing is owed for one this server let go of itself, at its
+		deadline, or in `stopAccepting()`, `drain()` or `close()`, which
+		takes it off the list first. Any other is counted in
+		`handshakeFailures`, unless `upgrade` refused it: a refusal is a
+		decision, not a failure.
+	**/
+	@:noCompletion private function __upgradeEnded(session:WebSocket):Void {
+		if (!__clearPendingUpgrade(session)) {
+			return;
+		}
+		if (!@:privateAccess session.__upgradeRefused) {
+			handshakeFailures++;
+		}
+		#if !nodejs
+		// And a listener set aside at the limit can take the next.
+		__syncListenerWatch();
+		#end
+	}
+
+	/**
+		Closes every session still upgrading: `stopAccepting()`, `drain()` and
+		`close()` each end this server's part in sessions not yet open.
+
+		None of them did. The reaper runs from the tick those calls take
+		away, so a session caught mid-upgrade was left with no deadline at
+		all, holding its descriptor for as long as its peer liked, and one
+		that finished upgrading afterwards opened, and was announced, on a
+		server that had stopped or was draining. Not counted as failures:
+		they were let go of, not lost.
+	**/
+	@:noCompletion private function __dropPendingUpgrades():Void {
+		if (__pendingUpgrades.length == 0) {
+			return;
+		}
+
+		var dropped:Array<PendingUpgrade> = __pendingUpgrades;
+		__pendingUpgrades = [];
+		for (pending in dropped) {
+			if (pending.session != null) {
+				try {
+					pending.session.close();
+				} catch (_:Dynamic) {}
 			}
 		}
 	}
@@ -385,6 +471,7 @@ class ServerWebSocket extends ServerSocket {
 
 		var now:Float = haxe.Timer.stamp();
 		var still:Array<PendingUpgrade> = [];
+		var expired:Array<WebSocket> = null;
 
 		for (pending in __pendingUpgrades) {
 			// Gone on its own, by close or by error. Nothing owed here.
@@ -410,12 +497,30 @@ class ServerWebSocket extends ServerSocket {
 				continue;
 			}
 
-			try {
-				pending.session.close();
-			} catch (_:Dynamic) {}
+			if (expired == null) {
+				expired = [];
+			}
+			expired.push(pending.session);
 		}
 
+		// Settled before anything is closed: closing a session tells this
+		// server, which would otherwise be changing the list it was walking.
 		__pendingUpgrades = still;
+		if (expired == null) {
+			return;
+		}
+
+		for (session in expired) {
+			// Given up on, so it failed to arrive, counted here, since it is
+			// off the list by the time its close is told.
+			handshakeFailures++;
+			try {
+				session.close();
+			} catch (_:Dynamic) {}
+		}
+		#if !nodejs
+		__syncListenerWatch();
+		#end
 	}
 
 	@:noCompletion private function __trackClient(e:ServerSocketConnectEvent):Void {
@@ -543,9 +648,11 @@ class ServerWebSocket extends ServerSocket {
 		open and usable.
 
 		The listening socket is released, so a successor process can bind
-		the port immediately during a deploy. Unlike `close()`, no `close`
-		event is dispatched and the server is not marked closed. Safe to
-		call more than once.
+		the port immediately during a deploy, and a session still completing
+		its TLS handshake or its upgrade is dropped, as `ServerSocket` drops
+		a handshake in flight: nothing opens on a server that has stopped.
+		Unlike `close()`, no `close` event is dispatched and the server is
+		not marked closed. Safe to call more than once.
 	**/
 	override public function stopAccepting():Void {
 		if (!listening && !bound) {
@@ -563,6 +670,7 @@ class ServerWebSocket extends ServerSocket {
 		listening = false;
 		bound = false;
 		__listenerReleased = true;
+		__dropPendingUpgrades();
 	}
 
 	/**
@@ -592,8 +700,17 @@ class ServerWebSocket extends ServerSocket {
 		@param closeCode WebSocket close code sent to clients. Defaults to
 			1001 ("going away"), the code meaning a server is shutting
 			down.
+		@throws ArgumentError If `closeCode` is not one that may be sent, as
+			`WebSocket.closeWith` says; nothing is stopped then.
 	**/
 	public function drain(timeoutSeconds:Float = 30.0, ?onComplete:Void->Void, closeCode:Int = 1001):Void {
+		// Asked before anything is stopped. Each session's closeWith refused a
+		// code like this, and the refusal was swallowed with the others, so
+		// no session was sent a close frame: they were dropped at the end of
+		// the wait with nothing to tell them why.
+		if (!@:privateAccess WebSocket.__isSendableCloseCode(closeCode)) {
+			throw new ArgumentError('$closeCode is not a close code that may be sent; use 1000, 1001, 1002-1014 (but 1004-1006), or 3000-4999.');
+		}
 		if (draining) {
 			return;
 		}
@@ -648,7 +765,9 @@ class ServerWebSocket extends ServerSocket {
 	}
 
 	/**
-		Closes the socket and stops listening for connections.
+		Closes the socket and stops listening for connections, dropping any
+		session still completing its TLS handshake or its upgrade. Sessions
+		already open are left to their owners, or to `drain()`.
 		Closed sockets cannot be reopened. Create a new ServerSocket instance instead.
 		@throws Error This error occurs if the socket could not be closed, or the socket was not open.
 	**/
@@ -661,12 +780,15 @@ class ServerWebSocket extends ServerSocket {
 			__closed = true;
 			__detachTick();
 			__cbInstance = null;
+			__dropPendingUpgrades();
 			return;
 		}
 
 		// Out of the poll set before the listener is closed; see
 		// Socket.__cleanSocket.
 		__detachTick();
+		// Before the listener, whose close can throw.
+		__dropPendingUpgrades();
 		try {
 			__webServerSocket.close();
 		} catch (e:Dynamic) {
@@ -820,8 +942,8 @@ class ServerWebSocket extends ServerSocket {
 
 			var accepted = __fromSockettoWebsocket(socket);
 
-			if (accepted != null && handshakeTimeout > 0) {
-				__pendingUpgrades.push({session: accepted, deadline: haxe.Timer.stamp() + handshakeTimeout});
+			if (accepted != null) {
+				__pendingUpgrades.push({session: accepted, deadline: __upgradeDeadline(haxe.Timer.stamp())});
 			}
 		}
 		__syncListenerWatch();
@@ -993,6 +1115,26 @@ class ServerWebSocket extends ServerSocket {
 	}
 
 	#if nodejs
+	// The longest a Node timer waits: past it Node fires at once instead.
+	@:noCompletion private static inline var NODE_TIMEOUT_MAX:Float = 2147483647;
+
+	// Where a raw TLS connection's arrival is noted, for the deadline its
+	// session is given once Node hands it over.
+	@:noCompletion private static inline var ACCEPTED_AT:String = "__crossbyteAcceptedAt";
+
+	/**
+		When `connection` arrived: for a TLS connection, when its raw
+		connection did, so its TLS handshake counts against
+		`handshakeTimeout` as it does natively, rather than earning the upgrade
+		a whole one of its own after it. A TLS socket keeps its raw one as
+		`_parent`; where it does not, the deadline counts from now.
+	**/
+	@:noCompletion private function __acceptedAt(connection:NodeSocket):Float {
+		var raw:Dynamic = (cast connection : Dynamic)._parent;
+		var at:Dynamic = raw == null ? null : Reflect.field(raw, ACCEPTED_AT);
+		return at == null ? haxe.Timer.stamp() : at;
+	}
+
 	/**
 	 * Builds the listener, plain or TLS. The mirror of
 	 * `ServerSocket.__makeNodeServer`, and deferred for the same reason: Node
@@ -1005,6 +1147,16 @@ class ServerWebSocket extends ServerSocket {
 		}
 
 		var accept = function(connection:NodeSocket):Void {
+			// A connection that finishes arriving after this server stopped:
+			// a TLS handshake in flight at stopAccepting() or close(), which
+			// Node carries on with. It was taken on as a session, after
+			// close(), by a server with no runtime, and could open and be
+			// announced on a server that had stopped, or was draining.
+			if (__closed || __listenerReleased || !listening) {
+				connection.destroy();
+				return;
+			}
+
 			if (!__hasListener) {
 				// Node has already accepted this and there is no backlog to
 				// leave it sitting in, so a session nobody is listening for is
@@ -1034,8 +1186,8 @@ class ServerWebSocket extends ServerSocket {
 			// Without it a peer could connect, send no upgrade request, and hold
 			// the descriptor for as long as it liked, the native path has been
 			// closing those for a while, and Node was the one serving the web.
-			if (accepted != null && handshakeTimeout > 0) {
-				__pendingUpgrades.push({session: accepted, deadline: haxe.Timer.stamp() + handshakeTimeout});
+			if (accepted != null) {
+				__pendingUpgrades.push({session: accepted, deadline: __upgradeDeadline(__acceptedAt(connection))});
 			}
 		};
 
@@ -1089,16 +1241,37 @@ class ServerWebSocket extends ServerSocket {
 				};
 			}
 
+			// Node's own bound on the TLS handshake, which was its default of
+			// two minutes: handshakeTimeout was never passed, so natively a
+			// peer that said nothing was dropped at it and here held its
+			// descriptor for 120 s. Node reads 0 as its default, so no deadline
+			// is the longest it will take.
+			options.handshakeTimeout = handshakeTimeout > 0 ? Math.min(Math.fceil(handshakeTimeout * 1000), NODE_TIMEOUT_MAX) : NODE_TIMEOUT_MAX;
+
 			// tls.Server extends net.Server, so listen, close and address are
 			// the same calls below this point.
 			__webServerSocket = Tls.createServer(options, accept);
 
 			// The raw TCP connection, before TLS starts on it: the point where
-			// a refusal still costs nothing.
+			// a refusal still costs nothing, and where the session's deadline
+			// starts, handshakeTimeout covers its TLS and its upgrade
+			// together, as natively.
 			__webServerSocket.on("connection", function(raw:NodeSocket):Void {
 				if (!__nodeAdmits(raw)) {
 					raw.destroy();
+					return;
 				}
+				Reflect.setField(raw, ACCEPTED_AT, haxe.Timer.stamp());
+			});
+
+			// A handshake that failed, or ran out of handshakeTimeout, which
+			// Node reports here and nowhere else: counted, as natively, and the
+			// connection let go, Node leaves that to whoever listens here.
+			__webServerSocket.on("tlsClientError", function(_:Dynamic, socket:NodeSocket):Void {
+				handshakeFailures++;
+				try {
+					socket.destroy();
+				} catch (_:Dynamic) {}
 			});
 		} else {
 			__webServerSocket = Net.createServer(accept);
