@@ -1956,6 +1956,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `ByteArray.clear()` says it keeps the memory the bytes took. Its doc,
+  AIR's, said it freed it, which it never did: a byte array cleared and
+  filled again reuses its buffer, which is what the sockets rely on when
+  they clear theirs after every message. Dropping the byte array is what
+  gives the memory back.
 - The varint writers write every value they take. `ByteArray.writeVarInt`
   (`writeVarUInt` now, under Removed) and `ByteArrayOutput.writeVarUInt`
   looped while a signed `v > 0x7F`, so a value with bit 31 set went out as
