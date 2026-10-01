@@ -2253,6 +2253,10 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `FileStream.readObject` refuses an object nested past the same depth
+  `ByteArray.readObject` now does, with an `IOError`, in both open modes:
+  a file holding an object nested a few thousand deep ran the reader out
+  of stack, which natively ended the process.
 - `readObject` refuses an object nested more than 256 levels deep (128 in
   AMF) with an `IOError`, on `ByteArray` and so on every socket. A peer's
   object nested a few thousand deep, 12 KB of HXSF, JSON or AMF, made

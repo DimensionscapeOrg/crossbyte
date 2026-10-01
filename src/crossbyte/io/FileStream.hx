@@ -25,7 +25,8 @@ import crossbyte.net.ObjectEncoding;
 import crossbyte.sys.Worker;
 import haxe.Json;
 import haxe.Serializer;
-import haxe.Unserializer;
+import crossbyte._internal.serial.BoundedUnserializer;
+import crossbyte._internal.serial.JsonNesting;
 import haxe.io.Bytes;
 import haxe.io.BytesInput;
 import haxe.io.BytesOutput;
@@ -48,6 +49,8 @@ import format.amf.Tools as AMFTools;
 import format.amf3.Reader as AMF3Reader;
 import format.amf3.Writer as AMF3Writer;
 import format.amf3.Tools as AMF3Tools;
+import crossbyte._internal.serial.BoundedAMF.BoundedAMFReader;
+import crossbyte._internal.serial.BoundedAMF.BoundedAMF3Reader;
 #end
 
 /**
@@ -881,7 +884,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 				// was never there to read.
 				var start:Int = __input.tell();
 				try {
-					return objectEncoding == AMF0 ? ByteArrayData.unwrapAMFValue(new AMFReader(__input).read()) : ByteArrayData.unwrapAMF3Value(new AMF3Reader(__input).read());
+					return objectEncoding == AMF0 ? ByteArrayData.unwrapAMFValue(new BoundedAMFReader(__input).read()) : ByteArrayData.unwrapAMF3Value(new BoundedAMF3Reader(__input).read());
 				} catch (_:haxe.io.Eof) {
 					__input.seek(start, FileSeek.SeekBegin);
 					throw new EOFError("The object runs past the end of the file.");
@@ -920,7 +923,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			case AMF0 | AMF3:
 				var input:BytesInput = new BytesInput(buffer, start, buffer.length - start);
 				try {
-					var value:Dynamic = objectEncoding == AMF0 ? ByteArrayData.unwrapAMFValue(new AMFReader(input).read()) : ByteArrayData.unwrapAMF3Value(new AMF3Reader(input).read());
+					var value:Dynamic = objectEncoding == AMF0 ? ByteArrayData.unwrapAMFValue(new BoundedAMFReader(input).read()) : ByteArrayData.unwrapAMF3Value(new BoundedAMF3Reader(input).read());
 					buffer.position = input.position;
 					return value;
 				} catch (_:haxe.io.Eof) {
@@ -949,8 +952,17 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		}
 	}
 
+	// Bounded as ByteArray's readObject is: a file's object can be anyone's,
+	// and natively one nested a few thousand deep overflowed the stack
+	// reading it and ended the process.
 	@:noCompletion private function __parseObject(text:String):Dynamic {
-		return objectEncoding == JSON ? Json.parse(text) : Unserializer.run(text);
+		if (objectEncoding == JSON) {
+			if (!JsonNesting.within(text, BoundedUnserializer.LIMIT)) {
+				throw new IOError('nested more than ${BoundedUnserializer.LIMIT} levels deep');
+			}
+			return Json.parse(text);
+		}
+		return BoundedUnserializer.run(text);
 	}
 
 	/**
