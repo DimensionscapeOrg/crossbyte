@@ -18,6 +18,7 @@ import crossbyte.io.FileStream;
 import crossbyte.net.RateLimiter;
 import crossbyte.net.Socket;
 import crossbyte.http.HTTPContentCoding;
+import crossbyte.http.HTTPServerConfig.ErrorPage;
 import crossbyte.url.URL;
 import crossbyte.url.URLRequestHeader;
 import crossbyte.utils.CompressionAlgorithm;
@@ -2647,7 +2648,39 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * HTTP/2 makes a malformed response.
 	 */
 	@:noCompletion private function __sendError(statusCode:Int, statusMessage:String, text:String, ?headers:Array<URLRequestHeader>):Void {
+		var page:Null<ErrorPage> = __config.errorDocument != null ? __errorPage() : null;
+		if (page != null) {
+			// HTTPServerConfig.errorDocument, as read once. Never compressed:
+			// an error's body is not. Shared, so only read from here.
+			__dispatchResponseBytes(statusCode, statusMessage, headers, page.type, ByteArray.fromBytes(page.body), __method == "HEAD");
+			return;
+		}
 		__dispatchResponse(statusCode, statusMessage, headers, "text/plain", text, __method == "HEAD");
+	}
+
+	/**
+	 * `HTTPServerConfig.errorDocument` as read, the first time it is wanted,
+	 * and kept on the configuration for every connection after; null when it
+	 * cannot be read, which is logged once.
+	 *
+	 * Two runtimes sharing a configuration may both read it the first time;
+	 * each keeps the same bytes, so the race costs a read, not a wrong page.
+	 */
+	@:noCompletion private function __errorPage():Null<ErrorPage> {
+		var document:Null<File> = __config.errorDocument;
+		var kept:Null<ErrorPage> = @:privateAccess __config.__errorPage;
+		if (kept == null || kept.document != document) {
+			var body:Null<haxe.io.Bytes> = null;
+			try {
+				body = sys.io.File.getBytes(document.nativePath);
+			} catch (error:Dynamic) {
+				Logger.error('HTTPServerConfig.errorDocument could not be read, so errors are answered as text: ' + Std.string(error),
+					["path" => document.nativePath]);
+			}
+			kept = {document: document, body: body, type: __getMimeType(document.nativePath)};
+			@:privateAccess __config.__errorPage = kept;
+		}
+		return kept.body != null ? kept : null;
 	}
 
 	/**

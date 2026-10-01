@@ -129,7 +129,26 @@ class HTTPServerConfig {
 	public var serveDotFiles:Bool = false;
 
 	public var directoryIndex:Array<String>;
+
+	/**
+		A page sent as the body of every error this server answers by itself,
+		in place of the line of plain text each carries, with the status it
+		would have had: a file that is not there (`404`), one kept back
+		(`403`), a method the files are not served to (`405`), a request
+		refused, limited or late, and a server error. `null`, the default,
+		keeps the text. An answer middleware or a route gives with `respond()`
+		is its own, and is never replaced.
+
+		Its `Content-Type` is the one its extension names, as for any file
+		served. It is read when first needed and kept, so a change to it is
+		seen after a restart, and `validate` refuses one that is not there.
+
+		It used to be accepted and kept and never read.
+	**/
 	public var errorDocument:File;
+
+	// The error document's bytes, read once: see errorDocument.
+	@:noCompletion private var __errorPage:Null<ErrorPage> = null;
 
 	/**
 		When not empty, the only files under `rootDirectory` this server serves
@@ -588,12 +607,18 @@ class HTTPServerConfig {
 	}
 
 	/**
-		Throws if this configuration describes a resolution order the server
-		will not follow. Called by `HTTPServer` on construction.
+		Throws an `ArgumentError` if this configuration says something the
+		server would not do. Called by `HTTPServer` on construction.
 
-		Two things are checked: the shape of `tryFiles`, and that nothing which
-		resolves files under `rootDirectory`, PHP, `rewrites`, `tryFiles`
-		entries past the first two, is asked for without one.
+		Checked:
+
+		- the shape of `tryFiles`, below;
+		- that nothing which resolves files under `rootDirectory`, PHP,
+		  `rewrites`, `tryFiles` entries past the first two, is asked for
+		  without one;
+		- that `corsAllowCredentials` is not paired with an
+		  `corsAllowedOrigins` of `"*"`;
+		- that an `errorDocument` is a file that is there.
 
 		`$uri` and `$uri/` are
 		tested by the resolver before it reads this list at all, before the
@@ -644,8 +669,21 @@ class HTTPServerConfig {
 				throw new ArgumentError("tryFiles entries after \"$uri/\" need a rootDirectory: each names a file under it. Set rootDirectory, or remove them.");
 			}
 		}
+
+		// Read only when the first error is answered, which is too late to
+		// say it is missing.
+		if (errorDocument != null && (!errorDocument.exists || errorDocument.isDirectory)) {
+			throw new ArgumentError("errorDocument " + errorDocument.nativePath + " is not a file that is there.");
+		}
 	}
 }
 
 typedef Middleware = (HTTPRequestHandler, ?Dynamic->Void) -> Void;
+
+/** `HTTPServerConfig.errorDocument` as read: `body` is null when it could not be. */
+@:noCompletion typedef ErrorPage = {
+	var document:File;
+	var body:Null<haxe.io.Bytes>;
+	var type:String;
+}
 #end
