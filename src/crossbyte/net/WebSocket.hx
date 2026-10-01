@@ -639,24 +639,13 @@ class WebSocket extends Socket {
 	}
 
 	/**
-		Reads a multibyte string from the byte stream, using the specified
-		character set.
+		Reads `length` bytes and decodes them as UTF-8.
 		@param length  The number of bytes from the byte stream to read.
-		@param charSet The string denoting the character set to use to
-					   interpret the bytes. Possible character set strings
-					   include `"shift_jis"`, `"CN-GB"`, and `"iso-8859-1"`.
-					   For a complete list, see <a
-					   href="../../charset-codes.html">Supported Character
-					   Sets</a>.
-					   **Note:** If the value for the `charSet` parameter is
-					   not recognized by the current system, then the
-					   application uses the system's default code page as the
-					   character set. For example, a value for the `charSet`
-					   parameter, as in `myTest.readMultiByte(22,
-					   "iso-8859-01")` that uses `01` instead of `1` might
-					   work on your development machine, but not on another
-					   machine. On the other machine, the application will use
-					   the system's default code page.
+		@param charSet Accepted for source compatibility and **ignored**. No
+					   character set conversion happens: the bytes are decoded
+					   as UTF-8, exactly as `readUTFBytes` would. Passing
+					   "shift-jis" does not decode Shift-JIS. Transcode the
+					   bytes yourself if you need another encoding.
 		@return A UTF-8 encoded string.
 		@throws EOFError There is insufficient data available to read.
 	**/
@@ -669,7 +658,9 @@ class WebSocket extends Socket {
 	}
 
 	/**
-		Reads an object from the socket, encoded in AMF serialized format.
+		Reads an object from the socket, in whichever format `objectEncoding`
+		names -- not AMF unless it says so -- as a `ByteArray` reads one. An
+		encoding this build cannot do throws.
 		@return The deserialized object
 		@throws EOFError There is insufficient data available to read.
 		@throws IOError  An I/O error occurred on the socket, or the socket is
@@ -906,15 +897,12 @@ class WebSocket extends Socket {
 	}
 
 	/**
-		Writes a multibyte string from the byte stream, using the specified
-		character set.
+		Writes a string as UTF-8.
 		@param value   The string value to be written.
-		@param charSet The string denoting the character set to use to
-					   interpret the bytes. Possible character set strings
-					   include `"shift_jis"`, `"CN-GB"`, and `"iso-8859-1"`.
-					   For a complete list, see <a
-					   href="../../charset-codes.html">Supported Character
-					   Sets</a>.
+		@param charSet Accepted for source compatibility and **ignored**. The
+					   string is encoded as UTF-8, exactly as `writeUTFBytes`
+					   would. Transcode the bytes yourself if you need another
+					   encoding.
 	**/
 	override public function writeMultiByte(value:String, charSet:String):Void {
 		if (__webSocket == null) {
@@ -925,7 +913,9 @@ class WebSocket extends Socket {
 	}
 
 	/**
-		Write an object to the socket in AMF serialized format.
+		Writes an object to the socket, in whichever format `objectEncoding`
+		names -- not AMF unless it says so -- as a `ByteArray` writes one. An
+		encoding this build cannot do throws.
 		@param object The object to be serialized.
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
