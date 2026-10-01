@@ -1942,6 +1942,10 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `WebSocket`'s `socketData` event reports in `bytesLoaded` the bytes of
+  the message that has just arrived, as a `Socket`'s does. It reported
+  everything unread, so a reader that had left one message in the stream
+  was told the next was both together.
 - `WebSocket.readMultiByte` and `writeMultiByte` say what they do, as
   `ByteArray`'s already did: the character set is ignored, and the bytes
   are UTF-8. They promised `"shift_jis"` and the rest. Its `readObject` and
