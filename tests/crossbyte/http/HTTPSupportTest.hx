@@ -317,6 +317,42 @@ class HTTPSupportTest extends utest.Test {
 		try root.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
+	public function testARuleThatAsksAboutFilesCanWinOverAnExistingFile():Void {
+		// tryFiles' doc said a rule given a FileExists condition runs before
+		// the file is looked for, which is how a rewrite wins over a file that
+		// exists. Every rule ran only once the request had been found to name
+		// no file at all, so none could.
+		var root = File.createTempDirectory();
+		try {
+			root.resolvePath("a.txt").save(ByteArray.fromBytes(Bytes.ofString("A")));
+			root.resolvePath("b.txt").save(ByteArray.fromBytes(Bytes.ofString("B")));
+			var cfg = new HTTPServerConfig("127.0.0.1", 0, root);
+			var none = new StringMap<String>();
+
+			// Asks, and the file exists: the rewrite wins.
+			cfg.rewrites = [{pattern: "^/a\\.txt$", target: "/b.txt", conditions: [{type: RewriteConditionType.FileExists, key: null, pattern: null, negate: false}]}];
+			var overridden = RewriteEngine.decide(cfg, "/a.txt", "", "GET", none);
+			Require.notNull(overridden);
+			Assert.equals("/b.txt", overridden.finalPath, "a rule asking for an existing file did not win over it");
+
+			// Asks for the file not to exist: it does, so the file is served.
+			cfg.rewrites[0].conditions[0].negate = true;
+			Assert.equals("/a.txt", RewriteEngine.decide(cfg, "/a.txt", "", "GET", none).finalPath);
+
+			// Does not ask: an existing file wins, as it always has.
+			cfg.rewrites[0].conditions = null;
+			Assert.equals("/a.txt", RewriteEngine.decide(cfg, "/a.txt", "", "GET", none).finalPath);
+
+			// And a rule for a path that is not a file runs as it always has.
+			cfg.rewrites = [{pattern: "^/gone$", target: "/b.txt"}];
+			Assert.equals("/b.txt", RewriteEngine.decide(cfg, "/gone", "", "GET", none).finalPath);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
 	public function testBackrefExpansionDoesNotReprocessCapturedText():Void {
 		// Expansion used to run one String.replace per group, so a group whose
 		// captured value itself contained "$2" had that "$2" rewritten by the
