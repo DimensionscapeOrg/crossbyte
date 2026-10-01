@@ -8,6 +8,10 @@ import crossbyte.Future;
  * Hosts accept incoming client transports and surface them through the
  * `onAccept` callback. Connection shutdowns are reported through
  * `onDisconnect`, while listener failures are reported through `onError`.
+ *
+ * A member that answers with a `Future` reports every failure through it,
+ * a refusal included, as a `Future` failed with the error as its `cause`,
+ * and never throws. The others throw.
  */
 interface INetHost {
 	/** Bound local address. */
@@ -18,7 +22,14 @@ interface INetHost {
 	public var isRunning(get, null):Bool;
 	/** Transport protocol served by this host. */
 	public var protocol(default, null):Protocol;
-	/** Maximum backlog / connection hint used by supported listeners. */
+	/**
+		The backlog a TCP or WebSocket host asks `listen()` for: how many
+		connections the system holds waiting to be accepted, 0 for the
+		system's own maximum. Despite its name it does not limit how many
+		connections the host serves at once, count them in `onAccept`, or
+		refuse with `ServerSocket.admit` or a `ConcurrencyLimiter`. A reliable
+		datagram host has no backlog, and does not read it.
+	**/
 	public var maxConnections:Int;
 	/** Called for each accepted connection. */
 	public var onAccept(get, set):INetConnection->Void;
@@ -66,7 +77,8 @@ interface INetHost {
 	 * socket, so an address discovered anywhere else says nothing about where
 	 * this host can be reached, which is the only thing worth publishing.
 	 *
-	 * @throws crossbyte.errors.IllegalOperationError when `canDial` is false.
+	 * Fails, with an `IllegalOperationError` as its cause, when `canDial` is
+	 * false.
 	 */
 	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<ReflexiveAddress>;
 
@@ -92,8 +104,9 @@ interface INetHost {
 	 * @param destination The peer's address, numeric. Which one it is matters:
 	 * a peer on this subnet and a peer across the internet are reached on
 	 * different interfaces.
-	 * @throws crossbyte.errors.IllegalOperationError when the host is not
-	 * running, because `localPort` has nothing to pair the answer with.
+	 *
+	 * Fails when the host is not running, because `localPort` has nothing to
+	 * pair the answer with.
 	 */
 	public function localAddressFor(destination:String):Future<String>;
 
@@ -105,7 +118,8 @@ interface INetHost {
 	 * socket that both listens and dials, and the permissions it grants
 	 * describe the traffic that socket sends.
 	 *
-	 * @throws crossbyte.errors.IllegalOperationError when `canDial` is false.
+	 * Fails, with an `IllegalOperationError` as its cause, when `canDial` is
+	 * false.
 	 */
 	public function allocateRelay(server:String, port:Int = 3478, username:String, password:String, useChannels:Bool = false,
 		?transport:TurnTransport):Future<ReflexiveAddress>;

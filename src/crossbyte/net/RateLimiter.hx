@@ -315,10 +315,17 @@ class RateLimiter {
 
 	/**
 	 * Forgets `key`, restoring its full burst capacity.
+	 *
+	 * `null` is the key `tryAcquire` spends a null key's tokens from, the
+	 * empty string; it was ignored here, so a null key could be limited and
+	 * never reset. A key sharing the overflow bucket, one that arrived with
+	 * the table full, see `maxKeys`, has no bucket of its own to forget,
+	 * and the shared one is left as it is: refilling it would refill every
+	 * key sharing it.
 	 */
 	public function reset(key:String):Void {
 		if (key == null) {
-			return;
+			key = "";
 		}
 		if (__current.remove(key)) {
 			__currentSize--;

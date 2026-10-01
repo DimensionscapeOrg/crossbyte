@@ -29,6 +29,23 @@ import crossbyte.events.ReliableDatagramSocketConnectEvent;
  * behind the `INetConnection` contract. Use the callback properties for the hot
  * data path and the static conversion helpers when you need to reach the
  * underlying transport type.
+ *
+ * Over TCP, WebSocket and reliable UDP alike, a connection tells its
+ * callbacks the same story, whatever its transport's own events are:
+ *
+ * - `onReady` once, when it is up.
+ * - `onError` for what went wrong: a connect that failed, refused, not
+ *   found, not made within its timeout, or a transport error. Reads stop
+ *   there.
+ * - `onClose` exactly once, when it is over, however it ended: closed by
+ *   either end, failed, or timed out, before or after it was ready. It is
+ *   given why, `Reason.Closed`, a WebSocket peer's `Reason.Code`, or the
+ *   reason `onError` was given when that is what ended it. Nothing is
+ *   called after it.
+ *
+ * A deadline that passed is `Reason.Timeout`, to both: a connect not made
+ * within its socket's `timeout`, and anything else its transport reports
+ * as an `ioError` with `IOErrorEvent.TIMEOUT_ERROR_ID`.
  */
 abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectionBase {
 	/** Remote peer address. */
@@ -51,9 +68,9 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	public var outTimestamp(get, set):Float;
 	/** Called when incoming data is available. */
 	public var onData(get, set):ByteArrayInput->Void;
-	/** Called when the connection closes. */
+	/** Called once, when the connection is over, with why; see the class notes. */
 	public var onClose(get, set):Reason->Void;
-	/** Called when the transport reports an error. */
+	/** Called when a connect fails or the transport reports an error; `onClose` follows. */
 	public var onError(get, set):Reason->Void;
 	/** Called once the connection becomes ready for I/O. */
 	public var onReady(get, set):Void->Void;
@@ -80,6 +97,10 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	 * on the calling thread: how long, in milliseconds, 0 for a single try.
 	 * `LocalConnection.timeout` when left out. The other transports connect
 	 * without waiting and ignore it.
+	 * @throws crossbyte.errors.ArgumentError For `local://`, when no listener
+	 * took the connection within `connectTimeout`, where the other
+	 * transports report a failed connect through `onError` and `onClose`
+	 * alone.
 	 */
 	public inline function new(uri:String, ?onData:ByteArrayInput->Void, ?onReady:Void->Void, ?onClose:Reason->Void, ?onError:Reason->Void,
 			readEnabled:Bool = false, ?connectTimeout:Int):Void {
@@ -156,7 +177,12 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		this.send(data);
 	}
 
-	/** Closes the wrapped transport. */
+	/**
+		Closes the wrapped transport, and tells `onClose` `Reason.Closed` if
+		the connection had not already ended. On one that has, closed by
+		its peer, failed, closed already, it does nothing, and does not
+		throw.
+	**/
 	public inline function close():Void {
 		this.close();
 	}
@@ -715,13 +741,31 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 	}
 
 	public inline function close():Void {
-		readEnabled = false;
+		__closeWith(Reason.Closed);
+	}
+
+	override public function __closeWith(reason:Reason):Void {
 		__disposeLifecycle();
-		__notifyClose(Reason.Closed);
-		__onClose(Reason.Closed);
+		__end(reason);
 		try {
 			__socket.close();
 		} catch (_:Dynamic) {}
+	}
+
+	/**
+		The connection is over: the observer and then `onClose` are told,
+		once, and nothing is told after. Closed by this side, it used to be
+		told every time `close()` was called, and once more on top of the
+		peer's close.
+	**/
+	@:noCompletion private function __end(reason:Reason):Void {
+		if (__ended) {
+			return;
+		}
+		__ended = true;
+		readEnabled = false;
+		__notifyClose(reason);
+		__onClose(reason);
 	}
 
 	@:noCompletion private inline function __writeBytes(bytes:ByteArray, offset:Int, length:Int):Void {
@@ -730,11 +774,21 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 		}
 
 		__socket.__output.writeBytes(bytes, offset, length);
-		outTimestamp = __socket.__cbInstance.uptime;
+		outTimestamp = __uptime();
+	}
+
+	/**
+		The uptime of the runtime the socket is on. Read from the native
+		socket's own runtime field, it was a TypeError on a Node client,
+		every send, and the first arrival, which closed the connection.
+	**/
+	@:noCompletion private inline function __uptime():Float {
+		final runtime:CrossByte = __socket.__runtime();
+		return runtime != null ? runtime.uptime : 0.0;
 	}
 
 	@:noCompletion private inline function socket_onData(_e:ProgressEvent):Void {
-		inTimestamp = __socket.__cbInstance.uptime;
+		inTimestamp = __uptime();
 		final input:ByteArrayInput = __socket.__input;
 		#if debug
 		try
@@ -746,9 +800,7 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 	}
 
 	private inline function socket_onClose(_e:Event):Void {
-		readEnabled = false;
-		__notifyClose(Reason.Closed);
-		__onClose(Reason.Closed);
+		__end(__failure != null ? __failure : Reason.Closed);
 	}
 
 	@:noCompletion private inline function socket_onReady(_e:Event):Void {
@@ -757,11 +809,28 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 		__onReady();
 	}
 
-	@:noCompletion private inline function socket_onIoError(e:IOErrorEvent):Void {
+	/**
+		An error stops the reads, and `onError` is told. A `Socket` whose
+		connect failed says so with this alone, no connection came up, so
+		no `close` follows, and the connection ends here; one that was up
+		ends with the `close` its socket dispatches next. A connect that
+		failed used to end with `onError` and no `onClose`, where a
+		WebSocket's and a reliable UDP one's ended with both.
+	**/
+	@:noCompletion private function socket_onIoError(e:IOErrorEvent):Void {
+		if (__ended) {
+			return;
+		}
+		final reason:Reason = NetConnectionBase.__reasonOf(e);
+		if (__failure == null) {
+			__failure = reason;
+		}
 		readEnabled = false;
-		final reason = Reason.Error(e.text);
 		__notifyClose(reason);
 		__onError(reason);
+		if (!__socket.connected) {
+			__end(reason);
+		}
 	}
 
 	@:noCompletion private inline function socket_onSecError(e:SecurityError):Void {
@@ -933,11 +1002,26 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 	}
 
 	public function close():Void {
-		readEnabled = false;
+		__closeWith(Reason.Closed);
+	}
+
+	override public function __closeWith(reason:Reason):Void {
 		__disposeLifecycle();
-		__notifyClose(Reason.Closed);
-		__onClose(Reason.Closed);
-		__socket.close();
+		__end(reason);
+		try {
+			__socket.close();
+		} catch (_:Dynamic) {}
+	}
+
+	/** As `TCPConnection.__end`: `onClose` once, and nothing after. **/
+	@:noCompletion private function __end(reason:Reason):Void {
+		if (__ended) {
+			return;
+		}
+		__ended = true;
+		readEnabled = false;
+		__notifyClose(reason);
+		__onClose(reason);
 	}
 
 	@:noCompletion private inline function socket_onDatagramData(event:DatagramSocketDataEvent):Void {
@@ -958,9 +1042,7 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 	}
 
 	@:noCompletion private inline function socket_onClose(_e:Event):Void {
-		readEnabled = false;
-		__notifyClose(Reason.Closed);
-		__onClose(Reason.Closed);
+		__end(__failure != null ? __failure : Reason.Closed);
 	}
 
 	@:noCompletion private inline function socket_onReady(_e:Event):Void {
@@ -969,11 +1051,25 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 		__onReady();
 	}
 
-	@:noCompletion private inline function socket_onIoError(e:IOErrorEvent):Void {
+	/**
+		As a TCP connection's: the reads stop and `onError` is told; a
+		connect that failed ends here, and one that was up with the `close`
+		that follows.
+	**/
+	@:noCompletion private function socket_onIoError(e:IOErrorEvent):Void {
+		if (__ended) {
+			return;
+		}
+		final reason:Reason = NetConnectionBase.__reasonOf(e);
+		if (__failure == null) {
+			__failure = reason;
+		}
 		readEnabled = false;
-		final reason = Reason.Error(e.text);
 		__notifyClose(reason);
 		__onError(reason);
+		if (!__socket.connected) {
+			__end(reason);
+		}
 	}
 
 	@:noCompletion private inline function __prepareLifecycle():Void {
@@ -1130,11 +1226,31 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 	}
 
 	public function close():Void {
-		readEnabled = false;
+		__closeWith(Reason.Closed);
+	}
+
+	/**
+		Closed once. A WebSocket already closed, by its peer, or by a
+		close() before this one, throws from its own close(), and so did
+		this: closing a connection whose peer had gone was an error.
+	**/
+	override public function __closeWith(reason:Reason):Void {
 		__disposeLifecycle();
-		__notifyClose(Reason.Closed);
-		__onClose(Reason.Closed);
-		__socket.close();
+		__end(reason);
+		try {
+			__socket.close();
+		} catch (_:Dynamic) {}
+	}
+
+	/** As `TCPConnection.__end`: `onClose` once, and nothing after. **/
+	@:noCompletion private function __end(reason:Reason):Void {
+		if (__ended) {
+			return;
+		}
+		__ended = true;
+		readEnabled = false;
+		__notifyClose(reason);
+		__onClose(reason);
 	}
 
 	@:noCompletion private inline function socket_onData(_e:ProgressEvent):Void {
@@ -1145,10 +1261,7 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 	}
 
 	@:noCompletion private inline function socket_onClose(e:Event):Void {
-		readEnabled = false;
-		final reason = __closeReason(e);
-		__notifyClose(reason);
-		__onClose(reason);
+		__end(__failure != null ? __failure : __closeReason(e));
 	}
 
 	/**
@@ -1172,11 +1285,26 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 		__onReady();
 	}
 
-	@:noCompletion private inline function socket_onIoError(e:IOErrorEvent):Void {
+	/**
+		As a TCP connection's: the reads stop and `onError` is told; a
+		connect that failed ends here, and one that was up with the close
+		that follows, told the error's reason rather than the 1006 a
+		WebSocket closes with after one.
+	**/
+	@:noCompletion private function socket_onIoError(e:IOErrorEvent):Void {
+		if (__ended) {
+			return;
+		}
+		final reason:Reason = NetConnectionBase.__reasonOf(e);
+		if (__failure == null) {
+			__failure = reason;
+		}
 		readEnabled = false;
-		final reason = Reason.Error(e.text);
 		__notifyClose(reason);
 		__onError(reason);
+		if (!__socket.connected) {
+			__end(reason);
+		}
 	}
 
 	@:noCompletion private inline function __prepareLifecycle():Void {

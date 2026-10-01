@@ -225,7 +225,15 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.PeerClockTest());
 		runner.addCase(new crossbyte.net.EndpointTest());
 		runner.addCase(new crossbyte.net.NetConnectionTest());
+		// Also in PortableSuite: Node is where a TCP NetConnection carried nothing.
+		runner.addCase(new crossbyte.net.NetConnectionTcpTest());
+		// Also in PortableSuite: one end, told once, over TCP and WebSocket.
+		runner.addCase(new crossbyte.net.NetConnectionLifecycleTest());
 		runner.addCase(new crossbyte.net.NetHostTest());
+		// Also in PortableSuite, for Node's wss server.
+		runner.addCase(new crossbyte.net.NetHostTLSTest());
+		// Also in PortableSuite: Node is where a key kept its PEM in plain view.
+		runner.addCase(new crossbyte.net.KeyTest());
 		runner.addCase(new crossbyte._internal.socket.poll.PollBackendRegistryTest());
 		runner.addCase(new crossbyte._internal.socket.poll.PollBackendSeamTest());
 		runner.addCase(new crossbyte._internal.socket.FlexSocketTest());
@@ -271,6 +279,10 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.ReliableDatagramLifecycleTest());
 		runner.addCase(new crossbyte.net.SocketCloseTest());
 		runner.addCase(new crossbyte.net.SocketHalfOpenTest());
+		// Also in PortableSuite, for Node's sockets.
+		runner.addCase(new crossbyte.net.SocketObjectTest());
+		// Also in PortableSuite, for Node's sockets.
+		runner.addCase(new crossbyte.net.SocketContractTest());
 		// Also in PortableSuite: Node is where the one replaced spoke up.
 		runner.addCase(new crossbyte.net.SocketReconnectTest());
 		// What a closed connection leaves in the registry: on the jvm and
@@ -281,6 +293,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.SocketRegistryScaleTest());
 		runner.addCase(new crossbyte.net.NameLookupTest());
 		runner.addCase(new crossbyte.net.ServerSocketAcceptTest());
+		// Also in PortableSuite: most of it is Node's listener.
+		runner.addCase(new crossbyte.net.ServerSocketListenTest());
 		runner.addCase(new crossbyte.net.ServerSocketBacklogTest());
 		// A child runtime's real POLL loop, so every threaded target.
 		runner.addCase(new crossbyte.net.SocketReadinessTest());
