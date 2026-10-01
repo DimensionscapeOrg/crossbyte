@@ -243,6 +243,32 @@ class ReliableDatagramSocketTest extends utest.Test {
 	}
 
 	/**
+		A question the server cannot ask fails the future it returns, its
+		cause an IOError, rather than throwing, which both questions' docs
+		said they did. A caller that caught a throw never saw it; one that
+		watched the future did.
+	**/
+	public function testTheServersQuestionsFailTheirFutureRatherThanThrow():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+		try {
+			// Unbound: neither question has a port to be about.
+			var discovery = server.discoverPublicAddress("127.0.0.1", 3478, 500);
+			var local = server.localAddressFor("127.0.0.1");
+
+			Assert.isTrue(discovery.completed && !discovery.succeeded, "discovery from an unbound server did not fail at once");
+			Assert.isTrue(Std.isOfType(discovery.cause, IOError), "its cause was " + discovery.cause);
+			Assert.isTrue(local.completed && !local.succeeded, "a local address from an unbound server did not fail at once");
+			Assert.isTrue(Std.isOfType(local.cause, IOError), "its cause was " + local.cause);
+		} catch (e:Dynamic) {
+			Assert.fail("a question to an unbound server threw: " + Std.string(e));
+		}
+
+		try server.close() catch (_:Dynamic) {}
+	}
+
+	/**
 		The same over a reliable session: a number written into a new ByteArray
 		reads back as itself from the message that carried it -- a game's
 		snapshot header, an input's tick. Messages came big-endian, and every
