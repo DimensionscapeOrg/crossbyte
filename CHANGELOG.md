@@ -79,6 +79,8 @@ entry below says how:
 - A closed `DataChannel` resets its SCTP stream, so the peer's end closes
   too. That needs RE-CONFIG at both ends: a peer on 1.0.0-rc.1 does not
   advertise it, is not asked, and keeps its end open as before.
+- `PeerConnection.addLocalCandidate` throws for a relayed candidate, which
+  never worked from there: ask `gatherRelayed` or `gatherRelayedFrom`.
 
 ### Added
 - `TurnServer.verifyCert`, so a relay `PeerConnection.gatherRelayedFrom`
@@ -1149,6 +1151,15 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `PeerConnection.addLocalCandidate` and `PeerConnectionHost.
+  addLocalCandidate` refuse a relayed candidate with an `ArgumentError`
+  naming `gatherRelayed` and `gatherRelayedFrom`. A relayed address works
+  only through the allocation that lent it, made from the connection's own
+  socket; one added from outside was taken in silence, and its checks went
+  straight at the peer while the peer was told to answer the relay. The
+  `TurnClient` and `IceAgent` examples now show the wiring a relayed
+  candidate needs, the way to send through the relay, and what it
+  forwards handed back, and call methods that exist.
 - Reliable UDP sends what a pass produces from one socket in as few system
   calls as the system allows. Each datagram was a `sendto` of its own,
   which was nearly all a server sending reliable UDP spent: 5.9 us a
