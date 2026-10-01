@@ -55,6 +55,9 @@ enum abstract JWTRejection(String) to String {
 	/** `iss` is not `JWT.expectedIssuer`. */
 	var WRONG_ISSUER = "wrong-issuer";
 
-	/** `aud` does not include `JWT.expectedAudience`. */
+	/**
+	 * `aud` does not include `JWT.expectedAudience`, or names an audience
+	 * where the verifier expects none.
+	 */
 	var WRONG_AUDIENCE = "wrong-audience";
 }

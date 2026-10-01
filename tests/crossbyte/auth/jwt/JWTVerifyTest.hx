@@ -143,6 +143,29 @@ class JWTVerifyTest extends utest.Test {
 		Assert.isTrue(jwt.verify(forge('{"alg":"HS256","typ":"JWT","x5t":"abc","custom":1}', claims())).valid);
 	}
 
+	/**
+		A token naming an audience is refused by a verifier that names none.
+
+		RFC 7519 4.1.3: a recipient that does not identify itself with a value
+		in a token's `aud` must reject it. A verifier with no `expectedAudience`
+		accepted a token minted for any other service the issuer and key
+		serve, the token another service was given, replayed here.
+	**/
+	public function testATokenForSomeAudienceIsRefusedWhereNoneIsExpected():Void {
+		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]), ISSUER);
+		var header:String = '{"alg":"HS256","typ":"JWT"}';
+		expectRefused(jwt, forge(header, claims({aud: "another-service"})), WRONG_AUDIENCE);
+		expectRefused(jwt, forge(header, claims({aud: ["another-service", "a-third"]})), WRONG_AUDIENCE);
+
+		// A token naming none passes, as before.
+		Assert.isTrue(jwt.verify(forge(header, claims({aud: null}))).valid);
+
+		// And one naming this verifier passes once it says which it is.
+		jwt.expectedAudience = "another-service";
+		Assert.isTrue(jwt.verify(forge(header, claims({aud: ["another-service", "a-third"]}))).valid);
+		expectRefused(jwt, forge(header, claims({aud: null})), WRONG_AUDIENCE);
+	}
+
 	public function testKeysRotateWithoutRebuildingTheVerifier():Void {
 		var jwt:JWT = JWT.make(HS256([{secret: "old-secret-old-secret-old-secret-01"}]), ISSUER, "api", 0);
 		jwt.acceptedTypes = ["JWT"];

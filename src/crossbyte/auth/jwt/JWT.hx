@@ -37,8 +37,23 @@ using StringTools;
 class JWT {
 	@:noCompletion private var __signer:IJWTSigner;
 
+	/** The issuer a token's `iss` has to be. `null` leaves `iss` unchecked. */
 	public var expectedIssuer:String;
+
+	/**
+	 * The audience this verifier is: a token's `aud` has to name it, or hold
+	 * it when `aud` is an array. When `null`, a token that names any audience
+	 * is refused as `WRONG_AUDIENCE` and one that names none is accepted,
+	 * RFC 7519 has a recipient that does not identify itself with a token's
+	 * `aud` reject it, and accepting one let a token minted for another
+	 * service of the same issuer be replayed here.
+	 */
 	public var expectedAudience:String;
+
+	/**
+	 * Seconds of clock difference forgiven when judging `exp`, `nbf` and
+	 * `iat` against the time. 60 by default.
+	 */
 	public var leeway:Int = 60;
 
 	/**
@@ -225,7 +240,14 @@ class JWT {
 		if (expectedIssuer != null && payload.issuer != expectedIssuer) {
 			return JWTVerification.refused(WRONG_ISSUER);
 		}
-		if (expectedAudience != null && !__audMatches(expectedAudience, payload.audience)) {
+		if (expectedAudience != null) {
+			if (!__audMatches(expectedAudience, payload.audience)) {
+				return JWTVerification.refused(WRONG_AUDIENCE);
+			}
+		} else if (payload.audience != null) {
+			// RFC 7519 4.1.3: a recipient that does not identify itself with a
+			// value in `aud` must reject the token. One minted for another
+			// service the issuer and key serve was accepted here.
 			return JWTVerification.refused(WRONG_AUDIENCE);
 		}
 
