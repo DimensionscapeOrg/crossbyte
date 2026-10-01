@@ -1233,6 +1233,30 @@ class HTTPRequestHandlerTest extends utest.Test {
 		}, null, true);
 	}
 
+	public function testTheResponseStatusEventSaysWhatWasAnswered(async:Async):Void {
+		// HTTPStatusEvent says responseURL is the URL the response came from
+		// and responseHeaders the fields it carried. On the server the URL was
+		// the client's address and the fields only those a caller had added,
+		// for a static file, Accept-Ranges and Last-Modified, with no
+		// Content-Type, Date or Server among them.
+		var seen:crossbyte.events.HTTPStatusEvent = null;
+		__sendRequest(async, [
+			(handler, next) -> {
+				handler.addEventListener(crossbyte.events.HTTPStatusEvent.HTTP_RESPONSE_STATUS, e -> seen = e);
+				next();
+			}
+		], "GET /index.html?x=1 HTTP/1.1\r\nHost: localhost\r\n\r\n", function(response):Void {
+			Assert.equals(200, response.status);
+			Require.notNull(seen, "HTTP_RESPONSE_STATUS was not dispatched");
+			Assert.equals("/index.html?x=1", seen.responseURL);
+			var names:Array<String> = [for (field in seen.responseHeaders) field.name.toLowerCase()];
+			for (name in ["content-type", "date", "server", "last-modified", "accept-ranges"]) {
+				Assert.isTrue(names.indexOf(name) >= 0, 'the event did not carry $name, which the response did');
+			}
+			async.done();
+		});
+	}
+
 	public function testTheErrorDocumentIsTheBodyOfTheServersOwnErrors(async:Async):Void {
 		// errorDocument was declared, taken by the constructor, and read by
 		// nothing: every error went out as one line of plain text whatever it
