@@ -47,6 +47,15 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	@:noCompletion private static inline var DEFAULT_CACHE_SIZE:UInt = 2000;
 
+	/**
+		Whether the database gives the space of deleted rows back to the
+		file system at every commit, so its file shrinks: SQLite's FULL
+		`auto_vacuum`, set when `open()` creates the database with
+		`autoCompact`, as AIR's is. A database made by an earlier CrossByte
+		with `autoCompact` is INCREMENTAL, which keeps its free pages until
+		`PRAGMA incremental_vacuum` runs, and reads `false`; `compact()`
+		reclaims the space of any database.
+	**/
 	public var autoCompact(get, null):Bool;
 	public var cacheSize(get, set):UInt;
 	// public var columnNameStyle(get, set):String;
@@ -1060,7 +1069,11 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			__connection.request('PRAGMA page_size = $pageSize;');
 
 			if (autoCompact) {
-				__connection.request("PRAGMA auto_vacuum = 2;");
+				// FULL: freed pages go back to the file system at every
+				// commit, which is what autoCompact is. This set 2,
+				// INCREMENTAL, which gives nothing back until PRAGMA
+				// incremental_vacuum runs, and nothing here ran it.
+				__connection.request("PRAGMA auto_vacuum = 1;");
 			}
 
 			if (__reference != null && __reference != ":memory:" && autoCompact) {
@@ -1232,19 +1245,10 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			result = __live().request("PRAGMA auto_vacuum;");
 		}
 
-		if (result.hasNext()) {
-			var autoVacuum:Int = result.next().auto_vacuum;
-
-			if (autoVacuum == 0) {
-				return false;
-			} else if (autoVacuum == 1) {
-				return true;
-			} else if (autoVacuum == 2) {
-				return true;
-			}
-		}
-
-		return false;
+		// FULL only. An INCREMENTAL database, what autoCompact made before,
+		// keeps its free pages until PRAGMA incremental_vacuum runs, so it
+		// does not compact by itself and is not reported as doing so.
+		return result.hasNext() && __wholeNumber(Reflect.field(result.next(), "auto_vacuum")) == 1;
 	}
 
 	private function get_pageSize():UInt {
