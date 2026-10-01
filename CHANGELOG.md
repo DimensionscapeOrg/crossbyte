@@ -1961,6 +1961,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On JavaScript a `Task`'s events and a `Worker`'s messages arrive in a
+  later turn, as they do from a thread elsewhere. With no threads the job
+  runs inside `TaskPool.submit`, and a worker's work inside `run()`, and
+  everything it reported was dispatched there too: before `submit` had
+  returned the task, so a listener added to it never heard anything. The
+  work still holds the one thread while it runs, as `TaskPool`, `Task` and
+  `Worker` now say, and a listener that throws is reported as a posted
+  callback's failure is rather than thrown into Node's loop.
 - On JavaScript a child runtime made once the program is running runs.
   `CrossByte.make()` handed its loop to `haxe.EntryPoint`, which on Node
   runs what it is given only until the program has started, so a child

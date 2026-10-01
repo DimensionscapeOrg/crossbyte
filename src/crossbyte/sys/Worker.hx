@@ -24,6 +24,12 @@ private enum WorkerMessage {
 	of a batch arrives. A worker used to hold a tick listener for as long as it
 	ran and poll its queue every tick, so a message waited for the next tick,
 	up to a whole frame, and every idle tick paid for every running worker.
+
+	On JavaScript, which has no threads, the work runs on the one thread there
+	is, inside `run()`, holding it for as long as the work takes. What it sends
+	is still delivered in a later turn, in order, as from a thread elsewhere, so
+	a listener added after `run()` hears it and `state` changes as the messages
+	arrive; it was all dispatched inside `run()`.
 **/
 class Worker extends EventDispatcher {
 	/**
@@ -54,7 +60,7 @@ class Worker extends EventDispatcher {
 	@:noCompletion private var __runMessage:Dynamic;
 	@:noCompletion private var __runtime:CrossByte;
 
-	#if target.threaded
+	#if (target.threaded || js)
 	// What the work has sent and the runtime has not yet delivered, in order.
 	// Replaced by each run, so a drain can tell whether it still belongs to
 	// the run that posted it.
@@ -62,6 +68,8 @@ class Worker extends EventDispatcher {
 	// Whether a drain is posted and has not yet emptied the outbox: the first
 	// message after that posts the next one.
 	@:noCompletion private var __drainPosted:Bool;
+	#end
+	#if target.threaded
 	@:noCompletion private var __workerThread:Thread;
 	// Guards the outbox and the cross-thread lifecycle state (the canceled,
 	// cancelRequested, completed, result and error flags) so the worker
@@ -78,22 +86,16 @@ class Worker extends EventDispatcher {
 	}
 
 	public function cancel(doClean:Bool = true):Void {
+		__acquire();
+		cancelRequested = true;
+		canceled = true;
+		if (!completed && state != FAILED) {
+			state = CANCELLED;
+		}
 		#if target.threaded
-		__lock.acquire();
-		cancelRequested = true;
-		canceled = true;
-		if (!completed && state != FAILED) {
-			state = CANCELLED;
-		}
 		__workerThread = null;
-		__lock.release();
-		#else
-		cancelRequested = true;
-		canceled = true;
-		if (!completed && state != FAILED) {
-			state = CANCELLED;
-		}
 		#end
+		__release();
 		if (doClean) {
 			__cleanResources();
 		}
@@ -120,16 +122,23 @@ class Worker extends EventDispatcher {
 		__drainPosted = false;
 		__lock.release();
 		__workerThread = Thread.create(__doWork);
+		#elseif js
+		// Here and now, on the one thread there is. What it sends goes to the
+		// outbox and is delivered in a later turn, as from a thread: it was
+		// dispatched inside run(), before a listener added after it could hear.
+		__outbox = [];
+		__drainPosted = false;
+		__doWork();
 		#else
 		__doWork();
 		#end
 	}
 
 	public function sendComplete(message:Dynamic = null):Void {
-		#if target.threaded
-		__lock.acquire();
+		#if (target.threaded || js)
+		__acquire();
 		if (cancelRequested || canceled) {
-			__lock.release();
+			__release();
 			return;
 		}
 		completed = true;
@@ -148,10 +157,10 @@ class Worker extends EventDispatcher {
 	}
 
 	public function sendError(message:Dynamic = null):Void {
-		#if target.threaded
-		__lock.acquire();
+		#if (target.threaded || js)
+		__acquire();
 		if (cancelRequested || canceled) {
-			__lock.release();
+			__release();
 			return;
 		}
 		error = message;
@@ -166,10 +175,10 @@ class Worker extends EventDispatcher {
 	}
 
 	public function sendProgress(message:Dynamic = null):Void {
-		#if target.threaded
-		__lock.acquire();
+		#if (target.threaded || js)
+		__acquire();
 		if (cancelRequested || canceled) {
-			__lock.release();
+			__release();
 			return;
 		}
 		__send(Progress(message));
@@ -190,15 +199,31 @@ class Worker extends EventDispatcher {
 	}
 
 	@:noCompletion private function __cleanResources():Void {
+		__acquire();
 		#if target.threaded
-		__lock.acquire();
 		__workerThread = null;
-		__outbox = null;
-		__lock.release();
 		#end
+		#if (target.threaded || js)
+		__outbox = null;
+		#end
+		__release();
 		__runtime = null;
 		__runMessage = null;
 		doWork = null;
+	}
+
+	// The lock where there are threads to need it, and nothing where there
+	// are not.
+	@:noCompletion private inline function __acquire():Void {
+		#if target.threaded
+		__lock.acquire();
+		#end
+	}
+
+	@:noCompletion private inline function __release():Void {
+		#if target.threaded
+		__lock.release();
+		#end
 	}
 
 	@:noCompletion private function __resetState():Void {
@@ -237,24 +262,36 @@ class Worker extends EventDispatcher {
 		dispatchEvent(new ThreadEvent(ThreadEvent.ERROR, message));
 	}
 
-	#if target.threaded
+	#if (target.threaded || js)
 	// Queues `message` for the owning runtime and posts a drain when this is
-	// the first of a batch. Called with __lock held; releases it.
+	// the first of a batch, on JavaScript, for a later turn. Called with the
+	// lock held; releases it.
 	@:noCompletion private function __send(message:WorkerMessage):Void {
 		var outbox:Array<WorkerMessage> = __outbox;
+		#if target.threaded
 		var runtime:CrossByte = __runtime;
 		if (outbox == null || runtime == null) {
-			__lock.release();
+			__release();
 			return;
 		}
+		#else
+		if (outbox == null) {
+			__release();
+			return;
+		}
+		#end
 
 		outbox.push(message);
 		var post:Bool = !__drainPosted;
 		__drainPosted = true;
-		__lock.release();
+		__release();
 
 		if (post) {
+			#if js
+			CrossByte.__nextTurn(() -> __drain(outbox));
+			#else
 			runtime.post(() -> __drain(outbox));
+			#end
 		}
 	}
 
@@ -264,11 +301,11 @@ class Worker extends EventDispatcher {
 	@:noCompletion private function __drain(outbox:Array<WorkerMessage>):Void {
 		var limit:Int = maxMessagesPerTick;
 
-		__lock.acquire();
+		__acquire();
 		// A run since, or a clean(), has replaced the outbox this was posted
 		// for: what it held belongs to a run that is over.
 		if (__outbox != outbox || cancelRequested) {
-			__lock.release();
+			__release();
 			return;
 		}
 		var batch:Array<WorkerMessage>;
@@ -283,7 +320,7 @@ class Worker extends EventDispatcher {
 			batch = outbox.splice(0, limit);
 			more = true;
 		}
-		__lock.release();
+		__release();
 
 		for (message in batch) {
 			// Checked again per message rather than trusted from above. A
@@ -320,10 +357,14 @@ class Worker extends EventDispatcher {
 		}
 
 		if (more) {
+			#if js
+			CrossByte.__nextTurn(() -> __drain(outbox));
+			#else
 			var runtime:CrossByte = __runtime;
 			if (runtime != null) {
 				runtime.post(() -> __drain(outbox));
 			}
+			#end
 		}
 	}
 	#end

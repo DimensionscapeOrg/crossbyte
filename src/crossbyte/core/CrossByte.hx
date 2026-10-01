@@ -1059,6 +1059,39 @@ final class CrossByte extends EventDispatcher {
 		__passFlushScheduled = false;
 		__flushHeld();
 	}
+
+	/**
+		Runs `callback` in a later turn of the platform's event loop: what a
+		thread elsewhere hands to a runtime's post queue, where there is no
+		other thread to hand it from. A `Task`'s events and a `Worker`'s
+		messages are delivered this way.
+
+		What it throws is reported as a posted callback's failure is, logged,
+		and dispatched as `UncaughtErrorEvent.UNCAUGHT_ERROR` on the runtime
+		current then, rather than thrown into the platform's loop, which on
+		Node ends the process.
+	**/
+	@:noCompletion public static function __nextTurn(callback:Void->Void):Void {
+		var run = function():Void {
+			try {
+				callback();
+			} catch (error:Dynamic) {
+				var runtime:Null<CrossByte> = __currentOrNull();
+				if (runtime != null) {
+					runtime.__uncaught(error, UncaughtErrorEvent.POSTED);
+				} else {
+					try {
+						Logger.error("A callback run in a later turn threw: " + Std.string(error));
+					} catch (_:Dynamic) {}
+				}
+			}
+		};
+		#if nodejs
+		js.Node.setImmediate(run);
+		#else
+		js.Browser.window.setTimeout(run, 0);
+		#end
+	}
 	#end
 
 	@:noCompletion private function __flushHeld():Void {
