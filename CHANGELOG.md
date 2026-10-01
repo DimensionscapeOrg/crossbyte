@@ -1859,6 +1859,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The metrics compile wherever hxcpp does. Their lock-free updates use
+  `std::atomic` in code that was inlined into each caller without
+  `<atomic>`, so they compiled only where the hxcpp fork's headers happened
+  to include it: an application built against haxelib's hxcpp 4.3.2
+  stopped at `Counter.cpp`.
 - A reliable UDP session is no longer closed when its socket's send buffer
   is momentarily full. The send raised an IOError for it, and the session
   took any send error as fatal, so a burst could close a healthy
