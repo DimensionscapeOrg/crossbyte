@@ -18,10 +18,20 @@ import crossbyte.sys._internal.JvmSignals.JvmSignalHandler;
  *
  * `installDefaultHandlers()` arms the platform shutdown source, natively the
  * console control handler on Windows (`Ctrl+C`, console close, logoff, system
- * shutdown) and `SIGINT`/`SIGTERM` on POSIX; `SIGINT`/`SIGTERM` listeners on
- * Node; the JVM's own signal hook for `INT` and `TERM` on the jvm. The handler
- * only records the request, and asks the watching runtime to look; nothing
- * else runs on the handler's thread.
+ * shutdown) and `SIGINT`, `SIGTERM` and `SIGHUP` on POSIX; listeners for the
+ * same three on Node; the JVM's own signal hook for `INT`, `TERM` and `HUP` on
+ * the jvm. The handler only records the request, and asks the watching runtime
+ * to look; nothing else runs on the handler's thread.
+ *
+ * `SIGHUP`: the terminal a server was started from going away, ends a
+ * process at once by default, with no callbacks; it runs the same graceful
+ * shutdown as `SIGTERM` instead. A server here does not reload, which is the
+ * other thing `SIGHUP` is used for. It is left alone when it was ignored as
+ * the process started, `nohup`, which asks for the process to outlive its
+ * terminal, or when something else already handles it: natively, on the
+ * jvm (whose own hook leaves an ignored `HUP` ignored), and on Node on Linux.
+ * On Node on macOS, which cannot see that it was ignored, it is left to its
+ * default. On Node on Windows it is how a console window closing arrives.
  *
  * For a console window closing, a logoff or a system shutdown, Windows ends
  * the process as soon as the console handler returns. The handler therefore
@@ -30,11 +40,24 @@ import crossbyte.sys._internal.JvmSignals.JvmSignalHandler;
  * about five seconds for a closed console window, and at most 20 seconds.
  * Ctrl+C and Ctrl+Break do not end the process, and are not held.
  *
- * A process started by the Windows Service Control Manager has no console and
- * receives none of those events, so a service needs
- * `installServiceControl()` instead: it adds the SCM as a second signal source
- * feeding the same latch, and reports service status back so that a stop waits
- * for the shutdown callbacks rather than killing the process on a timeout.
+ * Windows tells a process that has loaded user32.dll, any window, a GUI
+ * toolkit, a Shell function that calls into it, of a logoff or a shutdown
+ * through its windows instead of its console. Natively,
+ * `installDefaultHandlers()` gives such a process a hidden window that runs
+ * the same shutdown and holds the session's end the same way. CrossByte
+ * loads none of user32 itself, so call it after whatever does: each call
+ * looks again.
+ *
+ * A process in session 0, a service, or one a service started, is sent a
+ * logoff whenever anyone signs out, and Windows does not end it then. It
+ * ignores the logoff and keeps serving.
+ *
+ * A process started by the Windows Service Control Manager has no console for
+ * a Ctrl+C or a close to reach, and the SCM is what stops it. A service
+ * therefore needs `installServiceControl()` as well: it adds the SCM as a
+ * second signal source feeding the same latch, and reports service status
+ * back so that a stop waits for the shutdown callbacks rather than killing the
+ * process on a timeout.
  *
  * Registered `onShutdown` callbacks are dispatched exactly once, in
  * registration order, on the thread that calls `poll()`. Installing while a
@@ -124,6 +147,10 @@ final class ProcessLifecycle {
 	 * and on the jvm. Elsewhere, the interpreter, hl, neko, a browser, it
 	 * returns `false`, and shutdown remains fully usable through
 	 * `requestShutdown()`/`poll()`.
+	 *
+	 * Natively on Windows each call also looks for user32.dll, and makes the
+	 * hidden window a process that has loaded it hears a logoff or shutdown
+	 * through (see the class). Call it again after loading user32 late.
 	 */
 	public static function installDefaultHandlers():Bool {
 		__attachToCurrentRuntime();
@@ -167,8 +194,44 @@ final class ProcessLifecycle {
 			__nodeHandlersInstalled = true;
 			js.Node.process.on("SIGTERM", __onSignal);
 			js.Node.process.on("SIGINT", __onSignal);
+			if (__hangupIsUnclaimed()) {
+				js.Node.process.on("SIGHUP", __onSignal);
+			}
 		}
 		return true;
+	}
+
+	/**
+		Whether SIGHUP is Node's to end the process with, as it does unless
+		something listens: no listener of the application's, and not ignored
+		when Node started (nohup), which only Linux shows, the process's
+		ignored signals are in /proc/self/status. On Windows it is a console
+		window closing, which nothing ignores; on macOS it is left alone.
+	**/
+	@:noCompletion private static function __hangupIsUnclaimed():Bool {
+		if (js.Node.process.listenerCount("SIGHUP") > 0) {
+			return false;
+		}
+		switch (js.Node.process.platform) {
+			case "win32":
+				return true;
+			case "linux":
+				try {
+					var status:String = js.node.Fs.readFileSync("/proc/self/status", {encoding: "utf8"});
+					var ignored:EReg = ~/SigIgn:\s*([0-9a-fA-F]+)/;
+					if (!ignored.match(status)) {
+						return false;
+					}
+					// SIGHUP is signal 1, the mask's lowest bit.
+					var mask:String = ignored.matched(1);
+					var lowest:Int = crossbyte.utils.IntParse.hex(mask.charAt(mask.length - 1), 15);
+					return lowest >= 0 && (lowest & 1) == 0;
+				} catch (_:Dynamic) {
+					return false;
+				}
+			default:
+				return false;
+		}
 	}
 	#end
 
@@ -183,12 +246,22 @@ final class ProcessLifecycle {
 			return true;
 		}
 
+		var handler = new LatchOnSignal();
 		try {
-			var handler = new LatchOnSignal();
 			JvmSignal.handle(new JvmSignal("TERM"), handler);
 			JvmSignal.handle(new JvmSignal("INT"), handler);
 			__jvmHandlersInstalled = true;
 		} catch (_:Dynamic) {}
+
+		// HUP, which the JVM also answers by halting. Asked for on its own: a
+		// JVM on Windows has no such signal and refuses the name. The JVM's
+		// hook installs nothing for a HUP ignored as it started, nohup,
+		// and it stays ignored.
+		if (__jvmHandlersInstalled) {
+			try {
+				JvmSignal.handle(new JvmSignal("HUP"), handler);
+			} catch (_:Dynamic) {}
+		}
 		return __jvmHandlersInstalled;
 	}
 	#end
