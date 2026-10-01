@@ -199,7 +199,9 @@ Content-Length: ${body.length}
 		fixture.waitDone();
 
 		Assert.equals("hello world", result.data);
-		Assert.equals(-1, result.progress[0].total);
+		// 0 for a length nobody declared, as on JavaScript; -1 reached
+		// ProgressEvent's UInt as 4294967295.
+		Assert.equals(0, result.progress[0].total);
 		Assert.equals(11, result.progress[result.progress.length - 1].loaded);
 		Assert.isNull(result.error);
 	}
@@ -212,6 +214,7 @@ Content-Length: ${body.length}
 
 		Assert.equals("close body", result.data);
 		Assert.isNull(result.error);
+		Assert.equals(0, result.progress[0].total, "a body ended by the close has no length to report");
 	}
 
 	public function testHeadCompletesWithoutReadingResponseBody():Void {
@@ -235,7 +238,9 @@ Content-Length: ${body.length}
 		fixture.waitDone();
 
 		Assert.equals("ok", result.data);
-		Assert.same([100, 200], result.statuses);
+		// The interim 100 is not a status the load ends with, and the client
+		// contract says it is not reported. It was, as HTTP_STATUS.
+		Assert.same([200], result.statuses);
 		Assert.isNull(result.error);
 	}
 
@@ -486,7 +491,7 @@ Content-Length: ${body.length}
 
 		Assert.equals("ok", result.data);
 		Assert.isNull(result.error);
-		Assert.equals(-1, result.progress[0].total);
+		Assert.equals(0, result.progress[0].total);
 	}
 
 	public function testTheNextLoadCanStartFromComplete():Void {
