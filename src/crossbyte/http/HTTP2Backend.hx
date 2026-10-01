@@ -108,6 +108,24 @@ class HTTP2Backend implements HTTPBackend {
 		var contentType:Null<String> = context.contentType;
 		var cookies:Null<CookieJar> = context.manageCookies == true ? new CookieJar() : null;
 
+		// `requestData`, encoded as the HTTP/1.1 client encodes it -- a
+		// URLVariables, or an object's fields -- and ignored beside a body of
+		// the caller's own: a GET's or HEAD's query, any other method's form.
+		// Nothing here read it, so a form went out as an empty POST with no
+		// Content-Type, and a GET without its query.
+		var query:Null<String> = null;
+		if (data == null && context.requestData != null && Reflect.isObject(context.requestData)) {
+			var form:String = Http.__buildQuery(context.requestData);
+			if (method == "GET" || method == "HEAD") {
+				query = form;
+			} else {
+				data = form;
+				if (contentType == null) {
+					contentType = "application/x-www-form-urlencoded; charset=utf-8";
+				}
+			}
+		}
+
 		// The HTTP/1.1 client's redirect policy, through the same functions:
 		// a 3xx completed here with its Location unfollowed, where the
 		// HTTP/1.1 client, Node and the browser all followed it.
@@ -116,11 +134,14 @@ class HTTP2Backend implements HTTPBackend {
 		var credentialsDropped:Bool = false;
 
 		while (true) {
-			var exchange:Null<H2Exchange> = __exchange(context, url, method, headers, data, contentType, cookies, credentialsDropped);
+			var exchange:Null<H2Exchange> = __exchange(context, url, method, headers, query, data, contentType, cookies, credentialsDropped);
 			if (exchange == null) {
 				// Reported already.
 				return;
 			}
+			// The first hop's only, as over HTTP/1.1: a redirect's Location is
+			// the whole of the next hop's target.
+			query = null;
 
 			var stream:H2Stream = exchange.stream;
 			if (!context.followRedirects || !Http.__isRedirect(stream.status) || !stream.endOfStream || __cancelled(context)) {
@@ -193,8 +214,8 @@ class HTTP2Backend implements HTTPBackend {
 	 * Sends one request and waits for its response, or reports why it could
 	 * not and answers null.
 	 */
-	private function __exchange(context:HTTPRequestContext, url:URL, method:String, headers:Array<String>, data:Dynamic, contentType:Null<String>,
-			cookies:Null<CookieJar>, leftOrigin:Bool):Null<H2Exchange> {
+	private function __exchange(context:HTTPRequestContext, url:URL, method:String, headers:Array<String>, query:Null<String>, data:Dynamic,
+			contentType:Null<String>, cookies:Null<CookieJar>, leftOrigin:Bool):Null<H2Exchange> {
 		if (__cancelled(context)) {
 			// Between two hops, or before the first. Nothing is opened for it,
 			// and nothing already open is disturbed.
@@ -238,7 +259,7 @@ class HTTP2Backend implements HTTPBackend {
 			while (stream == null) {
 				session = H2ConnectionPool.acquire(origin, () -> __open(origin, url.host, port, secure, context, tls), timeout, context.cancelToken, tls);
 				try {
-					stream = session.execute(method, scheme, authority, __target(url), fields, body, timeout, context.cancelToken);
+					stream = session.execute(method, scheme, authority, __target(url, query), fields, body, timeout, context.cancelToken);
 				} catch (e:H2ConnectionError) {
 					if (e.code == H2ErrorCode.CANCEL && __cancelled(context)) {
 						// Cancelled as it was about to start: refused before
@@ -511,10 +532,14 @@ class HTTP2Backend implements HTTPBackend {
 	 * `:path` is the path and query together, and is never empty (§8.3.1).
 	 * Encoded as the HTTP/1.1 client encodes its request target: a space or a
 	 * byte past ASCII left raw is a malformed `:path` to a strict server.
+	 * `extra` is a form's fields, after any query the URL has already.
 	 */
-	private function __target(url:URL):String {
+	private function __target(url:URL, ?extra:String):String {
 		var path:String = (url.path != null && url.path.length > 0) ? url.path : "/";
 		var query:String = url.query;
+		if (extra != null && extra.length > 0) {
+			query = (query != null && query.length > 0) ? query + "&" + extra : extra;
+		}
 		return HttpSyntax.encodeRequestTarget((query != null && query.length > 0) ? '$path?$query' : path);
 	}
 
