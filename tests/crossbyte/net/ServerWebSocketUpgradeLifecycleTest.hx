@@ -190,6 +190,57 @@ class ServerWebSocketUpgradeLifecycleTest extends utest.Test {
 		try server.close() catch (_:Dynamic) {}
 	}
 
+	#if !eval
+	/**
+		A port already in use is reported, wherever it is found: natively
+		`bind()` throws, and on Node, which claims the port only once
+		`listen()` starts, as `ioError` and then `close`, as a
+		`DatagramSocket` reports it there. Node dispatched `close` alone.
+
+		Not on eval, whose bind raises a port in use as an error no Haxe
+		catch can see, ending the interpreter.
+	**/
+	@:timeout(15000)
+	public function testAPortInUseIsReported(async:Async):Void {
+		var holder = new ServerSocket();
+		holder.bind(0, "127.0.0.1");
+		holder.listen();
+
+		NetPump.until(() -> holder.localPort != 0, 5.0, function(_) {
+			var server = new ServerWebSocket();
+			var events:Array<String> = [];
+			var failure:String = null;
+			server.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) {
+				events.push("ioError");
+				failure = e.text;
+			});
+			server.addEventListener(Event.CLOSE, function(_) events.push("close"));
+
+			var thrown:Dynamic = null;
+			try {
+				server.bind(holder.localPort, "127.0.0.1");
+				server.listen();
+			} catch (e:Dynamic) {
+				thrown = e;
+			}
+
+			NetPump.until(() -> thrown != null || events.length >= 2, 5.0, function(_) {
+				if (thrown != null) {
+					Assert.isTrue(Std.isOfType(thrown, IOError), "a port in use was refused with something other than an IOError: " + thrown);
+					Assert.same([], events, "a refused bind was reported twice");
+				} else {
+					Assert.same(["ioError", "close"], events, "a port in use was not reported as ioError and then close");
+					Assert.isTrue(failure != null && failure.indexOf(Std.string(holder.localPort)) >= 0, "the report did not name the port: " + failure);
+					Assert.isFalse(server.listening, "a server that could not listen says it is listening");
+				}
+				try server.close() catch (_:Dynamic) {}
+				try holder.close() catch (_:Dynamic) {}
+				async.done();
+			});
+		});
+	}
+	#end
+
 	#if !nodejs
 	/**
 		The system refusing twice to hand over a waiting connection, as it
