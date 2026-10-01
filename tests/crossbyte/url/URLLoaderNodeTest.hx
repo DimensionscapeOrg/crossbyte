@@ -316,6 +316,42 @@ class URLLoaderNodeTest extends utest.Test {
 		});
 	}
 
+	/**
+		A cookie a redirect sets goes back on the hops after it, as
+		`manageCookies` says and as the native client does: a sign-in
+		answering 302 with a session cookie reached the page it sent the
+		client to without it. Not with `manageCookies` off, and never over a
+		`Cookie` the caller wrote itself.
+	**/
+	public function testACookieARedirectSetsGoesBackOnTheNextHop(async:Async):Void {
+		serveWith((request:Dynamic, body:js.node.Buffer, response:Dynamic) -> {
+			if (Std.string(request.url) == "/signin") {
+				var redirect:Dynamic = {};
+				Reflect.setField(redirect, "Location", "/landing");
+				Reflect.setField(redirect, "Set-Cookie", ["sid=abc123; Path=/; HttpOnly", "theme=dark"]);
+				response.writeHead(302, redirect);
+				response.end();
+				return;
+			}
+			var cookie:Dynamic = Reflect.field(request.headers, "cookie");
+			response.writeHead(200, {"Content-Type": "text/plain"});
+			response.end("cookie=" + (cookie == null ? "<none>" : Std.string(cookie)));
+		}, (port, close) -> {
+			var signin:String = 'http://127.0.0.1:$port/signin';
+			loadWith(signin, _ -> {}, managed -> {
+				loadWith(signin, request -> request.manageCookies = false, unmanaged -> {
+					loadWith(signin, request -> request.requestHeaders.push(new URLRequestHeader("Cookie", "mine=1")), own -> {
+						close();
+						Assert.equals("ok cookie=sid=abc123; theme=dark", managed, "the cookies a redirect set did not go back");
+						Assert.equals("ok cookie=<none>", unmanaged, "a cookie went back with manageCookies off");
+						Assert.equals("ok cookie=mine=1", own, "the caller's own Cookie was not the one sent");
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
 	/** Records what `loader` dispatches into `events`, as "COMPLETE <data>" or "IO_ERROR <text>". */
 	private static function listen(loader:URLLoader, events:Array<String>):Void {
 		loader.addEventListener(Event.COMPLETE, _ -> events.push("COMPLETE " + Std.string(loader.data)));

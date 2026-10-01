@@ -1932,6 +1932,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `URLLoader` on Node carries the cookies a redirect sets to the hops
+  after it, as `URLRequest.manageCookies`, on by default, says: by the
+  native client's rules, a cookie goes back only to the host that set it,
+  a `Secure` one only over TLS, and a `Cookie` the caller wrote wins. Node
+  kept nothing, so a sign-in answering 302 with a session cookie reached
+  the page it sent the client to without it. In a browser the browser's
+  own jar applies, and `manageCookies` now says so.
 - `URLLoader.close()` ends the load in flight on Node and in a browser,
   and `cancelToken` cancels one there. `close()` only stopped the next
   load being refused as busy: the request it closed went on, and its
