@@ -78,6 +78,47 @@ class SocketReconnectTest extends utest.Test {
 	// Not on eval, whose connect completes and announces itself before it
 	// returns, so there is no connect under way to give up.
 	#if (cpp || java || jvm || nodejs)
+	/**
+		One socket, closed and connected to another server, names the new
+		peer. The far end is read once per connection now, it was a
+		getpeername call on every read, every HTTP response among them, and
+		what is kept must not outlive the connection it was read from.
+	**/
+	@:timeout(30000)
+	public function testASocketConnectedAgainNamesItsNewPeer(async:Async):Void {
+		var firstHeard:Array<String> = [];
+		var secondHeard:Array<String> = [];
+		var peers:Array<Socket> = [];
+		var first = __echoServer(firstHeard, peers);
+		var second = __echoServer(secondHeard, peers);
+
+		NetPump.until(() -> first.localPort != 0 && second.localPort != 0, 5.0, function(_) {
+			var client = new Socket();
+			var connects:Int = 0;
+			client.addEventListener(Event.CONNECT, _ -> connects++);
+			client.connect("127.0.0.1", first.localPort);
+
+			NetPump.until(() -> connects == 1, 10.0, function(_) {
+				Assert.equals(first.localPort, client.remotePort, "the first peer's port");
+				Assert.equals("127.0.0.1", client.remoteAddress);
+				client.close();
+				client.connect("127.0.0.1", second.localPort);
+
+				NetPump.until(() -> connects == 2, 10.0, function(_) {
+					Assert.equals(second.localPort, client.remotePort, "the first connection's peer outlived it");
+					Assert.equals("127.0.0.1", client.remoteAddress);
+					try client.close() catch (_:Dynamic) {}
+					for (peer in peers) {
+						try peer.close() catch (_:Dynamic) {}
+					}
+					try first.close() catch (_:Dynamic) {}
+					try second.close() catch (_:Dynamic) {}
+					async.done();
+				});
+			});
+		});
+	}
+
 	@:timeout(30000)
 	public function testAConnectGivenUpForAnotherIsNotAnnounced(async:Async):Void {
 		var firstHeard:Array<String> = [];

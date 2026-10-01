@@ -2630,9 +2630,32 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		#elseif (js && !nodejs)
 		return __refuseEndpoint("remoteAddress");
 		#else
-		return crossbyte._internal.net.IPv6.compress(__socket.peer().host.toString());
+		__readPeer();
+		return __peerAddress;
 		#end
 	}
+
+	#if !js
+	// The far end of the connection, read once: it does not change while the
+	// connection lasts, and reading it was a getpeername call, a Host and a
+	// string each time, for every response an HTTP server sends. Kept
+	// against the socket it was read from, so a new connection, which is a
+	// new socket, reads it afresh; and only once connected, so an address
+	// asked for mid-connect is not the one kept.
+	@:noCompletion private var __peerOf:Dynamic = null;
+	@:noCompletion private var __peerAddress:String = null;
+	@:noCompletion private var __peerPort:Int = 0;
+
+	@:noCompletion private function __readPeer():Void {
+		if (__peerOf != null && __peerOf == __socket) {
+			return;
+		}
+		var peer = __socket.peer();
+		__peerAddress = crossbyte._internal.net.IPv6.compress(peer.host.toString());
+		__peerPort = peer.port;
+		__peerOf = __connected ? __socket : null;
+	}
+	#end
 
 	@:noCompletion private function get_alpnProtocol():Null<String> {
 		if (__socket == null) {
@@ -2672,7 +2695,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		#elseif (js && !nodejs)
 		return __refuseEndpoint("remotePort");
 		#else
-		return __socket.peer().port;
+		__readPeer();
+		return __peerPort;
 		#end
 	}
 
