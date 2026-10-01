@@ -110,6 +110,14 @@ class SctpAssociation {
 	**/
 	public var peerSupportsForwardTsn(default, null):Bool = false;
 
+	/**
+		Whether the peer listed RE-CONFIG among the chunks it understands,
+		RFC 6525: stream reset, which is how a data channel is closed at both
+		ends. Without it nothing is asked of the peer, and a channel closed here
+		closes here only, what a CrossByte peer from before 1.0 gets.
+	**/
+	public var peerSupportsReconfig(default, null):Bool = false;
+
 	/** Streams the peer offered inbound and outbound. **/
 	public var peerOutboundStreams(default, null):Int = 0;
 
@@ -483,6 +491,7 @@ class SctpAssociation {
 		__issuedCookie = __random(COOKIE_LENGTH);
 
 		peerSupportsForwardTsn = __offersForwardTsn(chunk);
+		peerSupportsReconfig = __offersExtension(chunk, SctpPacket.CHUNK_RECONFIG);
 
 		var value = __initBody(localTag, localTsn);
 		value.position = value.length;
@@ -523,6 +532,7 @@ class SctpAssociation {
 		peerOutboundStreams = init.outbound;
 		peerInboundStreams = init.inbound;
 		peerSupportsForwardTsn = __offersForwardTsn(chunk);
+		peerSupportsReconfig = __offersExtension(chunk, SctpPacket.CHUNK_RECONFIG);
 		__cookie = cookie.value;
 
 		state = COOKIE_ECHOED;
@@ -675,6 +685,11 @@ class SctpAssociation {
 		looks for both. Without them it may not abandon anything it sends here,
 		a channel opened with `maxRetransmits: 0` was silently made
 		reliable, and nothing sent from here may be abandoned either.
+
+		And RE-CONFIG, RFC 6525, listed beside it: stream reset, which is how a
+		data channel closes at both ends. A peer that does not see it listed
+		resets nothing toward this end, so a browser closing a channel had no
+		way to say so.
 	**/
 	@:noCompletion private function __initBody(tag:Int, tsn:Int):ByteArray {
 		var value = new ByteArray();
@@ -687,6 +702,7 @@ class SctpAssociation {
 
 		var extensions = new ByteArray();
 		extensions.writeByte(SctpPacket.CHUNK_FORWARD_TSN);
+		extensions.writeByte(SctpPacket.CHUNK_RECONFIG);
 
 		SctpParameter.writeAll(value, [
 			new SctpParameter(SctpParameter.FORWARD_TSN_SUPPORTED),
@@ -704,13 +720,19 @@ class SctpAssociation {
 			return true;
 		}
 
+		return __offersExtension(chunk, SctpPacket.CHUNK_FORWARD_TSN);
+	}
+
+	/** Whether an INIT or INIT ACK lists `chunkType` among its Supported Extensions, RFC 5061's way of saying so. **/
+	@:noCompletion private function __offersExtension(chunk:SctpChunk, chunkType:Int):Bool {
+		var parameters = SctpParameter.readAll(chunk.value, INIT_FIXED_LENGTH, chunk.value.length);
 		var extensions = SctpParameter.find(parameters, SctpParameter.SUPPORTED_EXTENSIONS);
 
 		if (extensions != null) {
 			extensions.value.position = 0;
 
 			for (_ in 0...extensions.value.length) {
-				if (extensions.value.readUnsignedByte() == SctpPacket.CHUNK_FORWARD_TSN) {
+				if (extensions.value.readUnsignedByte() == chunkType) {
 					return true;
 				}
 			}

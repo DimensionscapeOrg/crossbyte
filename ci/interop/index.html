@@ -37,10 +37,30 @@ window.__interop = {
   orderedState: [],
   // The terms of a channel CrossByte opened, as the browser read them.
   stateTerms: null,
+  // Labels of the channels whose close has completed here. A close completes
+  // only once both ends have reset their streams (RFC 8831 section 6.7), so
+  // one closed from either side shows up here only if CrossByte did its half.
+  closed: {},
   failed: null
 };
 
 let connection = null;
+
+// Every channel there has been, by label, so one can be closed by name.
+const channels = {};
+
+function track(channel) {
+  channels[channel.label] = channel;
+  channel.addEventListener('close', () => {
+    window.__interop.closed[channel.label] = true;
+    note('closed: ' + channel.label);
+  });
+}
+
+window.__closeChannel = function (label) {
+  channels[label].close();
+  return true;
+};
 
 // The channel the browser opened, kept for the message sent after an ICE
 // restart: it has to cross the session the restart left in place.
@@ -64,6 +84,7 @@ function makeConnection() {
   connection.ondatachannel = event => {
     const channel = event.channel;
     note('channel arrived: ' + channel.label);
+    track(channel);
 
     // CrossByte's partially reliable channel: what matters is how its terms
     // read here, which is the DCEP channel type and parameter it wrote.
@@ -114,13 +135,15 @@ window.__createOffer = async function () {
   const channel = connection.createDataChannel('interop');
   channel.binaryType = 'arraybuffer';
   interopChannel = channel;
+  track(channel);
 
   // Two partially reliable channels, which is what a game's state traffic
   // uses: CrossByte reports the terms it read from each, and loses its own
   // first message on the ordered one to see the browser skip past it.
-  connection.createDataChannel('state', { ordered: false, maxRetransmits: 0 });
+  track(connection.createDataChannel('state', { ordered: false, maxRetransmits: 0 }));
 
   const orderedState = connection.createDataChannel('ordered-state', { ordered: true, maxRetransmits: 0 });
+  track(orderedState);
   let answered = false;
   orderedState.onmessage = message => {
     note('ordered-state: ' + message.data);
