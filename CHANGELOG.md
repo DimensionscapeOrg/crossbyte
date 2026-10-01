@@ -2095,6 +2095,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A reliable `NetConnection` whose connect, idle or close deadline passes
+  ends as `Reason.Timeout`, as a TCP or WebSocket one does:
+  `ReliableDatagramSocket` dispatches those `ioError`s with
+  `IOErrorEvent.TIMEOUT_ERROR_ID`. They carried no id, so `onError` and
+  `onClose` heard `Reason.Error` with the time in its text.
 - A reliable session given a new `congestionControl` while messages wait
   for the window sends them first. They stayed queued until an
   acknowledgement drained them -- none came with nothing in flight --
