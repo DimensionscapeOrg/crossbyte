@@ -329,7 +329,15 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (value == null) {
 			throw new ArgumentError("A reliable datagram session needs a congestion control.");
 		}
-		return __congestion = value;
+		__congestion = value;
+		// What waits for the window goes first under the new one. Left in
+		// the queue, it waited for an acknowledgement to drain it, none,
+		// with nothing in flight, while the next message, finding room,
+		// went out ahead of it.
+		if (!__closed && __queueAt < __outgoingQueue.length) {
+			__drainQueue();
+		}
+		return value;
 	}
 
 	@:noCompletion private inline function get_roundTripVariation():Float {

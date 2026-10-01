@@ -1947,6 +1947,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A reliable session given a new `congestionControl` while messages wait
+  for the window sends them first. They stayed queued until an
+  acknowledgement drained them, none came with nothing in flight,
+  and the next message, finding room under the new policy, went out
+  ahead of them, so a `RELIABLE` message arrived before ones sent earlier.
 - `ReliableDatagramServerSocket.discoverPublicAddress` and
   `localAddressFor` say what they do with a question they cannot ask:
   return it failed, its `cause` an `IOError` for a server not bound and
