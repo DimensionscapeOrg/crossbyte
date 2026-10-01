@@ -237,6 +237,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.NetConnectionClockTest());
 		// Every threaded target: a close made from a second thread.
 		runner.addCase(new crossbyte.net.CrossThreadCloseTest());
+		// Reads the networking tests' own source: what they wait by.
+		runner.addCase(new crossbyte.net.NetTestClockTest());
 		runner.addCase(new crossbyte.net.NetHostTest());
 		// Also in PortableSuite: a URI host on port 0, which Node binds later.
 		runner.addCase(new crossbyte.net.NetHostUriTest());

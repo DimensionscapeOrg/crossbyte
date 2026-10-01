@@ -98,7 +98,7 @@ class NetConnectionTest extends utest.Test {
 		return;
 		#end
 
-		var name = '__crossbyte_netconnection_local_${Std.int(Sys.time() * 1000)}_${Std.random(1000000)}';
+		var name = '__crossbyte_netconnection_local_${Std.int(Sys.time() * 1000)}_${Std.random(1000000)}'; // time of day: a name no other run has used
 		var server = new crossbyte.ipc.LocalConnection();
 		var client:NetConnection = null;
 		var received:String = null;
@@ -183,8 +183,8 @@ class NetConnectionTest extends utest.Test {
 
 	private static function pumpUntil(done:Void->Bool, timeout:Float):Void {
 		var runtime = CrossByte.current();
-		var deadline = Sys.time() + timeout;
-		while (!done() && Sys.time() < deadline) {
+		var deadline = haxe.Timer.stamp() + timeout;
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
 			crossbyte.sys.System.sleep(0.001);
 		}

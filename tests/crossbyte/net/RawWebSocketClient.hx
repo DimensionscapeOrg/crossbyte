@@ -139,7 +139,7 @@ class RawWebSocketClient {
 	 * before the deadline.
 	 */
 	public function readFrame(timeoutSeconds:Float = 5.0):Null<RawFrame> {
-		var deadline:Float = Sys.time() + timeoutSeconds;
+		var deadline:Float = haxe.Timer.stamp() + timeoutSeconds;
 
 		var header:Bytes = __readExactly(2, deadline);
 		if (header == null) {
@@ -187,10 +187,10 @@ class RawWebSocketClient {
 	 * how a rejection is observed from the wire.
 	 */
 	public function waitForClose(timeoutSeconds:Float = 5.0):Bool {
-		var deadline:Float = Sys.time() + timeoutSeconds;
+		var deadline:Float = haxe.Timer.stamp() + timeoutSeconds;
 		var scratch:Bytes = Bytes.alloc(256);
 
-		while (Sys.time() < deadline) {
+		while (haxe.Timer.stamp() < deadline) {
 			try {
 				if (__socket.input.readBytes(scratch, 0, scratch.length) <= 0) {
 					return true;
@@ -214,8 +214,8 @@ class RawWebSocketClient {
 	 * what the server does on its own.
 	 */
 	public function pumpFor(seconds:Float):Void {
-		var until:Float = Sys.time() + seconds;
-		while (Sys.time() < until) {
+		var until:Float = haxe.Timer.stamp() + seconds;
+		while (haxe.Timer.stamp() < until) {
 			__pump();
 		}
 	}
@@ -258,9 +258,9 @@ class RawWebSocketClient {
 
 	private function __writeAll(bytes:Bytes):Void {
 		var sent:Int = 0;
-		var deadline:Float = Sys.time() + 15;
+		var deadline:Float = haxe.Timer.stamp() + 15;
 
-		while (sent < bytes.length && Sys.time() < deadline) {
+		while (sent < bytes.length && haxe.Timer.stamp() < deadline) {
 			try {
 				sent += __socket.output.writeBytes(bytes, sent, bytes.length - sent);
 			} catch (e:Dynamic) {
@@ -281,7 +281,7 @@ class RawWebSocketClient {
 		var out:Bytes = Bytes.alloc(count);
 		var got:Int = 0;
 
-		while (got < count && Sys.time() < deadline) {
+		while (got < count && haxe.Timer.stamp() < deadline) {
 			try {
 				var read:Int = __socket.input.readBytes(out, got, count - got);
 				if (read <= 0) {
@@ -305,9 +305,9 @@ class RawWebSocketClient {
 
 	private function __readLine():String {
 		var buf:StringBuf = new StringBuf();
-		var deadline:Float = Sys.time() + 15;
+		var deadline:Float = haxe.Timer.stamp() + 15;
 
-		while (Sys.time() < deadline) {
+		while (haxe.Timer.stamp() < deadline) {
 			try {
 				var c:Int = __socket.input.readByte();
 				if (c == 10) {

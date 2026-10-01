@@ -969,8 +969,8 @@ class SocketTest extends utest.Test {
 			pumpUntil(() -> peerCloseCount > 0, 3.0);
 
 			// Keep pumping well past the FIN: a repeat would land in here.
-			var settle:Float = Sys.time() + 0.5;
-			while (Sys.time() < settle) {
+			var settle:Float = haxe.Timer.stamp() + 0.5;
+			while (haxe.Timer.stamp() < settle) {
 				CrossByte.current().pump(1 / 60, 0);
 			}
 
@@ -1084,8 +1084,8 @@ class SocketTest extends utest.Test {
 
 	private static function pumpUntil(done:Void->Bool, timeout:Float):Void {
 		var runtime = CrossByte.current();
-		var deadline = Sys.time() + timeout;
-		while (!done() && Sys.time() < deadline) {
+		var deadline = haxe.Timer.stamp() + timeout;
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
 			crossbyte.sys.System.sleep(0.001);
 		}
