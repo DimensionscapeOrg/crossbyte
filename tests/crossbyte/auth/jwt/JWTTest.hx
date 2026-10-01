@@ -139,6 +139,24 @@ class JWTTest extends utest.Test {
 		Assert.isFalse(JWT.secureCompare("abc", "ab"));
 	}
 
+	/**
+		A missing value matches nothing, itself included. `secureCompare` read
+		the length of whatever it was given, so a null -- a header or cookie
+		that was not sent -- threw from inside a check, and natively a null
+		dereference need not throw at all.
+	**/
+	public function testSecureCompareTakesNull():Void {
+		var answers:Array<Dynamic> = [];
+		for (pair in [[null, "abc"], ["abc", null], [null, null]]) {
+			try {
+				answers.push(JWT.secureCompare(pair[0], pair[1]));
+			} catch (e:Dynamic) {
+				answers.push("threw " + e);
+			}
+		}
+		Assert.same([false, false, false], answers);
+	}
+
 	public function testHeaderAndSignerValidation():Void {
 		var header = JWTHeader.make(HS256, "kid-1");
 		Assert.equals("HS256", header.algorithm);

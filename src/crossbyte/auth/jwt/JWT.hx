@@ -540,8 +540,15 @@ class JWT {
 	 * mismatch: it iterates a fixed number of times over the longer string,
 	 * accumulating per-byte differences, and folds in the length delta so that the
 	 * comparison's running time does not leak which (if either) operand matched.
+	 *
+	 * @return `true` only when both are present and equal: a missing value --
+	 *         a header or cookie that was not sent -- matches nothing, another
+	 *         missing one included. It used to read the length of a null.
 	 */
 	public static function secureCompare(a:String, b:String):Bool {
+		if (a == null || b == null) {
+			return false;
+		}
 		var aLen:Int = a.length;
 		var bLen:Int = b.length;
 		var n:Int = (aLen > bLen) ? aLen : bLen;
