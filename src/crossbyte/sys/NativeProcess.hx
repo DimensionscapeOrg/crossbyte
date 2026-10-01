@@ -90,8 +90,9 @@ class NativeProcess extends EventDispatcher {
 		Starts the process `info` describes.
 
 		Natively, on the jvm and on Node a child inherits none of this
-		program's sockets. On neko -- and, by the same runtime design, on
-		HashLink -- it inherits every one that is open: a listener the child
+		program's sockets. On neko it inherits every one that is open -- and
+		probably on HashLink too, whose process natives are built the same
+		way, though that has not been run: a listener the child
 		holds stays bound until the child exits, and a connection it holds is
 		not closed by this program closing it. Nothing a Haxe program can do
 		changes that there; start children before opening sockets, or prefer
