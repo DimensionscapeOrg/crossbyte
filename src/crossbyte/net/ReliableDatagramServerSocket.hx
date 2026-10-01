@@ -831,6 +831,9 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		its session is already carrying data.
 
 		```haxe
+		// Given server:ReliableDatagramServerSocket, controlling:Bool.
+		import crossbyte.net.ice.IceAgent;
+
 		var agent = new IceAgent(controlling);
 		server.attachIceAgent(agent);
 
