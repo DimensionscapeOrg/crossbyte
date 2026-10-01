@@ -54,7 +54,7 @@ import haxe.Int64;
 class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransactionalConnection {
 	public static inline var isSupported:Bool = #if cpp true; #else false; #end
 
-	@:noCompletion private static inline var DEFAULT_CACHE_SIZE:UInt = 2000;
+	@:noCompletion private static inline var DEFAULT_CACHE_SIZE:Int = 2000;
 	// What __enter() answers for a statement's work.
 	@:noCompletion private static inline var ENTER_RUN:Int = 0;
 	@:noCompletion private static inline var ENTER_WITHDRAWN:Int = 1;
@@ -71,7 +71,17 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		reclaims the space of any database.
 	**/
 	public var autoCompact(get, null):Bool;
-	public var cacheSize(get, set):UInt;
+	/**
+		How much of the database the connection keeps in memory, as SQLite's
+		`PRAGMA cache_size` has it: a positive number of pages, or a negative
+		number of KiB -- `-2000` is about 2 MB, SQLite's own default. `open()`
+		sets 2000 pages, as AIR's does.
+
+		It was a `UInt`, which can hold no negative: `-4096` set was written
+		as 4294963200, which SQLite took as 0, and a size SQLite kept in KiB
+		read back as four billion pages.
+	**/
+	public var cacheSize(get, set):Int;
 	// public var columnNameStyle(get, set):String;
 
 	/**
@@ -1710,26 +1720,20 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		});
 	}
 
-	private function get_cacheSize():UInt {
-		return __now("cacheSize", function():UInt {
+	private function get_cacheSize():Int {
+		return __now("cacheSize", function():Int {
 			var result:ResultSet = __connection.request("PRAGMA cache_size;");
-
-			if (result.hasNext()) {
-				var cacheSize:UInt = result.next().cache_size;
-				return cacheSize;
-			}
-
-			return 0;
+			return result.hasNext() ? Std.int(__wholeNumber(Reflect.field(result.next(), "cache_size"))) : 0;
 		});
 	}
 
-	private function set_cacheSize(value:UInt):UInt {
+	private function set_cacheSize(value:Int):Int {
 		__now("cacheSize", () -> __setCacheSize(value));
 		return value;
 	}
 
 	/** `PRAGMA cache_size`, on whichever thread runs the connection's work. **/
-	@:noCompletion private function __setCacheSize(value:UInt):Bool {
+	@:noCompletion private function __setCacheSize(value:Int):Bool {
 		__connection.request('PRAGMA cache_size = $value;');
 		return true;
 	}
