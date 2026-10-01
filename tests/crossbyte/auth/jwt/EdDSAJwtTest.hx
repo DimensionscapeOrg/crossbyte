@@ -122,7 +122,7 @@ class EdDSAJwtTest extends utest.Test {
 	}
 	#else
 	public function testEdDSARequiresNativeBackend():Void {
-		Assert.raises(() -> JWT.make(EdDSA(rfcPublicKeys(), null, null)));
+		Assert.raises(() -> JWT.make(EdDSA(rfcPublicKeys(), null, null)), crossbyte.errors.IllegalOperationError);
 	}
 	#end
 }

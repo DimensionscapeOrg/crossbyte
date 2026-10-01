@@ -24,8 +24,8 @@ class LocalConnectionTest extends utest.Test {
 		#else
 		var server = new LocalConnection();
 		var client = new LocalConnection();
-		Assert.isTrue(throws(() -> server.listen("__crossbyte_test__")));
-		Assert.isTrue(throws(() -> client.connect("__crossbyte_test__")));
+		Assert.raises(() -> server.listen("__crossbyte_test__"), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> client.connect("__crossbyte_test__"), crossbyte.errors.IllegalOperationError);
 		#end
 	}
 

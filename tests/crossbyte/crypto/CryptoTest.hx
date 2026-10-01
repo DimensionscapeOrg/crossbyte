@@ -29,7 +29,9 @@ class CryptoTest extends utest.Test {
 		#else
 		Assert.isFalse(Blake3.isAvailable());
 		Assert.equals(0, Blake3.simdDegree());
-		Assert.isTrue(throwsDynamic(() -> Blake3.hash(Bytes.ofString("abc"))));
+		Assert.isTrue(throwsIllegalOperation(() -> Blake3.hash(Bytes.ofString("abc"))));
+		// The target first: a zero-length digest was handed back here.
+		Assert.isTrue(throwsIllegalOperation(() -> Blake3.hash(Bytes.ofString("abc"), 0)));
 		#end
 	}
 

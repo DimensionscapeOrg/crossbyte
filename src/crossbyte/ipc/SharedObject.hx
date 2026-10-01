@@ -6,6 +6,9 @@ package crossbyte.ipc;
 import crossbyte.Object;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
+#if !cpp
+import crossbyte.crypto._internal.NativeOnly;
+#end
 import haxe.Serializer;
 import haxe.Unserializer;
 import haxe.io.Bytes;
@@ -43,6 +46,11 @@ private typedef SharedObjectHandle = Dynamic;
 @:access(crossbyte.ipc._internal.NativeSharedObject)
 #end
 class SharedObject {
+	/**
+	 * Whether this target has shared memory regions: natively (cpp) on Windows,
+	 * Linux and macOS. Elsewhere the constructor throws an
+	 * `IllegalOperationError` naming the target.
+	 */
 	public static inline var isSupported:Bool = #if cpp true #else false #end;
 
 	/** Shared region name used to identify the underlying memory mapping. */
@@ -254,9 +262,9 @@ class SharedObject {
 	}
 
 	@:noCompletion private static inline function __requireSupported():Void {
-		if (!isSupported) {
-			throw new ArgumentError("SharedObject is only supported on cpp targets.");
-		}
+		#if !cpp
+		throw NativeOnly.error("SharedObject");
+		#end
 	}
 }
 #end

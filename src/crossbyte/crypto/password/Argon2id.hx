@@ -4,6 +4,10 @@ import haxe.io.Bytes;
 import crossbyte.Future;
 import crossbyte.crypto.password._internal.PasswordWork;
 import crossbyte.sys.TaskPool;
+import crossbyte.errors.IllegalOperationError;
+#if !(cpp || nodejs)
+import crossbyte.crypto._internal.NativeOnly;
+#end
 #if cpp
 import crossbyte.crypto._internal.NativeSodium;
 import crossbyte.crypto._internal.SodiumGlue;
@@ -27,7 +31,8 @@ import crossbyte.utils.IntParse;
  * Prefer this over `BCrypt` for new designs. Available on native `cpp` targets
  * through the statically linked libsodium, and on Node 24.7 and later through
  * Node's own `crypto.argon2`, with hashes interchangeable between the two. Every
- * method throws where neither exists; check `isAvailable` first.
+ * method throws an `IllegalOperationError` where neither exists, naming the
+ * target, or on Node the version; check `isAvailable` first.
  *
  * A hash at the interactive limits holds 64 MiB and a core for tens of
  * milliseconds, and the moderate and sensitive limits for far longer. On a
@@ -90,7 +95,16 @@ class Argon2id {
 	 */
 	public static inline final MEMLIMIT_SENSITIVE:Int = 1073741824;
 
-	@:noCompletion private static inline final UNAVAILABLE:String = "Argon2id is only available on native cpp targets and on Node 24.7 or later.";
+	/** What every member throws where there is no backend: which target this is, or which Node. */
+	@:noCompletion private static function __unavailable():IllegalOperationError {
+		#if nodejs
+		return new IllegalOperationError("Argon2id on Node needs crypto.argon2, which arrived in Node 24.7; this is " + js.Node.process.version + ".");
+		#elseif cpp
+		return new IllegalOperationError("Argon2id needs libsodium, which could not be started.");
+		#else
+		return new IllegalOperationError("Argon2id is only available natively (cpp) and on Node 24.7 or later, not on " + NativeOnly.TARGET + ".");
+		#end
+	}
 
 	// The last dummy hash made, replaced when other limits are asked for. One
 	// reference, written and read whole, so racing threads leave a valid hash.
@@ -113,7 +127,8 @@ class Argon2id {
 	/**
 	 * Hashes `password` into a self-describing PHC string.
 	 *
-	 * @throws String When no backend is available, or the limits are below the minimums.
+	 * @throws IllegalOperationError When no backend is available.
+	 * @throws String When the limits are below the minimums.
 	 */
 	public static function hash(password:String, opslimit:Int = OPSLIMIT_INTERACTIVE, memlimit:Int = MEMLIMIT_INTERACTIVE):String {
 		if (password == null) {
@@ -145,7 +160,7 @@ class Argon2id {
 		passwordBytes.fill(0, passwordBytes.length, 0);
 		return __encode(memlimit >> 10, opslimit, 1, salt, tag);
 		#else
-		throw UNAVAILABLE;
+		throw __unavailable();
 		#end
 	}
 
@@ -154,7 +169,7 @@ class Argon2id {
 	 *
 	 * @return `true` only when the string parses and the password matches;
 	 *         `false` for malformed strings and mismatches.
-	 * @throws String When no backend is available, as `hash` does. This used to
+	 * @throws IllegalOperationError When no backend is available, as `hash` does. This used to
 	 *         return `false` there instead, which refused every password on those
 	 *         targets while looking like a working check.
 	 */
@@ -192,7 +207,7 @@ class Argon2id {
 		passwordBytes.fill(0, passwordBytes.length, 0);
 		return tag != null && ConstantTime.equals(tag, parsed.hash);
 		#else
-		throw UNAVAILABLE;
+		throw __unavailable();
 		#end
 	}
 
@@ -216,7 +231,7 @@ class Argon2id {
 		var parsed:Null<PhcHash> = __decode(hashStr);
 		return parsed == null || parsed.passes != opslimit || parsed.memoryKiB != (memlimit >> 10);
 		#else
-		throw UNAVAILABLE;
+		throw __unavailable();
 		#end
 	}
 
@@ -255,7 +270,7 @@ class Argon2id {
 		passwordBytes.fill(0, passwordBytes.length, 0);
 		return out;
 		#else
-		throw UNAVAILABLE;
+		throw __unavailable();
 		#end
 	}
 
@@ -393,7 +408,7 @@ class Argon2id {
 
 	@:noCompletion private static function __requireNode():Void {
 		if (!__nodeHasArgon2()) {
-			throw UNAVAILABLE;
+			throw __unavailable();
 		}
 	}
 
