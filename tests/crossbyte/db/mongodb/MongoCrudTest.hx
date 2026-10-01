@@ -504,6 +504,35 @@ class MongoCrudTest extends utest.Test {
 		Assert.equals(0, server.commands("drop").length);
 	}
 
+	public function testAParameterSetToNullIsBoundAsNull():Void {
+		// A parameter set to null was refused as "no parameter named email",
+		// though it was there: Extended JSON was asked for its value alone, and
+		// null meant absent. It is a BSON null now; one never set is still
+		// refused.
+		__start();
+		var statement = new MongoStatement();
+		statement.sqlConnection = connection;
+		statement.text = '{"insert": "users", "documents": [{"name": :name, "email": :email}]}';
+		statement.parameters.name = "bob";
+		statement.parameters.email = null;
+		statement.execute();
+
+		var stored:Array<BsonDocument> = server.documents("app.users");
+		Assert.equals(1, stored.length);
+		if (stored.length == 1) {
+			Assert.equals("bob", stored[0].get("name"));
+			Assert.isTrue(stored[0].keys().indexOf("email") >= 0, "the field was left out");
+			Assert.isNull(stored[0].get("email"));
+		}
+
+		statement.text = '{"find": "users", "filter": {"email": :unset}}';
+		Assert.raises(() -> statement.execute(), crossbyte.errors.SQLError);
+
+		// And through request(), whose parameters are a Map.
+		var cursor = connection.request('{"find": "users", "filter": {"email": :email}}', ["email" => null]);
+		Assert.equals(1, [for (document in cursor) document].length);
+	}
+
 	public function testAFailedStatementReachesItsListenersWithTheServersCode():Void {
 		__start();
 		server.replyNext("find", FakeMongoServer.__error(13, "Unauthorized", "not authorized on app to execute command"));

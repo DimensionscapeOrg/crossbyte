@@ -213,11 +213,17 @@ class PostgresStatement extends EventDispatcher {
 		return null;
 	}
 
+	/**
+		`query` with `parameters` substituted. A parameter set to null is
+		written as `NULL`, as MySQL's statements write it; it was taken for one
+		never set and left in the SQL as `:name`, which the server refused.
+		Backslashes are not escapes in a PostgreSQL literal, with
+		`standard_conforming_strings` on as it has been by default since 9.1.
+	**/
 	private function __applyParameters(query:String):String {
 		var params:FieldStruct<String> = parameters;
-		return ParamBinder.substitute(query, function(name:String):Null<Dynamic> {
-			return FieldStruct.exists(params, name) ? FieldStruct.get(params, name) : null;
-		}, __quoteValue);
+		return ParamBinder.substituteWith(query, name -> FieldStruct.exists(params, name), name -> FieldStruct.get(params, name), __quoteValue,
+			false);
 	}
 
 	private function __quoteValue(value:Dynamic):String {

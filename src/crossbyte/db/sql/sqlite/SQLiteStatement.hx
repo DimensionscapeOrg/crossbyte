@@ -141,11 +141,16 @@ class SQLiteStatement extends EventDispatcher {
 		throw error;
 	}
 
+	/**
+		`query` with `parameters` substituted. A parameter set to null is
+		written as `NULL`, as MySQL's statements write it. It was taken for one
+		never set and left as `:name`, which SQLite read as an unbound
+		parameter, NULL as well, by luck rather than by design.
+	**/
 	@:noCompletion private function __applyParameters(query:String):String {
 		var params:FieldStruct<String> = parameters;
-		return ParamBinder.substitute(query, function(name:String):Null<Dynamic> {
-			return FieldStruct.exists(params, name) ? FieldStruct.get(params, name) : null;
-		}, __escapeValue);
+		return ParamBinder.substituteWith(query, name -> FieldStruct.exists(params, name), name -> FieldStruct.get(params, name), __escapeValue,
+			false);
 	}
 
 	@:noCompletion private function __escapeValue(value:Dynamic):String {
