@@ -91,6 +91,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.SocketReconnectTest());
 		runner.addCase(new crossbyte.net.NameLookupTest());
 		runner.addCase(new crossbyte.net.ServerSocketAcceptTest());
+		// What printing a key shows, which on Node was all of it.
+		runner.addCase(new crossbyte.net.KeyTest());
 		#end
 		// A page's Socket against the echo endpoint ci/browser/run.js serves.
 		// The browser only: it is the one target where a Socket is a WebSocket.

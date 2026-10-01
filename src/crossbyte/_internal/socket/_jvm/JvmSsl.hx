@@ -1649,6 +1649,14 @@ class JvmSslKey {
 		this.native = native;
 	}
 
+	/**
+		Nothing of the key. The JDK's own RSA key prints its private exponent
+		among its fields, so this never hands its `native` to a printer.
+	**/
+	public function toString():String {
+		return "[Key: redacted]";
+	}
+
 	public static function loadFile(path:String, isPublic:Bool = false, ?password:String):JvmSslKey {
 		return readPEM(sys.io.File.getContent(path), isPublic, password);
 	}
