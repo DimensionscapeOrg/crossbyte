@@ -70,6 +70,9 @@ class WebSocket extends Socket {
 		webSocket.__server = server;
 		webSocket.__cbInstance = CrossByte.current();
 		webSocket.__webSocket = crossbyte._internal.websocket.WebSocket.fromAcceptedSocket(socket);
+		// Said, as a socket a secure ServerSocket accepted says it: every
+		// session a secure server accepted read false.
+		webSocket.secure = server != null ? server.secure : @:privateAccess webSocket.__webSocket.__tls;
 		webSocket.__webSocket.maxOutputBufferSize = webSocket.__maxOutputBufferSize;
 		if (server != null) {
 			webSocket.__webSocket.pingInterval = server.pingInterval;
