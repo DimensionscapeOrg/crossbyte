@@ -842,6 +842,64 @@ class PeerConnectionRelayTest extends utest.Test {
 	}
 
 	/**
+		New TURN REST credentials leave the allocation held on the username it
+		was made with, and are used for the next relay asked.
+
+		Their username carries their expiry, so every renewal is a new one,
+		and a relay refuses a request on an allocation signed by any other
+		(441). `setRelayCredentials` compared the new username with the held
+		allocation's after rewriting the list entry that allocation was made
+		from -- comparing it with itself -- and handed it over, so the next
+		Refresh was refused and the allocation lost. Called twice, because a
+		fix that read the entry before rewriting it would pass once.
+	**/
+	public function testNewRestCredentialsLeaveTheAllocationHeldAlone():Void {
+		if (unsupported()) return;
+
+		var first:String = "1700000000:alice";
+		var second:String = "1700003600:alice";
+		var server = relayServer();
+		server.relay.users = [first => "first-password", second => "second-password"];
+		var connection = new PeerConnection(true);
+
+		try {
+			server.start();
+			connection.bind(0, "127.0.0.1");
+
+			var gathered:IceCandidate = null;
+			connection.gatherRelayed("127.0.0.1", first, "first-password", server.port).then(c -> gathered = c, _ -> {});
+			pumpUntil(() -> gathered != null, 8.0);
+			Require.notNull(gathered, "the relay never allocated");
+
+			for (renewal in 0...2) {
+				connection.setRelayCredentials(second, "second-password");
+
+				var refreshes:Int = server.relay.count("refreshed");
+				@:privateAccess connection.__turn.refresh(haxe.Timer.stamp());
+
+				// Until the client has the answer too, so the next renewal's
+				// Refresh is not refused as one already in flight.
+				pumpUntil(() -> (server.relay.count("refreshed") > refreshes && !@:privateAccess connection.__turn.__refreshing)
+					|| server.relay.count("refused-441") > 0, 5.0);
+
+				Assert.equals(0, server.relay.count("refused-441"), "renewal " + renewal + ": a Refresh was signed with the new username");
+				Assert.equals(refreshes + 1, server.relay.count("refreshed"), "renewal " + renewal + ": the Refresh was not accepted: " + server.relay.events.join(","));
+			}
+
+			Require.notNull(connection.relayedCandidate, "the allocation was lost");
+			Assert.equals(gathered.port, connection.relayedCandidate.port, "the allocation was replaced");
+
+			// And the next relay asked is asked as the new username.
+			Assert.equals(second, @:privateAccess connection.__relayServers[0].username);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		connection.close();
+		server.close();
+	}
+
+	/**
 		A datagram in the STUN range is decoded once, however many things on
 		the socket might want it.
 

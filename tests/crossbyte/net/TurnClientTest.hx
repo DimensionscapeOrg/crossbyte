@@ -1056,6 +1056,44 @@ class TurnClientTest extends utest.Test {
 		Assert.isTrue(network.relay.count("refreshed") >= 2, "the second refresh never succeeded");
 	}
 
+	/**
+		A new username is refused for the allocation held, which keeps the one
+		it was made with.
+
+		A relay ties an allocation to its username and refuses a request on it
+		signed with another, 441 -- and TURN REST credentials carry their
+		expiry in the username, so every renewal is a new one. The client took
+		it, the relay refused the next Refresh, and the allocation was lost.
+	**/
+	public function testANewUsernameIsRefusedForTheAllocationHeld():Void {
+		if (unsupported()) return;
+
+		var relay = new FakeTurnRelay();
+		relay.users = ["1700000000:alice" => "first", "1700003600:alice" => "second"];
+
+		var network = new TurnNetwork(relay);
+		var client = network.client(null, "1700000000:alice", "first");
+		var lost:Array<String> = [];
+		client.onLost = reason -> lost.push(reason);
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		if (!client.active) {
+			Assert.fail("the relay never allocated");
+			return;
+		}
+
+		Assert.raises(() -> client.setCredentials("1700003600:alice", "second"), crossbyte.errors.ArgumentError,
+			"a new username was taken for the allocation it was not made with");
+
+		network.advance(TurnClient.DEFAULT_LIFETIME / 2 + 5, 0.25);
+
+		Assert.equals(0, relay.count("refused-441"), "a request on the allocation was signed with another username");
+		Assert.isTrue(relay.count("refreshed") >= 1, "the refresh never succeeded");
+		Assert.isTrue(client.active, "the allocation was lost: " + lost);
+	}
+
 	// ------------------------------------------------------------------
 	// IPv6, RFC 8489's credentials, and streams
 	// ------------------------------------------------------------------
