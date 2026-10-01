@@ -1239,20 +1239,27 @@ class ServerWebSocket extends ServerSocket {
 			}
 
 			if (__tlsSni.length > 0) {
-				var sni = __tlsSni;
+				// Each entry's context made once, here, rather than for every
+				// handshake that asks for its name: making one parses the
+				// certificate and the key, which is the costly part. And with
+				// the key's passphrase, which a context made from the key alone
+				// could not open.
+				var sni:Array<{match:String->Bool, context:Dynamic}> = [];
+				for (entry in __tlsSni) {
+					var settings:Dynamic = {key: entry.key.__pem, cert: entry.certificate.__pem};
+					if (entry.key.__passphrase != null) {
+						settings.passphrase = entry.key.__passphrase;
+					}
+					sni.push({match: entry.match, context: Tls.createSecureContext(settings)});
+				}
+
 				options.SNICallback = function(servername:String, callback:Dynamic):Void {
 					for (entry in sni) {
 						// A predicate that throws claims nothing: this runs from
 						// Node's own loop, where a throw ends the process.
 						var claimed:Bool = try entry.match(servername) catch (_:Dynamic) false;
 						if (claimed) {
-							// The key's passphrase too, which a context made from
-							// the key alone could not open.
-							var context:Dynamic = {key: entry.key.__pem, cert: entry.certificate.__pem};
-							if (entry.key.__passphrase != null) {
-								context.passphrase = entry.key.__passphrase;
-							}
-							callback(null, Tls.createSecureContext(context));
+							callback(null, entry.context);
 							return;
 						}
 					}

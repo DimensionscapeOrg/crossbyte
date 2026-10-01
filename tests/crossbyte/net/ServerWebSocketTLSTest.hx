@@ -291,6 +291,52 @@ class ServerWebSocketTLSTest extends utest.Test {
 
 	#if nodejs
 	/**
+		Each SNI certificate's secure context is made once, with the server,
+		not for every handshake that asks for its name: making one parses the
+		certificate and its key, which is the costly part.
+	**/
+	@:timeout(30000)
+	public function testAnSniContextIsMadeOnceNotPerHandshake(async:Async):Void {
+		var fixture = TLSTestFixture.trusted();
+		var alternate = TLSTestFixture.trusted(["alt.example"]);
+		if (fixture == null || alternate == null) {
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
+			async.done();
+			return;
+		}
+
+		// Counted where the server makes one for the SNI certificate; a
+		// client's own contexts, which carry no certificate, are not.
+		var tls:Dynamic = js.Lib.require("tls");
+		var original:Dynamic = tls.createSecureContext;
+		var pem:String = @:privateAccess alternate.certificate.__pem;
+		var made:Int = 0;
+		tls.createSecureContext = function(options:Dynamic):Dynamic {
+			if (options != null && options.cert == pem) {
+				made++;
+			}
+			return original(options);
+		};
+
+		__serve(function(server) {
+			server.cert = {certificate: fixture.certificate, key: fixture.key};
+			server.addSNICertificate(name -> name == "alt.example", alternate.certificate, alternate.key);
+		}, function(server, sessions, finish) {
+			var beforeHandshakes:Int = made;
+			TlsProbe.run(server.localPort, {serverName: "alt.example", trust: alternate.certificate}, function(first) {
+				TlsProbe.run(server.localPort, {serverName: "alt.example", trust: alternate.certificate}, function(second) {
+					tls.createSecureContext = original;
+					Assert.isNull(first.error, "the certificate for the name asked for was not presented: " + first.error);
+					Assert.isNull(second.error, "the certificate for the name asked for was not presented again: " + second.error);
+					Assert.equals(0, made - beforeHandshakes, 'a secure context was made for each handshake asking for the name: ${made - beforeHandshakes} for two');
+					Assert.equals(1, made, "the SNI certificate's context was not made exactly once");
+					finish();
+				});
+			});
+		}, async);
+	}
+
+	/**
 		A TLS handshake that finishes after `stopAccepting()` opens no
 		session. Node carries a handshake in flight on past a server's close,
 		and hands the connection over when it is done: it was taken on and
