@@ -260,6 +260,78 @@ void crossbyte_file_sync_directory(::String path) {
 #endif
 }
 
+double crossbyte_file_created(::String path) {
+	// When the file was made, which is not what POSIX's ctime is: that is
+	// when its status last changed, a chmod or a rename moving it on. Linux
+	// keeps a birth time behind statx, where the C library has it, and macOS
+	// in st_birthtime; Windows in the creation time it has always had.
+#if defined(_WIN32)
+	std::wstring file = toWide(path);
+	WIN32_FILE_ATTRIBUTE_DATA data;
+	BOOL ok = FALSE;
+
+	{
+		hx::AutoGCFreeZone zone;
+		ok = GetFileAttributesExW(file.c_str(), GetFileExInfoStandard, &data);
+	}
+
+	if (!ok) {
+		return -2;
+	}
+
+	unsigned long long ticks = (static_cast<unsigned long long>(data.ftCreationTime.dwHighDateTime) << 32) | data.ftCreationTime.dwLowDateTime;
+	// 100ns ticks since 1601 to milliseconds since 1970.
+	return (static_cast<double>(ticks) - 116444736000000000.0) / 10000.0;
+#elif defined(__APPLE__)
+	std::string file = toNarrow(path);
+	struct stat info;
+	int status = 0;
+
+	{
+		hx::AutoGCFreeZone zone;
+		status = stat(file.c_str(), &info);
+	}
+
+	if (status != 0) {
+		return -2;
+	}
+
+	return static_cast<double>(info.st_birthtimespec.tv_sec) * 1000.0 + static_cast<double>(info.st_birthtimespec.tv_nsec) / 1000000.0;
+#elif defined(__linux__) && defined(STATX_BTIME)
+	std::string file = toNarrow(path);
+	struct statx info;
+	int status = 0;
+
+	{
+		hx::AutoGCFreeZone zone;
+		status = statx(AT_FDCWD, file.c_str(), 0, STATX_BTIME, &info);
+	}
+
+	if (status != 0) {
+		return errno == ENOENT || errno == ENOTDIR ? -2 : -1;
+	}
+
+	if ((info.stx_mask & STATX_BTIME) == 0) {
+		// A file system that keeps none.
+		return -1;
+	}
+
+	return static_cast<double>(info.stx_btime.tv_sec) * 1000.0 + static_cast<double>(info.stx_btime.tv_nsec) / 1000000.0;
+#else
+	// A C library without statx.
+	std::string file = toNarrow(path);
+	struct stat info;
+	int status = 0;
+
+	{
+		hx::AutoGCFreeZone zone;
+		status = stat(file.c_str(), &info);
+	}
+
+	return status != 0 ? -2 : -1;
+#endif
+}
+
 ::String crossbyte_file_truncate(::String path, double length) {
 	// The standard library has no truncate. FileStream read the whole file
 	// into memory and wrote back the part it kept, which is a file's size of

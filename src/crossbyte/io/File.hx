@@ -84,13 +84,23 @@ import haxe.io.Bytes;
 #end
 final class File extends EventDispatcher {
 	/**
-		The creation date of the file on the local disk. If the object is was
-		not populated, a call to get the value of this property returns
-		`null`.
+		The creation date of the file on the local disk, read from the disk
+		each time it is asked for.
 
-		@throws IOError               If the file information cannot be
-									  accessed, an exception is thrown with a
-									  message indicating a file I/O error.
+		The time the file was made, where the system keeps one: on Windows,
+		on macOS, and on Linux where the C library has `statx` (glibc 2.28)
+		and the file system records a birth time, natively, on the jvm and
+		on Node. `null` where the file system keeps none. On Node it is
+		Node's `birthtime`; on the jvm the attribute `creationTime`, which
+		before Java 22 on Linux is the modification time, the JVM's own
+		fallback. It is never POSIX's `ctime`, which is when the file's status
+		last changed, a chmod, a rename or a write moves it on.
+
+		@throws IOError               The file does not exist or cannot be
+									  examined.
+		@throws IllegalOperationError On the interpreter, neko and HashLink
+									  under Linux or macOS, whose `stat`
+									  reports no creation time.
 	**/
 	public var creationDate(get, null):Date;
 
@@ -122,13 +132,11 @@ final class File extends EventDispatcher {
 	public var data(get, null):ByteArray;
 
 	/**
-		The date that the file on the local disk was last modified. If the
-		object is not populated, a call to get the value of this property
-		returns `null`.
+		The date that the file on the local disk was last modified, read from
+		the disk each time it is asked for.
 
-		@throws IOError               If the file information cannot be
-									  accessed, an exception is thrown with a
-									  message indicating a file I/O error.
+		@throws IOError               The file does not exist or cannot be
+									  examined.
 	**/
 	public var modificationDate(get, null):Date;
 
@@ -138,7 +146,9 @@ final class File extends EventDispatcher {
 	public var name(get, null):String;
 
 	/**
-		The size of the file on the local disk in bytes.
+		The size of the file on the local disk in bytes, read from the disk
+		each time it is asked for: a File made before its file was written,
+		or kept while something else writes it, says what is there now.
 
 		An `Int`, so it states sizes up to 2,147,483,647 bytes, and a file
 		larger than that throws rather than answering. The standard library's
@@ -548,9 +558,6 @@ final class File extends EventDispatcher {
 	];
 
 	@:noCompletion private var __fileWorker:Worker;
-	@:noCompletion private var __fileStatsDirty:Bool = false;
-	// Set when the file is larger than `size` can state; `size` throws then.
-	@:noCompletion private var __sizeOverflows:Bool = false;
 	@:noCompletion private var __path:String;
 
 	/**
@@ -934,7 +941,6 @@ final class File extends EventDispatcher {
 	**/
 	public function createDirectory():Void {
 		FileSystem.createDirectory(__path);
-		__updateFileStats();
 	}
 
 	/**
@@ -975,8 +981,6 @@ final class File extends EventDispatcher {
 		} catch (e:Dynamic) {
 			throw new Error("Folder is not empty.", 3010);
 		}
-
-		__updateFileStats();
 	}
 
 	/**
@@ -1031,7 +1035,6 @@ final class File extends EventDispatcher {
 	**/
 	public function deleteFile():Void {
 		FileSystem.deleteFile(__path);
-		__updateFileStats();
 	}
 
 	/**
@@ -1358,7 +1361,6 @@ final class File extends EventDispatcher {
 					throw __ioError('Could not rename "$source" to "$target": ${Std.string(e)}', 3006);
 				}
 
-				__updateFileStats();
 				return;
 			}
 
@@ -1397,7 +1399,6 @@ final class File extends EventDispatcher {
 				throw __ioError('Could not move "$source" over "$target": ${Std.string(e)}', 3006);
 			}
 
-			__updateFileStats();
 			return;
 		}
 
@@ -1459,8 +1460,6 @@ final class File extends EventDispatcher {
 				throw __ioError('Moved "$source" to "$target", but the "$target" it replaced is still at "$aside": ${Std.string(e)}', 3012);
 			}
 		}
-
-		__updateFileStats();
 	}
 
 	/**
@@ -1673,7 +1672,6 @@ final class File extends EventDispatcher {
 		}
 
 		this.__data = data;
-		__updateFileStats();
 	}
 
 	/**
@@ -2059,27 +2057,89 @@ final class File extends EventDispatcher {
 		#end
 	}
 
-	@:noCompletion private function __updateFileStats(?path:String):Void {
-		if (path == null) {
-			path = __path;
-		}
-
-		if (FileSystem.exists(path)) {
-			var fileInfo = FileSystem.stat(path);
-			creationDate = fileInfo.ctime;
-			modificationDate = fileInfo.mtime;
-			size = fileInfo.size;
-			__sizeOverflows = __exceedsInt(path, fileInfo.size);
-		} else {
-			creationDate = null;
-			modificationDate = null;
-			size = 0;
-			__sizeOverflows = false;
-		}
+	/**
+		The names a path gives, `name`, `extension`, `type`, which need
+		nothing from the disk. What the disk says is asked when it is wanted:
+		`size`, `modificationDate` and `creationDate` were a snapshot taken
+		when the path was set, while `exists` was live, so a File made before
+		its file was written reported a size of 0 for good.
+	**/
+	@:noCompletion private function __updateNames(path:String):Void {
 		extension = Path.extension(path);
 		type = extension;
 		name = Path.withoutDirectory(path);
-		__fileStatsDirty = false;
+	}
+
+	/** The file's stat, or an IOError saying why there is none. **/
+	@:noCompletion private function __stat():sys.FileStat {
+		var stat:sys.FileStat;
+
+		try {
+			stat = FileSystem.stat(__path);
+		} catch (e:Dynamic) {
+			throw __missingOr(__path, e);
+		}
+
+		// hxcpp answers a missing file with a stat of zeros rather than a
+		// throw. A file or a directory always has its type in `mode`.
+		if (stat == null || (stat.mode == 0 && !FileSystem.exists(__path))) {
+			throw __missingOr(__path, "it could not be examined");
+		}
+
+		return stat;
+	}
+
+	#if jvm
+	// A Java long as a double, from its two halves: masking with 0xFFFFFFFF
+	// masks with -1, an Int, which keeps every bit.
+	@:noCompletion private static function __longToFloat(value:haxe.Int64):Float {
+		var low:Float = haxe.Int64.getLow(value);
+		if (low < 0) {
+			low += 4294967296.0;
+		}
+		return haxe.Int64.getHigh(value) * 4294967296.0 + low;
+	}
+	#end
+
+	/** An IOError for `path`: 3003 when it is not there, else what went wrong. **/
+	@:noCompletion private static function __missingOr(path:String, cause:Dynamic):IOError {
+		if (!FileSystem.exists(path)) {
+			return __ioError('"$path" does not exist.', 3003);
+		}
+		return __ioError('Could not examine "$path": ${Std.string(cause)}', 3001);
+	}
+
+	/**
+		The file's size, exact past 2 GB where the target can say, or an
+		IOError. On the interpreter, neko and hl `stat` has an Int size, and
+		`__exceedsInt` asks the file whether there is more past it.
+	**/
+	@:noCompletion private function __sizeNow():Float {
+		#if (js && !nodejs)
+		return FileSystem.stat(__path).size;
+		#elseif cpp
+		// One call: the exact size, or -1 when there is no file to measure.
+		var size:Float = crossbyte.io._internal.NativeFileSync.size(__path);
+		if (size < 0) {
+			throw __missingOr(__path, "it could not be examined");
+		}
+		return size;
+		#elseif jvm
+		var file = new java.io.File(__path);
+		if (!file.exists()) {
+			throw __missingOr(__path, "it could not be examined");
+		}
+		return __longToFloat(file.length());
+		#elseif nodejs
+		try {
+			return (js.node.Fs.statSync(__path).size : Float);
+		} catch (e:Dynamic) {
+			throw __missingOr(__path, e);
+		}
+		#else
+		var reported:Int = __stat().size;
+		return __exceedsInt(__path, reported) ? 2147483648.0 : reported;
+		#end
 	}
 
 	@:noCompletion private static function get_applicationDirectory():File {
@@ -2102,11 +2162,42 @@ final class File extends EventDispatcher {
 		return new File(System.userDir);
 	}
 
-	@:noCompletion private function get_creationDate():Date {
-		if (__fileStatsDirty) {
-			__updateFileStats();
+	@:noCompletion private function get_creationDate():Null<Date> {
+		// When the file was made. It was stat's ctime, which on POSIX is when
+		// the file's status last changed: a chmod, a rename, a write moved it
+		// on. Windows' ctime is the creation time, which is the one platform
+		// where that was right.
+		#if (js && !nodejs)
+		return FileSystem.stat(__path).ctime;
+		#elseif cpp
+		var created:Float = crossbyte.io._internal.NativeFileSync.created(__path);
+		if (created == -2) {
+			throw __missingOr(__path, "it could not be examined");
 		}
-		return creationDate;
+		return created < 0 ? null : Date.fromTime(created);
+		#elseif nodejs
+		try {
+			var stats:Dynamic = js.node.Fs.statSync(__path);
+			var created:Float = stats.birthtimeMs;
+			return created > 0 ? Date.fromTime(created) : null;
+		} catch (e:Dynamic) {
+			throw __missingOr(__path, e);
+		}
+		#elseif jvm
+		try {
+			var time:java.nio.file.attribute.FileTime = cast java.nio.file.Files.getAttribute(java.nio.file.Paths.get(__path), "basic:creationTime");
+			return Date.fromTime(__longToFloat(time.toMillis()));
+		} catch (e:Dynamic) {
+			throw __missingOr(__path, e);
+		}
+		#else
+		if (System.isWindows) {
+			return __stat().ctime;
+		}
+		__stat();
+		throw new IllegalOperationError("A file's creation time cannot be read on " + #if eval "the interpreter" #elseif neko "neko" #elseif hl "HashLink" #else "this target" #end
+			+ " on " + System.PLATFORM + ": its stat reports when the file's status last changed, which is not when it was made. Natively, on the jvm and on Node it is read.");
+		#end
 	}
 
 	@:noCompletion private inline function get_data():ByteArray {
@@ -2114,29 +2205,21 @@ final class File extends EventDispatcher {
 	}
 
 	@:noCompletion private function get_modificationDate():Date {
-		if (__fileStatsDirty) {
-			__updateFileStats();
-		}
-		return modificationDate;
+		return __stat().mtime;
 	}
 
 	@:noCompletion private function get_name():String {
-		if (__fileStatsDirty) {
-			__updateFileStats();
-		}
 		return name;
 	}
 
 	@:noCompletion private function get_size():Int {
-		if (__fileStatsDirty) {
-			__updateFileStats();
-		}
+		var size:Float = __sizeNow();
 
-		if (__sizeOverflows) {
+		if (size > 2147483647.0) {
 			throw new crossbyte.errors.IOError('$__path is larger than 2 GB, which File.size, an Int, cannot state.');
 		}
 
-		return size;
+		return Std.int(size);
 	}
 
 	/**
@@ -2183,9 +2266,6 @@ final class File extends EventDispatcher {
 	}
 
 	@:noCompletion private function get_type():String {
-		if (__fileStatsDirty) {
-			__updateFileStats();
-		}
 		return type;
 	}
 
@@ -2211,7 +2291,7 @@ final class File extends EventDispatcher {
 			throw new ArgumentError("One of the parameters is invalid.");
 		}
 
-		__updateFileStats(path);
+		__updateNames(path);
 
 		// Reformat when the path carries the *other* platform's separator, so
 		// that what is stored is joined on `separator` throughout.
