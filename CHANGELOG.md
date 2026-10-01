@@ -1064,6 +1064,18 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- Reliable UDP sends what a pass produces from one socket in as few system
+  calls as the system allows. Each datagram was a `sendto` of its own,
+  which was nearly all a server sending reliable UDP spent: 5.9 us a
+  1,200-byte datagram on Windows, against 6.2 for the bare call. On Linux
+  a run to one peer now goes as a single send the kernel cuts up (UDP
+  segmentation offload) and the rest 64 to a call (`sendmmsg`): a bulk
+  send costs the server 1.15 ms of CPU a megabyte where it cost 2.9, and a
+  game server with a thousand clients a few percent less a client a step.
+  Elsewhere each datagram is still a call of its own. Sessions also keep
+  their peer's resolved address, where the shared socket kept only the
+  last, so a server sending to each of its clients in turn built an
+  address for every datagram.
 - `SQLiteConnection.lastInsertRowID` is a `Float`, as
   `SQLResult.lastInsertRowID` already was, and `DBStats.pageCount` and
   `freeListCount` are `Float`s: all three can pass 2^31, and a `Float` is
@@ -1847,6 +1859,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A reliable UDP session is no longer closed when its socket's send buffer
+  is momentarily full. The send raised an IOError for it, and the session
+  took any send error as fatal, so a burst could close a healthy
+  connection; the datagram is dropped now, as a full queue anywhere on
+  the path drops one, and sent again by the protocol.
 - On Linux and macOS a refused connect is reported as a failure, with the
   system's reason. POSIX leaves a socket whose connect was refused
   writable, as one that connected, so a `Socket` announced CONNECT and

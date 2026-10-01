@@ -107,7 +107,7 @@ static bool crossbyte_udp_set_buffer(::Dynamic handle, bool receive, int size) {
 	@event ioError Dispatched when an I/O error occurs while sending or receiving.
 	@event data Dispatched when a complete UDP payload has been received.
 **/
-class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSocket #end {
+class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSocket #end #if cpp implements crossbyte.core._internal.PassFlush #end {
 	/**
 		Indicates whether UDP sockets are supported by the current target.
 
@@ -262,6 +262,16 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 
 	@:noCompletion private var __bound:Bool = false;
 	@:noCompletion private var __cbInstance:CrossByte;
+	#if cpp
+	// What senders handed this socket during the pass, gathered for one call
+	// when the pass ends; see __sendInPass. Kept between passes, emptied.
+	@:noCompletion private var __outBytes:Bytes = null;
+	@:noCompletion private var __outLength:Int = 0;
+	@:noCompletion private var __outSpans:Array<Int> = [];
+	@:noCompletion private var __outTargets:Array<Dynamic> = [];
+	@:noCompletion private var __outSenders:Array<crossbyte._internal.net.DatagramSender> = [];
+	@:noCompletion private var __outQueued:Bool = false;
+	#end
 	#if nodejs
 	// Buffer sizes asked for, applied when the socket is bound: Node cannot
 	// size a socket before then, and replaces an unbound one freely.
@@ -415,6 +425,14 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			} catch (_:Dynamic) {}
 		}
 		#else
+		#if cpp
+		// What the pass had gathered goes before the socket does: a server
+		// closing tells each client so in its last datagram, and those were
+		// waiting for a pass this close would have ended first.
+		if (__outTargets.length > 0) {
+			__flushPass();
+		}
+		#end
 		try {
 			__socket.close();
 		} catch (_:Dynamic) {}
@@ -1139,6 +1157,153 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	@:noCompletion private function __dispatchSendError(message:String):Void {
 		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
 	}
+
+	#if !nodejs
+	/**
+		The address `send` would send to for `address` and `port`, or null
+		while a name is still being looked up -- for a sender that keeps it,
+		as a reliable session keeps its peer's, rather than have one built
+		for each datagram: this socket keeps only the last.
+	**/
+	@:noCompletion public function __resolveTarget(address:String, port:Int):Null<Address> {
+		return __targetFor(address, port);
+	}
+
+	/**
+		Sends `length` bytes of `bytes` from `offset` to `target` when the
+		runtime's pass ends, together with everything else sent this way from
+		this socket in the pass: on Linux in as few system calls as the
+		kernel allows -- a run to one peer cut up by the kernel from a single
+		send, the rest 64 to a call -- and elsewhere one send each, as now.
+		`sender` is told if this one could not go.
+
+		Sending a datagram at a time cost its system call each, which was
+		most of what a server sending reliable UDP spent: 5.9 us a 1,200-byte
+		datagram on Windows, against 6.2 for the bare call. Over Linux
+		loopback a run cut by the kernel cost a seventh of the CPU of the same
+		datagrams sent one by one.
+
+		Goes now where there is no pass to wait for: no runtime, a runtime
+		that has stopped, or a target without the batch call.
+	**/
+	@:noCompletion public function __sendInPass(bytes:Bytes, offset:Int, length:Int, target:Address,
+			sender:Null<crossbyte._internal.net.DatagramSender>):Void {
+		#if cpp
+		// This socket's runtime, or for one that only sends -- set at
+		// receive() -- the thread's.
+		var runtime:CrossByte = __cbInstance;
+		if (runtime == null) {
+			try {
+				runtime = CrossByte.current();
+			} catch (_:Dynamic) {}
+		}
+		if (runtime != null && !runtime.__didExit && __socket != null) {
+			var end:Int = __outLength + length;
+			if (__outBytes == null || __outBytes.length < end) {
+				var grown:Bytes = Bytes.alloc(end > 32768 ? end * 2 : 65536);
+				if (__outLength > 0) {
+					grown.blit(0, __outBytes, 0, __outLength);
+				}
+				__outBytes = grown;
+			}
+			__outBytes.blit(__outLength, bytes, offset, length);
+			__outSpans.push(__outLength);
+			__outSpans.push(length);
+			__outTargets.push(target);
+			__outSenders.push(sender);
+			__outLength = end;
+			if (!__outQueued) {
+				__outQueued = true;
+				runtime.__queuePassFlush(this);
+			}
+			return;
+		}
+		#end
+		__sendNow(bytes, offset, length, target, sender);
+	}
+
+	@:noCompletion private function __sendNow(bytes:Bytes, offset:Int, length:Int, target:Address,
+			sender:Null<crossbyte._internal.net.DatagramSender>):Void {
+		try {
+			if (__socket == null) {
+				throw new IOError("Operation attempted on invalid socket.");
+			}
+			__socket.sendTo(bytes, offset, length, target);
+		} catch (e:Dynamic) {
+			// A full send buffer drops the datagram, as a full queue anywhere
+			// on the path would; it is not the sender's failure.
+			if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
+				return;
+			}
+			if (sender != null) {
+				sender.__datagramFailed(Std.string(e));
+			} else {
+				__dispatchSendError(Std.string(e));
+			}
+		}
+	}
+
+	#end
+
+	#if cpp
+	/**
+		Sends what the pass gathered; see __sendInPass. A datagram the batch
+		stopped at is sent alone, which says why: a full send buffer drops it
+		and what follows, as a full queue drops a datagram anywhere, and
+		anything else is its sender's to hear. Senders are told after the
+		batch is emptied, so one that sends again from there starts afresh.
+	**/
+	@:noCompletion public function __flushPass():Void {
+		__outQueued = false;
+		var count:Int = __outTargets.length;
+		if (count == 0) {
+			return;
+		}
+
+		var failed:Array<Int> = null;
+		var failures:Array<String> = null;
+		var first:Int = 0;
+		while (first < count && __socket != null) {
+			first += crossbyte._internal.net.NativeSocketAddress.sendBatch(__socket, __outBytes.getData(), __outSpans, __outTargets, first, count);
+			if (first >= count) {
+				break;
+			}
+
+			var stopped:Int = first++;
+			try {
+				var target:Address = __outTargets[stopped];
+				__socket.sendTo(__outBytes, __outSpans[2 * stopped], __outSpans[2 * stopped + 1], target);
+			} catch (e:Dynamic) {
+				if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
+					break;
+				}
+				if (failed == null) {
+					failed = [];
+					failures = [];
+				}
+				failed.push(stopped);
+				failures.push(Std.string(e));
+			}
+		}
+
+		var senders:Array<crossbyte._internal.net.DatagramSender> = failed == null ? null : [for (i in failed) __outSenders[i]];
+		__outLength = 0;
+		__outSpans.resize(0);
+		__outTargets.resize(0);
+		__outSenders.resize(0);
+
+		if (failed != null) {
+			for (i in 0...failed.length) {
+				var sender = senders[i];
+				if (sender != null) {
+					sender.__datagramFailed(failures[i]);
+				} else {
+					__dispatchSendError(failures[i]);
+				}
+			}
+		}
+	}
+	#end
 
 	@:noCompletion private function __syncPolling():Void {
 		#if nodejs

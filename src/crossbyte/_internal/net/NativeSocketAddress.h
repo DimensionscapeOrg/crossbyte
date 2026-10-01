@@ -6,3 +6,4 @@ Array<int> crossbyte_socket_peer_info(Dynamic socket);
 int crossbyte_socket_send_to(Dynamic socket, Array<unsigned char> buffer, int position, int length, Dynamic address);
 int crossbyte_socket_recv_from(Dynamic socket, Array<unsigned char> buffer, int position, int length, Dynamic address);
 String crossbyte_socket_connect_error(Dynamic socket);
+int crossbyte_socket_send_batch(Dynamic socket, Array<unsigned char> buffer, Array<int> spans, Array<Dynamic> targets, int first, int count);

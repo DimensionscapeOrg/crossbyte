@@ -16,6 +16,9 @@ typedef int SocketLen;
 #include <sys/types.h>
 #include <unistd.h>
 #include <fcntl.h>
+#if defined(__linux__)
+#include <netinet/udp.h>
+#endif
 typedef int SOCKET;
 #define INVALID_SOCKET (-1)
 #define SOCKET_ERROR (-1)
@@ -366,5 +369,199 @@ String crossbyte_socket_connect_error(Dynamic socket) {
 	return written > 0 ? String::create(text) : String::create("connect failed");
 #else
 	return String::create(strerror(error));
+#endif
+}
+
+#if defined(__linux__)
+#ifndef SOL_UDP
+#define SOL_UDP 17
+#endif
+#ifndef UDP_SEGMENT
+#define UDP_SEGMENT 103
+#endif
+
+namespace {
+// Whether the kernel takes UDP_SEGMENT. Assumed until a send says otherwise:
+// a kernel before 4.18, or a device that cannot checksum for it, refuses
+// with one of these, and every send after goes without.
+static volatile bool crossbyte_udp_gso = true;
+
+static bool crossbyte_gso_refused(int error) {
+	return error == EINVAL || error == EIO || error == EOPNOTSUPP || error == ENOPROTOOPT;
+}
+
+// How many datagrams from `first` form a run worth cutting from one send:
+// to one peer, lying end to end, each as long as the first but the last,
+// which may be shorter. At most 64 of them and 65,000 bytes, which every
+// kernel that cuts at all accepts.
+static int crossbyte_gso_run(Array<int> spans, Array<Dynamic> targets, int first, int count, int& total) {
+	int segment = spans[2 * first + 1];
+	total = segment;
+	if (segment <= 0) {
+		return 1;
+	}
+	int run = 1;
+	while (first + run < count && run < 64) {
+		int k = first + run;
+		int length = spans[2 * k + 1];
+		if (targets[k].mPtr != targets[first].mPtr || spans[2 * k] != spans[2 * first] + total
+				|| length <= 0 || length > segment || total + length > 65000) {
+			break;
+		}
+		total += length;
+		run++;
+		if (length < segment) {
+			break;
+		}
+	}
+	return run;
+}
+}
+#endif
+
+/**
+	Sends datagrams `first` to `count` of a batch: datagram i is
+	`spans[2i + 1]` bytes of `buffer` from `spans[2i]`, to `targets[i]`, a
+	sys.net.Address. Answers how many went, from `first`, before one did not;
+	that one is for the caller to send alone, which raises what stopped it.
+
+	On Linux a run to one peer -- end to end, each the same length but the
+	last -- goes as one send the kernel cuts up (UDP_SEGMENT): over loopback,
+	a seventh of the CPU a datagram that sending them one at a time costs.
+	The rest go 64 to a call with sendmmsg. Elsewhere each is a sendto.
+**/
+int crossbyte_socket_send_batch(Dynamic socket, Array<unsigned char> buffer, Array<int> spans, Array<Dynamic> targets, int first, int count) {
+	SOCKET nativeSocket = crossbyte_val_sock(socket);
+	int bufferLength = buffer->length;
+	if (first < 0 || count < first || count > targets->length || count > spans->length / 2) {
+		hx::Throw(HX_CSTRING("Invalid batch"));
+	}
+	for (int i = first; i < count; ++i) {
+		int position = spans[2 * i];
+		int length = spans[2 * i + 1];
+		if (position < 0 || length < 0 || position > bufferLength || length > bufferLength - position) {
+			hx::Throw(HX_CSTRING("Invalid data position"));
+		}
+	}
+
+	const char* data = bufferLength > 0 ? (const char*)&buffer[0] : "";
+	int sent = 0;
+	int i = first;
+
+#if defined(__linux__)
+	enum { BATCH = 64 };
+	struct mmsghdr messages[BATCH];
+	struct iovec pieces[BATCH];
+	sockaddr_storage names[BATCH];
+
+	while (i < count) {
+		if (crossbyte_udp_gso) {
+			int total = 0;
+			int run = crossbyte_gso_run(spans, targets, i, count, total);
+			if (run >= 2) {
+				sockaddr_storage name;
+				SocketLen nameLength = 0;
+				crossbyte_dynamic_to_sockaddr(targets[i], name, nameLength);
+
+				char control[CMSG_SPACE(sizeof(unsigned short))];
+				memset(control, 0, sizeof(control));
+				struct iovec whole;
+				whole.iov_base = (void*)(data + spans[2 * i]);
+				whole.iov_len = total;
+				struct msghdr message;
+				memset(&message, 0, sizeof(message));
+				message.msg_name = &name;
+				message.msg_namelen = nameLength;
+				message.msg_iov = &whole;
+				message.msg_iovlen = 1;
+				message.msg_control = control;
+				message.msg_controllen = sizeof(control);
+				struct cmsghdr* header = CMSG_FIRSTHDR(&message);
+				header->cmsg_level = SOL_UDP;
+				header->cmsg_type = UDP_SEGMENT;
+				header->cmsg_len = CMSG_LEN(sizeof(unsigned short));
+				*(unsigned short*)CMSG_DATA(header) = (unsigned short)spans[2 * i + 1];
+
+				hx::EnterGCFreeZone();
+				ssize_t result;
+				do {
+					result = sendmsg(nativeSocket, &message, MSG_NOSIGNAL);
+				} while (result < 0 && errno == EINTR);
+				int error = errno;
+				hx::ExitGCFreeZone();
+
+				if (result >= 0) {
+					i += run;
+					sent += run;
+					continue;
+				}
+				if (!crossbyte_gso_refused(error)) {
+					return sent;
+				}
+				// Not cut here: everything goes one datagram at a time from now.
+				crossbyte_udp_gso = false;
+			}
+		}
+
+		// Up to BATCH at once, stopping short of the next run worth cutting.
+		int n = 0;
+		while (i + n < count && n < BATCH) {
+			int k = i + n;
+			if (n > 0 && crossbyte_udp_gso) {
+				int total = 0;
+				if (crossbyte_gso_run(spans, targets, k, count, total) >= 2) {
+					break;
+				}
+			}
+			pieces[n].iov_base = (void*)(data + spans[2 * k]);
+			pieces[n].iov_len = spans[2 * k + 1];
+			SocketLen nameLength = 0;
+			crossbyte_dynamic_to_sockaddr(targets[k], names[n], nameLength);
+			memset(&messages[n], 0, sizeof(messages[n]));
+			messages[n].msg_hdr.msg_name = &names[n];
+			messages[n].msg_hdr.msg_namelen = nameLength;
+			messages[n].msg_hdr.msg_iov = &pieces[n];
+			messages[n].msg_hdr.msg_iovlen = 1;
+			n++;
+		}
+
+		hx::EnterGCFreeZone();
+		int result;
+		do {
+			result = sendmmsg(nativeSocket, messages, n, MSG_NOSIGNAL);
+		} while (result < 0 && errno == EINTR);
+		hx::ExitGCFreeZone();
+
+		if (result <= 0) {
+			return sent;
+		}
+		i += result;
+		sent += result;
+		if (result < n) {
+			return sent;
+		}
+	}
+	return sent;
+#else
+	for (; i < count; ++i) {
+		sockaddr_storage name;
+		SocketLen nameLength = 0;
+		crossbyte_dynamic_to_sockaddr(targets[i], name, nameLength);
+		hx::EnterGCFreeZone();
+		int result;
+#if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
+		result = sendto(nativeSocket, data + spans[2 * i], spans[2 * i + 1], MSG_NOSIGNAL, reinterpret_cast<sockaddr*>(&name), nameLength);
+#else
+		do {
+			result = sendto(nativeSocket, data + spans[2 * i], spans[2 * i + 1], MSG_NOSIGNAL, reinterpret_cast<sockaddr*>(&name), nameLength);
+		} while (result == SOCKET_ERROR && errno == EINTR);
+#endif
+		hx::ExitGCFreeZone();
+		if (result == SOCKET_ERROR) {
+			return sent;
+		}
+		sent++;
+	}
+	return sent;
 #endif
 }
