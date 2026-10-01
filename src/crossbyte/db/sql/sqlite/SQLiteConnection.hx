@@ -53,7 +53,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		its transaction still open.
 	**/
 	public var inTransaction(get, null):Bool;
-	public var lastInsertRowID(get, null):Int;
+	public var lastInsertRowID(get, null):Float;
 	public var pageSize(get, null):UInt;
 	public var totalChanges(get, null):Int;
 
@@ -245,16 +245,19 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		var pageCountRow:Dynamic = __pragmaFirstRow("page_count");
 		var freeListRow = __pragmaFirstRow("freelist_count");
 
-		var pageSize:Null<Int> = pageSizeRow != null ? Std.parseInt(Std.string(Reflect.field(pageSizeRow, "page_size"))) : 0;
-		var pageCount:Null<Int> = pageCountRow != null ? Std.parseInt(Std.string(Reflect.field(pageCountRow, "page_count"))) : 0;
-		var freeList:Null<Int> = freeListRow != null ? Std.parseInt(Std.string(Reflect.field(freeListRow, "freelist_count"))) : 0;
+		// Counted as Floats and multiplied as them: a page count can pass 2^31,
+		// and the product of two Ints wrapped past 2 GB, a 3 GB database
+		// reported a negative size, before it ever reached the Int64.
+		var pageSize:Float = pageSizeRow != null ? __wholeNumber(Reflect.field(pageSizeRow, "page_size")) : 0;
+		var pageCount:Float = pageCountRow != null ? __wholeNumber(Reflect.field(pageCountRow, "page_count")) : 0;
+		var freeList:Float = freeListRow != null ? __wholeNumber(Reflect.field(freeListRow, "freelist_count")) : 0;
 
 		return {
-			pageSize: pageSize,
+			pageSize: Std.int(pageSize),
 			pageCount: pageCount,
 			freeListCount: freeList,
-			dbSizeBytes: Int64.make(0, pageSize * pageCount),
-			freeBytes: Int64.make(0, pageSize * freeList)
+			dbSizeBytes: __bytesOf(pageSize, pageCount),
+			freeBytes: __bytesOf(pageSize, freeList)
 		};
 	}
 
@@ -783,6 +786,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				var results:ResultSet = obj.results;
 
 				statement.__resultSet = results;
+				statement.__rowId = obj.rowId;
 
 				statement.__queueResult();
 			} else {
@@ -944,8 +948,54 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		return __inTransaction;
 	}
 
-	private function get_lastInsertRowID():Int {
-		return __connection.lastInsertId();
+	private function get_lastInsertRowID():Float {
+		return __lastRowId();
+	}
+
+	/**
+		The rowid of the last insert, whole. SQLite's are 64-bit, and
+		`sys.db.Connection.lastInsertId` answers an Int: hxcpp's stops at
+		2^31 - 1 and the other drivers wrap, so a Snowflake id or a
+		millisecond timestamp used as a key read back as something else.
+		Below that it is exact and nothing more is asked; at or past it, or
+		negative, SQLite is asked in SQL, whose integer column every driver
+		returns whole.
+	**/
+	@:noCompletion private function __lastRowId():Float {
+		var id:Int = __connection.lastInsertId();
+		if (id >= 0 && id < 0x7FFFFFFF) {
+			return id;
+		}
+		var rows:ResultSet = __connection.request("SELECT last_insert_rowid() AS id;");
+		if (rows == null || !rows.hasNext()) {
+			return id;
+		}
+		return __wholeNumber(Reflect.field(rows.next(), "id"));
+	}
+
+	/**
+		An integer column as a Float, exact to 2^53: an Int, an Int64,
+		hxcpp's for a value past 32 bits, a Float, or text.
+	**/
+	@:noCompletion private static function __wholeNumber(value:Dynamic):Float {
+		if (value == null) {
+			return 0;
+		}
+		if (Int64.isInt64(value)) {
+			var wide:Int64 = value;
+			var low:Float = wide.low < 0 ? wide.low + 4294967296.0 : wide.low;
+			return wide.high * 4294967296.0 + low;
+		}
+		if (Std.isOfType(value, Int) || Std.isOfType(value, Float)) {
+			return value;
+		}
+		var parsed:Float = Std.parseFloat(Std.string(value));
+		return Math.isNaN(parsed) ? 0 : parsed;
+	}
+
+	/** `pages` of `pageSize` bytes, in bytes: multiplied as a Float, never in 32 bits. **/
+	@:noCompletion private static inline function __bytesOf(pageSize:Float, pages:Float):Int64 {
+		return Int64.fromFloat(pageSize * pages);
 	}
 
 	private function get_totalChanges():Int {
@@ -1136,8 +1186,9 @@ typedef FKViolation = {
 
 typedef DBStats = {
 	var pageSize:Int;
-	var pageCount:Int;
-	var freeListCount:Int;
+	// Floats, exact to 2^53: SQLite counts pages in 32 bits unsigned.
+	var pageCount:Float;
+	var freeListCount:Float;
 	var dbSizeBytes:Int64;
 	var freeBytes:Int64;
 }

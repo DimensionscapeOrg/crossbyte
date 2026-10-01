@@ -1057,6 +1057,10 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `SQLiteConnection.lastInsertRowID` is a `Float`, as
+  `SQLResult.lastInsertRowID` already was, and `DBStats.pageCount` and
+  `freeListCount` are `Float`s: all three can pass 2^31, and a `Float` is
+  exact to 2^53.
 - Native TLS servers resume a returning client's session (TLS 1.2 session
   tickets, from the hxcpp fork's `production`). Every connection was a full
   handshake, 3.9 ms of CPU for ECDSA and 6.9 ms for RSA on an MSVC build,
@@ -1836,6 +1840,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- SQLite rowids past 32 bits read back whole, from the connection and from
+  every statement's result. `sys.db.Connection.lastInsertId` is an Int,
+  which hxcpp holds at 2^31 - 1 and the other drivers wrap, so a Snowflake
+  id or a millisecond timestamp used as a key came back as something else.
+  Below that the id is read as before; at or past it SQLite is asked in
+  SQL. A statement's rowid is also read where it ran, on the worker for an
+  asynchronous connection: `getResult()` read it on the caller's thread,
+  and so reported whichever insert had happened last. And
+  `SQLiteConnection.stats()` multiplied page size by page count in 32
+  bits before widening, so a database past 2 GB reported a wrapped size.
 - On the jvm, a thread's selectors are closed once the thread has ended.
   Java says nothing when a thread ends, and each thread that ever selected
   kept up to three selectors, an epoll descriptor and wakeup pipe each

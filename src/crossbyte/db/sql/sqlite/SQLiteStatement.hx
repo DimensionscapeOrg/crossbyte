@@ -39,6 +39,11 @@ class SQLiteStatement extends EventDispatcher {
 	// first.
 	private var __resultQueue:Array<Array<Dynamic>> = [];
 	private var __async:Bool = false;
+	// The connection's last rowid as this statement finished executing,
+	// read on the thread that executed it. It was read by getResult(), on
+	// the caller's thread while the worker might be running the next
+	// statement, and so reported whichever insert had happened last.
+	@:noCompletion private var __rowId:Float = 0;
 
 	public function new() {
 		super();
@@ -70,6 +75,7 @@ class SQLiteStatement extends EventDispatcher {
 		} else {
 			__prefetch = prefetch;
 			__resultSet = __connection.request(sql);
+			__rowId = __rowIdNow();
 			__queueResult();
 		}
 	}
@@ -91,8 +97,10 @@ class SQLiteStatement extends EventDispatcher {
 		return function() {
 			var event:Event;
 			var results:ResultSet;
+			var rowId:Float = 0;
 			try {
 				results = __connection.request(sql);
+				rowId = __rowIdNow();
 				event = new SQLEvent(SQLEvent.RESULT);
 			} catch (e:Dynamic) {
 				results = null;
@@ -104,10 +112,19 @@ class SQLiteStatement extends EventDispatcher {
 			message.statement = statement;
 			message.event = event;
 			message.results = results;
+			message.rowId = rowId;
 			message.prefetch = prefetch;
 
 			__sqlConnection.__sqlWorker.sendProgress(message);
 		}
+	}
+
+	/** The connection's last rowid now, whole; see SQLiteConnection.__lastRowId. **/
+	@:noCompletion private function __rowIdNow():Float {
+		if (__sqlConnection != null) {
+			return __sqlConnection.__lastRowId();
+		}
+		return __connection != null ? __connection.lastInsertId() : 0;
 	}
 
 	private function __queueResult():Void {
@@ -147,8 +164,7 @@ class SQLiteStatement extends EventDispatcher {
 
 		if (results != null) {
 			var len:Int = (__resultSet != null) ? __resultSet.length : 0;
-			var lastId:Int = (__connection != null) ? __connection.lastInsertId() : 0;
-			return new SQLResult(results, len, complete, lastId);
+			return new SQLResult(results, len, complete, __rowId);
 		}
 		return null;
 	}
