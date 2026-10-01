@@ -98,6 +98,85 @@ class SnowflakeIdTest extends utest.Test {
 		Assert.equals(0, duplicates, "a standing clock produced " + duplicates + " repeats");
 	}
 
+	/**
+		A clock that reads fractions of a millisecond does not repeat.
+
+		Each reading that differed from the last only in its fraction was
+		taken for a new millisecond, so the sequence went back to zero -- and
+		the fraction was then dropped, which gave the identifier minted a
+		moment before. `Sys.time() * 1000` is such a clock, and so is the
+		default one natively: microseconds on Linux and macOS, and on Windows
+		seconds plus a thousandth per millisecond, which lands either side of
+		the whole millisecond once multiplied back.
+	**/
+	public function testAFractionalClockDoesNotRepeat():Void {
+		var base:Float = SnowflakeId.DEFAULT_EPOCH_MS + 1000.0;
+		// Two readings inside one millisecond, the next one, one a hair
+		// under a whole millisecond after one a hair over it, and a step back.
+		var offsets:Array<Float> = [0.25, 0.75, 1.0, 1.5, 2.0001, 2.9999, 3.0001, 2.5, 3.75];
+		var at:Int = 0;
+		var ids = new SnowflakeId(6, SnowflakeId.DEFAULT_EPOCH_MS, function():Float return base + offsets[at]);
+
+		var seen = new Map<String, Bool>();
+		var duplicates:Int = 0;
+		var outOfOrder:Int = 0;
+		var previous:Int64 = Int64.ofInt(0);
+
+		for (i in 0...offsets.length) {
+			at = i;
+			var id = ids.next();
+			var key = Int64.toStr(id);
+
+			if (seen.exists(key)) {
+				duplicates++;
+			}
+
+			if (i > 0 && id <= previous) {
+				outOfOrder++;
+			}
+
+			seen.set(key, true);
+			previous = id;
+		}
+
+		Assert.equals(0, duplicates, "a fractional clock produced " + duplicates + " repeats");
+		Assert.equals(0, outOfOrder, "a fractional clock went backwards " + outOfOrder + " times");
+		// Counted in whole milliseconds: the last one minted says 3.
+		Assert.equals("1003", Int64.toStr(SnowflakeId.elapsedOf(previous)));
+	}
+
+	/**
+		The default clock, read as fast as it will go, never repeats.
+
+		One generator's identifiers rise strictly -- a new millisecond, or a
+		later sequence in the same one -- so anything at or below the one
+		before is a repeat or worse. The repeats came at millisecond
+		boundaries: natively on Linux and macOS at every reading, on Windows
+		at about one boundary in a hundred, so half a second's worth.
+	**/
+	public function testTheDefaultClockNeverRepeats():Void {
+		var ids = new SnowflakeId(4);
+		var previous:Int64 = ids.next();
+		var outOfOrder:Int = 0;
+		var minted:Int = 0;
+		var until:Float = haxe.Timer.stamp() + 0.5;
+
+		while (haxe.Timer.stamp() < until) {
+			for (_ in 0...64) {
+				var id = ids.next();
+
+				if (id <= previous) {
+					outOfOrder++;
+				}
+
+				previous = id;
+				minted++;
+			}
+		}
+
+		Assert.equals(0, outOfOrder, "the default clock repeated or went back " + outOfOrder + " times in " + minted + " identifiers");
+	}
+
 	/** Identifiers minted later sort after ones minted earlier. **/
 	public function testIdentifiersSortByWhenTheyWereMinted():Void {
 		var now:Float = SnowflakeId.DEFAULT_EPOCH_MS + 1;
