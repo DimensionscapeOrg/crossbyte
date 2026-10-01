@@ -2484,9 +2484,13 @@ final class File extends EventDispatcher {
 		type = extension;
 	}
 
-	/** The file's stat, or an IOError saying why there is none. **/
-	@:noCompletion private function __stat():sys.FileStat {
-		var stat:sys.FileStat;
+	/**
+		The file's stat, or an IOError saying why there is none. Dynamic in a
+		browser, where the sys package cannot be named and NoFileSystem's
+		stat refuses anyway.
+	**/
+	@:noCompletion private function __stat():#if (js && !nodejs) Dynamic #else sys.FileStat #end {
+		var stat:#if (js && !nodejs) Dynamic #else sys.FileStat #end;
 
 		try {
 			stat = FileSystem.stat(__path);
