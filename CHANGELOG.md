@@ -1935,6 +1935,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The HTTP/2 client keeps an interim response, `100 Continue`, `103 Early
+  Hints`, apart from the response. Every header block's fields were
+  added to the stream's, so a 200 after a 103 came back carrying the 103's
+  `link`. An interim block is now dropped and the final one waited for, and
+  one that ends the stream is a malformed response, its stream reset
+  `PROTOCOL_ERROR` while the connection carries on (RFC 9113 8.1); it was
+  taken as the response, a `100`.
 - On Windows, a request path that names an environment variable,
   `/%25X%25`: reaches no file but one of that name. A `File` reads
   `%NAME%` in its path from the environment, and the server made one from
