@@ -191,7 +191,11 @@ class MongoIntegrationTest extends utest.Test {
 		Assert.equals(1, connection.delete("people", {name: "a"}).deleted);
 		Assert.equals(3, connection.delete("people", {}).deleted);
 		Assert.isTrue(connection.drop("people"));
-		Assert.isFalse(connection.drop("people"));
+		// Dropped again. A server before 7.0 says there was nothing to drop;
+		// 7.0 and later report success for a collection that is not there,
+		// and CI runs 7.
+		var major:Null<Int> = Std.parseInt(connection.serverVersion.split(".")[0]);
+		Assert.equals(major != null && major < 7 ? false : true, connection.drop("people"), "server " + connection.serverVersion);
 	}
 
 	public function testADuplicateKeyCarriesItsCodeAndPosition():Void {

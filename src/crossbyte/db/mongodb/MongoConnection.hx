@@ -744,7 +744,12 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		return index.name != null ? index.name : __indexName(__ordered(key, "an index key"));
 	}
 
-	/** Drops a collection; answers `false` when there was none to drop. **/
+	/**
+		Drops a collection. Answers `false` when the server says there was
+		none to drop, which a server before MongoDB 7.0 does. From 7.0 a
+		server reports success for a collection that is not there, so this
+		answers `true` from those either way.
+	**/
 	public function drop(collection:String):Bool {
 		__begin("drop", collection);
 		__endBody(__database, writeConcern, true);
