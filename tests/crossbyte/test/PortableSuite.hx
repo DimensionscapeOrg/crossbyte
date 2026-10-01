@@ -87,6 +87,8 @@ class PortableSuite {
 		// Empty wherever there are threads; on Node, an async write refused.
 		runner.addCase(new crossbyte.io.FileStreamAsyncRefusalTest());
 		runner.addCase(new crossbyte.net.SocketCloseTest());
+		// An object written and read with the encoding a socket starts in.
+		runner.addCase(new crossbyte.net.SocketObjectTest());
 		// A connection replaced, whose socket still reports on Node.
 		runner.addCase(new crossbyte.net.SocketReconnectTest());
 		runner.addCase(new crossbyte.net.NameLookupTest());

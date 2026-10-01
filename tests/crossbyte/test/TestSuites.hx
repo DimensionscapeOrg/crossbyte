@@ -273,6 +273,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.ReliableDatagramLifecycleTest());
 		runner.addCase(new crossbyte.net.SocketCloseTest());
 		runner.addCase(new crossbyte.net.SocketHalfOpenTest());
+		// Also in PortableSuite, for Node's sockets.
+		runner.addCase(new crossbyte.net.SocketObjectTest());
 		// Also in PortableSuite: Node is where the one replaced spoke up.
 		runner.addCase(new crossbyte.net.SocketReconnectTest());
 		// What a closed connection leaves in the registry: on the jvm and
