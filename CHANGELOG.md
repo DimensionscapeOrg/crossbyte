@@ -1961,6 +1961,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `Worker` cancelled after its work has sent its COMPLETE, but before
+  its runtime has delivered it, ends `CANCELLED`. `cancel()` went by
+  `completed`, which is set as the work sends, and left the state alone;
+  the delivery was then discarded as cancelled, and the worker read
+  `RUNNING` for good, so `run()` refused it as already running.
 - On JavaScript a `Task`'s events and a `Worker`'s messages arrive in a
   later turn, as they do from a thread elsewhere. With no threads the job
   runs inside `TaskPool.submit`, and a worker's work inside `run()`, and

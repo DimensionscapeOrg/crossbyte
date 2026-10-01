@@ -91,6 +91,32 @@ class BackgroundDeliveryTest extends utest.Test {
 	}
 
 	/**
+		Cancelled between `run()` and the later turn its messages come in, a
+		worker delivers none of them and ends cancelled, not RUNNING for
+		good, as it did when the work had already sent its COMPLETE.
+	**/
+	@:timeout(5000)
+	public function testACancelledWorkerDeliversNothingMore(async:utest.Async):Void {
+		var worker = new Worker();
+		var heard = 0;
+		worker.doWork = _ -> {
+			worker.sendProgress(1);
+			worker.sendComplete("done");
+		};
+		worker.addEventListener(ThreadEvent.PROGRESS, (_:ThreadEvent) -> heard++);
+		worker.addEventListener(ThreadEvent.COMPLETE, (_:ThreadEvent) -> heard++);
+		worker.run();
+		worker.cancel(false);
+
+		__waitThen(() -> false, () -> {
+			Assert.equals(0, heard, "a cancelled worker's messages were still delivered");
+			Assert.equals(WorkerState.CANCELLED, worker.state);
+			Assert.isFalse(worker.running);
+			async.done();
+		}, 0.1);
+	}
+
+	/**
 		A listener that throws is reported as a posted callback's failure is,
 		not thrown into the platform's loop, which on Node ends the process.
 	**/
