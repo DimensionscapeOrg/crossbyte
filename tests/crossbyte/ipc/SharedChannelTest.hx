@@ -25,9 +25,12 @@ class SharedChannelTest extends utest.Test {
 		Assert.isTrue(SharedChannel.isSupported);
 		#else
 		var channel = new SharedChannel();
-		Assert.isTrue(throws(function() {
+		Assert.raises(function() {
 			channel.connect("__crossbyte_test__");
-		}));
+		}, crossbyte.errors.IllegalOperationError);
+		Assert.raises(function() {
+			channel.send("__crossbyte_test__", "method");
+		}, crossbyte.errors.IllegalOperationError);
 		#end
 	}
 

@@ -9,6 +9,8 @@ import haxe.io.Bytes;
 import cpp.Pointer;
 import crossbyte.crypto._internal.NativePk;
 import crossbyte.crypto._internal.SodiumGlue;
+#else
+import crossbyte.crypto._internal.NativeOnly;
 #end
 
 /**
@@ -36,7 +38,9 @@ import crossbyte.crypto._internal.SodiumGlue;
  * key's operations take turns, since mbedTLS keeps state inside the key; give
  * threads that sign heavily a key each.
  *
- * Available on native `cpp` targets; elsewhere the constructors throw.
+ * Available on native `cpp` targets; elsewhere `fromPrivatePem` and
+ * `fromPublicPem` throw an `IllegalOperationError` naming the target, so no
+ * key exists there to call the rest on.
  */
 class SignatureKey {
 	/** The kind of key: `RSA` or `EC`, or `UNKNOWN` once disposed of. */
@@ -57,8 +61,8 @@ class SignatureKey {
 	 * Parses a PEM private key: PKCS#8, or PKCS#1 RSA, or SEC1 EC; unencrypted.
 	 *
 	 * @throws ArgumentError When `pem` is empty.
-	 * @throws String When mbedTLS cannot read it, with mbedTLS's reason, or on a
-	 *         target without the native backend.
+	 * @throws String When mbedTLS cannot read it, with mbedTLS's reason.
+	 * @throws IllegalOperationError On a target other than native cpp.
 	 */
 	public static function fromPrivatePem(pem:String):SignatureKey {
 		return __load(pem, true, true);
@@ -68,8 +72,8 @@ class SignatureKey {
 	 * Parses a PEM public key (`SubjectPublicKeyInfo`, as `JWK.toPem` produces).
 	 *
 	 * @throws ArgumentError When `pem` is empty.
-	 * @throws String When mbedTLS cannot read it, or on a target without the
-	 *         native backend.
+	 * @throws String When mbedTLS cannot read it.
+	 * @throws IllegalOperationError On a target other than native cpp.
 	 */
 	public static function fromPublicPem(pem:String):SignatureKey {
 		return __load(pem, false, true);
@@ -107,7 +111,7 @@ class SignatureKey {
 		}
 		return scratch.sub(0, produced[0]);
 		#else
-		throw PublicKeySignature.UNAVAILABLE;
+		throw NativeOnly.error("Public-key signing");
 		#end
 	}
 
@@ -115,9 +119,9 @@ class SignatureKey {
 	 * Verifies a SHA-256 signature over `message`.
 	 *
 	 * @param format Encoding of `signature`. Use `JOSE` for `ES256` JWTs.
-	 * @return `true` only when the signature is valid. A malformed signature, a
-	 *         disposed key or an unavailable backend is `false`, never a throw,
-	 *         so a hostile token cannot raise out of a verification path.
+	 * @return `true` only when the signature is valid. A malformed signature or
+	 *         a disposed key is `false`, never a throw, so a hostile token
+	 *         cannot raise out of a verification path.
 	 */
 	public function verify(message:Bytes, signature:Bytes, format:SignatureFormat = NATIVE):Bool {
 		if (message == null || signature == null || signature.length == 0) {
@@ -162,6 +166,7 @@ class SignatureKey {
 	 * Parses `pem`, or returns null when it cannot be read and `throws` is false.
 	 */
 	@:noCompletion private static function __load(pem:String, isPrivate:Bool, throws:Bool):Null<SignatureKey> {
+		#if cpp
 		if (pem == null || pem == "") {
 			if (throws) {
 				throw new ArgumentError("A PEM key is required.");
@@ -169,7 +174,6 @@ class SignatureKey {
 			return null;
 		}
 
-		#if cpp
 		if (!NativePk.isAvailable()) {
 			if (throws) {
 				throw PublicKeySignature.UNAVAILABLE;
@@ -191,10 +195,7 @@ class SignatureKey {
 		}
 		return new SignatureKey(handle, isPrivate, NativePk.keyType(handle));
 		#else
-		if (throws) {
-			throw PublicKeySignature.UNAVAILABLE;
-		}
-		return null;
+		throw NativeOnly.error("Public-key signing");
 		#end
 	}
 }
