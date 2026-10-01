@@ -2347,6 +2347,22 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// on Windows.
 			var r = SysSocket.select([], [__socket], [__socket], 0);
 
+			#if (cpp && !macro)
+			// Writable is not connected. POSIX makes a refused or unreachable
+			// connect writable too, so on Linux and macOS a refusal was
+			// announced as CONNECT and then, at the first read, a CLOSE -- a
+			// hangup, which a caller does not retry -- where Windows, which
+			// reports it in the exception set, said ioError. SO_ERROR tells
+			// the two apart, and says why.
+			if (r.write.length > 0 && r.write[0] == __socket) {
+				failure = crossbyte._internal.net.NativeSocketAddress.connectError(__socket);
+				if (failure != null) {
+					r.write.resize(0);
+					doClose = true;
+				}
+			}
+			#end
+
 			if (r.write.length > 0 && r.write[0] == __socket) {
 				#if !macro
 				if (secure) {
@@ -2363,6 +2379,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				// leaves as an ioError rather than a CLOSE. A connection that
 				// failed is a different fact from one that hung up.
 				doClose = true;
+				#if (cpp && !macro)
+				if (failure == null) {
+					failure = crossbyte._internal.net.NativeSocketAddress.connectError(__socket);
+				}
+				#end
 			}
 		}
 

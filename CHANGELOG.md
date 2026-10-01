@@ -1840,6 +1840,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On Linux and macOS a refused connect is reported as a failure, with the
+  system's reason. POSIX leaves a socket whose connect was refused
+  writable, as one that connected, so a `Socket` announced CONNECT and
+  then, at its first read, CLOSE -- a hangup, which a caller does not
+  retry, where Windows said ioError -- and a `WebSocket` client sent its
+  upgrade into nothing and closed with a 1006 that did not say why. The
+  connect's outcome is now read from `SO_ERROR`; a refusal is an ioError
+  naming it ("Connection refused") everywhere, Windows included.
 - `Socket`, `WebSocket` and `ReliableDatagramSocket` read and write objects
   in every `objectEncoding` a `ByteArray` does: JSON always, AMF with
   `-lib format`. They took only HXSF, and anything else read `null` and

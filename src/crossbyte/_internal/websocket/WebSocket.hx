@@ -737,13 +737,35 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			// the system had reported at once.
 			var sockets:Dynamic = FlexSocket.select(null, [__socket], [__socket], 0);
 
+			#if cpp
+			// Writable is not connected: POSIX makes a refused connect
+			// writable too, so on Linux and macOS a refusal was taken for a
+			// connection, sent its upgrade request, and ended at the first
+			// read as an unexplained 1006. See Socket's tick.
+			if (sockets.write[0] == __socket) {
+				var refused:Null<String> = crossbyte._internal.net.NativeSocketAddress.connectError(__socket);
+				if (refused != null) {
+					__onError("Failed to connect to server: " + refused);
+					__close(1006);
+					return;
+				}
+			}
+			#end
+
 			if (sockets.write[0] == __socket) {
 				__onConnect();
 			} else if ((sockets.others != null && sockets.others[0] == __socket)
 				|| haxe.Timer.stamp() - __timestamp > connectTimeout / 1000) {
 				// The reason first, then the close, so a listener that tears
-				// down on close has already been told why.
-				__onError("Failed to connect to server");
+				// down on close has already been told why -- and the system's
+				// reason, where it gave one.
+				var reason:Null<String> = null;
+				#if cpp
+				if (sockets.others != null && sockets.others[0] == __socket) {
+					reason = crossbyte._internal.net.NativeSocketAddress.connectError(__socket);
+				}
+				#end
+				__onError(reason != null ? "Failed to connect to server: " + reason : "Failed to connect to server");
 				__close(1006);
 			}
 		}
