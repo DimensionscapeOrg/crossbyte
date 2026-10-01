@@ -252,11 +252,26 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	private static inline var CONNECT_TIMEOUT_MS:Int = 10000;
 
 	/**
-	 * How long a client waits, in milliseconds, for its connection to open
-	 * and then again for the answer to its upgrade. Read on the ticks that
-	 * follow construction, so it can be set straight after.
+	 * How long a client waits, in milliseconds, from the start of its connect
+	 * for the session to open: the name's lookup, the TCP connect, a TLS
+	 * handshake and the upgrade, together. `0` waits as long as it takes.
+	 * Counted from the connect's start whenever it is set, so it can be set
+	 * straight after construction.
+	 *
+	 * Each step had a clock of its own, and not all of them this one: a TLS
+	 * handshake gave up at a fixed three seconds whatever this said, on Node
+	 * nothing bounded a connect until the transport was up, and natively a
+	 * timeout of 0 failed a lookup at once.
 	 */
-	public var connectTimeout:Int = CONNECT_TIMEOUT_MS;
+	public var connectTimeout(default, set):Int = CONNECT_TIMEOUT_MS;
+
+	private function set_connectTimeout(value:Int):Int {
+		connectTimeout = value;
+		if (__isClient != false && readyState == CONNECTING && __socket != null) {
+			__armOpenDeadline();
+		}
+		return value;
+	}
 
 	/**
 	 * How often, in seconds, a session that has heard nothing from its peer
@@ -275,8 +290,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	public var idleTimeout(get, set):Float;
 
 	private var __connected:Bool = false;
+	// When a client's connect started, or a server's session was accepted.
 	private var __timestamp:Float;
-	private var __timeout:Int = CONNECT_TIMEOUT_MS;
 
 	private var __origin:String;
 	private var __protocols:Array<String> = [];
@@ -312,11 +327,11 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	private var __drainedCode:Int = 1000;
 	private var __drainedReason:String = null;
 
-	// The deadline on a closing handshake, and on a client's upgrade.
+	// The deadline on a closing handshake, and on a client's connect.
 	private var __closeDeadline:Int = 0;
 	private var __closeDeadlineArmed:Bool = false;
-	private var __upgradeDeadline:Int = 0;
-	private var __upgradeDeadlineArmed:Bool = false;
+	private var __openDeadline:Int = 0;
+	private var __openDeadlineArmed:Bool = false;
 
 	// The heartbeat: whether anything has arrived since the last beat, for
 	// how long in a row nothing has, and the timer.
@@ -474,6 +489,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		if (socket == null) {
 			__tls = __secure;
 			__connectNode();
+			__armOpenDeadline();
 		} else {
 			// Accepted rather than dialled: already connected, so there is no
 			// connect event to wait for. __openConnection sends the upgrade
@@ -505,6 +521,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			// had even started.
 			__connect();
 			__runtime.addEventListener(Event.TICK, __tickConnectListener);
+			__armOpenDeadline();
 		} else {
 			__socket = socket;
 			__tls = __socket.isSecure;
@@ -721,12 +738,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 
 		if (__resolving) {
-			// No connect to ask about until the name is looked up; only the
-			// deadline, which a resolver that never answers does not outlast.
-			if (haxe.Timer.stamp() - __timestamp > connectTimeout / 1000) {
-				__onError("Failed to connect to server: " + __host + " was not looked up within " + connectTimeout + " ms");
-				__close(1006);
-			}
+			// No connect to ask about until the name is looked up. A resolver
+			// that never answers does not outlast the connect's deadline.
 			return;
 		}
 
@@ -754,8 +767,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 			if (sockets.write[0] == __socket) {
 				__onConnect();
-			} else if ((sockets.others != null && sockets.others[0] == __socket)
-				|| haxe.Timer.stamp() - __timestamp > connectTimeout / 1000) {
+			} else if (sockets.others != null && sockets.others[0] == __socket) {
+				// Refused. The deadline is the connect's own, armed with it.
+				//
 				// The reason first, then the close, so a listener that tears
 				// down on close has already been told why, and the system's
 				// reason, where it gave one.
@@ -1513,7 +1527,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 					if (__validateResponseHandshake(headers)) {
 						// handshake complete, is ready
-						__disarmUpgradeDeadline();
+						__disarmOpenDeadline();
 						readyState = OPEN;
 						__startHeartbeat();
 						onopen(new WebsocketEvent(WebsocketEvent.OPEN, this));
@@ -2249,15 +2263,10 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		// a listener to retire, and would otherwise start talking like a
 		// client.
 		if (__isClient != false) {
-			// The answer is waited for as long as the connect was, measured
-			// from here rather than from the connect: a TLS handshake has
-			// already spent some of that. Nothing bounded it before: a peer
-			// that accepted the connection and never replied, a TLS listener
-			// spoken to in plain text is one, held the client in CONNECTING
-			// for good.
-			__timestamp = haxe.Timer.stamp();
-			__timeout = connectTimeout;
-			__armUpgradeDeadline();
+			// The answer is waited for within what is left of the connect's
+			// deadline, armed when the connect began. A peer that accepts the
+			// connection and never replies, a TLS listener spoken to in plain
+			// text is one, once held the client in CONNECTING for good.
 			__doHandshake();
 		}
 	}
@@ -2335,37 +2344,64 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		#end
 	}
 
-	private function __armUpgradeDeadline():Void {
-		__disarmUpgradeDeadline();
-		if (__timeout <= 0) {
+	/**
+	 * Arms a client's one deadline, `connectTimeout` from the start of its
+	 * connect, over every step to the session opening: what is still in
+	 * progress when it passes is given up on, and the owner told which.
+	 */
+	private function __armOpenDeadline():Void {
+		__disarmOpenDeadline();
+		if (connectTimeout <= 0) {
 			return;
 		}
-		__upgradeDeadline = CBTimer.setTimeout(__timeout / 1000, function():Void {
-			__upgradeDeadlineArmed = false;
+
+		var remaining:Float = connectTimeout / 1000 - (haxe.Timer.stamp() - __timestamp);
+		__openDeadline = CBTimer.setTimeout(remaining > 0 ? remaining : 0, function():Void {
+			__openDeadlineArmed = false;
 			if (readyState == CONNECTING) {
-				__onError("The server did not answer the WebSocket upgrade");
+				__onError(__openFailure());
 				__close(1006);
 			}
 		});
-		__upgradeDeadlineArmed = true;
+		__openDeadlineArmed = true;
 	}
 
-	private function __disarmUpgradeDeadline():Void {
-		if (__upgradeDeadlineArmed) {
-			__upgradeDeadlineArmed = false;
-			CBTimer.clear(__upgradeDeadline);
+	private function __disarmOpenDeadline():Void {
+		if (__openDeadlineArmed) {
+			__openDeadlineArmed = false;
+			CBTimer.clear(__openDeadline);
 		}
 	}
 
+	/** What a connect still not open at its deadline was waiting on. **/
+	private function __openFailure():String {
+		var limit:String = connectTimeout + " ms";
+		#if !nodejs
+		if (__resolving) {
+			return "Failed to connect to server: " + __host + " was not looked up within " + limit;
+		}
+		if (__handshaking) {
+			return "Failed to connect to server: the TLS handshake did not finish within " + limit;
+		}
+		#end
+		if (!__connected) {
+			return "Failed to connect to server: " + __host + (__secure ? " was not connected over TLS within " : " was not connected within ") + limit;
+		}
+		return "The server did not answer the WebSocket upgrade within " + limit;
+	}
+
 	/**
-	 * Begins the deferred TLS handshake, deadline-guarded from the tick loop.
+	 * Begins the deferred TLS handshake, stepped from the poll set and the
+	 * tick. It has no clock of its own: a client's is its connect's
+	 * deadline, from `connectTimeout`, and an accepted session's is its
+	 * server's `handshakeTimeout`, over TLS and the upgrade together. It had
+	 * a fixed three seconds, so wss gave up at 3 s whatever either said.
 	 *
 	 * Known limitation, wss is not usable on the eval/interp target. eval
 	 * cannot make a socket non-blocking (`setBlocking` is a no-op there; see
 	 * the vendored sys.net.Socket), so `handshake()` below can park the whole
-	 * runtime thread waiting for the peer's next flight, and the deadline in
-	 * `__onTickSSLHandshake` never fires because control never comes back to
-	 * check it.
+	 * runtime thread waiting for the peer's next flight, and no deadline
+	 * fires because control never comes back to check it.
 	 *
 	 * The obvious mitigation does not work, and was measured rather than
 	 * assumed: setting a socket timeout does reach the recv, SO_RCVTIMEO
@@ -2379,26 +2415,15 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 */
 	#if !nodejs
 	private function __initSSLHandshake():Void {
-		if (__isClient == false) {
-			// An accepted session's deadline is its server's: handshakeTimeout
-			// from accept, over TLS and the upgrade together, which
-			// ServerWebSocket keeps. This was a fixed three seconds of its
-			// own, so a wss server gave up on every handshake at 3 s whatever
-			// handshakeTimeout said.
-			__timeout = 0;
-		} else {
-			__timeout = 3000;
-		}
-		__timestamp = haxe.Timer.stamp();
 		__handshaking = true;
 
 		__runtime.removeEventListener(Event.TICK, __tickConnectListener);
 		__runtime.addEventListener(Event.TICK, __tickSSLHandshakeListener);
 
 		// In the poll set, so each flight the peer sends steps the handshake
-		// as it lands; the tick stays for the deadline, and for a flight of
-		// this side's own that could not all be written at once. A client's
-		// socket is there already, from its connect.
+		// as it lands; the tick stays for a flight of this side's own that
+		// could not all be written at once. A client's socket is there
+		// already, from its connect.
 		if (!__registered && __socket != null) {
 			__socket.custom = this;
 			@:privateAccess __runtime.registerSocket(__socket);
@@ -2440,14 +2465,13 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 
 		// A terminal failure closes immediately instead of idling until the
-		// deadline; a merely stalled peer closes once the deadline passes.
-		// Either way the owner is told why before the close, a certificate
-		// the client refused is the one failure here worth reading.
-		var expired:Bool = __timeout > 0 && haxe.Timer.stamp() - __timestamp > __timeout / 1000;
-		if (failure != null || expired) {
+		// deadline, and the owner is told why before the close, a
+		// certificate the client refused is the one failure here worth
+		// reading. A merely stalled peer is the deadline's.
+		if (failure != null) {
 			__handshaking = false;
 			__runtime.removeEventListener(Event.TICK, __tickSSLHandshakeListener);
-			__onError(failure != null ? "TLS handshake failed: " + failure : "TLS handshake timed out");
+			__onError("TLS handshake failed: " + failure);
 			__close(1015);
 		}
 	}
@@ -2601,7 +2625,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		#if !nodejs
 		__resolving = false;
 		#end
-		__disarmUpgradeDeadline();
+		__disarmOpenDeadline();
 		__stopHeartbeat();
 		if (__closeDeadlineArmed) {
 			__closeDeadlineArmed = false;

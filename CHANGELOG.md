@@ -1942,6 +1942,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `WebSocket` client's `timeout` bounds the whole of a connect, as one
+  deadline from `connect()`: the host's lookup, the TCP connect, a
+  `wss://` TLS handshake and the upgrade. Natively the TLS handshake gave
+  up at a fixed three seconds whatever `timeout` said, and on Node nothing
+  bounded a connect until the transport was up, so a client of a server
+  that never answered TLS waited for good. A `timeout` of 0 waits for as
+  long as it takes, as it did on Node, where natively it failed a lookup
+  at once and still gave TLS its three seconds.
 - A `ServerWebSocket` lets go of the sessions still upgrading when it
   stops: `stopAccepting()`, `drain()` and `close()` close each one, as
   `ServerSocket` drops a TLS handshake in flight. None did, and the
