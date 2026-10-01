@@ -744,6 +744,78 @@ class SQLiteNativeTest extends utest.Test {
 		__pumpUntil(() -> false, 0.2);
 	}
 
+	public function testAPagedStatementKeepsItsRowsWhenAnotherRunsBetweenPages():Void {
+		// hxcpp's glue keeps one live result per connection and finalizes it
+		// as the next request starts. A statement read a page at a time while
+		// others ran on the same connection, a cursor whose rows are each
+		// written elsewhere, stopped after its first page, and the rest was
+		// reported as an empty page, complete.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		connection.open(null, SQLiteMode.CREATE, false, 4096);
+		connection.request("CREATE TABLE t AS WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100) SELECT i FROM n");
+		connection.request("CREATE TABLE copied (i INTEGER)");
+
+		var reader:SQLiteStatement = new SQLiteStatement();
+		reader.sqlConnection = connection;
+		reader.text = "SELECT i FROM t ORDER BY i";
+		reader.execute(10);
+		var read:Int = 0;
+
+		while (true) {
+			var page = reader.getResult();
+
+			if (page != null) {
+				for (row in page.data) {
+					connection.request("INSERT INTO copied VALUES (" + Reflect.field(row, "i") + ")");
+					read++;
+				}
+			}
+
+			if (!reader.executing) {
+				break;
+			}
+
+			reader.next(10);
+		}
+
+		Assert.equals(100, read, "the paged statement lost its rows to the statements run between its pages");
+		Assert.equals(100, __count(connection, "copied"));
+		connection.close();
+
+		// And on the worker, where another statement queued between two
+		// pages of the first runs between them.
+		var asynchronous:SQLiteConnection = new SQLiteConnection();
+		asynchronous.openAsync(null, SQLiteMode.CREATE, false, 4096);
+		var setup:SQLiteStatement = new SQLiteStatement();
+		setup.sqlConnection = asynchronous;
+		setup.text = "CREATE TABLE t AS WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100) SELECT i FROM n";
+		setup.execute();
+		var paged:SQLiteStatement = new SQLiteStatement();
+		paged.sqlConnection = asynchronous;
+		paged.text = "SELECT i FROM t ORDER BY i";
+		var other:SQLiteStatement = new SQLiteStatement();
+		other.sqlConnection = asynchronous;
+		other.text = "SELECT COUNT(*) AS n FROM t";
+		var pagedRows:Int = 0;
+		var done:Bool = false;
+		paged.addEventListener(SQLEvent.RESULT, function(_) {
+			var page = paged.getResult();
+			pagedRows += page == null ? 0 : page.data.length;
+
+			if (paged.executing) {
+				other.execute();
+				paged.next(10);
+			} else {
+				done = true;
+			}
+		});
+		paged.execute(10);
+		__pumpUntil(() -> done);
+		asynchronous.close();
+		__pumpUntil(() -> false, 0.2);
+		Assert.equals(100, pagedRows, "the paged statement lost its rows to the one queued between its pages");
+	}
+
 	public function testWhatSQLiteRefusesIsAnSQLError():Void {
 		// Against the engine itself: what hxcpp's glue throws is a String,
 		// which escaped as one, and nothing was dispatched.

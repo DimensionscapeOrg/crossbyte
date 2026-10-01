@@ -103,9 +103,36 @@ class NativeSQLiteConnection implements Connection {
 	/** Whether no transaction is open. **/
 	public var autocommit(get, never):Bool;
 
+	/**
+		Runs `s` and answers its result.
+
+		hxcpp's glue keeps one live result per connection, and starts a
+		request by finalizing the one before it: a statement read a page at a
+		time while others ran on the connection, a cursor whose rows are
+		each written elsewhere, lost every row after the page in hand, and
+		its next page read as the empty last one. So the result still live
+		reads the rest of its rows into its own hands first, and gives them
+		as asked; only a result interleaved that way pays for it.
+	**/
 	public function request(s:String):ResultSet {
-		return new NativeSQLiteResultSet(__request(__handle, s));
+		var previous:NativeSQLiteResultSet = __live;
+
+		if (previous != null) {
+			__live = null;
+			previous.__keepRest();
+		}
+
+		var result:NativeSQLiteResultSet = new NativeSQLiteResultSet(__request(__handle, s));
+
+		if (!result.__exhausted) {
+			__live = result;
+		}
+
+		return result;
 	}
+
+	// The result of the last request while it may still have rows to give.
+	@:noCompletion private var __live:NativeSQLiteResultSet;
 
 	public function close():Void {
 		// Let go of under the lock first: an interrupt() already running
@@ -114,6 +141,7 @@ class NativeSQLiteConnection implements Connection {
 		__dbLock.acquire();
 		__db = null;
 		__dbLock.release();
+		__live = null;
 		__close(__handle);
 	}
 
@@ -197,12 +225,19 @@ class NativeSQLiteConnection implements Connection {
 }
 
 @:noCompletion
+@:allow(crossbyte.db.sql.sqlite._internal.NativeSQLiteConnection)
 private class NativeSQLiteResultSet implements ResultSet {
 	public var length(get, null):Int;
 	public var nfields(get, null):Int;
 
 	@:noCompletion private var __result:Dynamic;
 	@:noCompletion private var __cache:List<Dynamic>;
+	// Whether the statement has no row left to give: stepped to its end.
+	@:noCompletion private var __exhausted:Bool = false;
+	// A failure __keepRest met reading ahead, thrown once the rows before it
+	// have been taken, where reading them in turn would have met it.
+	@:noCompletion private var __failed:Bool = false;
+	@:noCompletion private var __failure:Dynamic = null;
 
 	public function new(result:Dynamic) {
 		__cache = new List();
@@ -213,20 +248,51 @@ private class NativeSQLiteResultSet implements ResultSet {
 
 	private function get_length():Int {
 		if (nfields != 0) {
-			while (true) {
-				var row:Dynamic = __next(__result);
+			var row:Dynamic = __step();
 
-				if (row == null) {
-					break;
-				}
-
+			while (row != null) {
 				__cache.add(row);
+				row = __step();
 			}
 
 			return __cache.length;
 		}
 
 		return __length(__result);
+	}
+
+	/** The next row from the statement itself, or null once it has none. **/
+	@:noCompletion private function __step():Dynamic {
+		if (__exhausted) {
+			return null;
+		}
+
+		var row:Dynamic = __next(__result);
+
+		if (row == null) {
+			__exhausted = true;
+		}
+
+		return row;
+	}
+
+	/**
+		Reads the rows the statement has left into this result's own hands,
+		before the connection's next request has the glue finalize it.
+	**/
+	@:noCompletion private function __keepRest():Void {
+		try {
+			var row:Dynamic = __step();
+
+			while (row != null) {
+				__cache.add(row);
+				row = __step();
+			}
+		} catch (e:Dynamic) {
+			__exhausted = true;
+			__failed = true;
+			__failure = e;
+		}
 	}
 
 	private function get_nfields():Int {
@@ -251,7 +317,14 @@ private class NativeSQLiteResultSet implements ResultSet {
 			return cached;
 		}
 
-		return __next(__result);
+		if (__failed) {
+			__failed = false;
+			var failure:Dynamic = __failure;
+			__failure = null;
+			throw failure;
+		}
+
+		return __step();
 	}
 
 	public function results():List<Dynamic> {
