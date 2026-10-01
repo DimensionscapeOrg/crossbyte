@@ -606,6 +606,17 @@ class WebSocketTest extends utest.Test {
 	}
 
 	/**
+		A `WebSocket` has no half-close, a session ends both ways at once,
+		with a close frame, and `shutdown()` says so, as a page's `Socket`
+		does, where it returned having done nothing.
+	**/
+	public function testShutdownIsRefused():Void {
+		var socket = new crossbyte.net.WebSocket();
+		Assert.raises(() -> socket.shutdown(false, true), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> socket.shutdown(true, false), crossbyte.errors.IllegalOperationError);
+	}
+
+	/**
 		A URL whose port is too big for an `Int` is refused, on every target.
 		`Std.parseInt` made it the largest Int on Windows, its low 32 bits on
 		Linux, port 80, for this one, nothing at all on eval, so the

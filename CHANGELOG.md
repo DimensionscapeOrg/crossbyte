@@ -1942,6 +1942,16 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `WebSocket`'s output limit honours `outputOverflowPolicy`, as a
+  `Socket`'s does: `CLOSE` dispatches an `ioError` saying why and then
+  closes the session with 1011, and `THROW` throws an `IOError` from the
+  send that left more than `maxOutputBufferSize` waiting and keeps the
+  session. Whatever the policy, the session closed with 1011 and said
+  nothing; and on Node it ended its socket rather than destroying it, so
+  what was queued for the peer that was not reading stayed queued.
+  `shutdown()`, which on a `WebSocket` returned having done nothing,
+  throws an `IllegalOperationError`: a session has no half-close, and the
+  class now says `peerShutdownPolicy` is not consulted either.
 - On Node a `ServerWebSocket` that cannot listen, a port in use, an
   address that is not local, dispatches an `ioError` saying so and then
   `close`, as a `DatagramSocket` reports a failed bind there, and as
