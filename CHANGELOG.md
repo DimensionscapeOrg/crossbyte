@@ -1203,6 +1203,15 @@ All notable changes to CrossByte will be documented in this file.
   107 microseconds of CPU a message where it took 485 (Node with `ws`:
   521). At 60 a second it kept up where it fell 2 seconds behind,
   delivering 253,000 messages a second at an eighth of a core.
+- libsodium built by gcc and clang -- native Linux, macOS, Android and iOS
+  -- works the curve25519 field in 64-bit limbs where the target has
+  128-bit products, as its own configure build does, and loads and stores
+  a word at a time on little-endian targets. With no configure run it
+  took the 32-bit fallbacks. On a Ryzen 9 9950X with gcc 13: an X25519
+  key agreement in 24 microseconds where it took 41, an Ed25519 signature
+  in 11 where it took 16, a verification in 29 where it took 48. MSVC's
+  build already worked this out. Its 546 lines of "compiled using an
+  undocumented method" warnings are gone from every native build log.
 - `PostgresStatement` and `MongoStatement` throw a failed statement's
   `SQLError` after dispatching it as an `SQLErrorEvent`, as `MySQLStatement`
   does. They dispatched it and returned, so to a caller not listening -- an
