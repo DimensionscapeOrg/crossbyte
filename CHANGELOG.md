@@ -2035,13 +2035,13 @@ entry below says how:
   context is made once, with the server, and opens a key's passphrase. A
   session reports what its handshake agreed in `alpnProtocol`, which read
   `null` on every `WebSocket`.
-- A `ServerWebSocket`'s `cert` is wanted before `bind()`, as its documentation
-  now says, and a secure server will not `listen()` without one. A native
-  server builds its TLS configuration in `bind()`, so a certificate
-  assigned afterwards was taken without a word and never presented, and
-  `listen()` did not ask whether there was one: the server listened and
-  every handshake failed silently. `cert` is now refused once bound, and on
-  a plain server, which would never present it.
+- A `ServerWebSocket`'s `cert` is wanted before `bind()`, as its
+  documentation now says, and a secure server will not `listen()` without
+  one. A native server builds its TLS configuration in `bind()`, so a
+  certificate assigned afterwards was taken without a word and never
+  presented, and `listen()` did not ask whether there was one: the server
+  listened and every handshake failed silently. `cert` is now refused once
+  bound, and on a plain server, which would never present it.
 - A secure `ServerWebSocket` with `certAuthority` set asks every client for
   a certificate that authority issued, and refuses one that presents none,
   natively as on Node. Natively the authority was installed with
