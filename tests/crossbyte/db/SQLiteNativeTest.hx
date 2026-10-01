@@ -615,6 +615,34 @@ class SQLiteNativeTest extends utest.Test {
 		check.close();
 	}
 
+	public function testAForeignKeyViolationReportsItsWholeRowId():Void {
+		// The rowid was parsed into an Int: a violation at rowid 3,000,000,000
+		// was reported at 2147483647, the row a repair script would then touch.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		connection.open(null, SQLiteMode.CREATE, false, 4096);
+		connection.request("CREATE TABLE parent (id INTEGER PRIMARY KEY)");
+		connection.request("CREATE TABLE child (pid INTEGER REFERENCES parent(id))");
+		connection.request("INSERT INTO child (rowid, pid) VALUES (3000000000, 7)");
+
+		var violations = connection.foreignKeyCheck();
+		Assert.equals(1, violations.length);
+		if (violations.length == 1) {
+			Assert.equals(3000000000.0, violations[0].rowid);
+			Assert.equals("child", violations[0].table);
+			Assert.equals("parent", violations[0].parent);
+		}
+
+		// A WITHOUT ROWID table has none to report.
+		connection.request("CREATE TABLE keyed (k TEXT PRIMARY KEY, pid INTEGER REFERENCES parent(id)) WITHOUT ROWID");
+		connection.request("INSERT INTO keyed VALUES ('a', 9)");
+		var keyed = [for (v in connection.foreignKeyCheck()) if (v.table == "keyed") v];
+		Assert.equals(1, keyed.length);
+		if (keyed.length == 1) {
+			Assert.isNull(keyed[0].rowid);
+		}
+		connection.close();
+	}
+
 	public function testWhatSQLiteRefusesIsAnSQLError():Void {
 		// Against the engine itself: what hxcpp's glue throws is a String,
 		// which escaped as one, and nothing was dispatched.

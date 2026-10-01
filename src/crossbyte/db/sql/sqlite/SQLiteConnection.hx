@@ -64,7 +64,14 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	public var inTransaction(get, null):Bool;
 	public var lastInsertRowID(get, null):Float;
 	public var pageSize(get, null):UInt;
-	public var totalChanges(get, null):Int;
+
+	/**
+		The rows inserted, updated or deleted since the connection opened, as
+		SQLite's `total_changes()` counts them: a `Float`, exact to 2^53. It
+		was an `Int`, parsed with `Std.parseInt`, which past 2^31 answers
+		differently on each target and never the number.
+	**/
+	public var totalChanges(get, null):Float;
 
 	/**
 	 * Controls the on-disk journaling mode for transactions.
@@ -224,6 +231,13 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		return (rs != null && rs.hasNext()) ? Std.string(Reflect.field(rs.next(), "integrity_check")) : "";
 	}
 
+	/**
+		The rows that break a foreign key, as `PRAGMA foreign_key_check`
+		reports them. Each `rowid` is whole, exact to 2^53, or null for a row
+		of a `WITHOUT ROWID` table; it was parsed into an `Int`, so a
+		violation at rowid 3,000,000,000 was reported at 2147483647, the row
+		a repair would then have touched.
+	**/
 	public function foreignKeyCheck():Array<FKViolation> {
 		var rs:ResultSet = __pragma("foreign_key_check");
 		var out:Array<FKViolation> = [];
@@ -231,12 +245,13 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		if (rs != null) {
 			while (rs.hasNext()) {
 				var row:Dynamic = rs.next();
+				var rowid:Dynamic = Reflect.field(row, "rowid");
 
 				out.push({
 					table: Std.string(Reflect.field(row, "table")),
-					rowid: Std.parseInt(Std.string(Reflect.field(row, "rowid"))),
+					rowid: rowid == null ? null : __wholeNumber(rowid),
 					parent: Std.string(Reflect.field(row, "parent")),
-					fkid: Std.parseInt(Std.string(Reflect.field(row, "fkid")))
+					fkid: Std.int(__wholeNumber(Reflect.field(row, "fkid")))
 				});
 			}
 		}
@@ -1340,10 +1355,10 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		return Int64.fromFloat(pageSize * pages);
 	}
 
-	private function get_totalChanges():Int {
+	private function get_totalChanges():Float {
 		var result:ResultSet = __live().request("SELECT total_changes() AS total_changes;");
 
-		return (result != null && result.hasNext()) ? Std.parseInt(Std.string(Reflect.field(result.next(), "total_changes"))) : 0;
+		return (result != null && result.hasNext()) ? __wholeNumber(Reflect.field(result.next(), "total_changes")) : 0;
 	}
 
 	private function __dispatchSQLEvent(type:String):Void {
@@ -1521,7 +1536,9 @@ typedef WalCheckpointResult = {
 
 typedef FKViolation = {
 	var table:String;
-	var rowid:Int;
+
+	/** Exact to 2^53; null for a row of a `WITHOUT ROWID` table, which has none. **/
+	var rowid:Null<Float>;
 	var parent:String;
 	var fkid:Int;
 }

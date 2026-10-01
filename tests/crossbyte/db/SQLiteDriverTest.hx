@@ -110,6 +110,24 @@ class SQLiteDriverTest extends utest.Test {
 		Assert.isTrue(Std.isOfType(refused, SQLError), "request() threw " + Std.string(refused));
 	}
 
+	public function testCountsAndRowIdsPastThirtyTwoBitsReadWhole():Void {
+		// Both were parsed into an Int, with Std.parseInt, which past 2^31
+		// answers differently on each target, none of them the number:
+		// totalChanges and a foreign key violation's rowid.
+		var wire:ScriptedConnection = new ScriptedConnection();
+		wire.results.set("SELECT total_changes() AS total_changes;", [{total_changes: 3000000000.0}]);
+		wire.results.set("PRAGMA foreign_key_check;", [{table: "child", rowid: 3000000001.0, parent: "parent", fkid: 0}]);
+		var connection:SQLiteConnection = new SQLiteConnection();
+		connection.__connection = wire;
+
+		Assert.equals(3000000000.0, connection.totalChanges);
+		var violations = connection.foreignKeyCheck();
+		Assert.equals(1, violations.length);
+		if (violations.length == 1) {
+			Assert.equals(3000000001.0, violations[0].rowid);
+		}
+	}
+
 	public function testAStatementWithNoOpenConnectionIsRefused():Void {
 		// It dereferenced the connection it did not have.
 		var statement:SQLiteStatement = new SQLiteStatement();
