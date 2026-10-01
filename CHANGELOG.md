@@ -78,6 +78,11 @@ entry below says how:
   statements throw what the server refused.
 
 ### Added
+- `IceAgent.onStateChanged`, called as the agent moves to CHECKING,
+  CONNECTED and FAILED. Losing consent set `state` and called nothing, so
+  a caller holding an agent, one attached to a
+  `ReliableDatagramServerSocket`: had to poll `state` every tick to learn
+  that its path had gone.
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
   `DETACH DATABASE`, and `loadSchema()` with `getSchemaResult()`: a
   database's tables with their columns, views, indices and triggers.
@@ -1932,6 +1937,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An `IceAgent` that has failed stays failed, answering and sending
+  nothing, as RFC 7675 has a sender whose consent expired stop. A check
+  nominating a pair brought one whose consent had run out back to
+  CONNECTED, through the path meant for the first selection, with nothing
+  reported. `connected`'s documentation said an agent that connected stays
+  connected until closed; it says now how the path can change and end.
 - `IceAgent.receive` returns true only for what is the agent's: a check
   addressed to its credentials and signed with them, or an answer to a
   check it sent. It returned true for every binding message, so a check

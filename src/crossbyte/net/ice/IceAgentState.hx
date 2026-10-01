@@ -18,7 +18,11 @@ enum abstract IceAgentState(Int) {
 	/** A pair has been nominated, and traffic can use it. **/
 	var CONNECTED = 2;
 
-	/** Every pair failed, or the whole attempt ran out of time. **/
+	/**
+		Every pair failed, or the whole attempt ran out of time, or, once
+		connected, the peer stopped answering consent checks. Final: the
+		agent neither sends nor answers again, and a new path is a new agent.
+	**/
 	var FAILED = 3;
 
 	/** Shut down by the caller. **/
