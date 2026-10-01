@@ -220,10 +220,25 @@ class JsHttpClient {
 		}
 
 		if ((data is Bytes)) {
-			return new js.lib.Uint8Array((data : Bytes).getData());
+			return __view(data);
 		}
 
 		return Std.string(data);
+	}
+	#end
+
+	#if js
+	/**
+		The bytes `bytes` holds, as a view, without a copy.
+
+		Its length, not its buffer's. `getData()` is the whole buffer, and a
+		`ByteArray`'s runs on past `length` into the room it keeps to grow,
+		and into whatever it held before it was cleared. Both clients sent the
+		buffer: "hello" went out as nine bytes, and written after a secret,
+		with the rest of the secret behind it.
+	**/
+	@:noCompletion public static inline function __view(bytes:Bytes):js.lib.Uint8Array {
+		return new js.lib.Uint8Array(bytes.getData(), 0, bytes.length);
 	}
 	#end
 
@@ -308,7 +323,8 @@ class JsHttpClient {
 			var payload:js.node.Buffer = null;
 			__removeHeader(headers, "content-length");
 			if (body != null) {
-				payload = (body is Bytes) ? js.node.Buffer.from((body : Bytes).getData()) : js.node.Buffer.from(Std.string(body));
+				// Its own bytes, not its buffer's: see __view.
+				payload = (body is Bytes) ? js.node.Buffer.from((body : Bytes).getData(), 0, (body : Bytes).length) : js.node.Buffer.from(Std.string(body));
 				headers.set("Content-Length", Std.string(payload.length));
 			}
 
