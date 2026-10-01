@@ -1,6 +1,9 @@
 package crossbyte.crypto;
 
 import haxe.io.Bytes;
+#if !cpp
+import crossbyte.crypto._internal.NativeOnly;
+#end
 #if cpp
 import cpp.ConstPointer;
 import cpp.Pointer;
@@ -15,6 +18,9 @@ import crossbyte.crypto._internal.NativeBlake3;
  * This surface is intentionally small and aimed at artifact identity,
  * replication checks, chunk verification, and other content-addressed
  * workflows where a fast cryptographic digest is useful.
+ *
+ * Native `cpp` only. Elsewhere the hashing members throw an
+ * `IllegalOperationError` naming the target.
  */
 class Blake3 {
 	/**
@@ -46,6 +52,8 @@ class Blake3 {
 	 * - `4` for SSE2 or SSE4.1
 	 * - `8` for AVX2
 	 * - `16` for AVX-512
+	 *
+	 * `0` on a target without the native backend.
 	 */
 	public static inline function simdDegree():Int {
 		#if cpp
@@ -63,6 +71,7 @@ class Blake3 {
 	 * @return The BLAKE3 digest bytes.
 	 */
 	public static function hash(input:Bytes, outputLength:Int = DEFAULT_OUTPUT_BYTES):Bytes {
+		#if cpp
 		if (outputLength < 0) {
 			throw "outputLength must be >= 0";
 		}
@@ -72,14 +81,13 @@ class Blake3 {
 			return output;
 		}
 
-		#if cpp
 		var rc = NativeBlake3.hash(__cptrOrNull(input), __length(input), __ptr(output), outputLength);
 		if (rc != 0) {
 			throw "BLAKE3 hashing failed: " + rc;
 		}
 		return output;
 		#else
-		throw "BLAKE3 hashing is only available on native cpp targets.";
+		throw NativeOnly.error("BLAKE3 hashing");
 		#end
 	}
 

@@ -192,6 +192,63 @@ class MetricsTest extends utest.Test {
 		Assert.isTrue(text.indexOf("request_seconds_sum 2.05") >= 0);
 	}
 
+	/**
+		Whole numbers past 2^31 print every digit, in every sample.
+
+		They went through `Std.int`, which holds 31 bits: a counter of bytes
+		sent at three billion printed -1294967296, a gauge at five billion
+		705032704, and on the jvm both stopped at 2147483647. A collector
+		reading a counter that falls takes it for a restart. Bucket bounds,
+		sums and counts are written the same way, so they are checked too.
+	**/
+	public function testWholeNumbersPast32BitsPrintEveryDigit():Void {
+		metrics.counter("bytes_sent_total").inc(3000000000.0);
+		metrics.gauge("disk_free_bytes").set(5000000000.0);
+		metrics.gauge("balance").set(-5000000000.0);
+		// The largest whole number a Float holds with every one below it.
+		metrics.gauge("largest_exact").set(9007199254740991.0);
+		// Past it, a Float rather than a count, which has to read back as one.
+		metrics.gauge("past_exact").set(18014398509481984.0);
+		var sizes = metrics.histogram("payload_bytes", [4294967296.0]);
+		sizes.observe(3000000000.0);
+		sizes.observe(5000000000.0);
+
+		var text = metrics.toPrometheus();
+
+		Assert.isTrue(text.indexOf("bytes_sent_total 3000000000\n") >= 0, text);
+		Assert.isTrue(text.indexOf("disk_free_bytes 5000000000\n") >= 0, text);
+		Assert.isTrue(text.indexOf("balance -5000000000\n") >= 0, text);
+		Assert.isTrue(text.indexOf("largest_exact 9007199254740991\n") >= 0, text);
+		#if neko
+		// Printed as the Float it is, which neko's Std.string gives to 14
+		// significant digits: 1.8014398509482e+16.
+		Assert.isTrue(Math.abs(__sample(text, "past_exact") / 18014398509481984.0 - 1) < 1e-13, text);
+		#else
+		Assert.equals(18014398509481984.0, __sample(text, "past_exact"));
+		#end
+		Assert.isTrue(text.indexOf('payload_bytes_bucket{le="4294967296"} 1\n') >= 0, text);
+		Assert.isTrue(text.indexOf('payload_bytes_bucket{le="+Inf"} 2\n') >= 0, text);
+		Assert.isTrue(text.indexOf("payload_bytes_sum 8000000000\n") >= 0, text);
+		Assert.isTrue(text.indexOf("payload_bytes_count 2\n") >= 0, text);
+	}
+
+	/** Whole numbers that fit print as they always did, with no point. **/
+	public function testSmallWholeNumbersAndFractionsPrintAsBefore():Void {
+		metrics.gauge("zero").set(0);
+		metrics.gauge("negative_zero").set(-0.0);
+		metrics.gauge("small").set(-42);
+		metrics.gauge("billion").set(1000000000.0);
+		metrics.gauge("half").set(0.5);
+
+		var text = metrics.toPrometheus();
+
+		Assert.isTrue(text.indexOf("\nzero 0\n") >= 0, text);
+		Assert.isTrue(text.indexOf("negative_zero 0\n") >= 0, text);
+		Assert.isTrue(text.indexOf("small -42\n") >= 0, text);
+		Assert.isTrue(text.indexOf("billion 1000000000\n") >= 0, text);
+		Assert.isTrue(text.indexOf("half 0.5\n") >= 0, text);
+	}
+
 	public function testPrometheusEscapesLabelValuesAndEmitsOneHeaderPerName():Void {
 		metrics.counter("escaped", ["note" => 'say "hi"\\there'], "help").inc();
 		metrics.counter("multi", ["a" => "1"], "shared help").inc();
@@ -248,6 +305,16 @@ class MetricsTest extends utest.Test {
 		Assert.equals(2.0, latency.count());
 		Assert.equals(1.0, latency.bucketCounts()[0]);
 		Assert.isTrue(Math.isNaN(latency.sum()));
+	}
+
+	/** The value on the exposition line that starts with `series`, or NaN. **/
+	private static function __sample(text:String, series:String):Float {
+		for (line in text.split("\n")) {
+			if (StringTools.startsWith(line, series + " ")) {
+				return Std.parseFloat(line.substr(series.length + 1));
+			}
+		}
+		return Math.NaN;
 	}
 
 	#if target.threaded
@@ -343,15 +410,105 @@ class MetricsTest extends utest.Test {
 		Assert.equals(latency.count(), __sample(metrics.toPrometheus(), "scraped_seconds_count"));
 	}
 
-	/** The value on the exposition line that starts with `series`, or NaN. **/
-	private static function __sample(text:String, series:String):Float {
-		for (line in text.split("\n")) {
-			if (StringTools.startsWith(line, series + " ")) {
-				return Std.parseFloat(line.substr(series.length + 1));
+	#if (cpp || java || jvm)
+	/** What a test of this suite passes its own binary to run `firstReadChild`. **/
+	public static inline var FIRST_READ_CHILD:String = "--crossbyte-child=metrics-first-read";
+
+	/**
+		The first reads of `Metrics.shared` in a process, from eight threads
+		at once, find one registry.
+
+		It was made at the first read, with nothing to stop two threads from
+		both finding it missing. On the jvm eight threads reading it first got
+		eight registries every time, and seven of the eight counters they
+		registered went into registries that were then dropped -- no scrape
+		ever showed them. Only a process's first read can tell, so this runs
+		its own binary again for one: the native suite and the jvm's, which
+		are the binaries that can be run again.
+	**/
+	@:timeout(90000)
+	public function testTheFirstReadsOfTheSharedRegistryFindOne():Void {
+		#if (java || jvm)
+		var command:String = haxe.io.Path.join([java.lang.System.getProperty("java.home"), "bin", "java"]);
+		var args:Array<String> = ["-jar", Sys.programPath(), FIRST_READ_CHILD];
+		#else
+		var command:String = Sys.programPath();
+		var args:Array<String> = [FIRST_READ_CHILD];
+		#end
+		var child = new sys.io.Process(command, args);
+		var deadline:Float = haxe.Timer.stamp() + 60.0;
+
+		while (child.exitCode(false) == null) {
+			if (haxe.Timer.stamp() > deadline) {
+				child.kill();
+				child.close();
+				Assert.fail("the child never finished");
+				return;
+			}
+			crossbyte.sys.System.sleep(0.02);
+		}
+
+		var report:String = "";
+		for (line in child.stdout.readAll().toString().split("\n")) {
+			if (StringTools.startsWith(line, "registries=")) {
+				report = StringTools.trim(line);
 			}
 		}
-		return Math.NaN;
+		child.close();
+
+		Assert.equals("registries=1 lost=0", report);
 	}
+
+	/**
+		The child's side: eight threads, released together, read the shared
+		registry for the first time in this process and register a counter
+		each in what they found. Prints how many registries they found and
+		how many of their counters the shared one's scrape is missing.
+	**/
+	public static function firstReadChild():Void {
+		var threads:Int = 8;
+		var go = new haxe.atomic.AtomicInt(0);
+		var ready = new sys.thread.Deque<Bool>();
+		var found = new sys.thread.Deque<Metrics>();
+
+		for (t in 0...threads) {
+			sys.thread.Thread.create(function():Void {
+				ready.add(true);
+				var spins:Int = 0;
+				while (go.load() == 0) {
+					__letTheCollectorIn(++spins);
+				}
+				var registry:Metrics = Metrics.shared;
+				registry.counter("first_read_" + t).inc();
+				found.add(registry);
+			});
+		}
+
+		for (_ in 0...threads) {
+			ready.pop(true);
+		}
+		go.store(1);
+
+		var registries:Array<Metrics> = [];
+		for (_ in 0...threads) {
+			var registry:Metrics = found.pop(true);
+			if (registries.indexOf(registry) < 0) {
+				registries.push(registry);
+			}
+		}
+
+		var text:String = Metrics.shared.toPrometheus();
+		var lost:Int = 0;
+		for (t in 0...threads) {
+			if (text.indexOf("first_read_" + t + " 1\n") < 0) {
+				lost++;
+			}
+		}
+
+		Sys.println("registries=" + registries.length + " lost=" + lost);
+		Sys.stdout().flush();
+	}
+	#end
 
 	/**
 		A place for the collector to stop this thread now and then. The loops

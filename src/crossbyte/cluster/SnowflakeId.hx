@@ -79,7 +79,8 @@ class SnowflakeId {
 		       in the cluster; nothing here can check that for you.
 		@param epochMs What the identifiers count from. Every node must agree.
 		@param clock Milliseconds since the Unix epoch. Supply one in a test
-		       rather than waiting for real time to pass.
+		       rather than waiting for real time to pass. A fraction is
+		       allowed and dropped: identifiers count whole milliseconds.
 	**/
 	public function new(node:Int, epochMs:Float = DEFAULT_EPOCH_MS, ?clock:Void->Float) {
 		if (node < 0 || node > MAX_NODE) {
@@ -93,7 +94,13 @@ class SnowflakeId {
 
 	/** The next identifier. Never equal to one already returned. **/
 	public function next():Int64 {
-		var now:Float = __clock();
+		// Whole milliseconds, before anything is compared. A clock may carry
+		// a fraction -- the default one does natively, microseconds on Linux
+		// and macOS and an inexact thousandth on Windows -- and a reading
+		// that differed only in its fraction was taken for a new millisecond:
+		// the sequence went back to zero, the fraction was dropped below, and
+		// identifiers already handed out were handed out again.
+		var now:Float = Math.ffloor(__clock());
 
 		if (now > __lastMs) {
 			__lastMs = now;

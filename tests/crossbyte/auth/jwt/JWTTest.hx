@@ -40,7 +40,7 @@ class JWTTest extends utest.Test {
 		});
 
 		var parts = token.split(".");
-		var payload:Dynamic = Json.parse(JWT.safeBase64UrlEncodeString(parts[1]));
+		var payload:Dynamic = Json.parse(JWT.safeBase64UrlDecodeString(parts[1]));
 		payload.sub = "tampered";
 		var tamperedPayload = JWT.base64UrlEncodeString(Json.stringify(payload));
 		Assert.isNull(base.verifyToken(parts[0] + "." + tamperedPayload + "." + parts[2]));
@@ -130,13 +130,31 @@ class JWTTest extends utest.Test {
 		Assert.isTrue(encoded.indexOf("+") == -1);
 		Assert.isTrue(encoded.indexOf("/") == -1);
 		Assert.isTrue(encoded.indexOf("=") == -1);
-		Assert.equals('{"value":"+/="}', JWT.safeBase64UrlEncodeString(encoded));
-		Assert.isNull(JWT.safeBase64UrlEncodeString("a"));
+		Assert.equals('{"value":"+/="}', JWT.safeBase64UrlDecodeString(encoded));
+		Assert.isNull(JWT.safeBase64UrlDecodeString("a"));
 		Assert.equals("TQ==", JWT.normalizeBase64Url("TQ"));
 
 		Assert.isTrue(JWT.secureCompare("abc", "abc"));
 		Assert.isFalse(JWT.secureCompare("abc", "abd"));
 		Assert.isFalse(JWT.secureCompare("abc", "ab"));
+	}
+
+	/**
+		A missing value matches nothing, itself included. `secureCompare` read
+		the length of whatever it was given, so a null -- a header or cookie
+		that was not sent -- threw from inside a check, and natively a null
+		dereference need not throw at all.
+	**/
+	public function testSecureCompareTakesNull():Void {
+		var answers:Array<Dynamic> = [];
+		for (pair in [[null, "abc"], ["abc", null], [null, null]]) {
+			try {
+				answers.push(JWT.secureCompare(pair[0], pair[1]));
+			} catch (e:Dynamic) {
+				answers.push("threw " + e);
+			}
+		}
+		Assert.same([false, false, false], answers);
 	}
 
 	public function testHeaderAndSignerValidation():Void {

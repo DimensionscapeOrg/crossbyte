@@ -54,7 +54,7 @@ class JWTClaimsTest extends utest.Test {
 		var token:String = jwt.generateToken(claims);
 
 		// The same text on every target: the jvm prints a Float as 1.7E9.
-		var json:String = JWT.safeBase64UrlEncodeString(token.split(".")[1]);
+		var json:String = JWT.safeBase64UrlDecodeString(token.split(".")[1]);
 		Assert.isTrue(json.indexOf('"exp":1700003600') >= 0, json);
 		Assert.isTrue(json.indexOf('"iat":1700000000') >= 0, json);
 		// The caller's object is left as it was given.

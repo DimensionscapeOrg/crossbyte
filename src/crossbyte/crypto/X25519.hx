@@ -1,6 +1,9 @@
 package crossbyte.crypto;
 
 import haxe.io.Bytes;
+#if !cpp
+import crossbyte.crypto._internal.NativeOnly;
+#end
 #if cpp
 import crossbyte.crypto._internal.NativeSodium;
 import crossbyte.crypto._internal.SodiumGlue;
@@ -14,7 +17,8 @@ import crossbyte.crypto._internal.SodiumGlue;
  * raw shared point.
  *
  * Available on supported native `cpp` targets via the statically linked
- * libsodium backend.
+ * libsodium backend. Elsewhere every member but `isAvailable` throws an
+ * `IllegalOperationError` naming the target.
  */
 class X25519 {
 	/**
@@ -42,11 +46,11 @@ class X25519 {
 	 * Computes the public point for `scalar` against the curve base point.
 	 */
 	public static function scalarmultBase(scalar:Bytes):Bytes {
+		#if cpp
 		if (scalar == null || scalar.length != SCALAR_BYTES) {
 			throw "scalar must be " + SCALAR_BYTES + " bytes";
 		}
 
-		#if cpp
 		SodiumGlue.ensureAvailable();
 
 		var point = Bytes.alloc(POINT_BYTES);
@@ -56,7 +60,7 @@ class X25519 {
 		}
 		return point;
 		#else
-		throw "X25519 is only available on supported native cpp targets.";
+		throw NativeOnly.error("X25519");
 		#end
 	}
 
@@ -68,6 +72,7 @@ class X25519 {
 	 * not a recoverable condition.
 	 */
 	public static function scalarmult(scalar:Bytes, peerPoint:Bytes):Bytes {
+		#if cpp
 		if (scalar == null || scalar.length != SCALAR_BYTES) {
 			throw "scalar must be " + SCALAR_BYTES + " bytes";
 		}
@@ -75,7 +80,6 @@ class X25519 {
 			throw "peerPoint must be " + POINT_BYTES + " bytes";
 		}
 
-		#if cpp
 		SodiumGlue.ensureAvailable();
 
 		var point = Bytes.alloc(POINT_BYTES);
@@ -85,7 +89,7 @@ class X25519 {
 		}
 		return point;
 		#else
-		throw "X25519 is only available on supported native cpp targets.";
+		throw NativeOnly.error("X25519");
 		#end
 	}
 }

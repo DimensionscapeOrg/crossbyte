@@ -13,6 +13,10 @@ import php.Syntax;
 #if nodejs
 import js.node.Crypto;
 #end
+#if !(cpp || php || java || jvm || js)
+import crossbyte.crypto._internal.NativeOnly;
+import crossbyte.errors.IllegalOperationError;
+#end
 
 #if cpp
 @:cppFileCode('
@@ -37,16 +41,19 @@ final class SecureRandom {
 	 * The condition is the same one the branches below use, kept beside them so
 	 * the two cannot drift.
 	 *
-	 * False on the interpreter and on neko, which have no such source. Neither
-	 * is a deployment target, but code that runs in the test suite meets them.
+	 * True natively (cpp), on the jvm, on Node, in a browser and on PHP. False on
+	 * the interpreter, on neko and on HashLink, which have no such source here --
+	 * and so everything that needs one refuses there, saying so: `BCrypt.hash`,
+	 * PKCE, WebSocket clients, STUN, TURN, ICE and WebRTC.
 	 */
 	public static var isSupported(default, null):Bool = #if (cpp || php || java || jvm || nodejs || js) true #else false #end;
 
 	/**
 	 * Returns `length` bytes from the platform CSPRNG.
 	 *
-	 * On unsupported targets this throws rather than silently falling back to a
-	 * non-cryptographic generator.
+	 * @throws IllegalOperationError On a target without one -- the
+	 *         interpreter, neko, HashLink -- naming it, rather than falling
+	 *         back to a generator that only looks random.
 	 */
 	public static function getSecureRandomBytes(length:Int):ByteArray {
 		#if cpp
@@ -63,7 +70,8 @@ final class SecureRandom {
 		#elseif js
 		return __getSecureRandomBytesBrowser(length);
 		#else
-		throw "Secure random bytes are not available on this target, and this will not fall back to a generator that only looks random.";
+		throw new IllegalOperationError("Secure random bytes are not available on " + NativeOnly.TARGET
+			+ ", and this will not fall back to a generator that only looks random.");
 		#end
 	}
 
@@ -93,8 +101,8 @@ final class SecureRandom {
 	 * Web Crypto's `getRandomValues`, which browsers are required to back with
 	 * a cryptographically secure generator.
 	 *
-	 * A page served over plain http from anywhere but localhost is not a
-	 * secure context and is given no `crypto` object at all. That throws here
+	 * A page has it whether or not it is a secure context: only `crypto.subtle`
+	 * and `randomUUID` need one. A browser too old to have it throws here
 	 * rather than falling back to `Math.random`, which would hand back
 	 * something that passes every test a caller could write and is predictable
 	 * to anyone who wants it.
@@ -107,7 +115,7 @@ final class SecureRandom {
 		var webCrypto:js.html.Crypto = js.Browser.window.crypto;
 
 		if (webCrypto == null) {
-			throw "Secure random bytes need the Web Crypto API, which a page is only given in a secure context. Serve the page over https, or from localhost.";
+			throw "Secure random bytes need the Web Crypto API's crypto.getRandomValues, which this browser does not have.";
 		}
 
 		var out = new js.lib.Uint8Array(length);

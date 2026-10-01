@@ -12,7 +12,8 @@ class CryptoTest extends utest.Test {
 		Assert.equals(0, SecureRandom.getSecureRandomBytes(0).length);
 		Assert.equals(32, SecureRandom.getSecureRandomBytes(32).length);
 		#else
-		Assert.isTrue(throwsDynamic(() -> SecureRandom.getSecureRandomBytes(1)));
+		// An IllegalOperationError naming the target: it threw a String.
+		Assert.isTrue(throwsIllegalOperation(() -> SecureRandom.getSecureRandomBytes(1)));
 		#end
 	}
 
@@ -29,7 +30,9 @@ class CryptoTest extends utest.Test {
 		#else
 		Assert.isFalse(Blake3.isAvailable());
 		Assert.equals(0, Blake3.simdDegree());
-		Assert.isTrue(throwsDynamic(() -> Blake3.hash(Bytes.ofString("abc"))));
+		Assert.isTrue(throwsIllegalOperation(() -> Blake3.hash(Bytes.ofString("abc"))));
+		// The target first: a zero-length digest was handed back here.
+		Assert.isTrue(throwsIllegalOperation(() -> Blake3.hash(Bytes.ofString("abc"), 0)));
 		#end
 	}
 
@@ -64,8 +67,6 @@ class CryptoTest extends utest.Test {
 	#end
 
 	public function testEd25519AvailabilityAndValidationPaths():Void {
-		Assert.isFalse(Ed25519.verifyDetached(null, Bytes.ofString("hello"), Bytes.alloc(Ed25519.PUBLIC_KEY_BYTES)));
-		Assert.isFalse(Ed25519.verifyDetached(Bytes.alloc(Ed25519.SIGNATURE_BYTES), Bytes.ofString("hello"), Bytes.alloc(1)));
 		Assert.equals(32, Ed25519.PUBLIC_KEY_BYTES);
 		Assert.equals(64, Ed25519.SECRET_KEY_BYTES);
 		Assert.equals(64, Ed25519.SIGNATURE_BYTES);
@@ -78,6 +79,9 @@ class CryptoTest extends utest.Test {
 		#if cpp
 		Assert.isTrue(Ed25519.isAvailable());
 		Assert.equals("libsodium is available.", Ed25519.availabilityMessage());
+		// Malformed signatures and keys are refused, not thrown for.
+		Assert.isFalse(Ed25519.verifyDetached(null, message, Bytes.alloc(Ed25519.PUBLIC_KEY_BYTES)));
+		Assert.isFalse(Ed25519.verifyDetached(Bytes.alloc(Ed25519.SIGNATURE_BYTES), message, Bytes.alloc(1)));
 
 		var keyPair = Ed25519.keypair();
 		Assert.equals(Ed25519.PUBLIC_KEY_BYTES, keyPair.publicKey.length);
@@ -92,9 +96,43 @@ class CryptoTest extends utest.Test {
 		#else
 		Assert.isFalse(Ed25519.isAvailable());
 		Assert.equals("Ed25519 is only available on supported native cpp targets.", Ed25519.availabilityMessage());
-		Assert.isTrue(throwsDynamic(() -> Ed25519.keypair()));
-		Assert.isTrue(throwsDynamic(() -> Ed25519.signDetached(message, Bytes.alloc(Ed25519.SECRET_KEY_BYTES))));
+		Assert.isTrue(throwsIllegalOperation(() -> Ed25519.keypair()));
+		Assert.isTrue(throwsIllegalOperation(() -> Ed25519.signDetached(message, Bytes.alloc(Ed25519.SECRET_KEY_BYTES))));
+		// The target first, whatever the arguments: no key is right here.
+		Assert.isTrue(throwsIllegalOperation(() -> Ed25519.signDetached(message, null)));
 		#end
+	}
+
+	/**
+		Verifying an Ed25519 signature where nothing can verify one says so.
+
+		It answered `false` off cpp -- the answer for a forged signature -- so
+		code checking signed messages there refused every one, genuine ones
+		included, while looking like a working check. It throws, as signing
+		does there and as `Argon2id.verify` does, whatever it is handed.
+	**/
+	public function testEd25519VerifyingWhereNothingCanVerifyThrows():Void {
+		var message = Bytes.ofString("hello");
+		#if cpp
+		var keyPair = Ed25519.keypair();
+		Assert.isTrue(Ed25519.verifyDetached(Ed25519.signDetached(message, keyPair.secretKey), message, keyPair.publicKey));
+		#else
+		Assert.isTrue(throwsIllegalOperation(() -> Ed25519.verifyDetached(Bytes.alloc(Ed25519.SIGNATURE_BYTES), message,
+			Bytes.alloc(Ed25519.PUBLIC_KEY_BYTES))));
+		Assert.isTrue(throwsIllegalOperation(() -> Ed25519.verifyDetached(null, message, null)));
+		#end
+	}
+
+	/** Whether `fn` throws an IllegalOperationError naming where it is running. **/
+	private static function throwsIllegalOperation(fn:Void->Void):Bool {
+		try {
+			fn();
+			return false;
+		} catch (e:crossbyte.errors.IllegalOperationError) {
+			return e.message.indexOf(crossbyte.crypto._internal.NativeOnly.TARGET) >= 0;
+		} catch (_:Dynamic) {
+			return false;
+		}
 	}
 
 	public function testBCryptSupportsVerificationAndRehashSignals():Void {

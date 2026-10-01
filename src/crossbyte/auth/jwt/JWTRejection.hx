@@ -9,7 +9,10 @@ package crossbyte.auth.jwt;
  * to fetch the issuer's keys again.
  */
 enum abstract JWTRejection(String) to String {
-	/** Not three base64url segments of JSON objects, or a header field of the wrong type. */
+	/**
+	 * Not three base64url segments of JSON objects, a header field of the
+	 * wrong type, or a header nested more than 32 deep.
+	 */
 	var MALFORMED = "malformed";
 
 	/** Longer than `JWT.maxTokenLength`, and not parsed at all. */
@@ -20,6 +23,13 @@ enum abstract JWTRejection(String) to String {
 
 	/** A supported `alg`, but not the one this verifier's keys are for. */
 	var ALGORITHM_MISMATCH = "algorithm-mismatch";
+
+	/**
+	 * A `crit` header: the token names extensions it must not be accepted
+	 * without, and this verifier implements none. RFC 7515 makes such a token
+	 * invalid for a verifier that does not understand them.
+	 */
+	var UNSUPPORTED_CRITICAL = "unsupported-critical";
 
 	/** A `typ` outside `JWT.acceptedTypes`, or none where `JWT.requireType` asks for one. */
 	var TYPE_NOT_ACCEPTED = "type-not-accepted";
@@ -45,6 +55,9 @@ enum abstract JWTRejection(String) to String {
 	/** `iss` is not `JWT.expectedIssuer`. */
 	var WRONG_ISSUER = "wrong-issuer";
 
-	/** `aud` does not include `JWT.expectedAudience`. */
+	/**
+	 * `aud` does not include `JWT.expectedAudience`, or names an audience
+	 * where the verifier expects none.
+	 */
 	var WRONG_AUDIENCE = "wrong-audience";
 }

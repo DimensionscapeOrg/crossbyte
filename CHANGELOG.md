@@ -90,6 +90,24 @@ entry below says how:
 - An `IceAgent` fails when it has selected no pair 40 seconds after
   `start` (`timeout`), where it waited without end; set `timeout` to 0 to
   keep waiting.
+- Off native cpp, `Ed25519.verifyDetached` throws an
+  `IllegalOperationError` where it answered `false`, and `keypair` and
+  `signDetached` throw one where they threw a String; check
+  `Ed25519.isAvailable()` first.
+- `SharedObject.sync()` throws an `IOError` for a payload the build cannot
+  read, where it set `data` to `{}`.
+- Off native cpp the crypto classes, the EdDSA, RS256 and ES256 JWT
+  signers and the IPC classes throw an `IllegalOperationError`, where they
+  threw a String or an `ArgumentError`; `Aead.decrypt` and
+  `PublicKeySignature.verify`, `keyType` and `joseSignatureLength` throw
+  there where they answered. Check `isAvailable()` or `isSupported` first.
+- A `JWT` verifying tokens that carry `aud` needs `expectedAudience` set to
+  the audience it is; with none, those tokens are refused.
+- `JWTAlgorithm.HS384` and `HS512` are gone; nothing could use them.
+- `JWT.safeBase64UrlEncodeString` is renamed `safeBase64UrlDecodeString`.
+- `SecureRandom.getSecureRandomBytes`, and so everything that needs secure
+  random bytes, throws an `IllegalOperationError` on the interpreter, neko
+  and HashLink, where it threw a String.
 
 ### Added
 - `ReliableDatagramServerSocket.relayVerifyCert`, for a TURN relay reached
@@ -106,6 +124,17 @@ entry below says how:
   a caller holding an agent -- one attached to a
   `ReliableDatagramServerSocket` -- had to poll `state` every tick to learn
   that its path had gone.
+- `OAuthConfig.clientAuthentication`: `SECRET_BASIC` sends the client
+  secret in an HTTP Basic `Authorization` header, as RFC 6749 has every
+  provider accept, instead of the request body, `SECRET_POST`, which stays
+  the default. A provider configured for Basic alone answered every
+  exchange `invalid_client`, and there was no other way to send it.
+- `OAuthToken.idToken`, the OpenID Connect ID token a sign-in with the
+  `openid` scope answers with: the JWT that says who signed in, which was
+  dropped although `OAuth`'s own example asks for that scope. And
+  `getAuthorizationUrl` takes further parameters for the request, such as
+  OpenID Connect's `nonce`, which has to be new for each sign-in and so had
+  nowhere to go. `OAuthToken` and `OAuthConfig` document their fields.
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
   `DETACH DATABASE`, and `loadSchema()` with `getSchemaResult()`: a
   database's tables with their columns, views, indices and triggers.
@@ -1164,6 +1193,11 @@ entry below says how:
   which never blocks -- every read waits on the registry's poll, and
   Node's datagram socket has no timeout at all -- so it changed nothing on
   any target.
+- `JWTAlgorithm.HS384` and `HS512`. The type said it named the algorithms
+  CrossByte's JWT helpers understand, and nothing signs or verifies these:
+  no `JWTSigner` makes them, and `JWT.verify` refuses them as
+  `UNSUPPORTED_ALGORITHM`. The type now names HS256, RS256, ES256, EdDSA
+  and `none`, and says which verify where.
 - `ThreadEvent.UPDATE`. Nothing dispatched it, and no worker or task had
   anything it could have meant; `PROGRESS` carries a worker's messages.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
@@ -1184,6 +1218,45 @@ entry below says how:
   `TurnClient` and `IceAgent` examples now show the wiring a relayed
   candidate needs -- the way to send through the relay, and what it
   forwards handed back -- and call methods that exist.
+- `SecureRandom.getSecureRandomBytes` throws an `IllegalOperationError`
+  naming the target where there is no secure random source -- the
+  interpreter, neko, HashLink -- where it threw a String, as the other
+  crypto members now do.
+- `JWT.safeBase64UrlEncodeString` is `safeBase64UrlDecodeString`: it
+  decodes, and was named for the opposite. The auth docs were corrected
+  besides: `OAuth.getAccessToken` said the exchange ran inline on the jvm
+  and the interpreter, where it has run on `URLLoader`'s threads, bounded
+  by `timeout`, since loads moved to a pool; `JWTHeader.algorithm` carried
+  `type`'s doc and `type` none; and `generateToken` and
+  `normalizeBase64Url` did not say what they throw.
+- A JWT verifier with no `expectedAudience` refuses a token that names an
+  audience, as `WRONG_AUDIENCE`. RFC 7519 has a recipient that does not
+  identify itself with a token's `aud` reject it; accepting one let a token
+  minted for another service of the same issuer and key be replayed here.
+  A token naming no audience is accepted as before. `expectedIssuer`,
+  `expectedAudience` and `leeway` are documented.
+- A crypto or IPC member that cannot work on the target throws an
+  `IllegalOperationError` naming the target, before looking at its
+  arguments: `Aead`, `GenericHash`, `HKDF`, `X25519`, `KeyExchange`,
+  `Blake3`, `PublicKeySignature`, `SignatureKey`, `Argon2id` (which names
+  the Node version where Node is too old), the EdDSA, RS256 and ES256 JWT
+  signers, `LocalConnection`, `SharedChannel` and `SharedObject`. They
+  threw a String there, or for the IPC classes an `ArgumentError`, which
+  says the arguments were at fault. `Aead.decrypt` and
+  `PublicKeySignature.verify` throw there instead of answering `null` and
+  `false`, the answers for a forged message and a forged signature, as
+  `Ed25519.verifyDetached` does; `PublicKeySignature.keyType` and
+  `joseSignatureLength` throw instead of answering `UNKNOWN` and `-1` for
+  every key. Each class's doc says so, and `isSupported` on the IPC classes
+  says where they work.
+- `Ed25519.verifyDetached` throws on a target with no Ed25519 backend --
+  anything but native cpp -- instead of answering `false`, which is the
+  answer for a forged signature: code checking signed messages there
+  refused every one, genuine ones included, by what looked like a working
+  check. `Argon2id.verify` throws for the same reason. `keypair`,
+  `signDetached` and `verifyDetached` there throw an
+  `IllegalOperationError` naming the target, where the first two threw a
+  String, and before looking at their arguments.
 - Reliable UDP sends what a pass produces from one socket in as few system
   calls as the system allows. Each datagram was a `sendto` of its own,
   which was nearly all a server sending reliable UDP spent: 5.9 us a
@@ -2111,6 +2184,72 @@ entry below says how:
   over 31.5 seconds, and sixteen times the first timeout for the last to be
   answered. `IceAgent` waited one more doubling after the last and gave up
   at 63.5, where its documentation said half a minute.
+- `JWT.secureCompare` answers `false` for a null on either side, where it
+  read the null's length: a header or cookie that was not sent threw from
+  inside the check, and natively a null dereference need not throw.
+- `OAuth.getAuthorizationUrl` adds the flow's parameters after a query the
+  authorization endpoint carries of its own. They followed a second `?`,
+  so a parameter put in the endpoint -- Google's `access_type=offline`,
+  without which no refresh token is issued -- took the rest of the URL as
+  its value.
+- `JWT.verify` refuses a token whose header carries `crit`, as
+  `UNSUPPORTED_CRITICAL`, a new `JWTRejection`. The extensions it names
+  are ones the token may not be accepted without, none is implemented
+  here, and RFC 7515 makes such a token invalid; `crit` was ignored, so a
+  token with `"b64":false` (RFC 7797), whose payload travels unencoded,
+  was read as though it were base64url and accepted.
+- A JWT nested deeply enough no longer ends the process verifying it. JSON
+  is parsed a frame per level and a token's header is parsed before its
+  signature is checked, so no key was needed: natively a 16 KB token --
+  inside a raised `maxTokenLength`, which the doc suggests for tokens with
+  many claims -- nested 6,000 deep overflowed the stack, on the runtime's
+  thread or a worker's. A header nested more than 32 deep is refused as
+  `MALFORMED` before it is parsed; the claims are parsed only once the
+  signature has shown the issuer wrote them. The check costs a typical
+  token's verification 35 ns of 11.9 us natively.
+- `SharedObject` reads a region whole and never replaces `data` with `{}`.
+  `sync()` and the constructor read the payload's length and its bytes
+  under two acquisitions of the region's lock, so a flush by another
+  participant in between left a copy cut short: it failed to parse and
+  `data` became `{}`, which the next flush wrote over the shared state, or
+  the read threw. With a second handle flushing for three seconds, 176,256
+  of 613,235 syncs read `{}`. The length and the bytes are one read now,
+  under one lock. A payload this build cannot read makes `sync()` throw an
+  `IOError` and leaves `data` as it was; the constructor starts from
+  `defaultData` then, which it dropped. A handle asking for more than the
+  region's creator made is told the region's real capacity -- it was told
+  its own, and its first large flush wrote past the end of the mapping --
+  and on Linux and macOS one opening a region its creator had not sized yet
+  sizes it, where it failed. The class says how long a region lives on
+  each OS: on Windows until its last handle closes, on Linux and macOS
+  until the machine restarts.
+- The README says where the IPC classes and the crypto work. It called
+  `LocalConnection`, `SharedChannel`, `SharedObject` and the native crypto
+  native or jvm features: all of them are native only -- `Argon2id` runs on
+  Node too -- and of that sentence only ALPN works on the jvm. The crypto
+  list names each class and where it runs. `SecureRandom.isSupported`'s
+  doc names HashLink beside the interpreter and neko as where it is false.
+- `Metrics.shared` is one registry however many threads read it first.
+  It was made at the first read, with nothing to stop two threads from
+  both finding it missing: on the jvm, eight threads reading it first got
+  eight registries, and the counters registered in the seven that were
+  dropped never appeared in a scrape. It is made when the class
+  initializes now, so reading it costs nothing more than before.
+- `Metrics.toPrometheus()` prints whole numbers past 2^31 as they are.
+  They went through `Std.int`, which holds 31 bits: a counter of bytes
+  sent at three billion printed -1294967296 (2147483647 on the jvm), a
+  gauge at five billion 705032704, and a counter that falls reads to a
+  collector as the process restarting. Every sample is written the same
+  way -- counters, gauges, histogram bounds, sums and counts -- and every
+  whole number up to 2^53 now prints exactly.
+- `SnowflakeId` no longer hands out the same identifier twice when its
+  clock reads fractions of a millisecond, as its default clock does
+  natively: microseconds on Linux and macOS, and on Windows a thousandth
+  per millisecond that lands either side of the whole one. A reading that
+  differed only in its fraction was taken for a new millisecond, the
+  sequence went back to zero and the fraction was then dropped; two
+  million identifiers on Windows held 32,635 repeats. The clock is read
+  in whole milliseconds now.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened

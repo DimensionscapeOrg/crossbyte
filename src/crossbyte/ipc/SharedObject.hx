@@ -5,6 +5,10 @@ package crossbyte.ipc;
 
 import crossbyte.Object;
 import crossbyte.errors.ArgumentError;
+import crossbyte.errors.IOError;
+#if !cpp
+import crossbyte.crypto._internal.NativeOnly;
+#end
 import haxe.Serializer;
 import haxe.Unserializer;
 import haxe.io.Bytes;
@@ -26,11 +30,27 @@ private typedef SharedObjectHandle = Dynamic;
  *
  * This class allows multiple processes to read/write structured values in the same
  * memory-mapped region by name.
+ *
+ * Each `flush()` replaces the whole payload, and each `sync()` reads one whole
+ * payload, under a lock every participant takes: a sync never sees part of a
+ * flush. The last flush wins; nothing merges what two participants changed.
+ *
+ * How long a region lives differs by OS. On Windows it goes when the last handle
+ * to it closes, in whichever process, and the next process to open the name finds
+ * it empty. On Linux and macOS it stays, holding what was last flushed and its
+ * capacity in shared memory, until the machine restarts: `clear()` empties it,
+ * and nothing here removes it. Name regions so that a fixed set is reused rather
+ * than a new one made for each run.
  */
 #if cpp
 @:access(crossbyte.ipc._internal.NativeSharedObject)
 #end
 class SharedObject {
+	/**
+	 * Whether this target has shared memory regions: natively (cpp) on Windows,
+	 * Linux and macOS. Elsewhere the constructor throws an
+	 * `IllegalOperationError` naming the target.
+	 */
 	public static inline var isSupported:Bool = #if cpp true #else false #end;
 
 	/** Shared region name used to identify the underlying memory mapping. */
@@ -42,13 +62,18 @@ class SharedObject {
 	@:noCompletion private var __capacity:Int;
 	@:noCompletion private var __serializer:Serializer;
 	@:noCompletion private var __handle:SharedObjectHandle;
+	// The length the last read found: the next one's first guess.
+	@:noCompletion private var __expectedLength:Int = 0;
 
 	/**
 	 * Creates or opens a shared memory region.
 	 *
 	 * @param name        Shared memory region name.
 	 * @param maxSize     Optional maximum payload size for new regions (bytes).
-	 * @param defaultData Optional object to initialize from when no shared data exists.
+	 * @param defaultData Optional object to start from when the region holds nothing,
+	 *                    or nothing this build can read -- another program's bytes,
+	 *                    or a value naming a class this build does not have. A flush
+	 *                    then replaces what the region held.
 	 */
 	public function new(name:String, maxSize:Int = 65536, ?defaultData:Dynamic) {
 		__requireSupported();
@@ -73,12 +98,17 @@ class SharedObject {
 			__capacity = maxSize;
 		}
 
-		var payloadLength:Int = __readPayloadLength(__handle);
-		if (payloadLength > 0 && payloadLength <= __capacity) {
-			var payload:Bytes = Bytes.alloc(payloadLength);
-			if (__read(__handle, payload.getData(), payloadLength) == payloadLength) {
-				data = __unserializeData(payload.toString());
+		// What the region holds when it can be read, and `defaultData`
+		// otherwise. A payload that failed to parse -- or that a flush
+		// elsewhere had cut short, when the length and the bytes were two
+		// reads -- gave `{}` here, and `defaultData` was dropped.
+		try {
+			var payload:String = __readPayload();
+			if (payload.length > 0) {
+				data = Unserializer.run(payload);
 			}
+		} catch (_:Dynamic) {
+			data = null;
 		}
 
 		if (data == null) {
@@ -106,27 +136,30 @@ class SharedObject {
 		}
 	}
 
-	/** Reloads payload from shared memory into `data`. */
+	/**
+	 * Reloads payload from shared memory into `data`: one whole payload, as one
+	 * flush left it. An empty region gives `{}`.
+	 *
+	 * @throws IOError When the region holds a payload this build cannot read --
+	 *         another program's bytes, or a value naming a class this build does
+	 *         not have. `data` keeps what it had: an empty object in its place
+	 *         would be written over the region by the next flush.
+	 */
 	public function sync():Void {
 		__requireConnected();
 
-		var payloadLength:Int = __readPayloadLength(__handle);
-		if (payloadLength <= 0) {
+		var payload:String = __readPayload();
+		if (payload.length == 0) {
 			data = {};
 			return;
 		}
 
-		if (payloadLength > __capacity) {
-			payloadLength = __capacity;
+		var parsed:Dynamic;
+		try {
+			parsed = Unserializer.run(payload);
+		} catch (e:Dynamic) {
+			throw new IOError('SharedObject "$name" holds a payload this build cannot read: $e');
 		}
-
-		var payload:Bytes = Bytes.alloc(payloadLength);
-		var read:Int = __read(__handle, payload.getData(), payloadLength);
-		if (read != payloadLength) {
-			throw new ArgumentError("Shared payload read was incomplete");
-		}
-
-		var parsed:Dynamic = __unserializeData(payload.toString());
 		data = parsed == null ? {} : parsed;
 	}
 
@@ -150,11 +183,31 @@ class SharedObject {
 		__serializer.useCache = false;
 	}
 
-	@:noCompletion private function __unserializeData(payload:String):Object {
-		try {
-			return Unserializer.run(payload);
-		} catch (_:Dynamic) {}
-		return {};
+	/**
+	 * The region's payload, its length and bytes read under one acquisition of
+	 * the lock. They were two reads, and a flush between them left a copy cut
+	 * to the old length, which failed to parse, or short of the new, which
+	 * threw.
+	 *
+	 * Read into a buffer the size the last read found; one that is too small
+	 * learns the length from the same call, and the third try takes the whole
+	 * capacity, which every payload fits.
+	 */
+	@:noCompletion private function __readPayload():String {
+		var size:Int = __expectedLength;
+		for (attempt in 0...3) {
+			var buffer:Bytes = Bytes.alloc(size < 1 ? 1 : size);
+			var length:Int = __read(__handle, buffer.getData(), buffer.length);
+			if (length < 0) {
+				break;
+			}
+			if (length <= buffer.length) {
+				__expectedLength = length;
+				return buffer.getString(0, length);
+			}
+			size = attempt == 0 ? length : __capacity;
+		}
+		throw new IOError('SharedObject "$name" could not be read from shared memory.');
 	}
 
 	@:noCompletion private function __requireConnected():Void {
@@ -177,9 +230,10 @@ class SharedObject {
 		#end
 	}
 
+	/** The payload's length, and the payload copied into `buffer` when it fits; -1 when it cannot be read. */
 	@:noCompletion private static function __read(handle:SharedObjectHandle, buffer:BytesData, size:Int):Int {
 		#if cpp
-		return NativeSharedObject.__read(handle, Pointer.ofArray(buffer), size);
+		return NativeSharedObject.__readPayload(handle, Pointer.ofArray(buffer), size);
 		#else
 		return -1;
 		#end
@@ -199,14 +253,6 @@ class SharedObject {
 		#end
 	}
 
-	@:noCompletion private static function __readPayloadLength(handle:SharedObjectHandle):Int {
-		#if cpp
-		return NativeSharedObject.__getDataLength(handle);
-		#else
-		return 0;
-		#end
-	}
-
 	@:noCompletion private static function __getCapacity(handle:SharedObjectHandle):Int {
 		#if cpp
 		return NativeSharedObject.__getCapacity(handle);
@@ -216,9 +262,9 @@ class SharedObject {
 	}
 
 	@:noCompletion private static inline function __requireSupported():Void {
-		if (!isSupported) {
-			throw new ArgumentError("SharedObject is only supported on cpp targets.");
-		}
+		#if !cpp
+		throw NativeOnly.error("SharedObject");
+		#end
 	}
 }
 #end

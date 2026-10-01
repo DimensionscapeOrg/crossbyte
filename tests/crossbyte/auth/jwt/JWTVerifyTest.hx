@@ -75,6 +75,9 @@ class JWTVerifyTest extends utest.Test {
 		expectRefused(jwt, forge(header, claims({iss: "https://elsewhere.example"})), WRONG_ISSUER);
 		expectRefused(jwt, forge(header, claims({aud: "other-api"})), WRONG_AUDIENCE);
 		expectRefused(jwt, forge('{"alg":"none","typ":"JWT"}', claims()), UNSUPPORTED_ALGORITHM);
+		// Named by JWTAlgorithm once, and never signed or verified by anything.
+		expectRefused(jwt, forge('{"alg":"HS384","typ":"JWT"}', claims()), UNSUPPORTED_ALGORITHM);
+		expectRefused(jwt, forge('{"alg":"HS512","typ":"JWT"}', claims()), UNSUPPORTED_ALGORITHM);
 		expectRefused(jwt, forge('{"alg":"RS256","typ":"JWT"}', claims()), ALGORITHM_MISMATCH);
 		expectRefused(jwt, forge('{"alg":"HS256","typ":"JWT","kid":"retired"}', claims()), UNKNOWN_KEY);
 		expectRefused(jwt, forge('{"alg":"HS256","typ":"JWT","kid":7}', claims()), MALFORMED);
@@ -98,6 +101,76 @@ class JWTVerifyTest extends utest.Test {
 		Assert.equals(JWTRejection.TOO_LARGE, jwt.verify(bulky).rejection);
 		jwt.maxTokenLength = 16384;
 		Assert.isTrue(jwt.verify(bulky).valid);
+	}
+
+	/**
+		A header nested deeper than any real one is refused before it is
+		parsed.
+
+		JSON is parsed a frame per level, and the header is parsed before the
+		signature is checked, so this needed no key. Natively a 16 KB token --
+		within a raised `maxTokenLength`, which the doc suggests for tokens
+		with many claims -- nested 6,000 deep overflowed the stack and ended
+		the process, on the runtime's thread and on a worker alike. The claims
+		are parsed only once the signature has shown the issuer wrote them.
+	**/
+	public function testADeeplyNestedHeaderIsRefusedBeforeItIsParsed():Void {
+		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]), ISSUER, "api");
+		jwt.maxTokenLength = 16384;
+		var deep:String = StringTools.lpad("", "[", 6000) + StringTools.lpad("", "]", 6000);
+		expectRefused(jwt, forge('{"alg":"HS256","typ":"JWT","x":$deep}', claims()), MALFORMED);
+		// Unsigned, as a forger sends it: refused before the signature is read.
+		var unsigned:String = JWT.base64UrlEncodeString('{"alg":"HS256","x":$deep}') + "." + JWT.base64UrlEncodeString(claims()) + ".x";
+		expectRefused(jwt, unsigned, MALFORMED);
+
+		// Inside strings brackets are only text.
+		var bracketed:String = StringTools.lpad("", "[", 100);
+		Assert.isTrue(jwt.verify(forge('{"alg":"HS256","typ":"JWT","note":"$bracketed"}', claims())).valid);
+		Assert.isTrue(jwt.verify(forge('{"alg":"HS256","typ":"JWT","note":"\\"$bracketed"}', claims())).valid);
+
+		// What real tokens carry nests a few levels, and passes.
+		var roles:String = '"realm_access":{"roles":["a"]},"resource_access":{"client":{"roles":["b",["c",{"d":[1]}]]}}';
+		Assert.isTrue(jwt.verify(forge('{"alg":"HS256","typ":"JWT"}', withClaim(claims(), roles))).valid);
+	}
+
+	/**
+		A token whose `crit` header names extensions is refused: they are ones
+		it must not be accepted without, this verifier implements none, and RFC
+		7515 makes such a token invalid for it. `"b64":false` (RFC 7797) is
+		one: the payload travels unencoded, and was taken as though it were
+		base64url. A header member nobody marked critical is still ignored.
+	**/
+	public function testATokenNamingCriticalExtensionsIsRefused():Void {
+		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]), ISSUER, "api");
+		expectRefused(jwt, forge('{"alg":"HS256","typ":"JWT","b64":false,"crit":["b64"]}', claims()), UNSUPPORTED_CRITICAL);
+		expectRefused(jwt, forge('{"alg":"HS256","typ":"JWT","exp":1,"crit":["exp"]}', claims()), UNSUPPORTED_CRITICAL);
+		expectRefused(jwt, forge('{"alg":"HS256","typ":"JWT","crit":[]}', claims()), UNSUPPORTED_CRITICAL);
+		expectRefused(jwt, forge('{"alg":"HS256","typ":"JWT","crit":"b64"}', claims()), UNSUPPORTED_CRITICAL);
+
+		Assert.isTrue(jwt.verify(forge('{"alg":"HS256","typ":"JWT","x5t":"abc","custom":1}', claims())).valid);
+	}
+
+	/**
+		A token naming an audience is refused by a verifier that names none.
+
+		RFC 7519 4.1.3: a recipient that does not identify itself with a value
+		in a token's `aud` must reject it. A verifier with no `expectedAudience`
+		accepted a token minted for any other service the issuer and key
+		serve -- the token another service was given, replayed here.
+	**/
+	public function testATokenForSomeAudienceIsRefusedWhereNoneIsExpected():Void {
+		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]), ISSUER);
+		var header:String = '{"alg":"HS256","typ":"JWT"}';
+		expectRefused(jwt, forge(header, claims({aud: "another-service"})), WRONG_AUDIENCE);
+		expectRefused(jwt, forge(header, claims({aud: ["another-service", "a-third"]})), WRONG_AUDIENCE);
+
+		// A token naming none passes, as before.
+		Assert.isTrue(jwt.verify(forge(header, claims({aud: null}))).valid);
+
+		// And one naming this verifier passes once it says which it is.
+		jwt.expectedAudience = "another-service";
+		Assert.isTrue(jwt.verify(forge(header, claims({aud: ["another-service", "a-third"]}))).valid);
+		expectRefused(jwt, forge(header, claims({aud: null})), WRONG_AUDIENCE);
 	}
 
 	public function testKeysRotateWithoutRebuildingTheVerifier():Void {
@@ -140,13 +213,25 @@ class JWTVerifyTest extends utest.Test {
 	/** Claims valid for ten minutes from now, with `overrides` applied. */
 	static function claims(?overrides:Dynamic):String {
 		var now:Int = Std.int(Date.now().getTime() / 1000);
-		var base:Dynamic = {sub: "user-9", iat: now, exp: now + 600, iss: ISSUER, aud: "api"};
+		// Field by field rather than a literal: the jvm types a literal's
+		// fields, and then refuses an array for `aud` where it held a string.
+		var base:Dynamic = {};
+		Reflect.setField(base, "sub", "user-9");
+		Reflect.setField(base, "iat", now);
+		Reflect.setField(base, "exp", now + 600);
+		Reflect.setField(base, "iss", ISSUER);
+		Reflect.setField(base, "aud", "api");
 		if (overrides != null) {
 			for (field in Reflect.fields(overrides)) {
 				Reflect.setField(base, field, Reflect.field(overrides, field));
 			}
 		}
 		return haxe.Json.stringify(base);
+	}
+
+	/** `json`, an object, with `member` -- raw JSON, `"name":value` -- added at its end. */
+	static function withClaim(json:String, member:String):String {
+		return json.substr(0, json.length - 1) + "," + member + "}";
 	}
 
 	/** A token with exactly this header and payload, signed with the secret. */
