@@ -95,6 +95,44 @@ class NetConnectionTcpTest extends utest.Test {
 		});
 	}
 
+	/**
+		An RPC session whose heartbeat hears nothing ends its connection as
+		`Reason.Timeout`: the connection's `onClose` and the session's
+		`onDown` both hear it. They heard `Closed`, because the session closed
+		the connection the way an application does, after failing its calls
+		with the timeout. The peer accepts and never says a word.
+	**/
+	@:timeout(15000)
+	public function testAHeartbeatThatHearsNothingEndsTheConnectionAsATimeout(async:Async):Void {
+		var server = new ServerSocket();
+		var silent:Array<Socket> = [];
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) silent.push(e.socket));
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			var closes:Array<Reason> = [];
+			var downs:Array<Reason> = [];
+			var connection = new NetConnection('tcp://127.0.0.1:${server.localPort}', null, null, reason -> closes.push(reason));
+			var session = new RPCSession(connection, new TcpEchoCommands());
+			session.onDown = reason -> downs.push(reason);
+			session.heartbeatInterval = 200;
+			session.heartbeatTimeout = 800;
+			session.start();
+
+			NetPump.until(() -> closes.length > 0 && downs.length > 0, 10.0, function(_) {
+				Assert.isTrue(closes.length == 1 && Type.enumEq(Reason.Timeout, closes[0]), "onClose was not told of the timeout: " + closes);
+				Assert.isTrue(downs.length == 1 && Type.enumEq(Reason.Timeout, downs[0]), "onDown was not told of the timeout: " + downs);
+				session.close();
+				for (peer in silent) {
+					try peer.close() catch (_:Dynamic) {}
+				}
+				try server.close() catch (_:Dynamic) {}
+				async.done();
+			});
+		});
+	}
+
 	private static function __bytes(text:String):ByteArray {
 		var bytes = new ByteArray();
 		bytes.writeUTFBytes(text);
