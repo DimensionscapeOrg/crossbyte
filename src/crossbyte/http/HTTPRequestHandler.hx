@@ -532,7 +532,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private inline function __sendMethodNotAllowed():Void {
 		var hdrs:Array<URLRequestHeader> = [new URLRequestHeader("Allow", ALLOWED_METHODS.join(", "))];
-		__dispatchResponse(405, "Method Not Allowed", hdrs, "text/plain", "405 Method Not Allowed");
+		__sendError(405, "Method Not Allowed", "405 Method Not Allowed", hdrs);
 	}
 
 	/**
@@ -1154,7 +1154,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function __sendNotFound():Void {
-		__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
+		__sendError(404, "Not Found", "404 Not Found");
 	}
 
 	/**
@@ -1217,7 +1217,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function __sendForbidden():Void {
-		__dispatchResponse(403, "Forbidden", null, "text/plain", "403 Forbidden");
+		__sendError(403, "Forbidden", "403 Forbidden");
 	}
 
 	@:noCompletion private function __serveFile(filePath:String, headOnly:Bool = false):Void {
@@ -1231,7 +1231,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (!file.exists) {
 			// Keeps the connection: a routine 404, a page fetching a
 			// missing favicon, must not cost the client a new handshake.
-			__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
+			__sendNotFound();
 			return;
 		}
 
@@ -1240,7 +1240,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			if (indexFile != null) {
 				__serveFile(indexFile, headOnly);
 			} else {
-				__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
+				__sendNotFound();
 			}
 			return;
 		} else {
@@ -1262,7 +1262,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 				if (__php == null) {
 					Logger.warn("Refusing to serve PHP source with no bridge configured; set phpEnabled to execute it, or move it out of the web root.",
 						["path" => __requestPath]);
-					__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
+					__sendNotFound();
 					return;
 				}
 
@@ -2633,7 +2633,21 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __sendErrorResponse(statusCode:Int, message:String):Void {
-		__dispatchResponse(statusCode, message, null, "text/plain", message);
+		__sendError(statusCode, message, message);
+	}
+
+	/**
+	 * Answers with an error the server writes itself: `text` as plain text,
+	 * or no body at all for a HEAD, whose answer says only what its GET's
+	 * would.
+	 *
+	 * These went out with their text whatever the method, so a HEAD for a
+	 * missing file had "404 Not Found" after its head, which a client reads
+	 * as the start of the next response on the connection, and which
+	 * HTTP/2 makes a malformed response.
+	 */
+	@:noCompletion private function __sendError(statusCode:Int, statusMessage:String, text:String, ?headers:Array<URLRequestHeader>):Void {
+		__dispatchResponse(statusCode, statusMessage, headers, "text/plain", text, __method == "HEAD");
 	}
 
 	/**
@@ -2662,7 +2676,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			seconds = 1;
 		}
 
-		__dispatchResponse(429, "Too Many Requests", [new URLRequestHeader("Retry-After", Std.string(seconds))], "text/plain", "Too Many Requests");
+		__sendError(429, "Too Many Requests", "Too Many Requests", [new URLRequestHeader("Retry-After", Std.string(seconds))]);
 		return true;
 	}
 
@@ -3780,7 +3794,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (transferEncoding != null) {
 			var encodings = transferEncoding.toLowerCase().split(",");
 			if (encodings.length == 0 || StringTools.trim(encodings[encodings.length - 1]) != "chunked") {
-				__dispatchResponse(501, "Not Implemented", null, "text/plain", "Transfer-Encoding not supported");
+				__sendError(501, "Not Implemented", "Transfer-Encoding not supported");
 				return true;
 			}
 			chunked = true;
@@ -4066,7 +4080,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		if (!file.exists) {
-			__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
+			__sendNotFound();
 			return;
 		}
 
@@ -4075,7 +4089,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			if (indexFile != null) {
 				__handlePost(indexFile);
 			} else {
-				__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
+				__sendNotFound();
 			}
 			return;
 		}
