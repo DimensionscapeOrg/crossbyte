@@ -58,6 +58,32 @@ class ByteArrayTest extends utest.Test {
 		#end
 	}
 
+	/**
+		Text read back holds every byte it was given, a NUL among them. On
+		JavaScript the decoder stopped at the first NUL -- "a", NUL, "b" read
+		back as "a" -- where the other targets read all three; it is the
+		platform's TextDecoder there now, ten times as fast for a page. A
+		leading byte order mark is still U+FEFF.
+	**/
+	public function testTextReadsPastANulAndKeepsAByteOrderMark():Void {
+		var data = new ByteArray();
+		data.writeByte(0x61);
+		data.writeByte(0);
+		data.writeByte(0x62);
+		data.position = 0;
+		var read:String = data.readUTFBytes(3);
+		Assert.equals(3, read.length, "readUTFBytes stopped short");
+		Assert.isTrue(read.length == 3 && StringTools.fastCodeAt(read, 1) == 0 && StringTools.fastCodeAt(read, 2) == 0x62, "readUTFBytes read other characters");
+		Assert.equals(3, data.toString().length, "toString stopped short");
+
+		var marked = new ByteArray();
+		for (b in [0xEF, 0xBB, 0xBF, 0x61]) {
+			marked.writeByte(b);
+		}
+		marked.position = 0;
+		Assert.equals("\u{FEFF}a", marked.readUTFBytes(4));
+	}
+
 	public function testFromBytesAllocatesNothingTheSizeOfTheBytes():Void {
 		#if cpp
 		var source = Bytes.alloc(64 * 1024);

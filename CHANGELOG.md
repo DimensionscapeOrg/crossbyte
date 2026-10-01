@@ -1148,6 +1148,15 @@ All notable changes to CrossByte will be documented in this file.
   server answering small requests serves 59,000 a second where it served
   54,300 -- Node's own `http` module, sending three fewer headers and
   logging nothing, serves 61,500 to 64,900.
+- On JavaScript, text is decoded through the platform's `TextDecoder`:
+  `ByteArray.readUTFBytes`, `readUTF` and `toString`, and `URLLoader`'s
+  text. 64 KB took 206 microseconds and takes 3 (53 with non-ASCII
+  characters, where it took 228). Haxe's decoder stopped at the first NUL
+  byte, so "a", NUL, "b" read back as "a"; every byte is read now, on
+  HashLink too, which also stopped there. A malformed sequence reads as
+  U+FFFD, as in a browser. `URLLoader` decodes strictly: a text body that
+  is not UTF-8 is an `IO_ERROR` with the bytes in `data`, where only some
+  malformed sequences were and the rest came through as other characters.
 - `PostgresStatement` and `MongoStatement` throw a failed statement's
   `SQLError` after dispatching it as an `SQLErrorEvent`, as `MySQLStatement`
   does. They dispatched it and returned, so to a caller not listening -- an

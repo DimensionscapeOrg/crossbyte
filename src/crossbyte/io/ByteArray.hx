@@ -478,7 +478,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		@return The string representation of the byte array.
 	**/
 	public inline function toString():String {
-		return this.toString();
+		return crossbyte._internal.Utf8.stringOf(this, 0, this.length);
 	}
 
 	/**
@@ -1131,7 +1131,8 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 		position += length;
 
-		return getString(position - length, length);
+		// Through the platform's decoder on JavaScript; see Utf8.
+		return crossbyte._internal.Utf8.stringOf(this, position - length, length);
 	}
 
 	@:keep public inline function readVarInt():Int {
