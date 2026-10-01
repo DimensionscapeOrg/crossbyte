@@ -10,7 +10,7 @@ import crossbyte.errors.IOError;
 import crossbyte.crypto._internal.NativeOnly;
 #end
 import haxe.Serializer;
-import haxe.Unserializer;
+import crossbyte.ipc._internal.BoundedUnserializer;
 import haxe.io.Bytes;
 import haxe.io.BytesData;
 #if cpp
@@ -93,8 +93,9 @@ class SharedObject {
 	 * @param maxSize     Optional maximum payload size for new regions (bytes).
 	 * @param defaultData Optional object to start from when the region holds nothing,
 	 *                    or nothing this build can read, another program's bytes,
-	 *                    or a value naming a class this build does not have. A flush
-	 *                    then replaces what the region held.
+	 *                    a value naming a class this build does not have, or values
+	 *                    nested more than 256 deep. A flush then replaces what the
+	 *                    region held.
 	 * @throws IOError When another participant holds the region's lock for longer
 	 *         than `lockTimeout`'s default, five seconds.
 	 */
@@ -143,7 +144,7 @@ class SharedObject {
 		}
 		if (payload != null && payload.length > 0) {
 			try {
-				data = Unserializer.run(payload);
+				data = BoundedUnserializer.run(payload);
 			} catch (_:Dynamic) {
 				data = null;
 			}
@@ -187,10 +188,14 @@ class SharedObject {
 	 * flush left it. An empty region gives `{}`.
 	 *
 	 * @throws IOError When the region holds a payload this build cannot read,
-	 *         another program's bytes, or a value naming a class this build does
-	 *         not have, or when another participant holds the region's lock for
-	 *         longer than `lockTimeout`. `data` keeps what it had: an empty object
-	 *         in its place would be written over the region by the next flush.
+	 *         another program's bytes, a value naming a class this build does not
+	 *         have, or values nested more than 256 deep, or when another
+	 *         participant holds the region's lock for longer than `lockTimeout`.
+	 *         `data` keeps what it had: an empty object in its place would be
+	 *         written over the region by the next flush. The nesting is bounded
+	 *         because reading takes a frame per level: natively a payload nested
+	 *         6,000 deep, which any process writing the region could leave,
+	 *         overflowed the stack and ended the process reading it.
 	 */
 	public function sync():Void {
 		__requireConnected();
@@ -206,7 +211,7 @@ class SharedObject {
 
 		var parsed:Dynamic;
 		try {
-			parsed = Unserializer.run(payload);
+			parsed = BoundedUnserializer.run(payload);
 		} catch (e:Dynamic) {
 			throw new IOError('SharedObject "$name" holds a payload this build cannot read: $e');
 		}

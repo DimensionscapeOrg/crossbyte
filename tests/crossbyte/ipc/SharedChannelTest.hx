@@ -77,6 +77,34 @@ class SharedChannelTest extends utest.Test {
 		Assert.equals(0, receiver.calls);
 	}
 
+	/**
+		A message whose arguments nest more than 256 deep is dropped before
+		reading it gives the stack out. Reading takes a frame or two per level,
+		and natively a peer's arguments nested 6,000 deep, 12 KB, overflowed
+		the stack and ended the process, past any catch. 256 levels: the
+		arguments' own array, then 255 within it.
+	**/
+	public function testArgumentsNestedPastTheBoundAreDropped():Void {
+		var channel = new SharedChannel();
+		var receiver = new SharedChannelReceiver();
+		channel.client = receiver;
+		function nested(levels:Int):String {
+			return "a" + StringTools.lpad("", "a", levels - 1) + StringTools.lpad("", "h", levels - 1) + "h";
+		}
+
+		channel.__onData(frameSerialized("receiveAny", nested(256)));
+		Assert.equals(1, receiver.calls, "256 levels were not delivered");
+
+		channel.__onData(frameSerialized("receiveAny", nested(257)));
+		channel.__onData(frameSerialized("receiveAny", nested(6000)));
+		Assert.equals(1, receiver.calls, "a message nested past 256 levels was delivered");
+
+		// And the channel goes on.
+		channel.__onData(frame("receive", ["after", 7]));
+		Assert.equals(2, receiver.calls);
+		Assert.equals("after", receiver.lastMessage);
+	}
+
 	public function testOversizedFrameIsIgnored():Void {
 		var channel = new SharedChannel();
 		var receiver = new SharedChannelReceiver();
@@ -248,5 +276,9 @@ private class SharedChannelReceiver {
 		lastMessage = message;
 		lastValue = value;
 		runtime = CrossByte.current();
+	}
+
+	public function receiveAny(value:Dynamic):Void {
+		calls++;
 	}
 }
