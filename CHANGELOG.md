@@ -1935,6 +1935,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `POST` goes where the rewrite rules send it, as a `GET` does: it was
+  resolved against the path it named, so a form posting to a rewritten
+  path was answered 404. And a rule's query -- merged with the request's
+  under `QSA` -- reaches a script whether or not the rule has the `PHP`
+  flag: without it the script was given the request's query and lost the
+  route the rule had captured. `RewriteRule.target` no longer says it can
+  name a route, which rules, running after middleware, cannot reach.
 - `HTTPServerConfig.http2ResetWindowSeconds` says that it also measures the
   budget of PING and SETTINGS frames a peer may make the server answer, a
   hundred a window, and that `0` turns both defences off: it read as the

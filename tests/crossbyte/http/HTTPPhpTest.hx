@@ -251,6 +251,42 @@ class HTTPPhpTest extends utest.Test {
 		world.close();
 	}
 
+	public function testAPostFollowsARewrite():Void {
+		// A POST was resolved against the path it named, whatever a rule
+		// rewrote it to: a form posting to /submit, rewritten onto
+		// /index.php, was answered 404 while the GET beside it ran the script.
+		var backend = new FakeFastCGI();
+		var world = new PhpWorld(backend, (config, _) -> {
+			config.rewrites = [{pattern: "^/submit$", target: "/index.php"}];
+		});
+
+		world.send("POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 7\r\n\r\nname=ab");
+		Assert.isTrue(backend.received, "a POST rewritten onto a script did not reach it");
+		Assert.isTrue(backend.request.indexOf("name=ab") >= 0, "the script was not given the POST's body");
+
+		backend.answer(201, "text/plain", "stored");
+		HTTPTestSupport.pumpUntil(() -> world.responseCount() > 0, 3.0);
+		Assert.equals(201, HTTPTestSupport.parseResponse(world.raw).status);
+		world.close();
+	}
+
+	public function testARewritesQueryReachesTheScriptWithoutThePhpFlag():Void {
+		// A rule's query, and QSA's merging of the request's into it, were
+		// used only with the PHP flag. A rule naming a script without it --
+		// resolved as the file it names, then run -- gave the script the
+		// request's own query, and the route the rule captured was lost.
+		var backend = new FakeFastCGI();
+		var world = new PhpWorld(backend, (config, _) -> {
+			config.rewrites = [{pattern: "^/r/(.*)$", target: "/index.php?route=$1", flags: [crossbyte.http.config.RewriteFlag.QSA]}];
+		});
+
+		world.send("GET /r/abc?x=1 HTTP/1.1\r\nHost: localhost\r\n\r\n");
+		Assert.isTrue(backend.received, "the rewritten request did not reach the script");
+		// FastCGI writes a parameter's name straight before its value.
+		Assert.isTrue(backend.request.indexOf("QUERY_STRINGx=1&route=abc") >= 0, "the script was not given the rule's query");
+		world.close();
+	}
+
 	public function testABackendThatFailsIsAnsweredWithAWholeResponse():Void {
 		// The 502 and the 504 were written as a HEAD's answer: a Content-Length
 		// counting the text, and no text. The client was left waiting for
