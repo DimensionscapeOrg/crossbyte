@@ -79,6 +79,9 @@ entry below says how:
 - SQLite failures are `SQLError`s, as the other drivers' are, and are
   dispatched as `SQLErrorEvent`s: catch `SQLError` where code caught the
   `String` the driver threw.
+- `SQLiteConnection.open()` and `openAsync()` throw on a connection that
+  is open: `close()` it first, and after an asynchronous close wait for
+  `CLOSE`.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1935,6 +1938,18 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Opening a Postgres or SQLite connection that is already open no longer
+  leaks the first. Postgres replaced its native handle and left that
+  server connection open for the life of the process; it now closes it
+  first, dispatching `CLOSE`, as MySQL does. SQLite replaced its handle
+  too, leaving the first holding its locks, and `openAsync()` started a
+  second worker over the same object; it now throws an
+  `IllegalOperationError`, as AIR's `open()` does, and, after an
+  asynchronous `close()`, until its `CLOSE` arrives, when the old worker
+  has let go. An SQLite operation, `request()` or property read on a
+  closed connection throws `IllegalOperationError` where each
+  dereferenced the connection it did not have, and an open that failed
+  part way closes what it had opened.
 - An asynchronous `SQLiteConnection` survives a failure, and each of its
   statements gets every row. Any error on one killed the process: the
   connection's own failures, a refused `BEGIN`, a failed open, were

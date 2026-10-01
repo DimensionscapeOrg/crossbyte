@@ -509,6 +509,30 @@ class NativePostgresBridgeTest extends utest.Test {
 		return pages.join(" ");
 	}
 
+	public function testOpeningAgainClosesTheConnectionItHad():Void {
+		// open() on an open connection replaced its native handle and left
+		// the first connection open, unreachable, for the life of the process,
+		// a server connection each time a pool factory or a reconnect
+		// called it twice. MySQL's closes first; this does too now.
+		var connection:PostgresConnection = __open(__config("localhost"));
+		var closes:Int = 0;
+		connection.addEventListener(crossbyte.events.SQLEvent.CLOSE, _ -> closes++);
+		var before:Int = __live(connection);
+
+		connection.open(__config("localhost"));
+
+		Assert.equals(before, __live(connection), "the first connection was left open");
+		Assert.equals(1, closes);
+		Assert.isTrue(connection.ping(), "the second connection is not the one in use");
+		connection.close();
+	}
+
+	/** The connections the stand-in has open, process-wide. **/
+	@:noCompletion private static function __live(connection:PostgresConnection):Int {
+		var rows:Dynamic = connection.request("fake:live");
+		return Std.parseInt(Std.string(Reflect.field(rows.next(), "live")));
+	}
+
 	@:noCompletion private static function __open(config:PostgresConfig):PostgresConnection {
 		var connection = new PostgresConnection();
 		connection.open(config);

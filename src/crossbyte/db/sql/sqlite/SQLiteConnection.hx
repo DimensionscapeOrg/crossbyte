@@ -154,6 +154,10 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	// the calling thread sees it. An asynchronous connection is open from
 	// openAsync() on, before its worker has opened anything.
 	@:noCompletion private var __opened:Bool = false;
+	// An asynchronous close() asked for and not yet over: until its CLOSE
+	// arrives the old worker still holds its connection, and an open now
+	// would race it.
+	@:noCompletion private var __closing:Bool = false;
 	@:noCompletion private var __savepoints:Array<String> = [];
 	@:noCompletion private var __savepointSeq:Int = 0;
 	@:noCompletion private var __inTransaction:Bool = false;
@@ -396,6 +400,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		reports the same way on both.
 	**/
 	@:noCompletion private function __perform(operation:String, work:Void->Void):Void {
+		__requireOpen();
+
 		if (__async) {
 			__addToQueue(function() {
 				var event:Event;
@@ -484,6 +490,43 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		return __async ? __opened : __connection != null;
 	}
 
+	/**
+		Refuses what needs an open connection, as AIR's `SQLConnection`
+		does, where each dereferenced the connection it did not have.
+	**/
+	@:noCompletion private inline function __requireOpen():Void {
+		if (!__isOpen()) {
+			throw new IllegalOperationError("The SQLiteConnection is not open.");
+		}
+	}
+
+	/**
+		The open connection, for what the calling thread asks of it now; an
+		`IllegalOperationError` when there is none.
+	**/
+	@:noCompletion private function __live():Connection {
+		var connection:Connection = __connection;
+
+		if (connection == null) {
+			throw new IllegalOperationError("The SQLiteConnection is not open.");
+		}
+
+		return connection;
+	}
+
+	/**
+		Refuses an open while one is open, or an asynchronous close is not yet
+		over, as AIR's `open()` does. The handle it had was replaced and left
+		open, unreachable, holding whatever locks it held, and on an
+		asynchronous connection a second worker started over the same object.
+	**/
+	@:noCompletion private function __refuseIfOpen():Void {
+		if (__opened || __closing || __connection != null && !__async) {
+			throw new IllegalOperationError("This SQLiteConnection is already open; close() it first"
+				+ (__closing ? ", and wait for its CLOSE." : "."));
+		}
+	}
+
 	/** `name` as an SQL identifier, quoted, so any name, one with a space or a quote, is one. **/
 	@:noCompletion private static inline function __quoteIdentifier(name:String):String {
 		if (name == null || name == "") {
@@ -531,7 +574,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			__addToQueue(deanalyzeAsync, SQLEvent.DEANALYZE);
 		} else {
 			__connection.close();
-			open(__reference, __openMode, __initAutoCompact, __initPageSize);
+			__open(__reference, __openMode, __initAutoCompact, __initPageSize);
+			__dispatchSQLEvent(SQLEvent.OPEN);
 		}
 
 		__dispatchSQLEvent(SQLEvent.DEANALYZE);
@@ -567,10 +611,22 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			}
 
 			__opened = false;
+			__closing = true;
 			__addToQueue(function() {
 				var event:Event;
+				var connection:Connection = __connection;
+				// Let go of here, before the CLOSE that allows another open
+				// is sent: the next worker's open sets these afresh.
+				__connection = null;
+				#if cpp
+				__native = null;
+				#end
+				__inTransaction = false;
+
 				try {
-					__connection.close();
+					if (connection != null) {
+						connection.close();
+					}
 					event = new SQLEvent(SQLEvent.CLOSE);
 				} catch (e:Dynamic) {
 					event = new SQLErrorEvent(SQLErrorEvent.ERROR, __asSQLError(SQLEvent.CLOSE, e));
@@ -621,19 +677,21 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		`String` escape.
 	**/
 	public function request(sql:String):ResultSet {
+		var connection:Connection = __live();
+
 		try {
-			return __connection.request(sql);
+			return connection.request(sql);
 		} catch (e:Dynamic) {
 			throw __asSQLError("request", e);
 		}
 	}
 
 	public inline function escape(value:String):String {
-		return __connection.escape(value);
+		return __live().escape(value);
 	}
 
 	public inline function quote(value:String):String {
-		return __connection.quote(value);
+		return __live().quote(value);
 	}
 
 	public function commit():Void {
@@ -648,15 +706,60 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		__perform(SQLEvent.COMPACT, () -> __connection.request("VACUUM;"));
 	}
 
-	public function open(reference:Object = null, openMode:SQLiteMode = CREATE, autoCompact:Bool = false, pageSize:Int = 1024):Void {
-		__async = false;
-		__open(reference, openMode, autoCompact, pageSize);
-		__opened = true;
+	/**
+		Opens the database at `reference`, a path or a `File`, or null for
+		a new in-memory one, on the calling thread, and dispatches
+		`SQLEvent.OPEN`.
 
+		@throws IllegalOperationError When this connection is open already,
+		or an asynchronous close is not yet over: `close()` it first. A second
+		open replaced the connection it had and left that open.
+	**/
+	public function open(reference:Object = null, openMode:SQLiteMode = CREATE, autoCompact:Bool = false, pageSize:Int = 1024):Void {
+		__refuseIfOpen();
+		__async = false;
+
+		try {
+			__open(reference, openMode, autoCompact, pageSize);
+		} catch (e:Dynamic) {
+			__abandon();
+			throw e;
+		}
+
+		__opened = true;
 		__dispatchSQLEvent(SQLEvent.OPEN);
 	}
 
+	/**
+		Closes what an open that failed part way had opened, its settings
+		refused after the file was, so it is neither left open nor taken for
+		an open connection.
+	**/
+	@:noCompletion private function __abandon():Void {
+		var connection:Connection = __connection;
+		__connection = null;
+		#if cpp
+		__native = null;
+		#end
+
+		if (connection != null) {
+			try {
+				connection.close();
+			} catch (_:Dynamic) {}
+		}
+	}
+
+	/**
+		`open()`, on a worker thread of the connection's own, which runs
+		everything the connection is asked to do from then on, in order, and
+		sends back its events.
+
+		@throws IllegalOperationError As `open()`. After `close()`, wait for
+		its `SQLEvent.CLOSE` before opening again: the worker still holds the
+		connection until then.
+	**/
 	public function openAsync(reference:Object = null, openMode:SQLiteMode = CREATE, autoCompact:Bool = false, pageSize:Int = 1024):Void {
+		__refuseIfOpen();
 		__async = true;
 		__opened = true;
 		__initSQLWorker();
@@ -797,6 +900,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				__open(reference, openMode, autoCompact, pageSize);
 				event = new SQLEvent(SQLEvent.OPEN);
 			} catch (e:Dynamic) {
+				__abandon();
 				event = new SQLErrorEvent(SQLErrorEvent.ERROR, __asSQLError(SQLEvent.OPEN, e));
 				// Nothing is open for what was queued behind this to run on:
 				// the worker stops, telling each it will not run, and the
@@ -901,11 +1005,17 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 		if (Std.isOfType(message, SQLErrorEvent)) {
 			var failure:SQLErrorEvent = message;
+			var operation:String = failure.error != null ? failure.error.operation : null;
 
-			if (failure.error != null && failure.error.operation == SQLEvent.OPEN) {
+			if (operation == SQLEvent.OPEN) {
 				// The worker stopped: nothing was opened.
 				__opened = false;
+			} else if (operation == SQLEvent.CLOSE) {
+				__closing = false;
 			}
+		} else if (Std.isOfType(message, SQLEvent) && (message : SQLEvent).type == SQLEvent.CLOSE) {
+			// The worker has let go of its connection: another may be opened.
+			__closing = false;
 		}
 
 		if (Std.isOfType(message, Event)) {
@@ -1009,13 +1119,13 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		if (__async) {
 			#if cpp
 			__sqlMutex.acquire();
-			result = __connection.request("PRAGMA auto_vacuum;");
+			result = __live().request("PRAGMA auto_vacuum;");
 			__sqlMutex.release();
 			#else
-			result = __connection.request("PRAGMA auto_vacuum;");
+			result = __live().request("PRAGMA auto_vacuum;");
 			#end
 		} else {
-			result = __connection.request("PRAGMA auto_vacuum;");
+			result = __live().request("PRAGMA auto_vacuum;");
 		}
 
 		if (result.hasNext()) {
@@ -1034,7 +1144,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 
 	private function get_pageSize():UInt {
-		var result:ResultSet = __connection.request("PRAGMA page_size;");
+		var result:ResultSet = __live().request("PRAGMA page_size;");
 
 		if (result.hasNext()) {
 			var pageSize:UInt = result.next().page_size;
@@ -1046,7 +1156,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 
 	private function get_cacheSize():UInt {
-		var result:ResultSet = __connection.request("PRAGMA cache_size;");
+		var result:ResultSet = __live().request("PRAGMA cache_size;");
 
 		if (result.hasNext()) {
 			var cacheSize:UInt = result.next().cache_size;
@@ -1057,7 +1167,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 
 	private function set_cacheSize(value:UInt):UInt {
-		__connection.request('PRAGMA cache_size = $value;');
+		__live().request('PRAGMA cache_size = $value;');
 
 		return value;
 	}
@@ -1104,11 +1214,12 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		returns whole.
 	**/
 	@:noCompletion private function __lastRowId():Float {
-		var id:Int = __connection.lastInsertId();
+		var connection:Connection = __live();
+		var id:Int = connection.lastInsertId();
 		if (id >= 0 && id < 0x7FFFFFFF) {
 			return id;
 		}
-		var rows:ResultSet = __connection.request("SELECT last_insert_rowid() AS id;");
+		var rows:ResultSet = connection.request("SELECT last_insert_rowid() AS id;");
 		if (rows == null || !rows.hasNext()) {
 			return id;
 		}
@@ -1141,7 +1252,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 
 	private function get_totalChanges():Int {
-		var result:ResultSet = __connection.request("SELECT total_changes() AS total_changes;");
+		var result:ResultSet = __live().request("SELECT total_changes() AS total_changes;");
 
 		return (result != null && result.hasNext()) ? Std.parseInt(Std.string(Reflect.field(result.next(), "total_changes"))) : 0;
 	}
@@ -1151,7 +1262,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 
 	private function __getTables():Array<String> {
-		var result:ResultSet = __connection.request("SELECT name AS `table` FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';");
+		var result:ResultSet = __live().request("SELECT name AS `table` FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';");
 		var out:Array<String> = [];
 
 		while (result.hasNext()) {
@@ -1166,13 +1277,13 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		if (__async) {
 			#if cpp
 			__sqlMutex.acquire();
-			ret = __connection.request('PRAGMA ' + body + ';');
+			ret = __live().request('PRAGMA ' + body + ';');
 			__sqlMutex.release();
 			#else
-			ret = __connection.request('PRAGMA ' + body + ';');
+			ret = __live().request('PRAGMA ' + body + ';');
 			#end
 		} else {
-			ret = __connection.request('PRAGMA ' + body + ';');
+			ret = __live().request('PRAGMA ' + body + ';');
 		}
 
 		return ret;
