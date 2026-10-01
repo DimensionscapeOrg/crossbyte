@@ -369,6 +369,148 @@ class HTTPResponseStreamTest extends utest.Test {
 		});
 		return new HTTPServer(config);
 	}
+
+	/**
+		A response streamed while its request is handled goes out in one
+		write. Each write was flushed on its own, the head, every piece, the
+		last chunk, a system call apiece: a 64 KB body in eight writes was
+		served at a third the rate of the same body in one.
+	**/
+	public function testAStreamWrittenAsItsRequestIsHandledGoesInOneWrite():Void {
+		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.middleware.push(function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+			var stream = handler.beginResponse(200, "text/plain");
+			for (i in 0...8) {
+				stream.writeText("piece " + i + "\n");
+			}
+			stream.end();
+		});
+		var socket = new RequestOnlySocket();
+		var writer = new CountingWriter();
+		// A writer given leaves the reading to whoever gave it, as HTTP/2's
+		// frame layer does; this one reads the socket as HTTP/1.1 does.
+		var handler = new HTTPRequestHandler(socket, config, null, writer);
+		@:privateAccess handler.__setup();
+
+		socket.arrive("GET /s HTTP/1.1\r\nHost: x\r\n\r\n");
+
+		Assert.equals(1, writer.flushes, "the stream went out in " + writer.flushes + " writes");
+		var body = writer.body.toString();
+		Assert.isTrue(body.indexOf("piece 0") >= 0 && body.indexOf("piece 7") > body.indexOf("piece 0"), "the pieces written: " + body);
+		Assert.isTrue(writer.ended, "the response was not ended");
+	}
+}
+
+/** A connected socket that only hands over what `arrive` is given. */
+private class RequestOnlySocket extends Socket {
+	private var __arriving:Null<String> = null;
+
+	public function new() {
+		super();
+	}
+
+	public function arrive(request:String):Void {
+		__arriving = request;
+		dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, request.length, 0));
+	}
+
+	override private function get_connected():Bool {
+		return true;
+	}
+
+	override private function get_remoteAddress():String {
+		return "127.0.0.1";
+	}
+
+	override private function get_remotePort():Int {
+		return 50000;
+	}
+
+	override public function readBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+		if (__arriving != null) {
+			// Written at `offset` with the reader's position left where it
+			// was, as a socket's read leaves it.
+			var position = bytes.position;
+			bytes.position = offset;
+			bytes.writeUTFBytes(__arriving);
+			bytes.position = position;
+			__arriving = null;
+		}
+	}
+
+	override public function close():Void {}
+}
+
+/** A response writer that keeps what it is given and counts its flushes. */
+private class CountingWriter implements crossbyte._internal.http.HTTPResponseWriter {
+	public var flushes:Int = 0;
+	public var ended:Bool = false;
+	public var body:StringBuf = new StringBuf();
+	public var connected(get, never):Bool;
+	public var ownsConnection(get, never):Bool;
+	public var bufferedBytes(get, never):Int;
+	public var maxBufferedBytes(get, never):Int;
+	public var onDrain(get, set):Null<Void->Void>;
+	public var onAbandoned(get, set):Null<Void->Void>;
+
+	private var __unflushed:Int = 0;
+	private var __onDrain:Null<Void->Void> = null;
+	private var __onAbandoned:Null<Void->Void> = null;
+
+	public function new() {}
+
+	private function get_connected():Bool {
+		return true;
+	}
+
+	private function get_ownsConnection():Bool {
+		return false;
+	}
+
+	private function get_bufferedBytes():Int {
+		return __unflushed;
+	}
+
+	private function get_maxBufferedBytes():Int {
+		return 16 * 1024 * 1024;
+	}
+
+	private function get_onDrain():Null<Void->Void> {
+		return __onDrain;
+	}
+
+	private function set_onDrain(value:Null<Void->Void>):Null<Void->Void> {
+		return __onDrain = value;
+	}
+
+	private function get_onAbandoned():Null<Void->Void> {
+		return __onAbandoned;
+	}
+
+	private function set_onAbandoned(value:Null<Void->Void>):Null<Void->Void> {
+		return __onAbandoned = value;
+	}
+
+	public function writeHead(head:crossbyte._internal.http.HTTPResponseHead):Void {
+		__unflushed += 64;
+	}
+
+	public function writeBody(data:ByteArray, offset:Int, length:Int):Void {
+		data.position = offset;
+		body.add(data.readUTFBytes(length));
+		__unflushed += length;
+	}
+
+	public function flush():Void {
+		flushes++;
+		__unflushed = 0;
+	}
+
+	public function endResponse():Void {
+		ended = true;
+	}
+
+	public function abort():Void {}
 }
 
 /**
