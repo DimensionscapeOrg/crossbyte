@@ -209,7 +209,14 @@ class JWTVerifyTest extends utest.Test {
 	/** Claims valid for ten minutes from now, with `overrides` applied. */
 	static function claims(?overrides:Dynamic):String {
 		var now:Int = Std.int(Date.now().getTime() / 1000);
-		var base:Dynamic = {sub: "user-9", iat: now, exp: now + 600, iss: ISSUER, aud: "api"};
+		// Field by field rather than a literal: the jvm types a literal's
+		// fields, and then refuses an array for `aud` where it held a string.
+		var base:Dynamic = {};
+		Reflect.setField(base, "sub", "user-9");
+		Reflect.setField(base, "iat", now);
+		Reflect.setField(base, "exp", now + 600);
+		Reflect.setField(base, "iss", ISSUER);
+		Reflect.setField(base, "aud", "api");
 		if (overrides != null) {
 			for (field in Reflect.fields(overrides)) {
 				Reflect.setField(base, field, Reflect.field(overrides, field));
