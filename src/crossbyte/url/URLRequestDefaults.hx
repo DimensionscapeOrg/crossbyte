@@ -16,9 +16,10 @@ class URLRequestDefaults {
 		established before abandoning the request. Setting the property on a
 		request overrides this.
 
-		The default value is 0, which is not an idle timeout of zero: a request
-		takes this value only when it is greater than zero, and otherwise uses
-		30000.
+		The default value is 0, which here means unset rather than no limit:
+		a request takes this value only when it is greater than zero, and
+		otherwise starts at 30000. To give a request no limit, set its own
+		`idleTimeout` to `0`.
 	**/
 	public static var idleTimeout:Int = 0;
 
@@ -34,7 +35,8 @@ class URLRequestDefaults {
 		The default `userAgent` for new URLRequest objects. Setting the property
 		on a request overrides this.
 
-		Unset, and while it is null the client sends `CrossByte`.
+		Unset, and while it is null the client sends `CrossByte`; a browser
+		sends its own. See `URLRequest.userAgent`.
 	**/
 	public static var userAgent:String;
 }

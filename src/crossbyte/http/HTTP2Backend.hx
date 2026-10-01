@@ -23,13 +23,18 @@ import haxe.io.Bytes;
 /**
  * An HTTP/2 backend for `HTTPBackendRegistry`.
  *
- * Not registered by default. HTTP/2 is opt-in so that a program which never
- * asks for it does not link the framing layer, and so that registering a
- * different implementation stays possible:
+ * Registered on first use: the registry resolves HTTP/2 to this backend the
+ * first time a request asks for it, unless
+ * `HTTPBackendRegistry.autoRegisterBundled` was turned off before then.
+ * Register one yourself only in that case, or to give it settings of its
+ * own; a backend registered later takes precedence over the bundled one:
  *
  * ```haxe
  * HTTPBackendRegistry.register(new HTTP2Backend());
  * ```
+ *
+ * A build that never asks for HTTP/2 and should not link the framing layer
+ * is compiled with `-D crossbyte_no_http2`; see `autoRegisterBundled`.
  *
  * `http://` uses prior-knowledge h2c: the client opens with the connection
  * preface and assumes the server speaks HTTP/2. That is the only cleartext
@@ -63,7 +68,7 @@ import haxe.io.Bytes;
  *
  * The request's `timeout` is an idle limit on its stream, as it is on the
  * HTTP/1.1 client's socket: the longest the response may go with nothing
- * arriving for it.
+ * arriving for it. `0` or less is none, as it is there.
  */
 class HTTP2Backend implements HTTPBackend {
 	/**
@@ -108,6 +113,24 @@ class HTTP2Backend implements HTTPBackend {
 		var contentType:Null<String> = context.contentType;
 		var cookies:Null<CookieJar> = context.manageCookies == true ? new CookieJar() : null;
 
+		// `requestData`, encoded as the HTTP/1.1 client encodes it -- a
+		// URLVariables, or an object's fields -- and ignored beside a body of
+		// the caller's own: a GET's or HEAD's query, any other method's form.
+		// Nothing here read it, so a form went out as an empty POST with no
+		// Content-Type, and a GET without its query.
+		var query:Null<String> = null;
+		if (data == null && context.requestData != null && Reflect.isObject(context.requestData)) {
+			var form:String = Http.__buildQuery(context.requestData);
+			if (method == "GET" || method == "HEAD") {
+				query = form;
+			} else {
+				data = form;
+				if (contentType == null) {
+					contentType = "application/x-www-form-urlencoded; charset=utf-8";
+				}
+			}
+		}
+
 		// The HTTP/1.1 client's redirect policy, through the same functions:
 		// a 3xx completed here with its Location unfollowed, where the
 		// HTTP/1.1 client, Node and the browser all followed it.
@@ -116,11 +139,14 @@ class HTTP2Backend implements HTTPBackend {
 		var credentialsDropped:Bool = false;
 
 		while (true) {
-			var exchange:Null<H2Exchange> = __exchange(context, url, method, headers, data, contentType, cookies, credentialsDropped);
+			var exchange:Null<H2Exchange> = __exchange(context, url, method, headers, query, data, contentType, cookies, credentialsDropped);
 			if (exchange == null) {
 				// Reported already.
 				return;
 			}
+			// The first hop's only, as over HTTP/1.1: a redirect's Location is
+			// the whole of the next hop's target.
+			query = null;
 
 			var stream:H2Stream = exchange.stream;
 			if (!context.followRedirects || !Http.__isRedirect(stream.status) || !stream.endOfStream || __cancelled(context)) {
@@ -193,8 +219,8 @@ class HTTP2Backend implements HTTPBackend {
 	 * Sends one request and waits for its response, or reports why it could
 	 * not and answers null.
 	 */
-	private function __exchange(context:HTTPRequestContext, url:URL, method:String, headers:Array<String>, data:Dynamic, contentType:Null<String>,
-			cookies:Null<CookieJar>, leftOrigin:Bool):Null<H2Exchange> {
+	private function __exchange(context:HTTPRequestContext, url:URL, method:String, headers:Array<String>, query:Null<String>, data:Dynamic,
+			contentType:Null<String>, cookies:Null<CookieJar>, leftOrigin:Bool):Null<H2Exchange> {
 		if (__cancelled(context)) {
 			// Between two hops, or before the first. Nothing is opened for it,
 			// and nothing already open is disturbed.
@@ -224,7 +250,8 @@ class HTTP2Backend implements HTTPBackend {
 			// Bracketed for an IPv6 host: 2001:db8::1:8080 cannot be split.
 			var authority:String = HttpSyntax.authority(url.host, port, secure ? 443 : 80);
 			var body:Null<Bytes> = __body(method, data);
-			var timeout:Float = context.timeout > 0 ? context.timeout / 1000 : 30;
+			// 0, for 0 or less, is none: see Http.__idleSeconds.
+			var timeout:Float = Http.__idleSeconds(context.timeout);
 			var cookie:Null<String> = cookies != null ? cookies.headerFor(url.host, secure) : null;
 			var fields:Array<HpackHeader> = __headers(headers, context.userAgent, contentType, body, cookie);
 
@@ -238,7 +265,7 @@ class HTTP2Backend implements HTTPBackend {
 			while (stream == null) {
 				session = H2ConnectionPool.acquire(origin, () -> __open(origin, url.host, port, secure, context, tls), timeout, context.cancelToken, tls);
 				try {
-					stream = session.execute(method, scheme, authority, __target(url), fields, body, timeout, context.cancelToken);
+					stream = session.execute(method, scheme, authority, __target(url, query), fields, body, timeout, context.cancelToken);
 				} catch (e:H2ConnectionError) {
 					if (e.code == H2ErrorCode.CANCEL && __cancelled(context)) {
 						// Cancelled as it was about to start: refused before
@@ -353,7 +380,7 @@ class HTTP2Backend implements HTTPBackend {
 
 		// An idle limit, as the HTTP/1.1 client sets on its socket: the
 		// handshake's reads give up after it, however many there are.
-		var timeout:Float = context.timeout > 0 ? context.timeout / 1000 : 30;
+		var timeout:Float = Http.__idleSeconds(context.timeout);
 		socket.setTimeout(timeout);
 
 		// Published to the token for as long as the connect runs, which is
@@ -511,10 +538,14 @@ class HTTP2Backend implements HTTPBackend {
 	 * `:path` is the path and query together, and is never empty (§8.3.1).
 	 * Encoded as the HTTP/1.1 client encodes its request target: a space or a
 	 * byte past ASCII left raw is a malformed `:path` to a strict server.
+	 * `extra` is a form's fields, after any query the URL has already.
 	 */
-	private function __target(url:URL):String {
+	private function __target(url:URL, ?extra:String):String {
 		var path:String = (url.path != null && url.path.length > 0) ? url.path : "/";
 		var query:String = url.query;
+		if (extra != null && extra.length > 0) {
+			query = (query != null && query.length > 0) ? query + "&" + extra : extra;
+		}
 		return HttpSyntax.encodeRequestTarget((query != null && query.length > 0) ? '$path?$query' : path);
 	}
 
@@ -550,6 +581,7 @@ class HTTP2Backend implements HTTPBackend {
 		var seenContentType:Bool = false;
 		var seenUserAgent:Bool = false;
 		var seenCookie:Bool = false;
+		var seenAcceptEncoding:Bool = false;
 
 		if (lines != null) {
 			for (raw in lines) {
@@ -576,6 +608,8 @@ class HTTP2Backend implements HTTPBackend {
 						seenUserAgent = true;
 					case "cookie":
 						seenCookie = true;
+					case "accept-encoding":
+						seenAcceptEncoding = true;
 					case _:
 				}
 
@@ -593,6 +627,13 @@ class HTTP2Backend implements HTTPBackend {
 		}
 		if (!seenUserAgent && userAgent != null) {
 			out.push(new HpackHeader("user-agent", HttpSyntax.sanitizeHeaderValue(userAgent)));
+		}
+		// What the HTTP/1.1 client and Node ask for unless told otherwise, as
+		// URLRequest.requestHeaders says the client does. With none, RFC 9110
+		// 12.5.3 lets a server pick any coding, one this client cannot decode
+		// among them. Indexed after the first request, so it costs a byte.
+		if (!seenAcceptEncoding) {
+			out.push(new HpackHeader("accept-encoding", crossbyte._internal.http.headers.AcceptEncoding.IDENTITY));
 		}
 		if (!seenContentType && contentType != null && body != null) {
 			out.push(new HpackHeader("content-type", HttpSyntax.sanitizeHeaderValue(contentType)));

@@ -148,10 +148,10 @@ class URLLoaderHttpTest extends utest.Test {
 			var body:Bytes = Bytes.alloc(coded.length);
 			body.blit(0, coded, 0, coded.length);
 
-			var fixture = serveBytes('HTTP/1.1 200 OK
-Content-Encoding: deflate
-Content-Length: ${body.length}
-
+			var fixture = serveBytes('HTTP/1.1 200 OK
+Content-Encoding: deflate
+Content-Length: ${body.length}
+
 ', body);
 			var result = load(new URLRequest('http://127.0.0.1:${fixture.port}/coded'));
 			fixture.waitDone();
@@ -199,7 +199,9 @@ Content-Length: ${body.length}
 		fixture.waitDone();
 
 		Assert.equals("hello world", result.data);
-		Assert.equals(-1, result.progress[0].total);
+		// 0 for a length nobody declared, as on JavaScript; -1 reached
+		// ProgressEvent's UInt as 4294967295.
+		Assert.equals(0, result.progress[0].total);
 		Assert.equals(11, result.progress[result.progress.length - 1].loaded);
 		Assert.isNull(result.error);
 	}
@@ -212,6 +214,7 @@ Content-Length: ${body.length}
 
 		Assert.equals("close body", result.data);
 		Assert.isNull(result.error);
+		Assert.equals(0, result.progress[0].total, "a body ended by the close has no length to report");
 	}
 
 	public function testHeadCompletesWithoutReadingResponseBody():Void {
@@ -235,7 +238,9 @@ Content-Length: ${body.length}
 		fixture.waitDone();
 
 		Assert.equals("ok", result.data);
-		Assert.same([100, 200], result.statuses);
+		// The interim 100 is not a status the load ends with, and the client
+		// contract says it is not reported. It was, as HTTP_STATUS.
+		Assert.same([200], result.statuses);
 		Assert.isNull(result.error);
 	}
 
@@ -272,6 +277,56 @@ Content-Length: ${body.length}
 		Assert.isTrue(fixture.requests[0].body.indexOf("field=a%20b") >= 0);
 		Assert.isTrue(fixture.requests[0].body.indexOf("ok=false") >= 0);
 	}
+
+	#if !eval
+	/**
+		Form data reaches the server over HTTP/2 as it does over HTTP/1.1: a
+		GET's as its query, a POST's as a form body. The HTTP/2 backend never
+		read `requestData`, so a `URLVariables` or an object went nowhere --
+		a POST with an empty body and no Content-Type, a GET with no query --
+		though setting `httpVersion` is all a request is told to change.
+
+		Not on eval, where HTTP/2 is refused: see `HTTP2Backend.isSupported`.
+	**/
+	public function testFormDataGoesOutOverHttp2AsOverHttp11():Void {
+		var config = new crossbyte.http.HTTPServerConfig("127.0.0.1", 0);
+		config.http2Enabled = true;
+		config.middleware = [
+			(handler, next) -> handler.respond(200, "text/plain",
+				handler.method + " ?" + handler.queryString + " [" + handler.getHeader("content-type") + "] " + handler.requestText)
+		];
+		var server = new crossbyte.http.HTTPServer(config);
+		pumpUntil(() -> server.localPort != 0);
+
+		var answers:Array<String> = [];
+		for (version in [HTTPVersion.HTTP_1_1, HTTPVersion.HTTP_2]) {
+			var form = new URLVariables();
+			form.set("user", "alice");
+			form.set("score", "42");
+			var post = new URLRequest('http://127.0.0.1:${server.localPort}/form');
+			post.httpVersion = version;
+			post.method = URLRequestMethod.POST;
+			post.data = form;
+			var posted = load(post);
+
+			var get = new URLRequest('http://127.0.0.1:${server.localPort}/form?page=2');
+			get.httpVersion = version;
+			get.data = {user: "bob"};
+			var got = load(get);
+
+			// Key order is the map's, which differs by target.
+			for (field in ["user=alice", "score=42"]) {
+				Assert.isTrue(posted.data != null && posted.data.indexOf(field) >= 0, '$version: $field is not in the POST: ${posted.data} ${posted.error}');
+			}
+			Assert.isTrue(posted.data != null && StringTools.startsWith(posted.data, "POST ? [application/x-www-form-urlencoded"),
+				'$version: the POST was not a form: ${posted.data}');
+			Assert.equals("GET ?page=2&user=bob [null] ", got.data, '$version: the GET did not carry its fields as its query');
+		}
+
+		server.close();
+		crossbyte._internal.http.h2.H2ConnectionPool.closeAll();
+	}
+	#end
 
 	public function testRelativeRedirectNormalizesDotSegments():Void {
 		var fixture = serveRequests(request -> {
@@ -436,7 +491,7 @@ Content-Length: ${body.length}
 
 		Assert.equals("ok", result.data);
 		Assert.isNull(result.error);
-		Assert.equals(-1, result.progress[0].total);
+		Assert.equals(0, result.progress[0].total);
 	}
 
 	public function testTheNextLoadCanStartFromComplete():Void {
@@ -463,6 +518,25 @@ Content-Length: ${body.length}
 		pumpUntil(() -> events.length >= 2);
 		fixture.waitDone();
 		Assert.same(["complete ok", "complete ok"], events);
+	}
+
+	/**
+		A backend is handed the request's headers as `HTTPRequestContext`
+		says, each `"Name: value"`. They came as `URLRequestHeader.toString()`
+		wrote them, `"Name:value"`, so a backend splitting at ": " as told
+		found no value.
+	**/
+	public function testABackendIsHandedHeaderLinesAsItsContractSays():Void {
+		var backend = new HeaderRecordingBackend();
+		HTTPBackendRegistry.register(backend);
+		var request = new URLRequest("http://127.0.0.1/lines");
+		request.httpVersion = HTTPVersion.HTTP_3;
+		request.requestHeaders.push(new URLRequestHeader("X-Test", "yes"));
+		var result = load(request);
+		HTTPBackendRegistry.unregister(backend);
+
+		Assert.isTrue(result.complete, result.error);
+		Assert.same(["X-Test: yes"], backend.lines);
 	}
 
 	#if target.threaded
@@ -790,6 +864,24 @@ private class ThreadRecordingBackend implements HTTPBackend {
 	}
 }
 #end
+
+/** Answers every HTTP/3 request at once, keeping the header lines it was handed. */
+private class HeaderRecordingBackend implements HTTPBackend {
+	public var lines:Array<String> = null;
+
+	public function new() {}
+
+	public function supports(version:HTTPVersion):Bool {
+		return version == HTTPVersion.HTTP_3;
+	}
+
+	public function load(context:HTTPRequestContext):Void {
+		lines = context.headers.copy();
+		context.onStatus(200);
+		context.onHeaders(new Map());
+		context.onComplete(Bytes.ofString("ok"));
+	}
+}
 
 typedef URLLoaderHttpResult = {
 	var complete:Bool;

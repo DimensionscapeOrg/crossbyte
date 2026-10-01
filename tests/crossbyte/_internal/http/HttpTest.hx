@@ -416,16 +416,20 @@ class HttpTest extends utest.Test {
 	public function testLoadReportsOnlyTheFinalHeaderBlockAfterAnInformationalResponse():Void {
 		var fixture = serveOnce("HTTP/1.1 100 Continue\r\n\r\n" + "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Final: yes\r\n\r\nhi");
 		var reported:Array<Map<String, String>> = [];
+		var statuses:Array<Int> = [];
 		var completed:Bytes = null;
 
 		var http = new Http('http://127.0.0.1:${fixture.port}/continue');
+		http.onStatus = status -> statuses.push(status);
 		http.onHeaders = headers -> reported.push(headers);
 		http.onComplete = data -> completed = data;
 		http.load();
 		fixture.waitDone();
 
 		// A 1xx block is discarded and re-read, so the caller sees one header
-		// block rather than an interim one it would have to know to ignore.
+		// block rather than an interim one it would have to know to ignore --
+		// and one status, as HTTPRequestContext says: the 100 was reported.
+		Assert.same([200], statuses);
 		Assert.equals(1, reported.length);
 		Assert.equals("yes", reported[0].get("x-final"));
 		Require.notNull(completed);
@@ -493,9 +497,20 @@ class HttpTest extends utest.Test {
 		}
 	}
 
+	/**
+		An idle timeout of `0` or less is no limit -- a socket timeout of `0`,
+		which every target's socket takes as none -- as it is on JavaScript
+		and on every socket. It was 30 seconds here, a difference no case
+		shorter than 30 seconds can see, so the mapping is asserted itself.
+	**/
+	public function testAnIdleTimeoutOfZeroIsNoLimit():Void {
+		Assert.equals(0.0, Http.__idleSeconds(0));
+		Assert.equals(0.0, Http.__idleSeconds(-1));
+		Assert.equals(1.5, Http.__idleSeconds(1500));
+	}
+
 	public function testBuildQueryEncodesScalarsArraysAndNestedObjects():Void {
-		var http = new Http("http://example.com/");
-		var query = http.__buildQuery({
+		var query = Http.__buildQuery({
 			search: "hello world",
 			page: 2,
 			active: true,
@@ -563,9 +578,12 @@ class HttpTest extends utest.Test {
 
 		Require.notNull(completed);
 		Assert.equals("hello world", completed.toString());
-		Assert.equals(-1, progress[0].total);
+		// 0 for a length nobody declared, as HTTPRequestContext says and the
+		// JavaScript clients report. It was -1, which ProgressEvent's UInt
+		// made 4294967295.
+		Assert.equals(0, progress[0].total);
 		Assert.equals(11, progress[progress.length - 1].loaded);
-		Assert.equals(-1, progress[progress.length - 1].total);
+		Assert.equals(0, progress[progress.length - 1].total);
 	}
 
 	public function testChunkSizeWithTrailingGarbageIsRejected():Void {

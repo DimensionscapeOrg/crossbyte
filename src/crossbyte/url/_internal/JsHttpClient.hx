@@ -1,8 +1,10 @@
 package crossbyte.url._internal;
 
+import crossbyte._internal.http.CookieJar;
+import crossbyte.http.HTTPCancelToken;
+import crossbyte.http.HTTPVersion;
 import crossbyte.url.URLRequest;
 import crossbyte.url.URLRequestHeader;
-import crossbyte.url.URLVariables;
 import haxe.io.Bytes;
 
 /**
@@ -31,14 +33,24 @@ class JsHttpClient {
 	/** Redirects followed before giving up, as `Http.MAX_REDIRECTS` on native. */
 	private static inline var MAX_REDIRECTS:Int = 10;
 
+	/** What a cancelled request reports, as the native client says it. */
+	private static inline var CANCELLED:String = "Request cancelled";
+
+	/** The `User-Agent` sent while `URLRequest.userAgent` is unset, as natively. */
+	private static inline var DEFAULT_USER_AGENT:String = "CrossByte";
+
 	/**
 	 * Issues `request`, reporting through the callbacks. Exactly one of
 	 * `onComplete` or `onError` is called, once. `onResponse` is called once,
 	 * before either, when a final response has arrived: its status, headers,
 	 * the URL it came from, and whether a redirect led there.
+	 *
+	 * Cancelling `token` aborts the request where it stands -- the hop in
+	 * flight, a redirect included -- and calls `onError` with "Request
+	 * cancelled", at once, unless the request has ended already.
 	 */
 	public static function send(request:URLRequest, onStatus:Int->Void, onProgress:Int->Int->Void, onComplete:Bytes->Void, onError:String->Void,
-			?onResponse:(status:Int, headers:Array<URLRequestHeader>, url:String, redirected:Bool) -> Void):Void {
+			?onResponse:(status:Int, headers:Array<URLRequestHeader>, url:String, redirected:Bool) -> Void, ?token:HTTPCancelToken):Void {
 		if (request == null || request.url == null || request.url == "") {
 			onError("URLRequest has no url.");
 			return;
@@ -47,16 +59,21 @@ class JsHttpClient {
 		if (onResponse == null) {
 			onResponse = (_, _, _, _) -> {};
 		}
+		if (token != null && token.cancelled) {
+			onError(CANCELLED);
+			return;
+		}
 
 		var method:String = (request.method != null && request.method != "") ? request.method : "GET";
 
-		// A URLVariables goes where a form puts it: into the query of a GET or
-		// HEAD, and otherwise into the body, form-encoded. Sent as it stood,
-		// it was a debug dump of the map it is at run time.
+		// A URLVariables, or an object's fields, goes where a form puts it:
+		// into the query of a GET or HEAD, and otherwise into the body,
+		// form-encoded, as natively. Sent as it stood, it was a debug dump --
+		// of the map a URLVariables is at run time, or "{ user : bob }".
 		var url:String = request.url;
 		var body:Dynamic = request.data;
 		var contentType:String = request.contentType;
-		var form:Null<String> = URLVariables.encodeData(request.data);
+		var form:Null<String> = FormEncoding.encode(request.data);
 		if (form != null) {
 			if (method == "GET" || method == "HEAD") {
 				if (form.length > 0) {
@@ -72,9 +89,16 @@ class JsHttpClient {
 		}
 
 		#if (js && !nodejs)
-		__sendBrowser(request, method, url, body, contentType, onStatus, onProgress, onComplete, onError, onResponse);
+		__sendBrowser(request, method, url, body, contentType, onStatus, onProgress, onComplete, onError, onResponse, token);
 		#elseif nodejs
-		__sendNode(request, method, url, body, contentType, onStatus, onProgress, onComplete, onError, onResponse);
+		// Node's http client speaks HTTP/1.1 and nothing else, and natively a
+		// version that cannot be had fails rather than falls back -- HTTP/2
+		// speaks it or refuses. It was sent as HTTP/1.1 regardless.
+		if (request.httpVersion != null && request.httpVersion != HTTPVersion.HTTP_1_1) {
+			onError(request.httpVersion + " is not available to URLLoader on Node: its http client speaks HTTP/1.1 only. Use HTTPVersion.HTTP_1_1.");
+			return;
+		}
+		__sendNode(request, method, url, body, contentType, onStatus, onProgress, onComplete, onError, onResponse, token);
 		#end
 	}
 
@@ -86,11 +110,15 @@ class JsHttpClient {
 	 * as bytes so a binary response survives.
 	 *
 	 * The browser follows redirects itself and applies its own rules to them,
-	 * which are the rules the other clients copy.
+	 * which are the rules the other clients copy. What it leaves a page is
+	 * applied here where it can be -- `userAgent`, `followInsecureRedirects`
+	 * and `maxDecompressedSize`, the last two once the browser has shown what
+	 * it did -- and a request asking what a page cannot do is refused, saying
+	 * so, rather than sent as though it had been done.
 	 */
 	static function __sendBrowser(request:URLRequest, method:String, url:String, body:Dynamic, contentType:String, onStatus:Int->Void,
 			onProgress:Int->Int->Void, onComplete:Bytes->Void, onError:String->Void,
-			onResponse:(Int, Array<URLRequestHeader>, String, Bool) -> Void):Void {
+			onResponse:(Int, Array<URLRequestHeader>, String, Bool) -> Void, token:Null<HTTPCancelToken>):Void {
 		// The browser does its own TLS and tells a page nothing of the key it
 		// was shown, so a pin cannot be checked here. Refused rather than sent
 		// unchecked, as on the targets whose TLS cannot say either.
@@ -98,16 +126,37 @@ class JsHttpClient {
 			onError("Public key pinning is not available in a browser: it gives a page no access to the server's certificate");
 			return;
 		}
+		// The browser follows every redirect itself, and shows a page none of
+		// them: the 3xx asked for could not be handed back. Refused, where it
+		// went out and came back as whatever the redirect led to.
+		if (!request.followRedirects) {
+			onError("URLRequest.followRedirects = false is not available in a browser: the browser follows every redirect itself and shows a page none of them");
+			return;
+		}
 
 		var xhr = new js.html.XMLHttpRequest();
 		var settled:Bool = false;
 		var idle:haxe.Timer = null;
+		var onCancelled:Null<Void->Void> = null;
 
 		function stopIdle():Void {
 			if (idle != null) {
 				idle.stop();
 				idle = null;
 			}
+		}
+
+		// Marks the request over, and answers whether it was not already.
+		function settle():Bool {
+			if (settled) {
+				return false;
+			}
+			settled = true;
+			stopIdle();
+			if (onCancelled != null) {
+				token.removeHandler(onCancelled);
+			}
+			return true;
 		}
 
 		// Time without progress, not a deadline on the whole exchange: this
@@ -117,10 +166,9 @@ class JsHttpClient {
 			stopIdle();
 			if (request.idleTimeout > 0 && !settled) {
 				idle = haxe.Timer.delay(function():Void {
-					if (settled) {
+					if (!settle()) {
 						return;
 					}
-					settled = true;
 					xhr.abort();
 					onError("HTTP request timed out: " + url);
 				}, request.idleTimeout);
@@ -145,54 +193,172 @@ class JsHttpClient {
 			if (contentType != null && contentType != "") {
 				xhr.setRequestHeader("Content-Type", contentType);
 			}
+
+			// Handed to the browser, which has the last word: some send it,
+			// and others keep their own and say so in the console. Unset, the
+			// browser's own goes, not "CrossByte", which most would refuse on
+			// every request. Not beside one the caller wrote, which a browser
+			// that sends it would join to this one.
+			if (request.userAgent != null && !__namesHeader(request, "user-agent")) {
+				xhr.setRequestHeader("User-Agent", request.userAgent);
+			}
 		} catch (e:Dynamic) {
-			settled = true;
+			settle();
 			onError("HTTP request failed: " + Std.string(e));
 			return;
 		}
 
+		// Whether the response came content-coded, which the browser has
+		// undone by the time a page sees it.
+		var coded:Bool = false;
+
 		xhr.onreadystatechange = function() {
+			if (settled) {
+				return;
+			}
 			armIdle();
 			// Headers are in as of HEADERS_RECEIVED, which is where the status
 			// is worth reporting -- waiting for the body would hold it back
 			// behind however long the transfer takes.
 			if (xhr.readyState == 2) {
+				// Both absolute, as the browser reports where a response came
+				// from: compared with the URL as written, a relative one said
+				// every response to it had been redirected.
+				var requested:String = __absolute(url);
+				var finalUrl:String = (xhr.responseURL != null && xhr.responseURL != "") ? xhr.responseURL : requested;
+				// The hop has been made by now, and the browser says so only
+				// here: what it led to is not handed on.
+				var refusal:Null<String> = __followedRefusal(url, finalUrl, request.followInsecureRedirects);
+				if (refusal != null) {
+					if (settle()) {
+						xhr.abort();
+						onError(refusal);
+					}
+					return;
+				}
+				coded = __isCoded(xhr.getResponseHeader("content-encoding"));
 				onStatus(xhr.status);
-				var finalUrl:String = (xhr.responseURL != null && xhr.responseURL != "") ? xhr.responseURL : url;
-				onResponse(xhr.status, __parseHeaderBlock(xhr.getAllResponseHeaders()), finalUrl, finalUrl != url);
+				onResponse(xhr.status, __parseHeaderBlock(xhr.getAllResponseHeaders()), finalUrl, finalUrl != requested);
 			}
 		};
 
 		xhr.onprogress = function(e) {
+			if (settled) {
+				return;
+			}
 			armIdle();
 			onProgress(Std.int(e.loaded), e.lengthComputable ? Std.int(e.total) : 0);
 		};
 
 		xhr.onload = function(_) {
-			stopIdle();
-			if (settled) {
+			if (!settle()) {
 				return;
 			}
-			settled = true;
 
 			var buffer:js.lib.ArrayBuffer = xhr.response;
+			// The browser decoded the body before a page could count it, so
+			// the limit is held to what it decoded to, once it is all here: a
+			// load past it fails as it would anywhere else, though the browser
+			// has spent the memory by then.
+			var limit:Int = request.maxDecompressedSize;
+			if (coded && limit > 0 && buffer != null && buffer.byteLength > limit) {
+				onError("Failed to decode response body: it decoded to " + buffer.byteLength + " bytes, more than the " + limit + " allowed");
+				return;
+			}
 			onComplete(buffer == null ? Bytes.alloc(0) : Bytes.ofData(buffer));
 		};
 
 		xhr.onerror = function(_) {
-			stopIdle();
-			if (settled) {
+			if (!settle()) {
 				return;
 			}
-			settled = true;
 			// The browser deliberately withholds the reason -- a DNS failure,
 			// a refused connection and a blocked cross-origin request are one
 			// event with no detail, so there is nothing more specific to pass on.
 			onError("HTTP request failed: " + url);
 		};
 
+		// The request ends where it stands. An abort fires neither load nor
+		// error, so the cancel is reported here, once.
+		if (token != null) {
+			onCancelled = () -> {
+				if (settle()) {
+					xhr.abort();
+					onError(CANCELLED);
+				}
+			};
+			token.onCancel(onCancelled);
+		}
+
 		armIdle();
 		xhr.send(__body(body));
+	}
+
+	/**
+		Why a response the browser reached at `landed`, for a request made to
+		`requested`, may not be handed on, or null when it may: one that
+		redirects took from `https` to plain `http`, unless `followInsecure`
+		says so. Every other client refuses that hop before making it; a page
+		learns of it only once it has been made.
+	**/
+	@:noCompletion public static function __followedRefusal(requested:String, landed:String, followInsecure:Bool):Null<String> {
+		if (followInsecure || landed == requested) {
+			return null;
+		}
+		if (__protocolOf(requested) == "https:" && __protocolOf(landed) == "http:") {
+			return "Refused a redirect from https to http; set URLRequest.followInsecureRedirects to allow it";
+		}
+		return null;
+	}
+
+	/**
+		`url` resolved against the page, without a fragment, which is how the
+		browser reports where a response came from; `url` itself when it is
+		no URL.
+	**/
+	static function __absolute(url:String):String {
+		try {
+			var resolved = new js.html.URL(url, js.Browser.document.baseURI);
+			resolved.hash = "";
+			return resolved.href;
+		} catch (_:Dynamic) {
+			return url;
+		}
+	}
+
+	/** `url`'s scheme with its colon, resolved against the page; empty when it is no URL. */
+	static function __protocolOf(url:String):String {
+		try {
+			return new js.html.URL(url, js.Browser.document.baseURI).protocol;
+		} catch (_:Dynamic) {
+			return "";
+		}
+	}
+
+	/** Whether `request.requestHeaders` names `name`, lowercase, whatever case it was written in. */
+	static function __namesHeader(request:URLRequest, name:String):Bool {
+		if (request.requestHeaders != null) {
+			for (header in request.requestHeaders) {
+				if (header != null && header.name != null && header.name.toLowerCase() == name) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	/** Whether a `Content-Encoding` field names a coding other than `identity`. */
+	@:noCompletion public static function __isCoded(header:Null<String>):Bool {
+		if (header == null) {
+			return false;
+		}
+		for (raw in header.split(",")) {
+			var token:String = StringTools.trim(raw).toLowerCase();
+			if (token != "" && token != "identity") {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** `getAllResponseHeaders()`, one field per line, as header objects. */
@@ -220,10 +386,25 @@ class JsHttpClient {
 		}
 
 		if ((data is Bytes)) {
-			return new js.lib.Uint8Array((data : Bytes).getData());
+			return __view(data);
 		}
 
 		return Std.string(data);
+	}
+	#end
+
+	#if js
+	/**
+		The bytes `bytes` holds, as a view, without a copy.
+
+		Its length, not its buffer's. `getData()` is the whole buffer, and a
+		`ByteArray`'s runs on past `length` into the room it keeps to grow --
+		and into whatever it held before it was cleared. Both clients sent the
+		buffer: "hello" went out as nine bytes, and written after a secret,
+		with the rest of the secret behind it.
+	**/
+	@:noCompletion public static inline function __view(bytes:Bytes):js.lib.Uint8Array {
+		return new js.lib.Uint8Array(bytes.getData(), 0, bytes.length);
 	}
 	#end
 
@@ -241,15 +422,44 @@ class JsHttpClient {
 	 */
 	static function __sendNode(request:URLRequest, method:String, target:String, body:Dynamic, contentType:String, onStatus:Int->Void,
 			onProgress:Int->Int->Void, onComplete:Bytes->Void, onError:String->Void,
-			onResponse:(Int, Array<URLRequestHeader>, String, Bool) -> Void):Void {
+			onResponse:(Int, Array<URLRequestHeader>, String, Bool) -> Void, token:Null<HTTPCancelToken>):Void {
 		var settled:Bool = false;
+		// The hop in flight, which a cancel aborts.
+		var current:Null<js.node.http.ClientRequest> = null;
+		var onCancelled:Null<Void->Void> = null;
+
+		// Marks the request over, and answers whether it was not already.
+		function settle():Bool {
+			if (settled) {
+				return false;
+			}
+			settled = true;
+			if (onCancelled != null) {
+				token.removeHandler(onCancelled);
+			}
+			return true;
+		}
 
 		var fail = function(message:String):Void {
-			if (!settled) {
-				settled = true;
+			if (settle()) {
 				onError(message);
 			}
 		};
+
+		// Aborted where it stands: the request's socket is destroyed, which the
+		// server sees at once, and whatever Node reports of it after this is
+		// the request being over already.
+		if (token != null) {
+			onCancelled = () -> {
+				if (!settled) {
+					if (current != null) {
+						current.destroy();
+					}
+					fail(CANCELLED);
+				}
+			};
+			token.onCancel(onCancelled);
+		}
 
 		var headers:haxe.DynamicAccess<String> = {};
 
@@ -265,8 +475,12 @@ class JsHttpClient {
 			headers.set("Content-Type", contentType);
 		}
 
-		if (request.userAgent != null && request.userAgent != "") {
-			headers.set("User-Agent", request.userAgent);
+		// "CrossByte" while it is unset, as URLRequest.userAgent says and the
+		// native client sends: Node sends none of its own, so a request went
+		// out with no User-Agent at all. Node sends one, so one the caller
+		// wrote among its headers is that one, as over HTTP/2.
+		if (!__hasHeader(headers, "user-agent")) {
+			headers.set("User-Agent", request.userAgent != null ? request.userAgent : DEFAULT_USER_AGENT);
 		}
 
 		// What the native client asks for unless told otherwise. With none,
@@ -285,6 +499,14 @@ class JsHttpClient {
 		var redirects:Int = 0;
 		var leftOrigin:Bool = false;
 
+		// The native client's jar, for the length of this request: what a
+		// response sets goes back to the host that set it on the hops after
+		// it, unless the caller wrote a Cookie of its own, which wins while it
+		// is sent. Nothing was kept, so a sign-in answering 302 with a session
+		// cookie reached the page it sent the client to without it.
+		var jar:Null<CookieJar> = request.manageCookies ? new CookieJar() : null;
+		var callersCookie:Bool = __hasHeader(headers, "cookie");
+
 		function hop(target:String, method:String, body:Dynamic):Void {
 			var url:js.node.url.URL;
 
@@ -301,6 +523,15 @@ class JsHttpClient {
 
 			var secure:Bool = url.protocol == "https:";
 
+			if (jar != null && !callersCookie) {
+				// The last hop's, for its own host, is not this one's.
+				__removeHeader(headers, "cookie");
+				var cookie:Null<String> = jar.headerFor(url.hostname, secure);
+				if (cookie != null) {
+					headers.set("Cookie", cookie);
+				}
+			}
+
 			// Framed with its length, whatever the method. Node frames a body
 			// only for the methods it expects one on, so a body on a GET, DELETE
 			// or OPTIONS went out with no framing at all: the server read it as
@@ -308,7 +539,8 @@ class JsHttpClient {
 			var payload:js.node.Buffer = null;
 			__removeHeader(headers, "content-length");
 			if (body != null) {
-				payload = (body is Bytes) ? js.node.Buffer.from((body : Bytes).getData()) : js.node.Buffer.from(Std.string(body));
+				// Its own bytes, not its buffer's: see __view.
+				payload = (body is Bytes) ? js.node.Buffer.from((body : Bytes).getData(), 0, (body : Bytes).length) : js.node.Buffer.from(Std.string(body));
 				headers.set("Content-Length", Std.string(payload.length));
 			}
 
@@ -326,8 +558,22 @@ class JsHttpClient {
 			}
 
 			var handler = function(response:js.node.http.IncomingMessage):Void {
+				if (settled) {
+					// Cancelled, or timed out, as the response came.
+					response.resume();
+					return;
+				}
 				var code:Int = response.statusCode;
 				onStatus(code);
+
+				if (jar != null) {
+					// While `url` is still the host that set them. Node gives the
+					// fields as an array, and the jar takes them a line each.
+					var setCookie:Dynamic = response.headers.get("set-cookie");
+					if (setCookie != null) {
+						jar.store(Std.isOfType(setCookie, Array) ? (setCookie : Array<Dynamic>).join("\n") : Std.string(setCookie), url.hostname);
+					}
+				}
 
 				var location:Dynamic = response.headers.get("location");
 				if (request.followRedirects && (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) && location != null) {
@@ -361,6 +607,9 @@ class JsHttpClient {
 						__removeHeader(headers, "authorization");
 						__removeHeader(headers, "proxy-authorization");
 						__removeHeader(headers, "cookie");
+						// The jar's cookies, for whichever host set them, go on
+						// from here in the caller's place.
+						callersCookie = false;
 						// And the client certificate, meant for the origin named.
 						leftOrigin = true;
 					}
@@ -394,16 +643,18 @@ class JsHttpClient {
 				var loaded:Int = 0;
 
 				response.on("data", function(chunk:js.node.Buffer) {
+					if (settled) {
+						return;
+					}
 					chunks.push(chunk);
 					loaded += chunk.length;
 					onProgress(loaded, total);
 				});
 
 				response.on("end", function() {
-					if (settled) {
+					if (!settle()) {
 						return;
 					}
-					settled = true;
 
 					// Decoded as the native client decodes, within the same
 					// limits. The body was handed on as it came, so a gzip
@@ -438,6 +689,7 @@ class JsHttpClient {
 				fail("HTTP request failed: " + Std.string(e));
 				return;
 			}
+			current = clientRequest;
 
 			clientRequest.on("error", function(e) {
 				fail("HTTP request failed: " + Std.string(e));
@@ -662,6 +914,16 @@ class JsHttpClient {
 		}
 
 		step(codings.length - 1, body);
+	}
+
+	/** Whether `headers` holds `name`, lowercase, whatever case the caller wrote it in. */
+	static function __hasHeader(headers:haxe.DynamicAccess<String>, name:String):Bool {
+		for (key in headers.keys()) {
+			if (key.toLowerCase() == name) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** Removes a header whatever case the caller wrote it in. */

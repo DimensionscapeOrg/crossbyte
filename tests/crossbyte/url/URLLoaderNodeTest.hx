@@ -196,6 +196,276 @@ class URLLoaderNodeTest extends utest.Test {
 		});
 	}
 
+	/**
+		A `ByteArray` body goes out as the bytes it holds. Node was handed the
+		buffer under it, which runs on past `length` into the room it keeps to
+		grow -- and into whatever it held before it was cleared: "hello" went
+		out as nine bytes, and written after a secret, with the rest of the
+		secret behind it.
+	**/
+	public function testAByteArrayBodyGoesOutAsItsLength(async:Async):Void {
+		var body:crossbyte.io.ByteArray = new crossbyte.io.ByteArray();
+		body.writeUTFBytes("a secret, written first and then cleared away");
+		body.clear();
+		body.writeUTFBytes("hello");
+		serveWith((request, received, response) -> {
+			response.writeHead(200, {"Content-Type": "text/plain"});
+			response.end(Std.string(Reflect.field(request.headers, "content-length")) + " " + received.toString("hex"));
+		}, (port, close) -> {
+			loadWith('http://127.0.0.1:$port/echo', request -> {
+				request.method = URLRequestMethod.POST;
+				request.data = body;
+			}, outcome -> {
+				close();
+				Assert.equals("ok 5 68656c6c6f", outcome, "the body went out past its length: " + outcome);
+				async.done();
+			});
+		});
+	}
+
+	/**
+		`close()` ends the load in flight, and the next load is the only one
+		heard from. `close()` only stopped the next load being refused as
+		busy: the request it closed went on, and its answer arrived after the
+		next load's -- COMPLETE "FAST" and then COMPLETE "SLOW", on one loader
+		-- while the server answered a request nobody wanted.
+	**/
+	public function testClosingALoadEndsItsRequestAndDropsItsAnswer(async:Async):Void {
+		var slow:SlowAnswer = {arrived: false, closed: false, answered: false};
+		serveWith(answerSlowly(slow), (port, close) -> {
+			var loader:URLLoader = new URLLoader();
+			var events:Array<String> = [];
+			listen(loader, events);
+			loader.load(new URLRequest('http://127.0.0.1:$port/slow'));
+			loader.close();
+			loader.load(new URLRequest('http://127.0.0.1:$port/fast'));
+
+			// Past the time the slow answer comes, so a request that went on
+			// regardless has been heard from.
+			var until:Float = haxe.Timer.stamp() + 0.8;
+			HTTPTestSupport.pumpUntilAsync(() -> haxe.Timer.stamp() >= until, 5.0, _ -> {
+				close();
+				Assert.same(["COMPLETE FAST"], events, "a closed load was heard from");
+				Assert.isFalse(slow.answered, "the server answered a closed load");
+				async.done();
+			});
+		});
+	}
+
+	/**
+		And a load the server already holds: the server sees the client go as
+		it is closed, rather than answering it later for nobody.
+	**/
+	public function testClosingALoadTheServerHoldsEndsItsRequest(async:Async):Void {
+		var slow:SlowAnswer = {arrived: false, closed: false, answered: false};
+		serveWith(answerSlowly(slow), (port, close) -> {
+			var loader:URLLoader = new URLLoader();
+			var events:Array<String> = [];
+			listen(loader, events);
+			loader.load(new URLRequest('http://127.0.0.1:$port/slow'));
+			HTTPTestSupport.pumpUntilAsync(() -> slow.arrived, 5.0, arrived -> {
+				loader.close();
+				HTTPTestSupport.pumpUntilAsync(() -> slow.closed || slow.answered, 5.0, _ -> {
+					close();
+					Assert.isTrue(arrived, "the request never reached the server");
+					Assert.isTrue(slow.closed, "the closed load's request went on");
+					Assert.isFalse(slow.answered, "the server answered a closed load");
+					Assert.same([], events, "a closed load was heard from");
+					async.done();
+				});
+			});
+		});
+	}
+
+	/**
+		A load's `cancelToken` cancels it: the request ends, and the load fails
+		saying it was cancelled, as it does natively. There was no token on
+		JavaScript; `cancelToken` stayed null.
+	**/
+	public function testCancellingALoadsTokenEndsIt(async:Async):Void {
+		var slow:SlowAnswer = {arrived: false, closed: false, answered: false};
+		serveWith(answerSlowly(slow), (port, close) -> {
+			var loader:URLLoader = new URLLoader();
+			var events:Array<String> = [];
+			listen(loader, events);
+			loader.load(new URLRequest('http://127.0.0.1:$port/slow'));
+			var token:Null<crossbyte.http.HTTPCancelToken> = loader.cancelToken;
+			if (token == null) {
+				close();
+				Assert.fail("a load on Node has no cancelToken");
+				async.done();
+				return;
+			}
+			HTTPTestSupport.pumpUntilAsync(() -> slow.arrived, 5.0, arrived -> {
+				token.cancel();
+				HTTPTestSupport.pumpUntilAsync(() -> slow.closed || slow.answered, 5.0, _ -> {
+					Assert.isTrue(arrived, "the request never reached the server");
+					Assert.same(["IO_ERROR Request cancelled"], events);
+					Assert.isTrue(slow.closed, "the cancelled load's request went on");
+					Assert.isFalse(slow.answered, "the server answered a cancelled load");
+
+					// And the loader takes its next load.
+					loader.load(new URLRequest('http://127.0.0.1:$port/fast'));
+					HTTPTestSupport.pumpUntilAsync(() -> events.length >= 2, 5.0, _ -> {
+						close();
+						Assert.same(["IO_ERROR Request cancelled", "COMPLETE FAST"], events);
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
+	/**
+		A cookie a redirect sets goes back on the hops after it, as
+		`manageCookies` says and as the native client does: a sign-in
+		answering 302 with a session cookie reached the page it sent the
+		client to without it. Not with `manageCookies` off, and never over a
+		`Cookie` the caller wrote itself.
+	**/
+	public function testACookieARedirectSetsGoesBackOnTheNextHop(async:Async):Void {
+		serveWith((request:Dynamic, body:js.node.Buffer, response:Dynamic) -> {
+			if (Std.string(request.url) == "/signin") {
+				var redirect:Dynamic = {};
+				Reflect.setField(redirect, "Location", "/landing");
+				Reflect.setField(redirect, "Set-Cookie", ["sid=abc123; Path=/; HttpOnly", "theme=dark"]);
+				response.writeHead(302, redirect);
+				response.end();
+				return;
+			}
+			var cookie:Dynamic = Reflect.field(request.headers, "cookie");
+			response.writeHead(200, {"Content-Type": "text/plain"});
+			response.end("cookie=" + (cookie == null ? "<none>" : Std.string(cookie)));
+		}, (port, close) -> {
+			var signin:String = 'http://127.0.0.1:$port/signin';
+			loadWith(signin, _ -> {}, managed -> {
+				loadWith(signin, request -> request.manageCookies = false, unmanaged -> {
+					loadWith(signin, request -> request.requestHeaders.push(new URLRequestHeader("Cookie", "mine=1")), own -> {
+						close();
+						Assert.equals("ok cookie=sid=abc123; theme=dark", managed, "the cookies a redirect set did not go back");
+						Assert.equals("ok cookie=<none>", unmanaged, "a cookie went back with manageCookies off");
+						Assert.equals("ok cookie=mine=1", own, "the caller's own Cookie was not the one sent");
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
+	/**
+		`User-Agent: CrossByte` while `userAgent` is unset, as the member says
+		and the native client sends. Node sends none of its own, so a request
+		went out with no User-Agent at all. One set is sent instead, and one
+		the caller wrote among its headers is the one Node sends.
+	**/
+	public function testTheUserAgentIsCrossByteUnlessSet(async:Async):Void {
+		serveWith((request:Dynamic, body:js.node.Buffer, response:Dynamic) -> {
+			response.writeHead(200, {"Content-Type": "text/plain"});
+			response.end(Std.string(Reflect.field(request.headers, "user-agent")));
+		}, (port, close) -> {
+			var url:String = 'http://127.0.0.1:$port/';
+			loadWith(url, _ -> {}, unset -> {
+				loadWith(url, request -> request.userAgent = "Tester/1", set -> {
+					loadWith(url, request -> request.requestHeaders.push(new URLRequestHeader("User-Agent", "Mine/2")), written -> {
+						close();
+						Assert.equals("ok CrossByte", unset);
+						Assert.equals("ok Tester/1", set);
+						Assert.equals("ok Mine/2", written);
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
+	/**
+		A version Node's http client cannot speak is refused, saying so,
+		where it went out as HTTP/1.1 whatever was asked -- and natively a
+		version that cannot be had fails rather than falls back.
+	**/
+	public function testAVersionNodeCannotSpeakIsRefused(async:Async):Void {
+		var served:Int = 0;
+		serveWith((request:Dynamic, body:js.node.Buffer, response:Dynamic) -> {
+			served++;
+			response.writeHead(200, {"Content-Type": "text/plain"});
+			response.end("over " + Std.string(request.httpVersion));
+		}, (port, close) -> {
+			var url:String = 'http://127.0.0.1:$port/';
+			loadWith(url, request -> request.httpVersion = crossbyte.http.HTTPVersion.HTTP_2, two -> {
+				loadWith(url, request -> request.httpVersion = crossbyte.http.HTTPVersion.HTTP_1, one -> {
+					loadWith(url, _ -> {}, eleven -> {
+						close();
+						Assert.isTrue(StringTools.startsWith(two, "error HTTP/2 is not available to URLLoader on Node"), two);
+						Assert.isTrue(StringTools.startsWith(one, "error HTTP/1.0 is not available to URLLoader on Node"), one);
+						Assert.equals("ok over 1.1", eleven);
+						Assert.equals(1, served, "a request for a version Node cannot speak was sent");
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
+	/**
+		An object's fields go as a form, as they do natively: a POST's as its
+		body, a GET's as its query. Only a `URLVariables` was encoded here;
+		an object went out as `Std.string` made it -- "{ user : bob }" -- and
+		a GET sent it as a body.
+	**/
+	public function testAnObjectsFieldsGoAsAForm(async:Async):Void {
+		serveWith((request:Dynamic, body:js.node.Buffer, response:Dynamic) -> {
+			response.writeHead(200, {"Content-Type": "text/plain"});
+			response.end(Std.string(request.method) + " " + Std.string(request.url) + " [" + Std.string(Reflect.field(request.headers, "content-type")) + "] "
+				+ body.toString());
+		}, (port, close) -> {
+			loadWith('http://127.0.0.1:$port/form', request -> {
+				request.method = URLRequestMethod.POST;
+				request.data = {user: "bob", tags: ["a", "b"]};
+			}, posted -> {
+				loadWith('http://127.0.0.1:$port/form?page=2', request -> request.data = {user: "bob"}, got -> {
+					close();
+					Assert.equals("ok POST /form [application/x-www-form-urlencoded] user=bob&tags%5B%5D=a&tags%5B%5D=b", posted);
+					Assert.equals("ok GET /form?page=2&user=bob [null] ", got);
+					async.done();
+				});
+			});
+		});
+	}
+
+	/** Records what `loader` dispatches into `events`, as "COMPLETE <data>" or "IO_ERROR <text>". */
+	private static function listen(loader:URLLoader, events:Array<String>):Void {
+		loader.addEventListener(Event.COMPLETE, _ -> events.push("COMPLETE " + Std.string(loader.data)));
+		loader.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> events.push("IO_ERROR " + event.text));
+	}
+
+	/**
+		Answers `/slow` after 300 ms, unless the client has gone by then --
+		which `slow` records -- and anything else at once with "FAST".
+	**/
+	private static function answerSlowly(slow:SlowAnswer):(request:Dynamic, body:js.node.Buffer, response:Dynamic) -> Void {
+		return (request, body, response) -> {
+			if (Std.string(request.url) != "/slow") {
+				response.writeHead(200, {"Content-Type": "text/plain"});
+				response.end("FAST");
+				return;
+			}
+			slow.arrived = true;
+			// Before the answer is written, a close is the client going.
+			response.on("close", () -> {
+				if (!slow.answered) {
+					slow.closed = true;
+				}
+			});
+			js.Node.setTimeout(() -> {
+				if (!slow.closed) {
+					slow.answered = true;
+					response.writeHead(200, {"Content-Type": "text/plain"});
+					response.end("SLOW");
+				}
+			}, 300);
+		};
+	}
+
 	/** Loads `url` as text, and calls `done` with "ok <data>" or "error <text>". */
 	private static function load(url:String, limit:Null<Int>, done:String->Void):Void {
 		loadWith(url, request -> {
@@ -266,6 +536,28 @@ class URLLoaderNodeTest extends utest.Test {
 		return crossbyte._internal.http.PublicKeyPins.pinOf(haxe.crypto.Base64.decode(~/\s/g.replace(body, "")));
 	}
 
+	/**
+		Node's http server, answering each request with what `answer` makes of
+		it once its body has arrived. `close` also ends kept connections,
+		which would hold the process open.
+	**/
+	private static function serveWith(answer:(request:Dynamic, body:js.node.Buffer, response:Dynamic) -> Void,
+			then:(port:Int, close:Void->Void) -> Void):Void {
+		var server:Dynamic = js.Lib.require("http").createServer(function(request:Dynamic, response:Dynamic):Void {
+			var chunks:Array<js.node.Buffer> = [];
+			request.on("data", (chunk:js.node.Buffer) -> chunks.push(chunk));
+			request.on("end", () -> answer(request, js.node.Buffer.concat(chunks), response));
+		});
+		server.listen(0, "127.0.0.1", function():Void {
+			then(server.address().port, () -> {
+				server.close();
+				if (server.closeAllConnections != null) {
+					server.closeAllConnections();
+				}
+			});
+		});
+	}
+
 	/** Starts Node's http server with the answers this suite asks for. */
 	private static function serve(then:(port:Int, close:Void->Void) -> Void):Void {
 		var zlib:Dynamic = js.Lib.require("zlib");
@@ -307,5 +599,12 @@ class URLLoaderNodeTest extends utest.Test {
 			then(port, () -> server.close());
 		});
 	}
+}
+
+/** Whether `/slow` arrived, whether the client went before it was answered, and whether it was answered. */
+private typedef SlowAnswer = {
+	var arrived:Bool;
+	var closed:Bool;
+	var answered:Bool;
 }
 #end
