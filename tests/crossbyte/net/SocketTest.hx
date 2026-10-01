@@ -61,11 +61,15 @@ class SocketTest extends utest.Test {
 		new ConstructorProbeSocket("127.0.0.1", 1);
 		Assert.equals(1, ConstructorProbeSocket.lastPort);
 
-		// Out of range, and the 0 that means "leave it disconnected", are
-		// left alone rather than dialled.
-		for (port in [0, 65536, -1]) {
+		// The 0 that means "leave it disconnected" is left alone rather than
+		// dialled; a port out of range is the SecurityError the constructor
+		// promises, and is not dialled either.
+		ConstructorProbeSocket.lastPort = null;
+		new ConstructorProbeSocket("127.0.0.1", 0);
+		Assert.isNull(ConstructorProbeSocket.lastPort, "port 0 should not have been attempted");
+		for (port in [65536, -1]) {
 			ConstructorProbeSocket.lastPort = null;
-			new ConstructorProbeSocket("127.0.0.1", port);
+			Assert.raises(() -> new ConstructorProbeSocket("127.0.0.1", port), crossbyte.errors.SecurityError);
 			Assert.isNull(ConstructorProbeSocket.lastPort, "port " + port + " should not have been attempted");
 		}
 	}

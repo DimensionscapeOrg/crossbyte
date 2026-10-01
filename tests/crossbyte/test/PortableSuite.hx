@@ -89,6 +89,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.SocketCloseTest());
 		// An object written and read with the encoding a socket starts in.
 		runner.addCase(new crossbyte.net.SocketObjectTest());
+		// What Socket's documentation promises: ranges, ports, timeouts, close.
+		runner.addCase(new crossbyte.net.SocketContractTest());
 		// A connection replaced, whose socket still reports on Node.
 		runner.addCase(new crossbyte.net.SocketReconnectTest());
 		runner.addCase(new crossbyte.net.NameLookupTest());
