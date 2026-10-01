@@ -502,6 +502,83 @@ class SQLiteNativeTest extends utest.Test {
 		return Std.int(Reflect.field(connection.request("SELECT COUNT(*) AS n FROM " + table).next(), "n"));
 	}
 
+	public function testCancelStopsTheWorkAndKeepsTheConnection():Void {
+		// cancel() cancelled the connection's worker: the statement running
+		// went on to its end with nothing left to report it, the work queued
+		// behind it was dropped without a word, CANCEL came at once, and
+		// close() never closed, the connection and its file were held for
+		// the life of the process.
+		var path:String = __path("cancel");
+		var connection:SQLiteConnection = new SQLiteConnection();
+		var events:Array<String> = [];
+		var errors:Map<String, SQLError> = new Map();
+
+		for (type in [SQLEvent.OPEN, SQLEvent.BEGIN, SQLEvent.CANCEL, SQLEvent.CLOSE]) {
+			connection.addEventListener(type, e -> events.push(e.type));
+		}
+
+		connection.addEventListener(SQLErrorEvent.ERROR, e -> events.push("error:" + e.error.operation));
+		connection.openAsync(path, SQLiteMode.CREATE, false, 4096);
+
+		var first:SQLiteStatement = __watched(connection, "first", "SELECT 1 AS one", events, errors);
+		// Hours of work, which only an interrupt ends.
+		var long:SQLiteStatement = __watched(connection, "long",
+			"WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100000000000) SELECT COUNT(*) AS c FROM n", events, errors);
+		var queued:SQLiteStatement = __watched(connection, "queued", "SELECT 2 AS two", events, errors);
+		first.execute();
+		long.execute();
+		queued.execute();
+		connection.begin();
+
+		// The worker takes up the long statement as soon as the first is done.
+		__pumpUntil(() -> events.indexOf("first") >= 0);
+		__pumpUntil(() -> false, 0.2);
+
+		var asked:Float = haxe.Timer.stamp();
+		connection.cancel();
+		__pumpUntil(() -> events.indexOf(SQLEvent.CANCEL) >= 0);
+		var took:Float = haxe.Timer.stamp() - asked;
+
+		Assert.same([SQLEvent.OPEN, "first", "long:error", "queued:error", "error:" + SQLEvent.BEGIN, SQLEvent.CANCEL], events);
+		Assert.isTrue(took < 5, 'the cancel took $took s');
+		Assert.isTrue(errors.exists("long") && errors.get("long").details().indexOf("interrupt") >= 0,
+			"the running statement was not interrupted: " + (errors.exists("long") ? errors.get("long").details() : "no error"));
+		Assert.isTrue(errors.exists("queued") && errors.get("queued").details().indexOf("Cancelled") >= 0,
+			"the queued statement was not dropped: " + (errors.exists("queued") ? errors.get("queued").details() : "no error"));
+		Assert.isFalse(long.executing);
+		Assert.isFalse(queued.executing);
+
+		// Still open, and answering.
+		var after:SQLiteStatement = __watched(connection, "after", "SELECT 3 AS three", events, errors);
+		after.execute();
+		__pumpUntil(() -> events.indexOf("after") >= 0 || events.indexOf("after:error") >= 0);
+		Assert.isTrue(events.indexOf("after") >= 0, "the connection did not answer after cancel()");
+
+		connection.close();
+		__pumpUntil(() -> events.indexOf(SQLEvent.CLOSE) >= 0);
+		Assert.isTrue(events.indexOf(SQLEvent.CLOSE) >= 0, "close() never closed");
+
+		// Nothing holds the file.
+		var other:SQLiteConnection = new SQLiteConnection();
+		other.open(path, SQLiteMode.UPDATE, false, 4096);
+		other.request("BEGIN IMMEDIATE");
+		other.request("ROLLBACK");
+		other.close();
+	}
+
+	/** A statement whose result or failure is pushed to `events` as `name` or `name:error`. **/
+	private static function __watched(connection:SQLiteConnection, name:String, sql:String, events:Array<String>, errors:Map<String, SQLError>):SQLiteStatement {
+		var statement:SQLiteStatement = new SQLiteStatement();
+		statement.sqlConnection = connection;
+		statement.text = sql;
+		statement.addEventListener(SQLEvent.RESULT, _ -> events.push(name));
+		statement.addEventListener(SQLErrorEvent.ERROR, function(e:SQLErrorEvent) {
+			errors.set(name, e.error);
+			events.push(name + ":error");
+		});
+		return statement;
+	}
+
 	public function testWhatSQLiteRefusesIsAnSQLError():Void {
 		// Against the engine itself: what hxcpp's glue throws is a String,
 		// which escaped as one, and nothing was dispatched.
