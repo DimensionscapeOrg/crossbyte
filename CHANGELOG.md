@@ -1938,6 +1938,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `SQLiteConnection.deanalyze()` removes the statistics `analyze()`
+  gathered, as AIR's does: the rows of `sqlite_stat1`, and of
+  `sqlite_stat4` where there is one, in every database the connection has
+  open, and the query planner reads them again. It closed the connection
+  and opened it again instead, touching no statistics: an in-memory
+  database lost every table, a file kept its statistics, and the session
+  lost its transaction, attached databases and settings. On an
+  asynchronous connection `DEANALYZE` came before the work, which then
+  left the connection answering nothing; it comes once the work is done.
 - Opening a Postgres or SQLite connection that is already open no longer
   leaks the first. Postgres replaced its native handle and left that
   server connection open for the life of the process; it now closes it
