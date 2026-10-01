@@ -19,7 +19,9 @@
 		includes one.
 
 		File list generated from the vendored tree; regenerate it after
-		updating libsodium rather than editing by hand.
+		updating libsodium rather than editing by hand, then move
+		crypto_generichash/blake2b/ and sodium/runtime.c into the two groups
+		below the main one.
 	-->
 	<set name="CROSSBYTE_SODIUM_DIR" value="${this_dir}/vendor/libsodium/src"/>
 
@@ -76,13 +78,6 @@
 		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_core/keccak1600/ref/keccak1600_ref.c"/>
 		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_core/salsa/ref/core_salsa_ref.c"/>
 		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_core/softaes/softaes.c"/>
-		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/generichash_blake2.c"/>
-		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/ref/blake2b-compress-avx2.c"/>
-		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/ref/blake2b-compress-ref.c"/>
-		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/ref/blake2b-compress-sse41.c"/>
-		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/ref/blake2b-compress-ssse3.c"/>
-		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/ref/blake2b-ref.c"/>
-		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/ref/generichash_blake2b.c"/>
 		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/crypto_generichash.c"/>
 		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_hash/crypto_hash.c"/>
 		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_hash/sha256/cp/hash_sha256_cp.c"/>
@@ -174,9 +169,53 @@
 		<file name="${CROSSBYTE_SODIUM_DIR}/randombytes/sysrandom/randombytes_sysrandom.c"/>
 		<file name="${CROSSBYTE_SODIUM_DIR}/sodium/codecs.c"/>
 		<file name="${CROSSBYTE_SODIUM_DIR}/sodium/core.c"/>
-		<file name="${CROSSBYTE_SODIUM_DIR}/sodium/runtime.c"/>
 		<file name="${CROSSBYTE_SODIUM_DIR}/sodium/utils.c"/>
 		<file name="${CROSSBYTE_SODIUM_DIR}/sodium/version.c"/>
+	</files>
+
+	<!--
+		BLAKE2b's sources, built on gcc and clang without the instruction
+		sets (see crossbyte_sodium_config.h): libsodium's SIMD compression ran
+		at half the speed of its portable one on x86-64, AVX2 included. hxcpp
+		applies flags to a whole <files> group, so they are a group of their own;
+		MSVC builds them as it always did.
+	-->
+	<files id="crossbyte-sodium-vendor-scalar">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${CROSSBYTE_SODIUM_DIR}/include"/>
+		<compilerflag value="-I${CROSSBYTE_SODIUM_DIR}/include/sodium"/>
+		<compilerflag value="-DSODIUM_STATIC=1"/>
+		<compilerflag value="-DSODIUM_EXPORT="/>
+		<compilerflag value="-D_CRT_SECURE_NO_WARNINGS" if="windows"/>
+		<compilerflag value="-include" unless="isMsvc"/>
+		<compilerflag value="${this_dir}/crossbyte_sodium_config.h" unless="isMsvc"/>
+		<compilerflag value="-DCROSSBYTE_SODIUM_SCALAR=1" unless="isMsvc"/>
+
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/generichash_blake2.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/ref/blake2b-compress-avx2.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/ref/blake2b-compress-ref.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/ref/blake2b-compress-sse41.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/ref/blake2b-compress-ssse3.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/ref/blake2b-ref.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/ref/generichash_blake2b.c"/>
+	</files>
+
+	<!--
+		The CPU probe, the one source that may read XGETBV through the inline
+		assembly HAVE_AVX_ASM selects; see crossbyte_sodium_config.h.
+	-->
+	<files id="crossbyte-sodium-vendor-probe">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${CROSSBYTE_SODIUM_DIR}/include"/>
+		<compilerflag value="-I${CROSSBYTE_SODIUM_DIR}/include/sodium"/>
+		<compilerflag value="-DSODIUM_STATIC=1"/>
+		<compilerflag value="-DSODIUM_EXPORT="/>
+		<compilerflag value="-D_CRT_SECURE_NO_WARNINGS" if="windows"/>
+		<compilerflag value="-include" unless="isMsvc"/>
+		<compilerflag value="${this_dir}/crossbyte_sodium_config.h" unless="isMsvc"/>
+		<compilerflag value="-DCROSSBYTE_SODIUM_RUNTIME=1" unless="isMsvc"/>
+
+		<file name="${CROSSBYTE_SODIUM_DIR}/sodium/runtime.c"/>
 	</files>
 
 	<files id="crossbyte-sodium-common">
@@ -190,6 +229,8 @@
 	<target id="haxe">
 		<files id="crossbyte-sodium-common"/>
 		<files id="crossbyte-sodium-vendor"/>
+		<files id="crossbyte-sodium-vendor-scalar"/>
+		<files id="crossbyte-sodium-vendor-probe"/>
 		<lib name="advapi32.lib" if="windows" unless="static_link"/>
 	</target>
 </xml>

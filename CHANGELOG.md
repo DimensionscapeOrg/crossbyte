@@ -1211,9 +1211,15 @@ All notable changes to CrossByte will be documented in this file.
   a word at a time on little-endian targets. With no configure run it
   took the 32-bit fallbacks. On a Ryzen 9 9950X with gcc 13: an X25519
   key agreement in 24 microseconds where it took 41, an Ed25519 signature
-  in 11 where it took 16, a verification in 29 where it took 48. MSVC's
-  build already worked this out. Its 546 lines of "compiled using an
-  undocumented method" warnings are gone from every native build log.
+  in 11 where it took 16, a verification in 29 where it took 48. On
+  x86-64 it also builds libsodium's SSE, AVX2 and AVX-512 code and asks
+  the CPU which to run: Argon2id at its interactive limits, checking a
+  password, in 45 ms where it took 72, and XChaCha20-Poly1305 at 1.9 GB/s
+  where it ran at 0.9. BLAKE2b keeps the portable code, which ran twice
+  as fast as the SIMD one there. Every answer is byte for byte the
+  portable code's. MSVC's build already worked all this out. Its 546
+  lines of "compiled using an undocumented method" warnings are gone from
+  every native build log.
 - `PostgresStatement` and `MongoStatement` throw a failed statement's
   `SQLError` after dispatching it as an `SQLErrorEvent`, as `MySQLStatement`
   does. They dispatched it and returned, so to a caller not listening, an
