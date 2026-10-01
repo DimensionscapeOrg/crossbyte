@@ -1836,6 +1836,10 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `HTTPCancelToken.removeHandler` removes a bound method handed back to it.
+  It compared by identity, and on eval and the jvm each mention of
+  `object.method` is a new closure, so the handler stayed registered and
+  ran at a later cancel, for a request that had long finished.
 - `Socket` and `WebSocket` dispatch `OutputProgressEvent.OUTPUT_PROGRESS`.
   `bytesPending` is documented to be read in that event's handler, and the
   event was never dispatched, so a writer streaming to a slow reader had

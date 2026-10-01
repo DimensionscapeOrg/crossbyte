@@ -75,6 +75,23 @@ class HttpTest extends utest.Test {
 		Assert.isFalse(ran);
 	}
 
+	/**
+		A bound method handed back is the handler it was registered as. On
+		eval and the jvm each mention of `object.method` is a new closure, so
+		comparing by identity never found it: the handler stayed, and ran at
+		a later cancel for a request that had long finished.
+	**/
+	public function testARemovedBoundMethodDoesNotRun():Void {
+		var token = new HTTPCancelToken();
+		var owner = new CancelCounter();
+
+		token.onCancel(owner.stop);
+		token.removeHandler(owner.stop);
+		token.cancel();
+
+		Assert.equals(0, owner.stops);
+	}
+
 	public function testValidateHttpVersionOnlyAllowsImplementedVersions():Void {
 		Assert.isTrue(Http.validateHttpVersion(HttpVersion.HTTP_1));
 		Assert.isTrue(Http.validateHttpVersion(HttpVersion.HTTP_1_1));
@@ -2039,5 +2056,16 @@ private class FakeHTTP2Backend implements HTTPBackend {
 		context.onProgress(0, bytes.length);
 		context.onProgress(bytes.length, bytes.length);
 		context.onComplete(bytes);
+	}
+}
+
+/** Something with a method to register on a token, as a request's owner has. **/
+private class CancelCounter {
+	public var stops:Int = 0;
+
+	public function new() {}
+
+	public function stop():Void {
+		stops++;
 	}
 }
