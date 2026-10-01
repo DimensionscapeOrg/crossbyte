@@ -164,7 +164,11 @@ class StunQueryTest extends utest.Test {
 		}
 	}
 
-	/** A non-positive timeout is three seconds, which is what callers passed. **/
+	/**
+		A non-positive timeout is three seconds, which is what callers passed,
+		and the question says so: `timeoutMs` is the time it has, which its
+		failure reports.
+	**/
 	public function testANonPositiveTimeoutIsThreeSeconds():Void {
 		if (unsupported()) return;
 
@@ -172,6 +176,9 @@ class StunQueryTest extends utest.Test {
 
 		Assert.isFalse(query.expired(12.999));
 		Assert.isTrue(query.expired(13.0));
+		Assert.equals(StunQuery.DEFAULT_TIMEOUT_MS, query.timeoutMs);
+		Assert.equals(3000, new StunQuery(10, -5).timeoutMs);
+		Assert.equals(750, new StunQuery(10, 750).timeoutMs);
 	}
 
 	/**

@@ -8,7 +8,7 @@ import crossbyte.Future;
 import crossbyte.events.Event;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.events.ReliableDatagramSocketConnectEvent;
-import crossbyte.net.Endpoint.parseURL;
+import crossbyte.net.Endpoint.__parseListenURL;
 
 @:forward
 /**
@@ -23,6 +23,11 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 		Creates a host from a transport URI, `tcp://`, `ws://`, `wss://` or
 		`rudp://`: binds it, and starts it listening if asked.
 
+		Port 0, as in `tcp://127.0.0.1:0`, binds a port the system chooses,
+		as `ServerSocket.bind(0)` does, and `localPort` says which: once the
+		host is bound, and on Node once it is listening, a turn after
+		`listen()`.
+
 		A `wss://` host terminates TLS, and needs the certificate it presents
 		and its key in `cert`, which is installed before the host binds, as
 		a TLS server's material has to be. For anything more, client
@@ -35,7 +40,7 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 	**/
 	public inline function new(uri:String, ?onAccept:INetConnection->Void, ?onDisconnect:(INetConnection, Reason) -> Void, ?onError:Reason->Void,
 			startListening:Bool = false, ?cert:{certificate:Certificate, key:Key}):Void {
-		var endpoint:Endpoint = parseURL(uri);
+		var endpoint:Endpoint = __parseListenURL(uri);
 		var secureWebSocket = __isSecureWebSocketUri(uri);
 		// Before anything is bound. A wss:// host bound in this constructor
 		// with no way to reach its certificate: every handshake failed, and

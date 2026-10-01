@@ -77,6 +77,10 @@ interface INetHost {
 	 * socket, so an address discovered anywhere else says nothing about where
 	 * this host can be reached, which is the only thing worth publishing.
 	 *
+	 * `timeoutMs` is how long to keep asking; 0 or less asks for the default,
+	 * three seconds, since nothing but a deadline ends a question over UDP
+	 * that nobody answers.
+	 *
 	 * Fails, with an `IllegalOperationError` as its cause, when `canDial` is
 	 * false.
 	 */

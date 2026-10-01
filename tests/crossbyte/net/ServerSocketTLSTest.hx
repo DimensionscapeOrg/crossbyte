@@ -492,8 +492,8 @@ class ServerSocketTLSTest extends utest.Test {
 				handoff.release();
 			});
 
-			var deadline = Sys.time() + 20;
-			while (Sys.time() < deadline && !finished) {
+			var deadline = haxe.Timer.stamp() + 20;
+			while (haxe.Timer.stamp() < deadline && !finished) {
 				runtime.pump(1 / 60, 0);
 				finished = handoff.wait(0.002);
 			}
@@ -646,8 +646,8 @@ class ServerSocketTLSTest extends utest.Test {
 				handoff.release();
 			});
 
-			var deadline = Sys.time() + 20;
-			while (Sys.time() < deadline && !finished) {
+			var deadline = haxe.Timer.stamp() + 20;
+			while (haxe.Timer.stamp() < deadline && !finished) {
 				runtime.pump(1 / 60, 0);
 				finished = handoff.wait(0.002);
 			}
@@ -731,16 +731,16 @@ class ServerSocketTLSTest extends utest.Test {
 				handoff.release();
 			});
 
-			var deadline = Sys.time() + 20;
-			while (Sys.time() < deadline && !finished) {
+			var deadline = haxe.Timer.stamp() + 20;
+			while (haxe.Timer.stamp() < deadline && !finished) {
 				runtime.pump(1 / 60, 0);
 				finished = handoff.wait(0.002);
 			}
 
 			// A few more passes so a connection completing on the client's last
 			// breath still reaches the pump before the assertions read it.
-			var settle = Sys.time() + 0.5;
-			while (Sys.time() < settle) {
+			var settle = haxe.Timer.stamp() + 0.5;
+			while (haxe.Timer.stamp() < settle) {
 				runtime.pump(1 / 60, 0);
 				crossbyte.sys.System.sleep(0.002);
 			}

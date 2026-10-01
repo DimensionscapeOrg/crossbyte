@@ -87,7 +87,7 @@ entry below says how:
   advertise it, is not asked, and keeps its end open as before.
 - `PeerConnection.addLocalCandidate` throws for a relayed candidate, which
   never worked from there: ask `gatherRelayed` or `gatherRelayedFrom`.
-- An `IceAgent` fails when it has selected no pair 40 seconds after
+- An `IceAgent` fails when it has selected no pair 80 seconds after
   `start` (`timeout`), where it waited without end; set `timeout` to 0 to
   keep waiting.
 - Off native cpp, `Ed25519.verifyDetached` throws an
@@ -206,6 +206,11 @@ entry below says how:
   handle now takes the lock file before it opens the region, so a removal
   cannot come between the two. `SharedObjectTest` removes the regions it
   makes, which piled up under `/dev/shm` on every Linux run.
+- `PeerConnection.gatherRelayed` takes `certAuthority` and `verifyCert`
+  for a relay reached over TLS, as a `TurnServer` given to
+  `gatherRelayedFrom` does. It took the transport and nothing else, so a
+  private relay over TLS, whose authority no system trusts, could not be
+  reached through it.
 - `ReliableDatagramServerSocket.relayVerifyCert`, for a TURN relay reached
   over TLS whose certificate should not be checked, a test against a
   throwaway one. The server passed its relay client an authority
@@ -1344,6 +1349,16 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `IceAgent.DEFAULT_TIMEOUT`, the time an agent has from `start` to select
+  a pair, is 80 seconds, where round three made it 40. A nomination is a
+  check, given up on 39.5 seconds after it goes out, and forty was a moment
+  past that one schedule: an agent whose nominated pair went quiet moved on
+  to another pair that had answered only if the first had answered within
+  half a second, so a NAT that dropped a pair's first checks put the
+  agent's deadline ahead of its nomination's. Eighty is a moment past two
+  schedules, one for a pair to be answered however late, one for its
+  nomination to go unanswered, and still ends every wait nothing else
+  does. `PeerConnection` keeps its own `readyTimeout`.
 - Off native, `DtlsCertificate`'s constructor, `generate`, `fingerprintOf`
   and `matches` throw an `IllegalOperationError` naming the target, and
   each says so in its documentation. The constructor threw "That
@@ -2343,6 +2358,62 @@ entry below says how:
   nested 6,000 deep, 12 KB from the provider, or from whoever could
   answer for it, overflowed the stack and ended the process. `parse`
   throws, and the exchange fails as a malformed response.
+- `ReliableDatagramServerSocket.close()` may be called from any thread
+  too, and is handed to the server's runtime as a session's close is.
+  Made elsewhere, it took the runtime its ticks run on from the calling
+  thread, which threw there and was swallowed: an attached agent's, a
+  relay's or a waiting public-address question's tick stayed on the
+  runtime for good, and the question was failed on the closing thread.
+  The server's ticks are added to and taken off its own runtime now,
+  whichever is current.
+- `ReliableDatagramServerSocket.attachIceAgent` says when the agent's
+  `connected` fails, every pair failed, or none selected within the
+  agent's `timeout`, 80 seconds by default, and its example handles the
+  failure, where a session dialled on `connected` waited for an answer it
+  was never told would not come. A relayed reliable session leaves its
+  peer's channel to `TurnClient.sendTo`, which asks for it with the first
+  datagram, rather than asking again before every one.
+- A STUN question's `timeoutMs` of 0 or less is documented as what it
+  is, the default of three seconds, `StunClient`'s questions,
+  `ReliableDatagramServerSocket.discoverPublicAddress`,
+  `INetHost.discoverPublicAddress` and `PeerConnection.gatherReflexive`,
+  rather than no deadline, as 0 is for a connection's `timeout`:
+  nothing but a deadline ends a question over UDP that nobody answers.
+  It said so nowhere, and the failure told the caller the server had not
+  answered "within 0ms"; it gives the time the question had.
+- `close()` may be called from any thread on a `Socket`, a `WebSocket`
+  (and `closeWith()`), a `ReliableDatagramSocket` (and `abort()`) and a
+  `NetConnection` over any of them. From a thread that is not the
+  connection's runtime's, the close is handed to the runtime, as
+  `CrossByte.post` hands work over, and happens there after the call
+  returns, so `close` and `onClose` are told on the runtime's thread.
+  A WebSocket's `close()` threw there part way through, inside its
+  heartbeat's timer, and the error was swallowed: the close frame went,
+  the connection stayed open, the heartbeat ran on for good and `close`
+  was never dispatched. Its `closeWith()`, and a reliable session's
+  `close()`, threw at their callers, the reliable one with its FIN never
+  sent; a plain socket and a `NetConnection` closed, and told their
+  listeners on the wrong thread. A session's timers are now its runtime's
+  whichever thread arms or clears one, which on Node also keeps the
+  sessions a child runtime's server accepts on the child's timers, where
+  a heartbeat or keepalive armed in a socket's callback went on the
+  application's.
+- A reliable or WebSocket `NetConnection` stamps `inTimestamp` and
+  `outTimestamp` with the uptime of the runtime its socket runs on, read
+  off the socket. It asked `CrossByte.current()` on every message, a
+  thread-local lookup each way, about 5 ns natively, some 1.5% of what a
+  small reliable message costs, and on Node got the application's
+  runtime rather than a child's whenever a socket's callback sent or
+  received, so a child's `RPCSession` heartbeat read the connection
+  against a clock that was not its own. A session a `ServerWebSocket`
+  accepts runs on its server's runtime on Node too, where it took the
+  application's.
+- A `NetHost` made from a URI on port 0, `tcp://127.0.0.1:0`, and
+  `ws://`, `wss://` and `rudp://` alike, listens on a port the system
+  chooses, as `ServerSocket.bind(0)` does, and `localPort` says which. The
+  URI was read as one to dial, where port 0 names nothing, and refused, so
+  a host made from a URI could only be given a port someone had found free
+  a moment before. A URI to dial still refuses port 0.
 - A `-D final` build compiles again, Lime's `-final` defines `final`,
   on every sys target. `final` inlines the socket registry's `update()`,
   and a return added in the middle of it for a failing poll backend
@@ -2483,7 +2554,7 @@ entry below says how:
   that found no path also failed the connection however well the old path
   was doing.
 - An `IceAgent` gives up when it has not selected a pair within `timeout`
-  seconds of `start`, 40 by default, 0 for none, and `connected` fails
+  seconds of `start`, 80 by default, 0 for none, and `connected` fails
   saying what it was waiting for. It could wait for ever: with no pair to
   check (a peer offering only names, and no check arriving), as a
   controlled agent whose pairs answered and was never nominated, or as a

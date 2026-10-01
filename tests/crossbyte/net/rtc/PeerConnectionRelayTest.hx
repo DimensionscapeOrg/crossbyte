@@ -1072,6 +1072,68 @@ class PeerConnectionRelayTest extends utest.Test {
 		server.close();
 	}
 
+	/**
+		`gatherRelayed` takes for a relay over TLS what a `TurnServer` given
+		to `gatherRelayedFrom` takes: the authority its certificate chains to,
+		and, for a test, whether to check it at all.
+
+		It took a transport and nothing else, so a relay reached over TLS was
+		checked against the system's store alone, and one whose authority is
+		its own, a private relay, could not be reached through it. The
+		connection given nothing is refused here, as it was.
+	**/
+	public function testGatherRelayedTakesARelaysAuthorityOverTls():Void {
+		if (unsupported()) return;
+
+		var fixture = crossbyte.net.TLSTestFixture.trusted();
+
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the TURN over TLS case did not run");
+			return;
+		}
+
+		var server = relayServer();
+		var unnamed = new PeerConnection(true);
+		var named = new PeerConnection(true);
+		var unchecked = new PeerConnection(true);
+
+		try {
+			server.start();
+			server.startTcp(fixture.certificate, fixture.key);
+			unnamed.bind(0, "127.0.0.1");
+			named.bind(0, "127.0.0.1");
+			unchecked.bind(0, "127.0.0.1");
+
+			var refused:String = null;
+			unnamed.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.tcpPort, false, TLS).then(_ -> {}, error -> refused = error);
+
+			var trusted:IceCandidate = null;
+			var trustFailure:String = null;
+			named.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.tcpPort, false, TLS, fixture.certificate)
+				.then(candidate -> trusted = candidate, error -> trustFailure = error);
+
+			var unverified:IceCandidate = null;
+			var uncheckedFailure:String = null;
+			unchecked.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.tcpPort, false, TLS, null, false)
+				.then(candidate -> unverified = candidate, error -> uncheckedFailure = error);
+
+			pumpUntil(() -> refused != null && (trusted != null || trustFailure != null) && (unverified != null || uncheckedFailure != null), 10.0);
+
+			Assert.notNull(refused, "a relay whose certificate nothing vouches for was used");
+			Assert.isNull(trustFailure, "the relay's own authority was not trusted: " + trustFailure);
+			Assert.notNull(trusted, "no relayed candidate through the relay's own authority");
+			Assert.isNull(uncheckedFailure, "the check was not turned off: " + uncheckedFailure);
+			Assert.notNull(unverified, "no relayed candidate with the check off");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		unnamed.close();
+		named.close();
+		unchecked.close();
+		server.close();
+	}
+
 	/** There is no socket to allocate through before `bind`. **/
 	public function testRelayingBeforeBindingIsRefused():Void {
 		if (unsupported()) return;
@@ -1113,9 +1175,9 @@ class PeerConnectionRelayTest extends utest.Test {
 
 	private static function pumpUntil(done:Void->Bool, timeout:Float):Void {
 		var runtime = CrossByte.current();
-		var deadline = Sys.time() + timeout;
+		var deadline = haxe.Timer.stamp() + timeout;
 
-		while (!done() && Sys.time() < deadline) {
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
 			crossbyte.sys.System.sleep(0.001);
 		}

@@ -94,7 +94,9 @@ class StunClient {
 
 		@param timeoutMs How long to keep asking before giving up. UDP has no
 		failure to report, a request that reaches nothing looks exactly like
-		one still in flight, so a deadline is the only thing that ends this.
+		one still in flight, so a deadline is the only thing that ends this,
+		and 0 or less asks for the default, three seconds, rather than for none
+		as 0 is for a connection's `timeout`. The same for every question here.
 		@param socket The socket to ask through, whose mapping is then what the
 		answer describes; bound, and not connected. It is left open, and left
 		not receiving if it was not. The answer reaches its other `data`
@@ -123,6 +125,7 @@ class StunClient {
 		from. The building block `classifyMapping` and `classifyFiltering` are
 		made of, for a caller running RFC 5780's other tests.
 
+		@param timeoutMs As for `discover`: 0 or less is three seconds.
 		@param socket As for `discover`. Every question about one mapping has
 		to go through the socket that owns it.
 		@param changeAddress Ask the server to answer from its other address.
@@ -156,6 +159,8 @@ class StunClient {
 		addresses; one that cannot leaves `OTHER-ADDRESS` out and this fails
 		saying so.
 
+		@param timeoutMs For each question, as for `discover`: 0 or less is
+		three seconds.
 		@param socket As for `discover`. Without one, a socket of its own is
 		used for all three and closed.
 	**/
@@ -231,6 +236,8 @@ class StunClient {
 		only once `timeoutMs` has passed for each question it stopped, up to
 		two deadlines on top of the first answer's time.
 
+		@param timeoutMs For each question, as for `discover`: 0 or less is
+		three seconds.
 		@param socket As for `discover`. Without one, a socket of its own is
 		used for all three and closed.
 	**/
@@ -456,12 +463,14 @@ class StunClient {
 			if (query.expired(now)) {
 				// Damaged answers are not silence: the server answered, and a
 				// filtering test must not read what reached it as filtered.
+				// The time the question had, not the timeout given: 0 asks for
+				// the default, and this said "within 0ms".
 				var damage:Null<String> = query.damage();
 				if (damage != null) {
-					finish(null, "No usable reply from the STUN server at " + server + ":" + port + " within " + timeoutMs + "ms: " + damage + ".",
-						false);
+					finish(null, "No usable reply from the STUN server at " + server + ":" + port + " within " + query.timeoutMs + "ms: " + damage
+						+ ".", false);
 				} else {
-					finish(null, "No reply from the STUN server at " + server + ":" + port + " within " + timeoutMs
+					finish(null, "No reply from the STUN server at " + server + ":" + port + " within " + query.timeoutMs
 						+ "ms. UDP reports nothing when it is dropped, so a silent network and a wrong address look the same from here.",
 						true);
 				}
