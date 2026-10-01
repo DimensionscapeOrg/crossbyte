@@ -5,6 +5,21 @@ import utest.Assert;
 
 @:access(crossbyte.ipc.SharedObject)
 class SharedObjectTest extends utest.Test {
+	// Every name a case opened, so teardown can take the regions away: on
+	// Linux and macOS they outlived the run, one more set each time.
+	private static var __names:Array<String> = [];
+
+	public function teardown():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		for (name in __names) {
+			try {
+				SharedObject.remove(name);
+			} catch (_:Dynamic) {}
+		}
+		#end
+		__names = [];
+	}
+
 	public function testSupportFlagMatchesTarget():Void {
 		#if (cpp && (windows || linux || mac || macos))
 		Assert.isTrue(SharedObject.isSupported);
@@ -76,9 +91,9 @@ class SharedObjectTest extends utest.Test {
 		var second:SharedObject = null;
 		var third:SharedObject = null;
 		try {
-			first = new SharedObject(base + "/same", 8192);
-			second = new SharedObject(base + ":same", 8192);
-			third = new SharedObject(base + "_same", 8192);
+			first = new SharedObject(tracked(base + "/same"), 8192);
+			second = new SharedObject(tracked(base + ":same"), 8192);
+			third = new SharedObject(tracked(base + "_same"), 8192);
 
 			first.data = {value: "slash"};
 			second.data = {value: "colon"};
@@ -230,7 +245,7 @@ class SharedObjectTest extends utest.Test {
 		// What another program, or a build knowing a class this one does
 		// not, might leave in the region.
 		var garbage = haxe.io.Bytes.ofString("#not a serialized value");
-		Assert.isTrue(SharedObject.__write(other.__handle, garbage.getData(), garbage.length));
+		Assert.isTrue(SharedObject.__write(other.__handle, garbage.getData(), garbage.length, other.lockTimeout));
 
 		var raised:Dynamic = null;
 		try {
@@ -249,6 +264,52 @@ class SharedObjectTest extends utest.Test {
 	}
 
 	/**
+		A payload whose values nest more than 256 deep cannot be read: `sync()`
+		throws and keeps `data`, and the constructor starts from `defaultData`.
+		Reading takes a frame or two per level, and natively a payload nested
+		6,000 deep, 12 KB, which any process writing the region could leave,
+		overflowed the stack and ended the process reading it, past any
+		catch.
+	**/
+	public function testAPayloadNestedPastTheBoundCannotBeRead():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var name:String = uniqueName("nested");
+		var holder = new SharedObject(name, 65536);
+		var reader = new SharedObject(name, 65536);
+		function leave(levels:Int):Void {
+			var payload = haxe.io.Bytes.ofString(StringTools.lpad("", "a", levels) + StringTools.lpad("", "h", levels));
+			Assert.isTrue(SharedObject.__write(holder.__handle, payload.getData(), payload.length, holder.lockTimeout));
+		}
+
+		leave(256);
+		reader.sync();
+		Assert.isTrue(Std.isOfType(reader.data, Array), "256 levels were not read");
+
+		for (levels in [257, 6000]) {
+			leave(levels);
+			var raised:Dynamic = null;
+			try {
+				reader.sync();
+			} catch (e:Dynamic) {
+				raised = e;
+			}
+			Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), '$levels levels: sync() threw ' + raised);
+			Assert.isTrue(Std.string(raised).indexOf("nested more than 256 levels deep") >= 0, '$levels levels: ' + raised);
+			Assert.isTrue(Std.isOfType(reader.data, Array), '$levels levels: data was replaced');
+
+			var opened = new SharedObject(name, 65536, {fallback: true});
+			Assert.equals(true, opened.data.fallback, '$levels levels: the constructor did not start from defaultData');
+			opened.close();
+		}
+
+		reader.close();
+		holder.close();
+		#else
+		Assert.isFalse(SharedObject.isSupported);
+		#end
+	}
+
+	/**
 		The constructor starts from `defaultData` when the region's payload
 		cannot be read, as it does when the region is empty. It started from
 		`{}` and dropped what it was given.
@@ -258,7 +319,7 @@ class SharedObjectTest extends utest.Test {
 		var name:String = uniqueName("defaults");
 		var holder = new SharedObject(name, 8192);
 		var garbage = haxe.io.Bytes.ofString("#not a serialized value");
-		Assert.isTrue(SharedObject.__write(holder.__handle, garbage.getData(), garbage.length));
+		Assert.isTrue(SharedObject.__write(holder.__handle, garbage.getData(), garbage.length, holder.lockTimeout));
 
 		var opened = new SharedObject(name, 8192, {fallback: true});
 		Assert.equals(true, opened.data.fallback);
@@ -350,25 +411,51 @@ class SharedObjectTest extends utest.Test {
 
 	/**
 		Where Linux keeps a region: the name the native side gives it, the
-		name made safe, then its FNV-1a hash, as a file under /dev/shm. The
-		native side seeds the hash with 1469598103934665603, not FNV's own
-		14695981039346656037; any seed hashes, and changing it would part a
-		process built before the change from one built after.
+		name made safe, then its hash (`nameHash`), as a file under
+		/dev/shm.
 	**/
 	private static function posixRegionPath(name:String):String {
 		var bytes = haxe.io.Bytes.ofString(name);
-		var hash:haxe.Int64 = haxe.Int64.make(0x14650fb0, 0x739d0383);
-		var prime:haxe.Int64 = haxe.Int64.make(0x100, 0x000001b3);
 		var safe = new StringBuf();
 		for (i in 0...bytes.length) {
 			var c:Int = bytes.get(i);
-			hash = (hash ^ haxe.Int64.ofInt(c)) * prime;
 			var kept:Bool = (c >= "a".code && c <= "z".code) || (c >= "A".code && c <= "Z".code) || (c >= "0".code && c <= "9".code) || c == "-".code
 				|| c == "_".code;
 			safe.addChar(kept ? c : "_".code);
 		}
-		var hex:String = (StringTools.hex(hash.high, 8) + StringTools.hex(hash.low, 8)).toLowerCase();
-		return "/dev/shm/crossbyte_shared_object_" + safe.toString() + "_" + hex;
+		return "/dev/shm/crossbyte_shared_object_" + safe.toString() + "_" + nameHash(name);
+	}
+	#end
+
+	#if (cpp && !windows)
+	/**
+		What a region leaves on the file system: its file under /dev/shm by
+		Linux's name and by macOS's (which a Linux build switched to macOS's
+		names uses), and macOS's lock file. A real macOS has no /dev/shm.
+	**/
+	private static function leftBehind(name:String):Array<String> {
+		var hash:String = nameHash(name);
+		var paths:Array<String> = ["/dev/shm/cbso_" + hash, "/tmp/cbso_" + hash + ".lock"];
+		#if linux
+		paths.push(posixRegionPath(name));
+		#end
+		return paths;
+	}
+
+	/**
+		The FNV-1a hash the native side gives a name, as 16 hex digits. It
+		seeds the hash with 1469598103934665603, not FNV's own
+		14695981039346656037; any seed hashes, and changing it would part a
+		process built before the change from one built after.
+	**/
+	private static function nameHash(name:String):String {
+		var bytes = haxe.io.Bytes.ofString(name);
+		var hash:haxe.Int64 = haxe.Int64.make(0x14650fb0, 0x739d0383);
+		var prime:haxe.Int64 = haxe.Int64.make(0x100, 0x000001b3);
+		for (i in 0...bytes.length) {
+			hash = (hash ^ haxe.Int64.ofInt(bytes.get(i))) * prime;
+		}
+		return (StringTools.hex(hash.high, 8) + StringTools.hex(hash.low, 8)).toLowerCase();
 	}
 	#end
 
@@ -398,8 +485,187 @@ class SharedObjectTest extends utest.Test {
 		#end
 	}
 
+	/**
+		A participant stopped while holding the region's lock fails the others'
+		waits at `lockTimeout`, with an `IOError` saying so, and they read,
+		write and clear nothing. The wait had no deadline, so a holder
+		suspended in a debugger or sent SIGSTOP stopped every participant for
+		as long as it stayed stopped.
+
+		The holder is a second handle whose lock is taken on a thread of its
+		own, on Windows a mutex belongs to the thread that takes it, so
+		another thread waits on it as another process would, and kept until
+		the case lets it go.
+	**/
+	@:timeout(60000)
+	public function testALockHeldPastTheDeadlineFailsTheWait():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var name:String = uniqueName("held");
+		var shared = new SharedObject(name, 8192);
+		shared.data = {kept: "before"};
+		shared.flush();
+		var holder = new HeldLock(new SharedObject(name, 8192));
+
+		try {
+			shared.lockTimeout = 200;
+			shared.data = {kept: "during"};
+			for (operation in ["sync", "flush", "clear"]) {
+				var started:Float = Timer.stamp();
+				var raised:Dynamic = null;
+				try {
+					switch (operation) {
+						case "sync":
+							shared.sync();
+						case "flush":
+							shared.flush();
+						default:
+							shared.clear();
+					}
+				} catch (e:Dynamic) {
+					raised = e;
+				}
+				var waited:Float = Timer.stamp() - started;
+				Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), '$operation threw ' + raised);
+				Assert.isTrue(Std.string(raised).indexOf("lock was not released within 200 ms") >= 0, '$operation threw ' + raised);
+				Assert.isTrue(waited >= 0.18 && waited < 3, '$operation waited $waited s');
+			}
+			// Nothing synced over it or cleared it.
+			Assert.equals("during", shared.data.kept);
+
+			// The constructor, which waits as long as the default allows.
+			var started:Float = Timer.stamp();
+			var raised:Dynamic = null;
+			try {
+				new SharedObject(name, 8192);
+			} catch (e:Dynamic) {
+				raised = e;
+			}
+			var waited:Float = Timer.stamp() - started;
+			Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), "new threw " + raised);
+			Assert.isTrue(Std.string(raised).indexOf("lock was not released within 5000 ms") >= 0, "new threw " + raised);
+			Assert.isTrue(waited >= 4.9 && waited < 20, 'new waited $waited s');
+		} catch (e:Dynamic) {
+			holder.release();
+			shared.close();
+			throw e;
+		}
+
+		holder.release();
+		// Released, the region holds what the last flush left.
+		shared.sync();
+		Assert.equals("before", shared.data.kept);
+		shared.close();
+		#else
+		Assert.isFalse(SharedObject.isSupported);
+		#end
+	}
+
+	/**
+		A lock its holder lets go of in time is taken, with a deadline and with
+		none (0). On Linux and macOS a wait with a deadline asks again and
+		again rather than blocking, so this is also the case that it notices
+		the lock coming free.
+	**/
+	@:timeout(60000)
+	public function testALockReleasedInTimeIsTaken():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var name:String = uniqueName("released");
+		var shared = new SharedObject(name, 8192);
+		shared.data = {n: 0};
+		shared.flush();
+
+		for (deadline in [5000, 0]) {
+			shared.lockTimeout = deadline;
+			var holder = new HeldLock(new SharedObject(name, 8192), 0.3);
+			var started:Float = Timer.stamp();
+			shared.data = {n: deadline};
+			shared.flush();
+			var waited:Float = Timer.stamp() - started;
+			holder.release();
+
+			// It waited for the holder, then wrote.
+			Assert.isTrue(waited >= 0.2 && waited < 5, 'lockTimeout $deadline: waited $waited s');
+			shared.sync();
+			Assert.equals(deadline, shared.data.n);
+		}
+		shared.close();
+		#else
+		Assert.isFalse(SharedObject.isSupported);
+		#end
+	}
+
+	/**
+		`remove` takes a region away on Linux and macOS, where it otherwise
+		outlives every handle until the machine restarts: the next handle
+		opened under the name starts a new, empty region, while those open
+		keep the old one between them. On Windows a region goes with its last
+		handle and has no name to take away, so `remove` answers false.
+	**/
+	public function testRemoveTakesARegionAwayOnLinuxAndMacOS():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var name:String = uniqueName("removed");
+		var first = new SharedObject(name, 8192);
+		var second = new SharedObject(name, 8192);
+		first.data = {left: "behind"};
+		first.flush();
+
+		#if windows
+		Assert.isFalse(SharedObject.remove(name));
+		second.sync();
+		Assert.equals("behind", second.data.left);
+		#else
+		Assert.isTrue(SharedObject.remove(name));
+
+		// Those open keep the region, between them.
+		second.sync();
+		Assert.equals("behind", second.data.left);
+		second.data = {left: "still shared"};
+		second.flush();
+		first.sync();
+		Assert.equals("still shared", first.data.left);
+
+		// The next one opened under the name starts a new region.
+		var third = new SharedObject(name, 8192, {fresh: true});
+		Assert.equals(true, third.data.fresh);
+		Assert.isNull(third.data.left);
+		third.flush();
+		first.sync();
+		Assert.isNull(first.data.fresh);
+		third.close();
+
+		Assert.isTrue(SharedObject.remove(name), "the new region was not removed");
+		Assert.isFalse(SharedObject.remove(name), "a region no one has was removed");
+		// Nothing left under the name: on Linux the region's file, on macOS
+		// (and on Linux with the native side switched to its names) the
+		// region's and its lock file.
+		for (path in leftBehind(name)) {
+			Assert.isFalse(sys.FileSystem.exists(path), path + " is still there");
+		}
+		#end
+		first.close();
+		second.close();
+		#else
+		Assert.isFalse(SharedObject.isSupported);
+		#end
+	}
+
+	public function testRemoveRefusesAnEmptyName():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		Assert.raises(() -> SharedObject.remove(""), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> SharedObject.remove(null), crossbyte.errors.ArgumentError);
+		#else
+		Assert.raises(() -> SharedObject.remove("anything"), crossbyte.errors.IllegalOperationError);
+		#end
+	}
+
 	private static function uniqueName(label:String):String {
-		return "crossbyte_sharedobject_" + label + "_" + Std.int(Timer.stamp() * 1000) + "_" + Std.random(1000000);
+		return tracked("crossbyte_sharedobject_" + label + "_" + Std.int(Timer.stamp() * 1000) + "_" + Std.random(1000000));
+	}
+
+	// A name whose region teardown removes.
+	private static function tracked(name:String):String {
+		__names.push(name);
+		return name;
 	}
 
 	private static function closeIfOpen(shared:SharedObject):Void {
@@ -417,3 +683,57 @@ class SharedObjectTest extends utest.Test {
 		}
 	}
 }
+
+#if cpp
+/**
+	A region's lock held through `shared` on a thread of its own: until
+	`release()`, or for `holdFor` seconds when given. Either way `release()`
+	waits for the thread to let it go, then closes `shared`.
+**/
+@:access(crossbyte.ipc.SharedObject)
+@:access(crossbyte.ipc._internal.NativeSharedObject)
+private class HeldLock {
+	private var shared:SharedObject;
+	private var letGo:sys.thread.Deque<Bool> = new sys.thread.Deque<Bool>();
+	private var gone:sys.thread.Deque<Bool> = new sys.thread.Deque<Bool>();
+	private var released:Bool = false;
+
+	public function new(shared:SharedObject, ?holdFor:Float) {
+		this.shared = shared;
+		var taken = new sys.thread.Deque<Bool>();
+		var handle = shared.__handle;
+		var letGo = this.letGo;
+		var gone = this.gone;
+		sys.thread.Thread.create(function():Void {
+			var holding:Bool = crossbyte.ipc._internal.NativeSharedObject.__holdLockForTest(handle);
+			taken.add(holding);
+			if (holding) {
+				if (holdFor == null) {
+					letGo.pop(true);
+				} else {
+					crossbyte.sys.System.sleep(holdFor);
+				}
+				// On the thread that took it: a Windows mutex is released by
+				// its owner or not at all.
+				crossbyte.ipc._internal.NativeSharedObject.__releaseLockForTest(handle);
+			}
+			gone.add(true);
+		});
+		if (!taken.pop(true)) {
+			gone.pop(true);
+			shared.close();
+			throw "the region's lock could not be taken";
+		}
+	}
+
+	public function release():Void {
+		if (released) {
+			return;
+		}
+		released = true;
+		letGo.add(true);
+		gone.pop(true);
+		shared.close();
+	}
+}
+#end

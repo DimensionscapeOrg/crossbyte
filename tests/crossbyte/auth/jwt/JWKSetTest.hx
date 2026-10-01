@@ -28,6 +28,41 @@ class JWKSetTest extends utest.Test {
 		Assert.raises(() -> JWKSet.parse('{"keys":"nope"}'), String);
 	}
 
+	/**
+	 * A document nested deeper than any real JWK Set is refused before it is
+	 * parsed. Parsing takes a frame per level, and natively a set nested
+	 * 6,000 deep, 12 KB, from a provider's endpoint or whoever answers for
+	 * it, overflowed the stack and ended the process.
+	 *
+	 * The bound is 32 levels, objects and arrays together: here the set's
+	 * object, its `keys` array and the key's object, then a member nesting
+	 * the rest.
+	 */
+	public function testADeeplyNestedDocumentIsRefusedBeforeItIsParsed():Void {
+		var modulus:String = __sampleModulus();
+		function withMember(levels:Int):String {
+			var member:String = StringTools.lpad("", "[", levels) + StringTools.lpad("", "]", levels);
+			return '{"keys":[{"kty":"RSA","kid":"k","n":"$modulus","e":"AQAB","ext":$member}]}';
+		}
+
+		// 32 levels: read.
+		Assert.equals(1, JWKSet.parse(withMember(29)).keys.length);
+		// Brackets inside strings are text, an escaped quote's included.
+		Assert.equals(1, JWKSet.parse('{"keys":[{"kty":"RSA","kid":"k","n":"$modulus","e":"AQAB","ext":"[[[[\\"[[[[' + StringTools.lpad("", "[", 64)
+			+ '"}]}').keys.length);
+
+		// 33 levels, which every parser here reads without trouble, and 6,000.
+		for (levels in [30, 5997]) {
+			var raised:Null<String> = null;
+			try {
+				JWKSet.parse(withMember(levels));
+			} catch (e:Dynamic) {
+				raised = Std.string(e);
+			}
+			Assert.isTrue(raised != null && raised.indexOf("32 levels deep") >= 0, (levels + 3) + " levels: " + raised);
+		}
+	}
+
 	public function testEmptyKeySetParsesToNothing():Void {
 		var set = JWKSet.parse('{"keys":[]}');
 		Assert.equals(0, set.keys.length);

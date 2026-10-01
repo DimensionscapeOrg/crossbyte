@@ -1,5 +1,6 @@
 package crossbyte.auth;
 
+import crossbyte.auth._internal.JsonNesting;
 import crossbyte.crypto.SecureRandom;
 import crossbyte.events.Event;
 import crossbyte.events.HTTPStatusEvent;
@@ -28,6 +29,12 @@ using StringTools;
  * connection the server had for 1.5 s per sign-in; and on Node an endpoint
  * that never answered left both callbacks waiting forever. Every exchange now
  * has a deadline, `timeout`.
+ *
+ * An answer whose objects and arrays nest more than 32 levels deep is a
+ * failure, measured before it is parsed: parsing takes a frame per level,
+ * and natively an answer nested 6,000 deep, 12 KB, from the endpoint or
+ * from whoever can answer for it, overflowed the stack and ended the
+ * process. Real answers nest a few levels.
  *
  * Use PKCE (RFC 7636): it keeps an intercepted authorization code from being
  * exchanged by anyone else, and a client with no secret, a mobile or
@@ -296,7 +303,7 @@ class OAuth {
 	 * and `error_description`, or what the client reported when it gave none.
 	 */
 	@:noCompletion private static function __errorBody(body:Null<String>, transportError:String):String {
-		if (body == null || body.trim() == "") {
+		if (body == null || body.trim() == "" || !JsonNesting.within(body, JsonNesting.LIMIT)) {
 			return transportError;
 		}
 
@@ -318,6 +325,12 @@ class OAuth {
 	@:noCompletion public static function __handleTokenResponse(operation:String, response:String, callback:(OAuthToken) -> Void,
 			onError:Null<(String) -> Void>):Void {
 		var token:OAuthToken;
+
+		// Measured before parsing, which takes a frame per level; see the class.
+		if (!JsonNesting.within(response, JsonNesting.LIMIT)) {
+			__fail(operation, "malformed response: nested more than " + JsonNesting.LIMIT + " levels deep", onError);
+			return;
+		}
 
 		try {
 			var data:Dynamic = Json.parse(response);

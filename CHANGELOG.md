@@ -156,8 +156,21 @@ entry below says how:
 - `HTTPServerConfig.validate()`, and so `new HTTPServer`, refuses a
   `tlsCertificatePath` without a `tlsKeyPath` or the reverse, which was
   served as plain HTTP, and an `errorDocument` that is not there.
+- `SharedObject`'s constructor, `flush()`, `sync()` and `clear()` throw an
+  `IOError` when another participant holds the region's lock past
+  `lockTimeout` (five seconds), where they waited without end; set
+  `lockTimeout` to 0 to keep waiting.
 
 ### Added
+- `SharedObject.remove(name)` takes a region away on Linux and macOS,
+  with, on macOS, its lock file, where it otherwise outlives every
+  handle until the machine restarts, and nothing could remove it. Handles
+  open on it keep it between them; the next one opened under the name
+  starts a new, empty region. On Windows a region goes with its last
+  handle, and `remove` does nothing and answers `false`. On macOS a
+  handle now takes the lock file before it opens the region, so a removal
+  cannot come between the two. `SharedObjectTest` removes the regions it
+  makes, which piled up under `/dev/shm` on every Linux run.
 - `ReliableDatagramServerSocket.relayVerifyCert`, for a TURN relay reached
   over TLS whose certificate should not be checked, a test against a
   throwaway one. The server passed its relay client an authority
@@ -1254,6 +1267,11 @@ entry below says how:
 - accepted `wss://` sessions now run the deferred, timeout-guarded TLS handshake the client path already used; previously a server-side handshake happened implicitly on first read with no bound, so a peer that completed TCP then stalled mid-TLS held the socket indefinitely (`docs/proposals/0012-websocket-tls-handshake.md`)
 
 ### Removed
+- `crossbyte.rpc._internal.schema`: `RPCHeader`, `RPCHeaderField`,
+  `RPCHeaderFieldType` and `RPCValueType`, a header schema moved out of the
+  public API in the August 2025 RPC refactor for a macro-level use that
+  never came. Nothing imported it; only builds that include every module
+  compiled it. Internal, so no code needs to change.
 - `WebSocket.toWebSocket`, which took an internal socket type and made a
   session with no handshake deadline unless `ServerWebSocket` called it;
   it is `ServerWebSocket`'s own now.
@@ -2197,6 +2215,52 @@ entry below says how:
   after the client had ended the stream, a `WINDOW_UPDATE` of nothing,
   left a producer waiting for something to write hearing nothing, and a
   download holding its file open until the 30 s stall deadline.
+- `SharedObject` and `SharedChannel` refuse a payload whose values nest
+  more than 256 deep, before reading it gives the stack out. Unserializing
+  takes a frame or two per level, so natively a region, or a message's
+  arguments, nested 6,000 deep, 12 KB, which any process writing the
+  region or sending to the channel could leave, overflowed the stack and
+  ended the reading process, past any catch. `sync()` throws an `IOError`
+  for such a region, the constructor starts from `defaultData`, and the
+  channel drops the message.
+- `ProcessLifecycle.installDefaultHandlers()` handles SIGHUP, the
+  terminal a server was started from going away, with the same graceful
+  shutdown as SIGTERM: natively on Linux and macOS, on the jvm, and on
+  Node, where it is also how a Windows console window closing arrives.
+  SIGHUP's default ended the process at once, with no `onShutdown` and no
+  drain. One ignored as the process started (`nohup`) or handled by
+  something else is left alone; Node on macOS, which cannot tell, leaves
+  it to its default.
+- Natively on Windows, a process that has loaded user32.dll, a window, a
+  GUI toolkit, a Shell function, shuts down gracefully at a logoff or a
+  system shutdown. Windows tells such a process through its windows, not
+  its console, and it had none: the session ended it with no `onShutdown`.
+  `installDefaultHandlers()` gives it a hidden window that runs the
+  shutdown and holds the session's end while it runs, as the console
+  handler holds a close. CrossByte loads no user32 itself, so it is only
+  made where something else has.
+- A Windows service, or a process one started, keeps serving when a user
+  logs off. Windows sends services a logoff whenever anyone signs out and
+  does not end them, and `ProcessLifecycle` shut down on it; in session 0,
+  where no one logs on, it is now ignored.
+- A `SharedObject` waits at most `lockTimeout` for its region's lock, five
+  seconds by default, then throws an `IOError` saying the lock was not
+  released in time, having read, written and cleared nothing. The wait had
+  no deadline, so a participant stopped while holding the lock,
+  suspended in a debugger, sent SIGSTOP, stopped every other participant
+  with it. 0 means no deadline. The constructor waits as long as the
+  default allows, and a lock it cannot take is an `IOError`, not an empty
+  region to start from `defaultData` in. A free lock is taken without
+  entering a GC-free zone: natively on Windows a sync racing a flush on
+  another thread ran five times as fast (1.27 M syncs a second, from
+  0.25 M).
+- `JWKSet.parse` and `OAuth`'s token exchange refuse JSON whose objects
+  and arrays nest more than 32 levels deep, measured before it is parsed,
+  as `JWT.verify` refuses such a header. Parsing takes a frame per level,
+  so natively a JWK Set, a token endpoint's answer or its error document
+  nested 6,000 deep, 12 KB from the provider, or from whoever could
+  answer for it, overflowed the stack and ended the process. `parse`
+  throws, and the exchange fails as a malformed response.
 - A `-D final` build compiles again, Lime's `-final` defines `final`,
   on every sys target. `final` inlines the socket registry's `update()`,
   and a return added in the middle of it for a failing poll backend
