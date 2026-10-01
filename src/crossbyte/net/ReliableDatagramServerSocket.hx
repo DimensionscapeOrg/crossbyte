@@ -366,7 +366,8 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			return;
 		}
 
-		if (RuntimeHandOff.elsewhere(@:privateAccess __socket.__cbInstance, close)) {
+		var runtime:Null<CrossByte> = @:privateAccess __socket.__cbInstance;
+		if (RuntimeHandOff.offThread(runtime) && runtime.post(close)) {
 			return;
 		}
 

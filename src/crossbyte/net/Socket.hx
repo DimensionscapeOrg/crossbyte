@@ -670,13 +670,16 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	**/
 	public function close():Void {
 		if (__socket != null) {
-			var socket = __socket;
-			if (RuntimeHandOff.elsewhere(__runtime(), function():Void {
-				if (__socket == socket) {
-					close();
+			var runtime:Null<CrossByte> = __runtime();
+			if (RuntimeHandOff.offThread(runtime)) {
+				var socket = __socket;
+				if (runtime.post(function():Void {
+					if (__socket == socket) {
+						close();
+					}
+				})) {
+					return;
 				}
-			})) {
-				return;
 			}
 
 			// Mirror the remote-close path (see the read loop): an app-initiated
