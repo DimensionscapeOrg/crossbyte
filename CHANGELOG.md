@@ -156,8 +156,18 @@ entry below says how:
 - `HTTPServerConfig.validate()`, and so `new HTTPServer`, refuses a
   `tlsCertificatePath` without a `tlsKeyPath` or the reverse, which was
   served as plain HTTP, and an `errorDocument` that is not there.
+- On an asynchronous `SQLiteConnection`, `request()` and the properties
+  that ask SQLite wait for the work queued before them (`queueTimeout`),
+  and the rows `request()` answers are read by name: its `getResult`,
+  `getIntResult` and `getFloatResult` throw. `connected` is true from the
+  `OPEN` event to `close()`.
 
 ### Added
+- `SQLiteConnection.queueTimeout`: how long a call that answers at once,
+  `request()`, a property that asks SQLite, waits on an asynchronous
+  connection for the worker to reach it, 10 seconds unless changed, 0 for
+  no limit. One not started by then is withdrawn without running and
+  throws an `SQLError`.
 - `ReliableDatagramServerSocket.relayVerifyCert`, for a TURN relay reached
   over TLS whose certificate should not be checked, a test against a
   throwaway one. The server passed its relay client an authority
@@ -2163,6 +2173,22 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An asynchronous `SQLiteConnection` no longer crashes the process when
+  the calling thread asks it something while its worker runs a statement.
+  `request()`, and the properties and methods that ask SQLite,
+  `journalMode`, `cacheSize`, `lastInsertRowID`, `inTransaction`,
+  `stats()`, `tableList()` and the rest, ran on the calling thread, on
+  the connection the worker was stepping a statement on, and hxcpp's glue
+  finalizes the live statement as the next request starts: the worker
+  read freed memory, five runs in five. The worker runs them now, in turn
+  behind the work queued before them, while the calling thread waits for
+  the answer, for at most the new `queueTimeout`. So one asked right after
+  `openAsync()` waits for the open, where it threw "not open", and
+  `lastInsertRowID` after a queued insert is that insert's. `connected`
+  answers from the connection's events, and asks nothing. The savepoints
+  a `commit()` or `rollback()` ends are let go of on the calling thread,
+  which names them; the worker replaced the list the calling thread was
+  adding to.
 - A `-D final` build compiles again, Lime's `-final` defines `final`,
   on every sys target. `final` inlines the socket registry's `update()`,
   and a return added in the middle of it for a failing poll backend
