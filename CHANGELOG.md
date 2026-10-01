@@ -2163,6 +2163,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An HTTP/2 request refused at its headers whose answer could not be
+  written, its `413` threw, and the `500` after it, has its stream
+  reset `INTERNAL_ERROR`. It was reset `NO_ERROR`, which tells a client a
+  response was complete, for one that never began. And the reset that asks
+  a client to stop sending a refused request's body now waits for the
+  refusal to have gone out: sent straight after it, it cut off an answer
+  the client's window could not take at once, an `errorDocument` over
+  64 KB, after its first 64 KB.
 - A response the server sends in bursts, a file over 256 KB, a body too
   large for the output buffer, is held to its 30 s stall deadline
   whatever `requestTimeout` and `keepAliveTimeout` are, over HTTP/1.1 and
