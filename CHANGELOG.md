@@ -1098,6 +1098,12 @@ All notable changes to CrossByte will be documented in this file.
   that. A held connection costs a few kilobytes on native, so the default
   is tens of megabytes at most. What to change: a server that relied on the
   old cap to bound its memory sets it.
+- A WebSocket stops reading when a read comes back short of its buffer, as
+  `Socket` does, where it read on until the socket said it would block: a
+  system call that read nothing, and an exception thrown and caught, on
+  every arrival. On native, 64 clients echoing small messages get 110,600
+  a second where they got 77,900 (Node with `ws`: 86,800). A `wss://`
+  session reads on as before, since TLS can hold bytes `select` cannot see.
 - `PostgresStatement` and `MongoStatement` throw a failed statement's
   `SQLError` after dispatching it as an `SQLErrorEvent`, as `MySQLStatement`
   does. They dispatched it and returned, so to a caller not listening, an
