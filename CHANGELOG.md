@@ -1157,6 +1157,17 @@ All notable changes to CrossByte will be documented in this file.
   U+FFFD, as in a browser. `URLLoader` decodes strictly: a text body that
   is not UTF-8 is an `IO_ERROR` with the bytes in `data`, where only some
   malformed sequences were and the rest came through as other characters.
+- An HTTP/2 connection answers what one read asks for in one write. Every
+  frame was flushed on its own -- the SETTINGS, its acknowledgement, each
+  response's HEADERS and DATA -- a system call apiece, so a request cost
+  two or more where HTTP/1.1 costs one. A frame sent at any other time --
+  an answer that comes later, the next DATA once a window opens -- still
+  goes at once, and a GOAWAY is flushed before its connection closes.
+  Cleartext, 64 streams in flight on 8 connections: a native server answers
+  187,000 small requests a second where it answered 44,000, at 5.8
+  microseconds of CPU each where it took 22 (Node's own `http2`: 111,000).
+  Over TLS, as browsers use it: 175,000 where it answered 32,700 (Node:
+  109,000). A Node server, cleartext: 60,000 where it answered 26,500.
 - `readBytes` into a `ByteArray` past its end zeroes only the gap before
   where the bytes land, where it zeroed everything it grew and then wrote
   over it; and on JavaScript a `ByteArray` zeroes natively, where Haxe's
