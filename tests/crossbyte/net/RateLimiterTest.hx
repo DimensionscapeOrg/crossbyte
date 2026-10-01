@@ -97,6 +97,20 @@ class RateLimiterTest extends utest.Test {
 		Assert.isTrue(limiter.tryAcquire("client"));
 	}
 
+	/**
+		A null key spends from the empty string's bucket, and resets it too.
+		`reset(null)` returned at once, so a null key once limited stayed
+		limited until its bucket refilled.
+	**/
+	public function testResettingANullKeyResetsTheBucketItSpends():Void {
+		var limiter = new RateLimiter(1, 60.0, clock);
+		Assert.isTrue(limiter.tryAcquire(null));
+		Assert.isFalse(limiter.tryAcquire(null));
+
+		limiter.reset(null);
+		Assert.isTrue(limiter.tryAcquire(null), "reset(null) did not restore a null key's capacity");
+	}
+
 	public function testIdleBucketsAreEvicted():Void {
 		var limiter = new RateLimiter(2, 1.0, clock);
 		limiter.tryAcquire("idle");
