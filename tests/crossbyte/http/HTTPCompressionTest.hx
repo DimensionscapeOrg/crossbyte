@@ -215,8 +215,11 @@ class HTTPCompressionTest extends utest.Test {
 		], function(responses:Array<HTTPTestResponse>):Void {
 			try server.close() catch (_:Dynamic) {}
 
-			#if crossbyte_brotli_native
+			#if (crossbyte_brotli_native || nodejs)
 			Assert.equals("br", responses[0].headers.get("content-encoding"), "native Brotli was passed over");
+			if (responses[0].headers.get("content-encoding") == "br") {
+				Assert.isTrue(__decode(responses[0].bodyBytes, CompressionAlgorithm.BROTLI) == text, "the br body was not the text");
+			}
 			#else
 			Assert.equals("gzip", responses[0].headers.get("content-encoding"), "a browser's per-response body did not go as gzip");
 			Assert.isTrue(__decode(responses[0].bodyBytes, CompressionAlgorithm.GZIP) == text, "the gzip body was not the text");

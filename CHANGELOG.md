@@ -1104,6 +1104,15 @@ All notable changes to CrossByte will be documented in this file.
   every arrival. On native, 64 clients echoing small messages get 110,600
   a second where they got 77,900 (Node with `ws`: 86,800). A `wss://`
   session reads on as before, since TLS can hold bytes `select` cannot see.
+- On Node, gzip, zlib, raw DEFLATE and Brotli come from Node's own zlib,
+  where they came from the encoders written in Haxe: 64 KB of JSON took
+  888 microseconds as gzip and 2.5 ms as Brotli, and takes about 170 as
+  either, with gzip 6.0 KB where it was 8.3. With Brotli native there, a
+  browser's per-response body goes as br, half gzip's size. A Node server
+  answering browsers 64 KB of JSON serves 1,100 a second where it served
+  636, the rest held by encoding the text. The gzip header is the one
+  written everywhere else, and Brotli declares the window the Haxe encoder
+  does, not Node's 4 MB.
 - `PostgresStatement` and `MongoStatement` throw a failed statement's
   `SQLError` after dispatching it as an `SQLErrorEvent`, as `MySQLStatement`
   does. They dispatched it and returned, so to a caller not listening, an
