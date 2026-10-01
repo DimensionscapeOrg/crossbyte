@@ -579,6 +579,42 @@ class SQLiteNativeTest extends utest.Test {
 		return statement;
 	}
 
+	public function testAReadConnectionCannotWrite():Void {
+		// SQLiteMode.READ only checked that the file existed and then opened
+		// it read-write: an INSERT through it succeeded. AIR's READ is
+		// read-only.
+		var path:String = __path("read");
+		var setup:SQLiteConnection = new SQLiteConnection();
+		setup.open(path, SQLiteMode.CREATE, false, 4096);
+		setup.request("CREATE TABLE t (x INTEGER)");
+		setup.request("INSERT INTO t VALUES (1)");
+		setup.close();
+
+		var reader:SQLiteConnection = new SQLiteConnection();
+		reader.open(path, SQLiteMode.READ, false, 4096);
+		Assert.equals(1, __count(reader, "t"));
+		Assert.raises(() -> reader.request("INSERT INTO t VALUES (2)"), SQLError);
+		Assert.raises(() -> reader.request("CREATE TABLE u (y INTEGER)"), SQLError);
+		reader.close();
+
+		// Asynchronously the same.
+		var events:Array<String> = [];
+		var asynchronous:SQLiteConnection = new SQLiteConnection();
+		asynchronous.addEventListener(SQLEvent.OPEN, _ -> events.push("open"));
+		asynchronous.addEventListener(SQLEvent.CLOSE, _ -> events.push("close"));
+		asynchronous.openAsync(path, SQLiteMode.READ, false, 4096);
+		var insert:SQLiteStatement = __watched(asynchronous, "insert", "INSERT INTO t VALUES (3)", events, new Map());
+		insert.execute();
+		asynchronous.close();
+		__pumpUntil(() -> events.indexOf("close") >= 0);
+		Assert.same(["open", "insert:error", "close"], events);
+
+		var check:SQLiteConnection = new SQLiteConnection();
+		check.open(path, SQLiteMode.UPDATE, false, 4096);
+		Assert.equals(1, __count(check, "t"), "a READ connection wrote");
+		check.close();
+	}
+
 	public function testWhatSQLiteRefusesIsAnSQLError():Void {
 		// Against the engine itself: what hxcpp's glue throws is a String,
 		// which escaped as one, and nothing was dispatched.

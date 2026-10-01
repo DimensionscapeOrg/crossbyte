@@ -82,6 +82,8 @@ entry below says how:
 - `SQLiteConnection.open()` and `openAsync()` throw on a connection that
   is open: `close()` it first, and after an asynchronous close wait for
   `CLOSE`.
+- An SQLite connection opened with `SQLiteMode.READ` refuses to write:
+  open with `UPDATE` to write.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1938,6 +1940,10 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An SQLite connection opened with `SQLiteMode.READ` cannot write, as
+  AIR's `READ` cannot. It only checked that the file existed and then opened
+  it to read and write: an `INSERT` through it succeeded. It is held to
+  reading with SQLite's `query_only` now, which `SQLiteMode.READ` documents.
 - `SQLiteConnection.cancel()` stops the work and keeps the connection, as
   AIR's does. On an asynchronous connection the statement running is
   interrupted (`sqlite3_interrupt`, on cpp) and fails with "interrupted",
