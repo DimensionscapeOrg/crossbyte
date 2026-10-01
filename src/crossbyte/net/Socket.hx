@@ -315,6 +315,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		request rather than the end of the conversation, and read the hazard
 		on that value first: a departed peer is indistinguishable from a
 		half-closed one, so `HALF_OPEN` needs a bound of your own.
+
+		Not consulted by a `WebSocket`, which has no half-close: a peer's FIN
+		ends its session, as 1006.
 	**/
 	public var peerShutdownPolicy:PeerShutdownPolicy = CLOSE;
 

@@ -169,7 +169,8 @@ class ServerSocket extends EventDispatcher {
 		and so never became a `connect` event. Counted rather than reported one
 		by one: an open port sees a steady trickle of them from scanners and
 		broken clients, and each used to be dropped without a trace. Always 0
-		on a plain server.
+		on a plain server, but a `ServerWebSocket` counts its sessions' TLS
+		and upgrade together, plain or secure; see there.
 	**/
 	public var handshakeFailures(default, null):Int = 0;
 
@@ -1195,7 +1196,8 @@ class ServerSocket extends EventDispatcher {
 
 	/**
 		Number of connections currently completing their TLS handshake.
-		Always `0` on a plain server.
+		Always `0` on a plain server, but a `ServerWebSocket` counts its
+		sessions' TLS and upgrade together, plain or secure; see there.
 
 		On Node always `0` as well, secure or not: Node completes each
 		handshake itself and hands the server a connection only once it is
