@@ -2003,6 +2003,17 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `File.isHidden` on Windows reads the attribute of the file it names. It
+  ran `attrib` through `cmd.exe`, which expanded any `%NAME%` in the path,
+  so a hidden file with one in its name was asked about under another
+  name and read as not hidden. Natively it asks `GetFileAttributesW` and
+  on the jvm the JVM, starting no process; elsewhere `attrib` runs
+  directly, without a shell.
+- `File.spaceAvailable` is documented, and for a file is the room it has
+  to grow on its volume: on Windows it was 0, since `fsutil` takes only a
+  directory. A path with nothing there is 0, where Node threw `ENOENT`.
+  Natively (`GetDiskFreeSpaceExW`, `statvfs`) and on the jvm the file
+  system is asked directly, where each read started `fsutil` or `df`.
 - `System.totalCpuUsage()` measures the process: the processor time all
   its threads used since the previous call, as a percentage of all the
   machine's processors, one busy thread of eight reads 12.5. It
