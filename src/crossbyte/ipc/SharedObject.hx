@@ -40,7 +40,9 @@ private typedef SharedObjectHandle = Dynamic;
  * it empty. On Linux and macOS it stays, holding what was last flushed and its
  * capacity in shared memory, until the machine restarts: `clear()` empties it,
  * and nothing here removes it. Name regions so that a fixed set is reused rather
- * than a new one made for each run.
+ * than a new one made for each run. On macOS each name also has a small lock file,
+ * `/tmp/cbso_<hash>.lock`, which stays with it: macOS cannot lock a region
+ * itself.
  */
 #if cpp
 @:access(crossbyte.ipc._internal.NativeSharedObject)

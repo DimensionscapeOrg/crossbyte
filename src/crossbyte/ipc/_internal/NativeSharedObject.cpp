@@ -23,6 +23,22 @@ namespace
 	constexpr uint32_t SHARED_OBJECT_MAGIC = 0x4F424A53; // 'OJBS'
 	constexpr size_t MAX_SAFE_NAME_LENGTH = 160;
 
+#if !defined(_WIN32)
+	// macOS caps a shared memory object's name at 31 characters (PSHMNAMLEN)
+	// and refuses flock() on its descriptor, ENOTSUP, since it locks only
+	// files, so a region there could neither be opened under its name nor
+	// locked, and no SharedObject opened on macOS. There a region takes a
+	// short name, its hash alone, and is locked through a regular file in
+	// /tmp, which a process's death unlocks as it does a region's. Both ways
+	// are compiled on every POSIX target, so a Linux build checks the macOS
+	// one, and turning this on runs it there.
+#if defined(__APPLE__)
+	constexpr bool SHORT_NAME_AND_LOCK_FILE = true;
+#else
+	constexpr bool SHORT_NAME_AND_LOCK_FILE = false;
+#endif
+#endif
+
 	struct SharedObjectHeader
 	{
 		uint32_t magic;
@@ -38,6 +54,9 @@ namespace
 		HANDLE mutex;
 #else
 		int fd;
+		// The descriptor the region's lock is taken on: `fd` itself, or on
+		// macOS the lock file's.
+		int lockFd;
 		void* view;
 		size_t viewSize;
 #endif
@@ -124,7 +143,18 @@ namespace
 #else
 	std::string makeSharedName(const char* name)
 	{
+		if (SHORT_NAME_AND_LOCK_FILE)
+		{
+			// 22 characters: the 64-bit hash of the whole name.
+			return "/cbso_" + hexHash(hashName(sourceName(name)));
+		}
 		return "/crossbyte_shared_object_" + makeUniqueNameSuffix(name);
+	}
+
+	// The regular file whose lock stands for the region's on macOS.
+	std::string makeLockPath(const char* name)
+	{
+		return "/tmp/cbso_" + hexHash(hashName(sourceName(name))) + ".lock";
 	}
 #endif
 
@@ -203,15 +233,26 @@ namespace
 
 	bool lockForHandle(SharedObjectState* state)
 	{
-		return state != nullptr && lockDescriptor(state->fd);
+		return state != nullptr && lockDescriptor(state->lockFd);
 	}
 
 	void unlockForHandle(SharedObjectState* state)
 	{
-		if (state != nullptr && state->fd >= 0)
+		if (state != nullptr && state->lockFd >= 0)
 		{
-			flock(state->fd, LOCK_UN);
+			flock(state->lockFd, LOCK_UN);
 		}
+	}
+
+	// Undoes an open that failed after taking the region's lock.
+	void abandonOpen(int fd, int lockFd)
+	{
+		flock(lockFd, LOCK_UN);
+		if (lockFd != fd)
+		{
+			close(lockFd);
+		}
+		close(fd);
 	}
 #endif
 }
@@ -307,8 +348,24 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize)
 	// opening the name in that moment found it empty and failed, or, if it
 	// took the lock before the creator did, wrote its own maxSize into the
 	// header, past the end of a smaller mapping.
-	if (!lockDescriptor(fd))
+	int lockFd = fd;
+	if (SHORT_NAME_AND_LOCK_FILE)
 	{
+		// Opened for reading, which is all flock() needs, so a participant
+		// running as another user opens what the first one made.
+		lockFd = open(makeLockPath(name).c_str(), O_RDONLY | O_CREAT | O_CLOEXEC, 0666);
+		if (lockFd < 0)
+		{
+			close(fd);
+			return nullptr;
+		}
+	}
+	if (!lockDescriptor(lockFd))
+	{
+		if (lockFd != fd)
+		{
+			close(lockFd);
+		}
 		close(fd);
 		return nullptr;
 	}
@@ -323,8 +380,7 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize)
 
 	if (!sized || sharedInfo.st_size <= static_cast<off_t>(sizeof(SharedObjectHeader)))
 	{
-		flock(fd, LOCK_UN);
-		close(fd);
+		abandonOpen(fd, lockFd);
 		return nullptr;
 	}
 
@@ -332,8 +388,7 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize)
 	void* viewHandle = mmap(nullptr, mappedSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (viewHandle == MAP_FAILED)
 	{
-		flock(fd, LOCK_UN);
-		close(fd);
+		abandonOpen(fd, lockFd);
 		return nullptr;
 	}
 
@@ -341,12 +396,12 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize)
 	if (state == nullptr)
 	{
 		munmap(viewHandle, mappedSize);
-		flock(fd, LOCK_UN);
-		close(fd);
+		abandonOpen(fd, lockFd);
 		return nullptr;
 	}
 
 	state->fd = fd;
+	state->lockFd = lockFd;
 	state->view = viewHandle;
 	state->viewSize = mappedSize;
 	state->payloadRoom = mappedSize - sizeof(SharedObjectHeader);
@@ -389,6 +444,11 @@ extern "C" void native_sharedObjectClose(void* handle)
 	if (state->view != nullptr && state->view != MAP_FAILED)
 	{
 		munmap(state->view, state->viewSize);
+	}
+
+	if (state->lockFd >= 0 && state->lockFd != state->fd)
+	{
+		close(state->lockFd);
 	}
 
 	if (state->fd >= 0)
