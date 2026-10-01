@@ -2024,8 +2024,10 @@ entry below says how:
   signature is checked, so no key was needed: natively a 16 KB token,
   inside a raised `maxTokenLength`, which the doc suggests for tokens with
   many claims, nested 6,000 deep overflowed the stack, on the runtime's
-  thread or a worker's. A header or claims nested more than 32 deep is
-  refused as `MALFORMED` before it is parsed.
+  thread or a worker's. A header nested more than 32 deep is refused as
+  `MALFORMED` before it is parsed; the claims are parsed only once the
+  signature has shown the issuer wrote them. The check costs a typical
+  token's verification 35 ns of 11.9 us natively.
 - `SharedObject` reads a region whole and never replaces `data` with `{}`.
   `sync()` and the constructor read the payload's length and its bytes
   under two acquisitions of the region's lock, so a flush by another

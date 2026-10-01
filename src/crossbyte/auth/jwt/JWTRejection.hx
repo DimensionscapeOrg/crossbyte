@@ -11,7 +11,7 @@ package crossbyte.auth.jwt;
 enum abstract JWTRejection(String) to String {
 	/**
 	 * Not three base64url segments of JSON objects, a header field of the
-	 * wrong type, or JSON nested more than 32 deep.
+	 * wrong type, or a header nested more than 32 deep.
 	 */
 	var MALFORMED = "malformed";
 
