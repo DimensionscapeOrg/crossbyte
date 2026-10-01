@@ -1,6 +1,7 @@
 package crossbyte.io;
 
 import crossbyte.errors.IOError;
+import crossbyte.errors.RangeError;
 
 /**
  * Encodes bytes as their difference from a baseline both ends already hold,
@@ -20,11 +21,11 @@ import crossbyte.errors.IOError;
  * var snapshot:ByteArray = ByteDelta.decode(update, received.get(baselineTick));
  * ```
  *
- * **Format.** The rebuilt length as a varint, then pairs of varints, bytes
- * to copy from the baseline at the same offset, then bytes carried in the
- * delta, each pair followed by the bytes it carries, until the length is
- * made up. The end is implied by the length, so a delta can sit inside a
- * larger message.
+ * **Format.** Unsigned varints, as `ByteArray.writeVarUInt` writes them:
+ * the rebuilt length, then pairs, bytes to copy from the baseline at the
+ * same offset, then bytes carried in the delta, each pair followed by the
+ * bytes it carries, until the length is made up. The end is implied by the
+ * length, so a delta can sit inside a larger message.
  *
  * **Untrusted input.** `decode` measures every pair against what is really
  * there before it copies anything, refuses a declared length above its
@@ -59,7 +60,7 @@ final class ByteDelta {
 		var length:Int = current.length;
 		var shared:Int = baseline == null ? 0 : (baseline.length < length ? baseline.length : length);
 
-		out.writeVarInt(length);
+		out.writeVarUInt(length);
 
 		var pos:Int = 0;
 		while (pos < length) {
@@ -86,8 +87,8 @@ final class ByteDelta {
 				}
 			}
 
-			out.writeVarInt(copy);
-			out.writeVarInt(end - start);
+			out.writeVarUInt(copy);
+			out.writeVarUInt(end - start);
 			// Guarded because writeBytes reads a length of zero as "the rest".
 			if (end > start) {
 				out.writeBytes(current, start, end - start);
@@ -115,7 +116,19 @@ final class ByteDelta {
 	 * @throws EOFError If the delta ends inside one of its varints.
 	 */
 	public static function decode(delta:ByteArray, ?baseline:ByteArray, maxLength:Int = DEFAULT_MAX_LENGTH):ByteArray {
-		var length:Int = delta.readVarInt();
+		try {
+			return __decode(delta, baseline, maxLength);
+		} catch (error:RangeError) {
+			// A varint that does not fit in 32 bits, which the reader refuses
+			// as out of range; to the caller it is a malformed delta like any
+			// other. Its extra bits used to be shifted off the top, so a
+			// length of 2^32 + 3 decoded as 3.
+			throw new IOError("A delta holds a varint that does not fit in 32 bits.");
+		}
+	}
+
+	private static function __decode(delta:ByteArray, baseline:Null<ByteArray>, maxLength:Int):ByteArray {
+		var length:Int = delta.readVarUInt();
 		if (length < 0 || length > maxLength) {
 			throw new IOError('A delta declared a length of $length bytes; the most accepted is $maxLength.');
 		}
@@ -125,8 +138,8 @@ final class ByteDelta {
 		var pos:Int = 0;
 
 		while (pos < length) {
-			var copy:Int = delta.readVarInt();
-			var carried:Int = delta.readVarInt();
+			var copy:Int = delta.readVarUInt();
+			var carried:Int = delta.readVarUInt();
 
 			// Measured against what is left before either is added to
 			// anything, so no sum can overflow into a length that passes.

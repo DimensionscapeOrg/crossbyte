@@ -13,7 +13,16 @@ private typedef QueuedTask = {
 	job:Void->Dynamic
 }
 
-/** Small worker-pool scheduler for running `Task` jobs across background threads. */
+/**
+	Small worker-pool scheduler for running `Task` jobs across background threads.
+
+	On JavaScript, which has no threads, a job runs on the one thread there is,
+	inside `submit`, holding it for as long as the job takes; the task's events
+	still come in a later turn, as from a pool thread elsewhere, so a listener
+	added right after `submit` hears them. `queuedCount` and `activeCount` are
+	then always 0, and `shutdown` and `shutdownNow` only refuse what is submitted
+	after them.
+**/
 class TaskPool {
 	public var isShutdown(get, never):Bool;
 	public var workerCount(get, never):Int;

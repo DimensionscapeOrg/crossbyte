@@ -48,6 +48,43 @@ class ProcessLifecycleTest extends utest.Test {
 	}
 	#end
 
+	#if (cpp && windows)
+	/**
+		A closing console window holds the close while the shutdown runs.
+		Windows ends the process as soon as the handler for a close, a logoff
+		or a shutdown returns, and the handler returned at once: the process
+		was gone before the runtime's next tick saw the request, so only
+		Ctrl+C and Ctrl+Break ran onShutdown. Delivered here as Windows
+		delivers it, on a thread of its own, with a short hold.
+	**/
+	public function testAClosingConsoleWaitsForTheShutdown():Void {
+		var runtime = crossbyte.core.CrossByte.current();
+		var heldWhileRunning:Null<Bool> = null;
+		ProcessLifecycle.onShutdown(() -> {
+			heldWhileRunning = crossbyte.sys._internal.NativeLifecycle.consoleHandlersHolding() > 0;
+		});
+		Assert.isTrue(ProcessLifecycle.installDefaultHandlers());
+
+		var CTRL_CLOSE_EVENT:Int = 2;
+		Assert.isTrue(crossbyte.sys._internal.NativeLifecycle.deliverConsoleEvent(CTRL_CLOSE_EVENT, 1000));
+
+		// What the watching runtime does each tick.
+		var deadline:Float = haxe.Timer.stamp() + 5;
+		while (heldWhileRunning == null && haxe.Timer.stamp() < deadline) {
+			runtime.pump(1 / 60, 0);
+			crossbyte.sys.System.sleep(0.005);
+		}
+
+		Assert.equals(true, heldWhileRunning, "the close was let go before the shutdown ran: " + heldWhileRunning);
+
+		// Let the held handler go before the next test: its bound ends it.
+		deadline = haxe.Timer.stamp() + 5;
+		while (crossbyte.sys._internal.NativeLifecycle.consoleHandlersHolding() > 0 && haxe.Timer.stamp() < deadline) {
+			crossbyte.sys.System.sleep(0.01);
+		}
+	}
+	#end
+
 	public function testShutdownStartsUnrequested():Void {
 		Assert.isFalse(ProcessLifecycle.shutdownRequested);
 		Assert.isFalse(ProcessLifecycle.poll());

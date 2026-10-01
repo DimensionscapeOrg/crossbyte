@@ -14,10 +14,13 @@ class NativeProcessTest extends utest.Test {
 	// not reliably a three-second operation on a busy CI runner.
 	private static inline var TIMEOUT:Float = 15.0;
 
-	// hl and neko with no OS define: their bytecode runs on any OS and their
-	// process API with it, so nothing names one and none is needed.
+	// Every target with processes and threads but the interpreter: cpp, hl,
+	// neko and the jvm, none of which but cpp names an OS when it is built. The
+	// jvm was left out by asking for one, and refused to start a process though
+	// it can. The interpreter's process calls hold every thread while they
+	// wait, so it refuses, and says why.
 	public function testSupportFlagMatchesTarget():Void {
-		#if (nodejs || hl || neko || (sys && (windows || linux || mac || macos)))
+		#if (nodejs || (sys && target.threaded && !eval))
 		Assert.isTrue(NativeProcess.isSupported);
 		#else
 		Assert.isFalse(NativeProcess.isSupported);
@@ -25,18 +28,29 @@ class NativeProcessTest extends utest.Test {
 	}
 
 	public function testStartThrowsWhenUnsupported():Void {
-		#if (hl || neko || (sys && (windows || linux || mac || macos)))
+		#if (sys && target.threaded && !eval)
 		Assert.pass();
 		#else
+		// An IllegalOperationError, which says the target cannot, rather than
+		// the ArgumentError it was, which says the caller passed something
+		// wrong; and on the interpreter, why.
 		var proc = new NativeProcess();
-		Assert.isTrue(throws(function() {
+		var thrown:Dynamic = null;
+		try {
 			proc.start(new NativeProcessStartupInfo("echo"));
-		}));
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+		Assert.isTrue(Std.isOfType(thrown, crossbyte.errors.IllegalOperationError), "start threw " + thrown);
+		#if eval
+		Assert.isTrue(Std.string(thrown).indexOf("interpreter") >= 0, "the refusal did not name the interpreter: " + thrown);
+		#end
+		Assert.isFalse(proc.running);
 		#end
 	}
 
 	public function testStartEmitEventsAndExitCode():Void {
-		#if (hl || neko || (sys && (windows || linux || mac || macos)))
+		#if (sys && target.threaded && !eval)
 		var proc = new NativeProcess();
 		var output:String = "";
 		var exited:Bool = false;
@@ -76,7 +90,7 @@ class NativeProcessTest extends utest.Test {
 		target's `sys.io.Process` has one, they all have `getPid()`.
 	**/
 	public function testThePidIsTheChilds():Void {
-		#if (hl || neko || (sys && (windows || linux || mac || macos)))
+		#if (sys && target.threaded && !eval)
 		var proc = new NativeProcess();
 		var exited:Bool = false;
 		var exitPid:Int = -1;
@@ -91,9 +105,18 @@ class NativeProcessTest extends utest.Test {
 
 		pumpUntil(() -> exited, TIMEOUT);
 
-		Assert.isTrue(pid > 0, "the running child reported pid " + pid);
 		Assert.isTrue(exited);
 		Assert.equals(pid, exitPid);
+		#if jvm
+		// The one place there is no id to have: Java 8 on Windows keeps the
+		// child's handle and no way to learn its id, as `pid` documents. The
+		// jvm's own getPid() answered -1 everywhere, Linux and Java 9 included.
+		if (System.isWindows && Std.parseFloat(java.lang.System.getProperty("java.specification.version")) < 9) {
+			Assert.equals(-1, pid);
+			return;
+		}
+		#end
+		Assert.isTrue(pid > 0, "the running child reported pid " + pid);
 		#else
 		Assert.pass();
 		#end
@@ -109,7 +132,7 @@ class NativeProcessTest extends utest.Test {
 		5,212 ms between two ticks, for a child quiet for five seconds.
 	**/
 	public function testAQuietChildDoesNotStopTheRuntime():Void {
-		#if (hl || neko || (sys && (windows || linux || mac || macos)))
+		#if (sys && target.threaded && !eval)
 		var proc = new NativeProcess();
 		var exited:Bool = false;
 		proc.addEventListener(NativeProcessEvent.EXIT, _ -> exited = true);
@@ -144,8 +167,41 @@ class NativeProcessTest extends utest.Test {
 		#end
 	}
 
+	/**
+		A character a read cuts in two arrives whole. Each read of a child's
+		output was decoded on its own, so a UTF-8 character split across two,
+		at a 4096-byte boundary, or wherever the pipe hands back less,
+		came out as two replacement characters. Node decodes across reads
+		already. Here the output arrives a byte per read.
+	**/
+	@:access(crossbyte.sys.NativeProcess)
+	public function testACharacterSplitBetweenReadsArrivesWhole():Void {
+		#if (sys && target.threaded && !eval && !hl)
+		var expected:String = "aé€\u{1F600}b";
+		var proc = new NativeProcess();
+		var text:String = "";
+		var closed = false;
+		proc.addEventListener(NativeProcessEvent.STANDARD_OUTPUT_DATA, event -> text += event.text);
+		proc.addEventListener(NativeProcessEvent.STANDARD_OUTPUT_CLOSE, _ -> closed = true);
+
+		proc.__running = true;
+		proc.__worker = new Worker();
+		proc.__worker.addEventListener(crossbyte.events.ThreadEvent.PROGRESS, proc.__onWorkerProgress);
+		proc.__worker.doWork = _ -> proc.__readStream(NativeProcess.STREAM_STDOUT, new ByteAtATime(Bytes.ofString(expected)));
+		proc.__worker.run();
+
+		pumpUntil(() -> closed, TIMEOUT);
+		proc.__running = false;
+
+		Assert.isTrue(closed);
+		Assert.equals(expected, text);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testExitEventDispatchesOnOwningRuntimeTick():Void {
-		#if (hl || neko || (sys && (windows || linux || mac || macos)))
+		#if (sys && target.threaded && !eval)
 		var primordial = CrossByte.current();
 		var child = new CrossByte(false, DEFAULT, true);
 		var proc = new NativeProcess();
@@ -178,7 +234,7 @@ class NativeProcessTest extends utest.Test {
 	// `windows` define, and their bytecode runs on whichever OS it is given to.
 	@:noCompletion private static function getDefaultInfo():NativeProcessStartupInfo {
 		if (System.isWindows) {
-			return new NativeProcessStartupInfo("cmd.exe", ["/C echo nativeprocess_smoke"]);
+			return new NativeProcessStartupInfo("cmd.exe", ["/C", "echo", "nativeprocess_smoke"]);
 		}
 		return new NativeProcessStartupInfo("sh", ["-c", "echo nativeprocess_smoke"]);
 	}
@@ -217,5 +273,30 @@ class NativeProcessTest extends utest.Test {
 		} catch (_:Dynamic) {
 			return true;
 		}
+	}
+}
+
+/** A child's output that arrives one byte per read, then ends. **/
+private class ByteAtATime extends haxe.io.Input {
+	private final source:Bytes;
+	private var at:Int = 0;
+
+	public function new(source:Bytes) {
+		this.source = source;
+	}
+
+	override public function readByte():Int {
+		if (at >= source.length) {
+			throw new haxe.io.Eof();
+		}
+		return source.get(at++);
+	}
+
+	override public function readBytes(buffer:Bytes, pos:Int, len:Int):Int {
+		if (at >= source.length) {
+			throw new haxe.io.Eof();
+		}
+		buffer.set(pos, source.get(at++));
+		return 1;
 	}
 }

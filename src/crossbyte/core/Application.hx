@@ -60,7 +60,8 @@ class Application extends EventDispatcher {
 	 *
 	 * @param type The event type originally registered.
 	 * @param listener The listener callback to remove.
-	 * @param priority The listener priority that was used during registration.
+	 * @param priority Not used: a listener is removed whatever priority it
+	 *        was added with.
 	 */
 	public static function removeGlobalListener<T>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
 		if (__application != null) {

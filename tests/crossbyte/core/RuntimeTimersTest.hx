@@ -14,6 +14,75 @@ import utest.Assert;
 **/
 @:access(crossbyte.core.CrossByte)
 class RuntimeTimersTest extends utest.Test {
+	/**
+		Wall time and scheduler time convert at the present: the scheduler's
+		time now is the clock's now, and other times follow by the difference.
+		Both conversions counted the scheduler's time on top of its start, so
+		a runtime that had run for an hour put every wall time an hour out.
+	**/
+	public function testWallClockConversionsMeetAtThePresent():Void {
+		var runtime = new CrossByte(false, DEFAULT, true);
+		// A runtime that has been running a while, at the clock's pace, as
+		// one with a loop of its own does.
+		var started:Float = haxe.Timer.stamp();
+		crossbyte.sys.System.sleep(0.3);
+		runtime.pump(haxe.Timer.stamp() - started, 0);
+
+		var virtualNow:Float = crossbyte.Timer.getTime();
+		var wallNow:Float = crossbyte.Timer.now();
+		Assert.isTrue(virtualNow >= 0.25, "the runtime had not run: " + virtualNow);
+
+		Assert.floatEquals(virtualNow, crossbyte.Timer.fromWallClock(wallNow), 0.05);
+		Assert.floatEquals(wallNow, crossbyte.Timer.toWallClock(virtualNow), 0.05);
+		// A deadline ten seconds off is ten seconds of the scheduler's time off.
+		Assert.floatEquals(virtualNow + 10, crossbyte.Timer.fromWallClock(wallNow + 10), 0.05);
+		Assert.floatEquals(wallNow + 10, crossbyte.Timer.toWallClock(virtualNow + 10), 0.05);
+		// And each undoes the other.
+		Assert.floatEquals(wallNow - 2, crossbyte.Timer.toWallClock(crossbyte.Timer.fromWallClock(wallNow - 2)), 0.05);
+		runtime.exit();
+	}
+
+	/**
+		`Timer.stamp()` with no application is an IllegalOperationError that
+		says so, as `CrossByte.make()` is. It read the primordial runtime's
+		uptime without looking, which is a null access, and natively, in a
+		release build, a crash.
+	**/
+	public function testStampWithNoApplicationSaysSo():Void {
+		var primordial:CrossByte = CrossByte.__primordial;
+		CrossByte.__primordial = null;
+		var thrown:Dynamic = null;
+		try {
+			crossbyte.Timer.stamp();
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+		CrossByte.__primordial = primordial;
+
+		Assert.isTrue(Std.isOfType(thrown, crossbyte.errors.IllegalOperationError), "stamp() threw " + thrown);
+	}
+
+	#if target.threaded
+	/**
+		A thread no runtime runs on has no timers, and asking for them is an
+		IllegalOperationError, as `CrossByte.current()` is there. It was a
+		bare String.
+	**/
+	public function testATimerOnAThreadWithNoRuntimeIsRefused():Void {
+		var result = new sys.thread.Deque<Dynamic>();
+		sys.thread.Thread.create(() -> {
+			try {
+				crossbyte.Timer.setTimeout(1.0, () -> {});
+				result.add("no throw");
+			} catch (e:Dynamic) {
+				result.add(e);
+			}
+		});
+		var thrown:Dynamic = result.pop(true);
+		Assert.isTrue(Std.isOfType(thrown, crossbyte.errors.IllegalOperationError), "setTimeout threw " + thrown);
+	}
+	#end
+
 	public function testEveryTimerDueInAFrameFires():Void {
 		var runtime = new CrossByte(false, DEFAULT, true);
 		var fired = 0;

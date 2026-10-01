@@ -1,6 +1,7 @@
 package crossbyte;
 
 import crossbyte.core.CrossByte;
+import crossbyte.errors.IllegalOperationError;
 import crossbyte._internal.system.timer.TimerScheduler;
 #if target.threaded
 import sys.thread.Tls;
@@ -11,12 +12,15 @@ import sys.thread.Tls;
  *
  * `Timer` provides access to a scheduler bound to the current thread.
  * All timer operations are handled by the scheduler attached to this thread.
- * 
- * This API only works in threads that are managed by a CrossByte runtime instance (such as via `CrossByte.runThread()`).
- * It will throw an error if accessed from a thread that has not been initialized with a `CrossByte` instance.
- * 
+ *
+ * This API only works on a thread a CrossByte runtime runs on: the
+ * application's, a child runtime's made with `CrossByte.make()`, or the thread
+ * that pumps a host-driven runtime. Anywhere else it throws an
+ * `IllegalOperationError`, as `CrossByte.current()` does.
+ *
  * Threads created manually using `sys.thread.Thread.create()` or other non-CrossByte threading APIs
- * will fail at runtime when calling these timer methods unless a scheduler is explicitly bound.
+ * have no runtime, so these timer methods throw there; hand the work to a runtime with
+ * `CrossByte.post()` instead.
  *
  * This design allows each CrossByte-managed thread to maintain its own isolated timing system.
  * For process-wide timeout/interval APIs backed by the primordial runtime,
@@ -48,16 +52,20 @@ class Timer {
 	@:noCompletion private static inline function current():TimerScheduler {
 		#if target.threaded
 		final scheduler:TimerScheduler = __tls.value;
+		#else
+		final scheduler:TimerScheduler = __nonThreadedTimer;
+		#end
 		if (scheduler == null) {
-			throw "TimerScheduler not attached to this thread";
+			__noScheduler();
 		}
 		return scheduler;
-		#else
-		if (__nonThreadedTimer == null) {
-			throw "TimerScheduler not attached to this thread";
-		}
-		return __nonThreadedTimer;
-		#end
+	}
+
+	// Out of line, so the inline path above stays a load and a test. An
+	// IllegalOperationError, as CrossByte.current() throws on the same
+	// thread; this was a bare String.
+	@:noCompletion private static function __noScheduler():Void {
+		throw new IllegalOperationError("crossbyte.Timer needs a CrossByte runtime on this thread, and this thread has none. Use it from a runtime's thread, or hand the work to one with CrossByte.post().");
 	}
 
 	@:noCompletion private static inline function currentOrNull():Null<TimerScheduler> {
@@ -179,14 +187,25 @@ class Timer {
 
 	/**
 	 * Returns the current logical time (in seconds) for application since it started.
-	 * 
+	 *
 	 * This value increments when `advanceTime()` is called by the host loop.
 	 *
 	 * @return The application uptime (not wall-clock time).
+	 * @throws IllegalOperationError If there is no application: no primordial
+	 *         runtime has been made, or it has exited.
 	 */
 	public static inline function stamp():Float {
-		@:privateAccess
-		return CrossByte.__primordial.uptime;
+		final primordial:CrossByte = @:privateAccess CrossByte.__primordial;
+		if (primordial == null) {
+			// It read the primordial's uptime without looking, which is a
+			// null access, natively, in a release build, a crash.
+			__noApplication();
+		}
+		return primordial.uptime;
+	}
+
+	@:noCompletion private static function __noApplication():Void {
+		throw new IllegalOperationError("crossbyte.Timer.stamp() is the application's uptime, and there is no application: create an Application, HostApplication or ServerApplication first.");
 	}
 
 	/**
@@ -199,25 +218,35 @@ class Timer {
 	}
 
 	/**
-	 * Converts an absolute wall clock time (in seconds)
+	 * Converts an absolute wall clock time (in seconds), as `now()` reads it,
 	 * to the scheduler's virtual time.
+	 *
+	 * Measured from the present: the scheduler's time now, `getTime()`, plus
+	 * however far `wallTime` is from `now()`. So a timer due at the result
+	 * fires when the clock reads about `wallTime`, as long as the runtime
+	 * keeps pace with the clock, as its own loop does. A host-driven runtime
+	 * moves at the pace its host advances it.
 	 *
 	 * @param wallTime The absolute wall clock time.
 	 * @return The corresponding virtual time in the scheduler.
 	 */
 	public static inline function fromWallClock(wallTime:Float):Float {
-		final scheduler:TimerScheduler = current();
-		return scheduler.time + (wallTime - scheduler.startTime);
+		// The scheduler's time was counted on top of its start, so after an
+		// hour of running every answer was an hour late.
+		return current().time + (wallTime - haxe.Timer.stamp());
 	}
 
 	/**
-	 * Converts a scheduler virtual time back into a wall clock timestamp.
+	 * Converts a scheduler virtual time back into a wall clock timestamp, on
+	 * `now()`'s clock: when the clock reads, or will read, the moment the
+	 * scheduler reaches `virtualTime`.
+	 *
+	 * Measured from the present, as `fromWallClock` is, and its inverse.
 	 *
 	 * @param virtualTime The virtual time from the scheduler.
 	 * @return The corresponding wall clock time in seconds.
 	 */
 	public static inline function toWallClock(virtualTime:Float):Float {
-		final scheduler = current();
-		return scheduler.startTime + (virtualTime - scheduler.time);
+		return haxe.Timer.stamp() + (virtualTime - current().time);
 	}
 }
