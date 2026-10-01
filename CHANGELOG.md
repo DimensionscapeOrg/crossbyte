@@ -1945,6 +1945,9 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- In a browser, `HTTP_RESPONSE_STATUS` says a response was redirected only
+  when it was. A relative URL was compared, as written, with the absolute
+  one the browser reports, so every load of one said it had been.
 - An `HTTPBackend` is handed a request's headers as `"Name: value"`, as
   `HTTPRequestContext.headers` says; `URLLoader` passed them as
   `URLRequestHeader.toString()` writes them, with no space. And the client

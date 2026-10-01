@@ -152,6 +152,34 @@ class URLLoaderBrowserTest extends utest.Test {
 	}
 
 	/**
+		A response says it was redirected only when it was. A relative URL
+		was compared, as written, with the absolute one the browser reports,
+		so every load of one said it had been redirected.
+	**/
+	public function testARelativeUrlIsNotReportedRedirected(async:Async):Void {
+		var loader:URLLoader = new URLLoader();
+		var responses:Array<crossbyte.events.HTTPStatusEvent> = [];
+		loader.addEventListener(crossbyte.events.HTTPStatusEvent.HTTP_RESPONSE_STATUS, event -> responses.push(event));
+		var settled:Bool = false;
+		function done(outcome:String):Void {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			Assert.equals("complete", outcome);
+			Assert.equals(1, responses.length);
+			if (responses.length == 1) {
+				Assert.isFalse(responses[0].redirected, "a load nothing redirected said it was");
+				Assert.equals(js.Browser.location.origin + "/index.html", responses[0].responseURL);
+			}
+			async.done();
+		}
+		loader.addEventListener(Event.COMPLETE, _ -> done("complete"));
+		loader.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> done("error " + event.text));
+		loader.load(new URLRequest("/index.html"));
+	}
+
+	/**
 		A request asking not to follow redirects is refused in a page, and
 		nothing is sent: the browser follows every redirect itself and shows a
 		page none of them. It went out, and came back as wherever a redirect
