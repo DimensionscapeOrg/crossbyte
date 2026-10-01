@@ -1956,6 +1956,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `EventDispatcher.addEventListener` documents `priority` as what it is:
+  higher runs first, and equal priorities run in the order added. It called
+  it an insertion index, clamped to the list's length, with lower values
+  "inserted earlier (i.e. called later)". `Application.removeGlobalListener`
+  says its `priority` is not used, where it asked for the one a listener
+  was added with.
 - `EOFError` keeps the message and id it is given, as its doc says; given
   none, they are still Flash's "End of file was encountered" and 2030. It
   replaced both whatever was passed, so `FileStream`'s account of what ran
