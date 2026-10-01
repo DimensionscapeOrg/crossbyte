@@ -1,6 +1,6 @@
 package crossbyte.auth.jwt;
 
-import crossbyte.auth._internal.JsonNesting;
+import crossbyte._internal.serial.JsonNesting;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
 

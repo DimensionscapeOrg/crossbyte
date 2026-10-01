@@ -2181,6 +2181,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `readObject` refuses an object nested more than 256 levels deep (128 in
+  AMF) with an `IOError`, on `ByteArray` and so on every socket. A peer's
+  object nested a few thousand deep, 12 KB of HXSF, JSON or AMF, made
+  the reader recurse until the stack ran out, which natively ended the
+  whole process: any server that called `readObject` on a socket could be
+  stopped by one message.
 - A response the server sends in bursts, a file over 256 KB, a body too
   large for the output buffer, is held to its 30 s stall deadline
   whatever `requestTimeout` and `keepAliveTimeout` are, over HTTP/1.1 and
