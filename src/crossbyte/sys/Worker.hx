@@ -89,7 +89,11 @@ class Worker extends EventDispatcher {
 		__acquire();
 		cancelRequested = true;
 		canceled = true;
-		if (!completed && state != FAILED) {
+		// By the state, not by `completed`: sendComplete sets that as the work
+		// sends, and a completion not yet delivered is discarded by the drain
+		// once this is called, which then set nothing, the worker read
+		// RUNNING for good, and run() refused it.
+		if (state != COMPLETED && state != FAILED) {
 			state = CANCELLED;
 		}
 		#if target.threaded

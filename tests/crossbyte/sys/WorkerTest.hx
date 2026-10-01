@@ -217,6 +217,59 @@ class WorkerTest extends utest.Test {
 		#end
 	}
 
+	/**
+		A worker cancelled after its work sent COMPLETE, but before its runtime
+		delivered it, ends cancelled. cancel() decided by `completed`, which
+		sendComplete sets as it sends, and left the state alone; the drain then
+		discarded the completion as cancelled, and nothing set the state again.
+		The worker read RUNNING for good, and run() refused it as already
+		running.
+	**/
+	public function testAWorkerCancelledBeforeItsCompletionArrivesEndsCancelled():Void {
+		#if target.threaded
+		var child = new CrossByte(false, DEFAULT, true);
+		var worker = new Worker();
+		var completes = 0;
+		var sent = false;
+		worker.addEventListener(ThreadEvent.COMPLETE, (_:ThreadEvent) -> completes++);
+		worker.doWork = _ -> {
+			worker.sendComplete("first");
+			sent = true;
+		};
+
+		worker.run();
+		waitFor(() -> sent);
+		worker.cancel(false);
+		child.pump(0, 0);
+
+		Assert.equals(0, completes, "a cancelled worker's completion was delivered");
+		Assert.equals(WorkerState.CANCELLED, worker.state);
+		Assert.isFalse(worker.running);
+
+		var ranAgain = false;
+		var sentAgain = false;
+		worker.doWork = _ -> {
+			ranAgain = true;
+			worker.sendComplete("second");
+			sentAgain = true;
+		};
+		try {
+			worker.run();
+		} catch (e:Dynamic) {
+			Assert.fail("the cancelled worker could not run again: " + e);
+		}
+		waitFor(() -> sentAgain);
+		child.pump(0, 0);
+		child.exit();
+
+		Assert.isTrue(ranAgain);
+		Assert.equals(1, completes);
+		Assert.equals(WorkerState.COMPLETED, worker.state);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testEverythingQueuedIsDeliveredOnOneTick():Void {
 		#if target.threaded
 		var worker = new Worker();
