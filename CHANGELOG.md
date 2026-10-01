@@ -1944,6 +1944,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Postgres statement parameters are not substituted into a dollar-quoted
+  string or past an escaped quote in an `E'...'` string. The scan did not
+  know either: it substituted a `:name` the server reads as inside the
+  literal, and a value holding the dollar tag -- `$$; DROP TABLE users;
+  --` -- or no quote at all ended the server's literal for it, the rest
+  statement text. A placeholder inside such a literal is left as written,
+  as one inside any other literal is.
 - A `MySQLStatement` given its connection before `open()` runs once the
   connection is open; it copied the connection's handle when
   `sqlConnection` was set, held none, and refused. And a MySQL isolation
