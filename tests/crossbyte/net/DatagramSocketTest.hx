@@ -37,6 +37,46 @@ class DatagramSocketTest extends utest.Test {
 	}
 
 	/**
+		A socket's own address is asked of the system once, and kept while
+		nothing can change it. Every read of `localAddress` or `localPort` was a
+		getsockname() call, and a reliable session reads both for every message
+		it hands over, two system calls a message, an eighth of a game
+		server's time at a thousand clients.
+	**/
+	public function testItsOwnAddressIsAskedOnce():Void {
+		#if (sys && !nodejs)
+		if (!DatagramSocket.isSupported) {
+			Assert.isFalse(DatagramSocket.isSupported);
+			return;
+		}
+
+		var socket = new DatagramSocket();
+		var counting = new CountingUdpSocket();
+		try {
+			counting.setBlocking(false);
+			try socket.__socket.close() catch (_:Dynamic) {}
+			counting.custom = socket;
+			socket.__socket = counting;
+
+			socket.bind(0, "127.0.0.1");
+			var port:Int = socket.localPort;
+			var asked:Int = counting.asked;
+			for (_ in 0...100) {
+				Assert.equals(port, socket.localPort);
+				Assert.equals("127.0.0.1", socket.localAddress);
+			}
+			Assert.isTrue(port > 0, "the bound socket reported port " + port);
+			Assert.isTrue(counting.asked - asked <= 1, "200 reads asked the system " + (counting.asked - asked) + " times");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		try socket.close() catch (_:Dynamic) {}
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
 		A number written into a new ByteArray reads back as itself from the
 		datagram that carried it. Datagram payloads came big-endian, where a
 		ByteArray an application makes, and every other CrossByte socket, is
@@ -700,3 +740,15 @@ class DatagramSocketTest extends utest.Test {
 		}
 	}
 }
+
+#if (sys && !nodejs)
+/** A UDP socket that counts the times its own address is asked of the system. **/
+private class CountingUdpSocket extends sys.net.UdpSocket {
+	public var asked:Int = 0;
+
+	override public function host():{host:sys.net.Host, port:Int} {
+		asked++;
+		return super.host();
+	}
+}
+#end

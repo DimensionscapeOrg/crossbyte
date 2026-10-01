@@ -1234,6 +1234,12 @@ All notable changes to CrossByte will be documented in this file.
   in network byte order sets `endian = Endian.BIG_ENDIAN` on the socket,
   or `ByteArray.defaultEndian = Endian.BIG_ENDIAN` once for the whole
   application.
+- A `DatagramSocket` asks the system its own address once, and keeps it
+  until a bind, connect or close can change it. Every read of
+  `localAddress` or `localPort` was a getsockname() call, and a
+  `ReliableDatagramSocket` reads both for every message it hands over: two
+  system calls a message, about an eighth of a game server's time with a
+  thousand clients sending it inputs over reliable UDP.
 - `PostgresStatement` and `MongoStatement` throw a failed statement's
   `SQLError` after dispatching it as an `SQLErrorEvent`, as `MySQLStatement`
   does. They dispatched it and returned, so to a caller not listening, an
