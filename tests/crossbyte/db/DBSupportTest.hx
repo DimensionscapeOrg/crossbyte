@@ -321,6 +321,40 @@ class DBSupportTest extends utest.Test {
 		var connection = new SQLiteConnection();
 		Assert.raises(() -> connection.open(path, SQLiteMode.READ), ArgumentError);
 	}
+
+	/**
+		A rowid past 32 bits reads back whole. SQLite's are 64-bit and the
+		connection's was an Int, held at 2^31 - 1 by hxcpp and wrapped by
+		the other drivers: a Snowflake id or a millisecond timestamp used as
+		a key came back as something else, from the connection and from
+		every statement's result.
+	**/
+	public function testARowIdPastThirtyTwoBitsReadsBackWhole():Void {
+		var connection = new SQLiteConnection();
+		connection.open(null, SQLiteMode.CREATE, false, 4096);
+
+		var create = new SQLiteStatement();
+		create.sqlConnection = connection;
+		create.text = "CREATE TABLE stamps (id INTEGER PRIMARY KEY, name TEXT);";
+		create.execute();
+
+		var insert = new SQLiteStatement();
+		insert.sqlConnection = connection;
+		insert.text = "INSERT INTO stamps (id, name) VALUES (1727600000000, 'now');";
+		insert.execute();
+		var result = insert.getResult();
+
+		Require.notNull(result);
+		Assert.equals(1727600000000.0, result.lastInsertRowID, "the statement's result");
+		Assert.equals(1727600000000.0, connection.lastInsertRowID, "the connection");
+		connection.close();
+	}
+
+	/** Sizes past 2 GB, which multiplying two Ints wrapped before they reached the Int64. **/
+	public function testADatabaseSizeIsNotMultipliedInThirtyTwoBits():Void {
+		var size = @:privateAccess SQLiteConnection.__bytesOf(65536, 49152);
+		Assert.equals("3221225472", haxe.Int64.toStr(size));
+	}
 	#end
 
 	public function testAFailedSQLiteOpenIsAnIOError():Void {
