@@ -90,6 +90,7 @@ entry below says how:
 - A `JWT` verifying tokens that carry `aud` needs `expectedAudience` set to
   the audience it is; with none, those tokens are refused.
 - `JWTAlgorithm.HS384` and `HS512` are gone; nothing could use them.
+- `JWT.safeBase64UrlEncodeString` is renamed `safeBase64UrlDecodeString`.
 
 ### Added
 - `OAuthToken.idToken`, the OpenID Connect ID token a sign-in with the
@@ -1162,6 +1163,13 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `JWT.safeBase64UrlEncodeString` is `safeBase64UrlDecodeString`: it
+  decodes, and was named for the opposite. The auth docs were corrected
+  besides: `OAuth.getAccessToken` said the exchange ran inline on the jvm
+  and the interpreter, where it has run on `URLLoader`'s threads, bounded
+  by `timeout`, since loads moved to a pool; `JWTHeader.algorithm` carried
+  `type`'s doc and `type` none; and `generateToken` and
+  `normalizeBase64Url` did not say what they throw.
 - A JWT verifier with no `expectedAudience` refuses a token that names an
   audience, as `WRONG_AUDIENCE`. RFC 7519 has a recipient that does not
   identify itself with a token's `aud` reject it; accepting one let a token

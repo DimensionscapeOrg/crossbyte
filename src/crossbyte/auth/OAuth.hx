@@ -127,11 +127,10 @@ class OAuth {
 	/**
 	 * Exchanges the authorization code for an access token.
 	 *
-	 * On native targets and Node this returns at once, and the callbacks run on
-	 * the calling runtime's thread when the endpoint answers or `timeout`
-	 * seconds pass; on the jvm and the interpreter, where `URLLoader` runs its
-	 * request inline, it returns once the endpoint has answered. Needs a
-	 * CrossByte runtime on the calling thread.
+	 * This returns at once, and the callbacks run on the calling runtime's
+	 * thread when the endpoint answers or `timeout` seconds pass: on one of
+	 * `URLLoader`'s threads natively, on the jvm and on the interpreter, and
+	 * asynchronously on Node. Needs a CrossByte runtime on the calling thread.
 	 *
 	 * `callback` fires only on success. Supply `onError` to be told about a
 	 * failure: without one, a rejected grant is logged and nothing else happens,
@@ -243,8 +242,8 @@ class OAuth {
 			}
 		});
 
-		// Armed before the load: where the loader runs inline, the answer has
-		// settled, and cleared this, by the time load returns.
+		// Armed before the load, so a load that settles inside load() --
+		// refused before it starts -- clears it rather than leaving it armed.
 		deadline = crossbyte.Timer.setTimeout(timeout, () -> {
 			if (!settle()) {
 				return;

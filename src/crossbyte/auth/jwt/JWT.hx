@@ -114,6 +114,8 @@ class JWT {
 	 *
 	 * @throws ArgumentError When `iat`, `exp` or `nbf` is present and not a
 	 *         finite number of seconds.
+	 * @throws String When the signer holds no private key -- a verify-only
+	 *         one, such as `JWKSet.signer` makes.
 	 */
 	public function generateToken(payload:JWTPayload):String {
 		var signer:IJWTSigner = __signer;
@@ -404,7 +406,7 @@ class JWT {
 
 	/** Decodes one segment into a JSON object, or null for anything else. */
 	@:noCompletion private static function __decodeObject(segment:String):Null<Dynamic> {
-		var text:Null<String> = safeBase64UrlEncodeString(segment);
+		var text:Null<String> = safeBase64UrlDecodeString(segment);
 		if (text == null) {
 			return null;
 		}
@@ -501,7 +503,12 @@ class JWT {
 		return __stripPad(s);
 	}
 
-	/** Normalizes a base64url string into padded standard base64 form. */
+	/**
+	 * Normalizes a base64url string into padded standard base64 form.
+	 *
+	 * @throws String For a length no base64url string can have (one more than
+	 *         a multiple of four).
+	 */
 	public static inline function normalizeBase64Url(s:String):String {
 		var std:String = s.split("-").join("+").split("_").join("/");
 		switch (std.length % 4) {
@@ -516,8 +523,12 @@ class JWT {
 		return std;
 	}
 
-	/** Safely decodes a base64url string to UTF-8 text, returning `null` on failure. */
-	public static function safeBase64UrlEncodeString(s:String):Null<String> {
+	/**
+	 * Decodes a base64url string to UTF-8 text, returning `null` on failure.
+	 * It was named `safeBase64UrlEncodeString`, for the opposite of what it
+	 * does.
+	 */
+	public static function safeBase64UrlDecodeString(s:String):Null<String> {
 		var b64:String = s.split("-").join("+").split("_").join("/");
 		switch (b64.length % 4) {
 			case 2:
