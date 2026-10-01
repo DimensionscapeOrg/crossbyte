@@ -515,9 +515,14 @@ final class File extends EventDispatcher {
 	 *
 	 * @param path The path to the file.
 	 * @return A `ByteArray` containing the file's contents.
+	 * @throws IOError The file does not exist (3003) or cannot be read.
 	 */
-	public static inline function getFileBytes(path:String):ByteArray {
-		return HaxeFile.getBytes(path);
+	public static function getFileBytes(path:String):ByteArray {
+		try {
+			return HaxeFile.getBytes(path);
+		} catch (e:Dynamic) {
+			throw __missingOr(path, e);
+		}
 	}
 
 	/**
@@ -525,9 +530,14 @@ final class File extends EventDispatcher {
 	 *
 	 * @param path The path to the file.
 	 * @return A `String` containing the file's contents.
+	 * @throws IOError The file does not exist (3003) or cannot be read.
 	 */
-	public static inline function getFileText(path:String):String {
-		return HaxeFile.getContent(path);
+	public static function getFileText(path:String):String {
+		try {
+			return HaxeFile.getContent(path);
+		} catch (e:Dynamic) {
+			throw __missingOr(path, e);
+		}
 	}
 
 	/**
@@ -535,9 +545,14 @@ final class File extends EventDispatcher {
 	 *
 	 * @param path The path where the file should be saved.
 	 * @param bytes The `ByteArray` to write to the file.
+	 * @throws IOError The file cannot be written.
 	 */
-	public static inline function saveBytes(path:String, bytes:ByteArray):Void {
-		HaxeFile.saveBytes(path, bytes);
+	public static function saveBytes(path:String, bytes:ByteArray):Void {
+		try {
+			HaxeFile.saveBytes(path, bytes);
+		} catch (e:Dynamic) {
+			throw __ioError('Could not write "$path": ${Std.string(e)}', 0);
+		}
 	}
 
 	/**
@@ -545,9 +560,14 @@ final class File extends EventDispatcher {
 	 *
 	 * @param path The path where the file should be saved.
 	 * @param text The `String` content to write to the file.
+	 * @throws IOError The file cannot be written.
 	 */
-	public static inline function saveText(path:String, text:String):Void {
-		HaxeFile.saveContent(path, text);
+	public static function saveText(path:String, text:String):Void {
+		try {
+			HaxeFile.saveContent(path, text);
+		} catch (e:Dynamic) {
+			throw __ioError('Could not write "$path": ${Std.string(e)}', 0);
+		}
 	}
 
 	@:noCompletion private var __data:ByteArray;
@@ -1082,7 +1102,11 @@ final class File extends EventDispatcher {
 
 	**/
 	public function createDirectory():Void {
-		FileSystem.createDirectory(__path);
+		try {
+			FileSystem.createDirectory(__path);
+		} catch (e:Dynamic) {
+			throw __ioError('Could not create the directory "$__path": ${Std.string(e)}', FileSystem.exists(__path) ? 3002 : 0);
+		}
 	}
 
 	/**
@@ -1114,19 +1138,34 @@ final class File extends EventDispatcher {
 	/** deleteDirectory, which `cancelled`, when given, can stop between entries. **/
 	@:noCompletion private function __deleteDirectory(deleteDirectoryContents:Bool, cancelled:Null<Void->Bool>):Void {
 		if (!FileSystem.exists(__path)) {
-			throw new Error("File or directory does not exist.", 3003);
+			throw __ioError('"$__path" does not exist.', 3003);
+		}
+
+		if (!FileSystem.isDirectory(__path)) {
+			throw __ioError('"$__path" is not a directory; deleteFile() deletes a file.', 3007);
 		}
 
 		if (deleteDirectoryContents) {
 			for (item in __listPath(__path)) {
-				__removePath(Path.join([__path, item]), cancelled);
+				try {
+					__removePath(Path.join([__path, item]), cancelled);
+				} catch (e:FileCancelled) {
+					throw e;
+				} catch (e:Dynamic) {
+					throw __ioError('Could not delete "${Path.join([__path, item])}": ${Std.string(e)}', 3012);
+				}
 			}
+		} else if (__listPath(__path).length > 0) {
+			throw __ioError('"$__path" is not empty, and deleteDirectoryContents is false.', 3010);
 		}
 
+		// Each failure was "Folder is not empty", whatever it was -- a
+		// directory held open, a permission refused -- and the base Error,
+		// where an IOError is documented.
 		try {
 			FileSystem.deleteDirectory(__path);
 		} catch (e:Dynamic) {
-			throw new Error("Folder is not empty.", 3010);
+			throw __ioError('Could not delete "$__path": ${Std.string(e)}', 3012);
 		}
 	}
 
@@ -1168,7 +1207,19 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function deleteFile():Void {
-		FileSystem.deleteFile(__path);
+		if (!FileSystem.exists(__path)) {
+			throw __ioError('"$__path" does not exist.', 3003);
+		}
+
+		if (FileSystem.isDirectory(__path)) {
+			throw __ioError('"$__path" is a directory; deleteDirectory() deletes one.', 3006);
+		}
+
+		try {
+			FileSystem.deleteFile(__path);
+		} catch (e:Dynamic) {
+			throw __ioError('Could not delete "$__path": ${Std.string(e)}', 3012);
+		}
 	}
 
 	/**
@@ -1207,9 +1258,7 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function getDirectoryListing():Array<File> {
-		if (!isDirectory) {
-			throw new Error("Not a directory.", 3007);
-		}
+		__checkDirectory();
 
 		var directories:Array<String> = __listPath(__path);
 		var files:Array<File> = [];
@@ -1249,11 +1298,10 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function getDirectoryListingAsync():Void {
-		if (!isDirectory) {
-			throw new Error("Not a directory.", 3007);
-		}
-
 		__startAsync(cancelled -> {
+			// On the worker, so that what is wrong with the directory is the
+			// documented ioError event. It was thrown, synchronously.
+			__checkDirectory();
 			var files:Array<File> = [];
 
 			for (item in __listPath(__path)) {
@@ -1265,6 +1313,17 @@ final class File extends EventDispatcher {
 
 			return files;
 		}, (files:Array<File>) -> dispatchEvent(new FileListEvent(FileListEvent.DIRECTORY_LISTING, files)));
+	}
+
+	/** An IOError unless this is a directory: 3003 when nothing is there, 3007 when a file is. **/
+	@:noCompletion private function __checkDirectory():Void {
+		if (!FileSystem.exists(__path)) {
+			throw __ioError('"$__path" does not exist.', 3003);
+		}
+
+		if (!FileSystem.isDirectory(__path)) {
+			throw __ioError('"$__path" is not a directory.', 3007);
+		}
 	}
 
 	/**
@@ -1326,14 +1385,19 @@ final class File extends EventDispatcher {
 
 	/**
 		Loads a file synchronously. The data is loaded into the data property of the File instance.
+
+		@throws IOError The file does not exist (3003) or cannot be read.
 	**/
 	public function load():Void {
-		__data = HaxeFile.getBytes(__path);
+		__data = getFileBytes(__path);
 	}
 
 	/**
 		Loads a file asynchronously. The file data is stored in the `data` property and a
 		`complete` event is dispatched when loading finishes.
+
+		@event complete The file has been read into `data`.
+		@event ioError The file does not exist or cannot be read.
 	**/
 	public function loadAsync():Void {
 		__startAsync(cancelled -> {
@@ -1889,16 +1953,28 @@ final class File extends EventDispatcher {
 
 	/**
 		Saves the data parameter passed to the location of the file.
+
+		@param data The bytes to write: all `length` of them, whatever its `position`.
+		@param overwrite Whether to replace a file already there.
+		@throws ArgumentError `data` is null.
+		@throws IOError A file is there and `overwrite` is false (3002), or the file cannot be written.
 	**/
 	public function save(data:ByteArray, overwrite:Bool = false):Void {
-		if (exists && overwrite == false) {
-			throw "File exists at this location and overwrite param is false";
-			return;
+		// Plain strings were thrown, and every failure to write was "File is
+		// open": a missing directory, a permission refused and a full disk all
+		// read as that.
+		if (data == null) {
+			throw new ArgumentError("save needs the data to write.");
 		}
+
+		if (exists && overwrite == false) {
+			throw __ioError('"$__path" exists, and overwrite is false.', 3002);
+		}
+
 		try {
 			HaxeFile.saveBytes(__path, (data : haxe.io.Bytes));
 		} catch (e:Dynamic) {
-			throw("File is open");
+			throw __ioError('Could not write "$__path": ${Std.string(e)}', 0);
 		}
 
 		this.__data = data;
@@ -2037,9 +2113,16 @@ final class File extends EventDispatcher {
 		catchable `Error` everywhere.
 	**/
 	@:noCompletion private static function __listPath(path:String):Array<String> {
-		var items:Array<String> = FileSystem.readDirectory(path);
+		var items:Array<String> = null;
+
+		try {
+			items = FileSystem.readDirectory(path);
+		} catch (e:Dynamic) {
+			throw __missingOr(path, e);
+		}
+
 		if (items == null) {
-			throw new Error("File or directory does not exist.", 3003);
+			throw __missingOr(path, "it could not be read");
 		}
 		return items;
 	}

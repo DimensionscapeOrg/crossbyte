@@ -472,19 +472,133 @@ class FileTest extends utest.Test {
 		try root.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
-	public function testGetDirectoryListingAsyncThrowsForNonDirectory():Void {
+	public function testGetDirectoryListingAsyncReportsANonDirectoryAsAnEvent():Void {
+		// As documented: an ioError event. It threw, synchronously, a base
+		// Error.
 		var root = File.createTempDirectory();
 		var file = root.resolvePath("payload.txt");
-		var threw = false;
+		var missing = root.resolvePath("missing");
+		var errors:Array<IOErrorEvent> = [];
+		var raised:Dynamic = null;
 
 		try {
 			file.save(ByteArray.fromBytes(Bytes.ofString("payload")));
+			file.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> errors.push(event));
+			missing.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> errors.push(event));
 			file.getDirectoryListingAsync();
-		} catch (_:Dynamic) {
-			threw = true;
+			missing.getDirectoryListingAsync();
+		} catch (e:Dynamic) {
+			raised = e;
 		}
 
-		Assert.isTrue(threw);
+		pumpUntil(() -> errors.length >= 2, 5.0);
+
+		Assert.isNull(raised);
+		Assert.equals(2, errors.length);
+		var ids:Array<Int> = [for (error in errors) error.errorID];
+		ids.sort(Reflect.compare);
+		Assert.same([3003, 3007], ids);
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testFailuresAreIOErrorsWithAirsNumbers():Void {
+		// The base Error and bare strings were thrown where IOError is
+		// documented, so `catch (e:IOError)` missed them.
+		var root = File.createTempDirectory();
+		var file = root.resolvePath("file.txt");
+		var full = root.resolvePath("full");
+		HaxeFile.saveContent(file.nativePath, "x");
+		full.createDirectory();
+		HaxeFile.saveContent(full.resolvePath("inside.txt").nativePath, "x");
+		var missing = root.resolvePath("missing");
+
+		function id(call:Void->Void):Int {
+			try {
+				call();
+			} catch (e:crossbyte.errors.IOError) {
+				return e.errorID;
+			} catch (e:Dynamic) {
+				return -1;
+			}
+			return -2;
+		}
+
+		Assert.equals(3003, id(() -> missing.deleteDirectory()));
+		Assert.equals(3010, id(() -> full.deleteDirectory(false)));
+		Assert.equals(3007, id(() -> file.deleteDirectory()));
+		Assert.equals(3003, id(() -> missing.deleteFile()));
+		Assert.equals(3007, id(() -> file.getDirectoryListing()));
+		Assert.equals(3003, id(() -> missing.getDirectoryListing()));
+		Assert.equals(3003, id(() -> missing.load()));
+		Assert.equals(3003, id(() -> File.getFileBytes(missing.nativePath)));
+		Assert.equals(3003, id(() -> File.getFileText(missing.nativePath)));
+		Assert.equals(3002, id(() -> file.save(ByteArray.fromBytes(Bytes.ofString("y")))));
+		// Under a file, where no directory can be.
+		Assert.notEquals(-2, id(() -> file.resolvePath("sub").createDirectory()));
+		Assert.notEquals(-1, id(() -> file.resolvePath("sub").createDirectory()));
+
+		// Still there: nothing above deleted what it refused to.
+		Assert.isTrue(full.resolvePath("inside.txt").exists);
+		Assert.equals("x", HaxeFile.getContent(file.nativePath));
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testSaveSaysWhyItCouldNotWrite():Void {
+		// Every failure to write was "File is open", a bare string.
+		var root = File.createTempDirectory();
+		var blocker = root.resolvePath("blocker");
+		HaxeFile.saveContent(blocker.nativePath, "a file, where a directory would have to be");
+		var target = blocker.resolvePath("saved.bin");
+		var raised:Dynamic = null;
+
+		try {
+			target.save(ByteArray.fromBytes(Bytes.ofString("payload")));
+		} catch (e:Dynamic) {
+			raised = e;
+		}
+
+		Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), Std.string(raised));
+		Assert.isTrue(Std.string(raised).indexOf("saved.bin") >= 0, Std.string(raised));
+		Assert.equals(-1, Std.string(raised).indexOf("File is open"));
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testDeleteDirectorySaysWhyItCouldNot():Void {
+		// Each failure was "Folder is not empty", whatever it was.
+		if (!System.isWindows) {
+			// Windows refuses to delete a file that is open; POSIX does not, and
+			// a refused permission is no refusal to root.
+			Assert.pass();
+			return;
+		}
+
+		var root = File.createTempDirectory();
+		var held = root.resolvePath("held.txt");
+		HaxeFile.saveContent(held.nativePath, "x");
+		var input = HaxeFile.read(held.nativePath, true);
+		var raised:Dynamic = null;
+
+		try {
+			root.deleteDirectory(true);
+		} catch (e:Dynamic) {
+			raised = e;
+		}
+
+		input.close();
+
+		if (raised == null) {
+			// Opened with delete sharing -- Node opens files so -- the file
+			// went, and so did the directory: nothing refused, nothing to say.
+			Assert.isFalse(root.exists);
+			return;
+		}
+
+		Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), Std.string(raised));
+		Assert.equals(3012, (raised : crossbyte.errors.IOError).errorID);
+		Assert.equals(-1, Std.string(raised).indexOf("not empty"), Std.string(raised));
+
 		try root.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
