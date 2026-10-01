@@ -454,97 +454,207 @@ class System {
 		return uuid.match(output) ? uuid.matched(1).toUpperCase() : null;
 	}
 
-	public static inline function totalSystemMemory():Float {
+	/**
+		The machine's physical memory, in bytes.
+
+		Asked of the system directly natively, on the jvm and on Node:
+		`GlobalMemoryStatusEx` on Windows, `/proc/meminfo`'s `MemTotal` on
+		Linux. On macOS `sysctl hw.memsize` is run. The interpreter, neko and
+		HashLink under Windows have no call for it and run `wmic` -- or
+		PowerShell, where Windows no longer has wmic -- which takes half a
+		second or more.
+
+		@throws IllegalOperationError In a browser, which reports no such
+		thing, and on a system none of these answer on. It answered 0 on
+		macOS, and on a Windows without wmic.
+	**/
+	public static function totalSystemMemory():Float {
 		#if nodejs
 		// Node reports this directly, with no shell involved.
 		return js.node.Os.totalmem();
 		#elseif (js && !nodejs)
-		// Reading physical memory means shelling out, and a browser has no shell nor any web API that reports it. Returning 0 would read as "no memory" rather than "cannot know".
-		throw new crossbyte.errors.IllegalOperationError("System.totalSystemMemory() is not available on this target.");
+		throw new crossbyte.errors.IllegalOperationError("A browser reports no physical memory, so System.totalSystemMemory() is not available there.");
 		#else
-		var cmd:String = switch (PLATFORM) {
-			case "windows": "wmic computersystem get totalphysicalmemory";
-			case "linux": "grep MemTotal /proc/meminfo";
-			// No command for this platform. Returned an empty string to
-			// Process before, which is a spawn failure rather than an answer.
-			default: "";
-		};
+		var bytes:Float = __systemMemory(false);
 
-		if (cmd == "") {
-			return 0;
+		if (bytes > 0) {
+			return bytes;
 		}
 
-		var process:Process = new Process(cmd);
-		var output:String = process.stdout.readAll().toString();
-
-		// Before close(), not after: a closed process raises `process_exit`
-		// when asked for its exit code on eval.
-		var status:Int = process.exitCode();
-		process.close();
-
-		if (status > 0) {
-			return 0;
-		}
-
-		var lines = output.split("\n");
-
-		if (isWindows) {
-			return Std.parseFloat(lines[1]);
-		}
-
-		// On Linux the total is on the first line, in kB.
-		var parts = lines[0].split(":");
-
-		if (parts.length != 2) {
-			return 0;
-		}
-
-		return Std.parseFloat(StringTools.trim(parts[1])) * 1024;
+		throw new crossbyte.errors.IllegalOperationError('Nothing on $PLATFORM answered how much physical memory there is.');
 		#end
 	}
 
-	public static inline function freeSystemMemory():Float {
+	/**
+		The physical memory available to start programs without swapping, in
+		bytes: Windows' available physical memory, Linux's `MemAvailable`,
+		macOS's free, inactive and speculative pages, and on Node
+		`os.freemem()`. Asked where `totalSystemMemory()` is, at the same
+		cost: on macOS `vm_stat` is run.
+
+		@throws IllegalOperationError As `totalSystemMemory()` does. It
+		answered 0 on macOS, and on a Windows without wmic.
+	**/
+	public static function freeSystemMemory():Float {
 		#if nodejs
 		// Node reports this directly; the sys path shells out through a Process hxnodejs has no runtime for, so it compiled and then failed with "sys is not defined".
 		return js.node.Os.freemem();
 		#elseif (js && !nodejs)
-		// Same as totalSystemMemory: no shell, and no browser equivalent.
-		throw new crossbyte.errors.IllegalOperationError("System.freeSystemMemory() is not available on this target.");
+		throw new crossbyte.errors.IllegalOperationError("A browser reports no physical memory, so System.freeSystemMemory() is not available there.");
 		#else
-		var cmd:String = switch (PLATFORM) {
-			case "windows": "wmic OS get FreePhysicalMemory";
-			case "linux": "grep MemAvailable /proc/meminfo";
-			default: "";
-		};
+		var bytes:Float = __systemMemory(true);
 
-		if (cmd == "") {
-			return 0;
+		if (bytes >= 0) {
+			return bytes;
 		}
 
-		var process:Process = new Process(cmd);
-		var output:String = process.stdout.readAll().toString();
-		var status:Int = process.exitCode();
-		process.close();
-
-		if (status > 0) {
-			return 0;
-		}
-
-		var lines = output.split("\n");
-
-		// Both report kB; both are returned as bytes.
-		if (isWindows) {
-			return Std.parseFloat(lines[1]) * 1024;
-		}
-
-		var parts = lines[0].split(":");
-
-		if (parts.length != 2) {
-			return 0;
-		}
-
-		return Std.parseFloat(StringTools.trim(parts[1])) * 1024;
+		throw new crossbyte.errors.IllegalOperationError('Nothing on $PLATFORM answered how much physical memory is available.');
 		#end
+	}
+
+	#if !(js && !nodejs)
+	/**
+		The machine's physical memory in bytes, or what is available of it;
+		-1 if nothing answered. Each figure was a process: `wmic`, half a
+		second on Windows natively and on the jvm too, and `grep` on Linux;
+		macOS had none, and answered 0.
+	**/
+	@:noCompletion private static function __systemMemory(available:Bool):Float {
+		try {
+			switch (PLATFORM) {
+				case "windows":
+					#if cpp
+					return crossbyte.io._internal.NativeFileSync.systemMemory(available);
+					#else
+					#if (jvm || java)
+					var bytes:Float = __beanBytes(available ? "getFreePhysicalMemorySize" : "getTotalPhysicalMemorySize");
+
+					if (bytes >= 0) {
+						return bytes;
+					}
+					#end
+					return __windowsMemory(available);
+					#end
+				case "linux":
+					return __parseMeminfo(__readProcFile("/proc/meminfo"), available ? "MemAvailable" : "MemTotal");
+				case "mac":
+					if (available) {
+						return __parseVmStat(__programOutput("vm_stat", []));
+					}
+
+					var total:Null<Float> = __parseFirstNumber(__programOutput("sysctl", ["-n", "hw.memsize"]));
+					return total == null ? -1 : total;
+				default:
+					return -1;
+			}
+		} catch (_:Dynamic) {
+			return -1;
+		}
+	}
+
+	/**
+		A /proc file's text, read through to its end. Such a file reports a
+		size of 0, and hxcpp's getContent reads the size a file reports: it
+		answered "" for /proc/meminfo.
+	**/
+	@:noCompletion private static function __readProcFile(path:String):String {
+		var input = sys.io.File.read(path, false);
+
+		try {
+			var text:String = input.readAll().toString();
+			input.close();
+			return text;
+		} catch (e:Dynamic) {
+			input.close();
+			throw e;
+		}
+	}
+
+	#if (jvm || java)
+	/** A figure from the HotSpot OperatingSystemMXBean, or -1 where it has none. **/
+	@:noCompletion private static function __beanBytes(getter:String):Float {
+		try {
+			var bean:Dynamic = java.lang.management.ManagementFactory.getOperatingSystemMXBean();
+			var method = java.lang.Class.forName("com.sun.management.OperatingSystemMXBean").getMethod(getter);
+			var value:java.lang.Number = cast method.invoke(bean);
+			return value.doubleValue();
+		} catch (_:Dynamic) {
+			return -1;
+		}
+	}
+	#end
+
+	/**
+		Windows' figures from wmic, or from PowerShell where Windows no longer
+		ships wmic; -1 if neither answers.
+	**/
+	@:noCompletion private static function __windowsMemory(available:Bool):Float {
+		// Total in bytes; free in kilobytes.
+		var scale:Float = available ? 1024 : 1;
+		var wmic:Null<Float> = __parseFirstNumber(available ? __programOutput("wmic", ["OS", "get", "FreePhysicalMemory"]) : __programOutput("wmic",
+			["computersystem", "get", "totalphysicalmemory"]));
+
+		if (wmic != null) {
+			return wmic * scale;
+		}
+
+		var query:String = available ? "(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory" : "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory";
+		var shell:Null<Float> = __parseFirstNumber(__programOutput("powershell", ["-NoProfile", "-NonInteractive", "-Command", query]));
+		return shell == null ? -1 : shell * scale;
+	}
+	#end
+
+	/** The first line of `output` that is a whole number, or null. **/
+	@:noCompletion private static function __parseFirstNumber(output:Null<String>):Null<Float> {
+		if (output == null) {
+			return null;
+		}
+
+		for (line in output.split("\n")) {
+			var text:String = StringTools.trim(line);
+
+			if (~/^[0-9]+$/.match(text)) {
+				return Std.parseFloat(text);
+			}
+		}
+
+		return null;
+	}
+
+	/** `key`'s figure in /proc/meminfo's text, in bytes, or -1. **/
+	@:noCompletion private static function __parseMeminfo(content:String, key:String):Float {
+		var line:EReg = new EReg("^" + key + ":\\s*([0-9]+)\\s*kB", "m");
+		return line.match(content) ? Std.parseFloat(line.matched(1)) * 1024 : -1;
+	}
+
+	/**
+		Free, inactive and speculative pages in vm_stat's output, in bytes, or
+		-1: what macOS can hand a program without swapping.
+	**/
+	@:noCompletion private static function __parseVmStat(output:Null<String>):Float {
+		if (output == null) {
+			return -1;
+		}
+
+		var pageSize:EReg = ~/page size of ([0-9]+) bytes/;
+
+		if (!pageSize.match(output)) {
+			return -1;
+		}
+
+		var pages:Float = 0;
+
+		for (kind in ["free", "inactive", "speculative"]) {
+			var line:EReg = new EReg("Pages " + kind + ":\\s*([0-9]+)", "");
+
+			if (!line.match(output)) {
+				return -1;
+			}
+
+			pages += Std.parseFloat(line.matched(1));
+		}
+
+		return pages * Std.parseFloat(pageSize.matched(1));
 	}
 
 	/**

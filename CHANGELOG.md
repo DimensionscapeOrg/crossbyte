@@ -109,7 +109,8 @@ entry below says how:
   throw an `IllegalOperationError` off native and on macOS, where they
   answered `[false]`, `[]` and `false`: check `System.PLATFORM` and the
   target first. `System.getDeviceId()` answers `null`, not `""`, where
-  there is no identifier.
+  there is no identifier, and `totalSystemMemory()` and
+  `freeSystemMemory()` throw where nothing answers, where they answered 0.
 
 ### Added
 - `System.applicationId`, the name an application's storage directory and
@@ -2003,6 +2004,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `System.totalSystemMemory()` and `freeSystemMemory()` ask the system:
+  `GlobalMemoryStatusEx` natively on Windows, the HotSpot bean on the
+  jvm, `/proc/meminfo` on Linux, `sysctl` and `vm_stat` on macOS. Each
+  figure started a process -- `wmic` on Windows, natively and on the jvm
+  too, 0.2 s for the two; `grep` on Linux -- and macOS, or a Windows
+  without wmic, answered 0. The interpreter, neko and HashLink under
+  Windows still run wmic, or PowerShell where it is gone; both members
+  are documented, and throw an `IllegalOperationError` where nothing
+  answers.
 - `File.isHidden` on Windows reads the attribute of the file it names. It
   ran `attrib` through `cmd.exe`, which expanded any `%NAME%` in the path,
   so a hidden file with one in its name was asked about under another
