@@ -1389,6 +1389,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return false;
 		}
 
+		if (policy.precompressed && __servePrecompressed(file, mimeType, baseHeaders, modified, headOnly)) {
+			return true;
+		}
+
 		// A refusal of every coding is the ordinary path's to answer, 406.
 		// Kept once encoded, so Brotli first.
 		var decision:ResponseEncodingDecision = __resolveResponseEncoding(200, baseHeaders, false, true);
@@ -1403,27 +1407,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 			new URLRequestHeader("Content-Encoding", coding),
 			new URLRequestHeader("Vary", "Accept-Encoding")
 		]);
-
-		if (policy.precompressed) {
-			var sibling:Null<File> = __precompressedSibling(file, decision.encoding, modified);
-			if (sibling != null) {
-				var size:Int = -1;
-				try {
-					size = sibling.size;
-				} catch (_:Dynamic) {}
-				if (size >= 0) {
-					if (headOnly) {
-						__dispatchResponseBytes(200, "OK", headers, mimeType, null, true, size, false, false);
-					} else if (size > STREAM_THRESHOLD) {
-						__streamFileResponse(200, "OK", headers, mimeType, sibling, 0, size);
-					} else {
-						sibling.load();
-						__dispatchResponseBytes(200, "OK", headers, mimeType, sibling.data, false, null, false, false);
-					}
-					return true;
-				}
-			}
-		}
 
 		// A file past the streaming threshold is sent as it is on disk.
 		if (total > STREAM_THRESHOLD) {
@@ -1457,6 +1440,90 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	/**
+		Answers a whole-file request with `file`'s precompressed sibling, and
+		says whether it did: the `.br` or `.gz` beside it in the coding the
+		client prefers of those it takes and that have one there. Brotli wins
+		a tie, being the smaller, and is taken only when named, as everywhere
+		here.
+
+		Only the one coding the client was going to be given used to be
+		looked for, and every browser lists gzip and br alike, so Brotli was
+		that coding: a file with only a `.gz` beside it went out as br
+		encoded on the spot, and one too large to hold went out as it is on
+		disk, 307,200 bytes where its `.gz` held 49,755.
+	**/
+	@:noCompletion private function __servePrecompressed(file:File, mimeType:String, baseHeaders:Array<URLRequestHeader>, modified:Float,
+			headOnly:Bool):Bool {
+		var accept:Null<String> = getHeader("accept-encoding");
+		if (accept == null) {
+			return false;
+		}
+
+		var brotli:Float = -1;
+		var gzip:Float = -1;
+		var anything:Float = -1;
+		for (raw in accept.split(",")) {
+			var parts:Array<String> = raw.split(";");
+			var token:String = StringTools.trim(parts[0]).toLowerCase();
+			var q:Float = 1.0;
+			for (i in 1...parts.length) {
+				var param:String = StringTools.trim(parts[i]).toLowerCase();
+				if (StringTools.startsWith(param, "q=")) {
+					var parsed:Float = Std.parseFloat(StringTools.trim(param.substring(2)));
+					q = (parsed != parsed || parsed < 0 || parsed > 1) ? 0 : parsed;
+					break;
+				}
+			}
+			if (token == HTTPContentCoding.BR) {
+				brotli = q;
+			} else if (token == HTTPContentCoding.GZIP) {
+				gzip = q;
+			} else if (token == AcceptEncoding.DEFAULT) {
+				anything = q;
+			}
+		}
+		if (gzip < 0) {
+			gzip = anything;
+		}
+
+		var brotliFirst:Bool = brotli >= gzip;
+		for (pass in 0...2) {
+			var useBrotli:Bool = (pass == 0) == brotliFirst;
+			if ((useBrotli ? brotli : gzip) <= 0) {
+				continue;
+			}
+
+			var algorithm:CompressionAlgorithm = useBrotli ? CompressionAlgorithm.BROTLI : CompressionAlgorithm.GZIP;
+			var sibling:Null<File> = __precompressedSibling(file, algorithm, modified);
+			if (sibling == null) {
+				continue;
+			}
+			var size:Int = -1;
+			try {
+				size = sibling.size;
+			} catch (_:Dynamic) {}
+			if (size < 0) {
+				continue;
+			}
+
+			var headers:Array<URLRequestHeader> = baseHeaders.concat([
+				new URLRequestHeader("Content-Encoding", useBrotli ? HTTPContentCoding.BR : HTTPContentCoding.GZIP),
+				new URLRequestHeader("Vary", "Accept-Encoding")
+			]);
+			if (headOnly) {
+				__dispatchResponseBytes(200, "OK", headers, mimeType, null, true, size, false, false);
+			} else if (size > STREAM_THRESHOLD) {
+				__streamFileResponse(200, "OK", headers, mimeType, sibling, 0, size);
+			} else {
+				sibling.load();
+				__dispatchResponseBytes(200, "OK", headers, mimeType, sibling.data, false, null, false, false);
+			}
+			return true;
+		}
+		return false;
+	}
+
+	/**
 		The `.br` or `.gz` beside `file` for `algorithm`, when there is one the
 		server may send and it is not older than the file; null otherwise. The
 		blacklist and whitelist hold for it as for any file.
@@ -1477,8 +1544,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		try {
+			// Most files have no sibling, and asking first costs one call where
+			// making a File to ask cost two: so looking for both codings costs
+			// what looking for one did.
+			if (!sys.FileSystem.exists(path) || sys.FileSystem.isDirectory(path)) {
+				return null;
+			}
 			var sibling:File = new File(path);
-			if (!sibling.exists || sibling.isDirectory || sibling.modificationDate.getTime() < modified) {
+			if (sibling.modificationDate.getTime() < modified) {
 				return null;
 			}
 			return sibling;
