@@ -80,6 +80,9 @@ entry below says how:
   `Int`, where it threw; check for one where the value is a length.
 - `ByteArray.readVarInt` and `writeVarInt` are `readVarUInt` and
   `writeVarUInt`, in the same format.
+- `writeObject` puts a 32-bit length before an HXSF or JSON object, where
+  rc.1 put 16 bits: an object written by rc.1 does not read back, so both
+  peers, and anything stored, move to 1.0 together.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1148,6 +1151,16 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `writeObject` frames an HXSF or JSON object as the length in bytes of
+  its text, an unsigned 32-bit integer in the stream's `endian`, then the
+  text as UTF-8, on a `ByteArray` and on `Socket`, `WebSocket` and
+  `ReliableDatagramSocket`, which write through one. It was framed as
+  `writeUTF` frames a string, behind a 16-bit length, so an object past
+  65,535 bytes of text, a list of a few thousand records, was refused
+  with a `RangeError`, and nothing documented a limit. `readObject` reads
+  the new framing, and an object only part of which has arrived leaves
+  `position` where it was, so a socket's reader can try again; it left it
+  past the length. Objects written by 1.0.0-rc.1 do not read back.
 - Reliable UDP sends what a pass produces from one socket in as few system
   calls as the system allows. Each datagram was a `sendto` of its own,
   which was nearly all a server sending reliable UDP spent: 5.9 us a
