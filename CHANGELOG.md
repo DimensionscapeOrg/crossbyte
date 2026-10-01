@@ -1935,6 +1935,19 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An asynchronous `SQLiteConnection` survives a failure, and each of its
+  statements gets every row. Any error on one killed the process: the
+  connection's own failures, a refused `BEGIN`, a failed open, were
+  taken for a statement's message and its absent statement dereferenced,
+  and a failed statement had its absent result set read. And the worker
+  handed each statement its result set and went on to the next statement
+  while the runtime's thread read the rows, but hxcpp's glue starts a
+  statement by finalizing the one before it: of two SELECTs queued
+  together, the first got one row. Rows are read on the worker now and
+  sent back a page at a time; work queued behind a `close()`, or behind an
+  open that failed, is told it will not run instead of waiting for ever;
+  and `SQLResult.rowsAffected` is what a write changed, and 0 for a
+  SELECT, where reading it stepped through the rest of a SELECT's rows.
 - An SQLite SELECT returns all its rows once the connection's last rowid
   has passed 2^31. A statement read that rowid as soon as it had started,
   and past 2^31 reading it is a query of its own, which hxcpp's glue starts
