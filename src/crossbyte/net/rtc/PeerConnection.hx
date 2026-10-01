@@ -39,13 +39,28 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 	one port can carry all of it.
 
 	```haxe
+	// Given weOffer:Bool, sendToPeer:PeerDescription->Void.
+	import crossbyte.net.LocalAddress;
+	import crossbyte.net.ice.IceCandidate;
+
 	var connection = new PeerConnection(weOffer);
 	connection.bind(0, "0.0.0.0");
 
-	// `description()` goes to the peer over whatever channel the application
-	// already has; the peer's comes back the same way.
-	signalling.send(connection.description());
-	signalling.onDescription = remote -> connection.connect(remote);
+	// A wildcard bind is every interface and so names none: ask which one
+	// carries the default route, and advertise that. Without it the
+	// description carries no address at all.
+	LocalAddress.primary().then(function(address) {
+		connection.addLocalCandidate(IceCandidate.host(address, connection.localPort));
+
+		// `description()` goes to the peer over whatever channel the
+		// application already has...
+		sendToPeer(connection.description());
+	});
+
+	// ...and the peer's comes back the same way.
+	function onPeerDescription(remote:PeerDescription):Void {
+		connection.connect(remote);
+	}
 
 	connection.ready.then(function(_) {
 		var chat = connection.createDataChannel("chat");
@@ -135,8 +150,9 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 	The one thing this does require is that this peer advertise an address the
 	browser can reach. Gathering only toward the candidates a browser offered
 	yields nothing at all, since none of them resolve, ask `LocalAddress` for
-	the default route as well, or the peer ends up advertising loopback and
-	reachable only from its own machine.
+	the default route as well, as the example above does. A connection bound
+	to the wildcard and told no address advertises none: the browser has
+	nothing to check, and nothing here can reach a name, so they never meet.
 
 	## Many on one port
 
