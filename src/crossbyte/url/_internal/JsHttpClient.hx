@@ -1,5 +1,6 @@
 package crossbyte.url._internal;
 
+import crossbyte.http.HTTPCancelToken;
 import crossbyte.url.URLRequest;
 import crossbyte.url.URLRequestHeader;
 import crossbyte.url.URLVariables;
@@ -31,14 +32,21 @@ class JsHttpClient {
 	/** Redirects followed before giving up, as `Http.MAX_REDIRECTS` on native. */
 	private static inline var MAX_REDIRECTS:Int = 10;
 
+	/** What a cancelled request reports, as the native client says it. */
+	private static inline var CANCELLED:String = "Request cancelled";
+
 	/**
 	 * Issues `request`, reporting through the callbacks. Exactly one of
 	 * `onComplete` or `onError` is called, once. `onResponse` is called once,
 	 * before either, when a final response has arrived: its status, headers,
 	 * the URL it came from, and whether a redirect led there.
+	 *
+	 * Cancelling `token` aborts the request where it stands -- the hop in
+	 * flight, a redirect included -- and calls `onError` with "Request
+	 * cancelled", at once, unless the request has ended already.
 	 */
 	public static function send(request:URLRequest, onStatus:Int->Void, onProgress:Int->Int->Void, onComplete:Bytes->Void, onError:String->Void,
-			?onResponse:(status:Int, headers:Array<URLRequestHeader>, url:String, redirected:Bool) -> Void):Void {
+			?onResponse:(status:Int, headers:Array<URLRequestHeader>, url:String, redirected:Bool) -> Void, ?token:HTTPCancelToken):Void {
 		if (request == null || request.url == null || request.url == "") {
 			onError("URLRequest has no url.");
 			return;
@@ -46,6 +54,10 @@ class JsHttpClient {
 
 		if (onResponse == null) {
 			onResponse = (_, _, _, _) -> {};
+		}
+		if (token != null && token.cancelled) {
+			onError(CANCELLED);
+			return;
 		}
 
 		var method:String = (request.method != null && request.method != "") ? request.method : "GET";
@@ -72,9 +84,9 @@ class JsHttpClient {
 		}
 
 		#if (js && !nodejs)
-		__sendBrowser(request, method, url, body, contentType, onStatus, onProgress, onComplete, onError, onResponse);
+		__sendBrowser(request, method, url, body, contentType, onStatus, onProgress, onComplete, onError, onResponse, token);
 		#elseif nodejs
-		__sendNode(request, method, url, body, contentType, onStatus, onProgress, onComplete, onError, onResponse);
+		__sendNode(request, method, url, body, contentType, onStatus, onProgress, onComplete, onError, onResponse, token);
 		#end
 	}
 
@@ -90,7 +102,7 @@ class JsHttpClient {
 	 */
 	static function __sendBrowser(request:URLRequest, method:String, url:String, body:Dynamic, contentType:String, onStatus:Int->Void,
 			onProgress:Int->Int->Void, onComplete:Bytes->Void, onError:String->Void,
-			onResponse:(Int, Array<URLRequestHeader>, String, Bool) -> Void):Void {
+			onResponse:(Int, Array<URLRequestHeader>, String, Bool) -> Void, token:Null<HTTPCancelToken>):Void {
 		// The browser does its own TLS and tells a page nothing of the key it
 		// was shown, so a pin cannot be checked here. Refused rather than sent
 		// unchecked, as on the targets whose TLS cannot say either.
@@ -102,12 +114,26 @@ class JsHttpClient {
 		var xhr = new js.html.XMLHttpRequest();
 		var settled:Bool = false;
 		var idle:haxe.Timer = null;
+		var onCancelled:Null<Void->Void> = null;
 
 		function stopIdle():Void {
 			if (idle != null) {
 				idle.stop();
 				idle = null;
 			}
+		}
+
+		// Marks the request over, and answers whether it was not already.
+		function settle():Bool {
+			if (settled) {
+				return false;
+			}
+			settled = true;
+			stopIdle();
+			if (onCancelled != null) {
+				token.removeHandler(onCancelled);
+			}
+			return true;
 		}
 
 		// Time without progress, not a deadline on the whole exchange: this
@@ -117,10 +143,9 @@ class JsHttpClient {
 			stopIdle();
 			if (request.idleTimeout > 0 && !settled) {
 				idle = haxe.Timer.delay(function():Void {
-					if (settled) {
+					if (!settle()) {
 						return;
 					}
-					settled = true;
 					xhr.abort();
 					onError("HTTP request timed out: " + url);
 				}, request.idleTimeout);
@@ -146,12 +171,15 @@ class JsHttpClient {
 				xhr.setRequestHeader("Content-Type", contentType);
 			}
 		} catch (e:Dynamic) {
-			settled = true;
+			settle();
 			onError("HTTP request failed: " + Std.string(e));
 			return;
 		}
 
 		xhr.onreadystatechange = function() {
+			if (settled) {
+				return;
+			}
 			armIdle();
 			// Headers are in as of HEADERS_RECEIVED, which is where the status
 			// is worth reporting -- waiting for the body would hold it back
@@ -164,32 +192,43 @@ class JsHttpClient {
 		};
 
 		xhr.onprogress = function(e) {
+			if (settled) {
+				return;
+			}
 			armIdle();
 			onProgress(Std.int(e.loaded), e.lengthComputable ? Std.int(e.total) : 0);
 		};
 
 		xhr.onload = function(_) {
-			stopIdle();
-			if (settled) {
+			if (!settle()) {
 				return;
 			}
-			settled = true;
 
 			var buffer:js.lib.ArrayBuffer = xhr.response;
 			onComplete(buffer == null ? Bytes.alloc(0) : Bytes.ofData(buffer));
 		};
 
 		xhr.onerror = function(_) {
-			stopIdle();
-			if (settled) {
+			if (!settle()) {
 				return;
 			}
-			settled = true;
 			// The browser deliberately withholds the reason -- a DNS failure,
 			// a refused connection and a blocked cross-origin request are one
 			// event with no detail, so there is nothing more specific to pass on.
 			onError("HTTP request failed: " + url);
 		};
+
+		// The request ends where it stands. An abort fires neither load nor
+		// error, so the cancel is reported here, once.
+		if (token != null) {
+			onCancelled = () -> {
+				if (settle()) {
+					xhr.abort();
+					onError(CANCELLED);
+				}
+			};
+			token.onCancel(onCancelled);
+		}
 
 		armIdle();
 		xhr.send(__body(body));
@@ -256,15 +295,44 @@ class JsHttpClient {
 	 */
 	static function __sendNode(request:URLRequest, method:String, target:String, body:Dynamic, contentType:String, onStatus:Int->Void,
 			onProgress:Int->Int->Void, onComplete:Bytes->Void, onError:String->Void,
-			onResponse:(Int, Array<URLRequestHeader>, String, Bool) -> Void):Void {
+			onResponse:(Int, Array<URLRequestHeader>, String, Bool) -> Void, token:Null<HTTPCancelToken>):Void {
 		var settled:Bool = false;
+		// The hop in flight, which a cancel aborts.
+		var current:Null<js.node.http.ClientRequest> = null;
+		var onCancelled:Null<Void->Void> = null;
+
+		// Marks the request over, and answers whether it was not already.
+		function settle():Bool {
+			if (settled) {
+				return false;
+			}
+			settled = true;
+			if (onCancelled != null) {
+				token.removeHandler(onCancelled);
+			}
+			return true;
+		}
 
 		var fail = function(message:String):Void {
-			if (!settled) {
-				settled = true;
+			if (settle()) {
 				onError(message);
 			}
 		};
+
+		// Aborted where it stands: the request's socket is destroyed, which the
+		// server sees at once, and whatever Node reports of it after this is
+		// the request being over already.
+		if (token != null) {
+			onCancelled = () -> {
+				if (!settled) {
+					if (current != null) {
+						current.destroy();
+					}
+					fail(CANCELLED);
+				}
+			};
+			token.onCancel(onCancelled);
+		}
 
 		var headers:haxe.DynamicAccess<String> = {};
 
@@ -342,6 +410,11 @@ class JsHttpClient {
 			}
 
 			var handler = function(response:js.node.http.IncomingMessage):Void {
+				if (settled) {
+					// Cancelled, or timed out, as the response came.
+					response.resume();
+					return;
+				}
 				var code:Int = response.statusCode;
 				onStatus(code);
 
@@ -410,16 +483,18 @@ class JsHttpClient {
 				var loaded:Int = 0;
 
 				response.on("data", function(chunk:js.node.Buffer) {
+					if (settled) {
+						return;
+					}
 					chunks.push(chunk);
 					loaded += chunk.length;
 					onProgress(loaded, total);
 				});
 
 				response.on("end", function() {
-					if (settled) {
+					if (!settle()) {
 						return;
 					}
-					settled = true;
 
 					// Decoded as the native client decodes, within the same
 					// limits. The body was handed on as it came, so a gzip
@@ -454,6 +529,7 @@ class JsHttpClient {
 				fail("HTTP request failed: " + Std.string(e));
 				return;
 			}
+			current = clientRequest;
 
 			clientRequest.on("error", function(e) {
 				fail("HTTP request failed: " + Std.string(e));
