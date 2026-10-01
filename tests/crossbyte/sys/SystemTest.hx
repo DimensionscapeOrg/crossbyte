@@ -152,6 +152,49 @@ class SystemTest extends utest.Test {
 	}
 	#end
 
+	public function testTheApplicationDirectoryIsTheProgramsOwn():Void {
+		// It was the working directory: a Windows service, started in
+		// System32, looked for its files there. The suites start their
+		// programs from the repository and keep them in export/, so the two
+		// differ here except natively, where the runner starts the program
+		// in its own directory, which is why the working directory is
+		// moved below as well.
+		#if eval
+		// No program file on the interpreter: the directory the compiler ran in.
+		Assert.equals(haxe.io.Path.removeTrailingSlashes(Sys.getCwd()), System.appDir);
+		#else
+		var program:String = sys.FileSystem.absolutePath(Sys.programPath());
+		var expected:String = haxe.io.Path.removeTrailingSlashes(FilePath.normalize(haxe.io.Path.directory(program), System.isWindows));
+
+		Assert.equals(expected, haxe.io.Path.removeTrailingSlashes(System.appDir));
+		Assert.equals(expected, haxe.io.Path.removeTrailingSlashes(File.applicationDirectory.nativePath));
+
+		#if !(java || jvm)
+		// Not on the jvm, which cannot change its working directory, and
+		// whose jar is never in it here, so the assertions above decide.
+		var savedCwd:String = Sys.getCwd();
+		var savedDir:String = System.__appDirPath;
+		var elsewhere:File = File.createTempDirectory();
+
+		try {
+			System.__appDirPath = null;
+			Sys.setCwd(elsewhere.nativePath);
+			Assert.equals(expected, haxe.io.Path.removeTrailingSlashes(System.appDir), "it followed the working directory");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		Sys.setCwd(savedCwd);
+		System.__appDirPath = savedDir;
+		try elsewhere.deleteDirectory(true) catch (_:Dynamic) {}
+		#end
+		#end
+
+		// Resources are read from beside it.
+		Assert.equals(haxe.io.Path.removeTrailingSlashes(System.appDir) + File.separator + "resources" + File.separator,
+			crossbyte.Resources.resourcesDir);
+	}
+
 	public function testAnIdTheBuildRefuses():Void {
 		// What -D crossbyte_app_id is held to: a name every platform can give
 		// a directory.
