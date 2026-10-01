@@ -76,6 +76,9 @@ entry below says how:
   `ThreadEvent.UPDATE` are gone.
 - `BCrypt.hash` makes `$2b$` hashes, and Postgres, MySQL and MongoDB
   statements throw what the server refused.
+- SQLite failures are `SQLError`s, as the other drivers' are, and are
+  dispatched as `SQLErrorEvent`s: catch `SQLError` where code caught the
+  `String` the driver threw.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1932,6 +1935,18 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- SQLite reports its failures as the other drivers do. An operation or
+  statement SQLite refuses on a synchronous connection is dispatched as an
+  `SQLErrorEvent` and thrown as an `SQLError`, and `request()` throws an
+  `SQLError`; each let hxcpp's raw `String` escape, told no listener, and a
+  statement dispatched no `RESULT` at all. A statement whose connection is
+  not open throws an `IllegalOperationError` where it dereferenced the
+  connection it did not have, and it asks its connection for its state when
+  it runs: it copied the connection when `sqlConnection` was set, so one
+  given its connection before an `openAsync()` had finished held none, and
+  one kept across a `close()` and `open()` held the closed one. A second
+  `close()` does nothing, and a savepoint SQLite refused is not the one a
+  nameless release reaches for next.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened
