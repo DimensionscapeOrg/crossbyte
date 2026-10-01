@@ -81,6 +81,9 @@ entry below says how:
   advertise it, is not asked, and keeps its end open as before.
 - `PeerConnection.addLocalCandidate` throws for a relayed candidate, which
   never worked from there: ask `gatherRelayed` or `gatherRelayedFrom`.
+- An `IceAgent` fails when it has selected no pair 40 seconds after
+  `start` (`timeout`), where it waited without end; set `timeout` to 0 to
+  keep waiting.
 
 ### Added
 - `TurnServer.verifyCert`, so a relay `PeerConnection.gatherRelayedFrom`
