@@ -104,25 +104,29 @@ class JWTVerifyTest extends utest.Test {
 	}
 
 	/**
-		A header or claims nested deeper than any real token are refused before
-		they are parsed.
+		A header nested deeper than any real one is refused before it is
+		parsed.
 
 		JSON is parsed a frame per level, and the header is parsed before the
 		signature is checked, so this needed no key. Natively a 16 KB token --
 		within a raised `maxTokenLength`, which the doc suggests for tokens
 		with many claims -- nested 6,000 deep overflowed the stack and ended
-		the process, on the runtime's thread and on a worker alike.
+		the process, on the runtime's thread and on a worker alike. The claims
+		are parsed only once the signature has shown the issuer wrote them.
 	**/
-	public function testDeeplyNestedJsonIsRefusedBeforeItIsParsed():Void {
+	public function testADeeplyNestedHeaderIsRefusedBeforeItIsParsed():Void {
 		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]), ISSUER, "api");
 		jwt.maxTokenLength = 16384;
 		var deep:String = StringTools.lpad("", "[", 6000) + StringTools.lpad("", "]", 6000);
-
 		expectRefused(jwt, forge('{"alg":"HS256","typ":"JWT","x":$deep}', claims()), MALFORMED);
-		expectRefused(jwt, forge('{"alg":"HS256","typ":"JWT"}', withClaim(claims(), '"x":$deep')), MALFORMED);
+		// Unsigned, as a forger sends it: refused before the signature is read.
+		var unsigned:String = JWT.base64UrlEncodeString('{"alg":"HS256","x":$deep}') + "." + JWT.base64UrlEncodeString(claims()) + ".x";
+		expectRefused(jwt, unsigned, MALFORMED);
+
 		// Inside strings brackets are only text.
 		var bracketed:String = StringTools.lpad("", "[", 100);
-		Assert.isTrue(jwt.verify(forge('{"alg":"HS256","typ":"JWT"}', withClaim(claims(), '"note":"$bracketed"'))).valid);
+		Assert.isTrue(jwt.verify(forge('{"alg":"HS256","typ":"JWT","note":"$bracketed"}', claims())).valid);
+		Assert.isTrue(jwt.verify(forge('{"alg":"HS256","typ":"JWT","note":"\\"$bracketed"}', claims())).valid);
 
 		// What real tokens carry nests a few levels, and passes.
 		var roles:String = '"realm_access":{"roles":["a"]},"resource_access":{"client":{"roles":["b",["c",{"d":[1]}]]}}';
