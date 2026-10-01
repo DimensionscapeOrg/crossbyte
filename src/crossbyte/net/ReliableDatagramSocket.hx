@@ -940,7 +940,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private function __giveUpClose():Void {
 		if (__sentButUnacknowledged() && hasEventListener(IOErrorEvent.IO_ERROR)) {
 			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, 'The peer acknowledged nothing for ${__closeTimeout} s after close(); '
-				+ 'what it had not acknowledged by then may not have arrived.'));
+				+ 'what it had not acknowledged by then may not have arrived.', IOErrorEvent.TIMEOUT_ERROR_ID));
 		}
 		abort();
 	}
@@ -2426,7 +2426,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	@:noCompletion private function __dispatchTimeoutError():Void {
-		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Remote connection attempt has timed out and the connection could not be completed"));
+		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Remote connection attempt has timed out and the connection could not be completed",
+			IOErrorEvent.TIMEOUT_ERROR_ID));
 	}
 
 	@:noCompletion private function __dispose(dispatchClose:Bool):Void {
@@ -2670,7 +2671,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (__idleTimeout > 0 && __silentFor >= __idleTimeout) {
 			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
 				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, 'Nothing was heard from the peer for ${Math.round(__silentFor)} s; '
-					+ 'the session was closed as idle.'));
+					+ 'the session was closed as idle.', IOErrorEvent.TIMEOUT_ERROR_ID));
 			}
 			__dispose(true);
 			return;

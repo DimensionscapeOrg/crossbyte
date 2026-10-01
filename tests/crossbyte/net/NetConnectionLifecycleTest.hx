@@ -127,6 +127,44 @@ class NetConnectionLifecycleTest extends utest.Test {
 			});
 		});
 	}
+
+	/**
+		A reliable session's connect not made within its `timeout` is
+		`Reason.Timeout` too. The peer is a datagram socket that takes every
+		CONNECT and answers none. The session's timeout errors carried no
+		`TIMEOUT_ERROR_ID`, so this ended as `Reason.Error` with the time in
+		its text.
+	**/
+	@:timeout(20000)
+	public function testAReliableConnectThatTimesOutIsATimeout(async:Async):Void {
+		if (!DatagramSocket.isSupported) {
+			Assert.isFalse(DatagramSocket.isSupported);
+			async.done();
+			return;
+		}
+
+		var silent = new DatagramSocket();
+		silent.bind(0, "127.0.0.1");
+
+		// Node binds asynchronously.
+		NetPump.until(() -> silent.localPort != 0, 5.0, function(_) {
+			var socket = new ReliableDatagramSocket();
+			socket.timeout = 400;
+			var errors:Array<Reason> = [];
+			var closes:Array<Reason> = [];
+			var connection = NetConnection.fromReliableDatagramSocket(socket);
+			connection.onError = reason -> errors.push(reason);
+			connection.onClose = reason -> closes.push(reason);
+			socket.connect("127.0.0.1", silent.localPort);
+
+			NetPump.until(() -> closes.length > 0, 10.0, function(_) {
+				Assert.isTrue(errors.length == 1 && Type.enumEq(Reason.Timeout, errors[0]), "onError was not told of the timeout: " + errors);
+				Assert.isTrue(closes.length == 1 && Type.enumEq(Reason.Timeout, closes[0]), "onClose was not told of the timeout: " + closes);
+				try silent.close() catch (_:Dynamic) {}
+				async.done();
+			});
+		});
+	}
 	#end
 
 	/**
