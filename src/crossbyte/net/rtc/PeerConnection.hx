@@ -261,6 +261,13 @@ class PeerConnection {
 		TLS session for as long as the process ran. The reason `ready` fails
 		with names the phase that did not finish. Read at every poll, so it
 		can be changed after `connect`.
+
+		Thirty seconds fails a connection with no path about when a browser
+		reports one failed. It is shorter than one ICE check's whole schedule
+		(39.5 s), so a nomination whose answer is lost is not retried on
+		another pair before this ends the connection, though the ICE agent on
+		its own would retry (its `timeout` is 80 s): raise this past 80 to
+		give it that chance on a lossy path.
 	**/
 	public var readyTimeout:Float = DEFAULT_READY_TIMEOUT;
 
