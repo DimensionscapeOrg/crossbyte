@@ -83,6 +83,8 @@ entry below says how:
 - `writeObject` puts a 32-bit length before an HXSF or JSON object, where
   rc.1 put 16 bits: an object written by rc.1 does not read back, so both
   peers, and anything stored, move to 1.0 together.
+- A native Windows build runs at the priority it was started with; set
+  `CrossByte.windowsHighPriority = true` for the high class it took itself.
 
 ### Added
 - `crossbyte.utils.Checksum`: a `ChecksumAlgorithm`'s checksum of some
@@ -1156,6 +1158,12 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A native Windows build no longer raises its process to
+  `HIGH_PRIORITY_CLASS`. Every one did, unasked and undocumented, as the
+  runtime loaded, a library deciding for the process it is part of, and
+  a busy server at that class can starve the rest of the machine. It is
+  `CrossByte.windowsHighPriority = true` now, which takes effect when set
+  and, set back, returns the process to the class it had.
 - `writeObject` frames an HXSF or JSON object as the length in bytes of
   its text, an unsigned 32-bit integer in the stream's `endian`, then the
   text as UTF-8, on a `ByteArray` and on `Socket`, `WebSocket` and
