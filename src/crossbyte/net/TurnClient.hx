@@ -25,15 +25,45 @@ import haxe.io.Bytes;
 	at all.
 
 	```haxe
+	// Given agent:IceAgent, socket:DatagramSocket.
+	import crossbyte.events.DatagramSocketDataEvent;
+	import crossbyte.net.ice.IceAgent;
+	import crossbyte.net.ice.IceCandidate;
+
 	var relay = new TurnClient("turn.example.com", 3478, "user", "secret");
-	relay.onSend = (payload, address, port) -> server.sendTo(payload, address, port);
+	relay.onSend = (payload, address, port) -> socket.send(payload, 0, payload.length, address, port);
 
 	relay.allocated.then(function(relayed) {
-		agent.addLocalCandidate(new IceCandidate(RELAYED, relayed.address, relayed.port));
+		var candidate = new IceCandidate(RELAYED, relayed.address, relayed.port);
+
+		// The relayed candidate sends through the relay: its checks are
+		// wrapped for the relay to forward, to a peer permitted first. What
+		// the relay forwards back is the agent's, as having arrived on that
+		// candidate, so the answer goes back the same way.
+		agent.addLocalCandidate(candidate, function(payload, address, port) {
+			relay.permit(address, haxe.Timer.stamp());
+			relay.sendTo(payload, address, port);
+		});
+
+		relay.onData = (payload, address, port) -> agent.receive(payload, address, port, haxe.Timer.stamp(), candidate);
+	});
+
+	// The relay's answers and what it forwards arrive on the same socket as
+	// everything else: offered to it first, and the rest to the agent. And
+	// `relay.poll` on the tick, as `agent.poll`.
+	socket.addEventListener(DatagramSocketDataEvent.DATA, function(e) {
+		if (!relay.receive(e.data, e.srcAddress, e.srcPort, haxe.Timer.stamp())) {
+			agent.receive(e.data, e.srcAddress, e.srcPort, haxe.Timer.stamp());
+		}
 	});
 
 	relay.allocate(haxe.Timer.stamp());
 	```
+
+	A relayed candidate without the way to send through the relay is a
+	candidate whose checks go straight at the peer, from the socket, while
+	the peer is told to answer the relay. `PeerConnection.gatherRelayed` does
+	all of this for a peer connection.
 
 	## No socket, for the same reason as the agent
 

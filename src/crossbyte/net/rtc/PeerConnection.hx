@@ -13,6 +13,7 @@ import crossbyte.net.DatagramSocket;
 import crossbyte.net.ice.IceAgent;
 import crossbyte.net.ice.IceCandidate;
 import crossbyte.net.ice.IceCandidatePair;
+import crossbyte.net.ice.IceCandidateType;
 import crossbyte.net.ice.IceAgentState;
 import crossbyte.net.ice.IceCredentials;
 import crossbyte.net.TurnClient;
@@ -436,8 +437,9 @@ class PeerConnection {
 		host candidate. A wildcard bind does not -- `0.0.0.0` names every
 		interface and so names none -- so a caller behind one should ask
 		`LocalAddress` which interface reaches the peer and pass the answer to
-		`addLocalCandidate`. Reflexive and relayed candidates go in the same
-		way, but nothing here discovers them yet; see the class documentation.
+		`addLocalCandidate`, or the description carries no address at all.
+		Reflexive and relayed candidates come from `gatherReflexive` and
+		`gatherRelayed`.
 	**/
 	public function bind(localPort:Int = 0, localAddress:String = "0.0.0.0"):Void {
 		if (__host != null) {
@@ -482,12 +484,26 @@ class PeerConnection {
 	}
 
 	/**
-		Adds an address this peer can be reached at.
+		Adds an address this peer can be reached at: the interface
+		`LocalAddress` says reaches the peer, a public address a server knows
+		it has, a reflexive one learned elsewhere.
 
-		`bind` adds the socket's own when it names one; reflexive and relayed
-		candidates arrive here from whatever gathered them.
+		`bind` adds the socket's own when it names one, and `gatherReflexive`
+		and `gatherRelayed` add what they find.
+
+		@throws ArgumentError For a relayed candidate. A relayed address works
+		only through the allocation that lent it, made from this connection's
+		socket: checks from it are wrapped for the relay to forward, and what
+		the relay forwards comes back through it. One added here had neither.
+		It was taken in silence and its checks went straight at the peer from
+		this socket -- while the peer was told to answer the relay. Ask
+		`gatherRelayed` or `gatherRelayedFrom` for one.
 	**/
 	public function addLocalCandidate(candidate:IceCandidate):Void {
+		if (candidate != null && candidate.type == IceCandidateType.RELAYED) {
+			throw new ArgumentError("A relayed candidate works only through the allocation that lent it, made from this connection's socket; one added from outside would send its checks straight at the peer. Use gatherRelayed or gatherRelayedFrom.");
+		}
+
 		agent.addLocalCandidate(candidate);
 
 		if (__restartAgent != null) {
