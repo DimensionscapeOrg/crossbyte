@@ -1961,6 +1961,17 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On JavaScript a child runtime made once the program is running runs.
+  `CrossByte.make()` handed its loop to `haxe.EntryPoint`, which on Node
+  runs what it is given only until the program has started, so a child
+  made later never started: no INIT, no tick. And a child no longer takes
+  the program's timers. There is one thread, and a child's loop bound
+  `crossbyte.Timer` to itself as it started and never gave it back, so a
+  timer the application armed from then on ran on the child's scheduler,
+  and never at all once the child had exited. While a child's own work
+  runs, INIT, its ticks and timers, EXIT, `CrossByte.current()` is the
+  child and `crossbyte.Timer` schedules on it, as on a child's own thread
+  elsewhere; the rest of the time they are the application's.
 - `TickEvent.delta` says what the first tick reports: the time since the
   runtime's loop started, which is zero natively, on the jvm, hl, neko and
   the interpreter, where the loop ticks as it starts, and about one tick
