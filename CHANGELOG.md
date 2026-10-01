@@ -1944,6 +1944,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `MySQLStatement` given its connection before `open()` runs once the
+  connection is open; it copied the connection's handle when
+  `sqlConnection` was set, held none, and refused. And a MySQL isolation
+  level the server refuses is thrown as a `MySQLError`, as every other
+  refusal is: the setter went round `request()`, so the driver's own error
+  escaped -- on the jvm a `java.sql.SQLException`.
 - The PostgreSQL docs say what the driver is: libpq natively, PDO on php,
   nothing elsewhere -- the class said "backed by PHP PDO", and the README
   listed PostgreSQL with no target at all -- and that

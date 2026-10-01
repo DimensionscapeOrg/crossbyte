@@ -1039,9 +1039,15 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		return IsolationLevel.REPEATABLE_READ;
 	}
 
+	/**
+		Sets the level of the session's transactions from the next one on.
+		Throws the `MySQLError` the server refused it with, as every other
+		statement does: it went round `request()`, so what the driver threw
+		escaped as itself -- on the jvm a `java.sql.SQLException`.
+	**/
 	private function set_isolationLevel(v:IsolationLevel):IsolationLevel {
 		if (__connection != null) {
-			__connection.request("SET SESSION TRANSACTION ISOLATION LEVEL " + v + ";");
+			request("SET SESSION TRANSACTION ISOLATION LEVEL " + v + ";");
 		}
 
 		return v;
