@@ -116,6 +116,8 @@ class JvmSslSocket extends sys.net.Socket {
 	// A handshake after the first is under way; how many the peer has begun.
 	@:noCompletion private var __renegotiating:Bool = false;
 	@:noCompletion private var __renegotiations:Int = 0;
+	// A failure's alert has been sent, so close() lingers; see there.
+	@:noCompletion private var __refused:Bool = false;
 
 	@:noCompletion private static var __EMPTY:ByteBuffer = ByteBuffer.allocate(0);
 
@@ -707,6 +709,7 @@ class JvmSslSocket extends sys.net.Socket {
 				}
 			}
 		} catch (_:Dynamic) {}
+		__refused = true;
 		__outbound.release();
 	}
 
@@ -1014,13 +1017,48 @@ class JvmSslSocket extends sys.net.Socket {
 		return take;
 	}
 
+	/**
+		Closes the socket. A connection refused with an alert is not closed
+		at once but handed to `JvmSslLinger`: its output is shut behind the
+		alert, and what the peer still sends is read and dropped until it
+		closes, for a second at most.
+
+		Closed at once, it was reset by whatever the peer sent next, and a
+		reset throws away what the peer has not read yet, the alert saying
+		why it was refused. A JDK client still writing its half of the
+		handshake failed that write and reported "readHandshakeRecord" on
+		Linux; on Windows the alert was simply gone.
+	**/
 	override public function close():Void {
+		var lingering:java.nio.channels.SocketChannel = null;
+		if (__refused && channel != null && channel.isOpen()) {
+			lingering = cast channel;
+			// Shut only behind a whole alert: one still partly unsent would
+			// be cut short.
+			if (__netOut == null) {
+				try {
+					lingering.shutdownOutput();
+				} catch (_:Dynamic) {}
+			}
+			// The base close lets the runtime's selector go of the channel
+			// by closing it; here the key is cancelled instead, and the base
+			// close, with no channel to close, still has the selector drop it.
+			if (__selectKey != null) {
+				__selectKey.cancel();
+			}
+			channel = null;
+		}
+
 		super.close();
 		// Whatever it still held goes with it rather than with the socket
 		// object, which a caller may keep.
 		__netIn = null;
 		__appIn = null;
 		__netOut = null;
+
+		if (lingering != null) {
+			JvmSslLinger.hold(lingering);
+		}
 	}
 
 	/**
@@ -1368,6 +1406,89 @@ private class JvmSslContexts {
 }
 
 /** Plaintext in; ciphertext off the wire. **/
+/**
+	Connections refused with an alert, held open until the peer closes, for
+	`HOLD_SECONDS` at most, and read meanwhile so nothing the peer still sends
+	resets them. See `JvmSslSocket.close`.
+
+	One daemon thread serves them all, started with the first and ended with
+	the last, so a process with none has none and one never waits on it.
+**/
+private class JvmSslLinger implements java.lang.Runnable {
+	public static inline var HOLD_SECONDS:Float = 1.0;
+
+	static var __lock:sys.thread.Mutex = new sys.thread.Mutex();
+	static var __held:Array<JvmSslLingering> = [];
+	static var __running:Bool = false;
+
+	public static function hold(channel:java.nio.channels.SocketChannel):Void {
+		__lock.acquire();
+		__held.push(new JvmSslLingering(channel, haxe.Timer.stamp() + HOLD_SECONDS));
+		var start:Bool = !__running;
+		__running = true;
+		__lock.release();
+
+		if (start) {
+			var thread = new java.lang.Thread(new JvmSslLinger(), "crossbyte-tls-linger");
+			thread.setDaemon(true);
+			thread.start();
+		}
+	}
+
+	function new() {}
+
+	public function run():Void {
+		var scratch:ByteBuffer = ByteBuffer.allocate(4096);
+		while (true) {
+			__lock.acquire();
+			if (__held.length == 0) {
+				__running = false;
+				__lock.release();
+				return;
+			}
+			var batch:Array<JvmSslLingering> = __held.copy();
+			__lock.release();
+
+			var now:Float = haxe.Timer.stamp();
+			for (held in batch) {
+				var done:Bool = now >= held.until;
+				if (!done) {
+					try {
+						// Whatever has arrived, dropped; -1 is the peer's close.
+						var n:Int = 0;
+						do {
+							scratch.clear();
+							n = held.channel.read(scratch);
+						} while (n > 0);
+						done = n < 0;
+					} catch (_:Dynamic) {
+						done = true;
+					}
+				}
+				if (done) {
+					try {
+						held.channel.close();
+					} catch (_:Dynamic) {}
+					__lock.acquire();
+					__held.remove(held);
+					__lock.release();
+				}
+			}
+			crossbyte._internal.system.Sleep.sleep(0.01);
+		}
+	}
+}
+
+private class JvmSslLingering {
+	public var channel(default, null):java.nio.channels.SocketChannel;
+	public var until(default, null):Float;
+
+	public function new(channel:java.nio.channels.SocketChannel, until:Float) {
+		this.channel = channel;
+		this.until = until;
+	}
+}
+
 private class JvmSslInput extends haxe.io.Input {
 	private var socket:JvmSslSocket;
 	// Kept: a reader taking a line a byte at a time, as the HTTP client

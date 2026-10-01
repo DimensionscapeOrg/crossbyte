@@ -2287,7 +2287,12 @@ All notable changes to CrossByte will be documented in this file.
   connection already admitted. A handshake that fails now sends the peer its
   alert before the close, so the peer reports the reason, a certificate
   refused, or not presented, rather than "Remote host terminated the
-  handshake".
+  handshake". The connection then closes in order rather than at once: its
+  output is shut behind the alert, and what the peer still sends is read
+  and dropped until it closes, for a second at most. Closed at once, the
+  next thing the peer sent drew a reset, which threw the unread alert away,
+  on Linux a JDK client still writing its half of the handshake reported
+  "readHandshakeRecord" instead.
 - On the jvm, `select` keeps the sockets it is asked about registered from
   one call to the next. It registered every socket it was handed, checked
   every pair of them for duplicates and cancelled every key again, on each
