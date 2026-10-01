@@ -71,6 +71,7 @@ const STANDALONE = [
   'src/crossbyte/io/Store.hx',
   'src/crossbyte/math/Rectangle.hx',
   'src/crossbyte/net/NetConnection.hx',
+  'src/crossbyte/net/ReliableDatagramServerSocket.hx',
   'src/crossbyte/net/StunClient.hx',
   'src/crossbyte/net/TurnClient.hx',
   'src/crossbyte/net/ice/IceAgent.hx',
