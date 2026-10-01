@@ -1960,6 +1960,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A TCP or WebSocket `NetHost` reports `discoverPublicAddress` and
+  `allocateRelay`, which it cannot do, as a failed `Future`, as every
+  member answering with a `Future` reports failure; they threw, so a
+  caller handling failure on the `Future` never saw them. `INetHost` says
+  so, and says that `maxConnections` is the listen backlog, not a limit.
 - `Socket.close()` sends what was written first, as far as the system
   takes it without waiting. Writes go at the end of the pass, so bytes
   written just before `close()` were thrown away, on every target.

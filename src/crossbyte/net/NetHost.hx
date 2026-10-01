@@ -131,21 +131,25 @@ private class BaseNetHost<TServer:ServerSocket> implements INetHost {
 	}
 
 	/**
-	 * Always refuses, for the same reason as `dial`: there is no single
-	 * endpoint here whose outside appearance would mean anything.
+	 * Always fails, for the same reason as `dial` refuses: there is no single
+	 * endpoint here whose outside appearance would mean anything. Failed
+	 * rather than thrown, as everything this answers with a `Future` reports
+	 * failure; see `INetHost`.
 	 */
 	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<ReflexiveAddress> {
-		throw new crossbyte.errors.IllegalOperationError("A " + protocol.toString()
+		var refusal = new crossbyte.errors.IllegalOperationError("A " + protocol.toString()
 			+ " host has no listening endpoint to discover: accepting and connecting are separate sockets on a stream transport.");
+		return Future.failed(refusal.message, refusal);
 	}
 
 	/**
-	 * Always refuses, as `dial` does: a relay is reached through one socket
+	 * Always fails, as `dial` refuses: a relay is reached through one socket
 	 * that both listens and dials, and a stream host has two.
 	 */
 	public function allocateRelay(server:String, port:Int = 3478, username:String, password:String, useChannels:Bool = false,
 			?transport:TurnTransport):Future<ReflexiveAddress> {
-		throw __noRelay("allocateRelay");
+		var refusal = __noRelay("allocateRelay");
+		return Future.failed(refusal.message, refusal);
 	}
 
 	/** Always refuses; see `allocateRelay`. **/
