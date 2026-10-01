@@ -93,6 +93,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private static inline var STREAM_SLICE:Int = 64 * 1024;
 
 	/**
+		What a streamed response written while a read is handled may hold for
+		the end of that read before it goes anyway; see __writeOpenStream.
+	**/
+	@:noCompletion private static inline var STREAM_FLUSH_BATCH:Int = 64 * 1024;
+
+	/**
 	 * Stop feeding slices while at least this much is already buffered on
 	 * the socket. This is the bound that makes streaming streaming: peak
 	 * per-transfer memory is the watermark plus one slice, not the file.
@@ -352,6 +358,36 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __onData(e:ProgressEvent):Void {
+		// What a read is answered with as it is handled goes out together
+		// when it is done: see __writeOpenStream.
+		__reading = true;
+		try {
+			__onRead();
+		} catch (error:Dynamic) {
+			__reading = false;
+			__flushHeldStream();
+			throw error;
+		}
+		__reading = false;
+		__flushHeldStream();
+	}
+
+	/** Set while a read is handled; a streamed write made then waits for its end. */
+	@:noCompletion private var __reading:Bool = false;
+
+	/** A streamed write is waiting for the end of the read. */
+	@:noCompletion private var __streamFlushHeld:Bool = false;
+
+	@:noCompletion private function __flushHeldStream():Void {
+		if (__streamFlushHeld) {
+			__streamFlushHeld = false;
+			if (__writer.connected) {
+				__writer.flush();
+			}
+		}
+	}
+
+	@:noCompletion private function __onRead():Void {
 		__receivedAny = true;
 		try {
 			__origin.readBytes(__incomingBuffer, __incomingBuffer.length);
@@ -1794,8 +1830,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		if (openBody) {
 			// The body is the caller's to write, and endResponse settles the
-			// connection once it is done.
-			__writer.flush();
+			// connection once it is done. The head waits for the end of the
+			// read it was written in, with the writes that follow it.
+			if (__reading) {
+				__streamFlushHeld = true;
+			} else {
+				__writer.flush();
+			}
 			__finishResponse();
 			__streamPending = false;
 			return;
@@ -1997,7 +2038,19 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		__writer.writeBody(data, offset, length);
-		__writer.flush();
+
+		// Written while a read is handled -- a route streaming its answer --
+		// it waits for the end of that read and goes with the rest, until 64
+		// KB are waiting: every write was a system call of its own, and a
+		// 64 KB body in eight writes was served at a third the rate of the
+		// same body in one. Written at any other time it goes at once, as
+		// a producer feeding the stream later expects.
+		if (__reading && __writer.bufferedBytes < STREAM_FLUSH_BATCH) {
+			__streamFlushHeld = true;
+		} else {
+			__streamFlushHeld = false;
+			__writer.flush();
+		}
 
 		if (__writer.bufferedBytes >= __openStreamWatermark()) {
 			@:privateAccess stream.__blocked = true;
@@ -2022,6 +2075,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		if (__writer.connected) {
 			__writer.endResponse();
+			// With whatever the stream's writes left waiting, before the
+			// connection settles: it may close.
+			__streamFlushHeld = false;
 			__writer.flush();
 		}
 		__settleConnection();
