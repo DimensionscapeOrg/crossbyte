@@ -42,7 +42,7 @@ import haxe.io.Error;
  *
  * @author Christopher Speciale
  */
-class WebSocket #if !nodejs implements IPollableSocket #end {
+class WebSocket #if !nodejs implements IPollableSocket implements crossbyte.core._internal.PassFlush #end {
 	public static inline var CLOSED:Int = 3;
 	public static inline var CLOSING:Int = 2;
 	public static inline var CONNECTING:Int = 0;
@@ -90,6 +90,11 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	 */
 	private static inline var INPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
 	private static inline var OUTPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
+
+	// What a pass may hold before it is written anyway, and the size of a
+	// frame that is written at once rather than held: either is a write
+	// worth making on its own. See __queueOutput.
+	private static inline var PASS_BATCH:Int = 64 * 1024;
 
 	/** The extension named in the handshake, as RFC 7692 names it. **/
 	public static inline var PERMESSAGE_DEFLATE:String = "permessage-deflate";
@@ -310,6 +315,10 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	// a retry of its pending output is queued there.
 	private var __registered:Bool = false;
 	private var __writeQueued:Bool = false;
+
+	// Whether the runtime is to flush this session's output when its pass
+	// ends; see __queueOutput.
+	private var __passFlushQueued:Bool = false;
 
 	// A client's connect in flight, and a TLS handshake in flight, either
 	// end: what the registry's calls step while they last, rather than read.
@@ -909,6 +918,39 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 			@:privateAccess __runtime.queueWritable(__socket);
 		}
 	}
+
+	/**
+	 * Whether what is pending can wait for the end of the runtime's pass:
+	 * it can when the runtime is already to flush it, or is asked to now.
+	 * Only on the runtime's own thread, whose list of what to flush is not
+	 * shared; a send from any other goes at once, as it always did.
+	 */
+	private function __holdForPass():Bool {
+		if (__passFlushQueued) {
+			return true;
+		}
+		var runtime:CrossByte = __runtime;
+		if (runtime == null || @:privateAccess runtime.__didExit) {
+			return false;
+		}
+		var current:CrossByte = null;
+		try {
+			// Throws on a thread no runtime is attached to.
+			current = CrossByte.current();
+		} catch (_:Dynamic) {}
+		if (current != runtime) {
+			return false;
+		}
+		__passFlushQueued = true;
+		runtime.__queuePassFlush(this);
+		return true;
+	}
+
+	/** The runtime's call at the end of a pass: what the pass sent goes now. **/
+	@:noCompletion public function __flushPass():Void {
+		__passFlushQueued = false;
+		__flushPendingOutput();
+	}
 	#end
 
 	private function __doHandshake():Void {
@@ -950,19 +992,41 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	}
 
 	/**
-	 * Appends `bytes` to the pending buffer and tries to push it to the
-	 * socket.
+	 * Appends `bytes` to the pending buffer, to go to the socket when the
+	 * runtime's pass ends.
 	 *
 	 * Everything written by this session goes through here so that a
 	 * partially-accepted or momentarily-full socket retains the remainder
 	 * instead of losing it.
+	 *
+	 * On native, what a pass sends a session goes in one write as the pass
+	 * ends -- every message a handler sends, a timer's, a tick's -- where
+	 * each frame was a write of its own, a system call apiece. A server
+	 * relaying a chat room's messages to everyone in it made one for every
+	 * message to every member. Nothing waits past the pass: the loop flushes
+	 * before it polls again. A frame of 64 KB or more is written at once, as
+	 * is what has been held once it reaches that; so is everything where no
+	 * pass is coming -- no runtime, one that has exited, or a send from
+	 * another thread than the session's runtime.
 	 */
 	private function __queueOutput(data:ByteArray, length:Int):Void {
 		#if !nodejs
-		// Nothing queued ahead of it, so it is offered to the socket straight
-		// from where it was built, and only what the socket does not take is
-		// copied into the pending buffer -- the ordinary case, a socket with
-		// room, costs no copy at all.
+		if (data != null && length > 0 && __socket != null) {
+			var pending:Int = __pendingOutput.length - __pendingSent;
+			if (pending > 0 || length < PASS_BATCH) {
+				__pendingOutput.position = __pendingOutput.length;
+				__pendingOutput.writeBytes(data, 0, length);
+				if (pending + length < PASS_BATCH && __holdForPass()) {
+					return;
+				}
+				__flushPendingOutput();
+				return;
+			}
+		}
+
+		// Nothing queued ahead of it, and too large to be worth holding, so it
+		// is offered to the socket straight from where it was built, and only
+		// what the socket does not take is copied into the pending buffer.
 		if (data != null && length > 0 && __socket != null && __pendingSent >= __pendingOutput.length) {
 			var accepted:Int = __offer(data, 0, length);
 			if (accepted < 0) {
@@ -2395,6 +2459,14 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 
 		if (__socket != null) {
 			#if !nodejs
+			// What the pass was holding goes before the socket does, as it went
+			// before it was held: the close frame `abort` and a protocol
+			// failure send just ahead of this, and whatever was sent before it.
+			// Once, and only what the socket takes now.
+			if (__pendingOutput != null && __pendingOutput.length > __pendingSent) {
+				__offer(__pendingOutput, __pendingSent, __pendingOutput.length - __pendingSent);
+			}
+
 			// Out of the registry before the socket goes, as `Socket` does it.
 			if (__registered) {
 				__registered = false;

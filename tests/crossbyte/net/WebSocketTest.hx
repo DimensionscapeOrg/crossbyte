@@ -146,6 +146,83 @@ class WebSocketTest extends utest.Test {
 		#end
 	}
 
+	/**
+		What a pass of the runtime sends a WebSocket goes out in one write,
+		when the pass ends. Each message was a write of its own, a system
+		call apiece: a server relaying a chat room's messages to everyone in
+		it made one for every message to every member.
+	**/
+	public function testWhatOnePassSendsGoesOutInOneWrite():Void {
+		#if cpp
+		var listener = new sys.net.Socket();
+		listener.bind(new sys.net.Host("127.0.0.1"), 0);
+		listener.listen(1);
+		var client = new CountingSocket();
+		client.connect(new sys.net.Host("127.0.0.1"), listener.host().port);
+		var peer = listener.accept();
+		client.setBlocking(false);
+
+		var ws = openSender(client);
+		for (i in 0...10) {
+			ws.sendString("message " + i);
+		}
+		CrossByte.current().__flushHeld();
+		Assert.equals(1, client.written.writes, "ten messages sent in one pass went out in " + client.written.writes + " writes");
+
+		// All ten arrive, whole and in order: a 2-byte header and 9 bytes each.
+		var arrived = Bytes.alloc(110);
+		peer.setTimeout(5);
+		peer.input.readFullBytes(arrived, 0, arrived.length);
+		for (i in 0...10) {
+			var at:Int = i * 11;
+			Assert.equals(0x81, arrived.get(at), "frame " + i + " is not a final text frame");
+			Assert.equals(9, arrived.get(at + 1), "frame " + i + " has the wrong length");
+			Assert.equals("message " + i, arrived.getString(at + 2, 9));
+		}
+		try client.close() catch (_:Dynamic) {}
+		try peer.close() catch (_:Dynamic) {}
+		try listener.close() catch (_:Dynamic) {}
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		A session closed at once still sends what the pass was holding for it,
+		and its close frame after: an `abort` in the handler that sent a
+		last message used to find both already written, and must not lose
+		them now that they wait for the pass to end.
+	**/
+	public function testWhatAPassHeldGoesBeforeAnAbortCloses():Void {
+		#if cpp
+		var listener = new sys.net.Socket();
+		listener.bind(new sys.net.Host("127.0.0.1"), 0);
+		listener.listen(1);
+		var client = new CountingSocket();
+		client.connect(new sys.net.Host("127.0.0.1"), listener.host().port);
+		var peer = listener.accept();
+		client.setBlocking(false);
+
+		var ws = openSender(client);
+		ws.sendString("last words");
+		ws.abort(1001);
+
+		// "last words" in a 12-byte text frame, then a close frame carrying 1001.
+		var arrived = Bytes.alloc(16);
+		peer.setTimeout(5);
+		peer.input.readFullBytes(arrived, 0, arrived.length);
+		Assert.equals(0x81, arrived.get(0), "the held message did not go first");
+		Assert.equals("last words", arrived.getString(2, 10));
+		Assert.equals(0x88, arrived.get(12), "no close frame followed it");
+		Assert.equals(2, arrived.get(13));
+		Assert.equals(1001, (arrived.get(14) << 8) | arrived.get(15));
+		try peer.close() catch (_:Dynamic) {}
+		try listener.close() catch (_:Dynamic) {}
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testFragmentedFrameDispatchesOnceOnFinalContinuation():Void {
 		var ws = openParser();
 		var calls = 0;
@@ -463,6 +540,25 @@ class WebSocketTest extends utest.Test {
 		return ws;
 	}
 
+	#if cpp
+	/** An open server-side session over `socket`, as an accepted one is, ready to send. **/
+	private static function openSender(socket:sys.net.Socket):InternalWebSocket {
+		var ws = openParser();
+		ws.__socket = socket;
+		ws.__connected = true;
+		ws.__tls = false;
+		ws.__isClient = false;
+		ws.__output = new ByteArray();
+		ws.__output.endian = BIG_ENDIAN;
+		ws.__pendingOutput = new ByteArray();
+		ws.__pendingOutput.endian = BIG_ENDIAN;
+		ws.__outgoingMessageBuffer = new ByteArray();
+		ws.__outgoingMessageBuffer.endian = BIG_ENDIAN;
+		ws.__runtime = CrossByte.current();
+		return ws;
+	}
+	#end
+
 	private static function connectingParser():InternalWebSocket {
 		var ws = emptyWebSocket();
 		ws.readyState = InternalWebSocket.CONNECTING;
@@ -530,23 +626,54 @@ class WebSocketTest extends utest.Test {
 }
 
 #if cpp
-/** A socket whose input counts its reads. */
+/** A socket whose input counts its reads, and its output its writes. */
 private class CountingSocket extends sys.net.Socket {
 	public var counting(default, null):CountingInput;
+	public var written(default, null):CountingOutput;
 
 	private var __own:haxe.io.Input;
+	private var __ownOutput:haxe.io.Output;
 
 	override private function init():Void {
 		super.init();
 		__own = input;
 		counting = new CountingInput(input);
 		input = counting;
+		__ownOutput = output;
+		written = new CountingOutput(output);
+		output = written;
 	}
 
-	/** Puts the socket's own input back first: close() casts to it unchecked, and a null there crashes a release build. */
+	/** Puts the socket's own input and output back first: close() casts to them unchecked, and a null there crashes a release build. */
 	override public function close():Void {
 		input = __own;
+		output = __ownOutput;
 		super.close();
+	}
+}
+
+/** Writes through `inner`, counting the writes. */
+private class CountingOutput extends haxe.io.Output {
+	public var writes(default, null):Int = 0;
+
+	private final __inner:haxe.io.Output;
+
+	public function new(inner:haxe.io.Output) {
+		__inner = inner;
+	}
+
+	override public function writeByte(c:Int):Void {
+		writes++;
+		__inner.writeByte(c);
+	}
+
+	override public function writeBytes(buffer:Bytes, position:Int, length:Int):Int {
+		writes++;
+		return __inner.writeBytes(buffer, position, length);
+	}
+
+	override public function flush():Void {
+		__inner.flush();
 	}
 }
 

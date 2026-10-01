@@ -1192,6 +1192,17 @@ All notable changes to CrossByte will be documented in this file.
   taking uploads. 64 KB uploads: 23,600 a second where a Node server took
   16,500, and 49,300 where a native one took 43,300; 1 MB uploads to Node,
   1,250 where it took 920.
+- On native, what one pass of the runtime sends a WebSocket goes in one
+  write when the pass ends, where each message was a write of its own, a
+  system call apiece. A server relaying a chat room's messages to everyone
+  in it made one for every message to every member. Nothing waits past
+  the pass -- the loop flushes before it polls again -- and a frame of
+  64 KB or more is written at once, as is a send from another thread than
+  the session's runtime. `outputBufferLength` counts what the pass holds.
+  64 clients each sending 20 messages a second, every one relayed to all:
+  107 microseconds of CPU a message where it took 485 (Node with `ws`:
+  521). At 60 a second it kept up where it fell 2 seconds behind,
+  delivering 253,000 messages a second at an eighth of a core.
 - `PostgresStatement` and `MongoStatement` throw a failed statement's
   `SQLError` after dispatching it as an `SQLErrorEvent`, as `MySQLStatement`
   does. They dispatched it and returned, so to a caller not listening -- an
