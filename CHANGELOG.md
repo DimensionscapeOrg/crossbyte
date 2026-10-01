@@ -1991,6 +1991,20 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `File` throws the `IOError` it documents, with AIR's error number where
+  one applies, 3003 for a path with nothing there, 3002 and 3011 for one
+  in the way, 3007 for a file where a directory was wanted, 3010 for a
+  directory that is not empty, 3012 for one that could not be deleted,
+  and the real cause in its message. It threw the base `Error` from
+  `deleteDirectory`, `getDirectoryListing` and its listings, bare strings
+  from `save()`, and whatever the standard library threw from
+  `createDirectory`, `deleteFile`, `load` and the static `getFileBytes`,
+  `getFileText`, `saveBytes` and `saveText`, so `catch (e:IOError)` caught
+  none of them. `deleteDirectory` said "Folder is not empty" for every
+  failure, a file held open and a permission refused among them, and
+  `save()` "File is open" for every failure to write.
+  `getDirectoryListingAsync` reports a path that is not a directory as an
+  `ioError` event, as documented, where it threw.
 - `File.cancel()` cancels. With nothing pending it was a null access; with
   something pending the work went on, a 64 MB `copyToAsync` finished
   after it had been cancelled, because nothing in it asked. Each
