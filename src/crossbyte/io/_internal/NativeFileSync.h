@@ -43,3 +43,8 @@ int crossbyte_file_hidden(::String path);
 // The bytes this process could still write on the volume the file or
 // directory at `path` is on, or -1 if it cannot be examined.
 double crossbyte_file_space_available(::String path);
+
+// Windows' physical memory, in bytes: all of it, or what is available to
+// start programs without swapping. -1 where it cannot be asked: POSIX,
+// where System reads /proc/meminfo or asks sysctl.
+double crossbyte_system_memory(bool available);

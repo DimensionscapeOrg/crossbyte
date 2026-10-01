@@ -464,6 +464,24 @@ double crossbyte_file_space_available(::String path) {
 #endif
 }
 
+double crossbyte_system_memory(bool available) {
+	// Not a file operation: System's, kept in this bridge so that it has
+	// one. It started wmic for each figure, which takes half a second.
+#if defined(_WIN32)
+	MEMORYSTATUSEX status;
+	status.dwLength = sizeof(status);
+
+	if (!GlobalMemoryStatusEx(&status)) {
+		return -1.0;
+	}
+
+	return static_cast<double>(available ? status.ullAvailPhys : status.ullTotalPhys);
+#else
+	// System reads /proc/meminfo, or asks sysctl, there.
+	return -1.0;
+#endif
+}
+
 ::String crossbyte_file_truncate(::String path, double length) {
 	// The standard library has no truncate. FileStream read the whole file
 	// into memory and wrote back the part it kept, which is a file's size of
