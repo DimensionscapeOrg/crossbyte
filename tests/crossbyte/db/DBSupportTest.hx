@@ -159,7 +159,7 @@ class DBSupportTest extends utest.Test {
 		Assert.equals("a__DROP_TABLE_t____", connection.__sanitizeSavePoint("a; DROP TABLE t; --"));
 	}
 
-	#if (windows && cpp)
+	#if cpp
 	public function testAsyncQueueRunsEveryJobInOrderAndClosesCleanly():Void {
 		// The async queue had no coverage at all, which is how a change to it
 		// passed the whole suite while making the very first queued job
@@ -200,7 +200,7 @@ class DBSupportTest extends utest.Test {
 	}
 	#end
 
-	#if windows
+	#if cpp
 	public function testSavepointsNestAndReleaseByNameOrByOmission():Void {
 		// setSavepoint() returned nothing, so a savepoint made without a name
 		// could never be named again, and releaseSavepoint() with no name
@@ -233,7 +233,7 @@ class DBSupportTest extends utest.Test {
 	}
 	#end
 
-	#if windows
+	#if cpp
 	public function testSQLiteInMemoryOpenPragmasAndQueries():Void {
 		var connection = new SQLiteConnection();
 		Assert.isFalse(connection.connected);
@@ -348,6 +348,68 @@ class DBSupportTest extends utest.Test {
 		Assert.equals(1727600000000.0, result.lastInsertRowID, "the statement's result");
 		Assert.equals(1727600000000.0, connection.lastInsertRowID, "the connection");
 		connection.close();
+	}
+
+	/**
+		A database attached is reached as `name.table`, joins included, its
+		schema read, and detached again. `SQLEvent.ATTACH`, `DETACH` and
+		`SCHEMA` were declared, as AIR's `SQLConnection` has them, and
+		nothing could make one: there was no attach, detach or schema.
+	**/
+	public function testAnAttachedDatabaseIsJoinedReadAndDetached():Void {
+		var connection = new SQLiteConnection();
+		connection.open(null, SQLiteMode.CREATE, false, 4096);
+		var heard:Array<String> = [];
+		for (type in [SQLEvent.ATTACH, SQLEvent.DETACH, SQLEvent.SCHEMA]) {
+			connection.addEventListener(type, function(e:SQLEvent) heard.push(e.type));
+		}
+
+		sqlRun(connection, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT 'anon');");
+		connection.attach("extra");
+		sqlRun(connection, "CREATE TABLE extra.scores (user INTEGER, points INTEGER);");
+		sqlRun(connection, "CREATE INDEX extra.by_user ON scores(user);");
+		sqlRun(connection, "INSERT INTO users (id, name) VALUES (1, 'ada');");
+		sqlRun(connection, "INSERT INTO extra.scores VALUES (1, 42);");
+
+		var joined = sqlRun(connection, "SELECT u.name AS name, s.points AS points FROM users u JOIN extra.scores s ON s.user = u.id;");
+		Assert.equals(1, joined.length);
+		if (joined.length == 1) {
+			Assert.equals("ada", Std.string(Reflect.field(joined[0], "name")));
+			Assert.equals(42, Std.parseInt(Std.string(Reflect.field(joined[0], "points"))));
+		}
+
+		connection.loadSchema("extra");
+		var extra = connection.getSchemaResult();
+		Require.notNull(extra);
+		Assert.same(["scores"], [for (t in extra.tables) t.name]);
+		Assert.same(["user", "points"], [for (c in extra.tables[0].columns) c.name]);
+		Assert.same(["by_user"], [for (i in extra.indices) i.name]);
+		Assert.equals("scores", extra.indices[0].table);
+
+		connection.loadSchema();
+		var main = connection.getSchemaResult();
+		Require.notNull(main);
+		Assert.same(["users"], [for (t in main.tables) t.name]);
+		var columns = main.tables[0].columns;
+		Assert.isTrue(columns[0].primaryKey, "id is the primary key");
+		Assert.isFalse(columns[1].allowNull, "name is NOT NULL");
+		Assert.equals("TEXT", columns[1].dataType);
+		Assert.equals("'anon'", columns[1].defaultValue);
+
+		connection.detach("extra");
+		Assert.raises(() -> sqlRun(connection, "SELECT * FROM extra.scores;"), null, "a detached database still answered");
+		Assert.same(["attach", "schema", "schema", "detach"], heard);
+		connection.close();
+	}
+
+	/** Runs `sql` on `connection`, returning its rows. **/
+	private static function sqlRun(connection:SQLiteConnection, sql:String):Array<Dynamic> {
+		var statement = new SQLiteStatement();
+		statement.sqlConnection = connection;
+		statement.text = sql;
+		statement.execute();
+		var result = statement.getResult();
+		return result == null || result.data == null ? [] : result.data;
 	}
 
 	/** Sizes past 2 GB, which multiplying two Ints wrapped before they reached the Int64. **/

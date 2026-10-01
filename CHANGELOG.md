@@ -5,6 +5,11 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
+  `DETACH DATABASE`, and `loadSchema()` with `getSchemaResult()`: a
+  database's tables with their columns, views, indices and triggers.
+  `SQLEvent.ATTACH`, `DETACH` and `SCHEMA` were declared, as AIR's
+  `SQLConnection` has them, and nothing could make one.
 - A streamed response, `HTTPRequestHandler.beginResponse`, server-sent
   events, a download made as it goes, is compressed as it goes, for a
   client that takes gzip or deflate and a type the compression policy
