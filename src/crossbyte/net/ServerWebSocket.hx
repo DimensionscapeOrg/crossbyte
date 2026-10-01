@@ -839,11 +839,14 @@ class ServerWebSocket extends ServerSocket {
 			backlog = ServerSocket.DEFAULT_BACKLOG;
 		}
 
-		#if nodejs
+		// Asked on every target, as the doc says. Natively nothing did: Windows
+		// refused the listen with an error of the socket's own, and Linux and
+		// macOS bound the socket to a port of their choosing and listened.
 		if (!bound) {
-			throw new IOError("Operation attempted on invalid socket.");
+			throw new IOError("Operation attempted on invalid socket: listen() needs bind() first.");
 		}
 
+		#if nodejs
 		__makeNodeServer();
 		__webServerSocket.listen({port: localPort, host: localAddress, backlog: backlog}, function():Void {
 			var assigned:Dynamic = __webServerSocket.address();
