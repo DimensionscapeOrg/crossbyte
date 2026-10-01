@@ -340,8 +340,7 @@ class H2ConnectionHandler implements PassFlush {
 			try {
 				admitted.__continueDecodedRequest(body, request.tooLarge, request.timedOut);
 			} catch (error:Dynamic) {
-				Logger.error("HTTP/2 request handling failed: " + error);
-				__connection.resetStream(request.streamId, H2ErrorCode.INTERNAL_ERROR);
+				__serveFailed(admitted, request.streamId, error);
 			}
 			return;
 		}
@@ -361,8 +360,32 @@ class H2ConnectionHandler implements PassFlush {
 			handler.__serveDecodedRequest(request.method, target, query, __fieldsOf(request), body, request.tooLarge, request.headersTooLarge,
 				request.timedOut, request.startedAt);
 		} catch (error:Dynamic) {
-			Logger.error("HTTP/2 request handling failed: " + error);
-			__connection.resetStream(request.streamId, H2ErrorCode.INTERNAL_ERROR);
+			__serveFailed(handler, request.streamId, error);
+		}
+	}
+
+	/**
+	 * Answers what serving a request threw outside any middleware -- the rate
+	 * limiter, a status listener, the static files -- as the HTTP/1.1 parser
+	 * answers it: `500`, while nothing of the response has gone out, and the
+	 * stream reset once a head has, since no status can follow one (see
+	 * `HTTPRequestHandler.__sendError`). A response already finished, or
+	 * still being written, is left be.
+	 *
+	 * Every such throw reset the stream, `INTERNAL_ERROR`, so a request that
+	 * could still have been answered got no status at all -- where one
+	 * refused at its headers, through `__admit`, was answered `500`.
+	 */
+	private function __serveFailed(handler:HTTPRequestHandler, streamId:Int, error:Dynamic):Void {
+		Logger.error("HTTP/2 request handling failed: " + error);
+		try {
+			handler.__sendErrorResponse(500, "Internal Server Error");
+		} catch (_:Dynamic) {}
+
+		if (!handler.__responded && __connection.hasStream(streamId)) {
+			// The answer threw as well. The stream still ends, or its client
+			// waits on it for as long as the connection lasts.
+			__connection.resetStream(streamId, H2ErrorCode.INTERNAL_ERROR);
 		}
 	}
 

@@ -2002,8 +2002,103 @@ class HTTPRequestHandlerTest extends utest.Test {
 		});
 	}
 
+	public function testAResponseCutShortClosesRatherThanAnsweringAgain():Void {
+		// A write that throws after a response's head has gone out -- a socket
+		// past its output cap under OutputOverflowPolicy.THROW -- was answered
+		// 500 like any other failure, and the 500's status line went out in the
+		// middle of the first response's body. No status can follow a head; the
+		// connection is closed, which a client can tell from the length the
+		// head promised.
+		for (routed in [true, false]) {
+			var label:String = routed ? "from a middleware" : "from the files";
+			var root:File = File.createTempDirectory();
+			var page = new ByteArray();
+			page.writeUTFBytes("Hello");
+			root.resolvePath("index.html").save(page);
 
+			var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"]);
+			if (routed) {
+				config.middleware.push((handler, next) -> handler.respond(200, "text/plain", "routed"));
+			}
+			var socket = new BreakingBodySocket();
+			var handler = new HTTPRequestHandler(socket, config, null);
+			socket.arrive("GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n");
+			try root.deleteDirectory(true) catch (_:Dynamic) {}
 
+			var written:String = socket.written.toString();
+			Assert.isTrue(socket.broke, label + ": no write broke, so this shows nothing");
+			Assert.equals(1, written.split("HTTP/1.1 ").length - 1, label + ": wrote " + written);
+			Assert.equals(0, written.indexOf("HTTP/1.1 200 "), label + ": wrote " + written);
+			Assert.isTrue(socket.closed, label + ": the connection was left open under a response cut short");
+		}
+	}
+}
 
+/**
+	A connected socket with nothing behind it, whose first `writeBytes` -- the
+	first body written after a head, under HTTP/1.1 -- throws. What is written
+	otherwise is kept as text.
+**/
+private class BreakingBodySocket extends Socket {
+	public var written(default, null):StringBuf = new StringBuf();
+	public var broke(default, null):Bool = false;
+	public var closed(default, null):Bool = false;
+
+	private var __arriving:Null<String> = null;
+
+	public function new() {
+		super();
+	}
+
+	public function arrive(request:String):Void {
+		__arriving = request;
+		dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, request.length, 0));
+	}
+
+	override private function get_connected():Bool {
+		return !closed;
+	}
+
+	override private function get_remoteAddress():String {
+		return "127.0.0.1";
+	}
+
+	override private function get_remotePort():Int {
+		return 50000;
+	}
+
+	override public function readBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+		if (__arriving != null) {
+			var position = bytes.position;
+			bytes.position = offset;
+			bytes.writeUTFBytes(__arriving);
+			bytes.position = position;
+			__arriving = null;
+		}
+	}
+
+	override public function writeUTFBytes(value:String):Void {
+		written.add(value);
+	}
+
+	override public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+		if (!broke) {
+			broke = true;
+			throw new crossbyte.errors.IOError("the write broke");
+		}
+		var count:Int = length == 0 ? bytes.length - offset : length;
+		for (i in 0...count) {
+			written.addChar(bytes[offset + i]);
+		}
+	}
+
+	override public function flush():Void {}
+
+	override public function close():Void {
+		if (!closed) {
+			closed = true;
+			dispatchEvent(new Event(Event.CLOSE));
+		}
+	}
 }
 

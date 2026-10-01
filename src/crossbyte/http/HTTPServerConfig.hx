@@ -187,7 +187,16 @@ class HTTPServerConfig {
 		The hook may answer the request itself -- a JSON error body, say --
 		with `handler.respond()`, and must do so before it returns. If it does
 		not, the server answers `500`, or the status an `Int` error names; the
-		client is told the status and never the error's text.
+		client is told the status and never the error's text. A response
+		whose head has already gone out, cut short by a write that threw, is
+		answered by neither: no status can follow a head, so the response is
+		given up -- the connection closed under HTTP/1.1, the stream reset
+		under HTTP/2 -- which the client can tell from the length it was
+		promised.
+
+		What the server's own handling throws before any middleware runs --
+		the rate limiter's key, say -- or on a server with no middleware, is
+		answered `500` without the hook, over either protocol.
 
 		Whatever it does, an error that is not an `Int` is first logged at
 		ERROR with the method, the path and, where the target keeps one, the
