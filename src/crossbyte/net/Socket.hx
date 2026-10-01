@@ -1738,6 +1738,22 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		#end
 	}
 
+	/**
+		The runtime this socket's connection runs on: the one polling it
+		natively, the one flushing its writes on Node, the page's in a
+		browser. `__cbInstance` is set only natively, and a WebSocket's on
+		Node; read on its own, it was null on a Node client.
+	**/
+	@:noCompletion private inline function __runtime():Null<CrossByte> {
+		#if nodejs
+		return __nodeRuntime != null ? __nodeRuntime : __cbInstance;
+		#elseif (js && !nodejs)
+		return CrossByte.current();
+		#else
+		return __cbInstance;
+		#end
+	}
+
 	@:noCompletion private inline function __stopConnecting():Void {
 		if (__isConnecting && __cbInstance != null) {
 			__cbInstance.removeEventListener(TickEvent.TICK, __connectingTick);

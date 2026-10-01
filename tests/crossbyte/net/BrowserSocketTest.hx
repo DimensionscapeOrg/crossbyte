@@ -81,6 +81,48 @@ class BrowserSocketTest extends utest.Test {
 	}
 
 	/**
+		A `NetConnection` over a page's socket carries data. Its send stamped
+		the time from a field only a native connect sets, and threw a
+		TypeError in a page.
+	**/
+	@:timeout(15000)
+	public function testANetConnectionCarriesDataOverAPageSocket(async:Async):Void {
+		var port:Null<Int> = Std.parseInt(js.Browser.location.port);
+		if (port == null || port <= 0) {
+			Assert.warn("the page was not served by ci/browser/run.js, so there is no echo endpoint to reach");
+			async.done();
+			return;
+		}
+
+		var message:String = "netconnection-in-a-page";
+		var heard:String = "";
+		var failure:String = null;
+		var socket = new Socket();
+		var connection:NetConnection = NetConnection.fromSocket(socket);
+		connection.onData = input -> heard += input.readUTFBytes(input.bytesAvailable);
+		connection.onError = reason -> failure = Std.string(reason);
+		connection.onReady = function() {
+			var bytes = new crossbyte.io.ByteArray();
+			bytes.writeUTFBytes(message);
+			bytes.position = 0;
+			try {
+				connection.send(bytes);
+			} catch (e:Dynamic) {
+				failure = "send threw: " + Std.string(e);
+			}
+		};
+		connection.readEnabled = true;
+		socket.connect(js.Browser.location.hostname + "/" + ECHO_PATH, port);
+
+		NetPump.until(() -> heard.length >= message.length || failure != null, 5.0, function(_) {
+			Assert.isNull(failure, "the connection failed: " + failure);
+			Assert.equals(message, heard, "what the connection sent did not come back");
+			try connection.close() catch (_:Dynamic) {}
+			async.done();
+		});
+	}
+
+	/**
 		One socket connected to the echo endpoint: `before` runs ahead of
 		`connect()`, `after` once it has been called, and everything is
 		closed when `after` says it is finished.
