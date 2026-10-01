@@ -1029,6 +1029,82 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	public function testAnHttp2DownloadResetByItsClientLetsGoOfItsFile(async:Async):Void {
+		// The file pump resumes on its stream's writable callback, which a
+		// reset drops, and only the socket closing stopped it: a client
+		// resetting a large download left its file open, and its pump parked,
+		// for as long as the connection lived.
+		var held:HTTPRequestHandler = null;
+		var session = new H2Session(config -> {
+			__bigFile(config, 1024 * 1024);
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/big.bin") {
+						held = handler;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/big.bin", true);
+			session.until(() -> session.received(1) >= 65535 || session.ended, () -> {
+				var pumping:Bool = held != null && @:privateAccess held.__streaming;
+				session.reset(1);
+				session.until(() -> (held != null && !@:privateAccess held.__streaming) || session.ended, () -> {
+					session.request(3, "GET", "/index.html", true);
+					session.until(() -> session.finished(3) || session.ended, () -> {
+						session.close();
+						Assert.isTrue(pumping, "the download was not being pumped, so this shows nothing");
+						Assert.isFalse(@:privateAccess held.__streaming, "a reset download kept its file open");
+						Assert.equals(200, session.status(3));
+						async.done();
+					});
+				}, 2.0);
+			});
+		});
+	}
+
+	public function testAStalledHttp2DownloadIsEndedAtTheStallDeadline(async:Async):Void {
+		// The stall deadline -- 30 s without the client taking a byte -- was
+		// checked by the HTTP/1.1 sweep alone, so an HTTP/2 client that never
+		// opened its window held a file, and a pump, per stream, for good.
+		var held:HTTPRequestHandler = null;
+		var session = new H2Session(config -> {
+			__bigFile(config, 1024 * 1024);
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/big.bin") {
+						held = handler;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/big.bin", true);
+			session.until(() -> session.received(1) >= 65535 || session.ended, () -> {
+				// The sweep, as it would run once the deadline has passed.
+				var later:Float = haxe.Timer.stamp() + 31;
+				for (connection in @:privateAccess session.server.__activeHttp2) {
+					connection.checkDeadline(later);
+				}
+				session.until(() -> session.finished(1) || session.ended, () -> {
+					session.request(3, "GET", "/index.html", true);
+					session.until(() -> session.finished(3) || session.ended, () -> {
+						session.close();
+						Assert.isFalse(held == null || @:privateAccess held.__streaming, "a stalled download was not ended");
+						Assert.equals(2, session.resetCode(1), "the stalled stream was not reset");
+						Assert.equals(200, session.status(3), "the connection went with the stalled stream");
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
 	public function testALongPollOutlivesTheRequestTimeout(async:Async):Void {
 		// Every open stream counted as a request still arriving, so a long
 		// poll answered after requestTimeout found its connection closed with
@@ -1318,6 +1394,17 @@ class HTTPServerH2Test extends utest.Test {
 				}
 			});
 		});
+	}
+
+	/** Writes `size` patterned bytes to big.bin under the configuration's root, and answers its path. */
+	private static function __bigFile(config:HTTPServerConfig, size:Int):String {
+		var bytes:Bytes = Bytes.alloc(size);
+		for (i in 0...size) {
+			bytes.set(i, i & 0xFF);
+		}
+		var file = config.rootDirectory.resolvePath("big.bin");
+		file.save(ByteArray.fromBytes(bytes));
+		return file.nativePath;
 	}
 
 	/**
