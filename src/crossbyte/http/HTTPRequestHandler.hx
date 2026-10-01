@@ -3452,7 +3452,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __beginRequestBodyRead(onComplete:Void->Void):Bool {
-		__requestBody = new ByteArray();
+		// The fresh one the last response left (see __resetForNextRequest),
+		// while nothing has been written to it: another was made here for
+		// every request, a body or not.
+		if (__requestBody == null || __requestBody.length > 0) {
+			__requestBody = new ByteArray();
+		}
 		__requestBody.endian = __incomingBuffer.endian;
 
 		var transferEncoding:String = __headers.exists("transfer-encoding") ? __headers.get("transfer-encoding") : null;

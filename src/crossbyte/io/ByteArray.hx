@@ -753,6 +753,13 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	@:noCompletion private var __length:Int;
 
 	private function new(length:Int = 0) {
+		#if js
+		// Straight onto a new buffer, which JavaScript zeroes. Bytes.alloc made
+		// a Bytes and a view of its own only for this to make another over the
+		// same buffer: three objects for one, for every ByteArray, and an HTTP
+		// server on Node makes several a request.
+		super(new js.lib.ArrayBuffer(length));
+		#else
 		var bytes = Bytes.alloc(length);
 
 		#if sys
@@ -763,10 +770,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 		#if hl
 		super(bytes.getData(), length);
-		#elseif js
-		super(bytes.b.buffer);
 		#else
 		super(length, bytes.getData());
+		#end
 		#end
 
 		__length = length;
@@ -1251,6 +1257,33 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		position += length;
 	}
 
+	#if js
+	// A view's bytes appended at the end in one copy, the position left where
+	// it is. What a Node socket receives is a view of a pool Node shares; it
+	// was sliced into a buffer of its own, wrapped in a ByteArray, and copied
+	// again from that.
+	@:noCompletion private function __appendView(view:js.lib.Uint8Array):Void {
+		var count:Int = view.length;
+		if (count > 0) {
+			var at:Int = length;
+			__resize(at + count, at);
+			b.set(view, at);
+		}
+	}
+	#end
+
+	// All of `bytes` at the position, as writeBytes writes them, without the
+	// ByteArray writeBytes takes: one was made and dropped for every string
+	// written.
+	@:noCompletion private inline function __writeAll(bytes:Bytes):Void {
+		var count:Int = bytes.length;
+		if (count > 0) {
+			__resize(position + count, position);
+			blit(position, bytes, 0, count);
+			position += count;
+		}
+	}
+
 	public function writeDouble(value:Float):Void {
 		var int64 = FPHelper.doubleToI64(value);
 
@@ -1346,13 +1379,12 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		}
 
 		writeShort(bytes.length);
-		writeBytes(bytes);
+		__writeAll(bytes);
 	}
 
 	public function writeUTFBytes(value:String):Void {
 		// Through the platform's encoder on JavaScript; see Utf8.
-		var bytes = crossbyte._internal.Utf8.bytesOf(value);
-		writeBytes(bytes);
+		__writeAll(crossbyte._internal.Utf8.bytesOf(value));
 	}
 
 	@:keep public inline function writeVarInt(value:Int):Void {
