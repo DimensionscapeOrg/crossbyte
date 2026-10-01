@@ -1956,6 +1956,10 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `EOFError` keeps the message and id it is given, as its doc says; given
+  none, they are still Flash's "End of file was encountered" and 2030. It
+  replaced both whatever was passed, so `FileStream`'s account of what ran
+  out -- "Asked for 8 bytes with 3 left in the file" -- reached nobody.
 - `IDataInput` and `IDataOutput` describe CrossByte's defaults: values in
   the object's `endian`, which for a `ByteArray` and the sockets starts as
   `ByteArray.defaultEndian`, little-endian unless changed, and objects in
