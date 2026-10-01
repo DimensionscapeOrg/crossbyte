@@ -248,6 +248,12 @@ class ReliableDatagramSocketTest extends utest.Test {
 	**/
 	public function testADiscoveryTimeoutOfZeroAsksForTheDefaultAndSaysSo():Void {
 		if (!requireDatagramSupport()) return;
+		// No question is asked without a secure source for its transaction
+		// id: on neko and hl it is refused at once, before any timeout.
+		if (!crossbyte.crypto.SecureRandom.isSupported) {
+			Assert.isFalse(crossbyte.crypto.SecureRandom.isSupported);
+			return;
+		}
 
 		// A socket that takes the question and never answers it.
 		var silent = new DatagramSocket();
