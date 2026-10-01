@@ -764,6 +764,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 				if (sockets.others != null && sockets.others[0] == __socket) {
 					reason = crossbyte._internal.net.NativeSocketAddress.connectError(__socket);
 				}
+				#elseif (java || jvm)
+				reason = (cast __socket : sys.net.Socket).__connectFailure;
 				#end
 				__onError(reason != null ? "Failed to connect to server: " + reason : "Failed to connect to server");
 				__close(1006);
