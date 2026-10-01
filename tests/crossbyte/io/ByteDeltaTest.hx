@@ -176,7 +176,7 @@ class ByteDeltaTest extends utest.Test {
 	private static function craft(varints:Array<Int>, ?tail:Array<Int>):ByteArray {
 		var bytes = new ByteArray();
 		for (value in varints) {
-			bytes.writeVarInt(value);
+			bytes.writeVarUInt(value);
 		}
 		if (tail != null) {
 			for (value in tail) {
