@@ -1073,10 +1073,12 @@ All notable changes to CrossByte will be documented in this file.
   default level, where they came from the Deflater written in Haxe. 64 KB
   of JSON took 743 microseconds and came to 8.3 KB; it takes about 235 and
   comes to 6.0 KB, as Node's zlib writes it. A native server answering
-  gzip for that page serves 3,655 a second where it served 1,264. The
-  streaming encoder behind a chunked response is still the Haxe Deflater,
-  which can flush a chunk at a time. CRC-32 runs eight bytes a step, four
-  times as fast on every target.
+  gzip for that page serves 3,655 a second where it served 1,264. A
+  response compressed as it streams comes from the same zlib, flushed
+  after each write so the client can inflate it as it arrives: that page
+  streamed as gzip in eight writes serves 3,560 a second where it served
+  1,330, and comes to 5.8 KB where it came to 8.4. CRC-32 runs eight bytes
+  a step, four times as fast on every target.
 - A body the HTTP server encodes for one response goes as gzip before
   Brotli when the client takes both equally, as every browser's
   `Accept-Encoding` does, unless Brotli is native (`crossbyte-brotli` with
