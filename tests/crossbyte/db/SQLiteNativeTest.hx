@@ -1303,6 +1303,48 @@ class SQLiteNativeTest extends utest.Test {
 		connection.close();
 	}
 
+	public function testWorkAskedOfAWorkerThatHasStoppedIsRefusedAtOnce():Void {
+		// An asynchronous open that fails stops the worker, which tells what
+		// was queued behind it that it will not run -- but the calling thread
+		// learns of the failure only when its event is dispatched. A call
+		// made in between waited out queueTimeout for a worker that was gone,
+		// and a statement executed then never answered at all.
+		var missing:String = Path.join([Sys.getCwd(), "export", "sqlite-native-absent-" + Std.random(0x7FFFFFFF), "db.sqlite"]);
+		var connection:SQLiteConnection = new SQLiteConnection();
+		var failures:Int = 0;
+		connection.addEventListener(SQLErrorEvent.ERROR, _ -> failures++);
+		connection.queueTimeout = 3;
+		connection.openAsync(missing, SQLiteMode.CREATE, false, 4096);
+		// Time for the open to fail and the worker to stop, with nothing
+		// pumped: the failure waits, undispatched.
+		crossbyte.sys.System.sleep(0.3);
+
+		var asked:Float = haxe.Timer.stamp();
+		Assert.raises(() -> connection.foreignKeys, IllegalOperationError);
+		var took:Float = haxe.Timer.stamp() - asked;
+		Assert.isTrue(took < 1, 'the call waited $took s for a worker that had stopped');
+
+		var statement:SQLiteStatement = new SQLiteStatement();
+		statement.sqlConnection = connection;
+		statement.text = "SELECT 1";
+		Assert.raises(() -> statement.execute(), IllegalOperationError);
+		Assert.isFalse(statement.executing);
+
+		// close() and cancel() have nothing to do, and the open's failure is
+		// still heard; then it opens again.
+		connection.cancel();
+		connection.close();
+		__pumpUntil(() -> failures > 0);
+		Assert.equals(1, failures);
+		var opened:Bool = false;
+		connection.addEventListener(SQLEvent.OPEN, _ -> opened = true);
+		connection.openAsync(null, SQLiteMode.CREATE, false, 4096);
+		__pumpUntil(() -> opened);
+		Assert.isTrue(opened);
+		connection.close();
+		__pumpUntil(() -> false, 0.2);
+	}
+
 	public function testCodeTheWorkerRunsCanAskTheConnection():Void {
 		// An itemClass is made on the worker, and its setters run there: one
 		// that asks the connection is answered at once, rather than queued

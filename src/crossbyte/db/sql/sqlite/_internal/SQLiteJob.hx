@@ -7,6 +7,7 @@ import crossbyte.events.Event;
 import crossbyte.events.SQLErrorEvent;
 import sys.db.ResultSet;
 #if !php
+import sys.thread.Deque;
 import sys.thread.Lock;
 import sys.thread.Mutex;
 #end
@@ -49,6 +50,23 @@ class SQLiteJob {
 		statementEpoch = statement != null ? @:privateAccess statement.__cancels : 0;
 	}
 }
+
+#if !php
+/**
+	One worker's queue, and whether that worker has stopped taking work from
+	it: set before its last pass over what is left there, so that work asked
+	for afterwards is refused where it is asked for, and a call waiting on it
+	stops waiting. One per worker, so one stopping as the next starts cannot
+	mark the next stopped, nor take its work.
+**/
+@:noCompletion
+class SQLiteQueue {
+	public var jobs(default, null):Deque<SQLiteJob> = new Deque();
+	public var gone:Bool = false;
+
+	public function new() {}
+}
+#end
 
 /**
 	A call the calling thread makes of an asynchronous connection and waits
@@ -120,41 +138,31 @@ class SQLiteCall {
 	}
 
 	/**
-		On the caller: waits for the answer, up to `timeout` seconds for the
-		call to start -- `0` for no limit. A call that has started is waited
-		for to its end: it is the caller's own work, and runs as long as it
-		would on a synchronous connection. Answers `false` when it had not
-		started, and is withdrawn: it will not run.
+		On the caller: waits up to `seconds` for the call to be done, or
+		without limit for a negative number, and answers whether it is. Whole
+		milliseconds: hxcpp spins out the fraction of one.
 	**/
-	public function await(timeout:Float):Bool {
+	public function waitDone(seconds:Float):Bool {
 		#if !php
-		if (timeout <= 0) {
+		if (seconds < 0) {
 			__done.wait();
 			return true;
 		}
 
-		// Whole milliseconds: hxcpp spins out the fraction of one.
-		if (__done.wait(Math.max(0.001, Math.ffloor(timeout * 1000) / 1000))) {
-			return true;
-		}
-
-		__guard.acquire();
-		var started:Bool = __state != WAITING;
-
-		if (!started) {
-			__state = WITHDRAWN;
-		}
-
-		__guard.release();
-
-		if (started) {
-			__done.wait();
-		}
-
-		return started;
+		return __done.wait(Math.max(0.001, Math.ffloor(seconds * 1000) / 1000));
 		#else
 		return true;
 		#end
+	}
+
+	/**
+		On the caller: withdraws the call when the worker has not taken it
+		up -- it will not run -- and answers whether it did. A call that has
+		started is the caller's own work, and is waited for to its end, as on
+		a synchronous connection.
+	**/
+	public function withdraw():Bool {
+		return __take(WITHDRAWN);
 	}
 
 	/** Moves a waiting call to `state`; false when its caller withdrew it. **/
