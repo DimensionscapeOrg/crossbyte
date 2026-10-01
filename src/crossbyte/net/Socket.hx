@@ -2383,6 +2383,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				if (failure == null) {
 					failure = crossbyte._internal.net.NativeSocketAddress.connectError(__socket);
 				}
+				#elseif ((java || jvm) && !macro)
+				if (failure == null) {
+					failure = __socket.__connectFailure;
+				}
 				#end
 			}
 		}
