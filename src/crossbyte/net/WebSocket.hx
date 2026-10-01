@@ -344,6 +344,18 @@ class WebSocket extends Socket {
 		return __idleTimeout;
 	}
 
+	/**
+		Connects to the WebSocket server at `host` and `port`: `ws://`, or
+		`wss://` when `secure` is set. `host` may carry a path, as in
+		`"example.com/chat"`, and may be an IPv6 literal.
+
+		`timeout` bounds the whole of it, from this call to `connect`: the
+		host's lookup, the TCP connect, a `wss://` TLS handshake and the
+		upgrade together. `0` waits for as long as it takes.
+
+		@throws SecurityError The port is outside 0-65535.
+		@throws IOError The host is not one a URL can name.
+	**/
 	override public function connect(host:String, port:Int):Void {
 		if (__webSocket != null) {
 			close();
@@ -382,8 +394,8 @@ class WebSocket extends Socket {
 
 		__webSocket = new crossbyte._internal.websocket.WebSocket(schema + "://" + crossbyte._internal.websocket.WebSocketHost.forUrl(__webHost) + ":"
 			+ port + "/" + __webPath, protocols, null, verifyCert, certAuthority);
-		// `timeout` bounds the connection and the upgrade after it, as it
-		// bounds a plain socket's connect. The session used a fixed ten
+		// `timeout` bounds the connection and the upgrade after it, as one
+		// deadline from here; see connect's doc. The session used a fixed ten
 		// seconds of its own and never waited on the upgrade at all.
 		__webSocket.connectTimeout = timeout;
 		__webSocket.maxOutputBufferSize = __maxOutputBufferSize;
