@@ -196,11 +196,6 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	public var remotePort(get, never):Int;
 
 	/**
-		The socket timeout, in milliseconds, applied to the underlying UDP socket.
-	**/
-	public var timeout(get, set):Int;
-
-	/**
 		How many bytes of arriving datagrams the operating system holds for
 		this socket until they are read. Past it, what arrives is dropped.
 
@@ -340,7 +335,6 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	@:noCompletion private var __peerHeld:Array<HeldDatagram> = null;
 	@:noCompletion private var __connects:Int = 0;
 	#end
-	@:noCompletion private var __timeout:Int = 20000;
 
 	/**
 		Creates a new `DatagramSocket`.
@@ -1467,7 +1461,6 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		try {
 			__socket.setFastSend(true);
 		} catch (_:Dynamic) {}
-		__socket.setTimeout(__timeout / 1000);
 		__socket.custom = this;
 		__closed = false;
 	}
@@ -1558,10 +1551,6 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		return __remotePort;
 	}
 
-	@:noCompletion private inline function get_timeout():Int {
-		return __timeout;
-	}
-
 	@:noCompletion private inline function set_endian(value:Endian):Endian {
 		return __endian = value;
 	}
@@ -1645,23 +1634,6 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		#else
 		throw new IllegalOperationError('This target cannot size a socket\'s $which buffer: check DatagramSocket.bufferSizeSupported.');
 		#end
-	}
-
-	@:noCompletion private function set_timeout(value:Int):Int {
-		if (value < 0) {
-			throw new RangeError("Invalid socket timeout specified.");
-		}
-
-		__timeout = value;
-		#if !nodejs
-		// A read timeout is a property of a blocking read, and Node has none:
-		// a datagram is delivered when it arrives or not at all. The value is
-		// still kept, so reading `timeout` back gives what was set.
-		if (__socket != null) {
-			__socket.setTimeout(value / 1000);
-		}
-		#end
-		return value;
 	}
 }
 

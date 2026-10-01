@@ -76,8 +76,19 @@ entry below says how:
   `ThreadEvent.UPDATE` are gone.
 - `BCrypt.hash` makes `$2b$` hashes, and Postgres, MySQL and MongoDB
   statements throw what the server refused.
+- `ReliableDatagramSocket.close()` is graceful: its `close` event comes
+  once the peer has acknowledged everything, not during the call, and
+  `abort()` is the old immediate close. Its FIN holds a place in the
+  sequence, which a peer from before 1.0 does not know, so both ends need
+  1.0 for what was sent before a close to arrive before it.
+- `DatagramSocket.timeout` is gone; it did nothing, so delete what sets it.
 
 ### Added
+- `ReliableDatagramServerSocket.relayVerifyCert`, for a TURN relay reached
+  over TLS whose certificate should not be checked -- a test against a
+  throwaway one. The server passed its relay client an authority
+  (`relayCertAuthority`) and nothing else, so `TurnClient.verifyCert`
+  could not be reached.
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
   `DETACH DATABASE`, and `loadSchema()` with `getSchemaResult()`: a
   database's tables with their columns, views, indices and triggers.
@@ -1132,6 +1143,10 @@ entry below says how:
 - accepted `wss://` sessions now run the deferred, timeout-guarded TLS handshake the client path already used; previously a server-side handshake happened implicitly on first read with no bound, so a peer that completed TCP then stalled mid-TLS held the socket indefinitely (`docs/proposals/0012-websocket-tls-handshake.md`)
 
 ### Removed
+- `DatagramSocket.timeout`. It set a read timeout on the socket underneath,
+  which never blocks -- every read waits on the registry's poll, and
+  Node's datagram socket has no timeout at all -- so it changed nothing on
+  any target.
 - `ThreadEvent.UPDATE`. Nothing dispatched it, and no worker or task had
   anything it could have meant; `PROGRESS` carries a worker's messages.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
@@ -1932,6 +1947,51 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A reliable session given a new `congestionControl` while messages wait
+  for the window sends them first. They stayed queued until an
+  acknowledgement drained them -- none came with nothing in flight --
+  and the next message, finding room under the new policy, went out
+  ahead of them, so a `RELIABLE` message arrived before ones sent earlier.
+- `ReliableDatagramServerSocket.discoverPublicAddress` and
+  `localAddressFor` say what they do with a question they cannot ask:
+  return it failed, its `cause` an `IOError` for a server not bound and
+  listening, as `allocateRelay` does. They said they threw, so a caller
+  catching the throw never heard of the failure.
+- `ReliableDatagramSocket.readMultiByte` and `writeMultiByte` say they
+  read and write UTF-8 and ignore the character set named, as
+  `ByteArray`'s already do; they promised the named set.
+- `DeliveryMode.RELIABLE` and `ReliableDatagramSocket.send()` say how
+  large a reliable message can be: as large as the receiving session's
+  `maxMessageSize`, eight megabytes unless changed, past which the
+  receiver ends the session with an `ioError` and both sides close. They
+  said "however large" and "of any size".
+- `ReliableDatagramServerSocket.connect()` says what a dialled session
+  does: it dispatches `Event.CONNECT` itself when its handshake completes.
+  The documentation promised the server's
+  `ReliableDatagramSocketConnectEvent.CONNECT` "exactly as an accepted one
+  is", which never came -- the caller holds the session already -- so code
+  waiting on it waited for good.
+- A `ReliableDatagramSocket` whose `timeout` is zero has no deadline: it
+  goes on trying until the peer answers or it is closed, as a `Socket` on
+  Node does. It set a timer of zero, which gave the attempt up at the
+  first pass, by address and by name alike.
+- `ReliableDatagramSocket.close()` delivers what was sent before it. It
+  sent the frames gathered in the pass and a FIN, and let the rest go:
+  frames the congestion window was holding back, frames lost and waiting
+  to be sent again, and in `STREAM` mode bytes written and not flushed.
+  The FIN carried no sequence, so the receiver closed the moment it came,
+  dropping whatever it held past a gap, and a FIN that overtook a lost
+  frame took the frame with it: a client writing 300 messages and closing
+  at once had 10 of them heard. Now the close waits for the peer to
+  acknowledge everything, sending again what is lost, with a FIN that
+  holds the next place in the sequence behind it; the peer dispatches its
+  `close` only once all of it has been delivered, and this side's follows
+  when the peer has acknowledged it. A peer that acknowledges nothing for
+  `closeTimeout` seconds, ten unless changed, is given up, with an
+  `ioError` if more than the FIN went unacknowledged. `abort()` ends a
+  session at once, as `close()` did. A server's own `close()` and
+  `releaseRelay()` end their sessions that way, and so do a message past
+  `maxMessageSize` and an output queue past its limit.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened

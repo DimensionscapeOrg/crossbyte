@@ -37,6 +37,21 @@ class DatagramSocketTest extends utest.Test {
 	}
 
 	/**
+		There is no read timeout to set. A datagram socket never blocks --
+		every read waits on the registry's poll, and Node's socket has no
+		timeout at all -- so the one `timeout` set on the socket underneath
+		had nothing to time, on any target. It went rather than stay a
+		setting that changed nothing.
+	**/
+	public function testThereIsNoReadTimeoutToSet():Void {
+		var fields:Array<String> = Type.getInstanceFields(DatagramSocket);
+		Assert.isTrue(fields.indexOf("bind") >= 0, "the class's fields cannot be read here: " + fields.length);
+		for (name in ["timeout", "get_timeout", "set_timeout"]) {
+			Assert.equals(-1, fields.indexOf(name), name + " is still there");
+		}
+	}
+
+	/**
 		A port one datagram socket holds is not given to another. hxcpp set
 		SO_REUSEADDR on every socket it bound, and on Linux two datagram
 		sockets that both set it may share a port: a bind to port 0 handed out

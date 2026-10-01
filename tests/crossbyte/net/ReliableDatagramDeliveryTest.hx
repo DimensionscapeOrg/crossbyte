@@ -151,6 +151,18 @@ class ReliableDatagramDeliveryTest extends utest.Test {
 		Assert.equals(1, errors.length);
 		Assert.isTrue(errors.length == 1 && errors[0].indexOf("maxMessageSize") >= 0, errors.join("; "));
 		Assert.isFalse(pair.receiver.connected);
+
+		// And the sender is told the session is over, at once: it closes,
+		// with no error of its own, as `DeliveryMode.RELIABLE` says.
+		var senderErrors:Int = 0;
+		var senderClosed:Bool = false;
+		pair.sender.addEventListener(IOErrorEvent.IO_ERROR, _ -> senderErrors++);
+		pair.sender.addEventListener(crossbyte.events.Event.CLOSE, _ -> senderClosed = true);
+		for (frame in pair.receiver.take()) {
+			pair.sender.__acceptFrame(frame);
+		}
+		Assert.isTrue(senderClosed, "the sender of a message too large was never told");
+		Assert.equals(0, senderErrors);
 		pair.close();
 	}
 
@@ -204,6 +216,29 @@ class ReliableDatagramDeliveryTest extends utest.Test {
 		none.carry(none.sender.take());
 		Assert.same([9000], [for (m in none.received) m.length], "zero is no limit");
 		none.close();
+	}
+
+	/**
+		A stream's multi-byte strings are UTF-8 whatever character set is
+		named, as the socket's documentation now says; it promised the named
+		set, as AIR's did, and never used it.
+	**/
+	public function testAStreamsMultiByteStringsAreUtf8WhateverCharsetIsNamed():Void {
+		var pair = Pair.make();
+		if (pair == null) return;
+
+		pair.sender.__mode = STREAM;
+		pair.receiver.__mode = STREAM;
+		var text:String = "héllo, 世界";
+		pair.sender.writeMultiByte(text, "shift-jis");
+		pair.sender.flush();
+		pair.carry(pair.sender.take());
+
+		var utf8 = new ByteArray();
+		utf8.writeUTFBytes(text);
+		Assert.equals(utf8.length, pair.receiver.bytesAvailable, "the string was not written as UTF-8");
+		Assert.equals(text, pair.receiver.readMultiByte(pair.receiver.bytesAvailable, "iso-8859-1"), "the bytes were not read as UTF-8");
+		pair.close();
 	}
 
 	// ---------------------------------------------------------- unreliable
@@ -473,10 +508,10 @@ private class RecordingSocket extends ReliableDatagramSocket {
 	}
 
 	override private function __sendFrame(type:ReliableDatagramFrameType, sequence:crossbyte.Seq32, payload:ByteArray, offset:Int, length:Int,
-			resend:Bool, ack:Null<crossbyte.Seq32>, more:Bool):Void {
+			resend:Bool, ack:Null<crossbyte.Seq32>, more:Bool, graceful:Bool = false):Void {
 		var frame = new ByteArray();
 		frame.length = ReliableDatagramProtocol.MAX_FRAME_SIZE;
-		frame.length = ReliableDatagramProtocol.encodeInto(frame, type, sequence, payload, offset, length, resend, ack, more);
+		frame.length = ReliableDatagramProtocol.encodeInto(frame, type, sequence, payload, offset, length, resend, ack, more, 0, graceful);
 		__recorded.push(frame);
 	}
 }

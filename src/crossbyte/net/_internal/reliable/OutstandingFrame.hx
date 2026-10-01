@@ -34,6 +34,13 @@ class OutstandingFrame {
 	**/
 	public var sacked:Bool = false;
 
+	/**
+		Whether this is the graceful FIN `close()` sends rather than a
+		PACKET: the last frame of the sequence, with no payload, sent and sent
+		again as the frames before it are, and so acknowledged in order.
+	**/
+	public var fin:Bool = false;
+
 	public function new(payload:ByteArray, sentAt:Float, deadline:Float, more:Bool = false) {
 		this.payload = payload;
 		this.sentAt = sentAt;
