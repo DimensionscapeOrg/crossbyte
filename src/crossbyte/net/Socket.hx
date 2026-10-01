@@ -2109,10 +2109,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private function socket_onMessage(msg:Dynamic):Void {
+		// bytesLoaded is what arrived, as natively, where it was everything
+		// still unread: one event said 3 and the next 7 for the same 4 bytes,
+		// on Node and in a page alone.
 		#if (js && !nodejs)
 		if (__input.position == __input.length) {
 			__input.clear();
 		}
+		var before:Int = __input.length;
 
 		if ((msg.data is String)) {
 			__input.position = __input.length;
@@ -2124,8 +2128,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			newData.readBytes(__input, __input.length);
 		}
 
-		if (__input.bytesAvailable > 0) {
-			__dispatchPooledSocketData(__input.bytesAvailable, 0);
+		var arrived:Int = __input.length - before;
+		if (arrived > 0) {
+			__dispatchPooledSocketData(arrived, 0);
 		}
 		#elseif nodejs
 		if (__input.position == __input.length) {
@@ -2139,8 +2144,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		var chunk:Uint8Array = cast msg;
 		@:privateAccess (__input : ByteArrayData).__appendView(chunk);
 
-		if (__input.bytesAvailable > 0) {
-			__dispatchPooledSocketData(__input.bytesAvailable, 0);
+		if (chunk.length > 0) {
+			__dispatchPooledSocketData(chunk.length, 0);
 		}
 		#end
 	}
