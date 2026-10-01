@@ -475,6 +475,42 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		}
 	}
 
+	/**
+		The same for readBytes into a destination past its end: the gap before
+		the offset is zeroed, the old contents of a destination cut short do
+		not show through it, and what is read lands whole. Only the gap is
+		zeroed now, the bytes read cover the rest, where everything grown
+		was zeroed and then written.
+	**/
+	public function testReadBytesPastTheEndZeroesOnlyTheGap():Void {
+		var ba = new ByteArray();
+
+		for (_ in 0...4096) {
+			ba.writeByte(0xC5);
+		}
+
+		ba.length = 4;
+
+		var source = new ByteArray();
+
+		for (i in 0...16) {
+			source.writeByte((i * 5 + 1) & 0xFF);
+		}
+
+		source.position = 0;
+		source.readBytes(ba, 64, 16);
+
+		Assert.equals(80, ba.length);
+
+		for (i in 4...64) {
+			Assert.equals(0, ba[i], "byte " + i + " of the gap was not zeroed");
+		}
+
+		for (i in 0...16) {
+			Assert.equals((i * 5 + 1) & 0xFF, ba[64 + i], "what was read did not land intact");
+		}
+	}
+
 	public function testWritingPastTheEndZeroesTheGap():Void {
 		var payload = new ByteArray();
 		for (i in 0...256) {
