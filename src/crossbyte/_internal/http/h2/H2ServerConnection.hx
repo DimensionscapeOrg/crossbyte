@@ -947,8 +947,6 @@ class H2ServerConnection {
 		}
 		request.startedAt = target.openedAt;
 		target.request = request;
-		// Read into the request; nothing reads them from here again.
-		target.headers = [];
 
 		if (!onRequestHead(request)) {
 			// Answered, or turned away, before its body. What arrives of it is
