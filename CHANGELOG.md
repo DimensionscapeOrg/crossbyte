@@ -2160,6 +2160,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A WebSocket `NetConnection` whose connect or idle deadline passes ends
+  as `Reason.Timeout`, as a TCP or reliable one does: `WebSocket`
+  dispatches those `ioError`s with `IOErrorEvent.TIMEOUT_ERROR_ID`. They
+  carried no id, so `onError` and `onClose` heard `Reason.Error` with the
+  time in its text.
 - A `Socket`'s `localAddress`, `localPort`, `remoteAddress` and
   `remotePort` read null and 0 while it has no such end, before
   `connect()`, after `close()`, and on the jvm, hl and neko while a
