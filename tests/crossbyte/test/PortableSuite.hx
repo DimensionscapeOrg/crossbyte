@@ -87,10 +87,24 @@ class PortableSuite {
 		// Empty wherever there are threads; on Node, an async write refused.
 		runner.addCase(new crossbyte.io.FileStreamAsyncRefusalTest());
 		runner.addCase(new crossbyte.net.SocketCloseTest());
+		// An object written and read with the encoding a socket starts in.
+		runner.addCase(new crossbyte.net.SocketObjectTest());
+		// What Socket's documentation promises: ranges, ports, timeouts, close.
+		runner.addCase(new crossbyte.net.SocketContractTest());
 		// A connection replaced, whose socket still reports on Node.
 		runner.addCase(new crossbyte.net.SocketReconnectTest());
 		runner.addCase(new crossbyte.net.NameLookupTest());
 		runner.addCase(new crossbyte.net.ServerSocketAcceptTest());
+		// A listen that fails, and a TLS listener's handshakes, on Node.
+		runner.addCase(new crossbyte.net.ServerSocketListenTest());
+		// What printing a key shows, which on Node was all of it.
+		runner.addCase(new crossbyte.net.KeyTest());
+		// A NetConnection dialled over TCP, and an RPC call over one.
+		runner.addCase(new crossbyte.net.NetConnectionTcpTest());
+		// How a NetConnection ends, told once, the same over each transport.
+		runner.addCase(new crossbyte.net.NetConnectionLifecycleTest());
+		// A wss:// NetHost given its certificate.
+		runner.addCase(new crossbyte.net.NetHostTLSTest());
 		#end
 		// A page's Socket against the echo endpoint ci/browser/run.js serves.
 		// The browser only: it is the one target where a Socket is a WebSocket.

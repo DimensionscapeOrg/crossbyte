@@ -155,22 +155,32 @@ final class ConcurrencyLimiter {
 	 * unit behind a waiting request belongs to that request once enough
 	 * else is returned.
 	 *
+	 * What it decides for waiters on the way, a refusal at its deadline,
+	 * is delivered before any capacity is taken, so a callback that throws
+	 * there leaves nothing held by this call.
+	 *
 	 * @return A held permit, or `null` if the capacity is not there.
 	 */
 	public function tryAcquire(cost:Int = 1):Null<ConcurrencyPermit> {
 		__requireCost(cost);
 
-		var permit:ConcurrencyPermit = null;
-		if (!closed && cost <= __limit) {
-			__settle(__clock());
-
-			if (queued == 0 && inFlight + cost <= __limit) {
-				permit = new ConcurrencyPermit(this, cost, ConcurrencyPermit.HELD);
-				inFlight += cost;
-			}
+		if (closed || cost > __limit) {
+			__deliver();
+			return null;
 		}
 
+		// What the sweep decides is delivered before anything is taken. It
+		// was delivered after: a callback that threw carried its exception
+		// out of here with the permit just made, which held its capacity
+		// and was never handed to anyone who could release it.
+		__settle(__clock());
 		__deliver();
+
+		var permit:ConcurrencyPermit = null;
+		if (!closed && queued == 0 && inFlight + cost <= __limit) {
+			permit = new ConcurrencyPermit(this, cost, ConcurrencyPermit.HELD);
+			inFlight += cost;
+		}
 		return permit;
 	}
 

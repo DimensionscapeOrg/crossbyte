@@ -29,8 +29,10 @@ import crossbyte._internal.socket.IPollableSocket;
 #if cpp
 import crossbyte._internal.socket.AlpnSocket;
 #end
+import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IllegalOperationError;
 import crossbyte.errors.IOError;
+import crossbyte.errors.RangeError;
 import crossbyte.errors.SecurityError;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
@@ -51,6 +53,24 @@ import sys.net.Socket as SysSocket;
 /**
 	High-level TCP socket with binary read/write helpers, event dispatch, and
 	CrossByte runtime integration.
+
+	What a connection dispatches, once each where it says so:
+
+	- `connect` once it is up (and, for a `secure` one, its TLS handshake
+	  done).
+	- `ioError` for a connect that failed, refused, a name that does not
+	  resolve, a handshake that failed, or not made within `timeout`, whose
+	  event's `errorID` is then `IOErrorEvent.TIMEOUT_ERROR_ID`, and nothing
+	  after it, since no connection came up: no `close` follows, as in AIR.
+	  Once connected, for a write that failed; the connection's `close`
+	  follows.
+	- `close` once, when a connection that came up ends, whichever end ended
+	  it, `close()` included, after any data that arrived with the end.
+	- `peerClose` when the peer stops sending and `peerShutdownPolicy` is
+	  `HALF_OPEN`.
+@event close    Dispatched once when a connection that came up ends, from either end.
+@event connect  Dispatched when the connection is up.
+@event ioError  Dispatched when a connect fails, or a write on a connection fails.
 **/
 #if !debug
 @:fileXml('tags="haxe,release"')
@@ -128,7 +148,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	public var localPort(get, never):Int;
 
 	/**
-		Controls the version of AMF used when writing or reading an object.
+		Which serialization format `readObject` and `writeObject` use, a
+		constant from `ObjectEncoding`: `ObjectEncoding.DEFAULT` (HXSF) when
+		the socket is made, accepted ones included. `JSON` is always
+		available too; `AMF0` and `AMF3` only on a build with `-lib format`.
 	**/
 	public var objectEncoding:ObjectEncoding;
 
@@ -224,6 +247,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		Indicates the number of milliseconds to wait for a connection.
 		If the connection doesn't succeed within the specified time, the
 		connection fails. The default value is 20,000 (twenty seconds).
+
+		0 means no deadline: the connect is waited on for as long as the
+		system keeps trying, on every target. (It failed every native connect
+		at once, where on Node it meant no deadline.)
 
 		It counts a secure connection's TLS handshake, and a name's lookup,
 		with the connect. Not kept in a browser, whose WebSocket has its own.
@@ -580,6 +607,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		super();
 
 		endian = ByteArray.defaultEndian;
+		// It was never set: 0 natively and on the jvm, which is AMF0 and
+		// throws without -lib format, and null elsewhere, which throws too,
+		// so readObject and writeObject threw until an application chose.
+		objectEncoding = ObjectEncoding.DEFAULT;
 		timeout = 20000;
 		__connected = false;
 		__closed = false;
@@ -587,8 +618,13 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		// 65535 inclusive, which is what connect() accepts. This read
 		// `port < 65535`, so the highest valid TCP port was the one port
-		// number for which the constructor quietly declined to connect.
-		if (port > 0 && port <= 65535) {
+		// number for which the constructor quietly declined to connect,
+		// and any port out of range was declined as quietly, where the
+		// SecurityError above was promised.
+		if (port < 0 || port > 65535) {
+			throw new SecurityError("Invalid socket port number specified.");
+		}
+		if (port > 0) {
 			connect(host, port);
 		}
 	}
@@ -596,8 +632,18 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	/**
 		Closes the socket. You cannot read or write any data after the
 		`close()` method has been called.
-		The `close` event is dispatched only when the server closes the
-		connection; it is not dispatched when you call the `close()` method.
+
+		The `close` event is dispatched for it, before this returns, if the
+		connection had come up, once, as for a close by the peer, so code
+		that lets go of a connection's resources on `close` does so whichever
+		end closed it. AIR dispatches `close` only for the peer's close;
+		CrossByte dispatches it for every end of a connection. A connect still
+		under way is abandoned, with no event.
+
+		What was written and not yet sent goes first, as far as the system
+		takes it without waiting; to know all of it reached the network,
+		close once `bytesPending` is 0 (see `OutputProgressEvent`).
+
 		You can reuse the Socket object by calling the `connect()` method on
 		it again.
 		@throws IOError The socket could not be closed, or the socket was not
@@ -610,6 +656,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// that releases per-connection resources on CLOSE (e.g. HTTPServer's
 			// connection counter) leaks every time it closes a socket itself.
 			var wasConnected:Bool = __connected;
+			if (wasConnected && !__discardOnClose) {
+				__sendBeforeClose();
+			}
 			__cleanSocket();
 			if (wasConnected) {
 				__announceClose();
@@ -620,13 +669,34 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	/**
+		What was written goes before the connection closes, as far as the
+		system takes it now. Every write is sent at the end of the pass on its
+		own, and a close() in the same pass came first: what was written just
+		before it was thrown away, on every target.
+	**/
+	@:noCompletion private function __sendBeforeClose():Void {
+		if (__output == null || __output.length <= __outputSent) {
+			return;
+		}
+		try {
+			// Asked now even when a retry is queued: that retry finds the
+			// socket gone.
+			flushFull = false;
+			flush();
+		} catch (_:Dynamic) {
+			// A peer gone already takes nothing, and the close goes on.
+		}
+	}
+
+	/**
 		Connects the socket to the specified host and port.
 
 		The outcome is reported by an event, not by this call returning. If the
 		socket is already connected, the existing connection is closed first.
 
 		A host that cannot be resolved is reported as an `ioError` event rather
-		than thrown, so a listener is the only way to see it.
+		than thrown, so a listener is the only way to see it. A connect that
+		fails is reported by `ioError` alone; no `close` follows it.
 
 		A name is looked up off the runtime's thread, so nothing else on the
 		runtime waits on the resolver, and `timeout` counts the lookup as part
@@ -1000,7 +1070,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// loop, where a listener that threw would end the process.
 			try {
 				__dispatchPooledIOError("Connection failed: " + __host + (secure ? " was not connected over TLS within " : " was not connected within ")
-					+ limit + " ms");
+					+ limit + " ms", IOErrorEvent.TIMEOUT_ERROR_ID);
 			} catch (e:Dynamic) {
 				__contain(e, IOErrorEvent.IO_ERROR);
 			}
@@ -1016,13 +1086,19 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	#end
 
 	/**
-		Flushes any accumulated data in the socket's output buffer.
-		On some operating systems, flush() is called automatically between
-		execution frames, but on other operating systems, such as Windows, the
-		data is never sent unless you call `flush()` explicitly. To ensure
-		your application behaves reliably across all operating systems, it is
-		a good practice to call the `flush()` method after writing each
-		message (or related group of data) to the socket.
+		Sends what has been written and not yet sent, now.
+
+		There is no need to call it for data to go. Every write is sent by
+		the runtime on its own, on every target and operating system,
+		natively the next time the runtime services its sockets, which its
+		own loop does within the frame, and on Node at the end of the pass,
+		with the writes made meanwhile sent together. `flush()` sends straight
+		away instead, for a caller that wants the bytes handed to the system
+		before it goes on. Natively what the system will not take yet waits,
+		and goes as it makes room; `bytesPending` says how much is left.
+
+		A `WebSocket` is the exception: its writes go as a message only when
+		it is flushed.
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
@@ -1312,24 +1388,13 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	/**
-		Reads a multibyte string from the byte stream, using the specified
-		character set.
+		Reads `length` bytes from the socket and decodes them as UTF-8.
 		@param length  The number of bytes from the byte stream to read.
-		@param charSet The string denoting the character set to use to
-					   interpret the bytes. Possible character set strings
-					   include `"shift_jis"`, `"CN-GB"`, and `"iso-8859-1"`.
-					   For a complete list, see <a
-					   href="../../charset-codes.html">Supported Character
-					   Sets</a>.
-					   **Note:** If the value for the `charSet` parameter is
-					   not recognized by the current system, then the
-					   application uses the system's default code page as the
-					   character set. For example, a value for the `charSet`
-					   parameter, as in `myTest.readMultiByte(22,
-					   "iso-8859-01")` that uses `01` instead of `1` might
-					   work on your development machine, but not on another
-					   machine. On the other machine, the application will use
-					   the system's default code page.
+		@param charSet Accepted for source compatibility and **ignored**. No
+					   character set conversion happens: the bytes are decoded
+					   as UTF-8, exactly as `readUTFBytes` would. Passing
+					   "shift-jis" does not decode Shift-JIS. Transcode the
+					   bytes yourself if you need another encoding.
 		@return A UTF-8 encoded string.
 		@throws EOFError There is insufficient data available to read.
 	**/
@@ -1342,7 +1407,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	/**
-		Reads an object from the socket, encoded in AMF serialized format.
+		Reads an object from the socket, in whichever format `objectEncoding`
+		names: HXSF unless it was changed, not AMF.
 		@return The deserialized object
 		@throws EOFError There is insufficient data available to read.
 		@throws IOError  An I/O error occurred on the socket, or the socket is
@@ -1508,14 +1574,31 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					  value specified by the `offset` parameter.
 		@throws IOError    An I/O error occurred on the socket, or the socket
 						   is not open.
-		@throws RangeError If `offset` is greater than the length of the
-						   ByteArray specified in `bytes` or if the amount of
-						   data specified to be written by `offset` plus
-						   `length` exceeds the data available.
+		@throws RangeError If `offset` is negative or greater than the length
+						   of the ByteArray specified in `bytes`, or if the
+						   amount of data specified to be written by `offset`
+						   plus `length` exceeds the data available.
+		@throws ArgumentError If `bytes` is null.
 	**/
 	public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
 		if (__socket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
+		}
+		if (bytes == null) {
+			throw new ArgumentError("writeBytes needs bytes to write.");
+		}
+
+		// Checked as DatagramSocket.send checks, against what is left after
+		// the offset, `offset + length` overflows. ByteArray.writeBytes
+		// clamps, so an offset or length past the bytes wrote whatever part
+		// of them there was, where a RangeError was promised. The whole of
+		// `bytes`, the usual call, has nothing to check; and the length is
+		// the field itself, not ByteArray's getter, which is a call.
+		if (offset != 0 || length != 0) {
+			var available:Int = (bytes : ByteArrayData).length;
+			if (offset < 0 || length < 0 || offset > available || length > available - offset) {
+				throw new RangeError("The supplied index is out of bounds.");
+			}
 		}
 
 		__output.writeBytes(bytes, offset, length);
@@ -1570,15 +1653,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	/**
-		Writes a multibyte string from the byte stream, using the specified
-		character set.
+		Writes a string to the socket as UTF-8.
 		@param value   The string value to be written.
-		@param charSet The string denoting the character set to use to
-					   interpret the bytes. Possible character set strings
-					   include `"shift_jis"`, `"CN-GB"`, and `"iso-8859-1"`.
-					   For a complete list, see <a
-					   href="../../charset-codes.html">Supported Character
-					   Sets</a>.
+		@param charSet Accepted for source compatibility and **ignored**. The
+					   string is encoded as UTF-8, exactly as `writeUTFBytes`
+					   would. Transcode the bytes yourself if you need another
+					   encoding.
+		@throws IOError An I/O error occurred on the socket, or the socket is
+						not open.
 	**/
 	public function writeMultiByte(value:String, charSet:String):Void {
 		if (__socket == null) {
@@ -1590,7 +1672,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	/**
-		Write an object to the socket in AMF serialized format.
+		Writes an object to the socket, in whichever format `objectEncoding`
+		names: HXSF unless it was changed, not AMF.
 		@param object The object to be serialized.
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
@@ -1735,6 +1818,22 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__syncNodeTick();
 		#else
 		__closed = true;
+		#end
+	}
+
+	/**
+		The runtime this socket's connection runs on: the one polling it
+		natively, the one flushing its writes on Node, the page's in a
+		browser. `__cbInstance` is set only natively, and a WebSocket's on
+		Node; read on its own, it was null on a Node client.
+	**/
+	@:noCompletion private inline function __runtime():Null<CrossByte> {
+		#if nodejs
+		return __nodeRuntime != null ? __nodeRuntime : __cbInstance;
+		#elseif (js && !nodejs)
+		return CrossByte.current();
+		#else
+		return __cbInstance;
 		#end
 	}
 
@@ -2014,10 +2113,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private function socket_onMessage(msg:Dynamic):Void {
+		// bytesLoaded is what arrived, as natively, where it was everything
+		// still unread: one event said 3 and the next 7 for the same 4 bytes,
+		// on Node and in a page alone.
 		#if (js && !nodejs)
 		if (__input.position == __input.length) {
 			__input.clear();
 		}
+		var before:Int = __input.length;
 
 		if ((msg.data is String)) {
 			__input.position = __input.length;
@@ -2029,8 +2132,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			newData.readBytes(__input, __input.length);
 		}
 
-		if (__input.bytesAvailable > 0) {
-			__dispatchPooledSocketData(__input.bytesAvailable, 0);
+		var arrived:Int = __input.length - before;
+		if (arrived > 0) {
+			__dispatchPooledSocketData(arrived, 0);
 		}
 		#elseif nodejs
 		if (__input.position == __input.length) {
@@ -2044,8 +2148,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		var chunk:Uint8Array = cast msg;
 		@:privateAccess (__input : ByteArrayData).__appendView(chunk);
 
-		if (__input.bytesAvailable > 0) {
-			__dispatchPooledSocketData(__input.bytesAvailable, 0);
+		if (chunk.length > 0) {
+			__dispatchPooledSocketData(chunk.length, 0);
 		}
 		#end
 	}
@@ -2321,9 +2425,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// ask the socket about yet, only the attempt's deadline, which
 			// counts the lookup. A resolver that never answers is not waited
 			// on past it.
-			if (haxe.Timer.stamp() - __timestamp > timeout / 1000) {
+			if (__pastDeadline()) {
 				__cleanSocket();
-				__dispatchPooledIOError("Connection failed: " + __host + " was not looked up within " + timeout + " ms");
+				__dispatchPooledIOError("Connection failed: " + __host + " was not looked up within " + timeout + " ms", IOErrorEvent.TIMEOUT_ERROR_ID);
 			}
 			return;
 		}
@@ -2331,8 +2435,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		var doConnect = false;
 		var doClose = false;
 		var doPeerClose = false;
-		// Why a connect failed, where there is more to say than that it did.
+		// Why a connect failed, where there is more to say than that it did,
+		// and whether what failed it was the deadline.
 		var failure:Null<String> = null;
+		var timedOut:Bool = false;
 
 		if (!connected && !__tlsHandshaking) {
 			// Asked about on both sets. A connect that fails is reported in the
@@ -2404,12 +2510,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 		#end
 
-		if (!connected && !doConnect && !doClose && haxe.Timer.stamp() - __timestamp > timeout / 1000) {
+		if (!connected && !doConnect && !doClose && __pastDeadline()) {
 			// The deadline counts the TLS handshake with the connect.
 			doClose = true;
-			if (__tlsHandshaking) {
-				failure = "the TLS handshake did not finish within " + timeout + " ms";
-			}
+			timedOut = true;
+			failure = __tlsHandshaking ? "the TLS handshake did not finish within " + timeout + " ms" : __host + " was not connected within " + timeout
+				+ " ms";
 		}
 
 		var bLength = 0;
@@ -2543,7 +2649,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			if (closeWasConnected) {
 				__announceClose();
 			} else {
-				__dispatchPooledIOError(failure != null ? "Connection failed: " + failure : "Connection failed");
+				__dispatchPooledIOError(failure != null ? "Connection failed: " + failure : "Connection failed", timedOut ? IOErrorEvent.TIMEOUT_ERROR_ID : 0);
 			}
 		}
 
@@ -2558,6 +2664,15 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	#if !js
+	/**
+		Whether the attempt under way has run past `timeout`. A timeout of 0
+		or less is no deadline, as it was already on Node: natively it failed
+		every connect that took any time at all.
+	**/
+	@:noCompletion private inline function __pastDeadline():Bool {
+		return timeout > 0 && haxe.Timer.stamp() - __timestamp > timeout / 1000;
+	}
+
 	/**
 		Takes the socket out of the poll set's reads, once nothing more will
 		be read from it. It stays open, and what is written to it still goes:
@@ -2726,21 +2841,22 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__pooledSocketDataEventInUse = false;
 	}
 
-	@:noCompletion private function __dispatchPooledIOError(text:String = ""):Void {
+	@:noCompletion private function __dispatchPooledIOError(text:String = "", id:Int = 0):Void {
 		if (!hasEventListener(IOErrorEvent.IO_ERROR)) {
 			return;
 		}
 
 		if (__pooledIOErrorEventInUse) {
-			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text));
+			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text, id));
 			return;
 		}
 
 		if (__pooledIOErrorEvent == null) {
-			__pooledIOErrorEvent = new IOErrorEvent(IOErrorEvent.IO_ERROR, text);
+			__pooledIOErrorEvent = new IOErrorEvent(IOErrorEvent.IO_ERROR, text, id);
 		} else {
 			@:privateAccess {
 				__pooledIOErrorEvent.text = text;
+				__pooledIOErrorEvent.errorID = id;
 				__pooledIOErrorEvent.target = null;
 				__pooledIOErrorEvent.currentTarget = null;
 			}

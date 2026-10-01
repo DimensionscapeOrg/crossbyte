@@ -113,6 +113,17 @@ entry below says how:
   a browser one with `followRedirects = false` does.
 - `RPCResponse.respond()` replaces the responder bound before, as it says,
   where it added one: add with `then`.
+- A `NetConnection` whose TCP connect fails calls `onClose` after
+  `onError`, and `onClose` after an error is given the error's reason.
+  Code that took `onClose` to mean a connection had been up checks for
+  `onReady` instead.
+- `ServerSocket.listen()` throws an `IOError` for a server never bound,
+  on Linux and macOS too, where it listened on a port of the system's
+  choosing: bind first, to port 0 for one the system picks.
+- `Socket.writeBytes` and the `Socket` constructor throw for arguments
+  out of range, as documented, where they clamped or did nothing.
+- A TCP or WebSocket `NetHost`'s `discoverPublicAddress` and
+  `allocateRelay` fail the `Future` they return rather than throwing.
 
 ### Added
 - `ReliableDatagramServerSocket.relayVerifyCert`, for a TURN relay reached
@@ -140,6 +151,18 @@ entry below says how:
   `getAuthorizationUrl` takes further parameters for the request, such as
   OpenID Connect's `nonce`, which has to be new for each sign-in and so had
   nowhere to go. `OAuthToken` and `OAuthConfig` document their fields.
+- `new NetHost("wss://...")` takes the certificate and key it presents,
+  as `cert`, and installs them before it binds. It bound its
+  `ServerWebSocket` with no way to reach `cert` first, so every TLS
+  handshake failed and nothing said why; a `wss://` host without `cert`
+  is now an `ArgumentError`, as is `cert` given to a host that would not
+  use it.
+- `IOErrorEvent.TIMEOUT_ERROR_ID`, the `errorID` of a `Socket`'s `ioError`
+  for a connect not made within its `timeout`, so a listener can tell a
+  deadline from a refusal without reading the text. A `NetConnection`
+  reports it as `Reason.Timeout`, to `onError` and `onClose`, and a
+  `NetHost` to `onDisconnect`: `Reason.Timeout` was declared, and nothing
+  ever reported it.
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
   `DETACH DATABASE`, and `loadSchema()` with `getSchemaResult()`: a
   database's tables with their columns, views, indices and triggers.
@@ -1270,6 +1293,13 @@ entry below says how:
   natively HTTP/2 speaks it or fails. In a browser a request with
   `followRedirects = false` is refused, since the browser follows every
   redirect itself and the 3xx could not be handed back.
+- A `NetConnection` ends the same way over TCP, WebSocket and reliable
+  UDP: `onError` for what went wrong, then `onClose` exactly once, with
+  the reason it ended, and nothing after. Over TCP a connect that failed
+  called `onError` alone, where the other two called both; `onClose`
+  after an error was told `Reason.Closed`, or a WebSocket's 1006, rather
+  than the error; and closing a TCP connection told `onClose` again each
+  time, and once more after its peer's close.
 - Reliable UDP sends what a pass produces from one socket in as few system
   calls as the system allows. Each datagram was a `sendto` of its own,
   which was nearly all a server sending reliable UDP spent: 5.9 us a
@@ -2332,6 +2362,81 @@ entry below says how:
   before it was cleared: "hello" written after a cleared secret went out
   as 69 bytes, the rest of the secret among them. Natively the body was
   always `length` bytes.
+- `RateLimiter.reset(null)` resets the bucket a null key spends from, as
+  `tryAcquire(null)` spends it; it did nothing. Its doc says what it does
+  for a key sharing the overflow bucket: nothing, since refilling that
+  would refill every key sharing it.
+- A `socketData` event's `bytesLoaded` is the bytes that arrived for it,
+  on Node and in a page as natively; there it was everything still
+  unread, so an event for 4 bytes said 7 when 3 before them were unread.
+- A TCP or WebSocket `NetHost` reports `discoverPublicAddress` and
+  `allocateRelay`, which it cannot do, as a failed `Future`, as every
+  member answering with a `Future` reports failure; they threw, so a
+  caller handling failure on the `Future` never saw them. `INetHost` says
+  so, and says that `maxConnections` is the listen backlog, not a limit.
+- `Socket.close()` sends what was written first, as far as the system
+  takes it without waiting. Writes go at the end of the pass, so bytes
+  written just before `close()` were thrown away, on every target.
+- A `Socket`'s `timeout` of 0 means no deadline natively too, as it did
+  on Node; natively it failed every connect that took any time at all.
+- `Socket.writeBytes` throws the `RangeError` its doc promises for an
+  offset or length past the bytes given, as `DatagramSocket.send` does,
+  where it wrote whatever part of them there was; and `new Socket(host,
+  port)` throws the promised `SecurityError` for a port outside 0-65535,
+  where it made a socket that never connected. `flush()` and
+  `readMultiByte`/`writeMultiByte` say what they do: every write is sent
+  without a flush, and a character set is not used.
+- On Node a TLS `ServerSocket` drops a client that has not finished its
+  handshake within `handshakeTimeout`; Node's own two minutes applied. A
+  handshake that finished after `close()` or `stopAccepting()` is closed,
+  where it was adopted, with no runtime, and announced to the stopped
+  server.
+- On Node a `ServerSocket` that cannot have its port, in use, or an
+  address that is not local, dispatches an `ioError` saying why before
+  `close`, as a `DatagramSocket` does; it dispatched `close` alone. A
+  connection Node could not accept once listening, a process out of
+  descriptors, is counted in `acceptFailures` and reported once, as
+  natively, where it closed the server.
+- `ServerSocket.listen()` on a server never bound is the `IOError` its
+  doc promises, on every target. Windows threw "Listen failed", the jvm
+  a string, eval stopped altogether, and Linux and macOS listened on a
+  port of the system's choosing that `localPort` did not report.
+- `ConcurrencyLimiter.tryAcquire` no longer keeps capacity nobody can
+  release. It took the capacity before delivering what its sweep had
+  decided for waiters, so a refusal callback that threw carried its
+  exception out with the permit just made: held for good, and in the
+  hands of no caller. It delivers first now.
+- `NetConnection.close()` on a WebSocket connection whose peer had closed
+  it no longer throws "Operation attempted on invalid socket"; on any
+  connection that has ended it does nothing.
+- `Socket` and `WebSocket` start in `ObjectEncoding.DEFAULT`, accepted
+  sockets included, as `ByteArray` and `ReliableDatagramSocket` do.
+  `objectEncoding` was never set: natively and on the jvm it read 0,
+  which is AMF0 and throws without `-lib format`, and elsewhere null, so
+  `readObject` and `writeObject` threw on every socket until the
+  application chose an encoding.
+- A `NetConnection` dialled over TCP works on Node and in a browser. It
+  stamped each send and each arrival with the uptime of the socket's
+  runtime, read from a field only a native connect sets: every send threw
+  a TypeError, and on Node the first bytes to arrive threw inside Node's
+  data callback, which closed the connection, so `RPCSession.dial` with
+  a `tcp://` address could never carry a call there.
+- A `Key` loads from every form a key file comes in, with its password,
+  on every target. The jvm read an unencrypted PKCS#8 key alone: an
+  encrypted one, or a PKCS#1 or SEC1 key, what `openssl genrsa` and
+  `openssl ecparam -genkey` write, was an error saying to convert the
+  file. Natively, and on hl, neko and eval, mbedTLS decrypts PKCS#8 only
+  with DES, so the AES-encrypted key OpenSSL writes by default failed
+  with "Requested encryption or digest alg not available", and eval's
+  `Key.fromPem` passed no password at all. On Node a certificate chosen by
+  SNI was given its key without the passphrase, so every handshake for
+  that name failed when the key was encrypted; each name's context is now
+  made once, at `listen()`, rather than at every handshake.
+- A `Key` shows nothing of itself when printed. On Node it held its PEM
+  text and passphrase in two plain fields, and `trace`, `Std.string`,
+  `JSON.stringify` and `console.log` each printed both, so one debugging
+  line put a server's private key, and the password protecting it, in a
+  log. It prints as `[Key: redacted]` on every target now.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened

@@ -248,13 +248,12 @@ class NetHostTest extends utest.Test {
 
 			Assert.isFalse(host.canDial, "a stream host should not claim it can dial from its listening endpoint");
 
-			var refused = false;
-			try {
-				host.discoverPublicAddress("127.0.0.1");
-			} catch (_:crossbyte.errors.IllegalOperationError) {
-				refused = true;
-			}
-			Assert.isTrue(refused, "a stream host answered a question about an endpoint it has not got");
+			// Refused through the Future it answers with, as every failure of
+			// a Future-returning member is; it used to be thrown, so a caller
+			// handling failure on the Future missed this one.
+			var discovery = host.discoverPublicAddress("127.0.0.1");
+			Assert.isTrue(discovery.completed && !discovery.succeeded, "a stream host answered a question about an endpoint it has not got");
+			Assert.isTrue(Std.isOfType(discovery.cause, crossbyte.errors.IllegalOperationError), "the refusal's cause is " + discovery.cause);
 
 			host.localAddressFor("127.0.0.1").then(function(address) {
 				Assert.equals("127.0.0.1", address);
@@ -313,7 +312,10 @@ class NetHostTest extends utest.Test {
 		Assert.isTrue(message != null && StringTools.startsWith(message, "A TCP host has no relay"), "the refusal reads: " + message);
 
 		for (host in hosts) {
-			Assert.raises(() -> host.allocateRelay("127.0.0.1", 3478, "user", "secret"), crossbyte.errors.IllegalOperationError);
+			// A Future's failure, not a throw; see testAStreamHostAnswersWhatItCannotDiscover.
+			var relay = host.allocateRelay("127.0.0.1", 3478, "user", "secret");
+			Assert.isTrue(relay.completed && !relay.succeeded, "a stream host allocated a relay");
+			Assert.isTrue(Std.isOfType(relay.cause, crossbyte.errors.IllegalOperationError), "the refusal's cause is " + relay.cause);
 			Assert.raises(() -> host.dialRelayed("127.0.0.1", 3478), crossbyte.errors.IllegalOperationError);
 			Assert.raises(() -> host.permitRelayedPeer("127.0.0.1"), crossbyte.errors.IllegalOperationError);
 			closeHostQuietly(host);

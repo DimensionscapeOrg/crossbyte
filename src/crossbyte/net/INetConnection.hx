@@ -33,12 +33,19 @@ interface INetConnection {
 	/** Called when incoming data is available. */
 	public var onData(get, set):ByteArrayInput->Void;
 	/**
-		Called when the connection closes, with why: `Reason.Closed` for a
-		plain close, and otherwise what the transport knows, the code and
-		reason a WebSocket peer closed with as `Reason.Code`, for one.
+		Called once, when the connection is over, however it ended, closed
+		by either end, failed, or timed out, with why: `Reason.Closed` for a
+		plain close, the reason `onError` was given when an error or a
+		timeout ended it, and otherwise what the transport knows, the code
+		and reason a WebSocket peer closed with as `Reason.Code`, for one.
+		Nothing is called after it.
 	**/
 	public var onClose(get, set):Reason->Void;
-	/** Called when the transport reports an error. */
+	/**
+		Called when a connect fails, `Reason.Timeout` when its deadline
+		passed, or the transport reports an error. Reads stop, and
+		`onClose` follows.
+	**/
 	public var onError(get, set):Reason->Void;
 	/** Called once the connection becomes ready for I/O. */
 	public var onReady(get, set):Void->Void;
@@ -46,6 +53,9 @@ interface INetConnection {
 	public function expose():Transport;
 	/** Sends a payload over the active transport. */
 	public function send(data:ByteArray):Void;
-	/** Closes the connection. */
+	/**
+		Closes the connection; `onClose` is told `Reason.Closed` if it had
+		not already ended. On one that has, it does nothing.
+	**/
 	public function close():Void;
 }

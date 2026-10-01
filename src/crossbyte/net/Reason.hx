@@ -2,7 +2,11 @@ package crossbyte.net;
 
 /** Describes why a connection or host lifecycle callback fired. */
 enum Reason {
-	/** The connection exceeded its heartbeat or idle timeout. */
+	/**
+		A deadline passed: a connect not made within its socket's `timeout`
+		(an `ioError` whose `errorID` is `IOErrorEvent.TIMEOUT_ERROR_ID`), or
+		a connection its owner closed for silence.
+	**/
 	Timeout;
 	/** The transport closed cleanly. */
 	Closed;
