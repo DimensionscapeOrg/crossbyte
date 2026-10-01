@@ -67,7 +67,7 @@ import crossbyte._internal.net.IPv6;
 	@event data Dispatched in `DATAGRAM` mode when a complete reliable payload is delivered.
 	@event socketData Dispatched in `STREAM` mode when additional ordered bytes are available.
 **/
-class ReliableDatagramSocket extends EventDispatcher implements IDataInput implements IDataOutput implements crossbyte.core._internal.PassFlush {
+class ReliableDatagramSocket extends EventDispatcher implements IDataInput implements IDataOutput implements crossbyte.core._internal.PassFlush #if !nodejs implements crossbyte._internal.net.DatagramSender #end {
 	/**
 		A slot for whatever the application wants this connection to carry.
 
@@ -678,6 +678,16 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	@:noCompletion private var __timeout:Int = 20000;
 	@:noCompletion private var __transport:DatagramSocket;
+	#if !nodejs
+	// The peer's address as the transport sends to it, kept: the transport
+	// keeps only the last one it was asked for, so a server sending a
+	// datagram to each of its sessions in turn built a Host and an Address
+	// for every datagram. Refreshed when the peer or the transport changes.
+	@:noCompletion private var __target:sys.net.Address = null;
+	@:noCompletion private var __targetAddress:String = null;
+	@:noCompletion private var __targetPort:Int = 0;
+	@:noCompletion private var __targetTransport:DatagramSocket = null;
+	#end
 	@:noCompletion private var __transportListenerReady:Bool = false;
 	@:noCompletion private var __windowBase:Seq32 = 0;
 
@@ -2938,13 +2948,48 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		return used;
 	}
 
+	#if !nodejs
+	/** The peer's address as the transport sends to it, kept; null while a name is looked up. **/
+	@:noCompletion private function __peerTarget():Null<sys.net.Address> {
+		if (__target == null || __targetAddress != __remoteAddress || __targetPort != __remotePort || __targetTransport != __transport) {
+			__target = __transport.__resolveTarget(__remoteAddress, __remotePort);
+			__targetAddress = __remoteAddress;
+			__targetPort = __remotePort;
+			__targetTransport = __transport;
+		}
+		return __target;
+	}
+
+	/** A datagram the transport's batch could not send: as a send that failed when made. **/
+	@:noCompletion public function __datagramFailed(error:String):Void {
+		if (__closed) {
+			return;
+		}
+		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, error));
+		__dispose(true);
+	}
+	#end
+
 	@:noCompletion private function __sendDatagram(offset:Int, length:Int):Bool {
 		__sentSinceKeepAlive = true;
 		try {
 			if (__relay != null) {
 				__sendRelayed(offset, length);
 			} else {
+				#if nodejs
 				__transport.send(__scratch, offset, length, __remoteAddress, __remotePort);
+				#else
+				// With everything else this transport sends in the pass, and
+				// on Linux in a call or a few rather than one each; see
+				// DatagramSocket.__sendInPass. A failure comes back through
+				// __datagramFailed, after this has returned.
+				var target:Null<sys.net.Address> = __peerTarget();
+				if (target == null) {
+					__transport.send(__scratch, offset, length, __remoteAddress, __remotePort);
+				} else {
+					__transport.__sendInPass(__scratch, offset, length, target, this);
+				}
+				#end
 			}
 			return true;
 		} catch (e:Dynamic) {
