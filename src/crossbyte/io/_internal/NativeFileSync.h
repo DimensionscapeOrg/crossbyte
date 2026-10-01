@@ -23,3 +23,7 @@ int crossbyte_file_create_exclusive(::String path, bool directory);
 // The file at `path` as "<volume>:<index>", the same for every name the file
 // has, or an empty string if it cannot be examined.
 ::String crossbyte_file_identity(::String path);
+
+// Cuts or extends the file at `path` to `length` bytes. Returns an empty
+// string, or why it could not.
+::String crossbyte_file_truncate(::String path, double length);
