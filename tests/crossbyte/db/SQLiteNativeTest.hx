@@ -615,6 +615,43 @@ class SQLiteNativeTest extends utest.Test {
 		check.close();
 	}
 
+	public function testAutoCompactShrinksTheFileAsRowsGo():Void {
+		// autoCompact set auto_vacuum to INCREMENTAL, which gives nothing back
+		// until PRAGMA incremental_vacuum runs, and nothing ran it: after 200
+		// rows of 8 KiB were deleted the file stayed 1.6 MB, its pages free.
+		// AIR's autoCompact gives the space back at each commit, which is
+		// SQLite's FULL.
+		var path:String = __path("compact");
+		var connection:SQLiteConnection = new SQLiteConnection();
+		connection.open(path, SQLiteMode.CREATE, true, 4096);
+		Assert.isTrue(connection.autoCompact);
+		connection.request("CREATE TABLE blobs (b BLOB)");
+		connection.begin();
+
+		for (i in 0...200) {
+			connection.request("INSERT INTO blobs VALUES (zeroblob(8192))");
+		}
+
+		connection.commit();
+		var full:Float = FileSystem.stat(path).size;
+		connection.request("DELETE FROM blobs");
+		var after:Float = FileSystem.stat(path).size;
+		Assert.isTrue(after < full / 4, 'the file stayed $after bytes of $full');
+		Assert.equals(0.0, connection.stats().freeListCount);
+		connection.close();
+
+		// A database that gives nothing back by itself does not say it does,
+		// an incremental one included, as earlier versions made them.
+		var incremental:String = __path("incremental");
+		var plain:SQLiteConnection = new SQLiteConnection();
+		plain.open(incremental, SQLiteMode.CREATE, false, 4096);
+		Assert.isFalse(plain.autoCompact);
+		plain.request("PRAGMA auto_vacuum = 2");
+		plain.request("VACUUM");
+		Assert.isFalse(plain.autoCompact, "an incremental database reported compacting by itself");
+		plain.close();
+	}
+
 	public function testAForeignKeyViolationReportsItsWholeRowId():Void {
 		// The rowid was parsed into an Int: a violation at rowid 3,000,000,000
 		// was reported at 2147483647, the row a repair script would then touch.

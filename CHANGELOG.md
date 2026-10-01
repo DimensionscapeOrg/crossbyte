@@ -1942,6 +1942,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An SQLite database opened with `autoCompact` shrinks as rows are deleted,
+  as AIR's does. It was made INCREMENTAL, which gives nothing back until
+  `PRAGMA incremental_vacuum` runs, and nothing ran it: after 200 rows of
+  8 KiB were deleted the file stayed 1.7 MB with 425 free pages, while
+  `autoCompact` read `true`. New databases are FULL, which truncates the
+  file at every commit, and `autoCompact` is true for FULL only; a
+  database made by an earlier version reads `false`, and `compact()`
+  reclaims its space.
 - SQLite's `foreignKeyCheck()` and `totalChanges` read row ids and counts
   whole, as `lastInsertRowID` already does. Both were parsed into an `Int`
   with `Std.parseInt`, which past 2^31 answers differently on each target
