@@ -1942,6 +1942,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `WebSocket` client's failed connect ends one way, however it failed,
+  as a browser's WebSocket does and as the class now says: `ioError` saying
+  why, then `close` with 1006. A TLS failure closed with 1015 natively, an
+  upgrade the server refused closed with 1002 and no error, as if an open
+  session had broken the protocol, and a server that hung up before
+  answering closed with 1006 and said nothing.
 - A `WebSocket` client's `timeout` bounds the whole of a connect, as one
   deadline from `connect()`: the host's lookup, the TCP connect, a
   `wss://` TLS handshake and the upgrade. Natively the TLS handshake gave
