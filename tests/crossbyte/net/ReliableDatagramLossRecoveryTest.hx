@@ -359,7 +359,10 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		sender.__acceptFrame(ack(1005, []));
 		Assert.equals(5.0, sender.framesDelivered);
 
+		// Closed once the peer has acknowledged the FIN, which is 1005.
 		sender.close();
+		sender.__acceptFrame(ack(1006, []));
+		Assert.isTrue(sender.__closed, "the close never finished");
 		Assert.equals(0.0, sender.framesDelivered, "a closed session kept its count");
 	}
 
@@ -371,6 +374,30 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		sendMessages(sender, 10);
 		Assert.same(["PACKET 1000", "PACKET 1001", "PACKET 1002"], described(sender.take()));
 		sender.close();
+	}
+
+	/**
+		A policy changed while messages wait for the window takes over with
+		them still first in line. The setter left the queue where it was, so
+		a new policy with room let the next message out ahead of the ones
+		waiting, RELIABLE out of order, and with nothing in flight to be
+		acknowledged, nothing ever sent the waiting ones at all.
+	**/
+	public function testAPolicyChangedMidSessionKeepsTheOrder():Void {
+		var sender = RecordingSocket.make();
+		if (sender == null) return;
+
+		sender.congestionControl = new FixedWindow(2);
+		sendMessages(sender, 5);
+		Assert.same(["PACKET 1000", "PACKET 1001"], described(sender.take()));
+
+		// Room for everything, and then one more message.
+		sender.congestionControl = new FixedWindow(10);
+		sender.send(text("m5"));
+		var frames = sender.take();
+		Assert.same(["PACKET 1002", "PACKET 1003", "PACKET 1004", "PACKET 1005"], described(frames));
+		Assert.same(["m2", "m3", "m4", "m5"], [for (frame in frames) frame.payload.toString()], "a message overtook the ones waiting");
+		sender.abort();
 	}
 
 	public function testASessionCannotBeLeftWithoutAPolicy():Void {
@@ -393,8 +420,9 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		sender.__acceptFrame(ack(1000, [0, 1, 2, 3]));
 		Assert.equals(5.0, policy.window);
 
-		// Connected again, the socket is a new session, and so is its policy.
-		sender.close();
+		// Ended, the session is gone, and its policy starts over. Ended at
+		// once: a graceful close would wait for the lost frame.
+		sender.abort();
 		Assert.equals(10.0, policy.window);
 		Assert.equals(500.0, policy.slowStartThreshold);
 	}
@@ -551,10 +579,10 @@ private class RecordingSocket extends ReliableDatagramSocket {
 	}
 
 	override private function __sendFrame(type:ReliableDatagramFrameType, sequence:Seq32, payload:ByteArray, offset:Int, length:Int, resend:Bool,
-			ack:Null<Seq32>, more:Bool):Void {
+			ack:Null<Seq32>, more:Bool, graceful:Bool = false):Void {
 		var frame = new ByteArray();
 		frame.length = ReliableDatagramProtocol.MAX_FRAME_SIZE;
-		frame.length = ReliableDatagramProtocol.encodeInto(frame, type, sequence, payload, offset, length, resend, ack, more);
+		frame.length = ReliableDatagramProtocol.encodeInto(frame, type, sequence, payload, offset, length, resend, ack, more, 0, graceful);
 		__recorded.push(frame);
 	}
 

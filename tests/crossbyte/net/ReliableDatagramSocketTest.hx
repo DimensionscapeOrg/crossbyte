@@ -243,6 +243,32 @@ class ReliableDatagramSocketTest extends utest.Test {
 	}
 
 	/**
+		A question the server cannot ask fails the future it returns, its
+		cause an IOError, rather than throwing, which both questions' docs
+		said they did. A caller that caught a throw never saw it; one that
+		watched the future did.
+	**/
+	public function testTheServersQuestionsFailTheirFutureRatherThanThrow():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+		try {
+			// Unbound: neither question has a port to be about.
+			var discovery = server.discoverPublicAddress("127.0.0.1", 3478, 500);
+			var local = server.localAddressFor("127.0.0.1");
+
+			Assert.isTrue(discovery.completed && !discovery.succeeded, "discovery from an unbound server did not fail at once");
+			Assert.isTrue(Std.isOfType(discovery.cause, IOError), "its cause was " + discovery.cause);
+			Assert.isTrue(local.completed && !local.succeeded, "a local address from an unbound server did not fail at once");
+			Assert.isTrue(Std.isOfType(local.cause, IOError), "its cause was " + local.cause);
+		} catch (e:Dynamic) {
+			Assert.fail("a question to an unbound server threw: " + Std.string(e));
+		}
+
+		try server.close() catch (_:Dynamic) {}
+	}
+
+	/**
 		The same over a reliable session: a number written into a new ByteArray
 		reads back as itself from the message that carried it, a game's
 		snapshot header, an input's tick. Messages came big-endian, and every
@@ -583,6 +609,47 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 		try alice.close() catch (_:Dynamic) {}
 		try bob.close() catch (_:Dynamic) {}
+	}
+
+	/**
+		A session a server dials announces itself, with `Event.CONNECT` on the
+		socket the call returned; the server's own CONNECT is for sessions a
+		peer opened. Its documentation said a dialled session was reported
+		through the server's event "exactly as an accepted one is", which it
+		never was: the caller already holds it.
+	**/
+	public function testADialledSessionAnnouncesItselfAndNotThroughItsServer():Void {
+		if (!requireDatagramSupport()) return;
+
+		var alice = new ReliableDatagramServerSocket();
+		var bob = new ReliableDatagramServerSocket();
+		var announcedByAlice:Array<ReliableDatagramSocket> = [];
+		var acceptedByBob:Array<ReliableDatagramSocket> = [];
+		var connects = 0;
+
+		try {
+			alice.bind(0, "127.0.0.1");
+			alice.listen();
+			bob.bind(0, "127.0.0.1");
+			bob.listen();
+			alice.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, e -> announcedByAlice.push(e.socket));
+			bob.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, e -> acceptedByBob.push(e.socket));
+
+			var toBob = alice.connect("127.0.0.1", bob.localPort);
+			toBob.addEventListener(Event.CONNECT, _ -> connects++);
+			pumpUntil(() -> toBob.connected && acceptedByBob.length > 0, 5.0);
+			pumpUntil(() -> false, 0.1);
+
+			Assert.isTrue(toBob.connected, "the dialled session never connected");
+			Assert.equals(1, connects, "the dialled session did not say it had connected");
+			Assert.equals(0, announcedByAlice.length, "the server announced a session it dialled itself");
+			Assert.equals(1, acceptedByBob.length, "the peer did not announce the session it accepted");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		closeServerQuietly(alice);
+		closeServerQuietly(bob);
 	}
 
 	public function testDiallingRefusesWhatItCannotHonour():Void {
@@ -1026,6 +1093,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 		var unused = new DatagramSocket();
 		var errors = 0;
 		var closes = 0;
+		var order:Array<String> = [];
 
 		try {
 			unused.bind(0, "127.0.0.1");
@@ -1033,14 +1101,22 @@ class ReliableDatagramSocketTest extends utest.Test {
 			unused.close();
 
 			client.timeout = 10;
-			client.addEventListener(IOErrorEvent.IO_ERROR, _ -> errors++);
-			client.addEventListener(Event.CLOSE, _ -> closes++);
+			client.addEventListener(IOErrorEvent.IO_ERROR, _ -> {
+				errors++;
+				order.push("ioError");
+			});
+			client.addEventListener(Event.CLOSE, _ -> {
+				closes++;
+				order.push("close");
+			});
 			client.connect("127.0.0.1", unusedPort);
 
 			pumpUntil(() -> errors > 0, 1.0);
 
 			Assert.equals(1, errors);
 			Assert.equals(1, closes);
+			// As the class says a failed connect ends: the error, then close.
+			Assert.same(["ioError", "close"], order);
 			Assert.isFalse(client.connected);
 			Assert.isTrue(throwsIOError(() -> client.send(bytesOf("late"))));
 		} catch (e:Dynamic) {
@@ -1051,6 +1127,49 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 		closeQuietly(client);
 		closeDatagramQuietly(unused);
+	}
+
+	/**
+		A timeout of zero is no deadline: the attempt goes on until the peer
+		answers or the caller closes it, as it does for a `Socket` on Node.
+		It armed a timer of zero instead, which gave the attempt up at the
+		first pass, by address, and by name once looked up.
+	**/
+	public function testATimeoutOfZeroIsNoDeadline():Void {
+		if (!requireDatagramSupport()) return;
+
+		var silent = new DatagramSocket();
+		var byAddress = new ReliableDatagramSocket();
+		var byName = new ReliableDatagramSocket();
+		var failures:Array<String> = [];
+
+		try {
+			// Takes every CONNECT and answers none.
+			silent.bind(0, "127.0.0.1");
+			silent.receive();
+
+			byAddress.timeout = 0;
+			byAddress.addEventListener(IOErrorEvent.IO_ERROR, (e:IOErrorEvent) -> failures.push("by address: " + e.text));
+			byAddress.connect("127.0.0.1", silent.localPort);
+
+			byName.timeout = 0;
+			byName.addEventListener(IOErrorEvent.IO_ERROR, (e:IOErrorEvent) -> failures.push("by name: " + e.text));
+			byName.connect("localhost", silent.localPort);
+
+			// Long past the moment a deadline of zero comes due.
+			pumpUntil(() -> failures.length > 0, 0.5);
+
+			Assert.same([], failures, "an attempt with no deadline was given up");
+			Assert.isFalse(byAddress.connected);
+			Assert.equals(-1, byAddress.__connectionTimeoutHandle, "an attempt with no deadline armed one");
+			Assert.equals(-1, byName.__connectionTimeoutHandle, "an attempt by name with no deadline armed one");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		closeQuietly(byAddress);
+		closeQuietly(byName);
+		closeDatagramQuietly(silent);
 	}
 
 	public function testConnectsFromNewAddressesAreBoundedWhileUnanswered():Void {
