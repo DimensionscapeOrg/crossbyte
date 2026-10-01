@@ -33,10 +33,19 @@ import haxe.Int64;
 	that has not been written yet.
 
 	```haxe
+	// Given socket:crossbyte.net.DatagramSocket, local:String, theirCredentials:IceCredentials.
+	import crossbyte.core.CrossByte;
+	import crossbyte.events.DatagramSocketDataEvent;
+	import crossbyte.events.TickEvent;
+
 	var agent = new IceAgent(true, IceCredentials.generate());
-	agent.onSend = (payload, address, port) -> server.sendTo(payload, address, port);
-	agent.addLocalCandidate(IceCandidate.host(local, server.localPort));
+	agent.onSend = (payload, address, port) -> socket.send(payload, 0, payload.length, address, port);
+	agent.addLocalCandidate(IceCandidate.host(local, socket.localPort));
 	agent.start(theirCredentials, haxe.Timer.stamp());
+
+	// What arrives is offered to it, and its clock moves on the tick.
+	socket.addEventListener(DatagramSocketDataEvent.DATA, e -> agent.receive(e.data, e.srcAddress, e.srcPort, haxe.Timer.stamp()));
+	CrossByte.current().addEventListener(TickEvent.TICK, _ -> agent.poll(haxe.Timer.stamp()));
 
 	agent.connected.then(function(pair) {
 		trace("use " + pair.remote.address + ":" + pair.remote.port);
