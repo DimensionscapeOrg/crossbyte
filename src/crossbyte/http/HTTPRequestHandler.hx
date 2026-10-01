@@ -2108,14 +2108,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// only in taking a String. Two copies of the header-assembly rules is
 		// one too many to keep in step, and the duplicate would have needed the
 		// same rewrite to reach a writer.
-		var bodyBytes:ByteArray = new ByteArray();
-		if (!headOnly && content != null && content.length > 0) {
-			bodyBytes.writeUTFBytes(content);
-		}
+		// The encoded text is the body, rather than copied into one: written
+		// into a new ByteArray it was allocated and copied twice more, 64 KB
+		// at a time for a page.
+		var hasText:Bool = content != null && content.length > 0;
+		var bodyBytes:ByteArray = (!headOnly && hasText) ? ByteArray.fromBytes(crossbyte._internal.Utf8.bytesOf(content)) : new ByteArray();
 
 		// A HEAD says what the GET would: its length, not the empty body it
 		// sends, which went out as "Content-Length: 0" beside a GET of 20 KB.
-		var headLength:Null<Int> = (headOnly && content != null && content.length > 0) ? haxe.io.Bytes.ofString(content).length : null;
+		var headLength:Null<Int> = (headOnly && hasText) ? crossbyte._internal.Utf8.bytesOf(content).length : null;
 		__dispatchResponseBytes(statusCode, statusMessage, headers, contentType, bodyBytes, headOnly, headLength);
 	}
 

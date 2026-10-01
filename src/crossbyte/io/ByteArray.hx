@@ -1336,7 +1336,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public function writeUTF(value:String):Void {
-		var bytes = Bytes.ofString(value);
+		var bytes = crossbyte._internal.Utf8.bytesOf(value);
 
 		// The length prefix is sixteen bits. Past 65535 it wrapped: the
 		// string was written whole behind a length that described some other
@@ -1350,7 +1350,8 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public function writeUTFBytes(value:String):Void {
-		var bytes = Bytes.ofString(value);
+		// Through the platform's encoder on JavaScript; see Utf8.
+		var bytes = crossbyte._internal.Utf8.bytesOf(value);
 		writeBytes(bytes);
 	}
 
