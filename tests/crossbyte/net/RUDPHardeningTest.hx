@@ -344,6 +344,7 @@ class RUDPHardeningTest extends utest.Test {
 		socket.__fastResends = 0;
 		socket.__probes = 0;
 		socket.__timeoutResends = 0;
+		socket.__closing = false;
 		socket.maxOutputBufferSize = 0;
 		socket.outputOverflowPolicy = CLOSE;
 		return socket;

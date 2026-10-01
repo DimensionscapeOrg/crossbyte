@@ -76,6 +76,11 @@ entry below says how:
   `ThreadEvent.UPDATE` are gone.
 - `BCrypt.hash` makes `$2b$` hashes, and Postgres, MySQL and MongoDB
   statements throw what the server refused.
+- `ReliableDatagramSocket.close()` is graceful: its `close` event comes
+  once the peer has acknowledged everything, not during the call, and
+  `abort()` is the old immediate close. Its FIN holds a place in the
+  sequence, which a peer from before 1.0 does not know, so both ends need
+  1.0 for what was sent before a close to arrive before it.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1932,6 +1937,23 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `ReliableDatagramSocket.close()` delivers what was sent before it. It
+  sent the frames gathered in the pass and a FIN, and let the rest go:
+  frames the congestion window was holding back, frames lost and waiting
+  to be sent again, and in `STREAM` mode bytes written and not flushed.
+  The FIN carried no sequence, so the receiver closed the moment it came,
+  dropping whatever it held past a gap, and a FIN that overtook a lost
+  frame took the frame with it: a client writing 300 messages and closing
+  at once had 10 of them heard. Now the close waits for the peer to
+  acknowledge everything, sending again what is lost, with a FIN that
+  holds the next place in the sequence behind it; the peer dispatches its
+  `close` only once all of it has been delivered, and this side's follows
+  when the peer has acknowledged it. A peer that acknowledges nothing for
+  `closeTimeout` seconds, ten unless changed, is given up, with an
+  `ioError` if more than the FIN went unacknowledged. `abort()` ends a
+  session at once, as `close()` did, and is what a server's own `close()`
+  and `releaseRelay()` do to their sessions, as are an oversized message
+  and an output queue past its limit.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened

@@ -242,6 +242,70 @@ class ReliableDatagramLifecycleTest extends utest.Test {
 	}
 
 	/**
+		A client that writes a burst and closes at once, over a path losing
+		one datagram in seven: the server's session hears all of it, in
+		order, and then its close, and the client's close follows.
+
+		`close()` dropped what the congestion window had not let out yet and
+		what had been lost and was waiting to be sent again, and the server
+		took the FIN the moment it came, past any gap.
+	**/
+	@:timeout(40000)
+	public function testABurstClosedAtOnceArrivesWholeOverALossyPath(async:Async):Void {
+		if (!__supported(async)) {
+			return;
+		}
+
+		var server = __server();
+		var heard:Array<String> = [];
+		var heardAtClose:Int = -1;
+		server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, function(e:ReliableDatagramSocketConnectEvent) {
+			var session = e.socket;
+			session.addEventListener(DatagramSocketDataEvent.DATA, function(d:DatagramSocketDataEvent) heard.push(d.data.readUTFBytes(d.data.length)));
+			session.addEventListener(Event.CLOSE, function(_) heardAtClose = heard.length);
+		});
+
+		var client = new LossySocket(7);
+		var clientClosed:Bool = false;
+		var errors:Array<String> = [];
+		client.addEventListener(Event.CLOSE, function(_) clientClosed = true);
+		client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) errors.push(e.text));
+
+		NetPump.until(() -> server.localPort > 0, 5.0, function(_) {
+			client.connect("127.0.0.1", server.localPort);
+
+			NetPump.until(() -> client.connected, 5.0, function(ready:Bool) {
+				if (!ready) {
+					Assert.fail("the client never connected");
+					__close(client);
+					__closeServer(server);
+					async.done();
+					return;
+				}
+
+				var sent:Array<String> = [for (i in 0...300) "message " + i];
+				for (message in sent) {
+					var bytes = new ByteArray();
+					bytes.writeUTFBytes(message);
+					client.send(bytes);
+				}
+				client.close();
+
+				NetPump.until(() -> heardAtClose >= 0 && clientClosed, 30.0, function(_) {
+					Assert.isTrue(client.dropped > 0, "nothing was lost, so nothing was tested");
+					Assert.equals(sent.length, heard.length, 'the server heard ${heard.length} of ${sent.length}');
+					Assert.same(sent, heard, "what the server heard was not what was sent, in order");
+					Assert.equals(sent.length, heardAtClose, "the server's close came before the last of what was sent");
+					Assert.isTrue(clientClosed, "the client's close never finished");
+					Assert.same([], errors, "the close reported a failure");
+					__closeServer(server);
+					async.done();
+				});
+			});
+		});
+	}
+
+	/**
 		A server and one client connected to it, both with the keepalive
 		settings given, and the server's session for the client.
 	**/
@@ -306,5 +370,27 @@ class ReliableDatagramLifecycleTest extends utest.Test {
 				server.close();
 			}
 		} catch (_:Dynamic) {}
+	}
+}
+
+/** A client whose every `every`th datagram, once connected, never leaves. **/
+@:access(crossbyte.net.ReliableDatagramSocket)
+private class LossySocket extends ReliableDatagramSocket {
+	public var dropped:Int = 0;
+
+	private var __every:Int;
+	private var __count:Int = 0;
+
+	public function new(every:Int) {
+		super();
+		__every = every;
+	}
+
+	override private function __sendDatagram(offset:Int, length:Int):Bool {
+		if (__connected && ++__count % __every == 0) {
+			dropped++;
+			return true;
+		}
+		return super.__sendDatagram(offset, length);
 	}
 }
