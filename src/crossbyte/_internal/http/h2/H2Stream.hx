@@ -73,6 +73,20 @@ class H2Stream {
 	public var delivered:Bool = false;
 
 	/**
+		On the server, `haxe.Timer.stamp()` when the request's HEADERS
+		arrived: where its `requestTimeout` counts from, and where its
+		duration is measured from. Fixed once set, so nothing the peer sends
+		after it moves the deadline.
+	**/
+	public var openedAt:Float = 0;
+
+	/**
+		On the server, the request read from a header section whose body is
+		still to come, as it was admitted. Delivered once the body ends.
+	**/
+	public var request:Null<H2ServerRequest> = null;
+
+	/**
 	 * Response bytes accepted from the application but not yet permitted onto
 	 * the wire by flow control.
 	 *

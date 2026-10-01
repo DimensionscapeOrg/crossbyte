@@ -44,11 +44,21 @@ class H2ResponseWriter implements HTTPResponseWriter {
 	// response is being written in the middle of; see H2ConnectionHandler.
 	private final __flush:Void->Void;
 
-	public function new(connection:H2ServerConnection, socket:Socket, streamId:Int, ?flush:Void->Void) {
+	// Where sweepWith registers: the connection handler's own sweep.
+	private final __sweepWith:Null<(Int, Null<Float->Void>) -> Void>;
+
+	public function new(connection:H2ServerConnection, socket:Socket, streamId:Int, ?flush:Void->Void, ?sweepWith:(Int, Null<Float->Void>) -> Void) {
 		__connection = connection;
 		__socket = socket;
 		__streamId = streamId;
 		__flush = flush != null ? flush : socket.flush;
+		__sweepWith = sweepWith;
+	}
+
+	public function sweepWith(check:Null<Float->Void>):Void {
+		if (__sweepWith != null) {
+			__sweepWith(__streamId, check);
+		}
 	}
 
 	// The stream as well as the connection: a stream the client has reset
@@ -107,6 +117,14 @@ class H2ResponseWriter implements HTTPResponseWriter {
 		__onAbandoned = value;
 		__connection.setAbandonedCallback(__streamId, value);
 		return value;
+	}
+
+	/** A HEADERS frame carrying `:status 100` and leaving the stream open: an interim response (RFC 9113 8.1). */
+	public function writeContinue():Void {
+		if (__headSent) {
+			return;
+		}
+		__connection.sendHeaders(__streamId, 100, [], false);
 	}
 
 	public function writeHead(head:HTTPResponseHead):Void {

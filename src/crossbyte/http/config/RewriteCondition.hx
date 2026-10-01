@@ -4,8 +4,12 @@ package crossbyte.http.config;
 typedef RewriteCondition = {
   /** Kind of condition to evaluate. */
   public var type:RewriteConditionType;            
-  /** Input key such as a header name when the condition type requires one. */
-  public var key:String;                     
+  /**
+    Input key such as a header name when the condition type requires one. A
+    header name is matched in any case, as HTTP compares them: `X-Test` and
+    `x-test` name the same field.
+  **/
+  public var key:String;
   /** Pattern or value used by the condition. */
   public var pattern:String;                  
   /** Inverts the final condition result when `true`. */
