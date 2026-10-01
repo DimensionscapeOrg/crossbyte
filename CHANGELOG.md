@@ -4,6 +4,79 @@ All notable changes to CrossByte will be documented in this file.
 
 ## Unreleased
 
+### Highlights
+
+Everything since 1.0.0-rc.1 is listed under Added, Removed, Changed and
+Fixed below, more than 750 entries. In short:
+
+- **WebRTC and NAT traversal.** `crossbyte.net.rtc.PeerConnection` puts
+  ICE, DTLS, SCTP and data channels, reliable and partially reliable,
+  behind one class, and interoperates with Chrome. With them: STUN, TURN
+  over UDP, TCP and TLS with RFC 8656 channels, ICE restart and consent
+  freshness, and `PeerConnectionHost` for many peers on one UDP port.
+- **HTTP/2**, client and server, with ALPN, HPACK and the Rapid Reset
+  defence; HTTP/1.1 keep-alive and pipelining; streamed responses and
+  server-sent events; a router, gzip and Brotli, request limits, rate
+  limiting and Prometheus metrics.
+- **Real-time networking.** Reliable UDP with pluggable congestion control,
+  delivery modes, round-trip statistics and TURN fallback, its datagrams
+  batched on Linux; game-server structures -- `SpatialGrid`,
+  `InterestSet`, `SequenceRing` and `ByteDelta`, `BitWriter`,
+  `FixedStep`, `PeerClock`.
+- **Databases.** MongoDB over its wire protocol, BSON included, on every
+  target that can block; a native MySQL client with TLS and MySQL 8
+  logins; Postgres parameter binding and timeouts; SQLite with an
+  asynchronous worker, attached databases and schemas; connection pools,
+  `AsyncDatabase` and `SchemaMigrator`.
+- **Crypto.** libsodium, vendored (AEAD, X25519, key exchange, BLAKE2b,
+  Ed25519, Argon2id); RSA and ECDSA signatures; JWT with RS256, ES256 and
+  EdDSA, JWKS and claims of an application's own; OAuth PKCE;
+  asynchronous BCrypt and Argon2id.
+- **Every target.** Node runs the networking stack -- sockets, listeners,
+  TLS, WebSocket, UDP and the HTTP server; a headless browser runs the
+  portable suite; the jvm runs the whole suite, TLS with ALPN, SNI and
+  client certificates included; and the native suite runs on Windows,
+  Linux and macOS in CI.
+- **Runtime and operations.** `Future` and `Completer`, `CrossByte.post`
+  and `make`, loop-health measures, a structured `Logger` with categories,
+  layered `Config`, durable `Store` on every target, graceful shutdown and
+  Windows service control, and `crossbyte.metrics`.
+- **Hardening and speed.** Two audits, 171 findings, each fixed with a test
+  shown failing first; nine wire parsers fuzzed; soak, stress and
+  performance suites, and what they found -- among it a WebSocket server
+  receiving large messages 45 times faster, and TLS uploads 26 times.
+
+### Upgrading from 1.0.0-rc.1
+
+Native builds need the `production` branch of the `dimensionscape/hxcpp`
+fork; the README says why. Each of these can need code changed, and its
+entry below says how:
+
+- Sockets, datagram sockets and WebSocket messages read and write in
+  `ByteArray.defaultEndian`, little-endian unless changed, as every
+  `ByteArray` does. A protocol in network byte order sets `endian` on its
+  socket, or `ByteArray.defaultEndian` once.
+- An `HTTPServer` without a `rootDirectory` serves no files and listens on
+  `127.0.0.1`; `rewrites` is empty by default and `tryFiles` is
+  `["$uri", "$uri/"]`, and `validate()` refuses a `tryFiles` out of the
+  order the server follows.
+- The TLS surface takes `crossbyte.net.Certificate` and
+  `crossbyte.net.Key`, not `sys.ssl.Certificate` and `sys.ssl.Key`.
+- `readObject` and `writeObject` throw for an `objectEncoding` the build
+  cannot do -- on `ByteArray`, `FileStream` and every socket -- where they
+  read `null` and wrote nothing.
+- Types: `SQLiteConnection.lastInsertRowID` and `DBStats`' counts are
+  `Float`s; `JWTPayload.issuedAt`, `expiresAt` and `notBeforeTime` are
+  `Null<Float>`; `System.memoryUsage()` is a `Float`;
+  `MySQLStatement.parameters` is a `FieldStruct<Dynamic>`; `SlotHandle`
+  no longer becomes an `Int` by itself; `PHPBridge.execute()` returns a
+  `Future`.
+- Moved or removed: `RateLimiter` is in `crossbyte.net`;
+  `MongoConnection.lastInsertRowID`, `StunClient.discoverFor` and
+  `ThreadEvent.UPDATE` are gone.
+- `BCrypt.hash` makes `$2b$` hashes, and Postgres, MySQL and MongoDB
+  statements throw what the server refused.
+
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
   `DETACH DATABASE`, and `loadSchema()` with `getSchemaResult()`: a
