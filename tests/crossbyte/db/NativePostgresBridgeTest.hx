@@ -489,6 +489,35 @@ class NativePostgresBridgeTest extends utest.Test {
 		connection.close();
 	}
 
+	public function testCountsPastThirtyTwoBitsAreWhole():Void {
+		// The bridge read a statement's count with atoi, into 32 bits: a
+		// write of three billion rows read 2147483647 here (MSVC clamps;
+		// glibc wraps it negative), on both of its paths. And a statement's
+		// rowsAffected was the rows its result held, 0 for every write.
+		var connection = __open(__config("localhost"));
+
+		connection.request("fake:affect 3000000000");
+		Assert.equals(3000000000.0, connection.affectedRows);
+
+		// Bound parameters take the bridge's other path.
+		connection.requestParams("fake:affect 5000000001", []);
+		Assert.equals(5000000001.0, connection.affectedRows);
+
+		var statement = new crossbyte.db.postgres.PostgresStatement();
+		statement.sqlConnection = connection;
+		statement.text = "fake:affect 4000000000";
+		statement.execute();
+		Assert.equals(4000000000.0, statement.getResult().rowsAffected);
+		statement.executeParams([]);
+		Assert.equals(4000000000.0, statement.getResult().rowsAffected);
+
+		// A SELECT's is the rows it returned, as PostgreSQL counts it.
+		statement.text = "fake:count 3";
+		statement.execute();
+		Assert.equals(3.0, statement.getResult().rowsAffected);
+		connection.close();
+	}
+
 	// Pages `rows` rows two at a time, reading ahead of getResult(), and
 	// writes each page as its values, "+" marking one called complete.
 	@:noCompletion private static function __pages(connection:PostgresConnection, rows:Int):String {

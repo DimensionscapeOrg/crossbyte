@@ -45,6 +45,10 @@ class PostgresStatement extends EventDispatcher {
 	@:noCompletion private var __resultSet:Dynamic;
 	@:noCompletion private var __prefetch:Int = 0;
 	@:noCompletion private var __executing:Bool = false;
+	// What the connection said of this statement as it ran: the rows it
+	// changed or returned, and the OID of a row it inserted.
+	@:noCompletion private var __affected:Float = 0;
+	@:noCompletion private var __rowId:Float = 0;
 
 	// Pages read and not yet taken by getResult(), oldest first. A statement
 	// runs on the thread that calls it, so a plain Array serves every
@@ -90,6 +94,7 @@ class PostgresStatement extends EventDispatcher {
 
 		try {
 			__resultSet = __connection.request(query);
+			__noteCounts();
 			__queueResult();
 		} catch (e:Dynamic) {
 			__executing = false;
@@ -153,6 +158,7 @@ class PostgresStatement extends EventDispatcher {
 
 		try {
 			__resultSet = __toResultSet(__sqlConnection.requestParams(text, params));
+			__noteCounts();
 			__queueResult();
 		} catch (e:Dynamic) {
 			__executing = false;
@@ -213,12 +219,21 @@ class PostgresStatement extends EventDispatcher {
 		var complete:Bool = !__executing && __resultQueue.length == 0;
 
 		if (results != null) {
-			var len:Int = (__resultSet != null) ? __resultSet.length : 0;
-			var lastId:Int = (__sqlConnection != null) ? __sqlConnection.lastInsertRowID : 0;
-
-			return new SQLResult(results, len, complete, lastId);
+			return new SQLResult(results, __affected, complete, __rowId);
 		}
 		return null;
+	}
+
+	/**
+		Takes the statement's counts from the connection as it runs, before
+		another statement there replaces them. `rowsAffected` was the rows the
+		result held, 0 for every write, and the connection's last OID was
+		read as each page was taken.
+	**/
+	@:noCompletion private function __noteCounts():Void {
+		var connection:PostgresConnection = __sqlConnection;
+		__affected = connection != null ? connection.affectedRows : 0;
+		__rowId = connection != null ? connection.lastInsertRowID : 0;
 	}
 
 	/**

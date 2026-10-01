@@ -86,6 +86,24 @@ class PostgresWireTest extends utest.Test {
 		Assert.isNull(result.rows[1][1]);
 	}
 
+	public function testCountsPastThirtyTwoBitsDecodeWhole():Void {
+		// The bridge sent a statement's count in 32 bits, read with atoi, so
+		// past 2^31 it arrived clamped or negative; the OID, unsigned, read
+		// negative past 2^31. The count is 64 bits now, and the OID unsigned.
+		var block = new ResultBlock();
+		block.ok(5000000001.0, 3000000000.0, ["n"]);
+		var result = PostgresWire.decodeResult(block.finish());
+		Assert.equals(5000000001.0, result.affectedRows);
+		Assert.equals(3000000000.0, result.lastInsertRowID);
+
+		// 2^53, the last whole number a Float is sure of, and the largest OID.
+		var largest = new ResultBlock();
+		largest.ok(9007199254740992.0, 4294967295.0, []);
+		var decoded = PostgresWire.decodeResult(largest.finish());
+		Assert.equals(9007199254740992.0, decoded.affectedRows);
+		Assert.equals(4294967295.0, decoded.lastInsertRowID);
+	}
+
 	public function testResultCarriesValuesThatAreNotValidUtf8():Void {
 		var invalid:Bytes = Bytes.ofHex("C3281FFE");
 		var block = new ResultBlock();
@@ -142,6 +160,8 @@ class PostgresWireTest extends utest.Test {
 		// arithmetic that could defeat it lived inside the check itself.
 		var raw = new BytesBuffer();
 		__int(raw, PostgresWire.STATUS_OK);
+		// affectedRows, in two halves, and lastInsertRowID.
+		__int(raw, 0);
 		__int(raw, 0);
 		__int(raw, 0);
 		__int(raw, 1);
@@ -162,6 +182,7 @@ class PostgresWireTest extends utest.Test {
 		__int(raw, 0);
 		__int(raw, 0);
 		__int(raw, 0);
+		__int(raw, 0);
 		__int(raw, 20000000);
 
 		Assert.raises(() -> PostgresWire.decodeResult(raw.getBytes()));
@@ -174,11 +195,13 @@ class PostgresWireTest extends utest.Test {
 		__int(fields, PostgresWire.STATUS_OK);
 		__int(fields, 0);
 		__int(fields, 0);
+		__int(fields, 0);
 		__int(fields, -1);
 		Assert.raises(() -> PostgresWire.decodeResult(fields.getBytes()));
 
 		var rows = new BytesBuffer();
 		__int(rows, PostgresWire.STATUS_OK);
+		__int(rows, 0);
 		__int(rows, 0);
 		__int(rows, 0);
 		__int(rows, 0);
@@ -242,10 +265,12 @@ private class ResultBlock {
 
 	public function new() {}
 
-	public function ok(affectedRows:Int, lastInsertRowID:Int, fields:Array<String>):Void {
+	public function ok(affectedRows:Float, lastInsertRowID:Float, fields:Array<String>):Void {
 		__writeInt(__head, PostgresWire.STATUS_OK);
-		__writeInt(__head, affectedRows);
-		__writeInt(__head, lastInsertRowID);
+		// Unsigned 64 bits, low half first, then the OID unsigned.
+		__writeUInt(__head, affectedRows % 4294967296.0);
+		__writeUInt(__head, Math.ffloor(affectedRows / 4294967296.0));
+		__writeUInt(__head, lastInsertRowID);
 		__writeInt(__head, fields.length);
 		__fieldCount = fields.length;
 
@@ -267,6 +292,13 @@ private class ResultBlock {
 		}
 
 		__rowCount++;
+	}
+
+	private static function __writeUInt(out:BytesBuffer, value:Float):Void {
+		for (_ in 0...4) {
+			out.addByte(Std.int(value % 256));
+			value = Math.ffloor(value / 256);
+		}
 	}
 
 	public function finish():Bytes {
