@@ -324,6 +324,89 @@ class IceAgentTest extends utest.Test {
 	}
 
 	/**
+		Every change of state is told, the consent failure included.
+
+		Losing consent set `state` and called nothing, so a caller holding a
+		raw agent -- a reliable datagram server with one attached -- had to
+		poll `state` every tick to learn the path had gone.
+	**/
+	public function testAnAgentSaysWhenItsStateChanges():Void {
+		if (unsupported()) return;
+
+		var states:Array<String> = [];
+		__alice = new IceAgent(true, credentials("alice"));
+		__bob = new IceAgent(false, credentials("bob"));
+		__alice.onStateChanged = state -> states.push(__stateName(state));
+
+		var wire = new Wire(__alice, ALICE_ADDRESS, __bob, BOB_ADDRESS);
+		__alice.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		__bob.addLocalCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		__alice.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		__bob.addRemoteCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		__alice.start(__bob.localCredentials, 0);
+		__bob.start(__alice.localCredentials, 0);
+
+		Assert.isTrue(wire.run(() -> __alice.state == CONNECTED && __bob.state == CONNECTED), "the two never connected");
+		Assert.equals("checking,connected", states.join(","));
+
+		wire.delivering = false;
+		wire.advance(1.0, IceAgent.CONSENT_TIMEOUT + 5.0);
+
+		Assert.equals("checking,connected,failed", states.join(","), "losing consent was not told");
+	}
+
+	/**
+		A failed agent stays failed.
+
+		A nomination reaching an agent whose consent had run out went through
+		the branch meant for the first selection: CONNECTED again, with no
+		`onSelectedPairChanged`, on a path RFC 7675 had it stop using.
+	**/
+	public function testAFailedAgentStaysFailed():Void {
+		if (unsupported()) return;
+
+		var wire = __connected();
+
+		if (__bob.state != CONNECTED) {
+			Assert.fail("the two never connected");
+			return;
+		}
+
+		wire.delivering = false;
+		var now = wire.advance(1.0, IceAgent.CONSENT_TIMEOUT + 5.0);
+		Assert.equals(IceAgentState.FAILED, __bob.state, "the silent path was never given up on");
+
+		var sent:Int = 0;
+		var changes:Int = 0;
+		__bob.onSend = (_, _, _) -> sent++;
+		__bob.onSelectedPairChanged = _ -> changes++;
+		__bob.onStateChanged = _ -> changes++;
+
+		var nomination = new StunMessage(StunMessage.BINDING_REQUEST, crossbyte.crypto.SecureRandom.getSecureRandomBytes(12), [
+			StunMessage.username(IceCredentials.username(__bob.localCredentials, __alice.localCredentials)),
+			StunMessage.priority(IceCandidate.computePriority(PEER_REFLEXIVE)),
+			StunMessage.iceRole(true, __alice.tiebreaker),
+			StunMessage.useCandidate()
+		]);
+
+		Assert.isFalse(__bob.receive(nomination.encodeSigned(__bob.localCredentials.password), ALICE_ADDRESS, PORT, now),
+			"a failed agent took a check");
+		Assert.equals(IceAgentState.FAILED, __bob.state, "a nomination brought a failed agent back");
+		Assert.equals(0, sent, "a failed agent answered");
+		Assert.equals(0, changes, "a failed agent reported a change");
+	}
+
+	private static function __stateName(state:IceAgentState):String {
+		return switch (state) {
+			case NEW: "new";
+			case CHECKING: "checking";
+			case CONNECTED: "connected";
+			case FAILED: "failed";
+			case CLOSED: "closed";
+		}
+	}
+
+	/**
 		A peer that moves and nominates the pair from its new address is followed.
 
 		What a browser does when its network changes: the controlling agent

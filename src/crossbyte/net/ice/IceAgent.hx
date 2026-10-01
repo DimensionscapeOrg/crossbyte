@@ -163,7 +163,27 @@ class IceAgent {
 	/** Random, 64 bits, and compared when two peers claim the same role. **/
 	public var tiebreaker(default, null):Int64;
 
+	/** Where the agent has got to. `onStateChanged` says when it moves. **/
 	public var state(default, null):IceAgentState = NEW;
+
+	/**
+		Called when `state` changes: CHECKING once `start` has the peer's
+		credentials, CONNECTED when a pair is selected, and FAILED when every
+		pair has failed or, after connecting, the peer has stopped answering
+		consent checks for `CONSENT_TIMEOUT`. Not called for `close()`, which
+		the caller already knows about.
+
+		FAILED is final. The agent neither sends nor answers again, as RFC
+		7675 has a sender whose consent expired stop, and a path afresh is an
+		ICE restart: a new agent. A check nominating a pair used to bring a
+		failed agent back to CONNECTED, with nothing reporting it.
+
+		The consent failure used to set `state` and call nothing, on the
+		reasoning that a hook nothing is obliged to read is a way of not
+		reporting it -- which left a caller with nothing to read but `state`,
+		polled every tick.
+	**/
+	public dynamic function onStateChanged(state:IceAgentState):Void {}
 
 	/**
 		The pair traffic should use, once there is one.
@@ -184,9 +204,12 @@ class IceAgent {
 	/**
 		Resolves with the nominated pair, or fails when every pair has.
 
-		One shot: an agent that has connected stays connected until it is
-		closed, and an ICE restart is a new agent rather than a second result
-		on this one.
+		One shot: it settles once, with the first pair selected, and what
+		becomes of the path afterwards is said elsewhere. The controlling peer
+		can nominate another pair, which `onSelectedPairChanged` reports; and
+		the peer can stop answering consent checks, after which the agent is
+		FAILED for good, which `onStateChanged` reports. An ICE restart is a
+		new agent rather than a second result on this one.
 	**/
 	public var connected(default, null):Future<IceCandidatePair>;
 
@@ -359,6 +382,7 @@ class IceAgent {
 		state = CHECKING;
 		__nextCheckAt = now;
 		__rebuild();
+		onStateChanged(CHECKING);
 	}
 
 	/**
@@ -430,7 +454,9 @@ class IceAgent {
 		so a caller should pass it on rather than dropping it.
 	**/
 	public function receive(payload:ByteArray, fromAddress:String, fromPort:Int, now:Float, ?via:IceCandidate, ?message:StunMessage):Bool {
-		if (state == CLOSED || payload == null) {
+		// A failed agent is done, like a closed one: it answers nothing, and
+		// nothing brings it back.
+		if (state == CLOSED || state == FAILED || payload == null) {
 			return false;
 		}
 
@@ -1110,12 +1136,10 @@ class IceAgent {
 		}
 
 		if (now - __consentedAt >= CONSENT_TIMEOUT) {
-			// FAILED rather than a callback, because a hook nothing is obliged
-			// to read is a way of not reporting this. `selectedPair` is left
-			// alone: it is what the path *was*, which is worth having when
-			// working out why a session stopped.
-			state = FAILED;
-			__consentTransaction = null;
+			// `selectedPair` is left alone: it is what the path *was*, which
+			// is worth having when working out why a session stopped.
+			// `connected` resolved long ago and keeps its result.
+			__giveUp("The peer stopped answering consent checks.");
 			return;
 		}
 
@@ -1180,7 +1204,10 @@ class IceAgent {
 	}
 
 	@:noCompletion private function __select(pair:IceCandidatePair, now:Float):Void {
-		if (state == CLOSED) {
+		// Only while checking or connected. A failed agent is done: a
+		// nomination used to bring one back to CONNECTED, through the branch
+		// below meant for the first, with nothing told.
+		if (state != CHECKING && state != CONNECTED) {
 			return;
 		}
 
@@ -1217,6 +1244,7 @@ class IceAgent {
 		__consentDueAt = now + CONSENT_INTERVAL;
 
 		@:privateAccess connected.__resolve(pair);
+		onStateChanged(CONNECTED);
 	}
 
 	@:noCompletion private function __settleIfFinished():Void {
@@ -1230,8 +1258,15 @@ class IceAgent {
 			}
 		}
 
+		__giveUp("Every candidate pair failed: no path between these two peers was found.");
+	}
+
+	/** Fails the agent for good, saying why. **/
+	@:noCompletion private function __giveUp(reason:String):Void {
 		state = FAILED;
-		@:privateAccess connected.__fail("Every candidate pair failed: no path between these two peers was found.", null);
+		__consentTransaction = null;
+		@:privateAccess connected.__fail(reason, null);
+		onStateChanged(FAILED);
 	}
 
 	@:noCompletion private function __sameEndpoint(mapped:ReflexiveAddress, candidate:IceCandidate):Bool {
