@@ -75,6 +75,18 @@ class IceAgent {
 	public static inline var MAX_ATTEMPTS:Int = 7;
 
 	/**
+		How long the last transmission is given to be answered, in seconds:
+		RFC 8489's Rm of sixteen times the first timeout.
+
+		So a pair nothing answers is given up on 39.5 seconds after its first
+		check -- seven transmissions over 31.5 seconds, and eight more for the
+		last of them to be answered. It waited one more doubling instead, and
+		gave up at 63.5, which `TurnClient` had already stopped doing for the
+		same schedule.
+	**/
+	public static inline var FINAL_WAIT:Float = 8.0;
+
+	/**
 		How often consent to keep sending is re-asked for. RFC 7675 section 5.1.
 
 		Randomised around this rather than sent on the dot, because a fixed
@@ -377,8 +389,8 @@ class IceAgent {
 		for (check in __checks) {
 			if (check.state == IN_PROGRESS && now >= check.nextAttemptAt) {
 				if (check.attempts >= MAX_ATTEMPTS) {
-					// Nothing came back through seven transmissions over about
-					// half a minute. The pair is not a path.
+					// Nothing came back through seven transmissions and the
+					// wait after the last: 39.5 seconds. The pair is not a path.
 					check.state = FAILED;
 				} else {
 					__transmit(check, now);
@@ -492,8 +504,8 @@ class IceAgent {
 		usually are, and ICE pairs a relayed candidate with all of them. A relay
 		drops what it has no permission for without a word, so each of those
 		checks would otherwise be sent seven times over half a minute into
-		nothing, and an agent whose other pairs had all failed would wait that
-		long to say so.
+		nothing, and an agent whose other pairs had all failed would wait 39.5
+		seconds to say so.
 
 		A pair that has answered is left alone: it is a path that demonstrably
 		worked, whatever was said about it since.
@@ -548,8 +560,10 @@ class IceAgent {
 		// Recorded, because a refusal that comes back may be answering a claim
 		// this agent has since abandoned. See __refused.
 		check.sentAsControlling = controlling;
-		// Doubling from 500ms, so seven attempts span roughly 31 seconds.
-		check.nextAttemptAt = now + INITIAL_RTO * Math.pow(2, check.attempts - 1);
+		// Doubling from 500ms, so seven attempts span 31.5 seconds, and the
+		// last given sixteen times the first to be answered (RFC 8489 section
+		// 6.2.1): a pair is given up on at 39.5.
+		check.nextAttemptAt = now + (check.attempts >= MAX_ATTEMPTS ? FINAL_WAIT : INITIAL_RTO * Math.pow(2, check.attempts - 1));
 
 		__sendVia(check.pair.local, message.encodeSigned(remoteCredentials.password), check.pair.remote.address, check.pair.remote.port);
 	}

@@ -554,6 +554,39 @@ class IceAgentTest extends utest.Test {
 	}
 
 	/**
+		A pair nothing answers is given up on at 39.5 seconds, as RFC 8489 has
+		a transaction given up on: seven transmissions over 31.5 seconds, and
+		sixteen times the first timeout for the last to be answered.
+
+		It waited one more doubling after the last -- thirty-two seconds -- and
+		gave up at 63.5, while this class said half a minute.
+	**/
+	public function testAPairNothingAnswersIsGivenUpOnAtThirtyNineAndAHalfSeconds():Void {
+		if (unsupported()) return;
+
+		var agent = new IceAgent(true, credentials("alice"));
+		var now = 0.0;
+		var failedAt:Float = -1;
+		var sent:Int = 0;
+
+		agent.onSend = (_, _, _) -> sent++;
+		agent.connected.then(_ -> {}, _ -> failedAt = now);
+		agent.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		agent.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		agent.start(credentials("bob"), 0);
+
+		// A fine step, so each transmission goes out within a few milliseconds
+		// of when it is due and the total is what the schedule says.
+		while (failedAt < 0 && now < 120) {
+			agent.poll(now);
+			now += 0.01;
+		}
+
+		Assert.equals(IceAgent.MAX_ATTEMPTS, sent, "the pair was checked " + sent + " times");
+		Assert.isTrue(failedAt >= 39.5 && failedAt < 39.6, "the pair was given up on at " + failedAt + " seconds, not 39.5");
+	}
+
+	/**
 		STUN that is not a connectivity check is left for whatever else shares
 		the socket.
 
