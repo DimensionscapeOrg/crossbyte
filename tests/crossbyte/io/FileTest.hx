@@ -885,6 +885,32 @@ class FileTest extends utest.Test {
 		try Require.notNull(dir.parent).deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
+	public function testAPathIsTakenLiterally():Void {
+		// On Windows the first %NAME% in a path was replaced by that
+		// environment variable, after resolvePath had normalized the path,
+		// so a name a peer sent, "%SystemRoot%", reached a directory nobody
+		// had named: the HTTP server served files outside its root by it.
+		var dir = File.createTempDirectory();
+		var base:String = haxe.io.Path.removeTrailingSlashes(dir.nativePath);
+
+		Assert.equals(base + File.separator + "%TEMP%", dir.resolvePath("%TEMP%").nativePath);
+		Assert.equals(base + File.separator + "%SystemRoot%" + File.separator + "win.ini", dir.resolvePath("%SystemRoot%/win.ini").nativePath);
+
+		if (System.isWindows) {
+			Assert.equals("C:\\tmp\\%USERPROFILE%", new File("C:/tmp/%USERPROFILE%").nativePath);
+		} else {
+			Assert.equals("/tmp/%HOME%", new File("/tmp/%HOME%").nativePath);
+		}
+
+		// A name with such text in it is that name.
+		var literal = dir.resolvePath("100%PATH%.txt");
+		HaxeFile.saveContent(literal.nativePath, "x");
+		Assert.isTrue(literal.exists);
+		Assert.same(["100%PATH%.txt"], sys.FileSystem.readDirectory(dir.nativePath));
+
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
 	public function testGetRelativePathAnswersNullForWhatIsNotBelow():Void {
 		// A sibling came back as its bare name, "c", which reads as a child.
 		var root = File.createTempDirectory();
