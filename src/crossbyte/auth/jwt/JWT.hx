@@ -149,9 +149,9 @@ class JWT {
 	 * shape, the header's `alg`, `crit`, `typ` and `kid`, the signature, and
 	 * then the claims, `exp` (required), `iat`, `nbf`, `iss` and `aud`.
 	 * Nothing in a refused token is returned, so claims are never read before
-	 * the signature over them has been checked. A header or claims whose
-	 * objects and arrays nest more than 32 deep is `MALFORMED`, refused before
-	 * it is parsed. A header with `crit` is `UNSUPPORTED_CRITICAL`: no
+	 * the signature over them has been checked. A header whose objects and
+	 * arrays nest more than 32 deep is `MALFORMED`, refused before it is
+	 * parsed. A header with `crit` is `UNSUPPORTED_CRITICAL`: no
 	 * extension is implemented here, and RFC 7515 makes such a token invalid
 	 * to a verifier that does not understand the extensions it names.
 	 *
@@ -170,7 +170,9 @@ class JWT {
 			return JWTVerification.refused(MALFORMED);
 		}
 
-		var header:Null<Dynamic> = __decodeObject(parts[0]);
+		// Bounded: the header is parsed before the signature is checked, so it
+		// is the part anyone can write. See MAX_NESTING.
+		var header:Null<Dynamic> = __decodeObject(parts[0], MAX_NESTING);
 		if (header == null) {
 			return JWTVerification.refused(MALFORMED);
 		}
@@ -214,7 +216,9 @@ class JWT {
 			return JWTVerification.refused(BAD_SIGNATURE);
 		}
 
-		var claims:Null<Dynamic> = __decodeObject(parts[1]);
+		// Unbounded: parsed only once the signature has shown the issuer wrote
+		// them. Measuring them too cost a typical token's verification 2%.
+		var claims:Null<Dynamic> = __decodeObject(parts[1], 0);
 		if (claims == null || !__registeredClaimsWellTyped(claims)) {
 			return JWTVerification.refused(MALFORMED);
 		}
@@ -398,14 +402,16 @@ class JWT {
 	}
 
 	/**
-		The deepest a token's header or claims may nest, objects and arrays
-		together. Real claims nest a few levels: an address, roles under a
-		client.
+		The deepest a token's header may nest, objects and arrays together.
+		A header holds a handful of flat members.
 	**/
 	@:noCompletion private static inline var MAX_NESTING:Int = 32;
 
-	/** Decodes one segment into a JSON object, or null for anything else. */
-	@:noCompletion private static function __decodeObject(segment:String):Null<Dynamic> {
+	/**
+		Decodes one segment into a JSON object, or null for anything else,
+		including JSON nested deeper than `maxNesting`, when that is above 0.
+	**/
+	@:noCompletion private static function __decodeObject(segment:String, maxNesting:Int):Null<Dynamic> {
 		var text:Null<String> = safeBase64UrlDecodeString(segment);
 		if (text == null) {
 			return null;
@@ -415,7 +421,7 @@ class JWT {
 		// is parsed before the signature is checked, so a token needed no key
 		// to be nested 6,000 deep in 16 KB, within a raised maxTokenLength,
 		// and natively that overflowed the stack and ended the process.
-		if (!__nestsWithin(text, MAX_NESTING)) {
+		if (maxNesting > 0 && !__nestsWithin(text, maxNesting)) {
 			return null;
 		}
 
