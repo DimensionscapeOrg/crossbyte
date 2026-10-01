@@ -13,12 +13,18 @@ package crossbyte.errors;
 class EOFError extends IOError {
 	/**
 		Creates a new EOFError object.
-		@param message A string associated with the error object.
+		@param message A string associated with the error object. Without one,
+			   the message is Flash's: "End of file was encountered".
+		@param id A reference number to associate with the error. `0`, the
+			   default, gives Flash's number for this error, 2030.
 	**/
 	public function new(message:String = null, id:Int = 0) {
-		super("End of file was encountered");
+		// Both used to be replaced whatever was passed, so a reader's account
+		// of what ran out, "Asked for 8 bytes with 3 left in the file",
+		// reached nobody.
+		super(message == null || message == "" ? "End of file was encountered" : message);
 
 		name = "EOFError";
-		errorID = 2030;
+		errorID = id != 0 ? id : 2030;
 	}
 }
