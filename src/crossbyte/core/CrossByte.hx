@@ -178,6 +178,13 @@ final class CrossByte extends EventDispatcher {
 	 * a process whose primordial runtime has exited ends rather than waiting
 	 * on children nobody is going to stop.
 	 *
+	 * On JavaScript, which has one thread, the child's loop is a chain of
+	 * the platform's timers beside the application's, started in a later
+	 * turn. While its own work runs, INIT, its ticks and timers, EXIT,
+	 * `current()` is the child and `crossbyte.Timer` schedules on it; the
+	 * rest of the time, a socket's callbacks included, they are the
+	 * application's.
+	 *
 	 * ```haxe
 	 * var simulation = CrossByte.make(DEFAULT, WHEEL, child -> {
 	 *     child.tps = 60;
@@ -219,7 +226,20 @@ final class CrossByte extends EventDispatcher {
 		}
 
 		if (instance.__getRunning()) {
+			#if js
+			// In a later turn, as a thread would start, after whatever the
+			// caller does next. It went through haxe.EntryPoint, which runs
+			// what it is given only while its own loop goes on, on Node, until
+			// the program has started, so a child made once the program was
+			// running never started at all.
+			#if nodejs
+			js.Node.setImmediate(instance.__runEventLoop);
+			#else
+			js.Browser.window.setTimeout(instance.__runEventLoop, 0);
+			#end
+			#else
 			EntryPoint.addThread(instance.__runEventLoop);
+			#end
 		} else {
 			// Exited from inside configure: there is nothing to start.
 			instance.__finalizeExit();
@@ -237,7 +257,10 @@ final class CrossByte extends EventDispatcher {
 	 * On every threaded target, native, the jvm, the interpreter, hl and
 	 * neko, a thread with no runtime of its own is refused rather than
 	 * handed the primordial one: anything it registered there would be
-	 * touched from two threads. JavaScript has one thread and one runtime.
+	 * touched from two threads. JavaScript has one thread: there this is the
+	 * child runtime whose own work is running, its INIT, ticks, timers and
+	 * EXIT, and the primordial runtime the rest of the time, a socket's
+	 * callbacks included.
 	 *
 	 * @return The current thread's CrossByte instance, or the primordial
 	 *         application runtime when called from the primordial thread.
@@ -262,6 +285,9 @@ final class CrossByte extends EventDispatcher {
 			}
 		}
 		return instance;
+		#elseif js
+		var running:CrossByte = __jsRunning;
+		return running != null ? running : __primordial;
 		#else
 		return __primordial;
 		#end
@@ -281,6 +307,9 @@ final class CrossByte extends EventDispatcher {
 		var primordial:CrossByte = __primordial;
 		var primordialThread:Thread = __primordialThread;
 		return (primordial != null && primordialThread != null && Thread.current() == primordialThread) ? primordial : null;
+		#elseif js
+		var running:CrossByte = __jsRunning;
+		return running != null ? running : __primordial;
 		#else
 		return __primordial;
 		#end
@@ -462,6 +491,12 @@ final class CrossByte extends EventDispatcher {
 	#if js
 	@:noCompletion private var __passFlushScheduled:Bool = false;
 	@:noCompletion private var __passFlushTurn:Void->Void = null;
+
+	// The runtime whose own work is running, on the one thread JavaScript
+	// has, and what was there before it; see __enterJs.
+	@:noCompletion private static var __jsRunning:CrossByte = null;
+	@:noCompletion private var __jsOuterRunning:CrossByte = null;
+	@:noCompletion private var __jsOuterTimer:TimerScheduler = null;
 	#end
 
 	#if cpp
@@ -1364,7 +1399,11 @@ final class CrossByte extends EventDispatcher {
 		__ownerThread = Thread.current();
 		__threadLocalStorage.value = this;
 		#end
+		#if js
+		__enterJs();
+		#else
 		CBTimer.bindCurrentThread(__timer);
+		#end
 
 		#if !js
 		// Made here, on the loop's own thread, since the registry is not
@@ -1386,6 +1425,7 @@ final class CrossByte extends EventDispatcher {
 		__lastFrameStamp = Timer.stamp();
 		__frameDeadline = __lastFrameStamp + __tickInterval;
 		__scheduleFrame();
+		__leaveJs();
 		#else
 		while (__getRunning()) {
 			// Each callback the loop runs is contained where it runs; this is
@@ -1472,8 +1512,10 @@ final class CrossByte extends EventDispatcher {
 		js.Browser.window.clearTimeout(__frameTimeout);
 		#end
 
+		__enterJs();
 		if (!__getRunning()) {
 			__finalizeExit();
+			__leaveJs();
 			return;
 		}
 
@@ -1494,6 +1536,7 @@ final class CrossByte extends EventDispatcher {
 
 			if (!__getRunning()) {
 				__finalizeExit();
+				__leaveJs();
 				return;
 			}
 
@@ -1503,7 +1546,42 @@ final class CrossByte extends EventDispatcher {
 			}
 		}
 
+		__leaveJs();
 		__scheduleFrame();
+	}
+
+	/**
+		Makes this runtime the one whose work is running, until `__leaveJs`:
+		`current()` answers it and `crossbyte.Timer` schedules on it, as they
+		do on a runtime's own thread elsewhere.
+
+		JavaScript has one thread, so a child runtime's loop is a chain of the
+		platform's timers beside the application's, and the timers'
+		`bindCurrentThread` binds them for the whole program. A child's loop
+		did that as it started and never gave them back: a timer the
+		application armed from then on was the child's, and never ran once the
+		child had exited. A runtime's own work, its INIT, its frames, its
+		EXIT, is bracketed by these instead, and whatever was there before
+		is put back after.
+	**/
+	@:noCompletion private function __enterJs():Void {
+		__jsOuterRunning = __jsRunning;
+		__jsOuterTimer = CBTimer.currentOrNull();
+		__jsRunning = this;
+		CBTimer.bindCurrentThread(__timer);
+	}
+
+	@:noCompletion private function __leaveJs():Void {
+		__jsRunning = __jsOuterRunning;
+		var outer:TimerScheduler = __jsOuterTimer;
+		__jsOuterRunning = null;
+		__jsOuterTimer = null;
+		// Unless what was there was this runtime's own: then it is still
+		// bound, or an exit has just handed the timers back, and either way
+		// what is there now is right.
+		if (outer != __timer) {
+			CBTimer.bindCurrentThread(outer);
+		}
 	}
 	#end
 
