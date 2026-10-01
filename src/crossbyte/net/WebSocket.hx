@@ -1051,7 +1051,9 @@ class WebSocket extends Socket {
 			text = Std.string(failed.data);
 		}
 
-		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text));
+		// A deadline that passed says so with its id, which a NetConnection
+		// over this socket reports as Reason.Timeout.
+		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text, failed != null ? failed.errorID : 0));
 	}
 
 	@:noCompletion override private function socket_onMessage(msg:Dynamic):Void {

@@ -165,6 +165,43 @@ class NetConnectionLifecycleTest extends utest.Test {
 			});
 		});
 	}
+
+	/**
+		A WebSocket connect not open within its `timeout` is `Reason.Timeout`
+		too. The server takes the TCP connection and never answers the
+		upgrade. The session's deadline errors carried no
+		`TIMEOUT_ERROR_ID`, so this ended as `Reason.Error` with the time in
+		its text.
+	**/
+	@:timeout(20000)
+	public function testAWebSocketConnectThatTimesOutIsATimeout(async:Async):Void {
+		var server = new ServerSocket();
+		var silent:Array<Socket> = [];
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) silent.push(e.socket));
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			var socket = new WebSocket();
+			socket.timeout = 400;
+			var errors:Array<Reason> = [];
+			var closes:Array<Reason> = [];
+			var connection = NetConnection.fromWebSocket(socket);
+			connection.onError = reason -> errors.push(reason);
+			connection.onClose = reason -> closes.push(reason);
+			socket.connect("127.0.0.1", server.localPort);
+
+			NetPump.until(() -> closes.length > 0, 10.0, function(_) {
+				Assert.isTrue(errors.length == 1 && Type.enumEq(Reason.Timeout, errors[0]), "onError was not told of the timeout: " + errors);
+				Assert.isTrue(closes.length == 1 && Type.enumEq(Reason.Timeout, closes[0]), "onClose was not told of the timeout: " + closes);
+				for (peer in silent) {
+					try peer.close() catch (_:Dynamic) {}
+				}
+				try server.close() catch (_:Dynamic) {}
+				async.done();
+			});
+		});
+	}
 	#end
 
 	/**
