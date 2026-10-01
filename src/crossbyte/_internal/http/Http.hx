@@ -710,7 +710,10 @@ class Http {
 			return;
 		}
 
-		var bytesTotalForProgress:Int = (!isChunked && contentLength != null) ? contentLength : -1;
+		// 0 for a length nobody declared, as HTTPRequestContext.onProgress says
+		// and the JavaScript clients report. It was -1, which reached
+		// ProgressEvent.bytesTotal, a UInt, as 4294967295.
+		var bytesTotalForProgress:Int = (!isChunked && contentLength != null) ? contentLength : 0;
 
 		var isNoContentStatus:Bool = (__status == 204 || __status == 304);
 
@@ -1279,7 +1282,12 @@ class Http {
 				__status = code;
 				// Only an HTTP/1.1 response keeps its connection by default.
 				__responseHttp11 = StringTools.startsWith(line, "HTTP/1.1");
-				onStatus(__status);
+				// A 1xx is informational, and is not reported: the status that
+				// follows it is, as HTTPRequestContext says. A 100 Continue
+				// reached URLLoader's HTTP_STATUS ahead of the 200.
+				if (code >= 200) {
+					onStatus(code);
+				}
 			} else {
 				var i:Int = line.indexOf(":");
 				if (i <= 0) {
