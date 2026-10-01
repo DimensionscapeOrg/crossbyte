@@ -12,17 +12,27 @@ CrossByte aims to stay modular. The core provides portable behavior first, while
 
 ## Install
 
-Release candidate target:
-
 ```sh
 haxelib install crossbyte
 ```
 
-If you are tracking the repo directly during RC validation:
+Or track the repository:
 
 ```sh
 haxelib git crossbyte https://github.com/dimensionscapeorg/crossbyte.git
 ```
+
+### Native targets
+
+Native (hxcpp) builds need the `production` branch of the [`dimensionscape/hxcpp`](https://github.com/dimensionscape/hxcpp) fork:
+
+```sh
+haxelib git hxcpp https://github.com/dimensionscape/hxcpp.git production
+```
+
+It carries the socket, poll and TLS corrections CrossByte depends on, ALPN for HTTP/2, TLS session resumption and the bundled MySQL client, and it exposes hxcpp's mbedTLS to libraries, which CrossByte's RSA and ECDSA build against. hxcpp 4.3.2, the release on haxelib, has none of these and cannot build CrossByte's crypto. CI builds against the same branch.
+
+The JVM, Node, HashLink, Neko and the interpreter need nothing else; Node needs `hxnodejs`.
 
 Install the published CrossByte task runner with:
 
