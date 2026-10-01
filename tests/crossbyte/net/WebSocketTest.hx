@@ -147,6 +147,60 @@ class WebSocketTest extends utest.Test {
 	}
 
 	/**
+		A burst of messages is parsed in one sweep, and what is left of it
+		after the last whole frame is moved down once, in place.
+
+		Every 64 KB consumed copied the whole unread rest of the input into a
+		new buffer, so a burst cost the square of its length: a client
+		uploading 64 KB messages was received at 21 MB/s, 48.7 ms of server
+		CPU a megabyte, 82% of it in that copy, and the runtime ran nothing
+		else, for seconds at a time, while it lasted.
+	**/
+	public function testABurstIsParsedWithoutCopyingWhatIsLeft():Void {
+		var ws = openParser();
+		ws.__isClient = true;
+		var size:Int = 8 * 1024;
+		var count:Int = 64;
+
+		var burst = new ByteArray();
+		burst.endian = BIG_ENDIAN;
+		for (i in 0...count) {
+			burst.writeBytes(patternFrame(i, size));
+		}
+		// And the first half of one more, whose rest arrives after.
+		var last = patternFrame(count, size);
+		var half:Int = last.length >> 1;
+		burst.writeBytes(last, 0, half);
+
+		var buffer:ByteArray = ws.__input;
+		var copies:Int = 0;
+		var messages:Int = 0;
+		var wrong:Int = 0;
+		ws.onmessage = e -> {
+			if (ws.__input != buffer) {
+				copies++;
+				buffer = ws.__input;
+			}
+			if (!carries(e.data, messages, size)) {
+				wrong++;
+			}
+			messages++;
+		};
+
+		arrive(ws, burst, 0, burst.length);
+		if (ws.__input != buffer) {
+			copies++;
+			buffer = ws.__input;
+		}
+		Assert.equals(count, messages, "not every whole message in the burst was delivered");
+		Assert.equals(0, copies, 'what was left of a burst of $count messages was copied into a new buffer $copies times');
+
+		arrive(ws, last, half, last.length - half);
+		Assert.equals(count + 1, messages, "the message split across two arrivals was not delivered");
+		Assert.equals(0, wrong, '$wrong messages arrived as something other than what was sent');
+	}
+
+	/**
 		What a pass of the runtime sends a WebSocket goes out in one write,
 		when the pass ends. Each message was a write of its own, a system
 		call apiece: a server relaying a chat room's messages to everyone in
@@ -590,6 +644,44 @@ class WebSocketTest extends utest.Test {
 		}
 		frame.position = 0;
 		return frame;
+	}
+
+	/** An unmasked binary frame, as a server sends, whose payload of `size` bytes counts up from `index`. **/
+	private static function patternFrame(index:Int, size:Int):ByteArray {
+		var payload = Bytes.alloc(size);
+		for (j in 0...size) {
+			payload.set(j, (index + j) & 0xFF);
+		}
+		var frame = new ByteArray();
+		frame.endian = BIG_ENDIAN;
+		frame.writeByte(0x82);
+		writePayloadLength(frame, size, false);
+		frame.writeBytes(payload, 0, size);
+		frame.position = 0;
+		return frame;
+	}
+
+	/** Whether `data` is the payload `patternFrame(index, size)` carries: looked at every seventh byte, and the last. **/
+	private static function carries(data:ByteArray, index:Int, size:Int):Bool {
+		if (data.length != size) {
+			return false;
+		}
+		var j:Int = 0;
+		while (j < size) {
+			if (data[j] != ((index + j) & 0xFF)) {
+				return false;
+			}
+			j += 7;
+		}
+		return data[size - 1] == ((index + size - 1) & 0xFF);
+	}
+
+	/** `length` bytes of `data` arriving: appended to the session's input and parsed, as a read does. **/
+	private static function arrive(ws:InternalWebSocket, data:ByteArray, offset:Int, length:Int):Void {
+		ws.__input.position = ws.__input.length;
+		ws.__input.writeBytes(data, offset, length);
+		ws.__input.position = ws.__inputPosition;
+		ws.__onData();
 	}
 
 	private static function writeRawBytes(target:ByteArray, bytes:Bytes):Void {
