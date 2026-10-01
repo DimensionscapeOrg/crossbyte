@@ -218,6 +218,29 @@ class ReliableDatagramDeliveryTest extends utest.Test {
 		none.close();
 	}
 
+	/**
+		A stream's multi-byte strings are UTF-8 whatever character set is
+		named, as the socket's documentation now says; it promised the named
+		set, as AIR's did, and never used it.
+	**/
+	public function testAStreamsMultiByteStringsAreUtf8WhateverCharsetIsNamed():Void {
+		var pair = Pair.make();
+		if (pair == null) return;
+
+		pair.sender.__mode = STREAM;
+		pair.receiver.__mode = STREAM;
+		var text:String = "héllo, 世界";
+		pair.sender.writeMultiByte(text, "shift-jis");
+		pair.sender.flush();
+		pair.carry(pair.sender.take());
+
+		var utf8 = new ByteArray();
+		utf8.writeUTFBytes(text);
+		Assert.equals(utf8.length, pair.receiver.bytesAvailable, "the string was not written as UTF-8");
+		Assert.equals(text, pair.receiver.readMultiByte(pair.receiver.bytesAvailable, "iso-8859-1"), "the bytes were not read as UTF-8");
+		pair.close();
+	}
+
 	// ---------------------------------------------------------- unreliable
 
 	public function testAnUnreliableMessageGoesOutOnceAndIsNotKept():Void {
