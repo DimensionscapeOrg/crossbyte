@@ -81,6 +81,7 @@ entry below says how:
   `abort()` is the old immediate close. Its FIN holds a place in the
   sequence, which a peer from before 1.0 does not know, so both ends need
   1.0 for what was sent before a close to arrive before it.
+- `DatagramSocket.timeout` is gone; it did nothing, so delete what sets it.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1137,6 +1138,10 @@ entry below says how:
 - accepted `wss://` sessions now run the deferred, timeout-guarded TLS handshake the client path already used; previously a server-side handshake happened implicitly on first read with no bound, so a peer that completed TCP then stalled mid-TLS held the socket indefinitely (`docs/proposals/0012-websocket-tls-handshake.md`)
 
 ### Removed
+- `DatagramSocket.timeout`. It set a read timeout on the socket underneath,
+  which never blocks, every read waits on the registry's poll, and
+  Node's datagram socket has no timeout at all, so it changed nothing on
+  any target.
 - `ThreadEvent.UPDATE`. Nothing dispatched it, and no worker or task had
   anything it could have meant; `PROGRESS` carries a worker's messages.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
