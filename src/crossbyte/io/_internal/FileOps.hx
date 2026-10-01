@@ -127,6 +127,55 @@ class FileOps {
 	}
 
 	/**
+		`path` opened to be written from empty, as `sys.io.File.write` promises
+		and on the jvm under Windows does not keep: it deletes the file and
+		opens it afresh, Windows refuses the delete while any other handle has
+		the file open, and the old file is then opened without being cut,
+		its start overwritten, its old length kept, and nothing said. Cut here
+		through the handle, which Windows allows.
+	**/
+	public static function write(path:String):sys.io.FileOutput {
+		#if (js && !nodejs)
+		throw new crossbyte.errors.IllegalOperationError("Cannot write " + path + ": this target has no filesystem.");
+		#else
+		var output:sys.io.FileOutput = sys.io.File.write(path, true);
+
+		#if jvm
+		try {
+			@:privateAccess output.f.setLength(haxe.Int64.ofInt(0));
+		} catch (e:Dynamic) {
+			try {
+				output.close();
+			} catch (_:Dynamic) {}
+			throw e;
+		}
+		#end
+
+		return output;
+		#end
+	}
+
+	/** `bytes` as the whole of the file at `path`, through `write`. **/
+	public static function saveBytes(path:String, bytes:haxe.io.Bytes):Void {
+		#if (js && !nodejs)
+		throw new crossbyte.errors.IllegalOperationError("Cannot write " + path + ": this target has no filesystem.");
+		#else
+		var output:sys.io.FileOutput = write(path);
+
+		try {
+			output.writeFullBytes(bytes, 0, bytes.length);
+		} catch (e:Dynamic) {
+			try {
+				output.close();
+			} catch (_:Dynamic) {}
+			throw e;
+		}
+
+		output.close();
+		#end
+	}
+
+	/**
 		Cuts the file at `path` to `length` bytes, or extends it with zeros.
 		Through the system's own truncate where the target reaches one; the
 		interpreter, neko and hl have none, and there the kept part is read
