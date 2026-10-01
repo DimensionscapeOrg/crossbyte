@@ -1168,6 +1168,13 @@ All notable changes to CrossByte will be documented in this file.
   microseconds of CPU each where it took 22 (Node's own `http2`: 111,000).
   Over TLS, as browsers use it: 175,000 where it answered 32,700 (Node:
   109,000). A Node server, cleartext: 60,000 where it answered 26,500.
+- A response streamed with `beginResponse` while its request is handled
+  goes out in one write when the handling is done, or every 64 KB. Its
+  head, each `write` and the last chunk were each flushed on their own,
+  a system call apiece: a 64 KB body in eight writes was served at a third
+  the rate of the same body through `respond`. Written later, a producer
+  feeding the stream from a timer or a callback, it still goes at once.
+  Native, 64 KB in eight writes: 31,200 a second where it served 11,400.
 - An HTTP/2 frame is built in one allocation, and a DATA frame straight
   from its stream's queue. Every frame was assembled in a `BytesBuffer`
   that grew a byte at a time, and DATA was cut out of the queue first and
