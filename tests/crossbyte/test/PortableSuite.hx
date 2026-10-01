@@ -128,6 +128,9 @@ class PortableSuite {
 		// against IndexedDB here and a directory of files everywhere else, so
 		// neither backend grades its own homework.
 		runner.addCase(new crossbyte.io.StoreTest());
+		// The path arithmetic under File, both platforms' rules on whichever
+		// one runs it; strings only, so a browser runs it too.
+		runner.addCase(new crossbyte.io.FilePathTest());
 		runner.addCase(new crossbyte._internal.compression.CompressionRoundTripTest());
 		runner.addCase(new crossbyte._internal.compression.BrotliCodecTest());
 		runner.addCase(new crossbyte._internal.compression.CodecFormatsTest());

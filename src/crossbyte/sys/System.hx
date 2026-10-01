@@ -340,6 +340,23 @@ class System {
 		#end
 	}
 
+	/**
+		The application storage directory's path, or null where there is
+		none, without creating it and without throwing: what
+		`File.resolvePath` asks to know where its `..` stops.
+	**/
+	@:noCompletion private static function __storageRootOrNull():Null<String> {
+		#if (js && !nodejs)
+		return null;
+		#else
+		try {
+			return appStorageDir;
+		} catch (_:Dynamic) {
+			return null;
+		}
+		#end
+	}
+
 	@:noCompletion private static inline function get_desktopDir():String {
 		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
