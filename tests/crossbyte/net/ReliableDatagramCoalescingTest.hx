@@ -161,7 +161,27 @@ class ReliableDatagramCoalescingTest extends utest.Test {
 		socket.send(text("last words"));
 		socket.close();
 
+		// In the call, as it always went, and in the sequence behind the
+		// message, so the peer acts on it only once it has the message.
 		Assert.same(["PACKET last words", "FIN "], socket.described());
+		var frames = socket.frames();
+		if (frames.length == 2) {
+			Assert.isTrue(frames[1].graceful, "the FIN held no place in the sequence");
+			Assert.isTrue(frames[0].sequence + 1 == frames[1].sequence, "the FIN was not the next in the sequence");
+		}
+		socket.abort();
+	}
+
+	public function testAbortSendsWhatWasGatheredBeforeAFinThatEndsThePeerAtOnce():Void {
+		var socket = WireSocket.make(true);
+		if (socket == null) return;
+
+		socket.send(text("last words"));
+		socket.abort();
+
+		Assert.same(["PACKET last words", "FIN "], socket.described());
+		var frames = socket.frames();
+		Assert.isTrue(frames.length == 2 && !frames[1].graceful, "abort() sent a FIN that waits for what is missing before it");
 	}
 
 	public function testAFailedSessionDropsWhatItGathered():Void {

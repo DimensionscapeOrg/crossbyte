@@ -359,7 +359,10 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		sender.__acceptFrame(ack(1005, []));
 		Assert.equals(5.0, sender.framesDelivered);
 
+		// Closed once the peer has acknowledged the FIN, which is 1005.
 		sender.close();
+		sender.__acceptFrame(ack(1006, []));
+		Assert.isTrue(sender.__closed, "the close never finished");
 		Assert.equals(0.0, sender.framesDelivered, "a closed session kept its count");
 	}
 
@@ -393,8 +396,9 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		sender.__acceptFrame(ack(1000, [0, 1, 2, 3]));
 		Assert.equals(5.0, policy.window);
 
-		// Connected again, the socket is a new session, and so is its policy.
-		sender.close();
+		// Ended, the session is gone, and its policy starts over. Ended at
+		// once: a graceful close would wait for the lost frame.
+		sender.abort();
 		Assert.equals(10.0, policy.window);
 		Assert.equals(500.0, policy.slowStartThreshold);
 	}
@@ -551,10 +555,10 @@ private class RecordingSocket extends ReliableDatagramSocket {
 	}
 
 	override private function __sendFrame(type:ReliableDatagramFrameType, sequence:Seq32, payload:ByteArray, offset:Int, length:Int, resend:Bool,
-			ack:Null<Seq32>, more:Bool):Void {
+			ack:Null<Seq32>, more:Bool, graceful:Bool = false):Void {
 		var frame = new ByteArray();
 		frame.length = ReliableDatagramProtocol.MAX_FRAME_SIZE;
-		frame.length = ReliableDatagramProtocol.encodeInto(frame, type, sequence, payload, offset, length, resend, ack, more);
+		frame.length = ReliableDatagramProtocol.encodeInto(frame, type, sequence, payload, offset, length, resend, ack, more, 0, graceful);
 		__recorded.push(frame);
 	}
 
