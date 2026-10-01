@@ -1932,6 +1932,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `URLLoader` sends a `URLVariables`, or an object's fields, over HTTP/2
+  as it does over HTTP/1.1: a GET's or HEAD's as its query, any other
+  method's as a form body. The HTTP/2 backend never read them, so a form
+  went out as an empty POST with no Content-Type, and a GET without its
+  query, though setting `httpVersion` is all a request is told to change.
 - `URLLoader` on Node carries the cookies a redirect sets to the hops
   after it, as `URLRequest.manageCookies`, on by default, says: by the
   native client's rules, a cookie goes back only to the host that set it,
