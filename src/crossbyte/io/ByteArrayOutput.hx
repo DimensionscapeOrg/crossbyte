@@ -7,14 +7,20 @@ import crossbyte.errors.RangeError;
 /**
  * A buffered and growable binary output stream for writing primitive values into a `ByteArray`.
  *
- * `ByteArrayOutput` allows for efficient, low-level binary serialization using native Haxe types
- * with bounds-checked write methods (except in `#if final`) and staging via internal `Bytes` buffers.
+ * `ByteArrayOutput` allows for efficient, low-level binary serialization using native Haxe types,
+ * staging what is written in internal `Bytes` chunks.
  *
- * Data written through this abstraction is not immediately visible via `toBytes()` or `toByteArray()`
- * until `flush()` is called, at which point all internal buffers are merged into a contiguous array.
+ * Every writer makes room for what it writes, in every build, `final` included. When the active
+ * chunk cannot hold a value a new one is taken, at least as large as everything written so far,
+ * so writing value after value takes a handful of chunks. `reserve()` ahead of a run of writes
+ * takes one chunk of exactly that size instead: what a codec that knows its sizes does to grow
+ * once rather than as it goes.
+ *
+ * Converting the output to `Bytes` or a `ByteArray`, by assigning it to one, merges the chunks
+ * into one contiguous array (`flush()`).
  *
  * ## Key Features
- * - Fast, low-level `Bytes`-backed writing with safety outside `final`
+ * - Fast, low-level `Bytes`-backed writing, never past the end of a chunk
  * - Efficient incremental growth using internal buffer chunking
  * - Support for varint encoding, UTF strings, and fixed-size primitives
  * - Lazy flush behavior for performance
@@ -27,7 +33,7 @@ import crossbyte.errors.RangeError;
  * output.writeInt(42);
  * output.writeVarUTF("Hello");
  *
- * final result:Bytes = output.toBytes(); // or .toByteArray()
+ * final result:Bytes = output; // or a ByteArray
  * ```
  *
  * @see ByteArray
@@ -195,13 +201,41 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 		return true;
 	}
 
-	@:noCompletion private inline function __validateSizeErr(pos, size):Void {
-		// Against the active chunk, because that is what validateSizeAt just
-		// measured. Reporting the total capacity here named a number the
-		// check never looked at, and read as a contradiction once more than
-		// one chunk was in play.
-		throw 'ByteArrayOutput overflow (' + (pos + size) + ' > ' + current.length + ')';
+	/**
+		Makes room for `count` bytes at the write position: a comparison, and a
+		new chunk when the active one cannot hold them.
+
+		Every writer comes through here. The fixed-size ones only checked,
+		outside `final`, and threw, a `new ByteArrayOutput()` could not take
+		`writeInt(1)` without `reserve(4)` first, and in a `final` build did
+		not check at all, writing past the end of the chunk.
+	**/
+	@:noCompletion private inline function __room(count:Int):Void {
+		if (count > current.length - this.__outputPosition) {
+			__grow(count);
+		}
 	}
+
+	/**
+		A new chunk of at least `count` bytes, and at least as large as the
+		output already holds, so that writing value after value with no
+		`reserve()` takes a handful of chunks rather than one apiece.
+	**/
+	@:noCompletion private function __grow(count:Int):Void {
+		var chunk:Int = this.size < MIN_GROWTH ? MIN_GROWTH : this.size;
+		if (chunk < count) {
+			chunk = count;
+		}
+		var total:Int = this.size + chunk;
+		if (total < this.size) {
+			// Doubling past 2^31 wrapped: only what was asked for.
+			total = this.size + count;
+		}
+		this_resize(total);
+		this.__outputPosition = 0;
+	}
+
+	@:noCompletion private static inline var MIN_GROWTH:Int = 64;
 
 	/**
 	 * Writes a boolean as a single byte: `1` for `true`, `0` for `false`.
@@ -218,10 +252,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param v The byte value to write.
 	 */
 	public inline function writeByte(v:Int):Void {
-		#if !final
-		if (!validateSize(1))
-			__validateSizeErr(this.__outputPosition, 1);
-		#end
+		__room(1);
 		current.set(this.__outputPosition++, v & 0xFF);
 	}
 
@@ -237,10 +268,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 			length = source.length - offset;
 		}
 
-		#if !final
-		if (!validateSize(length))
-			__validateSizeErr(this.__outputPosition, length);
-		#end
+		__room(length);
 		inline current.blit(this.__outputPosition, source, offset, length);
 		this.__outputPosition += length;
 	}
@@ -251,11 +279,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param v The `Float` value to write.
 	 */
 	public inline function writeDouble(v:Float):Void {
-		#if !final
-		if (!validateSize(8))
-			__validateSizeErr(this.__outputPosition, 8);
-		#end
-
+		__room(8);
 		inline current.setDouble(this.__outputPosition, v);
 		this.__outputPosition += 8;
 	}
@@ -266,10 +290,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param v The `Float` value to write.
 	 */
 	public inline function writeFloat(v:Float):Void {
-		#if !final
-		if (!validateSize(4))
-			__validateSizeErr(this.__outputPosition, 4);
-		#end
+		__room(4);
 		inline current.setFloat(this.__outputPosition, v);
 		this.__outputPosition += 4;
 	}
@@ -280,11 +301,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param v The `Int` value to write.
 	 */
 	public inline function writeInt(v:Int):Void {
-		#if !final
-		if (!validateSize(4)) {
-			__validateSizeErr(this.__outputPosition, 4);
-		}
-		#end
+		__room(4);
 		current.setInt32(this.__outputPosition, v);
 		this.__outputPosition += 4;
 	}
@@ -358,10 +375,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param value The `UInt16` to write.
 	 */
 	public inline function writeShort(value:Int):Void {
-		#if !final
-		if (!validateSize(2))
-			__validateSizeErr(this.__outputPosition, 2);
-		#end
+		__room(2);
 		// haxe always uses litte endian anyway
 		current.setUInt16(this.__outputPosition, value);
 		this.__outputPosition += 2;
