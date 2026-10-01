@@ -11,6 +11,7 @@ import crossbyte.errors.Error;
 import crossbyte.events.Event;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.FileListEvent;
+import crossbyte.io._internal.FilePath;
 #if (js && !nodejs)
 // No filesystem here. The class keeps its type and its API; the calls
 // refuse. See NoFileSystem for why this is a shim and not a stubbed class.
@@ -1118,43 +1119,51 @@ final class File extends EventDispatcher {
 		Optionally, relative paths may include ".." references, but such paths will not cross conspicuous volume
 		boundaries.
 
+		Without `useDotDot` the answer is null for anything that is not this
+		File's path or below it, which makes this the check to run on a path
+		that came from outside: see `resolvePath`. It is `""` when the two are
+		the same place. Both paths are normalized first, and a relative one is
+		read against the working directory. Names are compared without regard
+		to case on Windows and exactly everywhere else, macOS included,
+		whose default volume ignores case: a name that differs only in case
+		reads as somewhere else, which for an inside-this-directory check is
+		the side to err on. Two drives, or two shares, are two volumes, and
+		the answer between them is null even with `useDotDot`.
+
 		@param ref A File object against which the path is given.
 		@param useDotDot  Specifies whether the resulting relative path can use ".." components.
 		@returns String The relative path between this file (or directory) and the ref file (or directory), if possible; otherwise null.
 		@throws	ArgumentError The reference is null.
-		@throws SecurityError The caller is not in the application security sandbox.
 	**/
 	public function getRelativePath(ref:File, useDotDot:Bool = false):Null<String> {
-		var thisPath:Array<String> = __path.split(separator);
-		var refPath:Array<String> = ref.__path.split(separator);
-
-		var relatives:Array<String> = [];
-
-		var minLength:Int = Std.int(Math.min(thisPath.length, refPath.length));
-		var commonSegments:Int = 0;
-
-		// Count the number of common segments
-		while (commonSegments < minLength && thisPath[commonSegments] == refPath[commonSegments]) {
-			commonSegments++;
+		// It compared raw strings split on the separator: a sibling came back
+		// as its bare name rather than null, the answer was joined with `\` on
+		// Windows, a null ref was a null access, and nothing stopped it
+		// answering across two drives.
+		if (ref == null) {
+			throw new ArgumentError("getRelativePath needs a File to compare against.");
 		}
 
-		if (useDotDot) {
-			// Add ".." for each segment beyond the common segments
-			var numUpSegments:Int = thisPath.length - commonSegments;
+		var windows:Bool = System.isWindows;
+		var from:String = __path;
+		var to:String = ref.__path;
+		var fromAbsolute:Bool = FilePath.isAbsolute(from, windows);
+		var toAbsolute:Bool = FilePath.isAbsolute(to, windows);
 
-			for (i in 0...numUpSegments) {
-				relatives.push("..");
+		if (fromAbsolute != toAbsolute) {
+			#if (js && !nodejs)
+			return null;
+			#else
+			if (!fromAbsolute) {
+				from = FileSystem.absolutePath(from);
 			}
+			if (!toAbsolute) {
+				to = FileSystem.absolutePath(to);
+			}
+			#end
 		}
 
-		// Add remaining segments from the refPath
-		for (j in commonSegments...refPath.length) {
-			relatives.push(refPath[j]);
-		}
-
-		var relativePath:String = relatives.join(separator);
-
-		return relativePath.length == 0 && ref.__path != __path ? null : relativePath;
+		return FilePath.relative(from, to, useDotDot, windows);
 	}
 
 	/**
@@ -1357,13 +1366,101 @@ final class File extends EventDispatcher {
 
 		Filenames and directory names are case-sensitive on Linux.
 
+		What counts as absolute: on POSIX a path starting with `/`. On Windows a
+		drive (`C:\test`, and `C:test`, which is taken to mean `C:\test`), a
+		share (`\\server\share\test`, which covers `\\?\C:\test` too), or a path
+		starting with a separator, which is read against this File's own drive
+		or share. `\` separates on every platform, as it does in `nativePath`.
+		A relative File stays relative, and its `..` past the start is kept.
+
+		**This is not a sandbox.** An absolute `path` is returned as it is,
+		wherever it points, and the `..` rule above only stops a path climbing
+		out of the storage root by `..`, it does not stop one that names
+		somewhere else outright. To keep a path that came from a user or a peer
+		inside a directory, resolve it and then check where it landed:
+
+		```hx
+		// Given requestedName:String.
+		import crossbyte.io.File;
+
+		var dir:File = File.applicationStorageDirectory.resolvePath("uploads");
+		var target:File = dir.resolvePath(requestedName);
+
+		if (dir.getRelativePath(target) == null) {
+			throw new crossbyte.errors.SecurityError(requestedName + " is not inside " + dir.nativePath);
+		}
+		```
+
+		`getRelativePath` answers null for anything that is not the directory
+		or below it. It compares paths, not what is on disk: a symbolic link
+		inside the directory that points out of it passes.
+
 		@param path The path to append to this File object's path (if the path parameter is a relative path); or
 		the path to return (if the path parameter is an absolute path).
 		@returns File A new File object pointing to the resulting path.
+		@throws ArgumentError `path` is null.
 	**/
 	public function resolvePath(path:String):File {
-		var directoryPath:String = Path.removeTrailingSlashes(__path);
-		return new File('$directoryPath$separator$path');
+		// It concatenated: "../x" came back as "<this>\..\x", an absolute path
+		// came back appended, "<this>\C:\Windows\win.ini", and nothing stopped
+		// at the storage root. So applicationStorageDirectory.resolvePath(name)
+		// climbed out of it on a name holding "..".
+		if (path == null) {
+			throw new ArgumentError("resolvePath needs a path; null names nowhere.");
+		}
+
+		var windows:Bool = System.isWindows;
+		var target:FilePathParts = FilePath.parse(path, windows);
+
+		if (target.root != "") {
+			var root:String = target.root;
+
+			if (windows && root == "\\") {
+				// Rooted on no drive in particular: this File's own.
+				var own:String = FilePath.parse(__path, true).root;
+				if (own != "") {
+					root = own;
+				}
+			}
+
+			return new File(FilePath.join(root, FilePath.walk([], target.segments, true, 0), windows));
+		}
+
+		var base:FilePathParts = FilePath.parse(__path, windows);
+		var rooted:Bool = base.root != "";
+		var start:Array<String> = FilePath.walk([], base.segments, rooted, 0);
+		var floor:Int = 0;
+		var storage:Array<String> = null;
+
+		if (rooted) {
+			// The storage root's own rule: a `..` never climbs out of it, from
+			// inside it or from a path that passes through it.
+			var storageRoot:Null<String> = @:privateAccess System.__storageRootOrNull();
+
+			if (storageRoot != null) {
+				var parts:FilePathParts = FilePath.parse(storageRoot, windows);
+
+				if (parts.root != "" && FilePath.sameRoot(parts.root, base.root, windows)) {
+					storage = FilePath.walk([], parts.segments, true, 0);
+
+					if (FilePath.sameSegments(start, storage, windows, storage.length)) {
+						floor = storage.length;
+					}
+				}
+			}
+		}
+
+		var segments:Array<String> = FilePath.walk(start, target.segments, rooted, floor, storage, windows);
+		var result:String = FilePath.join(base.root, segments, windows);
+
+		if (!rooted && result.indexOf(separator) < 0) {
+			// A relative File stays one. A bare name says nothing about where
+			// the file is and the constructor refuses it, so it is given the
+			// directory it is in: this one.
+			result = "." + separator + result;
+		}
+
+		return new File(result);
 	}
 
 	/**

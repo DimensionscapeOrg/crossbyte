@@ -682,6 +682,135 @@ class FileTest extends utest.Test {
 	}
 	#end
 
+	public function testResolvePathNormalizesDotsAndDotDot():Void {
+		// It concatenated: "../x" came back as "<dir>\..\x", with the climb
+		// still in it for whatever opened the path to act on.
+		var root = File.createTempDirectory();
+		var base:String = haxe.io.Path.removeTrailingSlashes(root.nativePath);
+		var dir = root.resolvePath("a");
+
+		Assert.equals(base + File.separator + "x", dir.resolvePath("../x").nativePath);
+		Assert.equals(base + File.separator + "a" + File.separator + "c", dir.resolvePath("./b/../c").nativePath);
+		Assert.equals(base + File.separator + "a" + File.separator + "b", dir.resolvePath("b/").nativePath);
+		Assert.raises(() -> dir.resolvePath(null), ArgumentError);
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testResolvePathNeverClimbsPastTheFileSystemRoot():Void {
+		var top:File = System.isWindows ? new File("C:\\") : new File("/");
+		var expected:String = System.isWindows ? "C:\\x" : "/x";
+
+		Assert.equals(expected, top.resolvePath("../../x").nativePath);
+		Assert.equals(expected, top.resolvePath("a/../../../x").nativePath);
+	}
+
+	public function testResolvePathReturnsAnAbsolutePathAsItIs():Void {
+		// It was appended: "<dir>\C:\Windows\win.ini", a path that names a
+		// stream on a file called "C" rather than the file asked for.
+		var dir = File.createTempDirectory();
+
+		if (System.isWindows) {
+			Assert.equals("C:\\x", dir.resolvePath("C:\\Windows\\..\\x").nativePath);
+			Assert.equals("C:\\Windows\\win.ini", dir.resolvePath("C:/Windows/win.ini").nativePath);
+			// Rooted, with no drive: this File's own.
+			var drive:String = dir.nativePath.substr(0, 3);
+			Assert.equals(drive + "x", dir.resolvePath("\\x").nativePath);
+		} else {
+			Assert.equals("/x", dir.resolvePath("/tmp/../x").nativePath);
+			Assert.equals("/etc/passwd", dir.resolvePath("/etc/passwd").nativePath);
+		}
+
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testResolvePathNeverClimbsOutOfTheStorageRoot():Void {
+		// The documentation's rule, which nothing implemented: a `..` that
+		// reaches the application storage root goes no further. Paths only;
+		// nothing is created.
+		var storage = File.applicationStorageDirectory;
+		var top:String = haxe.io.Path.removeTrailingSlashes(storage.nativePath);
+		var expected:String = top + File.separator + "x";
+
+		Assert.equals(expected, storage.resolvePath("../x").nativePath);
+		Assert.equals(expected, storage.resolvePath("a/../../x").nativePath);
+		Assert.equals(expected, storage.resolvePath("a/b/../../../../x").nativePath);
+		Assert.equals(expected, storage.resolvePath("sub").resolvePath("../../x").nativePath);
+
+		// Nor a path that passes through it on the way from above.
+		var parent = Require.notNull(storage.parent);
+		var name:String = storage.name;
+		Assert.equals(expected, parent.resolvePath(name + "/../x").nativePath);
+
+		// Climbing from above it without passing through is the ordinary rule.
+		Assert.equals(haxe.io.Path.removeTrailingSlashes(parent.nativePath) + File.separator + "y", parent.resolvePath("z/../y").nativePath);
+	}
+
+	public function testTheDocumentedCheckRefusesWhatResolvesOutside():Void {
+		// resolvePath is not a sandbox, an absolute path passes through, as
+		// AIR's does, so its documentation shows the check to run.
+		var dir = File.createTempDirectory().resolvePath("uploads");
+		var outside:String = System.isWindows ? "C:\\Windows\\win.ini" : "/etc/passwd";
+
+		for (hostile in [outside, "../escape.txt", "a/../../escape.txt", "..\\..\\escape.txt"]) {
+			Assert.isNull(dir.getRelativePath(dir.resolvePath(hostile)), hostile + " was taken for a path inside");
+		}
+
+		Assert.equals("ok/name.txt", dir.getRelativePath(dir.resolvePath("ok/name.txt")));
+		Assert.equals("name.txt", dir.getRelativePath(dir.resolvePath("./x/../name.txt")));
+
+		try Require.notNull(dir.parent).deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testGetRelativePathAnswersNullForWhatIsNotBelow():Void {
+		// A sibling came back as its bare name, "c", which reads as a child.
+		var root = File.createTempDirectory();
+		var a = root.resolvePath("a");
+		var b = a.resolvePath("b");
+		var c = a.resolvePath("c");
+
+		Assert.isNull(b.getRelativePath(c));
+		Assert.isNull(b.getRelativePath(root));
+		Assert.equals("../c", b.getRelativePath(c, true));
+		Assert.equals("../..", b.getRelativePath(root, true));
+		Assert.equals("", b.getRelativePath(b));
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testGetRelativePathUsesForwardSlashes():Void {
+		// The documented separator. It was the platform's: `\` on Windows.
+		var root = File.createTempDirectory();
+		var deep = root.resolvePath("b").resolvePath("c");
+
+		Assert.equals("b/c", root.getRelativePath(deep));
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testGetRelativePathRefusesANullReference():Void {
+		// It was a null access.
+		var root = File.createTempDirectory();
+		Assert.raises(() -> root.getRelativePath(null), ArgumentError);
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testGetRelativePathDoesNotCrossDrives():Void {
+		if (!System.isWindows) {
+			// One root on POSIX; FilePathTest checks the rule's Windows form
+			// on every platform.
+			Assert.pass();
+			return;
+		}
+
+		// "D:\a" and "C:\a" shared no segment, so the answer was the whole
+		// of the other path, a relative path naming another drive.
+		var c = new File("C:\\a");
+		var d = new File("D:\\a\\b");
+		Assert.isNull(c.getRelativePath(d));
+		Assert.isNull(c.getRelativePath(d, true));
+	}
+
 	public function testAnOrdinarySizeIsStillReported():Void {
 		var file = File.createTempFile();
 		HaxeFile.saveBytes(file.nativePath, Bytes.alloc(1234));
