@@ -423,6 +423,53 @@ class MySQLDriverTest extends utest.Test {
 		return pages.join(" ");
 	}
 
+	public function testAnInsertIdPastThirtyTwoBitsIsAskedForInSQL():Void {
+		// Off cpp the id came from sys.db.Connection.lastInsertId(), an Int:
+		// wrapped past 2^31 on hl and neko, which read it with a 32-bit
+		// getIntResult. As SQLite's driver does, an id that cannot be right
+		// is asked for in SQL now -- as text, which no driver narrows.
+		var wire:ScriptedConnection = new ScriptedConnection();
+		wire.insertId = -1294967296; // 3,000,000,000 in 32 bits
+		wire.results.set("SELECT CAST(LAST_INSERT_ID() AS CHAR) AS id", [{id: "3000000000"}]);
+		var statement:MySQLStatement = __statement(wire);
+		statement.text = "INSERT INTO t (x) VALUES (1)";
+		statement.execute();
+
+		Assert.equals(3000000000.0, statement.getResult().lastInsertRowID);
+		// The connection's Int holds at 2^31 - 1, as it does natively.
+		Assert.equals(2147483647, statement.sqlConnection.lastInsertRowID);
+
+		// One in range is taken as it is, with nothing more asked.
+		wire.insertId = 7;
+		var asked:Int = wire.sent.length;
+		statement.execute();
+		Assert.equals(7.0, statement.getResult().lastInsertRowID);
+		Assert.equals(asked + 1, wire.sent.length, "an id in range was asked for in SQL");
+	}
+
+	#if (java || jvm)
+	public function testAnInsertWhoseGeneratedKeyPassesThirtyTwoBitsIsNotReportedFailed():Void {
+		// Haxe's JDBC binding reads a single insert's generated key with
+		// getInt, after the INSERT has run, and Connector/J refuses a value
+		// past 2^31 with SQLSTATE 22003: a committed insert threw. (Shaped as
+		// Connector/J raises it; there is no Connector/J here to raise it.)
+		var wire:ScriptedConnection = new ScriptedConnection();
+		wire.failures.set("INSERT INTO t (x) VALUES (1)",
+			new java.sql.SQLException("Value '3000000000' is outside of valid range for type java.lang.Integer", "22003", 0));
+		wire.results.set("SELECT CAST(LAST_INSERT_ID() AS CHAR) AS id", [{id: "3000000000"}]);
+		var statement:MySQLStatement = __statement(wire);
+		statement.text = "INSERT INTO t (x) VALUES (1)";
+		statement.execute();
+		Assert.equals(3000000000.0, statement.getResult().lastInsertRowID);
+
+		// The same SQLSTATE from the server -- a value out of range for its
+		// column, with MySQL's error number -- is still a failure.
+		wire.failures.set("INSERT INTO t (x) VALUES (2)", new java.sql.SQLException("Out of range value for column 'x' at row 1", "22003", 1264));
+		statement.text = "INSERT INTO t (x) VALUES (2)";
+		Assert.raises(() -> statement.execute(), SQLError);
+	}
+	#end
+
 	private function __statement(wire:ScriptedConnection):MySQLStatement {
 		var connection:MySQLConnection = new MySQLConnection();
 		connection.__connection = wire;
