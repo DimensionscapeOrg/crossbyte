@@ -67,7 +67,7 @@ CrossByte currently includes:
   - hole punching on the reliable datagram sockets, for the same problem without the browser, with a TURN relay to fall back on where punching fails (`ReliableDatagramServerSocket.allocateRelay`)
 - RPC sessions, commands, handlers, and typed responses, see the
   [RPC guide](docs/rpc.md)
-- IPC primitives such as `LocalConnection`, `SharedChannel`, and `SharedObject`
+- IPC primitives such as `LocalConnection`, `SharedChannel`, and `SharedObject`, natively (cpp) on Windows, Linux and macOS; on every other target they say so with `isSupported` and throw when used
 - file APIs, `ByteArray`, `ByteArrayInput`, and `ByteArrayOutput`
 - compression:
   - DEFLATE
@@ -75,10 +75,9 @@ CrossByte currently includes:
   - LZ4
   - Brotli
 - crypto:
-  - BLAKE3
-  - Ed25519
-  - secure random bytes
-  - password hashing helpers
+  - natively (cpp) only, from libsodium and BLAKE3 compiled in: `Aead` (XChaCha20-Poly1305), `KeyExchange` and `X25519`, `GenericHash` (BLAKE2b), `HKDF`, `Ed25519` and `Blake3`; and from mbedTLS, RSA and ECDSA signatures (`PublicKeySignature`, `SignatureKey`). Elsewhere `isAvailable()` is false and they throw
+  - `Argon2id` natively and on Node 24.7 or later; `BCrypt` everywhere, in Haxe
+  - secure random bytes natively, on the jvm, on Node, in a browser and on PHP; not on the interpreter, neko or HashLink
 - workers, task pools, and native process helpers
 - data structures and utility packages
 - database surfaces for:
@@ -211,9 +210,9 @@ never calls can be skipped with `HL_DISABLED_LIBS=sqlite,mysql` (HashLink
 **What is not there.** Neither target has a secure random source, so
 `SecureRandom.isSupported` is false and everything that needs one refuses,
 saying so: `BCrypt.hash`, PKCE, WebSocket clients, STUN, TURN, ICE and WebRTC.
-Both are IPv4 only. `LocalConnection`, `SharedChannel` and `SharedObject`, the
-native crypto and ALPN (so HTTP/2 over TLS) are native or jvm features, and a
-datagram socket's buffers cannot be sized (`DatagramSocket.bufferSizeSupported`
+Both are IPv4 only. `LocalConnection`, `SharedChannel` and `SharedObject` and
+the libsodium, BLAKE3 and mbedTLS crypto are native features only; ALPN (so
+HTTP/2 over TLS) is native or jvm; and a datagram socket's buffers cannot be sized (`DatagramSocket.bufferSizeSupported`
 is false: they read 0 and setting them throws). On Linux, hl polls its sockets
 through `select`, which cannot watch a descriptor numbered 1024 or above, and
 hl has no poll natives to move to: a server there fails its polling once that
