@@ -1,6 +1,9 @@
 package crossbyte.crypto;
 
 import haxe.io.Bytes;
+#if !cpp
+import crossbyte.crypto._internal.NativeOnly;
+#end
 #if cpp
 import cpp.ConstPointer;
 import cpp.Pointer;
@@ -19,6 +22,10 @@ import crossbyte.crypto._internal.NativeSodium;
  * On supported native `cpp` targets the implementation uses a statically
  * linked libsodium backend, so applications do not need to ship a separate
  * runtime DLL in order to use Ed25519.
+ *
+ * Every other target has no backend, and there `keypair`, `signDetached` and
+ * `verifyDetached` throw an `IllegalOperationError` naming it; check
+ * `isAvailable` first.
  */
 class Ed25519 {
 	/**
@@ -72,6 +79,7 @@ class Ed25519 {
 	 * Generates a fresh Ed25519 keypair.
 	 *
 	 * @return A signing keypair containing `publicKey` and `secretKey`.
+	 * @throws IllegalOperationError On a target other than native cpp.
 	 */
 	public static function keypair():SigningKeyPair {
 		#if cpp
@@ -85,7 +93,7 @@ class Ed25519 {
 		}
 		return {publicKey: publicKey, secretKey: secretKey};
 		#else
-		throw "Ed25519 keypair generation is only available on supported native cpp targets.";
+		throw NativeOnly.error("Ed25519 keypair generation");
 		#end
 	}
 
@@ -95,13 +103,14 @@ class Ed25519 {
 	 * @param message The message bytes to sign.
 	 * @param secretKey The 64-byte Ed25519 secret key.
 	 * @return A 64-byte detached signature.
+	 * @throws IllegalOperationError On a target other than native cpp.
 	 */
 	public static function signDetached(message:Bytes, secretKey:Bytes):Bytes {
+		#if cpp
 		if (secretKey == null || secretKey.length != SECRET_KEY_BYTES) {
 			throw "secretKey must be " + SECRET_KEY_BYTES + " bytes";
 		}
 
-		#if cpp
 		__ensureAvailable();
 
 		var signature = Bytes.alloc(SIGNATURE_BYTES);
@@ -111,7 +120,7 @@ class Ed25519 {
 		}
 		return signature;
 		#else
-		throw "Ed25519 signing is only available on supported native cpp targets.";
+		throw NativeOnly.error("Ed25519 signing");
 		#end
 	}
 
@@ -122,23 +131,26 @@ class Ed25519 {
 	 * @param message The signed message bytes.
 	 * @param publicKey The 32-byte Ed25519 public key.
 	 * @return `true` if the signature is valid for the given message and public
-	 * key, otherwise `false`.
+	 * key, otherwise `false`, including for a signature or key of the wrong
+	 * length.
+	 * @throws IllegalOperationError On a target other than native cpp, whatever
+	 *         it is handed. It answered `false` there, which is the answer for a
+	 *         forged signature: every signature was refused, genuine ones
+	 *         included, by what looked like a working check.
+	 * @throws String When libsodium could not be started, as signing does.
 	 */
 	public static function verifyDetached(signature:Bytes, message:Bytes, publicKey:Bytes):Bool {
+		#if cpp
+		__ensureAvailable();
 		if (signature == null || signature.length != SIGNATURE_BYTES) {
 			return false;
 		}
 		if (publicKey == null || publicKey.length != PUBLIC_KEY_BYTES) {
 			return false;
 		}
-
-		#if cpp
-		if (!isAvailable()) {
-			return false;
-		}
 		return NativeSodium.ed25519VerifyDetached(__cptr(signature), __cptrOrNull(message), __length(message), __cptr(publicKey)) == 0;
 		#else
-		return false;
+		throw NativeOnly.error("Ed25519 verification");
 		#end
 	}
 
