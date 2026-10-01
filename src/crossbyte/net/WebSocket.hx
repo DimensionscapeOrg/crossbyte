@@ -67,8 +67,11 @@ import haxe.io.Error;
 **/
 class WebSocket extends Socket {
 	// The server half: `ServerWebSocket` accepts a connection and hands the
-	// raw socket here to be framed.
-	public static function toWebSocket(socket:#if nodejs NodeSocket #else FlexSocket #end, server:ServerWebSocket):WebSocket {
+	// raw socket here to be framed. Its own, not the application's: it takes
+	// an internal socket type, and a session made here without the server
+	// accepting it has no handshake deadline.
+	@:noCompletion @:allow(crossbyte.net.ServerWebSocket)
+	private static function toWebSocket(socket:#if nodejs NodeSocket #else FlexSocket #end, server:ServerWebSocket):WebSocket {
 		var webSocket:WebSocket = new WebSocket();
 
 		// The server first: the session asks it about its upgrade, and the
