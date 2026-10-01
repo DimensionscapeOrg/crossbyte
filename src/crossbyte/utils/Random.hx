@@ -359,7 +359,8 @@ final class Random {
 		} else if (span <= 2147483647.0) {
 			var count:Int = Std.int(span);
 			var mask:Int = __nextPow2Minus1(count);
-			if ((mask + 1) == count) {
+			// Not `mask + 1 == count`, which overflows past 2^30 values.
+			if (mask == count - 1) {
 				result = min + (next() & mask);
 			} else {
 				var x:Int = next() & mask;

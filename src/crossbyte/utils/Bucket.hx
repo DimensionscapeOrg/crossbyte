@@ -45,7 +45,8 @@ final class Bucket {
 
 		var mask:Int = nextPow2Mask(count);
 
-		if ((mask + 1) == count) {
+		// Not `mask + 1 == count`, which overflows past 2^30 buckets.
+		if (mask == count - 1) {
 			return hash & mask;
 		}
 
