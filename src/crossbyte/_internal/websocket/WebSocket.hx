@@ -615,13 +615,10 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 
 		__heard = true;
 
-		// Sliced by its own region: a Node Buffer can be a window onto a
-		// larger pooled allocation, and taking .buffer whole would carry bytes
-		// belonging to something else.
-		var region = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
-
-		__input.position = __input.length;
-		__appendBytes(__input, Bytes.ofData(region));
+		// Its own region only: a Node Buffer can be a window onto a larger
+		// pooled allocation, and taking .buffer whole would carry bytes
+		// belonging to something else. Copied straight into the input, once.
+		@:privateAccess (__input : crossbyte.io.ByteArray.ByteArrayData).__appendView(chunk);
 		__input.position = __inputPosition;
 		__onData();
 	}

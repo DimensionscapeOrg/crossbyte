@@ -1138,6 +1138,16 @@ All notable changes to CrossByte will be documented in this file.
   `Sys.println` -- can come out ahead of them. A Node server with the
   access log on, the default, answers 54,300 small requests a second where
   it answered 44,400.
+- On Node, what a socket receives is copied into its input once. It was
+  sliced out of Node's pooled buffer into one of its own, wrapped in a
+  `ByteArray` and copied again, for every arrival, on plain sockets and
+  WebSockets. A `ByteArray` on JavaScript is made with one buffer and one
+  view, where it made two views and a `Bytes` it threw away;
+  `writeUTFBytes` no longer wraps what it writes in another; and the HTTP
+  server makes one empty request body a request where it made two. A Node
+  server answering small requests serves 59,000 a second where it served
+  54,300 -- Node's own `http` module, sending three fewer headers and
+  logging nothing, serves 61,500 to 64,900.
 - `PostgresStatement` and `MongoStatement` throw a failed statement's
   `SQLError` after dispatching it as an `SQLErrorEvent`, as `MySQLStatement`
   does. They dispatched it and returned, so to a caller not listening -- an

@@ -1892,13 +1892,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			__input.clear();
 		}
 
-		// Node hands out Buffers backed by a shared pool, so the region has to
-		// be sliced out by byteOffset and length; taking .buffer whole would
-		// pick up unrelated data sitting either side of this chunk.
+		// Node hands out Buffers backed by a shared pool, so only the chunk's
+		// own region is read -- taking .buffer whole would pick up unrelated
+		// data either side of it -- and it is copied straight into the input,
+		// once.
 		var chunk:Uint8Array = cast msg;
-		var region = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
-		var newData:ByteArray = region;
-		newData.readBytes(__input, __input.length);
+		@:privateAccess (__input : ByteArrayData).__appendView(chunk);
 
 		if (__input.bytesAvailable > 0) {
 			__dispatchPooledSocketData(__input.bytesAvailable, 0);
