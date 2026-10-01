@@ -67,7 +67,11 @@ class Store {
 	 * not a path, and it is not a namespace between applications. Two
 	 * CrossByte programs on one machine that both open "session" are opening
 	 * their own, because the file backend resolves it under the application
-	 * storage directory.
+	 * storage directory, `File.applicationStorageDirectory`, which is named
+	 * for `System.applicationId`: the `crossbyte_app_id` define, or else the
+	 * main class. Two programs with the same main class, `Main` is a common
+	 * one, have the same id and share their stores unless one of them sets
+	 * the define. In a browser the stores are the page's origin's.
 	 *
 	 * @param name Store name. Letters, digits, `-`, `_` and `.` only, so that
 	 *        it is a legal file name and a legal IndexedDB store name without

@@ -68,7 +68,10 @@ class SysSupportTest extends utest.Test {
 		// when Git Bash had set it, a different location than a native build
 		// uses, for the same data, and null when nothing had, which reached
 		// callers as a relative directory named "undefined".
-		var storage:String = System.appStorageDir;
+		//
+		// The path, not the directory: asking for appStorageDir creates it, and
+		// this run would leave one in the account's application data.
+		var storage:String = @:privateAccess System.__storagePath();
 
 		Assert.notNull(storage);
 		Assert.notEquals("", storage);
@@ -76,7 +79,8 @@ class SysSupportTest extends utest.Test {
 		Assert.notEquals("null", storage);
 
 		if (System.isWindows) {
-			Assert.equals(Sys.getEnv("APPDATA"), storage);
+			// The application's own directory inside it; SystemTest says why.
+			Assert.equals(Sys.getEnv("APPDATA") + "\\" + System.applicationId, storage);
 			Assert.notEquals(Sys.getEnv("USERPROFILE"), storage, "storage fell back to the profile root");
 		}
 	}
@@ -87,10 +91,15 @@ class SysSupportTest extends utest.Test {
 		// it expected HOME and got HOME, and the two were wrong together. A
 		// test that reproduces the bug it is checking for cannot see it.
 		var expectedUser = System.isWindows ? Sys.getEnv("USERPROFILE") : Sys.getEnv("HOME");
-		var expectedDesktop = expectedUser + File.separator + "Desktop";
-		var expectedDocuments = expectedUser + File.separator + "Documents";
+		// Linux's xdg-user-dirs when the user has one; SystemTest reads it.
+		var xdgDesktop:Null<String> = @:privateAccess System.__xdgUserDir("XDG_DESKTOP_DIR");
+		var xdgDocuments:Null<String> = @:privateAccess System.__xdgUserDir("XDG_DOCUMENTS_DIR");
+		var expectedDesktop = xdgDesktop != null ? xdgDesktop : expectedUser + File.separator + "Desktop";
+		var expectedDocuments = xdgDocuments != null ? xdgDocuments : expectedUser + File.separator + "Documents";
 
-		Assert.equals(Path.removeTrailingSlashes(Sys.getCwd()), System.appDir);
+		// The program's own directory, not the working directory; SystemTest
+		// checks which.
+		Assert.equals(System.appDir, System.appDir);
 		Assert.equals(expectedUser, System.userDir);
 		Assert.equals(expectedDesktop, System.desktopDir);
 		Assert.equals(expectedDocuments, System.documentsDir);
@@ -98,7 +107,9 @@ class SysSupportTest extends utest.Test {
 		Assert.equals(expectedDocuments, System.documentsDir);
 		Assert.notEquals(System.desktopDir, System.documentsDir);
 
-		Assert.equals(System.isWindows ? Sys.getEnv("APPDATA") : Sys.getEnv("HOME"), System.appStorageDir);
+		// Cached, and the application's own: SystemTest checks the rule.
+		Assert.equals(@:privateAccess System.__storagePath(), @:privateAccess System.__storagePath());
+		Assert.isTrue(StringTools.endsWith(@:privateAccess System.__storagePath(), File.separator + System.applicationId));
 	}
 
 	public function testProcessorCountIsAnswerableOnEverySupportedNativePlatform():Void {
@@ -119,14 +130,15 @@ class SysSupportTest extends utest.Test {
 		Assert.notNull(affinity);
 		Assert.equals(System.processorCount, affinity.length);
 		#elseif (cpp && (mac || macos))
-		// macOS has no process-level affinity to report, there is no
+		// macOS has no process-level affinity, there is no
 		// sched_setaffinity, and thread_policy_set is a per-thread hint the
-		// scheduler may ignore. The empty mask is the honest answer, and these
-		// are pinned so that implementing it later has to be a deliberate
-		// change to the contract rather than an accident.
-		Assert.equals(0, System.processAffinity.length);
-		Assert.isFalse(System.hasProcessAffinity(0));
-		Assert.isFalse(System.setProcessAffinity(0, true));
+		// scheduler may ignore, and says so: an empty mask read as "no
+		// processor usable".
+		Assert.raises(() -> {
+			var mask = System.processAffinity;
+		}, crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> System.hasProcessAffinity(0), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> System.setProcessAffinity(0, true), crossbyte.errors.IllegalOperationError);
 		#else
 		Assert.pass();
 		#end
@@ -142,16 +154,19 @@ class SysSupportTest extends utest.Test {
 		// The collector's 64-bit figure: the 32-bit one wrapped past 2GiB.
 		Assert.isTrue(System.memoryUsage() > 0, "memoryUsage is " + System.memoryUsage());
 		#else
-		Assert.same([false], System.processAffinity);
-		Assert.equals("", System.getDeviceId());
+		// Affinity is refused off native, and SystemTest checks the device
+		// id: these pinned the placeholders, [false] and "".
+		Assert.raises(() -> {
+			var mask = System.processAffinity;
+		}, crossbyte.errors.IllegalOperationError);
 		#if (java || jvm || nodejs)
 		// It was 0 everywhere but native.
 		Assert.isTrue(System.memoryUsage() > 0, "memoryUsage is " + System.memoryUsage());
 		#else
 		Assert.equals(0.0, System.memoryUsage());
 		#end
-		Assert.isFalse(System.hasProcessAffinity(0));
-		Assert.isFalse(System.setProcessAffinity(0, true));
+		Assert.raises(() -> System.hasProcessAffinity(0), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> System.setProcessAffinity(0, true), crossbyte.errors.IllegalOperationError);
 		#end
 	}
 }
