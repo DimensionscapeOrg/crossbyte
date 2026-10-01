@@ -302,11 +302,30 @@ class Metrics {
 			return value > 0 ? "+Inf" : "-Inf";
 		}
 		// Whole numbers render without a decimal point so counters read
-		// naturally.
-		if (value == Math.ffloor(value) && Math.abs(value) < 1e15) {
-			return Std.string(Std.int(value));
+		// naturally: every one up to 2^53, which a Float holds exactly along
+		// with all below it. Past that it is printed as the Float it is.
+		if (value == Math.ffloor(value) && Math.abs(value) < 9007199254740992.0) {
+			return __whole(value);
 		}
 		return Std.string(value);
+	}
+
+	/**
+	 * A whole number below 2^53, every digit of it.
+	 *
+	 * In two halves that each fit an Int. It went through `Std.int`, which
+	 * holds 31 bits, so a counter of bytes sent at three billion printed
+	 * -1294967296 (2147483647 on the jvm) -- and a counter that falls reads
+	 * to a collector as the process restarting. The remainder and the
+	 * division are exact: the remainder of two Floats always is, and the
+	 * quotient is a whole number a Float holds.
+	 */
+	@:noCompletion private static function __whole(value:Float):String {
+		var magnitude:Float = Math.abs(value);
+		var low:Float = magnitude % 1000000000.0;
+		var high:Float = (magnitude - low) / 1000000000.0;
+		var digits:String = high == 0 ? Std.string(Std.int(low)) : Std.string(Std.int(high)) + StringTools.lpad(Std.string(Std.int(low)), "0", 9);
+		return value < 0 ? "-" + digits : digits;
 	}
 
 	@:noCompletion private static function __escapeLabel(value:String):String {
