@@ -85,6 +85,11 @@ entry below says how:
   peers, and anything stored, move to 1.0 together.
 
 ### Added
+- `crossbyte.utils.Checksum`: a `ChecksumAlgorithm`'s checksum of some
+  bytes, or of a range of them, as the bytes of its value (`compute`) or
+  as hexadecimal (`hex`), CRC-32, Adler-32, MD5, SHA-1 and XOR. The enum
+  named the five and nothing anywhere took one: it was left from an RPC
+  header field that was never built.
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
   `DETACH DATABASE`, and `loadSchema()` with `getSchemaResult()`: a
   database's tables with their columns, views, indices and triggers.

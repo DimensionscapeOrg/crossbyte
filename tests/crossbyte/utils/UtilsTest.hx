@@ -170,6 +170,48 @@ class UtilsTest extends utest.Test {
 		Assert.same([3, "hi"], info.value);
 	}
 
+	/**
+		Each `ChecksumAlgorithm`, computed. The enum named five algorithms and
+		nothing anywhere took one: a placeholder for an RPC header field that
+		was never built. These are the published check values.
+	**/
+	public function testChecksumComputesEachAlgorithm():Void {
+		var digits = haxe.io.Bytes.ofString("123456789");
+		Assert.equals("cbf43926", Checksum.hex(CRC32, digits));
+		Assert.equals("11e60398", Checksum.hex(ADLER32, haxe.io.Bytes.ofString("Wikipedia")));
+		Assert.equals("d41d8cd98f00b204e9800998ecf8427e", Checksum.hex(MD5, haxe.io.Bytes.alloc(0)));
+		Assert.equals("900150983cd24fb0d6963f7d28e17f72", Checksum.hex(MD5, haxe.io.Bytes.ofString("abc")));
+		Assert.equals("a9993e364706816aba3e25717850c26c9cd0d89d", Checksum.hex(SHA1, haxe.io.Bytes.ofString("abc")));
+
+		var xor = haxe.io.Bytes.alloc(3);
+		xor.set(0, 0x01);
+		xor.set(1, 0x02);
+		xor.set(2, 0x84);
+		Assert.equals("87", Checksum.hex(XOR, xor));
+
+		// The value's bytes, most significant first, as it prints.
+		var crc:haxe.io.Bytes = Checksum.compute(CRC32, digits);
+		Assert.equals(4, crc.length);
+		Assert.equals(0xCB, crc.get(0));
+		Assert.equals(0x26, crc.get(3));
+		Assert.equals(1, Checksum.compute(XOR, xor).length);
+		Assert.equals(16, Checksum.compute(MD5, digits).length);
+		Assert.equals(20, Checksum.compute(SHA1, digits).length);
+	}
+
+	public function testChecksumTakesARangeAndRefusesOneOutside():Void {
+		var framed = haxe.io.Bytes.ofString("xx123456789yy");
+		for (algorithm in [CRC32, ADLER32, MD5, SHA1, XOR]) {
+			Assert.equals(Checksum.hex(algorithm, haxe.io.Bytes.ofString("123456789")), Checksum.hex(algorithm, framed, 2, 9), 'range for $algorithm');
+			Assert.equals(Checksum.hex(algorithm, haxe.io.Bytes.ofString("123456789yy")), Checksum.hex(algorithm, framed, 2), 'to the end for $algorithm');
+		}
+		Assert.raises(() -> Checksum.compute(CRC32, framed, -1, 2), crossbyte.errors.RangeError);
+		Assert.raises(() -> Checksum.compute(CRC32, framed, 12, 2), crossbyte.errors.RangeError);
+		Assert.raises(() -> Checksum.compute(CRC32, framed, 14), crossbyte.errors.RangeError);
+		Assert.raises(() -> Checksum.compute(CRC32, null), crossbyte.errors.ArgumentError);
+		Assert.equals(Checksum.hex(CRC32, haxe.io.Bytes.alloc(0)), Checksum.hex(CRC32, framed, 13));
+	}
+
 	public function testUtilityEnumsExposeStableConstructors():Void {
 		Assert.equals("CRC32", Type.enumConstructor(ChecksumAlgorithm.CRC32));
 		Assert.equals("ADLER32", Type.enumConstructor(ChecksumAlgorithm.ADLER32));
