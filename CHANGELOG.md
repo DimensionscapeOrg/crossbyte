@@ -1943,6 +1943,10 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `URLLoader` on Node and in a browser sends an object's fields as a
+  form, as it does natively: a POST's as its body, a GET's as its query.
+  Only a `URLVariables` was encoded there, and an object went out as
+  `Std.string` made it, "{ user : bob }", a GET's as a body.
 - `URLLoader` on Node sends `User-Agent: CrossByte` while
   `URLRequest.userAgent` is unset, as the member says; it sent none. In a
   browser a `userAgent` set is handed to the browser, which has the last

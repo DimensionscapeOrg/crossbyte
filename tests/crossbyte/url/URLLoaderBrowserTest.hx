@@ -75,6 +75,25 @@ class URLLoaderBrowserTest extends utest.Test {
 	}
 
 	/**
+		An object's fields go as a form, as they do natively. Only a
+		`URLVariables` was encoded in a page; an object went out as
+		`Std.string` made it, "{ user : bob }".
+	**/
+	public function testAnObjectsFieldsGoAsAForm(async:Async):Void {
+		var sent:Array<Dynamic> = [];
+		var restore:Void->Void = wrap("send", (xhr, args) -> sent.push(args[0]));
+		var request:URLRequest = new URLRequest("/index.html");
+		request.method = URLRequestMethod.POST;
+		request.data = {user: "bob", tags: ["a", "b"]};
+		loadThen(request, outcome -> {
+			restore();
+			Assert.equals("complete", outcome);
+			Assert.same(["user=bob&tags%5B%5D=a&tags%5B%5D=b"], sent);
+			async.done();
+		});
+	}
+
+	/**
 		`close()` aborts the load in flight, and the next load is the only one
 		heard from. It only stopped the next load being refused as busy: both
 		requests went on, and the closed one's COMPLETE arrived beside the
