@@ -329,6 +329,38 @@ class ServerWebSocketTLSTest extends utest.Test {
 		return peer.ended;
 	}
 
+	/**
+		`requireClientCertificate()`, inherited from `ServerSocket`, is
+		`certAuthority` by another name: it reached into the listener
+		`ServerSocket` builds, which a `ServerWebSocket` never does.
+	**/
+	@:timeout(30000)
+	public function testRequireClientCertificateAsksForOne(async:Async):Void {
+		var fixture = TLSTestFixture.trusted();
+		var chain = TLSChainFixture.get();
+		if (fixture == null || chain == null) {
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
+			async.done();
+			return;
+		}
+
+		__serve(function(server) {
+			server.cert = {certificate: fixture.certificate, key: fixture.key};
+			server.requireClientCertificate(chain.root);
+			Assert.equals(chain.root, server.certAuthority, "certAuthority does not read back what requireClientCertificate() set");
+		}, function(server, sessions, finish) {
+			TlsProbe.run(server.localPort, {upgrade: true}, function(without) {
+				TlsProbe.run(server.localPort, {upgrade: true, present: {certificate: chain.client, key: chain.clientKey}}, function(with) {
+					NetPump.until(() -> sessions.length > 0, 2.0, function(_) {
+						Assert.isFalse(__upgraded(without), "a client presenting no certificate was let in: " + without.status);
+						Assert.isTrue(__upgraded(with), "a client presenting a certificate the authority issued was not upgraded: " + with.status);
+						finish();
+					});
+				});
+			});
+		}, async);
+	}
+
 	/** Whether the server answered a probe's upgrade with 101. **/
 	private static function __upgraded(outcome:TlsProbe.TlsProbeOutcome):Bool {
 		return outcome.status != null && outcome.status.indexOf(" 101 ") >= 0;
