@@ -106,7 +106,9 @@ class MongoStatement extends EventDispatcher {
 
 		try {
 			var params:FieldStruct<Dynamic> = parameters;
-			var command:Dynamic = ExtendedJson.parse(text, name -> FieldStruct.exists(params, name) ? FieldStruct.get(params, name) : null);
+			// Whether each exists is asked apart from its value, so one set to
+			// null is bound as BSON null; it was refused as "no parameter".
+			var command:Dynamic = ExtendedJson.parse(text, name -> FieldStruct.get(params, name), name -> FieldStruct.exists(params, name));
 
 			if (!Std.isOfType(command, BsonDocument)) {
 				throw new SQLError(SQLEvent.RESULT, "A command is a JSON object.", "Execution failed: a command is a JSON object.");
