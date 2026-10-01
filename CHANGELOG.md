@@ -2163,6 +2163,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An `Event.CLOSE` listener added to an `HTTPRequestHandler` after its
+  client had gone, the connection closed, or an HTTP/2 stream reset by
+  either end, hears it, once, in a later turn. It heard nothing, or only
+  the connection closing whenever that came, so a route that looked
+  something up before listening, and the producer `HTTPResponseStream`'s
+  example stops on `CLOSE`, ran on for a client that had left. And such a
+  listener no longer makes the others hear `CLOSE` a second time when the
+  connection closes.
 - An HTTP/2 request refused at its headers whose answer could not be
   written, its `413` threw, and the `500` after it, has its stream
   reset `INTERNAL_ERROR`. It was reset `NO_ERROR`, which tells a client a
