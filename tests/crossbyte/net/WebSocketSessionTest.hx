@@ -758,6 +758,94 @@ class WebSocketSessionTest extends utest.Test {
 		}, async);
 	}
 
+	/**
+		The output limit honours `outputOverflowPolicy`, as `Socket`'s does.
+		`CLOSE`, the default, says why before it closes: an `ioError`, then
+		`close` with 1011. The session closed without a word.
+	**/
+	@:timeout(60000)
+	public function testAnOverflowIsReportedBeforeTheSessionCloses(async:Async):Void {
+		__overflow(CLOSE, function(outcome) {
+			Assert.same(["ioError", "close 1011"], outcome.events, 'wrote ${outcome.written} bytes, and the session did not report its overflow and then close');
+			Assert.isFalse(outcome.threw, "the CLOSE policy threw from a send");
+			Assert.isTrue(outcome.failure != null && outcome.failure.indexOf("limit") >= 0, "the ioError did not say why: " + outcome.failure);
+		}, async);
+	}
+
+	/**
+		`THROW` throws an `IOError` from the send that leaves the session past
+		its limit, and keeps the session, for a writer that would rather
+		shed what it sends than lose the peer. It was ignored, and the session
+		closed with 1011 regardless.
+	**/
+	@:timeout(60000)
+	public function testTheThrowPolicyThrowsAndKeepsTheSession(async:Async):Void {
+		__overflow(THROW, function(outcome) {
+			Assert.isTrue(outcome.threw, 'wrote ${outcome.written} bytes past the limit and no send threw');
+			Assert.same([], outcome.events, "the THROW policy closed the session");
+			Assert.isTrue(outcome.connected, "the session was not kept");
+		}, async);
+	}
+
+	/**
+		A server session with a 256 KB output limit under `policy`, to a peer
+		that has stopped reading, sent 64 KB at a time until it closes, a send
+		throws, or far more than the kernel can hold has been sent.
+	**/
+	private function __overflow(policy:OutputOverflowPolicy, check:OverflowOutcome->Void, async:Async):Void {
+		__serve(null, function(server, sessions, finish) {
+			var peer = new WirePeer(server.localPort);
+			peer.upgrade();
+
+			NetPump.until(() -> {
+				peer.poll();
+				return sessions.length > 0 && peer.head() != null;
+			}, 5.0, function(_) {
+				peer.pause();
+
+				var session = sessions[0];
+				var outcome:OverflowOutcome = {events: [], failure: null, threw: false, connected: false, written: 0};
+				var chunk = new ByteArray();
+				chunk.length = 64 * 1024;
+				// Far past what the kernel holds for a stalled loopback peer.
+				var ceiling:Int = 64 * 1024 * 1024;
+
+				session.maxOutputBufferSize = 256 * 1024;
+				session.outputOverflowPolicy = policy;
+				session.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) {
+					outcome.events.push("ioError");
+					outcome.failure = e.text;
+				});
+				session.addEventListener(Event.CLOSE, function(e:Event) {
+					var close = Std.downcast(e, WebSocketCloseEvent);
+					outcome.events.push("close " + (close == null ? "?" : Std.string(close.code)));
+				});
+
+				NetPump.until(() -> {
+					// Nothing more once the session has said anything.
+					if (outcome.events.length == 0 && !outcome.threw && outcome.written < ceiling) {
+						try {
+							session.sendBinary(chunk);
+							outcome.written += chunk.length;
+						} catch (e:crossbyte.errors.IOError) {
+							outcome.threw = true;
+						}
+					}
+					var closed:Bool = outcome.events.length > 0 && StringTools.startsWith(outcome.events[outcome.events.length - 1], "close");
+					return outcome.threw || closed || outcome.written >= ceiling;
+				}, 40.0, function(_) {
+					// A moment, for anything dispatched after.
+					NetPump.wait(0.2, function() {
+						outcome.connected = session.connected;
+						check(outcome);
+						peer.close();
+						finish();
+					});
+				});
+			});
+		}, async);
+	}
+
 	// ---- Scaffolding ----------------------------------------------------
 
 	/**
@@ -797,4 +885,13 @@ class WebSocketSessionTest extends utest.Test {
 		return listeners == null ? 0 : listeners.length;
 	}
 	#end
+}
+
+private typedef OverflowOutcome = {
+	/** `ioError` and `close <code>`, in the order they were dispatched. **/
+	var events:Array<String>;
+	var failure:String;
+	var threw:Bool;
+	var connected:Bool;
+	var written:Int;
 }
