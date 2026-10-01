@@ -179,7 +179,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	public var remotePort(get, never):Int;
 
 	/**
-		The connection timeout, in milliseconds, used while establishing a reliable session.
+		The connection timeout, in milliseconds, used while establishing a
+		reliable session: 20 seconds unless changed. Zero means no deadline:
+		the attempt goes on, a CONNECT every three seconds, until the peer
+		answers or `close()` is called. Set it before `connect()`; an attempt
+		already under way keeps the deadline it began with.
+
+		@throws RangeError If set below zero.
 	**/
 	public var timeout(get, set):Int;
 
@@ -1074,7 +1080,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__transport.receive();
 
 		__clearHandshakeTimers();
-		__connectionTimeoutHandle = CBTimer.setTimeout(__timeout / 1000, __onConnectionFailed);
+		__armConnectionTimeout();
 
 		var lookup:Int = __lookups;
 		__lookingUp = true;
@@ -1563,7 +1569,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		socket.__connectionId = socket.__newConnectionId();
 		if (remoteAddress == null) {
 			socket.__lookingUp = true;
-			socket.__connectionTimeoutHandle = CBTimer.setTimeout(socket.__timeout / 1000, socket.__onConnectionFailed);
+			socket.__armConnectionTimeout();
 		} else {
 			socket.__beginHandshake();
 		}
@@ -2303,7 +2309,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// deadline counts the lookup, so it is not restarted after it.
 		if (!deadlineArmed) {
 			__clearHandshakeTimers();
-			__connectionTimeoutHandle = CBTimer.setTimeout(__timeout / 1000, __onConnectionFailed);
+			__armConnectionTimeout();
 		}
 
 		// Only a session that dialled repeats itself. An accepted one is
@@ -2322,6 +2328,17 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 
 		__sendHandshakeAttempt();
+	}
+
+	/**
+		The attempt's deadline, `timeout` from now; none for a timeout of
+		zero, which was armed as a timer of zero and gave the attempt up at
+		the first pass.
+	**/
+	@:noCompletion private function __armConnectionTimeout():Void {
+		if (__timeout > 0) {
+			__connectionTimeoutHandle = CBTimer.setTimeout(__timeout / 1000, __onConnectionFailed);
+		}
 	}
 
 	@:noCompletion private function __clearHandshakeTimers():Void {
