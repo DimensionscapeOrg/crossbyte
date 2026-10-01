@@ -212,16 +212,20 @@ class UtilsTest extends utest.Test {
 		`nextPow2` answers the same on every target at the top of the range.
 		Past 2^30 the answer is 2^31, which native targets wrapped to
 		-2147483648 and JavaScript, whose Int does not wrap, gave as
-		2147483648.
+		2147483648. `INT32_MIN` answers 0, as all below zero do: it answered
+		2^31 by wrapping `n - 1`, which C++ leaves undefined.
 	**/
 	public function testNextPow2AgreesAcrossTargetsAtTheTop():Void {
 		Assert.equals(1, MathUtil.nextPow2(1));
+		Assert.equals(2, MathUtil.nextPow2(2));
+		Assert.equals(4, MathUtil.nextPow2(3));
+		Assert.equals(1 << 30, MathUtil.nextPow2((1 << 29) + 1));
 		Assert.equals(1 << 30, MathUtil.nextPow2(1 << 30));
 		Assert.equals(1 << 31, MathUtil.nextPow2((1 << 30) + 1));
 		Assert.equals(1 << 31, MathUtil.nextPow2(0x7FFFFFFF));
 		Assert.equals(0, MathUtil.nextPow2(0));
 		Assert.equals(0, MathUtil.nextPow2(-5));
-		Assert.equals(1 << 31, MathUtil.nextPow2(MathUtil.INT32_MIN));
+		Assert.equals(0, MathUtil.nextPow2(MathUtil.INT32_MIN));
 	}
 
 	public function testMathUtilWrapHandlesWideRangesWithoutCollapsing():Void {

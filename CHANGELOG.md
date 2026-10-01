@@ -2195,7 +2195,11 @@ All notable changes to CrossByte will be documented in this file.
   keeps, where a burst of a hundred thousand used to stay for good.
 - `MathUtil.nextPow2` answers the same on every target above 2^30: 2^31's
   bit pattern, `1 << 31`. JavaScript's Int does not wrap by itself, so it
-  answered 2147483648 there and -2147483648 elsewhere.
+  answered 2147483648 there and -2147483648 elsewhere. Zero and below
+  answer 0, as documented, `INT32_MIN` too, which answered 2^31; and
+  nothing in it overflows an Int, which native targets survived only
+  because C++ compilers happen to wrap -- a signed overflow is undefined
+  there, and clang warned of it.
 - `Seq32` prints and divides as the unsigned number it is on the jvm. It
   printed through a Float, which the jvm writes in scientific notation --
   "4.294967295E9" -- and in hex saturated to 7FFFFFFF; and `%` passed a
