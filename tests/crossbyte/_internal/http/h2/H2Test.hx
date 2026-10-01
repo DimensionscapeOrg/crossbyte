@@ -345,6 +345,14 @@ class H2Test extends utest.Test {
 
 		Assert.isTrue(first.isClosed());
 		Assert.isFalse(first.endOfStream, "an interim response that ended the stream was taken as the response");
+
+		var second = connection.request("GET", "http", "example.com", "/next", []);
+		connection.pumpUntilClosed(second);
+		Assert.equals(200, second.status);
+		Assert.equals("fine", second.takeBody().toString());
+
+		// Read once everything has been written: written() finishes the
+		// sink, and on hxcpp a write after it is a null dereference.
 		var reset:Null<H2Frame> = null;
 		for (frame in ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length)) {
 			if (frame.type == H2FrameType.RST_STREAM && frame.streamId == 1) {
@@ -353,11 +361,6 @@ class H2Test extends utest.Test {
 		}
 		Require.notNull(reset, "the stream was not reset");
 		Assert.equals(1, reset.payload.get(3), "the reset was not PROTOCOL_ERROR");
-
-		var second = connection.request("GET", "http", "example.com", "/next", []);
-		connection.pumpUntilClosed(second);
-		Assert.equals(200, second.status);
-		Assert.equals("fine", second.takeBody().toString());
 	}
 
 	public function testOversizedFrameIsRejectedBeforeItIsAllocated():Void {
