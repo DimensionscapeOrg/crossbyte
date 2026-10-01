@@ -54,9 +54,15 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		of a row inserted, ask the statement for it: `INSERT ... RETURNING
 		id`.
 	**/
-	public var lastInsertRowID(get, null):Int;
+	public var lastInsertRowID(get, null):Float;
 
-	public var affectedRows(get, null):Int;
+	/**
+		The rows the last statement changed, or a `SELECT` returned, as the
+		server counts them in its command tag: a `Float`, exact to 2^53. The
+		native bridge read it with `atoi`, into 32 bits, so a write of three
+		billion rows read 2147483647 -- or, on Linux, a negative number.
+	**/
+	public var affectedRows(get, null):Float;
 	public var serverVersion(get, null):String;
 
 	/**
@@ -91,8 +97,8 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	@:noCompletion private var __inTransaction:Bool = false;
 	@:noCompletion private var __autocommit:Bool = true;
 	@:noCompletion private var __isolationLevel:PostgresIsolationLevel = PostgresIsolationLevel.REPEATABLE_READ;
-	@:noCompletion private var __lastInsertRowID:Int = 0;
-	@:noCompletion private var __lastAffectedRows:Int = 0;
+	@:noCompletion private var __lastInsertRowID:Float = 0;
+	@:noCompletion private var __lastAffectedRows:Float = 0;
 	@:noCompletion private var __savepoints:Array<String> = [];
 	@:noCompletion private var __savepointSeq:Int = 0;
 	// The command tag of the last request(), where the driver reports one.
@@ -408,8 +414,8 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		}
 
 		var rows:Array<Dynamic> = __toRows(Reflect.field(parsed, "rows"));
-		__lastAffectedRows = __toInt(Reflect.field(parsed, "affectedRows"));
-		__lastInsertRowID = __toInt(Reflect.field(parsed, "lastInsertRowID"));
+		__lastAffectedRows = __count(Reflect.field(parsed, "affectedRows"));
+		__lastInsertRowID = __count(Reflect.field(parsed, "lastInsertRowID"));
 		__lastCommand = Reflect.field(parsed, "command");
 		return new PostgresResultSet(rows);
 		#else
@@ -432,7 +438,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		} catch (_:Dynamic) {
 			try {
 				var updated:Dynamic = __connection.exec(sql);
-				__lastAffectedRows = __toInt(updated);
+				__lastAffectedRows = __count(updated);
 			} catch (e:Dynamic) {
 				var detail:String = Std.string(e);
 				throw new SQLError("request", detail, detail);
@@ -615,11 +621,11 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	}
 	#end
 
-	private function get_lastInsertRowID():Int {
+	private function get_lastInsertRowID():Float {
 		return __lastInsertRowID;
 	}
 
-	private function get_affectedRows():Int {
+	private function get_affectedRows():Float {
 		return __lastAffectedRows;
 	}
 
@@ -768,31 +774,42 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		}
 	}
 
-	@:noCompletion private function __lastInsertId():Int {
+	@:noCompletion private function __lastInsertId():Float {
 		if (__connection == null) {
 			return __lastInsertRowID;
 		}
 		try {
-			return __toInt(__connection.lastInsertId());
+			return __count(__connection.lastInsertId());
 		} catch (_:Dynamic) {
 			return __lastInsertRowID;
 		}
 	}
 
-	@:noCompletion private function __rowCount(statement:Dynamic):Int {
+	@:noCompletion private function __rowCount(statement:Dynamic):Float {
 		try {
-			return __toInt(statement.rowCount());
+			return __count(statement.rowCount());
 		} catch (_:Dynamic) {
 			return 0;
 		}
 	}
 
-	@:noCompletion private function __toInt(value:Dynamic):Int {
-		var n:Null<Int> = null;
-		if (value != null) {
-			n = Std.parseInt(Std.string(value));
+	/**
+		A count or id from the driver as a whole number, exact to 2^53: an
+		`Int`, a `Float` -- what JSON makes of a number past 32 bits -- or
+		digits as text. It was `Std.parseInt`, which past 2^31 answers
+		differently on every target, and never the number.
+	**/
+	@:noCompletion private static function __count(value:Dynamic):Float {
+		if (value == null) {
+			return 0;
 		}
-		return n != null ? n : 0;
+
+		if (Std.isOfType(value, Int) || Std.isOfType(value, Float)) {
+			return value;
+		}
+
+		var parsed:Float = Std.parseFloat(Std.string(value));
+		return Math.isNaN(parsed) ? 0 : parsed;
 	}
 
 	@:noCompletion private function __toRows(raw:Dynamic):Array<Dynamic> {

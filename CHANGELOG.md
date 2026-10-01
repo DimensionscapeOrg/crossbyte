@@ -163,6 +163,8 @@ entry below says how:
   `OPEN` event to `close()`.
 - `SQLiteConnection.cacheSize` is an `Int`, negative for a size in KiB,
   where it was a `UInt`.
+- `PostgresConnection.affectedRows` and `lastInsertRowID`, and
+  `PostgresRawResult`'s, are `Float`s, where they were `Int`s.
 
 ### Added
 - `SQLiteConnection.queueTimeout`: how long a call that answers at once --
@@ -2175,6 +2177,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Postgres counts are whole past 2^31. The native bridge read a
+  statement's count with `atoi`, into 32 bits, on both of its paths: a
+  write of three billion rows read 2147483647 on Windows and a negative
+  number on Linux. `PostgresConnection.affectedRows` and `lastInsertRowID`
+  are `Float`s, exact to 2^53, as SQLite's are, and the OID is read
+  unsigned. A `PostgresStatement`'s `SQLResult.rowsAffected` is the
+  statement's own count: it was the rows its result held, 0 for every
+  write.
 - `SQLiteConnection.cacheSize` is an `Int`, and says what SQLite says: a
   positive number of pages, or a negative number of KiB -- SQLite's own
   default is -2000, about 2 MB. As a `UInt` it could hold no negative:

@@ -299,12 +299,30 @@ namespace {
 		return nullptr;
 	}
 
-	int parseAffectedRows(const LibPQApi* api, PGresult* result) {
+	// The count PQcmdTuples gives as decimal digits: rows changed by a write,
+	// or returned by a SELECT, 64 bits since PostgreSQL 14. Read whole --
+	// atoi kept 32 bits, so a write of three billion rows read 2147483647
+	// with MSVC and a negative number with glibc -- and saturating, never
+	// wrapping, should it ever be longer.
+	unsigned long long parseAffectedRows(const LibPQApi* api, PGresult* result) {
 		const char* raw = api->PQcmdTuples(result);
-		if (raw == nullptr || raw[0] == '\0') {
+		unsigned long long value = 0;
+
+		if (raw == nullptr) {
 			return 0;
 		}
-		return std::atoi(raw);
+
+		for (const char* c = raw; *c >= '0' && *c <= '9'; ++c) {
+			unsigned long long digit = static_cast<unsigned long long>(*c - '0');
+
+			if (value > (ULLONG_MAX - digit) / 10) {
+				return ULLONG_MAX;
+			}
+
+			value = value * 10 + digit;
+		}
+
+		return value;
 	}
 
 	bool succeeded(ExecStatusType status) {
@@ -370,6 +388,15 @@ namespace {
 		out[1] = static_cast<unsigned char>((value >> 8) & 0xFF);
 		out[2] = static_cast<unsigned char>((value >> 16) & 0xFF);
 		out[3] = static_cast<unsigned char>((value >> 24) & 0xFF);
+		return out + 4;
+	}
+
+	// The same, for a value that is unsigned on both sides.
+	inline unsigned char* putUInt(unsigned char* out, unsigned int value) {
+		out[0] = static_cast<unsigned char>(value & 0xFFu);
+		out[1] = static_cast<unsigned char>((value >> 8) & 0xFFu);
+		out[2] = static_cast<unsigned char>((value >> 16) & 0xFFu);
+		out[3] = static_cast<unsigned char>((value >> 24) & 0xFFu);
 		return out + 4;
 	}
 
@@ -489,7 +516,8 @@ namespace {
 		int rows = api->PQntuples(result);
 		int fields = api->PQnfields(result);
 
-		long long size = 20;
+		// status, affectedRows (8), lastInsertRowID, fieldCount, rowCount.
+		long long size = 24;
 
 		for (int field = 0; field < fields; ++field) {
 			const char* name = api->PQfname(result, field);
@@ -515,9 +543,11 @@ namespace {
 		Array<unsigned char> block = Array_obj<unsigned char>::__new(total, total);
 		unsigned char* out = reinterpret_cast<unsigned char*>(block->GetBase());
 
+		unsigned long long affected = parseAffectedRows(api, result);
 		out = putInt(out, 0);
-		out = putInt(out, parseAffectedRows(api, result));
-		out = putInt(out, static_cast<int>(api->PQoidValue(result)));
+		out = putUInt(out, static_cast<unsigned int>(affected & 0xFFFFFFFFULL));
+		out = putUInt(out, static_cast<unsigned int>(affected >> 32));
+		out = putUInt(out, static_cast<unsigned int>(api->PQoidValue(result)));
 		out = putInt(out, fields);
 
 		for (int field = 0; field < fields; ++field) {
