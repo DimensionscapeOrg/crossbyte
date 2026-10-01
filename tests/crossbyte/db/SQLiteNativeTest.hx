@@ -866,6 +866,515 @@ class SQLiteNativeTest extends utest.Test {
 		connection.close();
 	}
 
+	public function testTheCallingThreadsReadsDoNotRaceTheWorker():Void {
+		// On an asynchronous connection request(), and the properties that ask
+		// SQLite, ran on the calling thread while the worker ran statements on
+		// the same connection, and hxcpp's glue keeps one live result per
+		// connection, finalized as the next request starts: a read on the
+		// calling thread stepped and finalized the statement the worker was
+		// reading.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		var opened:Bool = false;
+		var closed:Bool = false;
+		connection.addEventListener(SQLEvent.OPEN, _ -> opened = true);
+		connection.addEventListener(SQLEvent.CLOSE, _ -> closed = true);
+		connection.openAsync(null, SQLiteMode.CREATE, false, 4096);
+		// The open first, so what races below is the worker's statements.
+		__pumpUntil(() -> opened);
+
+		var setup:SQLiteStatement = new SQLiteStatement();
+		setup.sqlConnection = connection;
+		setup.text = "CREATE TABLE t AS WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 20000) SELECT i FROM n";
+		var made:Bool = false;
+		setup.addEventListener(SQLEvent.RESULT, _ -> made = true);
+		setup.execute();
+		__pumpUntil(() -> made);
+
+		var short:Array<Int> = [];
+		var wrong:Array<String> = [];
+		var failures:Array<String> = [];
+
+		for (round in 0...20) {
+			var select:SQLiteStatement = new SQLiteStatement();
+			select.sqlConnection = connection;
+			select.text = "SELECT i FROM t";
+			var rows:Int = -1;
+			var failed:Bool = false;
+			select.addEventListener(SQLEvent.RESULT, _ -> rows = select.getResult().data.length);
+			select.addEventListener(SQLErrorEvent.ERROR, function(e:SQLErrorEvent) {
+				failed = true;
+				failures.push("select: " + e.error.details());
+			});
+			select.execute();
+
+			// Asked while the worker reads its 20000 rows.
+			for (k in 0...20) {
+				try {
+					var count:Dynamic = Reflect.field(connection.request("SELECT COUNT(*) AS n FROM t").next(), "n");
+
+					if (count != 20000) {
+						wrong.push("count " + count);
+					}
+
+					if (connection.foreignKeys) {
+						wrong.push("foreign keys on");
+					}
+				} catch (e:Dynamic) {
+					failures.push("calling thread: " + Std.string(e));
+				}
+			}
+
+			__pumpUntil(() -> rows >= 0 || failed);
+
+			if (rows != 20000) {
+				short.push(rows);
+			}
+		}
+
+		connection.close();
+		__pumpUntil(() -> closed);
+		Assert.same([], short, "a statement on the worker lost rows to the calling thread's reads");
+		Assert.same([], wrong);
+		Assert.same([], failures);
+	}
+
+	public function testACallOnAnAsynchronousConnectionAnswersInTurn():Void {
+		// What answers at once is run by the worker behind the work queued
+		// before it. It ran on the calling thread at once, on the connection
+		// as the worker had it then: right after openAsync() there was none
+		// ("not open"), and a statement queued just before had not run.
+		var path:String = __path("in-turn");
+		var connection:SQLiteConnection = new SQLiteConnection();
+		var events:Array<String> = [];
+		connection.addEventListener(SQLEvent.OPEN, _ -> events.push("open"));
+		connection.addEventListener(SQLEvent.CLOSE, _ -> events.push("close"));
+		connection.openAsync(path, SQLiteMode.CREATE, false, 4096);
+
+		// Before the worker has opened anything: these wait for the open.
+		connection.foreignKeys = true;
+		Assert.isTrue(connection.foreignKeys);
+		connection.request("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)");
+
+		var insert:SQLiteStatement = new SQLiteStatement();
+		insert.sqlConnection = connection;
+		insert.text = "INSERT INTO t (id, v) VALUES (3000000000, 'a')";
+		insert.execute();
+		// The insert queued just before has run when these answer.
+		Assert.equals(3000000000.0, connection.lastInsertRowID);
+		Assert.equals(1.0, connection.totalChanges);
+		Assert.same(["t"], connection.tableList());
+		Assert.equals(1, __count(connection, "t"));
+
+		Assert.isFalse(connection.inTransaction);
+		connection.begin();
+		Assert.isTrue(connection.inTransaction, "the BEGIN queued before it had not run");
+		connection.rollback();
+		Assert.isFalse(connection.inTransaction);
+
+		// connected answers from the events, and asks nothing.
+		Assert.isFalse(connection.connected, "connected before OPEN was dispatched");
+		__pumpUntil(() -> events.indexOf("open") >= 0);
+		Assert.isTrue(connection.connected);
+		connection.close();
+		Assert.isFalse(connection.connected);
+		Assert.raises(() -> connection.request("SELECT 1"), IllegalOperationError);
+		__pumpUntil(() -> events.indexOf("close") >= 0);
+		Assert.same(["open", "close"], events);
+	}
+
+	public function testACallTheWorkerDoesNotReachInTimeIsWithdrawn():Void {
+		// Every wait ends: a call waits for its turn for queueTimeout, and one
+		// not started by then is withdrawn and never runs.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		var events:Array<String> = [];
+		connection.addEventListener(SQLEvent.CANCEL, _ -> events.push("cancel"));
+		connection.addEventListener(SQLEvent.CLOSE, _ -> events.push("close"));
+		connection.openAsync(null, SQLiteMode.CREATE, false, 4096);
+		connection.request("CREATE TABLE t (x INTEGER)");
+		connection.queueTimeout = 0.3;
+
+		// Hours of work, which only an interrupt ends.
+		var long:SQLiteStatement = __watched(connection, "long",
+			"WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100000000000) SELECT COUNT(*) AS c FROM n", events, new Map());
+		long.execute();
+
+		var asked:Float = haxe.Timer.stamp();
+		var refused:SQLError = null;
+
+		try {
+			connection.request("INSERT INTO t VALUES (1)");
+		} catch (e:SQLError) {
+			refused = e;
+		}
+
+		var took:Float = haxe.Timer.stamp() - asked;
+		Require.notNull(refused);
+		Assert.isTrue(took >= 0.25 && took < 5, 'the call waited $took s');
+		Assert.isTrue(refused.details().indexOf("Timed out") >= 0, refused.details());
+
+		connection.cancel();
+		__pumpUntil(() -> events.indexOf("cancel") >= 0);
+		connection.queueTimeout = 10;
+		Assert.equals(0, __count(connection, "t"), "the withdrawn call ran after all");
+
+		// 0 waits without limit; a negative is refused.
+		connection.queueTimeout = 0;
+		Assert.equals(1, __count(connection, "(SELECT 1)"));
+		Assert.raises(() -> connection.queueTimeout = -1, crossbyte.errors.ArgumentError);
+		Assert.raises(() -> connection.queueTimeout = Math.NaN, crossbyte.errors.ArgumentError);
+		connection.close();
+		__pumpUntil(() -> events.indexOf("close") >= 0);
+
+		// A call queued behind an open that fails is told so at once, as a
+		// call on a closed connection is.
+		var missing:String = Path.join([Sys.getCwd(), "export", "sqlite-native-absent-" + Std.random(0x7FFFFFFF), "db.sqlite"]);
+		var failed:SQLiteConnection = new SQLiteConnection();
+		failed.addEventListener(SQLErrorEvent.ERROR, _ -> {});
+		failed.openAsync(missing, SQLiteMode.CREATE, false, 4096);
+		asked = haxe.Timer.stamp();
+		Assert.raises(() -> failed.request("SELECT 1"), IllegalOperationError);
+		Assert.isTrue(haxe.Timer.stamp() - asked < 5);
+		__pumpUntil(() -> false, 0.2);
+	}
+
+	public function testCancellingAStatementStopsItsWorkAndNothingElse():Void {
+		// SQLiteStatement.cancel() only reset the statement's own fields: the
+		// work queued for it still ran, an INSERT cancelled before its turn
+		// inserted, and a statement already running ran on to its end,
+		// holding up everything queued behind it.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		var events:Array<String> = [];
+		var errors:Map<String, SQLError> = new Map();
+		connection.addEventListener(SQLEvent.CANCEL, _ -> events.push("connection:cancel"));
+		connection.addEventListener(SQLErrorEvent.ERROR, e -> events.push("connection:error"));
+		connection.addEventListener(SQLEvent.CLOSE, _ -> events.push("close"));
+		connection.openAsync(null, SQLiteMode.CREATE, false, 4096);
+		connection.request("CREATE TABLE t (x INTEGER)");
+
+		// Running: interrupted, and the statement queued behind it runs.
+		var hours:String = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100000000000) SELECT COUNT(*) AS c FROM n";
+		var long:SQLiteStatement = __watched(connection, "long", hours, events, errors);
+		var after:SQLiteStatement = __watched(connection, "after", "SELECT 1 AS one", events, errors);
+		long.execute();
+		after.execute();
+		__pumpUntil(() -> false, 0.3);
+		var asked:Float = haxe.Timer.stamp();
+		long.cancel();
+		Assert.isFalse(long.executing);
+		__pumpUntil(() -> events.indexOf("after") >= 0, 5.0);
+		Assert.isTrue(haxe.Timer.stamp() - asked < 5, "the cancelled statement kept the worker");
+		Assert.same(["after"], events, "the cancelled statement was heard from, or the connection was cancelled");
+
+		// Queued: dropped, never run; the statement running is not touched.
+		events.resize(0);
+		var blocker:SQLiteStatement = __watched(connection, "blocker", hours, events, errors);
+		var insert:SQLiteStatement = __watched(connection, "insert", "INSERT INTO t VALUES (1)", events, errors);
+		blocker.execute();
+		insert.execute();
+		__pumpUntil(() -> false, 0.3);
+		insert.cancel();
+		Assert.isFalse(insert.executing);
+		__pumpUntil(() -> false, 0.3);
+		Assert.isTrue(blocker.executing, "cancelling another statement stopped this one");
+		Assert.same([], events);
+		blocker.cancel();
+		var count:SQLiteStatement = __watched(connection, "count", "SELECT COUNT(*) AS n FROM t", events, errors);
+		var rows:Dynamic = null;
+		count.addEventListener(SQLEvent.RESULT, _ -> rows = Reflect.field(count.getResult().data[0], "n"));
+		count.execute();
+		__pumpUntil(() -> rows != null, 5.0);
+		Assert.equals(0, rows, "the cancelled INSERT ran");
+		Assert.same(["count"], events);
+
+		// Whatever a cancel left running, the connection still closes.
+		connection.cancel();
+		connection.close();
+		__pumpUntil(() -> events.indexOf("close") >= 0);
+	}
+
+	public function testACancelLandingAsTheStatementStartsStillStopsIt():Void {
+		// SQLite clears an interrupt as a statement starts when no other is
+		// running, so a cancel() landing while the worker prepared the
+		// statement, execute() then cancel() on an idle connection, was
+		// lost, and the statement ran its hours. Swept across the window.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		var closed:Bool = false;
+		connection.addEventListener(SQLEvent.CLOSE, _ -> closed = true);
+		connection.openAsync(null, SQLiteMode.CREATE, false, 4096);
+		connection.request("SELECT 1");
+		var hours:String = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100000000000) SELECT COUNT(*) AS c FROM n";
+		var stuck:Int = -1;
+
+		for (round in 0...150) {
+			var long:SQLiteStatement = new SQLiteStatement();
+			long.sqlConnection = connection;
+			long.text = hours;
+			long.execute();
+			// 0 to 150 microseconds, round by round.
+			var until:Float = haxe.Timer.stamp() + round * 0.000001;
+
+			while (haxe.Timer.stamp() < until) {}
+
+			long.cancel();
+
+			var quick:SQLiteStatement = new SQLiteStatement();
+			quick.sqlConnection = connection;
+			quick.text = "SELECT 1 AS one";
+			var answered:Bool = false;
+			quick.addEventListener(SQLEvent.RESULT, _ -> answered = true);
+			quick.execute();
+			__pumpUntil(() -> answered, 5.0);
+
+			if (!answered) {
+				stuck = round;
+				break;
+			}
+		}
+
+		Assert.equals(-1, stuck, 'the cancel of round $stuck was lost, and the statement ran on');
+		// Whatever is still running, end it.
+		connection.cancel();
+		connection.close();
+		__pumpUntil(() -> closed);
+	}
+
+	public function testAConnectionsCancelLandingAsAStatementStartsStillStopsIt():Void {
+		// The same window for the connection's own cancel(): its interrupt,
+		// landing while the worker prepared the statement, was cleared as the
+		// statement started, which then ran its hours.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		var cancels:Int = 0;
+		var closed:Bool = false;
+		connection.addEventListener(SQLEvent.CANCEL, _ -> cancels++);
+		connection.addEventListener(SQLEvent.CLOSE, _ -> closed = true);
+		connection.addEventListener(SQLErrorEvent.ERROR, _ -> {});
+		connection.openAsync(null, SQLiteMode.CREATE, false, 4096);
+		connection.request("SELECT 1");
+		var hours:String = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100000000000) SELECT COUNT(*) AS c FROM n";
+		var stuck:Int = -1;
+
+		for (round in 0...150) {
+			var long:SQLiteStatement = new SQLiteStatement();
+			long.sqlConnection = connection;
+			long.text = hours;
+			long.addEventListener(SQLErrorEvent.ERROR, _ -> {});
+			long.execute();
+			var until:Float = haxe.Timer.stamp() + round * 0.000001;
+
+			while (haxe.Timer.stamp() < until) {}
+
+			connection.cancel();
+			var expected:Int = round + 1;
+			__pumpUntil(() -> cancels >= expected, 5.0);
+
+			if (cancels < expected) {
+				stuck = round;
+				break;
+			}
+		}
+
+		Assert.equals(-1, stuck, 'the cancel of round $stuck was lost, and the statement ran on');
+		connection.cancel();
+		connection.close();
+		__pumpUntil(() -> closed);
+	}
+
+	public function testCancellingAPagedStatementEndsItsRead():Void {
+		// A statement read a page at a time keeps SQLite's read open until its
+		// last row, and a writer elsewhere cannot commit past it. cancel()
+		// let it go on the calling thread only: the worker kept it live, the
+		// read held, and the next statement there read every row it had
+		// left first.
+		var path:String = __path("paged-cancel");
+		var setup:SQLiteConnection = new SQLiteConnection();
+		setup.open(path, SQLiteMode.CREATE, false, 4096);
+		setup.request("CREATE TABLE t AS WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000) SELECT i FROM n");
+		setup.close();
+
+		var connection:SQLiteConnection = new SQLiteConnection();
+		var closed:Bool = false;
+		connection.addEventListener(SQLEvent.CLOSE, _ -> closed = true);
+		connection.openAsync(path, SQLiteMode.UPDATE, false, 4096);
+		var paged:SQLiteStatement = new SQLiteStatement();
+		paged.sqlConnection = connection;
+		paged.text = "SELECT i FROM t";
+		var heard:Int = 0;
+		paged.addEventListener(SQLEvent.RESULT, _ -> heard++);
+		paged.addEventListener(SQLErrorEvent.ERROR, _ -> heard++);
+		paged.execute(10);
+		__pumpUntil(() -> heard > 0);
+		Assert.equals(1, heard);
+		Assert.isTrue(paged.executing);
+		// Asked for and not yet read: dropped with the rest.
+		paged.next(10);
+		paged.cancel();
+		Assert.isFalse(paged.executing);
+		// A call runs behind the cancel, so its effect is in place when it
+		// answers. inTransaction asks SQLite without a statement of its own.
+		Assert.isFalse(connection.inTransaction);
+
+		var writer:SQLiteConnection = new SQLiteConnection();
+		writer.open(path, SQLiteMode.UPDATE, false, 4096);
+		var wrote:Bool = false;
+		var refusal:String = null;
+
+		try {
+			writer.request("BEGIN EXCLUSIVE");
+			writer.request("INSERT INTO t VALUES (0)");
+			writer.request("COMMIT");
+			wrote = true;
+		} catch (e:Dynamic) {
+			refusal = Std.string(e);
+		}
+
+		writer.close();
+		Assert.isTrue(wrote, "the cancelled statement still held its read: " + refusal);
+		__pumpUntil(() -> false, 0.2);
+		Assert.equals(1, heard, "a page of the cancelled statement was dispatched");
+		connection.close();
+		__pumpUntil(() -> closed);
+	}
+
+	public function testCancellingAStatementRunningOnAnotherThreadInterruptsIt():Void {
+		// On a synchronous connection a statement runs on the thread that
+		// executes it, so another thread is what cancels it.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		connection.open(null, SQLiteMode.CREATE, false, 4096);
+		var statement:SQLiteStatement = new SQLiteStatement();
+		statement.sqlConnection = connection;
+		statement.text = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100000000000) SELECT COUNT(*) AS c FROM n";
+		var failure:String = null;
+		var done:sys.thread.Lock = new sys.thread.Lock();
+
+		sys.thread.Thread.create(function() {
+			try {
+				statement.execute();
+			} catch (e:Dynamic) {
+				failure = Std.string(e);
+			}
+
+			done.release();
+		});
+
+		// Long enough for the statement to be stepping.
+		crossbyte.sys.System.sleep(0.3);
+		statement.cancel();
+		var stopped:Bool = done.wait(10.0);
+
+		if (!stopped) {
+			// Still running on the other thread: stop it, then report.
+			connection.cancel();
+			done.wait(10.0);
+			Assert.fail("cancel() did not interrupt the statement");
+			connection.close();
+			return;
+		}
+
+		Assert.isTrue(failure != null && failure.indexOf("interrupt") >= 0, "it failed with " + failure);
+		Assert.isFalse(statement.executing);
+		Assert.equals(1, __count(connection, "(SELECT 1)"));
+		connection.close();
+	}
+
+	public function testCacheSizeSaysWhatSQLiteSays():Void {
+		// cacheSize was a UInt, and SQLite gives a cache size in KiB as a
+		// negative number, its own default is -2000, about 2 MB. -4096 set
+		// was written as 4294963200, which SQLite read as 0, and a negative
+		// size read back as four billion pages.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		connection.open(null, SQLiteMode.CREATE, false, 4096);
+		// As open() leaves it: 2000 pages, as AIR's does.
+		var size:Float = connection.cacheSize;
+		Assert.equals(2000.0, size);
+
+		connection.cacheSize = -4096;
+		size = connection.cacheSize;
+		Assert.equals(-4096.0, size);
+		Assert.equals(-4096, Std.int(Reflect.field(connection.request("PRAGMA cache_size").next(), "cache_size")));
+
+		// Set as SQLite itself keeps it, and read back as such.
+		connection.request("PRAGMA cache_size = -2000");
+		size = connection.cacheSize;
+		Assert.equals(-2000.0, size);
+
+		connection.cacheSize = 500;
+		size = connection.cacheSize;
+		Assert.equals(500.0, size);
+		connection.close();
+	}
+
+	public function testWorkAskedOfAWorkerThatHasStoppedIsRefusedAtOnce():Void {
+		// An asynchronous open that fails stops the worker, which tells what
+		// was queued behind it that it will not run, but the calling thread
+		// learns of the failure only when its event is dispatched. A call
+		// made in between waited out queueTimeout for a worker that was gone,
+		// and a statement executed then never answered at all.
+		var missing:String = Path.join([Sys.getCwd(), "export", "sqlite-native-absent-" + Std.random(0x7FFFFFFF), "db.sqlite"]);
+		var connection:SQLiteConnection = new SQLiteConnection();
+		var failures:Int = 0;
+		connection.addEventListener(SQLErrorEvent.ERROR, _ -> failures++);
+		connection.queueTimeout = 3;
+		connection.openAsync(missing, SQLiteMode.CREATE, false, 4096);
+		// Time for the open to fail and the worker to stop, with nothing
+		// pumped: the failure waits, undispatched.
+		crossbyte.sys.System.sleep(0.3);
+
+		var asked:Float = haxe.Timer.stamp();
+		Assert.raises(() -> connection.foreignKeys, IllegalOperationError);
+		var took:Float = haxe.Timer.stamp() - asked;
+		Assert.isTrue(took < 1, 'the call waited $took s for a worker that had stopped');
+
+		var statement:SQLiteStatement = new SQLiteStatement();
+		statement.sqlConnection = connection;
+		statement.text = "SELECT 1";
+		Assert.raises(() -> statement.execute(), IllegalOperationError);
+		Assert.isFalse(statement.executing);
+
+		// close() and cancel() have nothing to do, and the open's failure is
+		// still heard; then it opens again.
+		connection.cancel();
+		connection.close();
+		__pumpUntil(() -> failures > 0);
+		Assert.equals(1, failures);
+		var opened:Bool = false;
+		connection.addEventListener(SQLEvent.OPEN, _ -> opened = true);
+		connection.openAsync(null, SQLiteMode.CREATE, false, 4096);
+		__pumpUntil(() -> opened);
+		Assert.isTrue(opened);
+		connection.close();
+		__pumpUntil(() -> false, 0.2);
+	}
+
+	public function testCodeTheWorkerRunsCanAskTheConnection():Void {
+		// An itemClass is made on the worker, and its setters run there: one
+		// that asks the connection is answered at once, rather than queued
+		// behind the statement it is part of, waiting for itself.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		connection.openAsync(null, SQLiteMode.CREATE, false, 4096);
+		connection.queueTimeout = 1;
+		AskingItem.connection = connection;
+		AskingItem.asked = [];
+
+		var select:SQLiteStatement = new SQLiteStatement();
+		select.sqlConnection = connection;
+		select.itemClass = AskingItem;
+		select.text = "SELECT 7 AS i";
+		var item:AskingItem = null;
+		var failure:String = null;
+		select.addEventListener(SQLEvent.RESULT, _ -> item = select.getResult().data[0]);
+		select.addEventListener(SQLErrorEvent.ERROR, e -> failure = e.error.details());
+		select.execute();
+		__pumpUntil(() -> item != null || failure != null);
+
+		Assert.isNull(failure);
+		Require.notNull(item);
+		Assert.equals(7, item.i);
+		Assert.same(["MEMORY"], AskingItem.asked);
+		AskingItem.connection = null;
+		connection.close();
+		__pumpUntil(() -> false, 0.2);
+	}
+
 	private static function __pumpUntil(done:Void->Bool, seconds:Float = 10.0):Void {
 		var runtime = crossbyte.core.CrossByte.current();
 		var deadline:Float = haxe.Timer.stamp() + seconds;
@@ -886,6 +1395,21 @@ class SQLiteNativeTest extends utest.Test {
 		var path:String = Path.join([directory, "sqlite-native-" + name + "-" + Std.random(0x7FFFFFFF) + ".db"]);
 		__paths.push(path);
 		return path;
+	}
+}
+
+/** A row type whose setter asks the connection, from the worker that makes it. **/
+private class AskingItem {
+	public static var connection:SQLiteConnection;
+	public static var asked:Array<String> = [];
+
+	public var i(default, set):Int;
+
+	public function new() {}
+
+	private function set_i(value:Int):Int {
+		asked.push(Std.string(connection.journalMode));
+		return i = value;
 	}
 }
 #end

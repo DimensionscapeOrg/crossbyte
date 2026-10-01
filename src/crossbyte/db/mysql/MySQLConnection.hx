@@ -52,8 +52,35 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		setter, and those statements when they are sent as text.
 	**/
 	public var inTransaction(get, null):Bool;
-	public var lastInsertRowID(get, null):Int;
-	public var affectedRows(get, null):Int;
+
+	/**
+		The AUTO_INCREMENT id the last statement generated: a `Float`, exact
+		to 2^53 on every target. Natively it comes with the statement's
+		answer; each read used to be a `SELECT LAST_INSERT_ID()`.
+
+		Elsewhere it comes from Haxe's driver, which holds an `Int`: one that
+		cannot be right there, negative, or 2^31 and past, is asked for
+		in SQL, as text, as the SQLite driver does. On hl and neko, whose
+		drivers read it in 32 bits, it is asked for so every time, which is
+		the round trip their own read made: one past 2^32 wrapped back into
+		range there, and was taken as it was.
+
+		It was an `Int`, held at 2^31 - 1.
+	**/
+	public var lastInsertRowID(get, null):Float;
+
+	/**
+		The rows the last statement changed, as the server counts them: a
+		`Float`, exact to 2^53. Natively from the statement's answer, where a
+		`SELECT ROW_COUNT()` used to be sent for each read, and read after
+		`getResult()`, which sent a statement of its own, it answered -1.
+		Elsewhere `ROW_COUNT()` is asked as text: -1 after a statement that
+		changes no rows, as MySQL counts it.
+
+		It was an `Int`, held at 2^31 - 1 natively, and elsewhere read with
+		`Std.parseInt`, which past 2^31 answers differently on every target.
+	**/
+	public var affectedRows(get, null):Float;
 	public var serverVersion(get, null):String;
 	public var autocommit(get, set):Bool;
 	public var isolationLevel(get, set):IsolationLevel;
@@ -845,48 +872,63 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		return __inTransaction || __autocommitOff;
 	}
 
-	/**
-		The AUTO_INCREMENT id the last statement generated. Natively it comes
-		with the statement's answer; each read used to be a `SELECT
-		LAST_INSERT_ID()`. An id past 2^31 reads as 2147483647 here;
-		`SQLResult.lastInsertRowID` holds it exactly to 2^53.
-
-		Elsewhere it comes from Haxe's driver, which holds an `Int`: one
-		that cannot be right there, negative, or 2^31 and past, is asked
-		for in SQL, as the SQLite driver does. On hl and neko, which read the
-		id in 32 bits, one past 2^32 can wrap back into range unnoticed.
-	**/
-	private function get_lastInsertRowID():Int {
-		#if cpp
-		if (__native != null) {
-			return __native.lastInsertId();
-		}
-		#end
-
-		var id:Float = __insertIdFloat();
-		return id >= 0x7FFFFFFF ? 0x7FFFFFFF : Std.int(id);
+	private function get_lastInsertRowID():Float {
+		return __insertIdFloat();
 	}
 
-	/**
-		The rows the last statement changed. Natively from its answer, where a
-		`SELECT ROW_COUNT()` used to be sent for each read, and read after
-		`getResult()`, which sent a statement of its own, it answered -1.
-	**/
-	private function get_affectedRows():Int {
+	private function get_affectedRows():Float {
 		if (__connection == null) {
 			return 0;
 		}
 
 		#if cpp
 		if (__native != null) {
-			var rows:Dynamic = __native.affectedRows;
-			return Std.isOfType(rows, Int) ? rows : 0x7FFFFFFF;
+			return __whole(__native.affectedRows);
 		}
 		#end
 
-		var rs = __connection.request("SELECT ROW_COUNT() AS n;");
+		var rs:ResultSet = __connection.request("SELECT CAST(ROW_COUNT() AS CHAR) AS n");
+		return (rs != null && rs.hasNext()) ? __parseWhole(Std.string(Reflect.field(rs.next(), "n"))) : 0;
+	}
 
-		return (rs != null && rs.hasNext()) ? Std.parseInt(Std.string(Reflect.field(rs.next(), "n"))) : 0;
+	/** A count or id the native client gives, an `Int`, or an `Int64` past 2^31, as a `Float`, exact to 2^53. **/
+	@:noCompletion private static function __whole(value:Dynamic):Float {
+		if (value == null) {
+			return 0;
+		}
+
+		if (haxe.Int64.isInt64(value)) {
+			var wide:haxe.Int64 = value;
+			var low:Float = wide.low < 0 ? wide.low + 4294967296.0 : wide.low;
+			return wide.high * 4294967296.0 + low;
+		}
+
+		var number:Float = value;
+		return number;
+	}
+
+	/**
+		Decimal digits, with a sign, as a whole number: exact to 2^53, where
+		`Std.parseInt` answers each target differently past 2^31. 0 for
+		anything else.
+	**/
+	@:noCompletion private static function __parseWhole(text:String):Float {
+		var negative:Bool = text.length > 0 && StringTools.fastCodeAt(text, 0) == "-".code;
+		// 0.0, not 0: eval does a Float seeded with an Int literal's
+		// arithmetic in wrapping Int, and 3000000000 came out -1294967296.
+		var value:Float = 0.0;
+
+		for (i in (negative ? 1 : 0)...text.length) {
+			var digit:Int = StringTools.fastCodeAt(text, i) - "0".code;
+
+			if (digit < 0 || digit > 9) {
+				return 0;
+			}
+
+			value = value * 10 + digit;
+		}
+
+		return negative ? -value : value;
 	}
 
 	private function get_serverVersion():String {
@@ -910,9 +952,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	@:noCompletion private function __insertIdFloat():Float {
 		#if cpp
 		if (__native != null) {
-			var id:Dynamic = __native.insertId;
-			var exact:Float = id;
-			return exact;
+			return __whole(__native.insertId);
 		}
 		#end
 
@@ -920,6 +960,10 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 			return 0;
 		}
 
+		#if !(hl || neko)
+		// hl's and neko's lastInsertId() is a SELECT LAST_INSERT_ID() read in
+		// 32 bits, past 2^32 wrapped back into range, where nothing here can
+		// tell: there it is asked as text instead, the same round trip.
 		if (!__insertIdStale) {
 			var id:Null<Int> = null;
 
@@ -933,6 +977,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 				return id;
 			}
 		}
+		#end
 
 		return __lastInsertIdBySQL();
 	}
@@ -949,22 +994,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 			return 0;
 		}
 
-		var text:String = Std.string(Reflect.field(rows.next(), "id"));
-		// 0.0, not 0: eval does a Float seeded with an Int literal's
-		// arithmetic in wrapping Int, and 3000000000 came out -1294967296.
-		var id:Float = 0.0;
-
-		for (i in 0...text.length) {
-			var digit:Int = StringTools.fastCodeAt(text, i) - "0".code;
-
-			if (digit < 0 || digit > 9) {
-				return 0;
-			}
-
-			id = id * 10 + digit;
-		}
-
-		return id;
+		return __parseWhole(Std.string(Reflect.field(rows.next(), "id")));
 	}
 
 	/**
