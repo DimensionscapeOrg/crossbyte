@@ -195,6 +195,16 @@ entry below says how:
   target first. `System.getDeviceId()` answers `null`, not `""`, where
   there is no identifier, and `totalSystemMemory()` and
   `freeSystemMemory()` throw where nothing answers, where they answered 0.
+- On an asynchronous `SQLiteConnection`, `request()` and the properties
+  that ask SQLite wait for the work queued before them (`queueTimeout`),
+  and the rows `request()` answers are read by name: its `getResult`,
+  `getIntResult` and `getFloatResult` throw. `connected` is true from the
+  `OPEN` event to `close()`.
+- `SQLiteConnection.cacheSize` is an `Int`, negative for a size in KiB,
+  where it was a `UInt`.
+- `affectedRows` and `lastInsertRowID` of `PostgresConnection` and
+  `MySQLConnection`, and `PostgresRawResult`'s, are `Float`s, where they
+  were `Int`s.
 
 ### Added
 - `SharedObject.remove(name)` takes a region away on Linux and macOS --
@@ -211,6 +221,11 @@ entry below says how:
   `gatherRelayedFrom` does. It took the transport and nothing else, so a
   private relay over TLS, whose authority no system trusts, could not be
   reached through it.
+- `SQLiteConnection.queueTimeout`: how long a call that answers at once --
+  `request()`, a property that asks SQLite -- waits on an asynchronous
+  connection for the worker to reach it, 10 seconds unless changed, 0 for
+  no limit. One not started by then is withdrawn without running and
+  throws an `SQLError`.
 - `ReliableDatagramServerSocket.relayVerifyCert`, for a TURN relay reached
   over TLS whose certificate should not be checked -- a test against a
   throwaway one. The server passed its relay client an authority
@@ -2414,6 +2429,64 @@ entry below says how:
   URI was read as one to dial, where port 0 names nothing, and refused, so
   a host made from a URI could only be given a port someone had found free
   a moment before. A URI to dial still refuses port 0.
+- A statement executed on an asynchronous `SQLiteConnection` whose open
+  has failed, before that failure is dispatched, throws an
+  `IllegalOperationError`, as on a connection that is not open: the
+  worker had stopped, and the statement never answered.
+- MySQL counts and ids are whole past 2^31, on every target.
+  `MySQLConnection.affectedRows` and `lastInsertRowID` are `Float`s, exact
+  to 2^53, as SQLite's and Postgres's are. Natively both were held at
+  2^31 - 1, and off the native client `affectedRows` was read with
+  `Std.parseInt`: null past 2^31 on the interpreter, other numbers
+  elsewhere. On hl and neko an insert id is asked for in SQL, as text,
+  every time -- the round trip their drivers' own 32-bit read made -- where
+  one past 2^32 wrapped back into range and was taken as it was.
+- Postgres counts are whole past 2^31. The native bridge read a
+  statement's count with `atoi`, into 32 bits, on both of its paths: a
+  write of three billion rows read 2147483647 on Windows and a negative
+  number on Linux. `PostgresConnection.affectedRows` and `lastInsertRowID`
+  are `Float`s, exact to 2^53, as SQLite's are, and the OID is read
+  unsigned. A `PostgresStatement`'s `SQLResult.rowsAffected` is the
+  statement's own count: it was the rows its result held, 0 for every
+  write.
+- `SQLiteConnection.cacheSize` is an `Int`, and says what SQLite says: a
+  positive number of pages, or a negative number of KiB -- SQLite's own
+  default is -2000, about 2 MB. As a `UInt` it could hold no negative:
+  `-4096` set was written as 4294963200, which SQLite took as 0, and a
+  size kept in KiB read back as four billion pages.
+- `SQLiteStatement.cancel()` stops the statement, and only it, as AIR's
+  does. On an asynchronous connection its work not yet run is dropped, its
+  work running now is interrupted, and the rows it left unread are let go
+  of, ending the read they held; nothing more is dispatched for it, and the
+  connection's other work carries on. On a synchronous connection, another
+  thread cancelling a statement that is running interrupts it. It only
+  reset the statement's own fields: an INSERT cancelled before its turn
+  still inserted, a statement running ran on to its end, holding up the
+  work behind it, and a statement read a page at a time kept its read open
+  -- a writer elsewhere was told "database is locked" -- until the next
+  statement on the connection read all its rows.
+- `SQLiteConnection.cancel()`, and a statement's own, stop a statement
+  whose work is just starting. SQLite clears an interrupt as a statement
+  starts when no other is running, so a cancel that landed while the
+  worker prepared the statement was lost, and the statement ran on: an
+  `execute()` and `cancel()` in a row lost it within the first few of 150
+  tries. A progress handler stops it now, until its work is over.
+- An asynchronous `SQLiteConnection` no longer crashes the process when
+  the calling thread asks it something while its worker runs a statement.
+  `request()`, and the properties and methods that ask SQLite --
+  `journalMode`, `cacheSize`, `lastInsertRowID`, `inTransaction`,
+  `stats()`, `tableList()` and the rest -- ran on the calling thread, on
+  the connection the worker was stepping a statement on, and hxcpp's glue
+  finalizes the live statement as the next request starts: the worker
+  read freed memory, five runs in five. The worker runs them now, in turn
+  behind the work queued before them, while the calling thread waits for
+  the answer, for at most the new `queueTimeout`. So one asked right after
+  `openAsync()` waits for the open, where it threw "not open", and
+  `lastInsertRowID` after a queued insert is that insert's. `connected`
+  answers from the connection's events, and asks nothing. The savepoints
+  a `commit()` or `rollback()` ends are let go of on the calling thread,
+  which names them; the worker replaced the list the calling thread was
+  adding to.
 - A `-D final` build compiles again -- Lime's `-final` defines `final` --
   on every sys target. `final` inlines the socket registry's `update()`,
   and a return added in the middle of it for a failing poll backend

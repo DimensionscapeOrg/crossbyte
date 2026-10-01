@@ -15,8 +15,12 @@ import haxe.io.BytesBuffer;
 typedef PostgresRawResult = {
 	var fields:Array<String>;
 	var rows:Array<Array<Null<Bytes>>>;
-	var affectedRows:Int;
-	var lastInsertRowID:Int;
+
+	/** Rows the statement changed, or a SELECT returned: exact to 2^53. **/
+	var affectedRows:Float;
+
+	/** `PQoidValue`: an unsigned 32-bit OID, 0 on PostgreSQL 12 and later. **/
+	var lastInsertRowID:Float;
 }
 
 /**
@@ -30,7 +34,10 @@ typedef PostgresRawResult = {
  * which is not valid UTF-8.
  *
  * Every integer is a signed little-endian 32-bit value, written and read a byte
- * at a time so neither side depends on the host's endianness.
+ * at a time so neither side depends on the host's endianness -- but for
+ * `affectedRows`, unsigned 64 bits as two halves, low first, and
+ * `lastInsertRowID`, unsigned 32. The count was 32 bits, read with `atoi`,
+ * and past 2^31 was clamped or wrapped.
  *
  * Parameter block:
  * ```
@@ -45,8 +52,8 @@ typedef PostgresRawResult = {
  * ```
  * status : i32   0 = ok, 1 = error
  * error:   messageLength : i32, message bytes
- * ok:      affectedRows : i32
- *          lastInsertRowID : i32
+ * ok:      affectedRows : u32 low, u32 high
+ *          lastInsertRowID : u32
  *          fieldCount : i32
  *          fieldCount times: nameLength : i32, name bytes
  *          rowCount : i32
@@ -114,8 +121,9 @@ class PostgresWire {
 			throw new SQLError("request", 'status=$status', 'Postgres bridge returned an unknown status: $status.');
 		}
 
-		var affectedRows:Int = cursor.readInt();
-		var lastInsertRowID:Int = cursor.readInt();
+		var low:Float = cursor.readUInt();
+		var affectedRows:Float = cursor.readUInt() * 4294967296.0 + low;
+		var lastInsertRowID:Float = cursor.readUInt();
 
 		var fieldCount:Int = cursor.readInt();
 
@@ -280,6 +288,12 @@ private class Cursor {
 
 		__position += 4;
 		return value;
+	}
+
+	/** The next value as unsigned 32 bits, so whole past 2^31. **/
+	public function readUInt():Float {
+		var value:Int = readInt();
+		return value < 0 ? value + 4294967296.0 : value;
 	}
 
 	public function readBytes(length:Int):Bytes {

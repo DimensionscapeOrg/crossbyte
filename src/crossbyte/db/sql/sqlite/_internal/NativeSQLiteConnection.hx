@@ -19,19 +19,29 @@ import sys.db.ResultSet;
  * `sqlite3_auto_extension`, on the thread opening it; the one registered
  * here notes it, and `open` takes it straight after the glue's own open
  * returns, on the same thread -- no change to hxcpp needed.
+ *
+ * Through the same pointer it registers a progress handler, which SQLite
+ * calls every thousand steps of its virtual machine: it stops the statement
+ * running when `stopRunning(true)` asks. `sqlite3_interrupt` alone is lost
+ * when it lands as a statement starts -- SQLite clears it there when no
+ * other statement is running -- and a statement's `cancel()` can land just
+ * then, as its work is taken up.
  */
 @:noCompletion
 @:buildXml('<include name="${HXCPP}/src/hx/libs/sqlite/Build.xml"/>')
 @:cppFileCode('
 HXCPP_EXTERN_CLASS_ATTRIBUTES bool _hx_sqlite_get_autocommit(Dynamic handle);
 
-// Two calls of the SQLite C API that the glue above has no wrapper for,
+#include <atomic>
+
+// Calls of the SQLite C API that the glue above has no wrapper for,
 // declared rather than included: sqlite3.h is on the include path of the
 // hxcpp sqlite files only.
 extern "C" {
 	struct sqlite3;
 	int sqlite3_auto_extension(void (*xEntryPoint)(void));
 	void sqlite3_interrupt(struct sqlite3 *db);
+	void sqlite3_progress_handler(struct sqlite3 *db, int steps, int (*handler)(void *), void *argument);
 }
 
 // The connection sqlite3_open made last on this thread, as SQLite reports it
@@ -60,6 +70,43 @@ static void *crossbyte_sqlite_take_opened() {
 static void crossbyte_sqlite_interrupt(void *db) {
 	sqlite3_interrupt((struct sqlite3 *)db);
 }
+
+// Whether the statement running on a connection is to stop: what its
+// progress handler answers SQLite, which then fails the statement with
+// SQLITE_INTERRUPT, as sqlite3_interrupt does.
+struct crossbyte_sqlite_stop {
+	std::atomic<int> requested;
+};
+
+static int crossbyte_sqlite_progress(void *stop) {
+	return ((crossbyte_sqlite_stop *)stop)->requested.load(std::memory_order_relaxed);
+}
+
+// Registering and removing the handler takes the mutex of the connection,
+// which a statement stepping on another thread holds: in a GC-free zone, as
+// the blocking calls of the glue are, touching nothing of the GC inside.
+static void *crossbyte_sqlite_watch_progress(void *db) {
+	crossbyte_sqlite_stop *stop = new crossbyte_sqlite_stop();
+	stop->requested.store(0);
+	// Every thousand steps: an atomic read each time, against the tens of
+	// steps a row takes.
+	hx::EnterGCFreeZone();
+	sqlite3_progress_handler((struct sqlite3 *)db, 1000, crossbyte_sqlite_progress, stop);
+	hx::ExitGCFreeZone();
+	return stop;
+}
+
+static void crossbyte_sqlite_set_stop(void *stop, bool on) {
+	((crossbyte_sqlite_stop *)stop)->requested.store(on ? 1 : 0);
+}
+
+// Before the connection closes: nothing calls the handler after this.
+static void crossbyte_sqlite_unwatch_progress(void *db, void *stop) {
+	hx::EnterGCFreeZone();
+	sqlite3_progress_handler((struct sqlite3 *)db, 0, 0, 0);
+	hx::ExitGCFreeZone();
+	delete (crossbyte_sqlite_stop *)stop;
+}
 ')
 class NativeSQLiteConnection implements Connection {
 	@:noCompletion private var __handle:Dynamic;
@@ -69,6 +116,9 @@ class NativeSQLiteConnection implements Connection {
 	// connection close() has freed.
 	@:noCompletion private var __db:cpp.Pointer<cpp.Void>;
 	@:noCompletion private var __dbLock:sys.thread.Mutex;
+	// What the progress handler reads, for stopRunning(); null once closed,
+	// and guarded by __dbLock as __db is.
+	@:noCompletion private var __stop:cpp.Pointer<cpp.Void>;
 
 	public static function open(path:String):NativeSQLiteConnection {
 		__watchOpens();
@@ -76,6 +126,11 @@ class NativeSQLiteConnection implements Connection {
 		__takeOpened();
 		var connection:NativeSQLiteConnection = new NativeSQLiteConnection(__connect(path));
 		connection.__db = __takeOpened();
+
+		if (connection.__db != null) {
+			connection.__stop = __watchProgress(connection.__db);
+		}
+
 		return connection;
 	}
 
@@ -100,6 +155,36 @@ class NativeSQLiteConnection implements Connection {
 		__dbLock.release();
 	}
 
+	/**
+		Has SQLite stop the statement running on this connection, and any
+		started on it, while `on` -- it fails with "interrupted" -- until
+		called again with `false`. From any thread. Unlike `interrupt()` it is
+		not lost when it lands as a statement starts.
+	**/
+	public function stopRunning(on:Bool):Void {
+		__dbLock.acquire();
+
+		if (__stop != null) {
+			__setStop(__stop, on);
+		}
+
+		__dbLock.release();
+	}
+
+	/**
+		Reads the rows the result still live has left into its own hands
+		now, as the next request would first: so that they are read before
+		whatever is about to run, and not as part of it.
+	**/
+	public function settle():Void {
+		var previous:NativeSQLiteResultSet = __live;
+
+		if (previous != null) {
+			__live = null;
+			previous.__keepRest();
+		}
+	}
+
 	/** Whether no transaction is open. **/
 	public var autocommit(get, never):Bool;
 
@@ -115,13 +200,7 @@ class NativeSQLiteConnection implements Connection {
 		as asked; only a result interleaved that way pays for it.
 	**/
 	public function request(s:String):ResultSet {
-		var previous:NativeSQLiteResultSet = __live;
-
-		if (previous != null) {
-			__live = null;
-			previous.__keepRest();
-		}
-
+		settle();
 		var result:NativeSQLiteResultSet = new NativeSQLiteResultSet(__request(__handle, s));
 
 		if (!result.__exhausted) {
@@ -134,13 +213,52 @@ class NativeSQLiteConnection implements Connection {
 	// The result of the last request while it may still have rows to give.
 	@:noCompletion private var __live:NativeSQLiteResultSet;
 
+	/**
+		Ends `result`, when it is the statement still part way through its
+		rows: finalized now, its read ended, and the rows it had left never
+		read -- where the next request would first have read them all into
+		its hands. A cancelled statement's. Reading it again finds no rows.
+	**/
+	public function discard(result:ResultSet):Void {
+		var live:NativeSQLiteResultSet = __live;
+
+		if (result == null || result != live) {
+			return;
+		}
+
+		__live = null;
+
+		if (live.__exhausted) {
+			// Read to its end, so the glue has finalized it already.
+			return;
+		}
+
+		live.__exhausted = true;
+		live.__cache.clear();
+		// The glue finalizes the statement before it as it prepares one, and
+		// has no call to finalize one otherwise. This one is never stepped,
+		// so it holds nothing, and the next request finalizes it in turn.
+		__request(__handle, "SELECT 1");
+	}
+
 	public function close():Void {
 		// Let go of under the lock first: an interrupt() already running
 		// finishes with the pointer before SQLite frees it, and one arriving
 		// later finds nothing.
 		__dbLock.acquire();
+		var db:cpp.Pointer<cpp.Void> = __db;
+		var stop:cpp.Pointer<cpp.Void> = __stop;
 		__db = null;
+		__stop = null;
 		__dbLock.release();
+
+		// Outside the lock, which interrupt() and stopRunning() wait on: this
+		// can wait for a statement another thread is stepping. Neither can
+		// reach either pointer now.
+		if (stop != null) {
+			__unwatchProgress(db, stop);
+		}
+
 		__live = null;
 		__close(__handle);
 	}
@@ -222,6 +340,15 @@ class NativeSQLiteConnection implements Connection {
 
 	@:native("crossbyte_sqlite_interrupt")
 	extern private static function __interruptDb(db:cpp.Pointer<cpp.Void>):Void;
+
+	@:native("crossbyte_sqlite_watch_progress")
+	extern private static function __watchProgress(db:cpp.Pointer<cpp.Void>):cpp.Pointer<cpp.Void>;
+
+	@:native("crossbyte_sqlite_set_stop")
+	extern private static function __setStop(stop:cpp.Pointer<cpp.Void>, on:Bool):Void;
+
+	@:native("crossbyte_sqlite_unwatch_progress")
+	extern private static function __unwatchProgress(db:cpp.Pointer<cpp.Void>, stop:cpp.Pointer<cpp.Void>):Void;
 }
 
 @:noCompletion
