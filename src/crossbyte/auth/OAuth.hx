@@ -39,6 +39,11 @@ using StringTools;
  * // ...and when the provider redirects back:
  * oauth.getAccessToken(code, token -> signIn(token), error -> refuse(error), verifier);
  * ```
+ *
+ * With the `openid` scope the provider answers with an OpenID Connect ID
+ * token too, `token.idToken`: the JWT that says who signed in. Verify it with
+ * `JWT` against the provider's keys (`JWKSet`), its issuer and your client id
+ * as the audience, before trusting who it names.
  */
 class OAuth {
 	/**
@@ -80,15 +85,28 @@ class OAuth {
 	/**
 	 * Generates the authorization URL for the OAuth flow.
 	 *
+	 * The flow's parameters are added to `OAuthConfig.authorizeUrl`, after any
+	 * query it carries of its own, the place for parameters that never
+	 * change, such as Google's `access_type=offline`.
+	 *
 	 * @param state A unique state parameter to prevent CSRF attacks.
 	 * @param scope The scope of the requested permissions.
 	 * @param codeChallenge The PKCE challenge, `codeChallenge(verifier)`, which
 	 *        is sent with `code_challenge_method=S256`. Omit it to leave PKCE out.
+	 * @param extra Further parameters for this request, encoded like the rest:
+	 *        OpenID Connect's `nonce`, which has to be new for each sign-in,
+	 *        `prompt` or `login_hint`.
 	 * @return The authorization URL.
 	 */
-	public function getAuthorizationUrl(state:String, scope:String, ?codeChallenge:String):String {
-		var url:String = config.authorizeUrl
-			+ "?response_type=code"
+	public function getAuthorizationUrl(state:String, scope:String, ?codeChallenge:String, ?extra:Map<String, String>):String {
+		// After the endpoint's own query, if it has one: the parameters were
+		// added after a second "?", so the endpoint's last parameter took the
+		// rest of the URL as its value.
+		var endpoint:String = config.authorizeUrl;
+		var joiner:String = endpoint.indexOf("?") < 0 ? "?" : (StringTools.endsWith(endpoint, "?") || StringTools.endsWith(endpoint, "&") ? "" : "&");
+		var url:String = endpoint
+			+ joiner
+			+ "response_type=code"
 			+ "&client_id=" + __encode(config.clientId)
 			+ "&redirect_uri=" + __encode(config.redirectUri)
 			+ "&state=" + __encode(state)
@@ -97,17 +115,22 @@ class OAuth {
 		if (codeChallenge != null && codeChallenge != "") {
 			url += "&code_challenge=" + __encode(codeChallenge) + "&code_challenge_method=S256";
 		}
+
+		if (extra != null) {
+			for (name => value in extra) {
+				url += "&" + __encode(name) + "=" + __encode(value);
+			}
+		}
 		return url;
 	}
 
 	/**
 	 * Exchanges the authorization code for an access token.
 	 *
-	 * On native targets and Node this returns at once, and the callbacks run on
-	 * the calling runtime's thread when the endpoint answers or `timeout`
-	 * seconds pass; on the jvm and the interpreter, where `URLLoader` runs its
-	 * request inline, it returns once the endpoint has answered. Needs a
-	 * CrossByte runtime on the calling thread.
+	 * This returns at once, and the callbacks run on the calling runtime's
+	 * thread when the endpoint answers or `timeout` seconds pass: on one of
+	 * `URLLoader`'s threads natively, on the jvm and on the interpreter, and
+	 * asynchronously on Node. Needs a CrossByte runtime on the calling thread.
 	 *
 	 * `callback` fires only on success. Supply `onError` to be told about a
 	 * failure: without one, a rejected grant is logged and nothing else happens,
@@ -158,12 +181,32 @@ class OAuth {
 
 	/**
 	 * A public client, one using PKCE with no secret, sends none. An empty
-	 * `client_secret` is refused as a wrong one by some providers.
+	 * `client_secret` is refused as a wrong one by some providers. With Basic
+	 * authentication the secret goes in a header instead; see
+	 * `__authorization`.
 	 */
 	@:noCompletion private function __addClientSecret(params:Array<String>):Void {
-		if (config.clientSecret != null && config.clientSecret != "") {
+		if (__hasSecret() && config.clientAuthentication != SECRET_BASIC) {
 			params.push("client_secret=" + __encode(config.clientSecret));
 		}
+	}
+
+	@:noCompletion private inline function __hasSecret():Bool {
+		return config.clientSecret != null && config.clientSecret != "";
+	}
+
+	/**
+	 * The `Authorization` header for Basic client authentication, or null:
+	 * RFC 6749 2.3.1, the client id and the secret each form-encoded, joined
+	 * by a colon, in base64. The secret went in the body whatever the
+	 * provider took, and one configured for Basic alone refused it.
+	 */
+	@:noCompletion private function __authorization():Null<String> {
+		if (!__hasSecret() || config.clientAuthentication != SECRET_BASIC) {
+			return null;
+		}
+		var credentials:String = __encode(config.clientId) + ":" + __encode(config.clientSecret);
+		return "Basic " + Base64.encode(Bytes.ofString(credentials));
 	}
 
 	@:noCompletion private function __requestToken(operation:String, params:Array<String>, callback:(OAuthToken) -> Void,
@@ -173,6 +216,10 @@ class OAuth {
 		request.contentType = "application/x-www-form-urlencoded";
 		request.data = params.join("&");
 		request.requestHeaders.push(new URLRequestHeader("Accept", "application/json"));
+		var authorization:Null<String> = __authorization();
+		if (authorization != null) {
+			request.requestHeaders.push(new URLRequestHeader("Authorization", authorization));
+		}
 		// The client's own idle limit as a backstop; the deadline below is what
 		// bounds the whole exchange, drip-fed answers included.
 		request.idleTimeout = Std.int(Math.max(1, timeout) * 1000);
@@ -219,8 +266,8 @@ class OAuth {
 			}
 		});
 
-		// Armed before the load: where the loader runs inline, the answer has
-		// settled, and cleared this, by the time load returns.
+		// Armed before the load, so a load that settles inside load(),
+		// refused before it starts, clears it rather than leaving it armed.
 		deadline = crossbyte.Timer.setTimeout(timeout, () -> {
 			if (!settle()) {
 				return;
@@ -286,7 +333,7 @@ class OAuth {
 			}
 
 			token = new OAuthToken(Std.string(accessToken), __optionalString(data, "refresh_token"), __toInt(Reflect.field(data, "expires_in")),
-				__optionalString(data, "token_type"), __optionalString(data, "scope"));
+				__optionalString(data, "token_type"), __optionalString(data, "scope"), __optionalString(data, "id_token"));
 		} catch (e:Dynamic) {
 			__fail(operation, "malformed response: " + Std.string(e), onError);
 			return;

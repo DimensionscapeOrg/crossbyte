@@ -1,6 +1,9 @@
 package crossbyte.crypto;
 
 import haxe.io.Bytes;
+#if !cpp
+import crossbyte.crypto._internal.NativeOnly;
+#end
 #if cpp
 import crossbyte.crypto._internal.NativeSodium;
 import crossbyte.crypto._internal.SodiumGlue;
@@ -16,7 +19,8 @@ import crossbyte.crypto._internal.SodiumGlue;
  * messages.
  *
  * Available on supported native `cpp` targets via the statically linked
- * libsodium backend.
+ * libsodium backend. Elsewhere every member but `isAvailable` throws an
+ * `IllegalOperationError` naming the target.
  */
 class Aead {
 	/**
@@ -68,9 +72,8 @@ class Aead {
 	 * @return Ciphertext with the tag appended (`plaintext.length + TAG_BYTES`).
 	 */
 	public static function encrypt(plaintext:Bytes, nonce:Bytes, key:Bytes, ?associatedData:Bytes):Bytes {
-		__validateNonceAndKey(nonce, key);
-
 		#if cpp
+		__validateNonceAndKey(nonce, key);
 		SodiumGlue.ensureAvailable();
 
 		var plaintextLength = SodiumGlue.len(plaintext);
@@ -82,25 +85,25 @@ class Aead {
 		}
 		return sealed;
 		#else
-		throw "Aead encryption is only available on supported native cpp targets.";
+		throw NativeOnly.error("Aead encryption");
 		#end
 	}
 
 	/**
 	 * Verifies and decrypts combined-mode ciphertext produced by `encrypt`.
 	 *
-	 * @return The plaintext, or `null` when authentication fails or the
-	 * backend is unavailable. Malformed nonce/key lengths throw.
+	 * @return The plaintext, or `null` when authentication fails. Malformed
+	 * nonce/key lengths throw.
+	 * @throws IllegalOperationError On a target other than native cpp. It
+	 *         answered `null` there, which is the answer for a forged message:
+	 *         every message was refused, genuine ones included.
 	 */
 	public static function decrypt(ciphertext:Bytes, nonce:Bytes, key:Bytes, ?associatedData:Bytes):Null<Bytes> {
+		#if cpp
 		__validateNonceAndKey(nonce, key);
+		SodiumGlue.ensureAvailable();
 
 		if (ciphertext == null || ciphertext.length < TAG_BYTES) {
-			return null;
-		}
-
-		#if cpp
-		if (!NativeSodium.isAvailable()) {
 			return null;
 		}
 
@@ -114,7 +117,7 @@ class Aead {
 		}
 		return (plaintextLength > 0) ? opened : Bytes.alloc(0);
 		#else
-		return null;
+		throw NativeOnly.error("Aead decryption");
 		#end
 	}
 
@@ -133,7 +136,7 @@ class Aead {
 		#if cpp
 		SodiumGlue.ensureAvailable();
 		#else
-		throw "Aead is only available on supported native cpp targets.";
+		throw NativeOnly.error("Aead");
 		#end
 	}
 }

@@ -4,8 +4,8 @@ package crossbyte.auth.jwt;
 /** Typed view over the standard JWT header fields. */
 abstract JWTHeader(JWTHeaderData) {
 	/** Signature algorithm (`alg`) used by the token. */
-	/** Header `typ` value. Defaults to `JWT` when created via `make`. */
 	public var algorithm(get, set):JWTAlgorithm;
+	/** Header `typ` value. Defaults to `JWT` when created via `make`. */
 	public var type(get, set):String;
 	/** Optional key identifier used during signature selection. */
 	public var keyId(get, set):String;

@@ -1,6 +1,9 @@
 package crossbyte.crypto;
 
 import haxe.io.Bytes;
+#if !cpp
+import crossbyte.crypto._internal.NativeOnly;
+#end
 #if cpp
 import crossbyte.crypto._internal.NativeSodium;
 import crossbyte.crypto._internal.SodiumGlue;
@@ -14,7 +17,8 @@ import crossbyte.crypto._internal.SodiumGlue;
  * between 16 and 64 bytes must match libsodium peers.
  *
  * Available on supported native `cpp` targets via the statically linked
- * libsodium backend.
+ * libsodium backend. Elsewhere every member but `isAvailable` throws an
+ * `IllegalOperationError` naming the target.
  */
 class GenericHash {
 	/**
@@ -61,6 +65,7 @@ class GenericHash {
 	 * @param length Digest length, `BYTES_MIN`–`BYTES_MAX`.
 	 */
 	public static function hash(data:Bytes, ?key:Bytes, length:Int = BYTES_DEFAULT):Bytes {
+		#if cpp
 		if (length < BYTES_MIN || length > BYTES_MAX) {
 			throw "digest length must be between " + BYTES_MIN + " and " + BYTES_MAX + " bytes";
 		}
@@ -68,7 +73,6 @@ class GenericHash {
 			throw "key length must be between " + KEY_BYTES_MIN + " and " + KEY_BYTES_MAX + " bytes";
 		}
 
-		#if cpp
 		SodiumGlue.ensureAvailable();
 
 		var digest = Bytes.alloc(length);
@@ -79,7 +83,7 @@ class GenericHash {
 		}
 		return digest;
 		#else
-		throw "GenericHash is only available on supported native cpp targets.";
+		throw NativeOnly.error("GenericHash");
 		#end
 	}
 

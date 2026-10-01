@@ -1,6 +1,9 @@
 package crossbyte.crypto;
 
 import haxe.io.Bytes;
+#if !cpp
+import crossbyte.crypto._internal.NativeOnly;
+#end
 #if cpp
 import crossbyte.crypto._internal.NativeSodium;
 import crossbyte.crypto._internal.SodiumGlue;
@@ -15,7 +18,8 @@ import crossbyte.crypto._internal.SodiumGlue;
  * `sha256` for the full extract-then-expand flow.
  *
  * Available on supported native `cpp` targets via the statically linked
- * libsodium backend.
+ * libsodium backend. Elsewhere every member but `isAvailable` throws an
+ * `IllegalOperationError` naming the target.
  */
 class HKDF {
 	/**
@@ -57,7 +61,7 @@ class HKDF {
 		}
 		return prk;
 		#else
-		throw "HKDF is only available on supported native cpp targets.";
+		throw NativeOnly.error("HKDF");
 		#end
 	}
 
@@ -69,6 +73,7 @@ class HKDF {
 	 * @param length Output length, 1–`SHA256_EXPAND_MAX_BYTES`.
 	 */
 	public static function sha256Expand(prk:Bytes, ?info:Bytes, length:Int):Bytes {
+		#if cpp
 		if (prk == null || prk.length != SHA256_PRK_BYTES) {
 			throw "prk must be " + SHA256_PRK_BYTES + " bytes";
 		}
@@ -76,7 +81,6 @@ class HKDF {
 			throw "output length must be between 1 and " + SHA256_EXPAND_MAX_BYTES + " bytes";
 		}
 
-		#if cpp
 		SodiumGlue.ensureAvailable();
 
 		var okm = Bytes.alloc(length);
@@ -86,7 +90,7 @@ class HKDF {
 		}
 		return okm;
 		#else
-		throw "HKDF is only available on supported native cpp targets.";
+		throw NativeOnly.error("HKDF");
 		#end
 	}
 

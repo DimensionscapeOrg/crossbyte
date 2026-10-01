@@ -4,6 +4,8 @@ import crossbyte.errors.ArgumentError;
 import haxe.io.Bytes;
 #if cpp
 import crossbyte.crypto._internal.NativePk;
+#else
+import crossbyte.crypto._internal.NativeOnly;
 #end
 
 /**
@@ -50,7 +52,9 @@ enum abstract SignatureFormat(Int) from Int to Int {
  * that is faster, and leaves no copy of a private key behind per call.
  *
  * Available on native `cpp` targets. mbedTLS ships with hxcpp and is
- * already linked for TLS, so no extra dependency is introduced.
+ * already linked for TLS, so no extra dependency is introduced. Elsewhere
+ * every member but `isAvailable` throws an `IllegalOperationError` naming
+ * the target.
  */
 class PublicKeySignature {
 	@:noCompletion @:allow(crossbyte.crypto.SignatureKey)
@@ -72,6 +76,8 @@ class PublicKeySignature {
 	 *
 	 * @param keyPem PEM text.
 	 * @param isPrivate Whether `keyPem` is a private key.
+	 * @throws IllegalOperationError On a target other than native cpp, where it
+	 *         answered `UNKNOWN` for every key.
 	 */
 	public static function keyType(keyPem:String, isPrivate:Bool = false):PublicKeyType {
 		var key:Null<SignatureKey> = @:privateAccess SignatureKey.__load(keyPem, isPrivate, false);
@@ -89,6 +95,7 @@ class PublicKeySignature {
 	 * twice the curve's coordinate size, so 64 for P-256.
 	 *
 	 * @return The length, or `-1` when the key is not an EC key.
+	 * @throws IllegalOperationError On a target other than native cpp.
 	 */
 	public static function joseSignatureLength(keyPem:String, isPrivate:Bool = false):Int {
 		var key:Null<SignatureKey> = @:privateAccess SignatureKey.__load(keyPem, isPrivate, false);
@@ -108,12 +115,16 @@ class PublicKeySignature {
 	 * @param message The signed message bytes.
 	 * @param signature The signature to check.
 	 * @param format Encoding of `signature`. Use `JOSE` for `ES256` JWTs.
-	 * @return `true` only when the signature is valid. Malformed keys,
-	 *         wrong-length signatures, and unavailable backends return
-	 *         `false` rather than throwing, so a hostile token cannot
-	 *         raise out of a verification path.
+	 * @return `true` only when the signature is valid. Malformed keys and
+	 *         wrong-length signatures return `false` rather than throwing,
+	 *         so a hostile token cannot raise out of a verification path.
+	 * @throws IllegalOperationError On a target other than native cpp,
+	 *         whatever it is handed: no token chooses the target. It answered
+	 *         `false` there, the answer for a forged signature, so every
+	 *         signature was refused, genuine ones included.
 	 */
 	public static function verify(publicKeyPem:String, message:Bytes, signature:Bytes, format:SignatureFormat = NATIVE):Bool {
+		#if cpp
 		if (message == null || signature == null || signature.length == 0) {
 			return false;
 		}
@@ -126,6 +137,9 @@ class PublicKeySignature {
 		var valid:Bool = key.verify(message, signature, format);
 		key.dispose();
 		return valid;
+		#else
+		throw NativeOnly.error("Public-key signature verification");
+		#end
 	}
 
 	/**
@@ -136,8 +150,10 @@ class PublicKeySignature {
 	 * @param format Encoding to produce. Use `JOSE` for `ES256` JWTs.
 	 * @return The signature.
 	 * @throws ArgumentError When arguments are missing.
+	 * @throws IllegalOperationError On a target other than native cpp.
 	 */
 	public static function sign(privateKeyPem:String, message:Bytes, format:SignatureFormat = NATIVE):Bytes {
+		#if cpp
 		if (privateKeyPem == null || privateKeyPem == "") {
 			throw new ArgumentError("A PEM private key is required to sign.");
 		}
@@ -156,5 +172,8 @@ class PublicKeySignature {
 		// Wiped now rather than whenever the collector gets to it.
 		key.dispose();
 		return signature;
+		#else
+		throw NativeOnly.error("Public-key signing");
+		#end
 	}
 }

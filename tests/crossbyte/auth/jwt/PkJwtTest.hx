@@ -159,8 +159,8 @@ class PkJwtTest extends utest.Test {
 
 		var keys = new StringMap<String>();
 		keys.set("k1", "not-a-key");
-		Assert.raises(() -> JWT.make(RS256(keys, null, "k1")));
-		Assert.raises(() -> JWT.make(ES256(keys, null, "k1")));
+		Assert.raises(() -> JWT.make(RS256(keys, null, "k1")), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> JWT.make(ES256(keys, null, "k1")), crossbyte.errors.IllegalOperationError);
 	}
 	#end
 }

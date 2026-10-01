@@ -37,8 +37,23 @@ using StringTools;
 class JWT {
 	@:noCompletion private var __signer:IJWTSigner;
 
+	/** The issuer a token's `iss` has to be. `null` leaves `iss` unchecked. */
 	public var expectedIssuer:String;
+
+	/**
+	 * The audience this verifier is: a token's `aud` has to name it, or hold
+	 * it when `aud` is an array. When `null`, a token that names any audience
+	 * is refused as `WRONG_AUDIENCE` and one that names none is accepted,
+	 * RFC 7519 has a recipient that does not identify itself with a token's
+	 * `aud` reject it, and accepting one let a token minted for another
+	 * service of the same issuer be replayed here.
+	 */
 	public var expectedAudience:String;
+
+	/**
+	 * Seconds of clock difference forgiven when judging `exp`, `nbf` and
+	 * `iat` against the time. 60 by default.
+	 */
 	public var leeway:Int = 60;
 
 	/**
@@ -99,6 +114,8 @@ class JWT {
 	 *
 	 * @throws ArgumentError When `iat`, `exp` or `nbf` is present and not a
 	 *         finite number of seconds.
+	 * @throws String When the signer holds no private key, a verify-only
+	 *         one, such as `JWKSet.signer` makes.
 	 */
 	public function generateToken(payload:JWTPayload):String {
 		var signer:IJWTSigner = __signer;
@@ -129,10 +146,14 @@ class JWT {
 	 * refused.
 	 *
 	 * Checks run cheapest first and the first failure is the answer: size and
-	 * shape, the header's `alg`, `typ` and `kid`, the signature, and then the
-	 * claims, `exp` (required), `iat`, `nbf`, `iss` and `aud`. Nothing in a
-	 * refused token is returned, so claims are never read before the signature
-	 * over them has been checked.
+	 * shape, the header's `alg`, `crit`, `typ` and `kid`, the signature, and
+	 * then the claims, `exp` (required), `iat`, `nbf`, `iss` and `aud`.
+	 * Nothing in a refused token is returned, so claims are never read before
+	 * the signature over them has been checked. A header whose objects and
+	 * arrays nest more than 32 deep is `MALFORMED`, refused before it is
+	 * parsed. A header with `crit` is `UNSUPPORTED_CRITICAL`: no
+	 * extension is implemented here, and RFC 7515 makes such a token invalid
+	 * to a verifier that does not understand the extensions it names.
 	 *
 	 * @param now As for `verifyToken`.
 	 */
@@ -149,7 +170,9 @@ class JWT {
 			return JWTVerification.refused(MALFORMED);
 		}
 
-		var header:Null<Dynamic> = __decodeObject(parts[0]);
+		// Bounded: the header is parsed before the signature is checked, so it
+		// is the part anyone can write. See MAX_NESTING.
+		var header:Null<Dynamic> = __decodeObject(parts[0], MAX_NESTING);
 		if (header == null) {
 			return JWTVerification.refused(MALFORMED);
 		}
@@ -164,6 +187,14 @@ class JWT {
 		}
 		if ((alg : String) != (signer.algorithm : String)) {
 			return JWTVerification.refused(ALGORITHM_MISMATCH);
+		}
+
+		// RFC 7515 4.1.11: the extensions `crit` names are ones the token may
+		// not be accepted without, and none is implemented here. It was
+		// ignored, so a token with `"b64":false`, its payload unencoded,
+		// was read as though its payload were base64url.
+		if (Reflect.hasField(header, "crit")) {
+			return JWTVerification.refused(UNSUPPORTED_CRITICAL);
 		}
 
 		var typ:Dynamic = Reflect.field(header, "typ");
@@ -185,7 +216,9 @@ class JWT {
 			return JWTVerification.refused(BAD_SIGNATURE);
 		}
 
-		var claims:Null<Dynamic> = __decodeObject(parts[1]);
+		// Unbounded: parsed only once the signature has shown the issuer wrote
+		// them. Measuring them too cost a typical token's verification 2%.
+		var claims:Null<Dynamic> = __decodeObject(parts[1], 0);
 		if (claims == null || !__registeredClaimsWellTyped(claims)) {
 			return JWTVerification.refused(MALFORMED);
 		}
@@ -213,7 +246,14 @@ class JWT {
 		if (expectedIssuer != null && payload.issuer != expectedIssuer) {
 			return JWTVerification.refused(WRONG_ISSUER);
 		}
-		if (expectedAudience != null && !__audMatches(expectedAudience, payload.audience)) {
+		if (expectedAudience != null) {
+			if (!__audMatches(expectedAudience, payload.audience)) {
+				return JWTVerification.refused(WRONG_AUDIENCE);
+			}
+		} else if (payload.audience != null) {
+			// RFC 7519 4.1.3: a recipient that does not identify itself with a
+			// value in `aud` must reject the token. One minted for another
+			// service the issuer and key serve was accepted here.
 			return JWTVerification.refused(WRONG_AUDIENCE);
 		}
 
@@ -361,10 +401,27 @@ class JWT {
 		return copy != null ? copy : claims;
 	}
 
-	/** Decodes one segment into a JSON object, or null for anything else. */
-	@:noCompletion private static function __decodeObject(segment:String):Null<Dynamic> {
-		var text:Null<String> = safeBase64UrlEncodeString(segment);
+	/**
+		The deepest a token's header may nest, objects and arrays together.
+		A header holds a handful of flat members.
+	**/
+	@:noCompletion private static inline var MAX_NESTING:Int = 32;
+
+	/**
+		Decodes one segment into a JSON object, or null for anything else,
+		including JSON nested deeper than `maxNesting`, when that is above 0.
+	**/
+	@:noCompletion private static function __decodeObject(segment:String, maxNesting:Int):Null<Dynamic> {
+		var text:Null<String> = safeBase64UrlDecodeString(segment);
 		if (text == null) {
+			return null;
+		}
+
+		// Measured before parsing, which takes a frame per level. The header
+		// is parsed before the signature is checked, so a token needed no key
+		// to be nested 6,000 deep in 16 KB, within a raised maxTokenLength,
+		// and natively that overflowed the stack and ended the process.
+		if (maxNesting > 0 && !__nestsWithin(text, maxNesting)) {
 			return null;
 		}
 
@@ -379,6 +436,40 @@ class JWT {
 			return null;
 		}
 		return value;
+	}
+
+	/**
+		Whether the objects and arrays in `json` nest no deeper than `limit`.
+		Brackets inside strings are text, escaped quotes included. One pass,
+		allocating nothing.
+	**/
+	@:noCompletion private static function __nestsWithin(json:String, limit:Int):Bool {
+		var depth:Int = 0;
+		var inString:Bool = false;
+		var i:Int = 0;
+		var length:Int = json.length;
+		while (i < length) {
+			var code:Int = StringTools.fastCodeAt(json, i);
+			if (inString) {
+				if (code == "\\".code) {
+					// Whatever is escaped, a quote included, is not structure.
+					i++;
+				} else if (code == '"'.code) {
+					inString = false;
+				}
+			} else if (code == '"'.code) {
+				inString = true;
+			} else if (code == "{".code || code == "[".code) {
+				depth++;
+				if (depth > limit) {
+					return false;
+				}
+			} else if (code == "}".code || code == "]".code) {
+				depth--;
+			}
+			i++;
+		}
+		return true;
 	}
 
 	@:noCompletion private static function __audMatches(expected:String, aud:Dynamic):Bool {
@@ -418,7 +509,12 @@ class JWT {
 		return __stripPad(s);
 	}
 
-	/** Normalizes a base64url string into padded standard base64 form. */
+	/**
+	 * Normalizes a base64url string into padded standard base64 form.
+	 *
+	 * @throws String For a length no base64url string can have (one more than
+	 *         a multiple of four).
+	 */
 	public static inline function normalizeBase64Url(s:String):String {
 		var std:String = s.split("-").join("+").split("_").join("/");
 		switch (std.length % 4) {
@@ -433,8 +529,12 @@ class JWT {
 		return std;
 	}
 
-	/** Safely decodes a base64url string to UTF-8 text, returning `null` on failure. */
-	public static function safeBase64UrlEncodeString(s:String):Null<String> {
+	/**
+	 * Decodes a base64url string to UTF-8 text, returning `null` on failure.
+	 * It was named `safeBase64UrlEncodeString`, for the opposite of what it
+	 * does.
+	 */
+	public static function safeBase64UrlDecodeString(s:String):Null<String> {
 		var b64:String = s.split("-").join("+").split("_").join("/");
 		switch (b64.length % 4) {
 			case 2:
@@ -457,8 +557,15 @@ class JWT {
 	 * mismatch: it iterates a fixed number of times over the longer string,
 	 * accumulating per-byte differences, and folds in the length delta so that the
 	 * comparison's running time does not leak which (if either) operand matched.
+	 *
+	 * @return `true` only when both are present and equal: a missing value,
+	 *         a header or cookie that was not sent, matches nothing, another
+	 *         missing one included. It used to read the length of a null.
 	 */
 	public static function secureCompare(a:String, b:String):Bool {
+		if (a == null || b == null) {
+			return false;
+		}
 		var aLen:Int = a.length;
 		var bLen:Int = b.length;
 		var n:Int = (aLen > bLen) ? aLen : bLen;

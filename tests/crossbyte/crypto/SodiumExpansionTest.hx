@@ -78,8 +78,13 @@ class SodiumExpansionTest extends utest.Test {
 		Assert.equals(plaintext.toHex(), opened.toHex());
 		#else
 		Assert.isFalse(Aead.isAvailable());
-		Assert.isTrue(throwsDynamic(() -> Aead.encrypt(Bytes.ofString("x"), Bytes.alloc(Aead.NONCE_BYTES), Bytes.alloc(Aead.KEY_BYTES))));
-		Assert.isNull(Aead.decrypt(Bytes.alloc(Aead.TAG_BYTES), Bytes.alloc(Aead.NONCE_BYTES), Bytes.alloc(Aead.KEY_BYTES)));
+		Assert.isTrue(throwsIllegalOperation(() -> Aead.encrypt(Bytes.ofString("x"), Bytes.alloc(Aead.NONCE_BYTES), Bytes.alloc(Aead.KEY_BYTES))));
+		// Not null, the answer for a forged message: every message would be
+		// refused, genuine ones included.
+		Assert.isTrue(throwsIllegalOperation(() -> Aead.decrypt(Bytes.alloc(Aead.TAG_BYTES), Bytes.alloc(Aead.NONCE_BYTES), Bytes.alloc(Aead.KEY_BYTES))));
+		// The target first, whatever the arguments.
+		Assert.isTrue(throwsIllegalOperation(() -> Aead.encrypt(null, null, null)));
+		Assert.isTrue(throwsIllegalOperation(() -> Aead.decrypt(null, null, null)));
 		#end
 	}
 
@@ -124,7 +129,8 @@ class SodiumExpansionTest extends utest.Test {
 		Assert.isTrue(throwsDynamic(() -> Aead.decrypt(sealed, Bytes.alloc(1), key)));
 		Assert.isTrue(throwsDynamic(() -> Aead.decrypt(sealed, nonce, Bytes.alloc(0))));
 		#else
-		Assert.isTrue(throwsDynamic(() -> Aead.generateKey()));
+		Assert.isTrue(throwsIllegalOperation(() -> Aead.generateKey()));
+		Assert.isTrue(throwsIllegalOperation(() -> Aead.generateNonce()));
 		#end
 	}
 
@@ -153,7 +159,8 @@ class SodiumExpansionTest extends utest.Test {
 		Assert.isTrue(throwsDynamic(() -> X25519.scalarmult(aliceSecret, Bytes.alloc(X25519.POINT_BYTES + 1))));
 		#else
 		Assert.isFalse(X25519.isAvailable());
-		Assert.isTrue(throwsDynamic(() -> X25519.scalarmultBase(Bytes.alloc(X25519.SCALAR_BYTES))));
+		Assert.isTrue(throwsIllegalOperation(() -> X25519.scalarmultBase(Bytes.alloc(X25519.SCALAR_BYTES))));
+		Assert.isTrue(throwsIllegalOperation(() -> X25519.scalarmult(null, null)));
 		#end
 	}
 
@@ -186,7 +193,9 @@ class SodiumExpansionTest extends utest.Test {
 		Assert.isTrue(throwsDynamic(() -> KeyExchange.clientSessionKeys(client.publicKey, Bytes.alloc(1), server.publicKey)));
 		#else
 		Assert.isFalse(KeyExchange.isAvailable());
-		Assert.isTrue(throwsDynamic(() -> KeyExchange.keypair()));
+		Assert.isTrue(throwsIllegalOperation(() -> KeyExchange.keypair()));
+		Assert.isTrue(throwsIllegalOperation(() -> KeyExchange.clientSessionKeys(null, null, null)));
+		Assert.isTrue(throwsIllegalOperation(() -> KeyExchange.serverSessionKeys(null, null, null)));
 		#end
 	}
 
@@ -213,7 +222,8 @@ class SodiumExpansionTest extends utest.Test {
 		Assert.isTrue(throwsDynamic(() -> GenericHash.hash(Bytes.ofString("abc"), Bytes.alloc(GenericHash.KEY_BYTES_MAX + 1))));
 		#else
 		Assert.isFalse(GenericHash.isAvailable());
-		Assert.isTrue(throwsDynamic(() -> GenericHash.hash(Bytes.ofString("abc"))));
+		Assert.isTrue(throwsIllegalOperation(() -> GenericHash.hash(Bytes.ofString("abc"))));
+		Assert.isTrue(throwsIllegalOperation(() -> GenericHash.hash(null, null, 0)));
 		#end
 	}
 
@@ -242,7 +252,8 @@ class SodiumExpansionTest extends utest.Test {
 		Assert.isTrue(throwsDynamic(() -> HKDF.sha256Expand(Bytes.alloc(HKDF.SHA256_PRK_BYTES - 1), info, 16)));
 		#else
 		Assert.isFalse(HKDF.isAvailable());
-		Assert.isTrue(throwsDynamic(() -> HKDF.sha256(Bytes.ofString("ikm"), null, null, 32)));
+		Assert.isTrue(throwsIllegalOperation(() -> HKDF.sha256(Bytes.ofString("ikm"), null, null, 32)));
+		Assert.isTrue(throwsIllegalOperation(() -> HKDF.sha256Expand(null, null, 0)));
 		#end
 	}
 
@@ -275,10 +286,10 @@ class SodiumExpansionTest extends utest.Test {
 		Assert.isTrue(throwsDynamic(() -> Argon2id.derive("passphrase", saltA, 0, Argon2id.OPSLIMIT_MIN, Argon2id.MEMLIMIT_MIN)));
 		#else
 		Assert.isFalse(Argon2id.isAvailable());
-		Assert.isTrue(throwsDynamic(() -> Argon2id.hash("pw")));
+		Assert.isTrue(throwsIllegalOperation(() -> Argon2id.hash("pw")));
 		// Throws as hash does. Answering false here refused every password on
 		// a target that could not check one, and looked like a working check.
-		Assert.isTrue(throwsDynamic(() -> Argon2id.verify("$argon2id$bogus", "pw")));
+		Assert.isTrue(throwsIllegalOperation(() -> Argon2id.verify("$argon2id$bogus", "pw")));
 		#end
 	}
 
@@ -310,6 +321,22 @@ class SodiumExpansionTest extends utest.Test {
 		SecureMemory.wipe(secret);
 		Assert.equals(0, secret.get(0) | secret.get(1) | secret.get(2));
 		#end
+	}
+
+	/** Whether `fn` throws an IllegalOperationError naming where it is running. **/
+	private static function throwsIllegalOperation(fn:() -> Void):Bool {
+		try {
+			fn();
+			return false;
+		} catch (e:crossbyte.errors.IllegalOperationError) {
+			#if !cpp
+			return e.message.indexOf(crossbyte.crypto._internal.NativeOnly.TARGET) >= 0;
+			#else
+			return true;
+			#end
+		} catch (_:Dynamic) {
+			return false;
+		}
 	}
 
 	private static function throwsDynamic(fn:() -> Void):Bool {
