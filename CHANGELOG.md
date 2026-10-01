@@ -1254,6 +1254,11 @@ entry below says how:
 - accepted `wss://` sessions now run the deferred, timeout-guarded TLS handshake the client path already used; previously a server-side handshake happened implicitly on first read with no bound, so a peer that completed TCP then stalled mid-TLS held the socket indefinitely (`docs/proposals/0012-websocket-tls-handshake.md`)
 
 ### Removed
+- `crossbyte.rpc._internal.schema` -- `RPCHeader`, `RPCHeaderField`,
+  `RPCHeaderFieldType` and `RPCValueType`, a header schema moved out of the
+  public API in the August 2025 RPC refactor for a macro-level use that
+  never came. Nothing imported it; only builds that include every module
+  compiled it. Internal, so no code needs to change.
 - `WebSocket.toWebSocket`, which took an internal socket type and made a
   session with no handshake deadline unless `ServerWebSocket` called it;
   it is `ServerWebSocket`'s own now.
