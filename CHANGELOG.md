@@ -76,8 +76,18 @@ entry below says how:
   `ThreadEvent.UPDATE` are gone.
 - `BCrypt.hash` makes `$2b$` hashes, and Postgres, MySQL and MongoDB
   statements throw what the server refused.
+- A `NetConnection` whose TCP connect fails calls `onClose` after
+  `onError`, and `onClose` after an error is given the error's reason.
+  Code that took `onClose` to mean a connection had been up checks for
+  `onReady` instead.
 
 ### Added
+- `IOErrorEvent.TIMEOUT_ERROR_ID`, the `errorID` of a `Socket`'s `ioError`
+  for a connect not made within its `timeout`, so a listener can tell a
+  deadline from a refusal without reading the text. A `NetConnection`
+  reports it as `Reason.Timeout`, to `onError` and `onClose`, and a
+  `NetHost` to `onDisconnect`: `Reason.Timeout` was declared, and nothing
+  ever reported it.
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
   `DETACH DATABASE`, and `loadSchema()` with `getSchemaResult()`: a
   database's tables with their columns, views, indices and triggers.
@@ -1137,6 +1147,13 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A `NetConnection` ends the same way over TCP, WebSocket and reliable
+  UDP: `onError` for what went wrong, then `onClose` exactly once, with
+  the reason it ended, and nothing after. Over TCP a connect that failed
+  called `onError` alone, where the other two called both; `onClose`
+  after an error was told `Reason.Closed`, or a WebSocket's 1006, rather
+  than the error; and closing a TCP connection told `onClose` again each
+  time, and once more after its peer's close.
 - Reliable UDP sends what a pass produces from one socket in as few system
   calls as the system allows. Each datagram was a `sendto` of its own,
   which was nearly all a server sending reliable UDP spent: 5.9 us a
@@ -1932,6 +1949,9 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `NetConnection.close()` on a WebSocket connection whose peer had closed
+  it no longer throws "Operation attempted on invalid socket"; on any
+  connection that has ended it does nothing.
 - `Socket` and `WebSocket` start in `ObjectEncoding.DEFAULT`, accepted
   sockets included, as `ByteArray` and `ReliableDatagramSocket` do.
   `objectEncoding` was never set: natively and on the jvm it read 0,
