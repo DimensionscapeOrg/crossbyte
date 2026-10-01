@@ -1940,6 +1940,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A TURN relay reached over TCP or TLS that answers 300 Try Alternate is
+  followed to the relay it names, over a connection of its own, for
+  `PeerConnection.gatherRelayedFrom` and
+  `ReliableDatagramServerSocket.allocateRelay` alike. The connection was
+  opened once, so the retry reached the relay that had just redirected it,
+  which redirected it again, and the allocation failed as a redirection
+  back to a relay already asked. Over TLS the alternate's certificate is
+  checked against the ALTERNATE-DOMAIN the relay names (RFC 8489 section
+  14.16), and its address when it names none.
 - Closing a `DataChannel` closes it at both ends, by resetting its stream
   as RFC 8831 section 6.7 has it (RFC 6525's RE-CONFIG), and a peer's
   close, a browser's `channel.close()`, reaches `onClose` here. What

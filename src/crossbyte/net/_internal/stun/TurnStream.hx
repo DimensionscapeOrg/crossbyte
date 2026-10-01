@@ -20,6 +20,13 @@ import crossbyte.net.TurnTransport;
 	relay over TCP or TLS. TLS is framed exactly as TCP is; the socket is a
 	secure one, checking the relay's certificate against the name it was
 	given with the client's `verifyCert` and `certAuthority`.
+
+	A relay that redirects with 300 Try Alternate is another server, reached
+	over a connection of its own: the client sends its retry to the
+	alternate's address, and the connection follows. It went on writing to
+	the connection opened once, so the retry reached the relay that had just
+	redirected it, which redirected it again, and the allocation failed as a
+	redirection back to a relay already asked.
 **/
 class TurnStream {
 	public var client(default, null):TurnClient;
@@ -27,6 +34,11 @@ class TurnStream {
 	@:noCompletion private var __socket:Socket;
 	@:noCompletion private var __connected:Bool = false;
 	@:noCompletion private var __closed:Bool = false;
+
+	/** Where the open connection goes, as the client names it, so a send elsewhere is known for a move. **/
+	@:noCompletion private var __address:String;
+
+	@:noCompletion private var __port:Int = 0;
 
 	/** What the client sent before the connection opened, sent when it does. **/
 	@:noCompletion private var __waiting:Array<ByteArray> = [];
@@ -38,10 +50,22 @@ class TurnStream {
 	public function new(client:TurnClient) {
 		this.client = client;
 
-		client.onSend = function(payload:ByteArray, _:String, _:Int):Void {
+		client.onSend = function(payload:ByteArray, address:String, port:Int):Void {
+			if (!__closed && (address != __address || port != __port)) {
+				__reconnect();
+			}
+
 			__write(payload);
 		};
 
+		__open();
+	}
+
+	/** A connection to wherever the client sends now. **/
+	@:noCompletion private function __open():Void {
+		__address = client.serverAddress;
+		__port = client.serverPort;
+		__connected = false;
 		__socket = new Socket();
 
 		if (client.transport == TLS) {
@@ -59,10 +83,34 @@ class TurnStream {
 		__socket.addEventListener(IOErrorEvent.IO_ERROR, __onError);
 
 		try {
-			__socket.connect(client.serverAddress, client.serverPort);
+			// The alternate's domain, after a redirection over TLS that named one,
+			// is what its certificate is checked against.
+			__socket.connect(client.__streamHost, __port);
 		} catch (e:Dynamic) {
 			__end("could not connect: " + Std.string(e));
 		}
+	}
+
+	/**
+		The client moved to another server: the connection to the one that
+		redirected it is let go, quietly, since its end is not the end of an
+		allocation the alternate has yet to grant, and one to the alternate
+		opened. Anything still waiting for the old one to open was for that
+		server, and goes with it.
+	**/
+	@:noCompletion private function __reconnect():Void {
+		var previous = __socket;
+		previous.removeEventListener(Event.CONNECT, __onConnect);
+		previous.removeEventListener(ProgressEvent.SOCKET_DATA, __onData);
+		previous.removeEventListener(Event.CLOSE, __onClose);
+		previous.removeEventListener(IOErrorEvent.IO_ERROR, __onError);
+
+		try {
+			previous.close();
+		} catch (_:Dynamic) {}
+
+		__waiting = [];
+		__open();
 	}
 
 	/** Closes the connection, which a relay takes as the end of the allocation. **/
