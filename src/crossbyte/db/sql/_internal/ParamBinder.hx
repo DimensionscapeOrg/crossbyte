@@ -40,10 +40,17 @@ package crossbyte.db.sql._internal;
  *   placeholder was left unsubstituted, in the other one was substituted at a
  *   point the server still read as inside a literal. `substituteWith` takes
  *   `backslashEscapes`, which the MySQL driver sets from the session's mode.
- *
- * Still not modelled, and named here rather than left to be discovered:
- *
- * - **Postgres dollar-quoting** (`$$ ... $$`, `$tag$ ... $tag$`).
+ * - **Postgres escape strings**, `E'...'`, which honour backslash escapes
+ *   whatever `standard_conforming_strings` says. They are read so in every
+ *   dialect: elsewhere it can only make the scan take more of a statement
+ *   for a literal than the server does, which leaves a placeholder
+ *   unsubstituted, the loud failure, never the unsafe one.
+ * - **Postgres dollar-quoting**, `$$ ... $$` and `$tag$ ... $tag$`, when the
+ *   caller asks (`dollarQuotes`): everything up to the closing tag is
+ *   literal, quotes included. Unmodelled, a placeholder inside one was
+ *   substituted, and a value holding the tag ended the string there.
+ *   Asked for by the Postgres driver only: SQLite reads `$name` as a
+ *   parameter of its own.
  */
 class ParamBinder {
 	// Character codes, spelled out rather than written as escapes, because the
@@ -57,6 +64,7 @@ class ParamBinder {
 	private static inline var STAR:Int = 42; // *
 	private static inline var NEWLINE:Int = 10;
 	private static inline var BACKSLASH:Int = 92;
+	private static inline var DOLLAR:Int = 36; // $
 
 	/**
 	 * @param text    The source SQL/command text containing `:name` placeholders.
@@ -85,9 +93,11 @@ class ParamBinder {
 	 * @param escape  As for `substitute`.
 	 * @param backslashEscapes Whether a backslash inside a quoted run escapes
 	 *                the character after it, as in MySQL's default mode.
+	 * @param dollarQuotes Whether `$$ ... $$` and `$tag$ ... $tag$` quote, as
+	 *                in Postgres.
 	 */
 	public static function substituteWith(text:String, has:String->Bool, get:String->Null<Dynamic>, escape:Dynamic->String,
-			backslashEscapes:Bool):String {
+			backslashEscapes:Bool, dollarQuotes:Bool = false):String {
 		if (text == null || text == "") {
 			return text;
 		}
@@ -101,6 +111,9 @@ class ParamBinder {
 		// identifiers, but for this scan they behave alike: a doubled quote
 		// stands for itself, and nothing inside is substituted.
 		var quote:Int = 0;
+		// Whether a backslash escapes inside the run being scanned: always in
+		// the dialect's mode, and in a Postgres E'...' string whatever it is.
+		var runBackslashes:Bool = false;
 		var lineComment:Bool = false;
 		var blockDepth:Int = 0;
 
@@ -146,7 +159,7 @@ class ParamBinder {
 			if (quote != 0) {
 				out.addChar(c);
 
-				if (backslashEscapes && c == BACKSLASH && i + 1 < len) {
+				if (runBackslashes && c == BACKSLASH && i + 1 < len) {
 					// The next character is escaped, a quote included, and
 					// does not end the run.
 					out.addChar(next);
@@ -172,9 +185,25 @@ class ParamBinder {
 
 			if (c == SINGLE_QUOTE || c == DOUBLE_QUOTE || c == BACKTICK) {
 				quote = c;
+				runBackslashes = backslashEscapes || (c == SINGLE_QUOTE && __isEscapeStringPrefix(text, i));
 				out.addChar(c);
 				i++;
 				continue;
+			}
+
+			if (dollarQuotes && c == DOLLAR && (i == 0 || !__isIdentPartOrDollar(StringTools.fastCodeAt(text, i - 1)))) {
+				var tagEnd:Int = __dollarTagEnd(text, i);
+
+				if (tagEnd > 0) {
+					// Literal up to and including the closing tag, or to the
+					// end, unterminated, where the server will refuse it.
+					var tag:String = text.substring(i, tagEnd);
+					var close:Int = text.indexOf(tag, tagEnd);
+					var end:Int = close < 0 ? len : close + tag.length;
+					out.add(text.substring(i, end));
+					i = end;
+					continue;
+				}
 			}
 
 			if (c == DASH && next == DASH) {
@@ -213,6 +242,53 @@ class ParamBinder {
 		}
 
 		return out.toString();
+	}
+
+	/**
+		Whether the quote at `at` opens a Postgres escape string: an `E` or
+		`e` before it that does not end a name, as in `E'it\'s'` and not in
+		`typE'...'`.
+	**/
+	private static function __isEscapeStringPrefix(text:String, at:Int):Bool {
+		if (at < 1) {
+			return false;
+		}
+
+		var prefix:Int = StringTools.fastCodeAt(text, at - 1);
+
+		if (prefix != "E".code && prefix != "e".code) {
+			return false;
+		}
+
+		return at < 2 || !__isIdentPartOrDollar(StringTools.fastCodeAt(text, at - 2));
+	}
+
+	/**
+		Where the dollar-quote tag opening at `at` ends, just past its
+		second `$`, or -1 when there is none: `$$`, or `$` and a name and
+		`$`. A digit cannot start the name, so `$1` is a parameter.
+	**/
+	private static function __dollarTagEnd(text:String, at:Int):Int {
+		var j:Int = at + 1;
+
+		if (j < text.length && StringTools.fastCodeAt(text, j) == DOLLAR) {
+			return j + 1;
+		}
+
+		if (j >= text.length || !__isIdentStart(StringTools.fastCodeAt(text, j))) {
+			return -1;
+		}
+
+		while (j < text.length && __isIdentPart(StringTools.fastCodeAt(text, j))) {
+			j++;
+		}
+
+		return j < text.length && StringTools.fastCodeAt(text, j) == DOLLAR ? j + 1 : -1;
+	}
+
+	/** A character that continues a Postgres name, where `$` may follow the first. **/
+	private static inline function __isIdentPartOrDollar(c:Int):Bool {
+		return __isIdentPart(c) || c == DOLLAR;
 	}
 
 	private static inline function __isIdentStart(c:Int):Bool {

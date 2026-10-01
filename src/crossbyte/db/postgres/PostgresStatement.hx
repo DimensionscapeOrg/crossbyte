@@ -226,12 +226,14 @@ class PostgresStatement extends EventDispatcher {
 		written as `NULL`, as MySQL's statements write it; it was taken for one
 		never set and left in the SQL as `:name`, which the server refused.
 		Backslashes are not escapes in a PostgreSQL literal, with
-		`standard_conforming_strings` on as it has been by default since 9.1.
+		`standard_conforming_strings` on as it has been by default since 9.1,
+		except in an `E'...'` string; and nothing inside a dollar-quoted
+		string, `$$ ... $$`, is substituted.
 	**/
 	private function __applyParameters(query:String):String {
 		var params:FieldStruct<String> = parameters;
 		return ParamBinder.substituteWith(query, name -> FieldStruct.exists(params, name), name -> FieldStruct.get(params, name), __quoteValue,
-			false);
+			false, true);
 	}
 
 	private function __quoteValue(value:Dynamic):String {
