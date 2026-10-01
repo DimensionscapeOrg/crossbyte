@@ -41,8 +41,15 @@ final class ReliableDatagramFrame {
 	**/
 	public var bundles(default, null):Bool;
 
+	/**
+		On a FIN: a graceful close, holding the place in the sequence after
+		the last frame its sender sent, and acted on in order. A FIN without
+		it ends the session at once; see `ReliableDatagramProtocol`.
+	**/
+	public var graceful(default, null):Bool;
+
 	public function new(type:ReliableDatagramFrameType, sequence:Seq32, payload:ByteArray, resend:Bool, ?ack:Seq32, more:Bool = false,
-			bundles:Bool = false) {
+			bundles:Bool = false, graceful:Bool = false) {
 		this.type = type;
 		this.sequence = sequence;
 		this.payload = payload;
@@ -50,6 +57,7 @@ final class ReliableDatagramFrame {
 		this.ack = ack;
 		this.more = more;
 		this.bundles = bundles;
+		this.graceful = graceful;
 	}
 }
 
@@ -59,11 +67,22 @@ final class ReliableDatagramFrame {
 	it big-endian.
 
 	The flags byte holds the type in its low three bits, and above them:
-	`BUNDLES_MASK` (0x10), `MORE_MASK` (0x20), `RESEND_MASK` (0x40) and
-	`ACK_PRESENT_MASK` (0x80). A decoder that meets a type it does not know
-	drops the frame, which is what lets a newer peer send types an older one
-	has never heard of; and one that meets a flag it does not know ignores
-	it, which is what lets a CONNECT say the sender takes bundles.
+	`GRACEFUL_MASK` (0x08), `BUNDLES_MASK` (0x10), `MORE_MASK` (0x20),
+	`RESEND_MASK` (0x40) and `ACK_PRESENT_MASK` (0x80). A decoder that meets
+	a type it does not know drops the frame, which is what lets a newer peer
+	send types an older one has never heard of; and one that meets a flag it
+	does not know ignores it, which is what lets a CONNECT say the sender
+	takes bundles.
+
+	A FIN comes in two kinds. One with `GRACEFUL_MASK` is a graceful close:
+	its sequence is the place after the last frame its sender sent, and it
+	is acknowledged, sent again and delivered in order exactly as a PACKET
+	is, so its receiver acts on it only once everything sent before it has
+	arrived. A FIN without it ends the session at once, whatever is still
+	on its way: the abortive close, a server's answer to a peer it holds no
+	session for, and every FIN a peer from before 1.0 sends, which also
+	takes a graceful FIN that way, ignoring the flag, as it always took a
+	FIN.
 
 	An ACK's payload, when it has one, is a selective acknowledgement: a map
 	of the frames the receiver holds past the cumulative acknowledgement,
@@ -118,6 +137,7 @@ final class ReliableDatagramProtocol {
 	@:noCompletion private static inline var RESEND_MASK:Int = 0x40;
 	@:noCompletion private static inline var MORE_MASK:Int = 0x20;
 	@:noCompletion private static inline var BUNDLES_MASK:Int = 0x10;
+	@:noCompletion private static inline var GRACEFUL_MASK:Int = 0x08;
 	@:noCompletion private static inline var TYPE_MASK:Int = 0x07;
 
 	/**
@@ -199,7 +219,7 @@ final class ReliableDatagramProtocol {
 		payload.position = 0;
 
 		return new ReliableDatagramFrame(cast typeValue, sequence, payload, (meta & RESEND_MASK) != 0, ack, (meta & MORE_MASK) != 0,
-			(meta & BUNDLES_MASK) != 0);
+			(meta & BUNDLES_MASK) != 0, (meta & GRACEFUL_MASK) != 0);
 	}
 
 	/** Whether a datagram is a bundle rather than a frame. **/
@@ -233,11 +253,11 @@ final class ReliableDatagramProtocol {
 		packet; this is kept for callers that want the frame to keep.
 	**/
 	public static function encode(type:ReliableDatagramFrameType, sequence:Seq32, ?payload:ByteArray, resend:Bool = false, ?ack:Seq32,
-			more:Bool = false):ByteArray {
+			more:Bool = false, graceful:Bool = false):ByteArray {
 		var payloadLength:Int = payload != null ? payload.length : 0;
 		var frame:ByteArray = new ByteArray();
 		frame.length = HEADER_SIZE + ACK_FIELD_SIZE + payloadLength;
-		var written:Int = encodeInto(frame, type, sequence, payload, 0, payloadLength, resend, ack, more);
+		var written:Int = encodeInto(frame, type, sequence, payload, 0, payloadLength, resend, ack, more, 0, graceful);
 		frame.length = written;
 		frame.position = 0;
 		return frame;
@@ -256,9 +276,10 @@ final class ReliableDatagramProtocol {
 		@param payload Whatever is to be carried, from `offset` for `length`
 		       bytes; it must fit `MAX_PAYLOAD_SIZE`, which the socket checks
 		       before it gets here.
+		@param graceful On a FIN, that it is the graceful kind, in sequence.
 	**/
 	public static function encodeInto(out:ByteArray, type:ReliableDatagramFrameType, sequence:Seq32, payload:ByteArray, offset:Int, length:Int,
-			resend:Bool, ack:Null<Seq32>, more:Bool, start:Int = 0):Int {
+			resend:Bool, ack:Null<Seq32>, more:Bool, start:Int = 0, graceful:Bool = false):Int {
 		var bytes:Bytes = out;
 		var meta:Int = (type : Int);
 		if (resend) {
@@ -266,6 +287,9 @@ final class ReliableDatagramProtocol {
 		}
 		if (more) {
 			meta |= MORE_MASK;
+		}
+		if (graceful) {
+			meta |= GRACEFUL_MASK;
 		}
 		if (ack != null) {
 			meta |= ACK_PRESENT_MASK;

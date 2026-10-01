@@ -7,8 +7,12 @@ import crossbyte.net.ReliableDatagramSocket;
 
 /**
 	A `ReliableDatagramServerSocket` dispatches a `ReliableDatagramSocketConnectEvent`
-	when a reliable session has completed its handshake and is ready for use.
-	The `socket` property provides the accepted peer session.
+	when a reliable session a peer opened has completed its handshake and is
+	ready for use. The `socket` property provides the accepted peer session.
+
+	A session the server dials itself, with `connect` or `connectRelayed`, is
+	not announced this way: the caller holds it from the call, and it
+	dispatches `Event.CONNECT` when its handshake completes.
 **/
 class ReliableDatagramSocketConnectEvent extends Event {
 	/**

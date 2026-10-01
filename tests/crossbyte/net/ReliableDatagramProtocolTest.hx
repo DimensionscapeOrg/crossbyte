@@ -59,6 +59,24 @@ class ReliableDatagramProtocolTest extends utest.Test {
 		Assert.equals(3, fragment.ack);
 	}
 
+	public function testAFinSaysWhetherItIsGraceful():Void {
+		var graceful = ReliableDatagramProtocol.decode(ReliableDatagramProtocol.encode(FIN, 77, null, false, 5, false, true));
+		Require.notNull(graceful);
+		Assert.equals(ReliableDatagramFrameType.FIN, graceful.type);
+		Assert.isTrue(graceful.graceful);
+		Assert.equals(77, graceful.sequence);
+		Assert.equals(5, graceful.ack);
+
+		// What every FIN used to be, and what a peer from before 1.0 sends.
+		var abortive = ReliableDatagramProtocol.decode(ReliableDatagramProtocol.encode(FIN, 0));
+		Require.notNull(abortive);
+		Assert.isFalse(abortive.graceful);
+
+		// A bit of its own, disturbing neither the type nor the other flags.
+		var bytes:haxe.io.Bytes = ReliableDatagramProtocol.encode(FIN, 77, null, true, 5, true, true);
+		Assert.equals(0x80 | 0x40 | 0x20 | 0x08 | 4, bytes.get(2));
+	}
+
 	public function testASequenceFieldCarriesTheChannelAndCounter():Void {
 		for (channel in [0, 1, 127, 128, 255]) {
 			for (counter in [0, 1, 0x7FFFFF, 0x800000, 0xFFFFFF]) {
