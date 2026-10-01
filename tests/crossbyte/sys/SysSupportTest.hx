@@ -130,14 +130,15 @@ class SysSupportTest extends utest.Test {
 		Assert.notNull(affinity);
 		Assert.equals(System.processorCount, affinity.length);
 		#elseif (cpp && (mac || macos))
-		// macOS has no process-level affinity to report -- there is no
+		// macOS has no process-level affinity -- there is no
 		// sched_setaffinity, and thread_policy_set is a per-thread hint the
-		// scheduler may ignore. The empty mask is the honest answer, and these
-		// are pinned so that implementing it later has to be a deliberate
-		// change to the contract rather than an accident.
-		Assert.equals(0, System.processAffinity.length);
-		Assert.isFalse(System.hasProcessAffinity(0));
-		Assert.isFalse(System.setProcessAffinity(0, true));
+		// scheduler may ignore -- and says so: an empty mask read as "no
+		// processor usable".
+		Assert.raises(() -> {
+			var mask = System.processAffinity;
+		}, crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> System.hasProcessAffinity(0), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> System.setProcessAffinity(0, true), crossbyte.errors.IllegalOperationError);
 		#else
 		Assert.pass();
 		#end
@@ -153,16 +154,19 @@ class SysSupportTest extends utest.Test {
 		// The collector's 64-bit figure: the 32-bit one wrapped past 2GiB.
 		Assert.isTrue(System.memoryUsage() > 0, "memoryUsage is " + System.memoryUsage());
 		#else
-		Assert.same([false], System.processAffinity);
-		Assert.equals("", System.getDeviceId());
+		// Affinity is refused off native, and SystemTest checks the device
+		// id: these pinned the placeholders, [false] and "".
+		Assert.raises(() -> {
+			var mask = System.processAffinity;
+		}, crossbyte.errors.IllegalOperationError);
 		#if (java || jvm || nodejs)
 		// It was 0 everywhere but native.
 		Assert.isTrue(System.memoryUsage() > 0, "memoryUsage is " + System.memoryUsage());
 		#else
 		Assert.equals(0.0, System.memoryUsage());
 		#end
-		Assert.isFalse(System.hasProcessAffinity(0));
-		Assert.isFalse(System.setProcessAffinity(0, true));
+		Assert.raises(() -> System.hasProcessAffinity(0), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> System.setProcessAffinity(0, true), crossbyte.errors.IllegalOperationError);
 		#end
 	}
 }

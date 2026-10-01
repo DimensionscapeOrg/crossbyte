@@ -244,6 +244,96 @@ class SystemTest extends utest.Test {
 		#end
 	}
 
+	public function testTotalCpuUsageMeasuresTheProcess():Void {
+		// It returned 0, busy or idle.
+		#if (js && !nodejs)
+		Assert.raises(() -> System.totalCpuUsage(), crossbyte.errors.IllegalOperationError);
+		#else
+		System.totalCpuUsage();
+		var started:Float = haxe.Timer.stamp();
+		var sum:Float = 0.0;
+
+		while (haxe.Timer.stamp() - started < 0.3) {
+			for (i in 0...10000) {
+				sum += Math.sqrt(i);
+			}
+		}
+
+		var busy:Float = System.totalCpuUsage();
+		Assert.isFalse(Math.isNaN(sum));
+		Assert.isTrue(busy > 0, 'busy for 0.3 s, the process read $busy%');
+		Assert.isTrue(busy <= 100, 'read $busy%');
+		#end
+	}
+
+	public function testAffinityIsNativeOnWindowsAndLinuxAndRefusedElsewhere():Void {
+		// Off native it answered [false] -- no processor usable -- and false
+		// to every question; natively on macOS, [] and false.
+		#if cpp
+		if (System.isWindows || System.PLATFORM == "linux") {
+			var mask:Array<Bool> = System.processAffinity;
+			Assert.equals(System.processorCount, mask.length);
+			Assert.equals(mask[0], System.hasProcessAffinity(0));
+			// The native calls shift a bit by the index: past the mask that
+			// was undefined behaviour.
+			Assert.raises(() -> System.hasProcessAffinity(-1), crossbyte.errors.RangeError);
+			Assert.raises(() -> System.hasProcessAffinity(System.processorCount), crossbyte.errors.RangeError);
+			Assert.raises(() -> System.setProcessAffinity(System.processorCount, true), crossbyte.errors.RangeError);
+			// Asking for what the process has already changes nothing, and
+			// is accepted.
+			Assert.isTrue(System.setProcessAffinity(0, mask[0]));
+			Assert.same(mask, System.processAffinity);
+			return;
+		}
+		#end
+		Assert.raises(() -> {
+			var mask = System.processAffinity;
+		}, crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> System.hasProcessAffinity(0), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> System.setProcessAffinity(0, true), crossbyte.errors.IllegalOperationError);
+	}
+
+	public function testTheDeviceIdIsTheMachines():Void {
+		// It was "" everywhere but native, and null natively on Linux and
+		// macOS.
+		var id:Null<String> = System.getDeviceId();
+		Assert.equals(id, System.getDeviceId());
+		#if (js && !nodejs)
+		Assert.isNull(id);
+		#else
+		if (System.isWindows || System.PLATFORM == "mac") {
+			var uuid:EReg = ~/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/;
+			Assert.isTrue(id != null && uuid.match(id), 'device id "$id"');
+		} else if (sys.FileSystem.exists("/etc/machine-id")) {
+			Assert.equals(StringTools.trim(sys.io.File.getContent("/etc/machine-id")), id);
+		} else {
+			Assert.pass();
+		}
+
+		if (System.isWindows) {
+			// The native build reads the registry itself; the others ask
+			// reg.exe. One machine, one answer.
+			var viaReg:Null<String> = System.__parseMachineGuid(System.__programOutput("reg",
+				["query", "HKLM\\SOFTWARE\\Microsoft\\Cryptography", "/v", "MachineGuid", "/reg:64"]));
+			Assert.equals(viaReg, id);
+		}
+		#end
+	}
+
+	public function testDeviceIdOutputsAreRead():Void {
+		var reg:String = "\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Cryptography\r\n    MachineGuid    REG_SZ    1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d\r\n\r\n";
+		Assert.equals("1B2C3D4E-5F60-4A7B-8C9D-0E1F2A3B4C5D", System.__parseMachineGuid(reg));
+		Assert.equals("1B2C3D4E-5F60-4A7B-8C9D-0E1F2A3B4C5D", System.__parseMachineGuid("MachineGuid REG_SZ {1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d}"));
+		Assert.isNull(System.__parseMachineGuid("ERROR: The system was unable to find the specified registry key or value."));
+		Assert.isNull(System.__parseMachineGuid(null));
+
+		var ioreg:String = '+-o Mac14,2  <class IOPlatformExpertDevice, id 0x100000201, registered, matched, active, busy 0 (13 ms), retain 39>\n'
+			+ '    {\n      "IOPlatformSerialNumber" = "C02XX0XXXX00"\n      "IOPlatformUUID" = "564D8A1B-2C3D-4E5F-8A9B-0C1D2E3F4A5B"\n    }\n';
+		Assert.equals("564D8A1B-2C3D-4E5F-8A9B-0C1D2E3F4A5B", System.__parseIoregUuid(ioreg));
+		Assert.isNull(System.__parseIoregUuid("no platform device here"));
+		Assert.isNull(System.__parseIoregUuid(null));
+	}
+
 	#if !(jvm || java)
 	static function __restoreEnv(name:String, value:Null<String>):Void {
 		#if nodejs
