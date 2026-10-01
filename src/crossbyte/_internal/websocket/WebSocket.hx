@@ -2543,7 +2543,7 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	}
 
 	public function sendString(data:String):Void {
-		__prepareMessage(Bytes.ofString(data), WebSocketOpcode.TEXT);
+		__prepareMessage(crossbyte._internal.Utf8.bytesOf(data), WebSocketOpcode.TEXT);
 	}
 
 	private function __prepareMessage(data:ByteArray, opcode:Int):Void {
