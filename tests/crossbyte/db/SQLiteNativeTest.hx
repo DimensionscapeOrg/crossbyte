@@ -4,6 +4,7 @@ package crossbyte.db;
 import crossbyte.db.sql.sqlite.SQLiteConnection;
 import crossbyte.db.sql.sqlite.SQLiteMode;
 import crossbyte.db.sql.sqlite.SQLiteStatement;
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.errors.SQLError;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
@@ -340,6 +341,75 @@ class SQLiteNativeTest extends utest.Test {
 		Assert.isTrue(opened);
 		Assert.same(["first:5000", "second:5000"], counts);
 		Assert.equals(5001, pagedRows);
+	}
+
+	public function testOpeningAnOpenConnectionAgainIsRefused():Void {
+		// open() on an open connection replaced its handle and left the first
+		// open -- unreachable, and holding whatever locks it had. AIR's open()
+		// throws IllegalOperationError then; so does this, and a statement
+		// kept across close() and open() runs on the open one.
+		var path:String = __path("reopen");
+		var connection:SQLiteConnection = new SQLiteConnection();
+		connection.open(path, SQLiteMode.CREATE, false, 4096);
+		connection.request("CREATE TABLE t (x INTEGER)");
+		connection.request("BEGIN IMMEDIATE");
+
+		var refused:Bool = false;
+
+		try {
+			connection.open(path, SQLiteMode.UPDATE, false, 4096);
+		} catch (_:IllegalOperationError) {
+			refused = true;
+		}
+
+		if (!Assert.isTrue(refused, "a second open() was taken, and the first connection left open")) {
+			return;
+		}
+
+		Assert.raises(() -> connection.openAsync(path, SQLiteMode.UPDATE, false, 4096), IllegalOperationError);
+		Assert.isTrue(connection.inTransaction, "the connection in use is not the first");
+		connection.request("ROLLBACK");
+
+		var count:SQLiteStatement = new SQLiteStatement();
+		count.sqlConnection = connection;
+		count.text = "SELECT COUNT(*) AS n FROM t";
+		connection.close();
+
+		// Closed: refused, where each dereferenced the connection it had not.
+		Assert.raises(() -> count.execute(), IllegalOperationError);
+		Assert.raises(() -> connection.begin(), IllegalOperationError);
+		Assert.raises(() -> connection.request("SELECT 1"), IllegalOperationError);
+		Assert.raises(function() {
+			var id:Float = connection.lastInsertRowID;
+		}, IllegalOperationError);
+
+		connection.open(path, SQLiteMode.UPDATE, false, 4096);
+		count.execute();
+		Assert.equals(0, (Reflect.field(count.getResult().data[0], "n") : Int));
+
+		// Nothing was left behind holding the write lock.
+		var other:SQLiteConnection = new SQLiteConnection();
+		other.open(path, SQLiteMode.UPDATE, false, 4096);
+		other.request("BEGIN IMMEDIATE");
+		other.request("ROLLBACK");
+		other.close();
+		connection.close();
+
+		// Asynchronously the same, and a close is over once CLOSE arrives:
+		// until then the old worker still holds its connection.
+		var events:Array<String> = [];
+		connection.addEventListener(SQLEvent.OPEN, _ -> events.push("open"));
+		connection.addEventListener(SQLEvent.CLOSE, _ -> events.push("close"));
+		connection.openAsync(path, SQLiteMode.UPDATE, false, 4096);
+		Assert.raises(() -> connection.openAsync(path, SQLiteMode.UPDATE, false, 4096), IllegalOperationError);
+		connection.close();
+		Assert.raises(() -> connection.openAsync(path, SQLiteMode.UPDATE, false, 4096), IllegalOperationError);
+		Assert.raises(() -> connection.begin(), IllegalOperationError);
+		__pumpUntil(() -> events.indexOf("close") >= 0);
+		connection.openAsync(path, SQLiteMode.UPDATE, false, 4096);
+		connection.close();
+		__pumpUntil(() -> events.length >= 4);
+		Assert.same(["open", "close", "open", "close"], events);
 	}
 
 	public function testWhatSQLiteRefusesIsAnSQLError():Void {
