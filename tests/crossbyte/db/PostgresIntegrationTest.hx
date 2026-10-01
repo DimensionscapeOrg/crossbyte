@@ -379,7 +379,7 @@ class PostgresIntegrationTest extends utest.Test {
 		#end
 	}
 
-	public function testStatementBoundFailureDispatchesAnError():Void {
+	public function testAFailedBoundStatementIsDispatchedAndThrown():Void {
 		#if cpp
 		if (__skip()) {
 			return;
@@ -391,11 +391,19 @@ class PostgresIntegrationTest extends utest.Test {
 
 		var errored:Bool = false;
 		statement.addEventListener(crossbyte.events.SQLErrorEvent.ERROR, _ -> errored = true);
-		statement.executeParams([Text("1")]);
+		var thrown:crossbyte.errors.SQLError = null;
+		try {
+			statement.executeParams([Text("1")]);
+		} catch (e:crossbyte.errors.SQLError) {
+			thrown = e;
+		}
 
-		// Reported through the statement's own error event rather than thrown,
-		// matching how execute() reports a failure.
-		Assert.isTrue(errored);
+		// Dispatched as the statement's error event and then thrown, as
+		// execute() reports a failure and as MySQL's statement always has.
+		Assert.isTrue(errored, "the failure was not dispatched");
+		Require.notNull(thrown, "the failure was not thrown");
+		var said:String = thrown.message + " | " + thrown.details();
+		Assert.isTrue(said.indexOf("does not exist") >= 0, said);
 		Assert.isTrue(connection.ping());
 		#else
 		Assert.pass();
