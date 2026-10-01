@@ -206,6 +206,17 @@ final class File extends EventDispatcher {
 		The applicationStorageDirectory property provides a way to reference the application
 		storage directory that works across platforms.
 
+		It is `System.applicationId` inside the directory the operating system keeps
+		applications' data in: `%APPDATA%\<id>` on Windows, `~/Library/Application Support/<id>`
+		on macOS, and `$XDG_DATA_HOME/<id>` or `~/.local/share/<id>` elsewhere. The id is the
+		`crossbyte_app_id` define if the build sets one and the main class's full name if not,
+		so two applications whose main classes share a name, such as `Main`, share this directory
+		unless one of them sets the define. `System.appStorageDir` says more.
+
+		@throws IOError The environment names no place for it (no `APPDATA` on Windows, no
+		`HOME` elsewhere), or it cannot be created.
+		@throws IllegalOperationError In a browser, which has no file system.
+
 		The following code creates a File object pointing to the "images" subdirectory of the application storage directory.
 
 		```hx
