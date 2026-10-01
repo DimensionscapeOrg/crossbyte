@@ -377,8 +377,17 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		Reads an object from the byte array, in whichever format
 		`objectEncoding` names. That is `HXSF` unless you changed it, not AMF.
 
+		An `HXSF` or `JSON` object is read as `writeObject` frames one: the
+		length in bytes of its text, as an unsigned 32-bit integer in this
+		byte array's `endian`, then the text as UTF-8. `AMF0` and `AMF3` are
+		their own framing.
+
 		@return The deserialized object.
-		@throws EOFError There is not sufficient data available to read.
+		@throws EOFError There is not sufficient data available to read. For
+				`HXSF` and `JSON`, `position` is left where it was, so the
+				read can be tried again once the rest has arrived.
+		@throws RangeError An `HXSF` or `JSON` object declares 2^31 bytes or
+				more, which no ByteArray holds.
 	**/
 	public inline function readObject():Dynamic {
 		return this.readObject();
@@ -611,6 +620,13 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	/**
 		Writes an object into the byte array, in whichever format
 		`objectEncoding` names. That is `HXSF` unless you changed it, not AMF.
+
+		An `HXSF` or `JSON` object is framed as the length in bytes of its
+		text, an unsigned 32-bit integer in this byte array's `endian`, then
+		the text as UTF-8, so it can be as large as a ByteArray. (1.0.0-rc.1
+		framed it as `writeUTF` frames a string, behind a 16-bit length, and
+		refused one past 65,535 bytes; the two framings do not read each
+		other.) `AMF0` and `AMF3` are their own framing.
 
 		@param object The object to serialize.
 	**/
@@ -1006,16 +1022,45 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			#end
 
 			case HXSF:
-				var data = readUTF();
-				return Unserializer.run(data);
+				return Unserializer.run(__readObjectText());
 
 			case JSON:
-				var data = readUTF();
-				return Json.parse(data);
+				return Json.parse(__readObjectText());
 
 			default:
 				throw new Exception(__unsupportedEncoding(objectEncoding));
 		}
+	}
+
+	/**
+		The text an HXSF or JSON object was written as: its length in bytes as
+		an unsigned 32-bit integer in this stream's `endian`, then that many
+		bytes of UTF-8. Framed as `writeUTF` frames a string, behind sixteen
+		bits, an object could not pass 65,535 bytes of text.
+
+		An object only part of which is here is an EOFError that leaves
+		`position` where it was, so a socket's reader can try again when the
+		rest has arrived; readUTF moved it past the length first.
+	**/
+	@:noCompletion private function __readObjectText():String {
+		var at:Int = position;
+		var count:Int = readUnsignedInt();
+		if (count < 0) {
+			// From 2^31 up, which no ByteArray holds, so no wait would end it.
+			position = at;
+			throw new RangeError("An object declares 2^31 bytes or more, which no ByteArray holds.");
+		}
+		if (count > __available() - position) {
+			position = at;
+			throw new EOFError();
+		}
+		return readUTFBytes(count);
+	}
+
+	@:noCompletion private function __writeObjectText(text:String):Void {
+		var bytes:Bytes = crossbyte._internal.Utf8.bytesOf(text);
+		writeUnsignedInt(bytes.length);
+		__writeAll(bytes);
 	}
 
 	// Reached when objectEncoding names a format this build cannot do, AMF
@@ -1388,12 +1433,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			#end
 
 			case HXSF:
-				var value = Serializer.run(object);
-				writeUTF(value);
+				__writeObjectText(Serializer.run(object));
 
 			case JSON:
-				var value = Json.stringify(object);
-				writeUTF(value);
+				__writeObjectText(Json.stringify(object));
 
 			default:
 				throw new Exception(__unsupportedEncoding(objectEncoding));
