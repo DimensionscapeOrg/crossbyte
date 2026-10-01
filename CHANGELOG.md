@@ -1942,6 +1942,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On Node a `ServerWebSocket` that cannot listen -- a port in use, an
+  address that is not local -- dispatches an `ioError` saying so and then
+  `close`, as a `DatagramSocket` reports a failed bind there, and as
+  `bind()` now documents. Node claims the address only once `listen()`
+  starts, so the failure cannot come out of `bind()` as it does natively,
+  and it was dispatched as `close` alone.
 - A session a secure `ServerWebSocket` accepted says it is `secure`, as a
   socket a secure `ServerSocket` accepted does. It read `false`.
 - `ServerWebSocket.listen()` throws an `IOError` for a server that is not

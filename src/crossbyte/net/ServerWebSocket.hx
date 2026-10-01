@@ -22,6 +22,7 @@ import crossbyte.errors.RangeError;
 import crossbyte.errors.Error as CBError;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
+import crossbyte.events.IOErrorEvent;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.net.Socket as CBSocket;
 import crossbyte.io.ByteArray;
@@ -581,6 +582,12 @@ class ServerWebSocket extends ServerSocket {
 
 	/**
 		Binds this socket to the specified local address and port.
+
+		On Node, which claims the address only once `listen()` starts, this
+		cannot know whether it will take: a port in use, or an address that is
+		not local, is reported then instead, as an `ioError` and then `close`.
+		And a `localPort` of 0 reads 0 until listening has begun.
+
 		@param localPort 	(default = 0) The number of the port to bind to on the local computer.
 							If localPort, is set to 0 (the default), the next available system port is bound. Permission
 							to connect to a port number below 1024 is subject to the system security policy. On Mac and
@@ -1292,13 +1299,30 @@ class ServerWebSocket extends ServerSocket {
 			__webServerSocket = Net.createServer(accept);
 		}
 
-		__webServerSocket.on("error", function(_):Void {
+		// A port already in use, or an address that is not local, reaches a
+		// Node server here, once listen() has tried: reported as a
+		// DatagramSocket reports it on Node, an ioError and then close. It
+		// dispatched close alone, so a listener on ioError -- which is where
+		// a native bind() failure arrives -- never heard why.
+		__webServerSocket.on("error", function(error:Dynamic):Void {
 			if (__closed) {
 				return;
 			}
 
-			close();
-			dispatchEvent(new Event(Event.CLOSE));
+			var why:String = error != null && error.message != null ? Std.string(error.message) : Std.string(error);
+			var message:String = "Could not listen on " + localAddress + ":" + localPort + ": " + why;
+			try {
+				close();
+			} catch (_:Dynamic) {}
+
+			// Contained: this runs from Node's own loop, where a listener that
+			// threw would end the process.
+			try {
+				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
+				dispatchEvent(new Event(Event.CLOSE));
+			} catch (e:Dynamic) {
+				CrossByte.__socketListenerThrew(e, this, "A listener of a ServerWebSocket that could not listen threw");
+			}
 		});
 	}
 	#end
