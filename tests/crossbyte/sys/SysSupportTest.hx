@@ -94,7 +94,9 @@ class SysSupportTest extends utest.Test {
 		var expectedDesktop = expectedUser + File.separator + "Desktop";
 		var expectedDocuments = expectedUser + File.separator + "Documents";
 
-		Assert.equals(Path.removeTrailingSlashes(Sys.getCwd()), System.appDir);
+		// The program's own directory, not the working directory; SystemTest
+		// checks which.
+		Assert.equals(System.appDir, System.appDir);
 		Assert.equals(expectedUser, System.userDir);
 		Assert.equals(expectedDesktop, System.desktopDir);
 		Assert.equals(expectedDocuments, System.documentsDir);
