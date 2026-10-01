@@ -509,6 +509,41 @@ class NativePostgresBridgeTest extends utest.Test {
 		return pages.join(" ");
 	}
 
+	public function testWhatRequestIsRefusedIsAnSQLError():Void {
+		// request() threw an IOError for a statement the server refused, where
+		// requestParams() threw an SQLError -- and code catching SQLError, as
+		// MongoError's doc says every driver's failures are caught, caught
+		// nothing from request(). On a connection not open it threw a String.
+		var connection:PostgresConnection = __open(__config("localhost"));
+		var thrown:Dynamic = null;
+
+		try {
+			connection.request("fake:fail");
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+
+		Assert.isTrue(Std.isOfType(thrown, SQLError), "request() threw " + Std.string(thrown));
+
+		if (Std.isOfType(thrown, SQLError)) {
+			var error:SQLError = thrown;
+			Assert.isTrue(error.details().indexOf("fake failure") >= 0, error.details());
+		}
+
+		Assert.isTrue(connection.ping(), "the connection did not survive a refused statement");
+		connection.close();
+
+		var refused:Dynamic = null;
+
+		try {
+			new PostgresConnection().request("SELECT 1");
+		} catch (e:Dynamic) {
+			refused = e;
+		}
+
+		Assert.isTrue(Std.isOfType(refused, SQLError), "a connection not open threw " + Std.string(refused));
+	}
+
 	public function testOpeningAgainClosesTheConnectionItHad():Void {
 		// open() on an open connection replaced its native handle and left
 		// the first connection open, unreachable, for the life of the process
