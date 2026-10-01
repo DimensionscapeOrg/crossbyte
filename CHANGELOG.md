@@ -1991,6 +1991,17 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `File.openWithDefaultApplication()` opens the file, or a directory, in
+  the file manager, with the application the operating system has
+  registered for it: through `explorer.exe` on Windows, `open` on macOS
+  and `xdg-open` on Linux and the BSDs, on Node through `child_process`.
+  It starts the application and returns without waiting for it. It was
+  empty: a documented member that did nothing. As in AIR, a file the
+  system would run rather than open, an executable's extension, or on
+  Linux and macOS the executable bit, is refused with an
+  `IllegalOperationError`, a missing file is an `IOError`, and a browser,
+  another operating system or a missing `xdg-open` is an
+  `IllegalOperationError` that says which.
 - `File.size`, `modificationDate` and `creationDate` are read from the disk
   when asked for, as `exists` always was. They were a snapshot taken when
   the path was set, so a File made before its file was written reported a

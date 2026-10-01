@@ -1125,6 +1125,98 @@ class FileTest extends utest.Test {
 		try file.deleteFile() catch (_:Dynamic) {}
 	}
 
+	public function testOpenWithDefaultApplicationStartsTheSystemsOpener():Void {
+		// It was empty. Checked without opening anything: the launch is
+		// recorded rather than made.
+		var dir = File.createTempDirectory();
+		var note = dir.resolvePath("note.txt");
+		HaxeFile.saveContent(note.nativePath, "hello");
+		var launched:Null<{command:String, args:Array<String>}> = null;
+
+		var original = @:privateAccess File.__launch;
+		@:privateAccess File.__launch = (command:String, args:Array<String>) -> launched = {command: command, args: args};
+
+		try {
+			note.openWithDefaultApplication();
+			// A directory opens in the file manager.
+			dir.openWithDefaultApplication();
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		@:privateAccess File.__launch = original;
+
+		var expected:String = System.isWindows ? "explorer.exe" : (System.PLATFORM == "mac" ? "open" : "xdg-open");
+		Require.notNull(launched);
+		Assert.equals(expected, launched.command);
+		Assert.equals(1, launched.args.length);
+		Assert.equals(haxe.io.Path.removeTrailingSlashes(dir.nativePath), haxe.io.Path.removeTrailingSlashes(launched.args[0]));
+
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testOpenWithDefaultApplicationRefusesWhatWouldRunAndWhatIsMissing():Void {
+		var dir = File.createTempDirectory();
+		var launched:Int = 0;
+		var original = @:privateAccess File.__launch;
+		@:privateAccess File.__launch = (_, _) -> launched++;
+
+		for (name in ["setup.exe", "run.BAT", "install.sh", "tool.jar", "link.lnk"]) {
+			var file = dir.resolvePath(name);
+			HaxeFile.saveContent(file.nativePath, "x");
+			Assert.raises(() -> file.openWithDefaultApplication(), crossbyte.errors.IllegalOperationError, name);
+		}
+
+		if (!System.isWindows) {
+			// Marked executable, whatever it is called.
+			var script = dir.resolvePath("notes.txt");
+			HaxeFile.saveContent(script.nativePath, "#!/bin/sh\n");
+			Sys.command("chmod", ["755", script.nativePath]);
+			Assert.raises(() -> script.openWithDefaultApplication(), crossbyte.errors.IllegalOperationError);
+		}
+
+		Assert.raises(() -> dir.resolvePath("missing.txt").openWithDefaultApplication(), crossbyte.errors.IOError);
+
+		@:privateAccess File.__launch = original;
+		Assert.equals(0, launched, "something was started");
+
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testTheLauncherStartsAProgramAndDoesNotWaitForIt():Void {
+		// The real launcher, with a program that opens nothing: started, left
+		// to run, and waited for elsewhere.
+		var started:Float = haxe.Timer.stamp();
+
+		try {
+			@:privateAccess File.__launch("hostname", []);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		Assert.isTrue(haxe.Timer.stamp() - started < 5.0);
+
+		if (!System.isWindows) {
+			// An opener that is not installed is said to be missing, rather
+			// than started into nothing.
+			Assert.raises(() -> @:privateAccess File.__launch("cb-no-such-opener", []), crossbyte.errors.IllegalOperationError);
+		}
+	}
+
+	public function testEachPlatformsOpener():Void {
+		var command = (platform:String) -> {
+			var launch = @:privateAccess File.__defaultApplicationCommand("/x/y.txt", platform);
+			return launch == null ? null : launch.command + " " + launch.args.join(" ");
+		};
+
+		Assert.equals("explorer.exe /x/y.txt", command("windows"));
+		Assert.equals("open /x/y.txt", command("mac"));
+		Assert.equals("xdg-open /x/y.txt", command("linux"));
+		Assert.equals("xdg-open /x/y.txt", command("freebsd"));
+		Assert.isNull(command("browser"));
+		Assert.isNull(command("haiku"));
+	}
+
 	/** Runs a command with its output kept out of the test report. **/
 	private static function __quietly(command:String, args:Array<String>):Int {
 		try {
