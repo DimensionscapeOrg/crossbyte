@@ -1057,6 +1057,23 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- On native, gzip, zlib and raw DEFLATE -- `ByteArray.compress`, and the
+  HTTP server's `gzip` and `deflate` -- come from hxcpp's own zlib at its
+  default level, where they came from the Deflater written in Haxe. 64 KB
+  of JSON took 743 microseconds and came to 8.3 KB; it takes about 235 and
+  comes to 6.0 KB, as Node's zlib writes it. A native server answering
+  gzip for that page serves 3,655 a second where it served 1,264. The
+  streaming encoder behind a chunked response is still the Haxe Deflater,
+  which can flush a chunk at a time. CRC-32 runs eight bytes a step, four
+  times as fast on every target.
+- A body the HTTP server encodes for one response goes as gzip before
+  Brotli when the client takes both equally, as every browser's
+  `Accept-Encoding` does, unless Brotli is native (`crossbyte-brotli` with
+  `-D crossbyte_brotli_native`). Brotli in Haxe takes 1.3 ms for 64 KB of
+  JSON and gzip a fifth of that, so a server answering browsers was held to
+  about 800 compressed responses a second, where it now manages 3,700. A
+  static file, compressed once and kept, still goes as Brotli, the
+  smallest; and a client whose q-values prefer Brotli still gets it.
 - `HTTPServerConfig.keepAliveMaxRequests` defaults to 1,000, as nginx's
   does, where it was 100. Every close costs the client a new connection,
   and over HTTPS a full handshake: a native HTTPS server with 64 clients
