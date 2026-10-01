@@ -81,14 +81,6 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	private static inline var GET:String = "GET";
 	private static inline var HTTP:String = "HTTP";
 
-	/**
-	 * Consumed bytes tolerated at the front of `__input` while a frame is
-	 * still arriving, before the unread tail is moved down. As on `Socket`:
-	 * without it the consumed prefix was kept until a read happened to end
-	 * on a frame boundary, which a steady stream of large messages may never
-	 * do.
-	 */
-	private static inline var INPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
 	private static inline var OUTPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
 
 	// What a pass may hold before it is written anyway, and the size of a
@@ -1327,9 +1319,11 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 					break;
 				}
 
-				var maskingKey:ByteArray = new ByteArray(4);
+				// The key is used where it lies in the input rather than
+				// copied into a buffer made for it, one per frame.
+				var keyAt:Int = __input.position;
 				if (isMasked) {
-					__input.readBytes(maskingKey, 0, 4);
+					__input.position = keyAt + 4;
 				}
 
 				var payload:ByteArray = new ByteArray(payloadLength);
@@ -1337,7 +1331,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 					__input.readBytes(payload, 0, payloadLength);
 				}
 				if (isMasked) {
-					__applyMask(payload, payloadLength, maskingKey);
+					__applyMask(payload, payloadLength, __input, keyAt);
 				}
 
 				payload.position = 0;
@@ -1377,8 +1371,18 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 					return;
 				}
 
-				__incomingMessageBuffer.position = __incomingMessageBuffer.length;
-				__incomingMessageBuffer.writeBytes(payload);
+				if (__incomingMessageBuffer == null || __incomingMessageBuffer.length == 0) {
+					// A message's first frame is the message so far, and is
+					// taken as it is: every message was copied from its
+					// payload into an empty buffer, a second copy of every
+					// byte received.
+					payload.endian = BIG_ENDIAN;
+					payload.position = payload.length;
+					__incomingMessageBuffer = payload;
+				} else {
+					__incomingMessageBuffer.position = __incomingMessageBuffer.length;
+					__incomingMessageBuffer.writeBytes(payload);
+				}
 
 				if (isFinal) {
 					// Inflated whole, once the last frame is in: the size cap
@@ -1402,6 +1406,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 				__validateInputPosition();
 			}
+
+			// Once an arrival is parsed, not after every frame of it.
+			__compactInput();
 		} else if (readyState == CONNECTING) {
 			var raw:Bytes = __input;
 			var start:Int = __input.position;
@@ -1587,12 +1594,12 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * up with `mask[(i + j) & 3]` for every offset that is a multiple of
 	 * four — which is why only the trailing bytes need the scalar loop.
 	 */
-	private static function __applyMask(data:Bytes, length:Int, mask:Bytes):Void {
+	private static function __applyMask(data:Bytes, length:Int, mask:Bytes, maskAt:Int = 0):Void {
 		if (length <= 0) {
 			return;
 		}
 
-		var key:Int = mask.getInt32(0);
+		var key:Int = mask.getInt32(maskAt);
 		var wordEnd:Int = length & ~3;
 		var i:Int = 0;
 
@@ -1602,7 +1609,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 
 		while (i < length) {
-			data.set(i, data.get(i) ^ mask.get(i & 0x03));
+			data.set(i, data.get(i) ^ mask.get(maskAt + (i & 0x03)));
 			i++;
 		}
 	}
@@ -1729,25 +1736,55 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			return;
 		}
 
+		__inputPosition = __input.position;
+	}
+
+	/**
+	 * Moves the unread tail of `__input` down over what has been parsed, in
+	 * place, once the parsed part is at least as long as the tail -- so no
+	 * byte is moved more often than bytes are consumed, and what is moved is
+	 * at most the frame still arriving.
+	 *
+	 * This ran after every frame, from 64 KB parsed, and copied the whole
+	 * unread rest of the input into a new buffer each time: a burst cost the
+	 * square of its length. A client uploading 64 KB messages was received
+	 * at 21 MB/s, 82% of the server's time spent in that copy.
+	 *
+	 * A move within one buffer is a blit whose ends overlap, which every
+	 * target copies front to back or as if through a temporary: safe moving
+	 * down, which is the only way this moves.
+	 */
+	private function __compactInput():Void {
 		var consumed:Int = __input.position;
-		if (consumed >= INPUT_COMPACT_THRESHOLD) {
-			var remaining:Int = __input.length - consumed;
-			var carried:ByteArray = new ByteArray();
-			carried.endian = BIG_ENDIAN;
-			carried.writeBytes(__input, consumed, remaining);
-			carried.position = 0;
-			__input = carried;
+		if (consumed <= 0) {
+			return;
 		}
 
-		__inputPosition = __input.position;
+		var remaining:Int = __input.length - consumed;
+		if (remaining <= 0) {
+			__input.clear();
+			__inputPosition = 0;
+			return;
+		}
+
+		if (consumed < remaining) {
+			return;
+		}
+
+		var raw:Bytes = __input;
+		raw.blit(0, raw, consumed, remaining);
+		__input.length = remaining;
+		__input.position = 0;
+		__inputPosition = 0;
 	}
 
 	private function __dispatchMessage():Void {
 		var message:ByteArray = __incomingMessageBuffer;
 		var isText:Bool = __incomingOpcode == WebSocketOpcode.TEXT;
 		message.position = 0;
-		__incomingMessageBuffer = new ByteArray();
-		__incomingMessageBuffer.endian = BIG_ENDIAN;
+		// The next message's first frame becomes its buffer (see __onData),
+		// so none is made for it here.
+		__incomingMessageBuffer = null;
 		__incomingOpcode = -1;
 		__incomingMessageSize = 0;
 
