@@ -1969,6 +1969,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On Windows, closing the console window, logging off or shutting down
+  runs the `onShutdown` callbacks of `ProcessLifecycle`. Windows ends the
+  process as soon as the console handler for those returns, and the
+  handler returned at once, so the process was gone before the runtime's
+  next tick saw the request: only Ctrl+C and Ctrl+Break shut down cleanly.
+  The handler now holds the event while the runtime shuts down, for as
+  long as Windows allows, about five seconds for a closed window, and at
+  most 20, and the process ending lets it go.
 - A `MainLoopType.CUSTOM` loop body can run its runtime. It calls
   `CrossByte.pump(delta, socketTimeout)`, public and documented now, for
   a frame, what was posted, the timers, the tick, the sockets, which
