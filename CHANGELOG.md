@@ -1932,6 +1932,9 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `$uri` in a `tryFiles` entry after the first two is the request path, as
+  in nginx's `try_files`: `"$uri.html"` serves `/about` from `about.html`.
+  It was looked for as a file named `$uri.html`.
 - A rewrite rule with a `FileExists` or `DirExists` condition can win over
   a file the request names, as `HTTPServerConfig.tryFiles` says: it is
   tried in its place even then, and with `FileExists` (not negated) it
