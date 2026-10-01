@@ -75,6 +75,9 @@ class JWTVerifyTest extends utest.Test {
 		expectRefused(jwt, forge(header, claims({iss: "https://elsewhere.example"})), WRONG_ISSUER);
 		expectRefused(jwt, forge(header, claims({aud: "other-api"})), WRONG_AUDIENCE);
 		expectRefused(jwt, forge('{"alg":"none","typ":"JWT"}', claims()), UNSUPPORTED_ALGORITHM);
+		// Named by JWTAlgorithm once, and never signed or verified by anything.
+		expectRefused(jwt, forge('{"alg":"HS384","typ":"JWT"}', claims()), UNSUPPORTED_ALGORITHM);
+		expectRefused(jwt, forge('{"alg":"HS512","typ":"JWT"}', claims()), UNSUPPORTED_ALGORITHM);
 		expectRefused(jwt, forge('{"alg":"RS256","typ":"JWT"}', claims()), ALGORITHM_MISMATCH);
 		expectRefused(jwt, forge('{"alg":"HS256","typ":"JWT","kid":"retired"}', claims()), UNKNOWN_KEY);
 		expectRefused(jwt, forge('{"alg":"HS256","typ":"JWT","kid":7}', claims()), MALFORMED);
