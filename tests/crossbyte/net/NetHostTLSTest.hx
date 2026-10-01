@@ -46,26 +46,21 @@ class NetHostTLSTest extends utest.Test {
 			return;
 		}
 
-		// A URI names its port, and 0 is not one: a port that was free a
-		// moment ago, taken from a listener once it closes.
-		var probe = new ServerSocket();
-		probe.bind(0, "127.0.0.1");
-		probe.listen();
+		// Port 0: wherever the system has one free. A URI host could not be
+		// given it, so this took a port from a listener it had just closed,
+		// assuming nothing had taken the port since.
+		var host = new NetHost('wss://127.0.0.1:0', function(connection:INetConnection) {
+			connection.onData = input -> {
+				var answer = new ByteArray();
+				answer.writeUTFBytes(input.readUTFBytes(input.bytesAvailable).toUpperCase());
+				answer.position = 0;
+				connection.send(answer);
+			};
+			connection.readEnabled = true;
+		}, null, null, true, {certificate: fixture.certificate, key: fixture.key});
 
-		NetPump.until(() -> probe.localPort != 0, 5.0, function(_) {
-			var port:Int = probe.localPort;
-			try probe.close() catch (_:Dynamic) {}
-
-			var host = new NetHost('wss://127.0.0.1:$port', function(connection:INetConnection) {
-				connection.onData = input -> {
-					var answer = new ByteArray();
-					answer.writeUTFBytes(input.readUTFBytes(input.bytesAvailable).toUpperCase());
-					answer.position = 0;
-					connection.send(answer);
-				};
-				connection.readEnabled = true;
-			}, null, null, true, {certificate: fixture.certificate, key: fixture.key});
-
+		// Node claims the port a turn after listen().
+		NetPump.until(() -> host.localPort != 0, 5.0, function(_) {
 			var heard:String = "";
 			var failure:String = null;
 			var client = new WebSocket();
@@ -77,17 +72,13 @@ class NetHostTLSTest extends utest.Test {
 			});
 			client.addEventListener(ProgressEvent.SOCKET_DATA, function(_) heard += client.readUTFBytes(client.bytesAvailable));
 			client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) failure = e.text);
+			client.connect("127.0.0.1", host.localPort);
 
-			// Node claims the port a turn after listen().
-			NetPump.wait(0.2, function() {
-				client.connect("127.0.0.1", port);
-
-				NetPump.until(() -> heard.length >= 8 || failure != null, 10.0, function(_) {
-					Assert.equals("OVER WSS", heard, "the wss host did not answer: " + failure);
-					try client.close() catch (_:Dynamic) {}
-					try host.close() catch (_:Dynamic) {}
-					async.done();
-				});
+			NetPump.until(() -> heard.length >= 8 || failure != null, 10.0, function(_) {
+				Assert.equals("OVER WSS", heard, "the wss host did not answer: " + failure);
+				try client.close() catch (_:Dynamic) {}
+				try host.close() catch (_:Dynamic) {}
+				async.done();
 			});
 		});
 	}

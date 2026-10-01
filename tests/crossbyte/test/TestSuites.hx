@@ -233,6 +233,8 @@ class TestSuites {
 		// Also in PortableSuite: one end, told once, over TCP and WebSocket.
 		runner.addCase(new crossbyte.net.NetConnectionLifecycleTest());
 		runner.addCase(new crossbyte.net.NetHostTest());
+		// Also in PortableSuite: a URI host on port 0, which Node binds later.
+		runner.addCase(new crossbyte.net.NetHostUriTest());
 		// Also in PortableSuite, for Node's wss server.
 		runner.addCase(new crossbyte.net.NetHostTLSTest());
 		// Also in PortableSuite: Node is where a key kept its PEM in plain view.
