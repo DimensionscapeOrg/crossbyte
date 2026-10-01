@@ -53,15 +53,20 @@ class SQLiteJob {
 
 #if !php
 /**
-	One worker's queue, and whether that worker has stopped taking work from
-	it: set before its last pass over what is left there, so that work asked
-	for afterwards is refused where it is asked for, and a call waiting on it
-	stops waiting. One per worker, so one stopping as the next starts cannot
-	mark the next stopped, nor take its work.
+	One worker's queue, and what that worker is told and tells through it.
+	`closing` is set by the close job, or by an open that failed, on the
+	worker, so that the work loop ends on its next pass without anyone
+	needing to wake it. `gone` is set by the worker before its last pass over
+	what is left, so that work asked for afterwards is refused where it is
+	asked for, and a call waiting on it stops waiting. One per worker: both
+	were the connection's, and a worker stopping as the next one started,
+	its CLOSE heard and `openAsync()` called before it had set them, could
+	mark the next one stopped, or take its work.
 **/
 @:noCompletion
 class SQLiteQueue {
 	public var jobs(default, null):Deque<SQLiteJob> = new Deque();
+	public var closing:Bool = false;
 	public var gone:Bool = false;
 
 	public function new() {}
