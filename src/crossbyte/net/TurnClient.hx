@@ -449,14 +449,20 @@ class TurnClient {
 
 		A relay ties an allocation to the username that made it and refuses a
 		request on it signed with another (441), so a new username is for the
-		next allocation; a new password for the same username applies to this
-		one.
+		next allocation, another client, and a new password for the same
+		username applies to this one.
 
-		@throws ArgumentError When either is null.
+		@throws ArgumentError When either is null, or when `username` is not
+		the one an allocation held or being made was signed with. It was taken,
+		and the relay refused the next Refresh with 441, ending the allocation.
 	**/
 	public function setCredentials(username:String, password:String):Void {
 		if (username == null || password == null) {
 			throw new ArgumentError("A relay needs credentials: it forwards traffic on somebody's behalf and has to know whose.");
+		}
+
+		if (username != __username && (active || (__allocating && __key != null))) {
+			throw new ArgumentError("This client's allocation was made under another username, and a relay refuses a request on it signed as anyone else (441). A new username is for a new client.");
 		}
 
 		__username = username;
