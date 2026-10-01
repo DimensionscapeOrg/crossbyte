@@ -1938,6 +1938,17 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `SQLiteConnection.cancel()` stops the work and keeps the connection, as
+  AIR's does. On an asynchronous connection the statement running is
+  interrupted (`sqlite3_interrupt`, on cpp) and fails with "interrupted",
+  everything queued before the call is dropped with an `SQLErrorEvent`
+  saying so, and `CANCEL` follows them; the connection then runs what it is
+  asked as before. It cancelled the connection's worker instead: the
+  running statement went on to its end unreported, the queued work was
+  dropped without a word, `CANCEL` came at once, and `close()` never
+  closed, holding the connection and its file for the life of the process.
+  On a synchronous connection it interrupts a statement running on another
+  thread.
 - `SQLiteConnection.deanalyze()` removes the statistics `analyze()`
   gathered, as AIR's does: the rows of `sqlite_stat1`, and of
   `sqlite_stat4` where there is one, in every database the connection has
