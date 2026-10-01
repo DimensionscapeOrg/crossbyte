@@ -104,6 +104,48 @@ class WebSocketTest extends utest.Test {
 		Assert.equals("hello", received.readUTFBytes(received.length));
 	}
 
+	/**
+		A read that drains the socket is the last read of an arrival, as
+		Socket's is. The loop read on until the socket said it would block: a
+		system call that read nothing on every arrival, and an exception hxcpp
+		throws and the loop catches -- a third of an echoing server's time,
+		where a plain socket spent a twelfth.
+	**/
+	public function testAReadThatDrainsTheSocketIsTheLastRead():Void {
+		#if cpp
+		var listener = new sys.net.Socket();
+		listener.bind(new sys.net.Host("127.0.0.1"), 0);
+		listener.listen(1);
+		var client = new CountingSocket();
+		client.connect(new sys.net.Host("127.0.0.1"), listener.host().port);
+		var peer = listener.accept();
+		client.setBlocking(false);
+		var counting = client.counting;
+
+		var ws = openParser();
+		ws.__socket = client;
+		ws.__connected = true;
+		ws.__tls = false;
+		var received:String = null;
+		ws.onmessage = e -> received = e.data.readUTFBytes(e.data.length);
+
+		var frame = maskedFrame(0x01, Bytes.ofString("hello"));
+		peer.output.writeBytes(frame, 0, frame.length);
+		peer.output.flush();
+		sys.net.Socket.select([client], [], [], 5.0);
+		ws.__readAvailable();
+
+		Assert.equals("hello", received);
+		Assert.equals(1, counting.reads, "a read that drained the socket was followed by another");
+		Assert.equals(0, counting.blocked, "a read was made only to be told the socket would block");
+		try client.close() catch (_:Dynamic) {}
+		try peer.close() catch (_:Dynamic) {}
+		try listener.close() catch (_:Dynamic) {}
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testFragmentedFrameDispatchesOnceOnFinalContinuation():Void {
 		var ws = openParser();
 		var calls = 0;
@@ -486,3 +528,53 @@ class WebSocketTest extends utest.Test {
 		}
 	}
 }
+
+#if cpp
+/** A socket whose input counts its reads. */
+private class CountingSocket extends sys.net.Socket {
+	public var counting(default, null):CountingInput;
+
+	private var __own:haxe.io.Input;
+
+	override private function init():Void {
+		super.init();
+		__own = input;
+		counting = new CountingInput(input);
+		input = counting;
+	}
+
+	/** Puts the socket's own input back first: close() casts to it unchecked, and a null there crashes a release build. */
+	override public function close():Void {
+		input = __own;
+		super.close();
+	}
+}
+
+/** Reads through `inner`, counting the reads and the ones that would have blocked. */
+private class CountingInput extends haxe.io.Input {
+	public var reads(default, null):Int = 0;
+	public var blocked(default, null):Int = 0;
+
+	private final __inner:haxe.io.Input;
+
+	public function new(inner:haxe.io.Input) {
+		__inner = inner;
+	}
+
+	override public function readByte():Int {
+		return __inner.readByte();
+	}
+
+	override public function readBytes(buffer:Bytes, position:Int, length:Int):Int {
+		reads++;
+		try {
+			return __inner.readBytes(buffer, position, length);
+		} catch (e:Dynamic) {
+			if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
+				blocked++;
+			}
+			throw e;
+		}
+	}
+}
+#end

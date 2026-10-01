@@ -828,6 +828,19 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 				totalBytes += nBytes;
 				__input.writeBytes(scratch, 0, nBytes);
 
+				#if !eval
+				// A read shorter than the buffer has drained the socket, so it
+				// ends here, as Socket's does. It read on until the socket
+				// said it would block: a system call that read nothing on
+				// every arrival, answered with an exception hxcpp throws and
+				// this catches -- a third of an echoing server's time, where
+				// a plain socket spent a twelfth. TLS reads on as before:
+				// mbedTLS holds plaintext select cannot see (see below).
+				if (!__tls && nBytes < scratch.length) {
+					break;
+				}
+				#end
+
 				#if eval
 				// eval's setBlocking is a no-op (see the vendored
 				// sys.net.Socket), so this drain loop cannot rely on an empty
