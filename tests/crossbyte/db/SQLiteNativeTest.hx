@@ -3,8 +3,11 @@ package crossbyte.db;
 #if cpp
 import crossbyte.db.sql.sqlite.SQLiteConnection;
 import crossbyte.db.sql.sqlite.SQLiteMode;
+import crossbyte.db.sql.sqlite.SQLiteStatement;
+import crossbyte.errors.SQLError;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
+import crossbyte.test.Require;
 import crossbyte.utils.Logger;
 import haxe.io.Path;
 import sys.FileSystem;
@@ -196,6 +199,56 @@ class SQLiteNativeTest extends utest.Test {
 		}
 
 		Assert.isTrue(closed, message);
+	}
+
+	public function testWhatSQLiteRefusesIsAnSQLError():Void {
+		// Against the engine itself: what hxcpp's glue throws is a String,
+		// which escaped as one, and nothing was dispatched.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		connection.open(null, SQLiteMode.CREATE, false, 4096);
+		var heard:Array<SQLError> = [];
+		connection.addEventListener(SQLErrorEvent.ERROR, event -> heard.push(event.error));
+		connection.begin();
+
+		var thrown:Dynamic = null;
+
+		try {
+			connection.begin();
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+
+		Assert.equals(1, heard.length);
+		if (heard.length == 1) {
+			Assert.equals(heard[0], thrown);
+			Assert.equals(SQLEvent.BEGIN, heard[0].operation);
+			Assert.isTrue(heard[0].details().indexOf("within a transaction") >= 0, heard[0].details());
+		}
+
+		connection.rollback();
+
+		var refused:Dynamic = null;
+
+		try {
+			connection.request("SELECT * FROM nowhere");
+		} catch (e:Dynamic) {
+			refused = e;
+		}
+
+		Assert.isTrue(Std.isOfType(refused, SQLError), "request() threw " + Std.string(refused));
+
+		var statement:SQLiteStatement = new SQLiteStatement();
+		statement.sqlConnection = connection;
+		statement.text = "SELECT * FROM nowhere";
+		var failed:SQLError = null;
+		statement.addEventListener(SQLErrorEvent.ERROR, event -> failed = event.error);
+		Assert.raises(() -> statement.execute(), SQLError);
+		Require.notNull(failed);
+		Assert.isTrue(failed.details().indexOf("no such table") >= 0, failed.details());
+
+		connection.close();
+		// Closed already: a second close does nothing, as on the other drivers.
+		connection.close();
 	}
 
 	private static function __pumpUntil(done:Void->Bool, seconds:Float = 10.0):Void {
