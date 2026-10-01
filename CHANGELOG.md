@@ -1942,6 +1942,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `ReliableDatagramServerSocket.connect()` says what a dialled session
+  does: it dispatches `Event.CONNECT` itself when its handshake completes.
+  The documentation promised the server's
+  `ReliableDatagramSocketConnectEvent.CONNECT` "exactly as an accepted one
+  is", which never came, the caller holds the session already, so code
+  waiting on it waited for good.
 - A `ReliableDatagramSocket` whose `timeout` is zero has no deadline: it
   goes on trying until the peer answers or it is closed, as a `Socket` on
   Node does. It set a timer of zero, which gave the attempt up at the

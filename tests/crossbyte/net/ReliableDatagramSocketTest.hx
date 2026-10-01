@@ -585,6 +585,47 @@ class ReliableDatagramSocketTest extends utest.Test {
 		try bob.close() catch (_:Dynamic) {}
 	}
 
+	/**
+		A session a server dials announces itself, with `Event.CONNECT` on the
+		socket the call returned; the server's own CONNECT is for sessions a
+		peer opened. Its documentation said a dialled session was reported
+		through the server's event "exactly as an accepted one is", which it
+		never was: the caller already holds it.
+	**/
+	public function testADialledSessionAnnouncesItselfAndNotThroughItsServer():Void {
+		if (!requireDatagramSupport()) return;
+
+		var alice = new ReliableDatagramServerSocket();
+		var bob = new ReliableDatagramServerSocket();
+		var announcedByAlice:Array<ReliableDatagramSocket> = [];
+		var acceptedByBob:Array<ReliableDatagramSocket> = [];
+		var connects = 0;
+
+		try {
+			alice.bind(0, "127.0.0.1");
+			alice.listen();
+			bob.bind(0, "127.0.0.1");
+			bob.listen();
+			alice.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, e -> announcedByAlice.push(e.socket));
+			bob.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, e -> acceptedByBob.push(e.socket));
+
+			var toBob = alice.connect("127.0.0.1", bob.localPort);
+			toBob.addEventListener(Event.CONNECT, _ -> connects++);
+			pumpUntil(() -> toBob.connected && acceptedByBob.length > 0, 5.0);
+			pumpUntil(() -> false, 0.1);
+
+			Assert.isTrue(toBob.connected, "the dialled session never connected");
+			Assert.equals(1, connects, "the dialled session did not say it had connected");
+			Assert.equals(0, announcedByAlice.length, "the server announced a session it dialled itself");
+			Assert.equals(1, acceptedByBob.length, "the peer did not announce the session it accepted");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		closeServerQuietly(alice);
+		closeServerQuietly(bob);
+	}
+
 	public function testDiallingRefusesWhatItCannotHonour():Void {
 		if (!requireDatagramSupport()) return;
 
