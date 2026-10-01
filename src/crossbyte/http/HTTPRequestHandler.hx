@@ -1622,6 +1622,27 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__pumpStream();
 	}
 
+	/**
+	 * Gives up on a response whose head has gone out, when the body cannot be
+	 * finished: the writer's `abort`, which under HTTP/1.1 closes the
+	 * connection -- the only way left to say the body is short -- and under
+	 * HTTP/2 resets the stream and leaves the connection's other streams be.
+	 * These paths closed the socket themselves, which under HTTP/2 is every
+	 * stream's: one file that shrank mid-transfer took down every request on
+	 * the connection.
+	 *
+	 * Whoever listens hears `Event.CLOSE` either way. Under HTTP/1.1 the
+	 * socket closing says so; under HTTP/2 nothing did, so a producer stopped
+	 * at the output cap was never told and, writing on a timer, wrote on for
+	 * good.
+	 */
+	@:noCompletion private function __abandonResponse():Void {
+		__writer.abort();
+		if (!__clientLeft) {
+			__clientGone();
+		}
+	}
+
 	@:noCompletion private function __onStreamSocketGone(_:Event):Void {
 		// Peer closed or errored mid-transfer: stop reading, release the
 		// file, and never write again — the response is unfinishable.
@@ -1708,9 +1729,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 						// one that is quietly wrong.
 						Logger.error('Streamed file ${__requestPath} ended early; closing rather than sending fabricated bytes.');
 						__stopStream();
-						if (__origin.connected) {
-							__origin.close();
-						}
+						__abandonResponse();
 						return;
 					}
 
@@ -1740,9 +1759,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// against the length it was promised.
 			Logger.error("Streamed file response failed mid-body: " + error);
 			__stopStream();
-			if (__origin.connected) {
-				__origin.close();
-			}
+			__abandonResponse();
 			return;
 		}
 
@@ -2179,7 +2196,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			Logger.error('A streamed response to ${__requestPath} outran its client: ' + (__writer.bufferedBytes + length)
 				+ ' bytes would be waiting, past maxOutputBufferSize ($cap). Ending it.');
 			__detachOpenStream();
-			__writer.abort();
+			__abandonResponse();
 			return false;
 		}
 

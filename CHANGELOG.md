@@ -1932,6 +1932,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An HTTP/2 response the server has to give up on partway -- a file that
+  came up short, a read that failed, a stream written faster than its
+  client takes it -- resets its own stream and leaves the connection's
+  others be. The file pump closed the socket, which under HTTP/2 is every
+  stream's, so one file changing under a download took down every request
+  on the connection. And a producer stopped at `maxOutputBufferSize` hears
+  `Event.CLOSE` over HTTP/2 as it does over HTTP/1.1: nothing told it, so
+  one writing on a timer wrote on for good.
 - An HTTP/2 request's method is read in capitals, as an HTTP/1.1 one is and
   as `HTTPRequestHandler.method` says. It was taken as it came, so `get`
   was refused `405` over HTTP/2 and served over HTTP/1.1, and a route
