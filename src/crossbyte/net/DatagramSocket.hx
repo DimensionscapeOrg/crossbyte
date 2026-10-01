@@ -149,6 +149,13 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 
 	/**
 		The byte order used for `ByteArray` payloads dispatched by this socket.
+
+		`ByteArray.defaultEndian` when the socket is made, little-endian
+		unless the application changed it, as a ByteArray it makes is, so a
+		number written into a new ByteArray reads back as itself from the
+		datagram that carried it. Set `Endian.BIG_ENDIAN` for a protocol in
+		network byte order. Payloads came big-endian whatever the rest of the
+		application did.
 	**/
 	public var endian(get, set):Endian;
 
@@ -268,7 +275,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	// without end, which is the difference this counts.
 	@:noCompletion private var __consecutiveReadFailures:Int = 0;
 	@:noCompletion private var __connected:Bool = false;
-	@:noCompletion private var __endian:Endian = Endian.BIG_ENDIAN;
+	@:noCompletion private var __endian:Endian = ByteArray.defaultEndian;
 	@:noCompletion private var __readBuffer:Bytes;
 	@:noCompletion private var __receiving:Bool = false;
 	@:noCompletion private var __registered:Bool = false;

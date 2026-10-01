@@ -242,6 +242,47 @@ class ReliableDatagramSocketTest extends utest.Test {
 		try server.close() catch (_:Dynamic) {}
 	}
 
+	/**
+		The same over a reliable session: a number written into a new ByteArray
+		reads back as itself from the message that carried it, a game's
+		snapshot header, an input's tick. Messages came big-endian, and every
+		ByteArray an application makes is little-endian.
+	**/
+	public function testANumberSentIsTheNumberRead():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+		var client = new ReliableDatagramSocket();
+		var number:Null<Int> = null;
+		var fraction:Null<Float> = null;
+
+		try {
+			server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, function(e:ReliableDatagramSocketConnectEvent):Void {
+				var message = new ByteArray();
+				message.writeInt(0x01020304);
+				message.writeDouble(-1.25);
+				e.socket.send(message, 0, message.length);
+			});
+			client.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
+				e.data.position = 0;
+				number = e.data.readInt();
+				fraction = e.data.readDouble();
+			});
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			client.connect("127.0.0.1", server.localPort);
+
+			pumpUntil(() -> number != null, 3.0);
+			Assert.equals(0x01020304, number, "the int came back as " + StringTools.hex(number == null ? 0 : number, 8));
+			Assert.equals(-1.25, fraction);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try client.close() catch (_:Dynamic) {}
+		try server.close() catch (_:Dynamic) {}
+	}
+
 	public function testTwoServersDiallingEachOtherBothConnect():Void {
 		if (!requireDatagramSupport()) return;
 
