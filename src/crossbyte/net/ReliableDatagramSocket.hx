@@ -4,7 +4,7 @@ package crossbyte.net;
 #if !(js && !nodejs)
 
 import crossbyte.Seq32;
-import crossbyte.Timer as CBTimer;
+import crossbyte._internal.system.timer.TimerScheduler;
 import crossbyte.core.CrossByte;
 import crossbyte.crypto.SecureRandom;
 import crossbyte.errors.ArgumentError;
@@ -24,6 +24,7 @@ import crossbyte.net._internal.reliable.OutstandingFrame;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrame;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrameType;
+import crossbyte.net._internal.RuntimeHandOff;
 import haxe.Serializer;
 import haxe.Unserializer;
 import haxe.ds.IntMap;
@@ -747,6 +748,31 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		return __transport != null ? __transport.__cbInstance : null;
 	}
 
+	/** The runtime whose scheduler this session's timers are on; see `__timers`. **/
+	@:noCompletion private var __timerHome:Null<CrossByte> = null;
+
+	/**
+		The scheduler this session's timers run on, its handshake, its
+		keepalive, its retransmissions and its close, whichever thread arms
+		or clears one: its runtime's, taken off the transport the first time.
+		They were the calling thread's, `crossbyte.Timer`'s, so `close()`
+		from another thread threw arming its deadline, and on Node, where a
+		socket's callbacks run as the application's, a child runtime's
+		session armed timers on the application's runtime and cleared them on
+		its own.
+	**/
+	@:noCompletion private function __timers():TimerScheduler {
+		var home:Null<CrossByte> = __timerHome;
+		if (home == null) {
+			home = __transportRuntime();
+			if (home == null) {
+				home = CrossByte.current();
+			}
+			__timerHome = home;
+		}
+		return @:privateAccess home.__timer;
+	}
+
 	#if !nodejs
 	// The peer's address as the transport sends to it, kept: the transport
 	// keeps only the last one it was asked for, so a server sending a
@@ -832,9 +858,19 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		A peer from before 1.0 takes the FIN the moment it arrives and does
 		not acknowledge it, so a close to one ends at `closeTimeout`.
+
+		It may be called from any thread, as `abort()` may: from one that is
+		not the session's runtime's, it is handed to the runtime, as
+		`CrossByte.post` hands work over, and begins there after this
+		returns. It threw there, arming its deadline on the calling thread's
+		timers, with the FIN queued and never sent.
 	**/
 	public function close():Void {
 		if (__closed || __closing) {
+			return;
+		}
+
+		if (RuntimeHandOff.elsewhere(__transportRuntime(), close)) {
 			return;
 		}
 
@@ -877,9 +913,16 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		For a session that cannot or should not wait: a server shutting down,
 		a peer breaking the protocol. `close()` is the graceful way, and
 		calling this while it waits ends that close.
+
+		From a thread that is not the session's runtime's, it is handed to the
+		runtime and happens there after this returns, as `close()` does.
 	**/
 	public function abort():Void {
 		if (__closed) {
+			return;
+		}
+
+		if (RuntimeHandOff.elsewhere(__transportRuntime(), abort)) {
 			return;
 		}
 
@@ -910,13 +953,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/** (Re)starts the timer that checks on a close, `delay` seconds from now; none for no deadline. **/
 	@:noCompletion private function __armCloseTimer(delay:Float):Void {
 		if (__closeTimerHandle != -1) {
-			CBTimer.clear(__closeTimerHandle);
+			__timers().clear(__closeTimerHandle);
 			__closeTimerHandle = -1;
 		}
 		if (__closeTimeout <= 0) {
 			return;
 		}
-		__closeTimerHandle = CBTimer.setTimeout(delay, __onCloseTimer);
+		__closeTimerHandle = __timers().setTimeout(delay, __onCloseTimer);
 	}
 
 	/**
@@ -2352,7 +2395,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// session answers every one of them with a fresh HANDSHAKE. A lost
 		// answer is recovered by the next attempt either way.
 		if (!__incoming) {
-			__connectionAttemptHandle = CBTimer.setInterval(CONNECTION_ATTEMPT_INTERVAL, CONNECTION_ATTEMPT_INTERVAL, __sendHandshakeAttempt);
+			__connectionAttemptHandle = __timers().setInterval(CONNECTION_ATTEMPT_INTERVAL, CONNECTION_ATTEMPT_INTERVAL, __sendHandshakeAttempt);
 		}
 
 		__sendHandshakeAttempt();
@@ -2365,18 +2408,18 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	**/
 	@:noCompletion private function __armConnectionTimeout():Void {
 		if (__timeout > 0) {
-			__connectionTimeoutHandle = CBTimer.setTimeout(__timeout / 1000, __onConnectionFailed);
+			__connectionTimeoutHandle = __timers().setTimeout(__timeout / 1000, __onConnectionFailed);
 		}
 	}
 
 	@:noCompletion private function __clearHandshakeTimers():Void {
 		if (__connectionAttemptHandle != -1) {
-			CBTimer.clear(__connectionAttemptHandle);
+			__timers().clear(__connectionAttemptHandle);
 			__connectionAttemptHandle = -1;
 		}
 
 		if (__connectionTimeoutHandle != -1) {
-			CBTimer.clear(__connectionTimeoutHandle);
+			__timers().clear(__connectionTimeoutHandle);
 			__connectionTimeoutHandle = -1;
 		}
 	}
@@ -2448,11 +2491,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__closed = true;
 		__clearHandshakeTimers();
 		if (__keepAliveHandle != -1) {
-			CBTimer.clear(__keepAliveHandle);
+			__timers().clear(__keepAliveHandle);
 			__keepAliveHandle = -1;
 		}
 		if (__closeTimerHandle != -1) {
-			CBTimer.clear(__closeTimerHandle);
+			__timers().clear(__closeTimerHandle);
 			__closeTimerHandle = -1;
 		}
 		__closing = false;
@@ -2617,7 +2660,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (__peerConfirmed || __incoming) {
 			__clearHandshakeTimers();
 		} else if (__connectionTimeoutHandle != -1) {
-			CBTimer.clear(__connectionTimeoutHandle);
+			__timers().clear(__connectionTimeoutHandle);
 			__connectionTimeoutHandle = -1;
 		}
 		__startKeepAlive();
@@ -2643,7 +2686,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/** (Re)starts the keepalive check, for a connected session. **/
 	@:noCompletion private function __startKeepAlive():Void {
 		if (__keepAliveHandle != -1) {
-			CBTimer.clear(__keepAliveHandle);
+			__timers().clear(__keepAliveHandle);
 			__keepAliveHandle = -1;
 		}
 
@@ -2654,7 +2697,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (__closed || !__connected || period <= 0) {
 			return;
 		}
-		__keepAliveHandle = CBTimer.setInterval(period, period, __onKeepAlive);
+		__keepAliveHandle = __timers().setInterval(period, period, __onKeepAlive);
 	}
 
 	/**
@@ -3041,14 +3084,14 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
-		__retransmitHandle = CBTimer.setInterval(RETRANSMIT_TICK, RETRANSMIT_TICK, function() {
+		__retransmitHandle = __timers().setInterval(RETRANSMIT_TICK, RETRANSMIT_TICK, function() {
 			__checkRetransmits();
 		});
 	}
 
 	@:noCompletion private function __stopRetransmitClock():Void {
 		if (__retransmitHandle != -1) {
-			CBTimer.clear(__retransmitHandle);
+			__timers().clear(__retransmitHandle);
 			__retransmitHandle = -1;
 		}
 	}

@@ -9,6 +9,7 @@ import crossbyte.ipc.LocalConnection;
 #end
 import crossbyte.net.Endpoint.parseURL;
 import crossbyte.net._internal.CloseObservable;
+import crossbyte.net._internal.RuntimeHandOff;
 import crossbyte.errors.SecurityError;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.Event;
@@ -182,6 +183,12 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		the connection had not already ended. On one that has, closed by
 		its peer, failed, closed already, it does nothing, and does not
 		throw.
+
+		Over TCP, WebSocket and reliable UDP it may be called from any
+		thread: from one that is not the connection's runtime's, the close is
+		handed to the runtime and happens there after this returns, so
+		`onClose` is called on the runtime's thread, as every other callback
+		is. It was called on the closing thread.
 	**/
 	public inline function close():Void {
 		this.close();
@@ -745,6 +752,10 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 	}
 
 	override public function __closeWith(reason:Reason):Void {
+		// From another thread, on the socket's runtime; see `NetConnection.close`.
+		if (RuntimeHandOff.elsewhere(@:privateAccess __socket.__runtime(), () -> __closeWith(reason))) {
+			return;
+		}
 		__disposeLifecycle();
 		__end(reason);
 		try {
@@ -1023,6 +1034,10 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 	}
 
 	override public function __closeWith(reason:Reason):Void {
+		// From another thread, on the session's runtime; see `NetConnection.close`.
+		if (RuntimeHandOff.elsewhere(@:privateAccess __socket.__transportRuntime(), () -> __closeWith(reason))) {
+			return;
+		}
 		__disposeLifecycle();
 		__end(reason);
 		try {
@@ -1265,6 +1280,10 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 		this: closing a connection whose peer had gone was an error.
 	**/
 	override public function __closeWith(reason:Reason):Void {
+		// From another thread, on the session's runtime; see `NetConnection.close`.
+		if (RuntimeHandOff.elsewhere(@:privateAccess __socket.__runtime(), () -> __closeWith(reason))) {
+			return;
+		}
 		__disposeLifecycle();
 		__end(reason);
 		try {
