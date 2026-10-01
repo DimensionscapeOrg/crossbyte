@@ -246,16 +246,7 @@ final class CrossByte extends EventDispatcher {
 
 		if (instance.__getRunning()) {
 			#if js
-			// In a later turn, as a thread would start, after whatever the
-			// caller does next. It went through haxe.EntryPoint, which runs
-			// what it is given only while its own loop goes on -- on Node, until
-			// the program has started -- so a child made once the program was
-			// running never started at all.
-			#if nodejs
-			js.Node.setImmediate(instance.__runEventLoop);
-			#else
-			js.Browser.window.setTimeout(instance.__runEventLoop, 0);
-			#end
+			instance.__startLoopLater();
 			#else
 			EntryPoint.addThread(instance.__runEventLoop);
 			#end
@@ -1400,7 +1391,11 @@ final class CrossByte extends EventDispatcher {
 		}
 
 		if (__isPrimordial) {
+			#if js
+			__startLoopLater();
+			#else
 			EntryPoint.runInMainThread(__runEventLoop);
+			#end
 			#if target.threaded
 			// Publish primordial state under the lock before any child runtimes
 			// (and their threads) can be created, establishing happens-before for
@@ -1664,6 +1659,24 @@ final class CrossByte extends EventDispatcher {
 
 		__leaveJs();
 		__scheduleFrame();
+	}
+
+	/**
+		Starts this runtime's loop in a later turn, after whatever the code
+		that made it does next, as a thread would start elsewhere.
+
+		Both an application's loop and a child's went through haxe.EntryPoint,
+		which runs what it is handed only while its own loop goes on: on Node,
+		until the program has started. So a runtime made once the program was
+		running -- an application made after an asynchronous load, a child
+		made from a tick -- never started at all.
+	**/
+	@:noCompletion private function __startLoopLater():Void {
+		#if nodejs
+		js.Node.setImmediate(__runEventLoop);
+		#else
+		js.Browser.window.setTimeout(__runEventLoop, 0);
+		#end
 	}
 
 	/**
