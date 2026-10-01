@@ -826,6 +826,24 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 				totalBytes += nBytes;
 				__input.writeBytes(scratch, 0, nBytes);
 
+				// A pass's share, as Socket's (see READ_BUDGET there): what
+				// is left stays in the kernel, which reports the socket
+				// readable again next pass. It read for as long as reads came
+				// back full, so a peer sending faster than this parsed held
+				// the runtime here, every timer and every other socket
+				// waiting on it. TLS stops here too: a read takes a whole
+				// record into a buffer larger than any, so mbedTLS is left
+				// holding nothing select cannot see, and the jvm's engine,
+				// which can hold more, is asked about it before every select.
+				if (totalBytes >= @:privateAccess crossbyte.net.Socket.READ_BUDGET) {
+					// And the loop is told, so the rest is read before it
+					// waits rather than after.
+					if (__runtime != null) {
+						@:privateAccess __runtime.__noteMoreToRead();
+					}
+					break;
+				}
+
 				#if !eval
 				// A read shorter than the buffer has drained the socket, so it
 				// ends here, as Socket's does. It read on until the socket

@@ -201,6 +201,62 @@ class WebSocketTest extends utest.Test {
 	}
 
 	/**
+		A session whose peer keeps every read full reads a megabyte a pass,
+		as a plain socket does, and the rest on the passes after.
+
+		It read for as long as reads came back full, so a client uploading
+		faster than the server parsed held the runtime in that one session,
+		every timer and every other socket waiting on it.
+	**/
+	public function testAPeerThatKeepsSendingIsReadAMegabyteAPass():Void {
+		#if cpp
+		// 4 bytes of header and 4,092 of payload: 4 KB a frame, 16 a read.
+		var size:Int = 4092;
+		var total:Int = 8 * 1024 * 1024;
+		var raw = new sys.net.Socket();
+		var original = raw.input;
+		var flood = new FloodInput(patternFrame(0, size), total, 64 * 1024);
+		@:privateAccess raw.input = flood;
+
+		var ws = openParser();
+		ws.__isClient = true;
+		ws.__socket = raw;
+		ws.__connected = true;
+		ws.__tls = false;
+		var messages:Int = 0;
+		var wrong:Int = 0;
+		ws.onmessage = e -> {
+			if (!carries(e.data, 0, size)) {
+				wrong++;
+			}
+			messages++;
+		};
+
+		var perPass:Array<Int> = [];
+		while (flood.available > 0 && perPass.length < 100) {
+			var before:Int = messages;
+			ws.__readAvailable();
+			perPass.push(messages - before);
+		}
+		ws.__socket = null;
+		@:privateAccess raw.input = original;
+		try raw.close() catch (_:Dynamic) {}
+
+		var largest:Int = 0;
+		for (n in perPass) {
+			if (n > largest) {
+				largest = n;
+			}
+		}
+		Assert.equals(total >> 12, messages, "not every message sent was delivered");
+		Assert.equals(0, wrong, '$wrong messages arrived as something other than what was sent');
+		Assert.isTrue(largest <= 256, 'one pass read $largest messages, ${largest * 4} KB, from a peer that kept sending');
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
 		What a pass of the runtime sends a WebSocket goes out in one write,
 		when the pass ends. Each message was a write of its own, a system
 		call apiece: a server relaying a chat room's messages to everyone in

@@ -82,6 +82,84 @@ class RuntimeHealthTest extends utest.Test {
 		Assert.isTrue(ready.calls > 0, "a frame whose tick took 60 ms of a 50 ms frame never polled its sockets");
 	}
 
+	/**
+		A socket that stopped with its share of a pass taken is read again
+		before the frame is waited out. With a megabyte the most a socket may
+		read in one pass, a POLL loop at 1,000 ticks a second, a frame too
+		short to wait in, so polled once, read an upload a megabyte per
+		sleep: 34 MB/s, a tenth of what the same socket read unbounded.
+	**/
+	public function testASocketWithMoreToReadIsReadAgainBeforeThePollLoopWaits():Void {
+		var ready = BusySocket.create(0);
+		if (ready == null) {
+			Assert.fail("could not open a loopback connection");
+			return;
+		}
+
+		var runtime = new CrossByte(false, POLL, true);
+		runtime.tps = 1000;
+		ready.onRead = () -> if (ready.calls < 3) runtime.__noteMoreToRead();
+		runtime.registerSocket(ready.reader);
+		ready.poke();
+		crossbyte.sys.System.sleep(0.01);
+		runtime.__frameDeadline = Timer.stamp() + runtime.__tickInterval;
+		runtime.__pollBasedMainLoop();
+		runtime.deregisterSocket(ready.reader);
+		runtime.exit();
+		ready.close();
+
+		Assert.isTrue(ready.calls >= 2, "a socket with more to read was read " + ready.calls + " time(s) in a frame at 1,000 ticks a second");
+	}
+
+	/**
+		The DEFAULT loop, which polls once a frame and sleeps the rest, reads
+		such a socket again before it sleeps: at the default 12 ticks a
+		second, a socket stopped at its share otherwise waited 84 ms for each
+		megabyte.
+	**/
+	public function testASocketWithMoreToReadIsReadAgainBeforeTheDefaultLoopSleeps():Void {
+		var ready = BusySocket.create(0);
+		if (ready == null) {
+			Assert.fail("could not open a loopback connection");
+			return;
+		}
+
+		var runtime = new CrossByte(false, DEFAULT, true);
+		runtime.tps = 20;
+		ready.onRead = () -> if (ready.calls < 3) runtime.__noteMoreToRead();
+		runtime.registerSocket(ready.reader);
+		ready.poke();
+		crossbyte.sys.System.sleep(0.01);
+		runtime.__frameDeadline = Timer.stamp() + runtime.__tickInterval;
+		runtime.__defaultMainLoop();
+		runtime.deregisterSocket(ready.reader);
+		runtime.exit();
+		ready.close();
+
+		Assert.equals(3, ready.calls, "a socket with more to read was not read again before the frame was slept out");
+	}
+
+	/** And a host's pump, within the frame the host gave it. **/
+	public function testASocketWithMoreToReadIsReadAgainInTheSamePump():Void {
+		var ready = BusySocket.create(0);
+		if (ready == null) {
+			Assert.fail("could not open a loopback connection");
+			return;
+		}
+
+		var runtime = new CrossByte(false, DEFAULT, true);
+		ready.onRead = () -> if (ready.calls < 3) runtime.__noteMoreToRead();
+		runtime.registerSocket(ready.reader);
+		ready.poke();
+		crossbyte.sys.System.sleep(0.01);
+		runtime.pump(0.05, 0);
+		runtime.deregisterSocket(ready.reader);
+		runtime.exit();
+		ready.close();
+
+		Assert.equals(3, ready.calls, "a socket with more to read was left for the host's next frame");
+	}
+
 	public function testAPollLoopCountsTheTimeItsSocketHandlersTake():Void {
 		// The load was measured before the poll, so a POLL server's socket
 		// handlers, nearly all of what it does, never counted: busy half
@@ -285,6 +363,8 @@ private class BusySocket implements IPollableSocket {
 	public var reader(default, null):Socket;
 	public var calls(default, null):Int = 0;
 	public var registryClosed(get, never):Bool;
+	/** Run after each read, as a socket's handler does once it has read. **/
+	public var onRead:Null<Void->Void> = null;
 
 	private var __writer:Socket;
 	private var __burn:Float;
@@ -329,6 +409,9 @@ private class BusySocket implements IPollableSocket {
 		calls++;
 		var end = Timer.stamp() + __burn;
 		while (Timer.stamp() < end) {}
+		if (onRead != null) {
+			onRead();
+		}
 	}
 
 	public function registryOnWritable():Void {}
