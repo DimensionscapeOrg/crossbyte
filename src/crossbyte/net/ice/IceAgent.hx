@@ -423,10 +423,11 @@ class IceAgent {
 		that: a socket this agent shares with a relay client or a reflexive
 		query decodes each datagram once and shows the message to each, rather
 		than having each decode it again.
-		@return Whether this was a STUN message the agent took. False means the
-		datagram belongs to whatever else shares the socket, which is the normal
-		case once a session is carrying data, so a caller should pass it on
-		rather than dropping it.
+		@return Whether this was a STUN message the agent took: a check
+		addressed to its credentials and signed with them, or an answer to a
+		check it sent. False means the datagram belongs to whatever else shares
+		the socket, which is the normal case once a session is carrying data,
+		so a caller should pass it on rather than dropping it.
 	**/
 	public function receive(payload:ByteArray, fromAddress:String, fromPort:Int, now:Float, ?via:IceCandidate, ?message:StunMessage):Bool {
 		if (state == CLOSED || payload == null) {
@@ -449,28 +450,31 @@ class IceAgent {
 		var previous = __arrivedVia;
 		__arrivedVia = via;
 
+		// Each says whether the message was this agent's. They all used to be
+		// reported taken, so a check addressed to another session, or an
+		// answer to something this agent never asked, was kept from whatever
+		// else on the socket might have wanted it.
+		var taken:Bool;
+
 		switch (message.type) {
 			case StunMessage.BINDING_REQUEST:
-				__answer(message, fromAddress, fromPort, now);
+				taken = __answer(message, fromAddress, fromPort, now);
 			case StunMessage.BINDING_SUCCESS:
 				// Consent first: its transaction is not in __checks, so
 				// __accept would look straight past it.
-				if (!__acceptConsent(message, now)) {
-					__accept(message, fromAddress, fromPort, now);
-				}
+				taken = __acceptConsent(message, now) || __accept(message, fromAddress, fromPort, now);
 			case StunMessage.BINDING_ERROR:
-				__refused(message, now);
+				taken = __refused(message, now);
 			default:
 				// STUN, but not a check: a relay's answer, a Data indication.
 				// Whatever else shares the socket may want it, and taking it
 				// here is what swallowed a TURN relay's answers on a reliable
 				// datagram server with an agent attached.
-				__arrivedVia = previous;
-				return false;
+				taken = false;
 		}
 
 		__arrivedVia = previous;
-		return true;
+		return taken;
 	}
 
 	/** Stops everything. A closed agent neither sends nor answers. **/
@@ -593,11 +597,12 @@ class IceAgent {
 	// Receiving
 	// ------------------------------------------------------------------
 
-	@:noCompletion private function __answer(request:StunMessage, fromAddress:String, fromPort:Int, now:Float):Void {
+	/** @return Whether the check was this agent's: addressed to its credentials and signed with them. **/
+	@:noCompletion private function __answer(request:StunMessage, fromAddress:String, fromPort:Int, now:Float):Bool {
 		var usernameBytes = request.attribute(StunMessage.ATTR_USERNAME);
 
 		if (usernameBytes == null) {
-			return;
+			return false;
 		}
 
 		usernameBytes.position = 0;
@@ -607,7 +612,7 @@ class IceAgent {
 		// is what makes it a check for this session rather than a stray
 		// datagram or somebody else's.
 		if (!localCredentials.addressedByUsername(username) || !request.verifyIntegrity(localCredentials.password)) {
-			return;
+			return false;
 		}
 
 		// A check from somewhere the peer never advertised makes that place a
@@ -617,7 +622,7 @@ class IceAgent {
 		// the check goes unanswered, since an answer would make a pair at the
 		// peer's end, one it could nominate, that this end never formed.
 		if (__remoteAt(fromAddress, fromPort) == null && __remotes.length >= MAX_REMOTE_CANDIDATES) {
-			return;
+			return true;
 		}
 
 		// Before answering: the sender may have claimed the same role this
@@ -629,7 +634,7 @@ class IceAgent {
 			]);
 
 			__sendVia(__arrivedVia, refusal.encodeSigned(localCredentials.password), fromAddress, fromPort);
-			return;
+			return true;
 		}
 
 		// Where this peer sees the sender, which is how the sender learns about
@@ -646,7 +651,7 @@ class IceAgent {
 		var pair = __pairFrom(fromAddress, fromPort, __arrivedVia);
 
 		if (pair == null) {
-			return;
+			return true;
 		}
 
 		var check = __checkFor(pair);
@@ -682,23 +687,32 @@ class IceAgent {
 			// selecting happens the moment the check answers.
 			check.nominatedByPeer = true;
 		}
+
+		return true;
 	}
 
-	@:noCompletion private function __accept(response:StunMessage, fromAddress:String, fromPort:Int, now:Float):Void {
+	/** @return Whether the response answered a check this agent sent. **/
+	@:noCompletion private function __accept(response:StunMessage, fromAddress:String, fromPort:Int, now:Float):Bool {
 		if (remoteCredentials == null) {
-			return;
+			return false;
 		}
 
 		var check = __checkByTransaction(response);
 
-		if (check == null || check.state != IN_PROGRESS) {
-			return;
+		if (check == null) {
+			return false;
+		}
+
+		// A second answer to a check already answered: this agent's own, and
+		// nothing more to do with it.
+		if (check.state != IN_PROGRESS) {
+			return true;
 		}
 
 		// Keyed with the other peer's password, the same one that signed the
 		// request, so a response nobody could have signed is not an answer.
 		if (!response.verifyIntegrity(remoteCredentials.password)) {
-			return;
+			return false;
 		}
 
 		check.state = SUCCEEDED;
@@ -720,6 +734,7 @@ class IceAgent {
 		}
 
 		__settleIfFinished();
+		return true;
 	}
 
 	/**
@@ -781,23 +796,25 @@ class IceAgent {
 		changing sides and asking again, with a new transaction, because the
 		old one has been answered and a peer is entitled to ignore a repeat of
 		it.
+
+		@return Whether the refusal answered a check this agent sent.
 	**/
-	@:noCompletion private function __refused(response:StunMessage, now:Float):Void {
+	@:noCompletion private function __refused(response:StunMessage, now:Float):Bool {
 		var check = __checkByTransaction(response);
 
 		if (check == null || remoteCredentials == null) {
-			return;
+			return false;
 		}
 
 		if (!response.verifyIntegrity(remoteCredentials.password)) {
-			return;
+			return false;
 		}
 
 		if (response.errorCodeValue() != ROLE_CONFLICT) {
 			// Any other refusal is this pair failing, not the session.
 			check.state = FAILED;
 			__settleIfFinished();
-			return;
+			return true;
 		}
 
 		// Only if this refusal is about the role currently held. A check sent
@@ -819,6 +836,7 @@ class IceAgent {
 		check.attempts = 0;
 		check.state = WAITING;
 		__transmit(check, now);
+		return true;
 	}
 
 	/**
