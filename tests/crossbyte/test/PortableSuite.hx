@@ -186,6 +186,9 @@ class PortableSuite {
 		// A child runtime made once the program runs, which on Node never
 		// started, and whose loop took the program's timers when it did.
 		runner.addCase(new crossbyte.core.ChildRuntimeTest());
+		// TaskPool and Worker with no threads: the work inline, what it
+		// reports in a later turn.
+		runner.addCase(new crossbyte.sys.BackgroundDeliveryTest());
 		// ServerApplication on Node, whose POLL loop threw at its first frame.
 		runner.addCase(new crossbyte.core.ApplicationTest());
 		// SIGTERM and SIGINT on Node, which exited without the drain.
