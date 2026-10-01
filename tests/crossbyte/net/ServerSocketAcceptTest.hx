@@ -187,6 +187,42 @@ class ServerSocketAcceptTest extends utest.Test {
 			});
 		});
 	}
+
+	/**
+		A `handshakeTimeout` of 0 sets no deadline, as every other timeout
+		does and as `ServerWebSocket`'s does. It failed every handshake at
+		the first accept tick natively, and at 1 ms on Node.
+	**/
+	@:timeout(20000)
+	public function testAHandshakeTimeoutOfZeroWaits(async:Async):Void {
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			// No certificate toolchain on this machine.
+			Assert.pass();
+			async.done();
+			return;
+		}
+
+		var server = new ServerSocket(true);
+		server.setCertificate(fixture.certificate, fixture.key);
+		server.handshakeTimeout = 0;
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(_) {});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			// Connects, and says nothing of TLS for a while.
+			var slow = new WirePeer(server.localPort);
+
+			NetPump.wait(0.8, function() {
+				Assert.isFalse(slow.ended, "a handshake with no deadline was dropped");
+				Assert.equals(0, server.handshakeFailures, "a handshake with no deadline was counted as failed");
+				slow.close();
+				try server.close() catch (_:Dynamic) {}
+				async.done();
+			});
+		});
+	}
 	#end
 }
 

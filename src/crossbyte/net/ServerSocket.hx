@@ -111,7 +111,8 @@ class ServerSocket extends EventDispatcher {
 		Maximum seconds an accepted TLS connection may spend completing its
 		handshake before the server drops it. Guards against clients that
 		open a connection and then stall, which would otherwise accumulate
-		half-open sockets.
+		half-open sockets. 0 sets no deadline, as every timeout here does: a
+		client that stalls then holds its connection until it closes it.
 	**/
 	public var handshakeTimeout:Float = 10.0;
 
@@ -645,7 +646,8 @@ class ServerSocket extends EventDispatcher {
 			// passed, so Node's own two minutes applied: a client that opened
 			// a connection and never sent its half of the handshake held it
 			// twelve times longer than the server was configured to allow.
-			options.handshakeTimeout = Std.int(Math.max(1, handshakeTimeout * 1000));
+			// 0 is no deadline, which Node takes as 0 too.
+			options.handshakeTimeout = handshakeTimeout > 0 ? Std.int(Math.max(1, handshakeTimeout * 1000)) : 0;
 			__serverSocket = Tls.createServer(options, accept);
 
 			// The raw TCP connection, before TLS starts on it: the point where
@@ -945,7 +947,8 @@ class ServerSocket extends EventDispatcher {
 				// Defer the connect event: the peer is not authenticated (and
 				// no application bytes are readable) until TLS completes.
 				sysSocket.setBlocking(false);
-				var pending:PendingHandshake = new PendingHandshake(this, sysSocket, haxe.Timer.stamp() + handshakeTimeout);
+				var pending:PendingHandshake = new PendingHandshake(this, sysSocket,
+					handshakeTimeout > 0 ? haxe.Timer.stamp() + handshakeTimeout : Math.POSITIVE_INFINITY);
 				__pendingHandshakes.push(pending);
 
 				// In the poll set, so each flight the peer sends steps the
