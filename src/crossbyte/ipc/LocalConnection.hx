@@ -6,6 +6,9 @@ package crossbyte.ipc;
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IllegalOperationError;
+#if !cpp
+import crossbyte.crypto._internal.NativeOnly;
+#end
 
 import crossbyte.io.ByteArray;
 import crossbyte.io.ByteArrayInput;
@@ -70,6 +73,11 @@ private enum LocalConnectionDispatch {
 @:access(crossbyte.ipc._internal.NativeLocalConnection)
 #end
 class LocalConnection implements INetConnection implements CloseObservable {
+	/**
+	 * Whether this target has local IPC: natively (cpp) on Windows, over a
+	 * named pipe, and on Linux and macOS, over a Unix domain socket. Elsewhere
+	 * `listen` and `connect` throw an `IllegalOperationError` naming the target.
+	 */
 	public static inline var isSupported:Bool = #if cpp true #else false #end;
 
 	/** Maximum payload size accepted by the framing layer, in bytes. */
@@ -1240,9 +1248,9 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	}
 
 	@:noCompletion private static inline function __requireSupported():Void {
-		if (!isSupported) {
-			throw new ArgumentError("LocalConnection is only supported on native cpp targets.");
-		}
+		#if !cpp
+		throw NativeOnly.error("LocalConnection");
+		#end
 	}
 
 	@:noCompletion private static inline function __requireConnectionName(connectionName:String):Void {

@@ -1,6 +1,9 @@
 package crossbyte.crypto;
 
 import haxe.io.Bytes;
+#if !cpp
+import crossbyte.crypto._internal.NativeOnly;
+#end
 #if cpp
 import crossbyte.crypto._internal.NativeSodium;
 import crossbyte.crypto._internal.SodiumGlue;
@@ -45,7 +48,8 @@ typedef SessionKeys = {
  * keys.
  *
  * Available on supported native `cpp` targets via the statically linked
- * libsodium backend.
+ * libsodium backend. Elsewhere every member but `isAvailable` throws an
+ * `IllegalOperationError` naming the target.
  */
 class KeyExchange {
 	/**
@@ -89,7 +93,7 @@ class KeyExchange {
 		}
 		return {publicKey: publicKey, secretKey: secretKey};
 		#else
-		throw "KeyExchange is only available on supported native cpp targets.";
+		throw NativeOnly.error("KeyExchange");
 		#end
 	}
 
@@ -97,9 +101,8 @@ class KeyExchange {
 	 * Derives the client-side session keys against a server public key.
 	 */
 	public static function clientSessionKeys(clientPublicKey:Bytes, clientSecretKey:Bytes, serverPublicKey:Bytes):SessionKeys {
-		__validateKeys(clientPublicKey, clientSecretKey, serverPublicKey);
-
 		#if cpp
+		__validateKeys(clientPublicKey, clientSecretKey, serverPublicKey);
 		SodiumGlue.ensureAvailable();
 
 		var rx = Bytes.alloc(SESSION_KEY_BYTES);
@@ -111,7 +114,7 @@ class KeyExchange {
 		}
 		return {rx: rx, tx: tx};
 		#else
-		throw "KeyExchange is only available on supported native cpp targets.";
+		throw NativeOnly.error("KeyExchange");
 		#end
 	}
 
@@ -119,9 +122,8 @@ class KeyExchange {
 	 * Derives the server-side session keys against a client public key.
 	 */
 	public static function serverSessionKeys(serverPublicKey:Bytes, serverSecretKey:Bytes, clientPublicKey:Bytes):SessionKeys {
-		__validateKeys(serverPublicKey, serverSecretKey, clientPublicKey);
-
 		#if cpp
+		__validateKeys(serverPublicKey, serverSecretKey, clientPublicKey);
 		SodiumGlue.ensureAvailable();
 
 		var rx = Bytes.alloc(SESSION_KEY_BYTES);
@@ -133,7 +135,7 @@ class KeyExchange {
 		}
 		return {rx: rx, tx: tx};
 		#else
-		throw "KeyExchange is only available on supported native cpp targets.";
+		throw NativeOnly.error("KeyExchange");
 		#end
 	}
 

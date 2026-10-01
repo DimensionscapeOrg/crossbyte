@@ -1,19 +1,20 @@
 package crossbyte.auth.jwt;
 
-/** JWT signature algorithms understood by CrossByte's JWT helpers. */
+/**
+ * JWS algorithm names: the four `JWT` signs and verifies with, and `none`.
+ *
+ * `JWT.verify` refuses any other `alg` as `UNSUPPORTED_ALGORITHM`, `none`
+ * included.
+ */
 enum abstract JWTAlgorithm(String) from String to String {
-  /** HMAC using SHA-256. */
-  var HS256:String = "HS256"; 
-  /** HMAC using SHA-384. */
-  var HS384:String = "HS384";
-  /** HMAC using SHA-512. */
-  var HS512:String = "HS512";
-  /** RSA PKCS#1 v1.5 using SHA-256. */
-  var RS256:String = "RS256";  
-  /** ECDSA using P-256 and SHA-256. */
+  /** HMAC using SHA-256, with a shared secret: `JWTSigner.HS256`. */
+  var HS256:String = "HS256";
+  /** RSA PKCS#1 v1.5 using SHA-256: `JWTSigner.RS256`, natively. */
+  var RS256:String = "RS256";
+  /** ECDSA using P-256 and SHA-256: `JWTSigner.ES256`, natively. */
   var ES256:String = "ES256";
-  /** Edwards-curve EdDSA signatures such as Ed25519. */
-  var EdDSA:String = "EdDSA"; 
-  /** Unsigned token. Included for parsing/validation semantics only. */
+  /** Ed25519 signatures (RFC 8037): `JWTSigner.EdDSA`, natively. */
+  var EdDSA:String = "EdDSA";
+  /** Unsigned token. Named so it can be compared against; never accepted. */
   var NONE:String = "none";
 }

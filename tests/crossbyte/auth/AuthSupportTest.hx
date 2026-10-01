@@ -74,6 +74,44 @@ class AuthSupportTest extends utest.Test {
 		);
 	}
 
+	/**
+		An authorization endpoint that carries a query of its own keeps it.
+
+		The flow's parameters were added after a second `?`, so a parameter
+		that never changes put in the endpoint, Google's
+		`access_type=offline`, without which no refresh token is issued,
+		took the rest of the URL as its value.
+	**/
+	public function testAnAuthorizeUrlWithAQueryKeepsIt():Void {
+		var oauth = new OAuth(new OAuthConfig("client", "secret", "https://auth.example/authorize?access_type=offline", "https://auth.example/token",
+			"https://app.example/callback"));
+
+		Assert.equals("https://auth.example/authorize?access_type=offline"
+			+ "&response_type=code"
+			+ "&client_id=client"
+			+ "&redirect_uri=https%3A%2F%2Fapp.example%2Fcallback"
+			+ "&state=s"
+			+ "&scope=openid", oauth.getAuthorizationUrl("s", "openid"));
+	}
+
+	/**
+		Parameters that change per request, OpenID Connect's `nonce`,
+		`prompt`, `login_hint`, go in the URL encoded like the rest. There
+		was nowhere to put them: a nonce, which has to be new for each
+		sign-in, cannot live in the configuration.
+	**/
+	public function testFurtherAuthorizationParametersAreEncodedIn():Void {
+		var oauth = new OAuth(new OAuthConfig("client", "secret", "https://auth.example/authorize", "https://auth.example/token",
+			"https://app.example/callback"));
+
+		var url:String = oauth.getAuthorizationUrl("s", "openid", "challenge", ["nonce" => "n 1/2", "prompt" => "consent"]);
+
+		Assert.isTrue(StringTools.startsWith(url, "https://auth.example/authorize?response_type=code&"), url);
+		Assert.isTrue(url.indexOf("&code_challenge=challenge&code_challenge_method=S256") > 0, url);
+		Assert.isTrue(url.indexOf("&nonce=n%201%2F2") > 0, url);
+		Assert.isTrue(url.indexOf("&prompt=consent") > 0, url);
+	}
+
 	public function testSecretTypedefSupportsOptionalKey():Void {
 		var keyed:Secret = {key: "kid-1", secret: "secret-a"};
 		var plain:Secret = {secret: "secret-b"};
@@ -100,6 +138,24 @@ class AuthSupportTest extends utest.Test {
 		// Sent as a string by some providers; handed straight to an Int field it
 		// is a broken token on every static target.
 		Assert.equals(3600, delivered.expiresIn);
+		Assert.isNull(delivered.idToken);
+	}
+
+	/**
+		An OpenID Connect sign-in hands back its ID token.
+
+		The class's own example asks for `openid email` and signs the user in
+		with what comes back, and the `id_token`, the one thing in the
+		response that says who signed in, was dropped.
+	**/
+	public function testAnOpenIdConnectSignInKeepsItsIdToken():Void {
+		var delivered:OAuthToken = null;
+
+		OAuth.__handleTokenResponse("exchange", '{"access_token":"at","token_type":"Bearer","expires_in":3600,"id_token":"h.p.s"}',
+			token -> delivered = token, null);
+
+		Require.notNull(delivered);
+		Assert.equals("h.p.s", delivered.idToken);
 	}
 
 	public function testRejectedGrantReachesTheErrorCallback():Void {

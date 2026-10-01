@@ -7,6 +7,11 @@ class NativeSmokeMain {
 			loggerChild();
 			return;
 		}
+		// The first reads of a process-wide registry: see MetricsTest.
+		if (Sys.args().indexOf(crossbyte.metrics.MetricsTest.FIRST_READ_CHILD) >= 0) {
+			crossbyte.metrics.MetricsTest.firstReadChild();
+			return;
+		}
 
 		crossbyte.test.TestHarness.run(crossbyte.test.TestSuites.addNativeSmoke);
 	}
