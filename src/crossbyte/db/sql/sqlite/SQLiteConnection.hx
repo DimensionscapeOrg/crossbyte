@@ -1491,9 +1491,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 		// Queued behind the close, or behind an open that failed: each is
 		// told it will never run, where it waited for ever. A cancel's own
-		// report still goes out.
-		// Before the last pass: what is asked for from now on is refused
-		// where it is asked for, and a call waiting stops waiting.
+		// report still goes out. Marked gone first, so that what is asked for
+		// from now on is refused where it is asked for, and a call waiting
+		// stops waiting.
 		queue.gone = true;
 		var left:SQLiteJob = queue.jobs.pop(false);
 
