@@ -96,6 +96,11 @@ entry below says how:
   and HashLink, where it threw a String.
 
 ### Added
+- `OAuthConfig.clientAuthentication`: `SECRET_BASIC` sends the client
+  secret in an HTTP Basic `Authorization` header, as RFC 6749 has every
+  provider accept, instead of the request body, `SECRET_POST`, which stays
+  the default. A provider configured for Basic alone answered every
+  exchange `invalid_client`, and there was no other way to send it.
 - `OAuthToken.idToken`, the OpenID Connect ID token a sign-in with the
   `openid` scope answers with: the JWT that says who signed in, which was
   dropped although `OAuth`'s own example asks for that scope. And

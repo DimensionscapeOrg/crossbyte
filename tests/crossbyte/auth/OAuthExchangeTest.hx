@@ -127,6 +127,39 @@ class OAuthExchangeTest extends utest.Test {
 		});
 	}
 
+	/**
+		A provider set up for HTTP Basic client authentication gets the secret
+		in an `Authorization` header and not in the body.
+
+		The secret went in the body whatever the provider took, and RFC 6749
+		has every provider accept Basic and calls the body NOT RECOMMENDED: a
+		provider configured for Basic alone answered `invalid_client`, with no
+		way to send anything else.
+	**/
+	public function testTheSecretGoesInABasicHeaderWhenTheProviderAsks(async:Async):Void {
+		serve(0, 200, TOKEN_RESPONSE, endpoint -> {
+			var config:OAuthConfig = new OAuthConfig("client 1", "s3cret:/", "https://provider.example/authorize",
+				'http://127.0.0.1:${endpoint.port}/token', "https://app.example/callback");
+			config.clientAuthentication = SECRET_BASIC;
+			var oauth:OAuth = new OAuth(config);
+			var delivered:Null<OAuthToken> = null;
+			var failure:Null<String> = null;
+
+			oauth.getAccessToken("code-abc", token -> delivered = token, message -> failure = message);
+
+			pumpUntil(() -> delivered != null || failure != null, 15, _ -> {
+				Assert.isNull(failure);
+				Assert.notNull(delivered);
+				// RFC 6749 2.3.1: each part form-encoded, then base64.
+				var expected:String = "Basic " + haxe.crypto.Base64.encode(haxe.io.Bytes.ofString("client%201:s3cret%3A%2F"));
+				Assert.equals(expected, endpoint.authorization);
+				Assert.equals(-1, endpoint.body().indexOf("client_secret"), endpoint.body());
+				endpoint.close();
+				async.done();
+			});
+		});
+	}
+
 	public function testARejectedGrantReportsTheProvidersReason(async:Async):Void {
 		serve(0, 400, '{"error":"invalid_grant","error_description":"authorization code has expired"}', endpoint -> {
 			var oauth:OAuth = client(endpoint.port);
@@ -189,6 +222,7 @@ class OAuthExchangeTest extends utest.Test {
 		var endpoint:TokenEndpoint = new TokenEndpoint();
 		var held:Array<Dynamic> = [];
 		var server:Dynamic = js.Lib.require("http").createServer(function(req:Dynamic, res:Dynamic) {
+			endpoint.authorization = req.headers.authorization;
 			var chunks:Array<String> = [];
 			req.on("data", function(chunk:Dynamic) chunks.push(Std.string(chunk)));
 			req.on("end", function() {
@@ -227,7 +261,7 @@ class OAuthExchangeTest extends utest.Test {
 
 				peer = server.accept();
 				peer.setTimeout(5.0);
-				endpoint.received = readBody(peer);
+				endpoint.received = readBody(peer, endpoint);
 				if (delay < 0) {
 					// Unanswered until the case is over, or two seconds pass:
 					// where the exchange runs inline, only this close ends it.
@@ -254,7 +288,7 @@ class OAuthExchangeTest extends utest.Test {
 	}
 
 	#if (sys && !nodejs)
-	static function readBody(peer:SysSocket):String {
+	static function readBody(peer:SysSocket, endpoint:TokenEndpoint):String {
 		var length:Int = 0;
 		while (true) {
 			var line:String = peer.input.readLine();
@@ -262,6 +296,9 @@ class OAuthExchangeTest extends utest.Test {
 				break;
 			}
 			var separator:Int = line.indexOf(":");
+			if (separator > 0 && StringTools.trim(line.substr(0, separator)).toLowerCase() == "authorization") {
+				endpoint.authorization = StringTools.trim(line.substr(separator + 1));
+			}
 			if (separator > 0 && StringTools.trim(line.substr(0, separator)).toLowerCase() == "content-length") {
 				length = crossbyte.utils.IntParse.decimal(StringTools.trim(line.substr(separator + 1)), 65536);
 			}
@@ -276,6 +313,7 @@ class OAuthExchangeTest extends utest.Test {
 private class TokenEndpoint {
 	public var port:Int = 0;
 	public var received:Null<String> = null;
+	public var authorization:Null<String> = null;
 	#if (sys && !nodejs)
 	public var released:Lock = new Lock();
 	#end
