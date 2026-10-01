@@ -1214,6 +1214,25 @@ class HTTPRequestHandlerTest extends utest.Test {
 		});
 	}
 
+	public function testAnErrorAnsweringAHeadCarriesNoBody(async:Async):Void {
+		// The server's own error answers -- a 404, a 403, a 405 -- were written
+		// with their text whatever the method, so a HEAD for a missing file
+		// had "404 Not Found" after its head, which a client reads as the
+		// start of the next response on the connection.
+		__sendRequests(async, [], [
+			"HEAD /missing.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
+		], function(result):Void {
+			Assert.equals(404, result.responses[0].status);
+			Assert.equals("13", result.responses[0].headers.get("content-length"), "a HEAD's 404 did not give its GET's length");
+			var afterHead:Int = result.raw.indexOf("\r\n\r\n") + 4;
+			Assert.isTrue(result.raw.indexOf("HTTP/1.1 200", afterHead) == afterHead, "a body followed a HEAD's 404: " + result.raw.substr(afterHead, 20));
+			Assert.equals(200, result.responses[1].status);
+			Assert.equals("Hello from middleware test", result.responses[1].body);
+			async.done();
+		}, null, true);
+	}
+
 	public function testLateAsynchronousNextCannotAnswerALaterRequest(async:Async):Void {
 		// testRespondThenNextEmitsSingleResponse covers the synchronous
 		// violation. This covers the asynchronous one: request one answers

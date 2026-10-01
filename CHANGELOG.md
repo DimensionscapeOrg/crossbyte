@@ -1932,6 +1932,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The server's own error answers -- a 404 for a missing file, a 403, 405,
+  429, 501 and the rest -- carry no body for a `HEAD`. They went out with
+  their text whatever the method, so a `HEAD` for a missing file had
+  "404 Not Found" after its head, which a client keeping the connection
+  reads as the start of the next response, and which HTTP/2 makes a
+  malformed one.
 - A precompressed `.gz` beside a static file is sent to a client that also
   takes Brotli, which every browser does. Only the sibling for the coding
   the client was going to be given was looked for, and that was Brotli, so
