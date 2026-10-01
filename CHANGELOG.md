@@ -1942,6 +1942,31 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `ServerWebSocket` lets go of the sessions still upgrading when it
+  stops: `stopAccepting()`, `drain()` and `close()` close each one, as
+  `ServerSocket` drops a TLS handshake in flight. None did, and the
+  deadline on those sessions is kept from the tick they take away, so a
+  peer caught mid-upgrade was held with no deadline at all, and one that
+  finished upgrading afterwards opened -- and was announced -- on a server
+  that had stopped or was draining. On Node a TLS handshake that finishes
+  after the server stopped is refused for the same reason. `drain()`
+  refuses a close code that may not be sent before it stops anything:
+  each session's `closeWith` refused it and the refusals were swallowed,
+  so no session was told why it was dropped.
+- A secure `ServerWebSocket` gives a session all of `handshakeTimeout` from
+  accept, over its TLS handshake and its upgrade together. Natively an
+  accepted session gave its TLS handshake a fixed three seconds whatever
+  `handshakeTimeout` said; on Node the TLS server was never given it, so a
+  peer that connected and said nothing held its descriptor for Node's
+  default of two minutes.
+- `ServerWebSocket.pendingHandshakeCount()` is the sessions still arriving,
+  in their TLS handshake or their upgrade -- what `maxPendingHandshakes`
+  bounds -- and `handshakeFailures` counts those that never arrive: a TLS
+  handshake or upgrade request that failed, a peer gone first, or
+  `handshakeTimeout` run out. Both stayed at 0 on every `ServerWebSocket`.
+  A refusal by `upgrade` is not counted, nor a session stopping or closing
+  the server let go of. A session under a `handshakeTimeout` of 0 is
+  counted and dropped like the rest; it had been left off the list.
 - A `ServerWebSocket` takes the TLS methods it inherits from `ServerSocket`:
   `setCertificate()`, `addSNICertificate()` and `setALPN()`, as well as
   `requireClientCertificate()`. Each reached into the listener

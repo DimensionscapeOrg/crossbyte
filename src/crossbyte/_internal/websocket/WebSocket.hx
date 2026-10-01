@@ -2379,7 +2379,16 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 */
 	#if !nodejs
 	private function __initSSLHandshake():Void {
-		__timeout = 3000;
+		if (__isClient == false) {
+			// An accepted session's deadline is its server's: handshakeTimeout
+			// from accept, over TLS and the upgrade together, which
+			// ServerWebSocket keeps. This was a fixed three seconds of its
+			// own, so a wss server gave up on every handshake at 3 s whatever
+			// handshakeTimeout said.
+			__timeout = 0;
+		} else {
+			__timeout = 3000;
+		}
 		__timestamp = haxe.Timer.stamp();
 		__handshaking = true;
 
@@ -2434,7 +2443,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		// deadline; a merely stalled peer closes once the deadline passes.
 		// Either way the owner is told why before the close -- a certificate
 		// the client refused is the one failure here worth reading.
-		var expired:Bool = haxe.Timer.stamp() - __timestamp > __timeout / 1000;
+		var expired:Bool = __timeout > 0 && haxe.Timer.stamp() - __timestamp > __timeout / 1000;
 		if (failure != null || expired) {
 			__handshaking = false;
 			__runtime.removeEventListener(Event.TICK, __tickSSLHandshakeListener);
