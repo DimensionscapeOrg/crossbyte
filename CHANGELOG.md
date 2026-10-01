@@ -160,6 +160,41 @@ entry below says how:
   `IOError` when another participant holds the region's lock past
   `lockTimeout` (five seconds), where they waited without end; set
   `lockTimeout` to 0 to keep waiting.
+- `File.moveTo` with `overwrite` replaces an existing directory instead of
+  merging into it, as its documentation says; merge with `copyTo` and then
+  delete the source if that is what was meant.
+- `File.applicationStorageDirectory` is the application's own directory
+  inside the account's application data, so stores moved:
+  `%APPDATA%\stores\<name>` is now `%APPDATA%\<id>\stores\<name>`, and
+  `$HOME/stores/<name>` is now `~/.local/share/<id>/stores/<name>` on
+  Linux and `~/Library/Application Support/<id>/stores/<name>` on macOS,
+  with `<id>` the main class's full name unless `-D crossbyte_app_id`
+  names it. Nothing is moved for you -- a store in the old place could be
+  any application's -- so move an application's own across once. Two
+  applications with the same main class, such as `Main`, share a
+  directory until one sets the define.
+- `File.applicationDirectory` and `Resources` read from the program's own
+  directory instead of the working directory. The build copies `resources`
+  beside the program; a tool that moves the program afterwards must carry
+  `resources` with it.
+- `File` no longer expands `%NAME%` in a path on Windows: build the path
+  from `Sys.getEnv("NAME")`, or start from `File.applicationStorageDirectory`
+  and the other static directories, which are usually what was meant.
+- `FileStream` reads and writes in `ByteArray.defaultEndian`,
+  little-endian unless changed. Set `endian = Endian.BIG_ENDIAN` on a
+  stream reading numbers that rc.1's synchronous `FileStream` wrote. Its
+  `writeObject` frames HXSF and JSON with a 32-bit length, so objects in
+  files written by rc.1 do not read back.
+- `File.data` throws an `IllegalOperationError` until a load has
+  succeeded, where it answered `null`: check for a load first, or catch
+  it. `File.extension` and `type` are `null` for a name with no dot, where
+  they were `""`.
+- `System.processAffinity`, `hasProcessAffinity` and `setProcessAffinity`
+  throw an `IllegalOperationError` off native and on macOS, where they
+  answered `[false]`, `[]` and `false`: check `System.PLATFORM` and the
+  target first. `System.getDeviceId()` answers `null`, not `""`, where
+  there is no identifier, and `totalSystemMemory()` and
+  `freeSystemMemory()` throw where nothing answers, where they answered 0.
 
 ### Added
 - `SharedObject.remove(name)` takes a region away on Linux and macOS --
@@ -213,6 +248,14 @@ entry below says how:
   as hexadecimal (`hex`) -- CRC-32, Adler-32, MD5, SHA-1 and XOR. The enum
   named the five and nothing anywhere took one: it was left from an RPC
   header field that was never built.
+- `System.applicationId`, the name an application's storage directory and
+  stores are kept under: the `crossbyte_app_id` define
+  (`-D crossbyte_app_id=com.example.chat`), which the build refuses unless
+  every platform can give a directory that name, or else the main class's
+  full name -- the same whichever target the application is built for,
+  and for an Aedifex build the project's main class, which Aedifex's
+  generated `ProgramMain` starts. A build with no main class uses the
+  program's file name.
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
   `DETACH DATABASE`, and `loadSchema()` with `getSchemaResult()`: a
   database's tables with their columns, views, indices and triggers.
@@ -1386,6 +1429,35 @@ entry below says how:
   the new framing, and an object only part of which has arrived leaves
   `position` where it was, so a socket's reader can try again; it left it
   past the length. Objects written by 1.0.0-rc.1 do not read back.
+- `FileStream` starts in `ByteArray.defaultEndian` and
+  `ByteArray.defaultObjectEncoding`, as every CrossByte `IDataInput` and
+  `IDataOutput` does -- little-endian and HXSF unless the application
+  changed them. A synchronous stream was big-endian, set by `open()`
+  whatever `endian` said, and an asynchronous one little-endian.
+- `FileStream.writeObject` frames HXSF and JSON with a 32-bit length in the
+  stream's byte order, as `ByteArray.writeObject` does, and `readObject`
+  reads it: an object is no longer capped at 65,535 bytes of UTF-8, the
+  limit of the 16-bit `writeUTF` framing it used.
+- `File.applicationDirectory`, `System.appDir` and `Resources` are the
+  program's own directory -- the executable's natively, the jar's on the
+  jvm, the script's on Node, the bytecode file's on neko and HashLink --
+  rather than the working directory, which is wherever the program was
+  started from: a Windows service, started in System32, looked for its
+  resources there and found none. The build copies the project's
+  `resources` beside the program it writes, where it copied it onto
+  itself, or for a Windows native build into a `bin/windows/bin` that
+  nothing ran from. The interpreter, which has no program file, keeps the
+  working directory.
+- `File.applicationStorageDirectory`, and every `Store` kept in it, is the
+  application's own: `System.applicationId` inside `%APPDATA%` on Windows,
+  `~/Library/Application Support` on macOS, and `$XDG_DATA_HOME` or
+  `~/.local/share` elsewhere, created the first time it is asked for. It
+  was `%APPDATA%` or `$HOME` itself, the account's root, which every
+  CrossByte program on the account shared -- so two applications that
+  opened a store of the same name opened one store, where `Store` promised
+  each its own. An environment with no `APPDATA` (and no `USERPROFILE`) or
+  no `HOME` is an `IOError` that says so, where the path came out as
+  "null".
 - Reliable UDP sends what a pass produces from one socket in as few system
   calls as the system allows. Each datagram was a `sendto` of its own,
   which was nearly all a server sending reliable UDP spent: 5.9 us a
@@ -3178,6 +3250,236 @@ entry below says how:
   was refused to a `GET` and run for a `POST`, or for a rewrite with the
   `PHP` flag onto it. A `POST` to a listed file is answered `403` as a
   `GET` is. Both fields had no documentation, and now say this.
+- `File.copyTo` merging a directory into one that holds another name for
+  one of its own files -- a hard link -- leaves that file as it is. The
+  copy truncated the destination before reading the source, which was
+  the same file, and its data was gone, on every target. On neko and
+  HashLink under Windows, which cannot tell two names of one file apart,
+  a copy onto a hard link to the file itself is spared the same way,
+  where it emptied the file.
+- `System.totalSystemMemory()` and `freeSystemMemory()` ask the system:
+  `GlobalMemoryStatusEx` natively on Windows, the HotSpot bean on the
+  jvm, `/proc/meminfo` on Linux, `sysctl` and `vm_stat` on macOS. Each
+  figure started a process -- `wmic` on Windows, natively and on the jvm
+  too, 0.2 s for the two; `grep` on Linux -- and macOS, or a Windows
+  without wmic, answered 0. The interpreter, neko and HashLink under
+  Windows still run wmic, or PowerShell where it is gone; both members
+  are documented, and throw an `IllegalOperationError` where nothing
+  answers.
+- `File.isHidden` on Windows reads the attribute of the file it names. It
+  ran `attrib` through `cmd.exe`, which expanded any `%NAME%` in the path,
+  so a hidden file with one in its name was asked about under another
+  name and read as not hidden. Natively it asks `GetFileAttributesW` and
+  on the jvm the JVM, starting no process; elsewhere `attrib` runs
+  directly, without a shell.
+- `File.spaceAvailable` is documented, and for a file is the room it has
+  to grow on its volume: on Windows it was 0, since `fsutil` takes only a
+  directory. A path with nothing there is 0, where Node threw `ENOENT`.
+  Natively (`GetDiskFreeSpaceExW`, `statvfs`) and on the jvm the file
+  system is asked directly, where each read started `fsutil` or `df`.
+- `System.totalCpuUsage()` measures the process: the processor time all
+  its threads used since the previous call, as a percentage of all the
+  machine's processors -- one busy thread of eight reads 12.5. It
+  returned 0. On Node it asks `process.cpuUsage()` and on the jvm the
+  HotSpot bean, since `Sys.cpuTime()` is the wall clock on both; it
+  throws an `IllegalOperationError` in a browser.
+- `System.getDeviceId()` answers on every target: Windows' `MachineGuid`,
+  Linux's machine id, macOS's `IOPlatformUUID`, the same on every target
+  on one machine and read once. It answered `""` everywhere but native,
+  and `null` natively on Linux and macOS. `null` now means there is none:
+  in a browser, or on a Linux system without `/etc/machine-id`.
+- `System.processAffinity`, `hasProcessAffinity` and `setProcessAffinity`
+  throw an `IllegalOperationError` where there is no process affinity --
+  natively on macOS, and on every target but native -- where they
+  answered `[false]`, `[]` and `false`, which read as "no processor
+  usable". Natively on Windows and Linux an index past the processors,
+  or past the 64 a Windows mask holds, is a `RangeError`; it shifted a
+  bit past the mask in C.
+- `File.canonicalize()` follows links, as documented, to the path the file
+  system gives for the file -- natively and on Node through the system's
+  own call, on the jvm `toRealPath`, and on the interpreter, neko and
+  HashLink under Linux and macOS `realpath` -- so a symbolic link or a
+  junction on the way is resolved. It only corrected the case of each
+  name, which it still does for a path with nothing at the end, and on
+  the interpreter, neko and HashLink under Windows, which resolve no link.
+- `new File("file:///C:/x")` names `C:\x`, as the constructor documents a
+  URL to: a `file:` URL was taken for a native path, `file:\C:\x`, which
+  names nothing. `file:///home/x` is `/home/x`, `file://server/share/x`
+  the share, and `%XX` escapes are decoded as UTF-8.
+- `File.extension` and `type` are `null` for a name with no dot, as
+  documented, where they were `""` -- the extension of a name ending in a
+  dot.
+- `File.data` throws an `IllegalOperationError` until a `load()` or
+  `loadAsync()` has succeeded, as documented, where it answered `null`.
+  A load unsets it first, so one that fails or is cancelled no longer
+  leaves the previous load's bytes in place, looking like its own.
+- `File.documentsDirectory` and `desktopDirectory` follow xdg-user-dirs on
+  Linux and the BSDs, as documented: a desktop in another language, or a
+  user, can keep them somewhere other than `~/Documents` and `~/Desktop`,
+  which was all that was looked at.
+- `File.clone()` copies the File's path and names, and starts no process.
+  It read every property through its getter to set it on the clone, so
+  each clone ran `fsutil` or `df` for `spaceAvailable` and read the file's
+  size and dates: 200 clones took 1.2 s on the interpreter and 3.5 s on
+  the jvm.
+- `File`'s documentation no longer promises what AIR does and CrossByte
+  does not: no `SecurityError` is thrown or `securityError` dispatched,
+  `copyTo` copies a file's contents and not its attributes, and a file
+  that is open can be copied -- what Windows refuses, unless the program
+  that has the file open allowed it, is moving or deleting it, which it
+  says now.
+- On the jvm under Windows, writing a file that another handle has open
+  replaces its contents. The standard library's write deletes the file and
+  opens it afresh; Windows refuses the delete while the file is open, and
+  the old file was then opened without being cut -- so `File.save`,
+  `saveBytes`, `saveText`, `copyTo` onto it and a `FileStream` opened to
+  write overwrote its start, kept its old length, and said nothing. They
+  cut it through the handle they write with now.
+- A `File` path is taken literally on every platform. On Windows the first
+  `%NAME%` in a path was replaced by that environment variable -- in
+  `nativePath`, the constructor and every `resolvePath`, after
+  `resolvePath` had normalized the path -- so a name sent by a peer,
+  `%SystemRoot%` or `%USERPROFILE%`, reached a directory nobody had named:
+  the HTTP server could be led by it to files outside its root. AIR's
+  `File` expands nothing, and neither does the operating system's own
+  file API.
+- `File` throws the `IOError` it documents, with AIR's error number where
+  one applies -- 3003 for a path with nothing there, 3002 and 3011 for one
+  in the way, 3007 for a file where a directory was wanted, 3010 for a
+  directory that is not empty, 3012 for one that could not be deleted --
+  and the real cause in its message. It threw the base `Error` from
+  `deleteDirectory`, `getDirectoryListing` and its listings, bare strings
+  from `save()`, and whatever the standard library threw from
+  `createDirectory`, `deleteFile`, `load` and the static `getFileBytes`,
+  `getFileText`, `saveBytes` and `saveText`, so `catch (e:IOError)` caught
+  none of them. `deleteDirectory` said "Folder is not empty" for every
+  failure, a file held open and a permission refused among them, and
+  `save()` "File is open" for every failure to write.
+  `getDirectoryListingAsync` reports a path that is not a directory as an
+  `ioError` event, as documented, where it threw.
+- `File.cancel()` cancels. With nothing pending it was a null access; with
+  something pending the work went on -- a 64 MB `copyToAsync` finished
+  after it had been cancelled -- because nothing in it asked. Each
+  asynchronous operation now asks between steps and stops: a copy between
+  blocks, removing a destination it had made (or, copying onto one that
+  was there, the file it was part way through); a move across volumes
+  putting the source and whatever it was replacing back; a recursive
+  delete between entries; a load between blocks. A cancelled operation
+  dispatches nothing more, and the File dispatches `cancel` once. Two
+  operations at once on one File both report now: they shared one worker
+  field, so the first to finish disposed of the other's worker, whose
+  result was never heard, or found the field empty.
+- `File.openWithDefaultApplication()` opens the file -- or a directory, in
+  the file manager -- with the application the operating system has
+  registered for it: through `explorer.exe` on Windows, `open` on macOS
+  and `xdg-open` on Linux and the BSDs, on Node through `child_process`.
+  It starts the application and returns without waiting for it. It was
+  empty: a documented member that did nothing. As in AIR, a file the
+  system would run rather than open -- an executable's extension, or on
+  Linux and macOS the executable bit -- is refused with an
+  `IllegalOperationError`, a missing file is an `IOError`, and a browser,
+  another operating system or a missing `xdg-open` is an
+  `IllegalOperationError` that says which.
+- `File.size`, `modificationDate` and `creationDate` are read from the disk
+  when asked for, as `exists` always was. They were a snapshot taken when
+  the path was set, so a File made before its file was written reported a
+  size of 0 for good; and a missing file read a size of 0 and null dates
+  where an `IOError` is documented, which it is now. Making a File no
+  longer touches the disk at all. `creationDate` is the time the file was
+  made -- natively from `statx` on Linux and `st_birthtime` on macOS, on
+  Node its `birthtime`, on the jvm its `creationTime` -- where it was
+  POSIX's `ctime`, which a chmod or a write moves on; `null` where the
+  file system keeps none, and an `IllegalOperationError` on the
+  interpreter, neko and HashLink under Linux and macOS, whose `stat` has
+  no such time.
+- `FileStream` keeps the contract `IDataInput` and `IDataOutput` describe,
+  and `ByteArray` keeps, opened either way. A synchronous stream's
+  `readByte` returned the unsigned byte, `readBoolean` was true only for
+  1, `writeShort` threw `Overflow` outside -32768..32767 rather than
+  keeping the low sixteen bits, every read but `readBytes` let
+  `haxe.io.Eof` escape -- having consumed what it read -- where an
+  `EOFError` consuming nothing is documented, and `writeBytes` passed an
+  out-of-range offset or length to the file, which on the interpreter
+  ended the process. Each does what `ByteArray`'s does now, and an
+  asynchronous read that fails leaves the position where it was too.
+- `FileStream.endian`, `objectEncoding` and `position` mean the same
+  whether the file was opened with `open()` or `openAsync()`. `endian`
+  read a file handle, so before opening it was a null access, set before
+  opening it was lost, and `open()` made it big-endian whatever it said;
+  an asynchronous stream read and wrote through a plain `ByteArray` --
+  little-endian and HXSF whatever the stream said -- and its writes went
+  on from wherever the writer had got to, so moving `position` back and
+  writing changed nothing. Writes to an asynchronous file are now queued
+  where the position is, and the buffer that held everything ever
+  written to one is gone.
+- `FileStream.truncate()` refuses a stream opened to read, as documented,
+  rather than cutting the file it was reading, and truncates in place
+  through the system's own call -- natively `SetEndOfFile` or `truncate`,
+  `RandomAccessFile.setLength` on the jvm, `fs.truncateSync` on Node --
+  where it closed the stream, read the whole file into memory and wrote
+  back the part it kept. An asynchronous stream truncates after the
+  writes already pending, which it read the file before.
+- `FileStream.openAsync` keeps its documentation. On a stream already
+  open it closes that file first, without a `close` event; it made its
+  worker and then disposed of it in the close, a null access. A file that
+  cannot be opened is an `ioError` event, heard by a listener added after
+  the call returns; it threw. `UPDATE` reads the file into the buffer with
+  `progress` and `complete`, as `READ` does, and a write lands in the file
+  and in what is read back; it opened only the writer, and every read
+  threw. Writes still pending on a stream reopened elsewhere are written
+  before the next file opens.
+- An asynchronous `FileStream`'s events are its own: `complete`,
+  `progress` and `outputProgress` with the stream as their target, and
+  failures as `ioError`. The worker's own events were passed on as they
+  were -- `ThreadEvent`s whose target was a private `Worker` -- and its
+  failures were its `"error"` event, which no `ioError` listener hears. A
+  file closed while it was still being read dispatched `complete` before
+  `close`; it dispatches only `close`.
+- `FileStream.readObject` in AMF0 and AMF3 reads one object: it read the
+  rest of the file into a buffer, decoded one object from it and threw
+  away the rest, so a second `readObject` found nothing.
+- `FileStream.readMultiByte` and `writeMultiByte` say what they do: UTF-8,
+  whatever `charSet` names, as `ByteArray`'s do. They listed `shift-jis`,
+  `cn-gb` and `iso-8859-1` among the character sets they would honour.
+- `FileStream`'s documentation no longer claims files past 2^32 bytes --
+  a position is an Int, 2 GB -- or a read-ahead in file-system pages it
+  does not have; it reads in 4 KB blocks.
+- `File.copyTo` and `moveTo` refuse to copy or move a file onto itself, and
+  `moveTo` is a rename. The standard library's copy truncates its
+  destination before it reads the source, so `copyTo(itself, true)`
+  emptied the file and reported success -- and so did copying onto
+  another name for it: its name in another case on Windows, a hard link, a
+  path through a junction. `moveTo` was a copy and then a delete, so it
+  did the same and then deleted what was left, which made renaming a
+  file's case on Windows or macOS lose the file. The two ends are compared
+  as files now, by the volume and index the file system keeps for each,
+  and an `IOError` says they are one; a name changed only in case is
+  renamed. Within a volume `moveTo` renames, so a directory moves in one
+  step whatever its size and a file replaced through it is never seen half
+  written; onto another volume it copies and then deletes, and leaves
+  nothing behind if the copy fails. With `overwrite` an existing
+  destination is replaced -- a directory as a whole, where it was merged
+  into -- and put back if the move fails. A directory is no longer copied
+  or moved into itself, which copied what it had just copied until the
+  path grew too long. Errors on these paths are `IOError`s carrying AIR's
+  error numbers, as documented, where some were the base `Error`.
+- `File.resolvePath` normalizes, as its documentation says: `.` is
+  dropped, `..` consumes its parent and never climbs past the file
+  system's root or the application storage directory, and an absolute
+  path is returned as that path. It concatenated, so
+  `File.applicationStorageDirectory.resolvePath(name)` climbed out of the
+  storage directory on a name holding `..`, and an absolute name came
+  back appended to the directory -- on Windows a path naming a stream on
+  a file called `C`. Windows drives, shares and `\\?\` paths keep their
+  roots. Its documentation now says plainly that it is not a sandbox, and
+  shows the check that is: `dir.getRelativePath(file) == null`.
+- `File.getRelativePath` answers as documented: null for a path that is
+  not the File's own or below it unless `useDotDot` is given, `/`
+  between segments on every platform, null across drives and shares
+  even with `useDotDot`, and an `ArgumentError` for a null reference. A
+  sibling came back as its bare name, which reads as a child; the answer
+  was joined with `\` on Windows; across two drives it named the other
+  drive; and a null reference was a null access.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened

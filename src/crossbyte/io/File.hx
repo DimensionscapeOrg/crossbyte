@@ -8,9 +8,12 @@ import crossbyte.sys.Worker;
 import crossbyte.errors.IllegalOperationError;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.Error;
+import crossbyte.errors.IOError;
 import crossbyte.events.Event;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.FileListEvent;
+import crossbyte.io._internal.FileOps;
+import crossbyte.io._internal.FilePath;
 #if (js && !nodejs)
 // No filesystem here. The class keeps its type and its API; the calls
 // refuse. See NoFileSystem for why this is a shim and not a stubbed class.
@@ -73,7 +76,6 @@ import haxe.io.Bytes;
 	@event directoryListing 	Dispatched when a directory list is available as a result of a
 	call to the getDirectoryListingAsync() method.
 	@event ioError  			Dispatched when an error occurs during an asynchronous file operation.
-	@event securityError  		Dispatched when an operation violates a security constraint.
 
 **/
 #if !crossbyte_debug
@@ -81,13 +83,23 @@ import haxe.io.Bytes;
 #end
 final class File extends EventDispatcher {
 	/**
-		The creation date of the file on the local disk. If the object is was
-		not populated, a call to get the value of this property returns
-		`null`.
+		The creation date of the file on the local disk, read from the disk
+		each time it is asked for.
 
-		@throws IOError               If the file information cannot be
-									  accessed, an exception is thrown with a
-									  message indicating a file I/O error.
+		The time the file was made, where the system keeps one: on Windows,
+		on macOS, and on Linux where the C library has `statx` (glibc 2.28)
+		and the file system records a birth time -- natively, on the jvm and
+		on Node. `null` where the file system keeps none. On Node it is
+		Node's `birthtime`; on the jvm the attribute `creationTime`, which
+		before Java 22 on Linux is the modification time, the JVM's own
+		fallback. It is never POSIX's `ctime`, which is when the file's status
+		last changed -- a chmod, a rename or a write moves it on.
+
+		@throws IOError               The file does not exist or cannot be
+									  examined.
+		@throws IllegalOperationError On the interpreter, neko and HashLink
+									  under Linux or macOS, whose `stat`
+									  reports no creation time.
 	**/
 	public var creationDate(get, null):Date;
 
@@ -102,30 +114,25 @@ final class File extends EventDispatcher {
 		The ByteArray object representing the data from the loaded file after
 		a successful call to the `load()` method.
 
-		@throws IOError               If the file cannot be opened or read, or
-									  if a similar error is encountered in
-									  accessing the file, an exception is
-									  thrown with a message indicating a file
-									  I/O error. In this case, the value of
-									  the `data` property is `null`.
+		A load starts by unsetting it, so a load that fails -- `load()`
+		throwing its `IOError`, `loadAsync()` dispatching `ioError` -- or one
+		cancelled leaves no data from an earlier one. `save()` sets it to what
+		it saved.
+
 		@throws IllegalOperationError If the `load()` method was not called
 									  successfully, an exception is thrown
 									  with a message indicating that functions
 									  were called in the incorrect sequence or
-									  an earlier call was unsuccessful. In
-									  this case, the value of the `data`
-									  property is `null`.
+									  an earlier call was unsuccessful.
 	**/
 	public var data(get, null):ByteArray;
 
 	/**
-		The date that the file on the local disk was last modified. If the
-		object is not populated, a call to get the value of this property
-		returns `null`.
+		The date that the file on the local disk was last modified, read from
+		the disk each time it is asked for.
 
-		@throws IOError               If the file information cannot be
-									  accessed, an exception is thrown with a
-									  message indicating a file I/O error.
+		@throws IOError               The file does not exist or cannot be
+									  examined.
 	**/
 	public var modificationDate(get, null):Date;
 
@@ -135,7 +142,9 @@ final class File extends EventDispatcher {
 	public var name(get, null):String;
 
 	/**
-		The size of the file on the local disk in bytes.
+		The size of the file on the local disk in bytes, read from the disk
+		each time it is asked for: a File made before its file was written,
+		or kept while something else writes it, says what is there now.
 
 		An `Int`, so it states sizes up to 2,147,483,647 bytes, and a file
 		larger than that throws rather than answering. The standard library's
@@ -189,6 +198,17 @@ final class File extends EventDispatcher {
 		that works across platforms. In CrossByte this is exposed as a filesystem path, not
 		as a URL-backed virtual path.
 
+		It is the directory the program itself is in -- the executable natively, the jar on the
+		jvm, the script on Node, the bytecode file on neko and HashLink -- and not the working
+		directory, which is wherever the program was started from: `C:\Windows\System32` for a
+		Windows service. On the interpreter (`--interp`), which runs from source and has no
+		program file, it is the working directory. `System.appDir` says more.
+
+		Nothing stops a write here; it is read-only only by convention, and an installed
+		application's directory is often not writable by the user running it. Keep what the
+		application writes in `applicationStorageDirectory`.
+
+		@throws IllegalOperationError In a browser.
 	**/
 	public static var applicationDirectory(get, never):File;
 
@@ -202,6 +222,17 @@ final class File extends EventDispatcher {
 
 		The applicationStorageDirectory property provides a way to reference the application
 		storage directory that works across platforms.
+
+		It is `System.applicationId` inside the directory the operating system keeps
+		applications' data in: `%APPDATA%\<id>` on Windows, `~/Library/Application Support/<id>`
+		on macOS, and `$XDG_DATA_HOME/<id>` or `~/.local/share/<id>` elsewhere. The id is the
+		`crossbyte_app_id` define if the build sets one and the main class's full name if not --
+		so two applications whose main classes share a name, such as `Main`, share this directory
+		unless one of them sets the define. `System.appStorageDir` says more.
+
+		@throws IOError The environment names no place for it (no `APPDATA` on Windows, no
+		`HOME` elsewhere), or it cannot be created.
+		@throws IllegalOperationError In a browser, which has no file system.
 
 		The following code creates a File object pointing to the "images" subdirectory of the application storage directory.
 
@@ -223,6 +254,10 @@ final class File extends EventDispatcher {
 		set a File object to reference the desktop directory using the nativePath property, it will only work on the
 		platform for which that path is valid.
 
+		On Windows it is the Desktop directory in the user's profile (a Desktop moved elsewhere is not
+		followed), on macOS ~/Desktop, and on Linux and the BSDs the directory xdg-user-dirs names,
+		`XDG_DESKTOP_DIR` in `~/.config/user-dirs.dirs`, or ~/Desktop where that names none.
+
 		If an operating system does not support a desktop directory, a suitable directory in the file system is used instead.
 
 		The following code outputs a list of files and directories contained in the user's desktop directory.
@@ -243,9 +278,11 @@ final class File extends EventDispatcher {
 	/**
 		The user's documents directory.
 
-		On Windows, this is the My Documents directory (for example, C:\Documents and Settings\userName\My
-		Documents). On Mac OS, the default location is /Users/userName/Documents. On Linux, the default location
-		is /home/userName/Documents (on an English system), and the property observes the xdg-user-dirs setting.
+		On Windows, this is the Documents directory in the user's profile (for example,
+		C:\Users\userName\Documents); a Documents folder moved elsewhere, through its properties or by OneDrive,
+		is not followed. On Mac OS, it is /Users/userName/Documents. On Linux and the BSDs it is the directory
+		xdg-user-dirs names -- `XDG_DOCUMENTS_DIR` in `~/.config/user-dirs.dirs`, which a desktop in another
+		language or the user may have moved -- and /home/userName/Documents where that names none.
 
 		The documentsDirectory property provides a way to reference the documents directory that works across
 		platforms.
@@ -337,10 +374,12 @@ final class File extends EventDispatcher {
 		property by using the forward slash character or the backslash (\) character as the path separator,
 		and the forward slashes are replaced with the appropriate backslash character for you.
 
-		On Windows a path containing `%NAME%` has the first such reference expanded from the
-		process environment, so `"%APPDATA%/myapp"` resolves. A name that is not set is left
-		as written rather than expanding to nothing, and only the first reference in a path is
-		expanded.
+		A path is taken literally on every platform: `%NAME%` and `$NAME` are characters of a
+		name, as they are to the operating system's own file calls. It used to expand the first
+		`%NAME%` from the environment on Windows, which let a name a peer sent -- `"%SystemRoot%"`
+		-- reach a directory the program never named. Expand a variable yourself, from
+		`Sys.getEnv`, where one is meant; `File.applicationStorageDirectory` and the other
+		static directories are usually what was.
 
 		Before writing code to set the nativePath property directly, consider whether doing so may result
 		in platform-specific code. For example, a native path such as "C:\\Documents and Settings\\bob\\Desktop"
@@ -359,7 +398,6 @@ final class File extends EventDispatcher {
 		with no directory component.
 
 		@throws ArgumentError The syntax of the path is invalid.
-		@throws SecurityError The caller is not in the application security sandbox.
 
 		The following code shows a native path for an example Windows computer.
 
@@ -411,6 +449,19 @@ final class File extends EventDispatcher {
 		return System.isWindows ? "\\" : "/";
 	}
 
+	/**
+		The space available at this File's location, in bytes: on the volume
+		a directory is on, or the room a file has to grow on its volume. 0 if
+		there is nothing at the path.
+
+		Natively, on the jvm and on Node the file system is asked directly.
+		The interpreter, neko and HashLink have no call for it and run
+		`fsutil` on Windows, `df` elsewhere, once per read; `fsutil` answers
+		in the system's language, and where that is not English its answer
+		is not understood and this is 0.
+
+		@throws IllegalOperationError In a browser, which has no file system.
+	**/
 	public var spaceAvailable(get, null):Float;
 
 	/**
@@ -480,9 +531,14 @@ final class File extends EventDispatcher {
 	 *
 	 * @param path The path to the file.
 	 * @return A `ByteArray` containing the file's contents.
+	 * @throws IOError The file does not exist (3003) or cannot be read.
 	 */
-	public static inline function getFileBytes(path:String):ByteArray {
-		return HaxeFile.getBytes(path);
+	public static function getFileBytes(path:String):ByteArray {
+		try {
+			return HaxeFile.getBytes(path);
+		} catch (e:Dynamic) {
+			throw __missingOr(path, e);
+		}
 	}
 
 	/**
@@ -490,9 +546,14 @@ final class File extends EventDispatcher {
 	 *
 	 * @param path The path to the file.
 	 * @return A `String` containing the file's contents.
+	 * @throws IOError The file does not exist (3003) or cannot be read.
 	 */
-	public static inline function getFileText(path:String):String {
-		return HaxeFile.getContent(path);
+	public static function getFileText(path:String):String {
+		try {
+			return HaxeFile.getContent(path);
+		} catch (e:Dynamic) {
+			throw __missingOr(path, e);
+		}
 	}
 
 	/**
@@ -500,9 +561,14 @@ final class File extends EventDispatcher {
 	 *
 	 * @param path The path where the file should be saved.
 	 * @param bytes The `ByteArray` to write to the file.
+	 * @throws IOError The file cannot be written.
 	 */
-	public static inline function saveBytes(path:String, bytes:ByteArray):Void {
-		HaxeFile.saveBytes(path, bytes);
+	public static function saveBytes(path:String, bytes:ByteArray):Void {
+		try {
+			FileOps.saveBytes(path, bytes);
+		} catch (e:Dynamic) {
+			throw __ioError('Could not write "$path": ${Std.string(e)}', 0);
+		}
 	}
 
 	/**
@@ -510,9 +576,14 @@ final class File extends EventDispatcher {
 	 *
 	 * @param path The path where the file should be saved.
 	 * @param text The `String` content to write to the file.
+	 * @throws IOError The file cannot be written.
 	 */
-	public static inline function saveText(path:String, text:String):Void {
-		HaxeFile.saveContent(path, text);
+	public static function saveText(path:String, text:String):Void {
+		try {
+			FileOps.saveBytes(path, Bytes.ofString(text));
+		} catch (e:Dynamic) {
+			throw __ioError('Could not write "$path": ${Std.string(e)}', 0);
+		}
 	}
 
 	@:noCompletion private var __data:ByteArray;
@@ -522,10 +593,10 @@ final class File extends EventDispatcher {
 		"S:\\", "T:\\", "U:\\", "V:\\", "W:\\", "X:\\", "Y:\\", "Z:\\"
 	];
 
-	@:noCompletion private var __fileWorker:Worker;
-	@:noCompletion private var __fileStatsDirty:Bool = false;
-	// Set when the file is larger than `size` can state; `size` throws then.
-	@:noCompletion private var __sizeOverflows:Bool = false;
+	// Each asynchronous operation's own worker, while it runs. There was one
+	// field for all of them, so a second operation started before the first
+	// had finished was disposed of by the first one's completion.
+	@:noCompletion private var __pending:Array<Worker> = [];
 	@:noCompletion private var __path:String;
 
 	/**
@@ -553,7 +624,8 @@ final class File extends EventDispatcher {
 		```
 
 		@param path	The path to the file. You can specify the path by using either a URL or native path (platform-specific)
-		notation.
+		notation. A URL is a `file:` URL: `file:///C:/x` is `C:\x` on Windows, `file:///home/x` is `/home/x`,
+		`file://server/share/x` is the share `\\server\share\x`, and `%XX` escapes are decoded as UTF-8.
 		@throws ArgumentError The syntax of the path parameter is invalid.
 	**/
 	public function new(path:String = null) {
@@ -561,6 +633,12 @@ final class File extends EventDispatcher {
 
 		if (path == null) {
 			return;
+		}
+
+		// A URL, as documented: it was taken for a native path, so
+		// "file:///C:/x" became "file:\C:\x", which names nothing.
+		if (path.length >= 5 && path.substr(0, 5).toLowerCase() == "file:") {
+			path = __pathOfUrl(path, System.isWindows);
 		}
 
 		nativePath = path;
@@ -572,11 +650,147 @@ final class File extends EventDispatcher {
 	}
 
 	/**
+		The native path a `file:` URL names: `file:///C:/x` is `C:\x` on Windows,
+		`file:///home/x` is `/home/x`, `file://server/share/x` is the share
+		`\\server\share\x`, and `%XX` escapes are decoded as UTF-8 -- `+` is a
+		plus sign in a path, not a space.
+	**/
+	@:noCompletion private static function __pathOfUrl(url:String, windows:Bool):String {
+		var rest:String = url.substr(5);
+		var host:String = "";
+
+		if (StringTools.startsWith(rest, "//")) {
+			rest = rest.substr(2);
+			var slash:Int = rest.indexOf("/");
+			host = slash < 0 ? rest : rest.substr(0, slash);
+			rest = slash < 0 ? "/" : rest.substr(slash);
+
+			if (host.toLowerCase() == "localhost") {
+				host = "";
+			}
+		}
+
+		var path:String = __percentDecode(rest);
+
+		if (host != "") {
+			return windows ? "\\\\" + host + StringTools.replace(path, "/", "\\") : "//" + host + path;
+		}
+
+		if (windows && ~/^\/[A-Za-z]:/.match(path)) {
+			path = path.substr(1);
+		}
+
+		return path;
+	}
+
+	@:noCompletion private static function __percentDecode(text:String):String {
+		if (text.indexOf("%") < 0) {
+			return text;
+		}
+
+		var out:haxe.io.BytesBuffer = new haxe.io.BytesBuffer();
+		var i:Int = 0;
+
+		while (i < text.length) {
+			var code:Int = StringTools.fastCodeAt(text, i);
+
+			if (code == "%".code && i + 2 < text.length && __isHex(text.charCodeAt(i + 1)) && __isHex(text.charCodeAt(i + 2))) {
+				out.addByte(Std.parseInt("0x" + text.substr(i + 1, 2)));
+				i += 3;
+				continue;
+			}
+
+			// One character, as UTF-8; a surrogate pair is two code units.
+			var length:Int = 1;
+			if (code >= 0xD800 && code <= 0xDBFF && i + 1 < text.length) {
+				length = 2;
+			}
+			out.addString(text.substr(i, length));
+			i += length;
+		}
+
+		return out.getBytes().toString();
+	}
+
+	@:noCompletion private static inline function __isHex(code:Null<Int>):Bool {
+		return code != null && ((code >= "0".code && code <= "9".code) || (code >= "a".code && code <= "f".code) || (code >= "A".code && code <= "F".code));
+	}
+
+	/**
 		Cancels any pending asynchronous operation.
+
+		Each stops where it is and reports nothing more -- no `complete`, no `ioError` -- and the File
+		dispatches `cancel`, once. What is left behind:
+
+		- `copyToAsync` stops between blocks. A destination that did not exist before the copy began is
+		  removed; copying onto one that did, the file it was part way through is removed, and the files
+		  it had finished stay.
+		- `moveToAsync` is a rename on one volume, done before there is anything to cancel; across
+		  volumes the copy stops and is removed, and the source and whatever the move was replacing are
+		  as they were.
+		- `deleteDirectoryAsync` stops between entries: what it had deleted stays deleted.
+		- `loadAsync` stops reading, and `data` stays unset, as for a load that failed.
+		- `getDirectoryListingAsync` and `deleteFileAsync` dispatch nothing more.
+
+		With nothing pending this does nothing, and dispatches nothing.
+
+		@event cancel An asynchronous operation was cancelled.
 	**/
 	public function cancel():Void {
-		__fileWorker.cancel();
+		// It cancelled a worker without asking whether there was one: with
+		// nothing pending, a null access. And the work went on -- a 64 MB
+		// copy finished after it had been cancelled -- because nothing in it
+		// ever asked.
+		if (__pending.length == 0) {
+			return;
+		}
+
+		var workers:Array<Worker> = __pending;
+		__pending = [];
+
+		for (worker in workers) {
+			worker.removeAllListeners();
+			worker.cancel();
+		}
+
 		dispatchEvent(new Event(Event.CANCEL));
+	}
+
+	/**
+		Runs `work` on a worker of its own, then `done` with what it returned
+		on this File's thread, or an ioError with what it threw. `work` is
+		handed what it asks, between steps, to learn whether it has been
+		cancelled; a cancelled one ends by throwing FileCancelled.
+	**/
+	@:noCompletion private function __startAsync(work:(Void->Bool)->Dynamic, done:Dynamic->Void):Void {
+		var worker:Worker = new Worker();
+		__pending.push(worker);
+
+		worker.addEventListener(ThreadEvent.COMPLETE, (event:ThreadEvent) -> {
+			__pending.remove(worker);
+			done(event.message);
+		});
+		worker.addEventListener(ThreadEvent.ERROR, (event:ThreadEvent) -> {
+			__pending.remove(worker);
+			__dispatchIoError(event.message);
+		});
+
+		worker.doWork = function(_:Dynamic):Void {
+			var result:Dynamic = null;
+
+			try {
+				result = work(() -> worker.cancelRequested);
+			} catch (_:FileCancelled) {
+				return;
+			} catch (e:Dynamic) {
+				worker.sendError(e);
+				return;
+			}
+
+			worker.sendComplete(result);
+		};
+
+		worker.run();
 	}
 
 	/**
@@ -584,10 +798,15 @@ final class File extends EventDispatcher {
 
 		If the File object represents an existing file or directory, canonicalization adjusts the path so that it
 		matches the case of the actual file or directory name. If the File object is a symbolic link,
-		canonicalization adjusts the path so that it matches the file or directory that the link points to,
-		regardless of whether the file or directory that is pointed to exists. On case sensitive file systems (such
-		as Linux), when multiple files exist with names differing only in case, the canonicalize() method adjusts
-		the path to match the first file found (in an order determined by the file system).
+		canonicalization adjusts the path so that it matches the file or directory that the link points to.
+
+		The path is the one the file system gives for the file -- natively and on Node through the system's own
+		call (`GetFinalPathNameByHandle`, `realpath`), on the jvm `toRealPath`, and on the interpreter, neko and
+		HashLink under Linux and macOS `realpath` -- so every link on the way, a junction on Windows included, is
+		followed. Two cases fall back to correcting the case of each name that exists, listing each directory on
+		the way down, without following links: a path with nothing at the end of it -- AIR follows a link to a
+		target that does not exist, and this does not -- and the interpreter, neko and HashLink under Windows,
+		whose standard library resolves no link.
 
 		The following code shows how to use the canonicalize() method to find the correct capitalization of a
 		directory name. Before running this example, create a directory named CrossByte Test on the desktop of your computer.
@@ -602,6 +821,17 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function canonicalize():Void {
+		// The file system's own path, where it can be asked: links followed,
+		// as documented, which nothing did -- only the case of each name was
+		// corrected, by listing each directory on the way down.
+		var real:Null<String> = __realPath(__path);
+
+		if (real != null) {
+			__path = real;
+			__updateNames(real);
+			return;
+		}
+
 		var segs:Array<String> = __path.split(separator);
 
 		var cPath:String = __driveLetters[__driveLetters.indexOf(segs[0].toUpperCase() + separator)];
@@ -626,53 +856,46 @@ final class File extends EventDispatcher {
 		File object. To copy a file, use the copyTo() method.
 	**/
 	public function clone():File {
-		var fileClass:Class<File> = File;
-
-		var fileClone:Dynamic = Type.createEmptyInstance(fileClass);
-
-		// The file's own state, not the dispatcher's. Every instance field was
-		// copied, EventDispatcher's included, so the clone shared the original's
-		// listener map -- a listener added to either reached both -- and on the
-		// dynamic targets the original's bound methods were copied onto the
-		// clone too, so `clone.addEventListener` registered on the original.
-		var dispatcherFields:Array<String> = Type.getInstanceFields(EventDispatcher);
-		var fields:Array<String> = Type.getInstanceFields(fileClass);
-		for (field in fields) {
-			if (dispatcherFields.indexOf(field) != -1) {
-				continue;
-			}
-			try {
-				var value:Dynamic = Reflect.getProperty(this, field);
-				if (!Reflect.isFunction(value)) {
-					Reflect.setProperty(fileClone, field, value);
-				}
-			} catch (e:Dynamic) {}
-		}
-
-		// What EventDispatcher's constructor would have set.
-		var clone:File = fileClone;
-		@:privateAccess {
-			clone.__eventMap = null;
-			clone.__targetDispatcher = null;
-			clone.__nextListenerOrder = 0;
-			clone.__walking = 0;
-		}
+		// The File's own state, set on a File made the ordinary way. It copied
+		// every instance field by reflection: EventDispatcher's too, so the
+		// clone shared the original's listeners (fixed by skipping those), and
+		// every property through its getter -- `isHidden`, which runs
+		// `attrib` on Windows, `spaceAvailable`, which runs fsutil or df, and
+		// size and both dates, which read the disk -- to set them on a clone
+		// that cannot be set.
+		var clone:File = new File();
+		clone.__path = __path;
+		clone.name = name;
+		clone.extension = extension;
+		clone.type = type;
+		clone.creator = creator;
+		clone.__data = __data;
 		return clone;
 	}
 
 	/**
 		Copies the file or directory at the location specified by this File object to the location
 		specified by the newLocation parameter. The copy process creates any required parent directories
-		(if possible). When overwriting files using copyTo(), the file attributes are also overwritten.
+		(if possible). Only the contents are copied, not the attributes AIR copies: a new copy gets the
+		permissions a new file gets, one written over a file keeps that file's, and either was modified now.
+
+		The source and destination are compared as files, not only as names: a name for the same file in
+		another case on Windows, a hard link to it, or a path to it through a junction or a symbolic link is
+		the same file, and copying a file onto itself is refused whatever `overwrite` says. A directory
+		copied onto an existing directory with `overwrite` is merged into it: its files replace those of
+		the same name, and the others stay; a file there that is one of its own under another name is
+		left as it is. On neko and HashLink under Windows, which cannot tell two names of one file apart,
+		a copy onto another name for the file itself does nothing, rather than being refused.
 
 		@param newLocation The target location of the new file. Note that this File object specifies the
 		resulting (copied) file or directory, not the path to the containing directory.
 		@param overwrite If false, the copy fails if the file specified by the target parameter already
 		exists. If true, the operation overwrites existing file or directory of the same name.
 		@throws IOError The source does not exist; or the source could not be copied to the target; or
-		the source and destination refer to the same file or folder and overwrite is set to true. On
-		Windows, you cannot copy a file that is open or a directory that contains a file that is open.
-		@throws SecurityError The application does not have the necessary permissions.
+		the source and destination refer to the same file or folder; or a directory would be copied into
+		itself. A file that is open is copied as it stands on disk, and so is a directory with one inside
+		it, unless whatever has the file open refused other readers, as a program can on Windows.
+		@throws ArgumentError `newLocation` is null.
 
 		The following code shows how to use the copyTo() method to copy a file. Before running this code,
 		create a test1.txt file in the CrossByte Test subdirectory of the documents directory on your computer.
@@ -709,52 +932,109 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function copyTo(newLocation:File, overwrite:Bool = false):Void {
-		if (!overwrite && FileSystem.exists(newLocation.__path)) {
-			throw new Error("Overwrite is false.");
+		__copyTo(newLocation, overwrite, null);
+	}
+
+	/** copyTo, which `cancelled`, when given, can stop between blocks. **/
+	@:noCompletion private function __copyTo(newLocation:File, overwrite:Bool, cancelled:Null<Void->Bool>):Void {
+		if (newLocation == null) {
+			throw new ArgumentError("copyTo needs a destination.");
 		}
+
 		var newPath:String = newLocation.__path;
-		/*
-			* What if we had an additional argument, duplicate for copy and move that would
-			* work like this below:
-			*
-			if (!overwrite && FileSystem.exists(newPath))
-			{
-				var ext:String = Path.extension(newPath);
-
-				if (ext.length > 0)
-				{
-					ext = '.$ext';
-				}
-
-				var newPathWithoutExt:String = Path.withoutExtension(newPath);
-				var i:Int = 2;
-
-				while (FileSystem.exists(newPath))
-				{
-					newPath = newPathWithoutExt + '($i)$ext';
-					i++;
-				}
-		}*/
 
 		if (!FileSystem.exists(__path)) {
-			throw new Error("File or directory does not exist.", 3003);
+			throw __ioError('"$__path" does not exist.', 3003);
 		}
 
+		// Onto itself, whatever overwrite says. The standard library's copy
+		// truncates the destination before it reads the source, and the
+		// source was the destination: the file was left empty. A different
+		// spelling of the same file -- its name in another case, a hard
+		// link, a path through a junction -- did the same.
+		if (FileOps.sameFile(__path, newPath, System.isWindows)) {
+			throw __ioError('"$__path" and "$newPath" are the same file, and copying it onto itself would empty it.', 3011);
+		}
+
+		if (!overwrite && FileSystem.exists(newPath)) {
+			throw __ioError('"$newPath" exists, and overwrite is false.', 3011);
+		}
+
+		// Nor a directory into itself, which copied what it had just copied
+		// until the path grew too long.
+		if (isDirectory && __inside(__path, newPath)) {
+			throw __ioError('Cannot copy "$__path" into itself, as "$newPath".', 3014);
+		}
+
+		if (cancelled == null) {
+			__copyPath(__path, newPath, overwrite, null);
+			return;
+		}
+
+		// A destination that is all this copy's own goes as a whole if it is
+		// cancelled; one that was there already keeps what it had.
+		var fresh:Bool = !FileSystem.exists(newPath);
+
 		try {
-			if (isDirectory) {
-				FileSystem.createDirectory(newPath);
-				var files:Array<File> = getDirectoryListing();
-				for (file in files) {
-					var newFile = new File(Path.join([newPath, file.name]));
-					file.copyTo(newFile, overwrite);
+			__copyPath(__path, newPath, overwrite, cancelled);
+		} catch (stopped:FileCancelled) {
+			if (fresh && FileSystem.exists(newPath)) {
+				try {
+					__removePath(newPath);
+				} catch (_:Dynamic) {}
+			}
+			throw stopped;
+		}
+	}
+
+	/**
+		The copy itself, once copyTo has checked the two ends. `cancelled`,
+		when given, is asked before each entry and each block, and a file cut
+		short by it is removed.
+	**/
+	@:noCompletion private static function __copyPath(source:String, target:String, overwrite:Bool, cancelled:Null<Void->Bool>):Void {
+		try {
+			if (cancelled != null && cancelled()) {
+				throw new FileCancelled();
+			}
+
+			if (FileSystem.isDirectory(source)) {
+				FileSystem.createDirectory(target);
+				for (item in __listPath(source)) {
+					var child:String = Path.join([target, item]);
+
+					if (!overwrite && FileSystem.exists(child)) {
+						throw __ioError('"$child" exists, and overwrite is false.', 3011);
+					}
+
+					__copyPath(Path.join([source, item]), child, overwrite, cancelled);
 				}
 			} else {
-				var newDirectory:String = Path.directory(newPath);
-				if (!FileSystem.exists(newDirectory)) {
+				var newDirectory:String = Path.directory(target);
+				if (newDirectory != "" && !FileSystem.exists(newDirectory)) {
 					FileSystem.createDirectory(newDirectory);
 				}
-				HaxeFile.copy(__path, newPath);
+
+				if (FileSystem.exists(target) && __alreadyThere(source, target)) {
+					// Nothing to copy, and copying would have emptied it: the
+					// copy truncates the destination before it reads the
+					// source, and they are one file.
+					return;
+				}
+
+				if (cancelled == null) {
+					#if jvm
+					// Its copy opens the destination as its write() does: see FileOps.write.
+					__copyFileInBlocks(source, target, () -> false);
+					#else
+					HaxeFile.copy(source, target);
+					#end
+				} else {
+					__copyFileInBlocks(source, target, cancelled);
+				}
 			}
+		} catch (e:FileCancelled) {
+			throw e;
 		} catch (e:Error) {
 			// A recursive call has already described the failure against the
 			// path it actually happened on. Re-wrapping it here would bury both.
@@ -765,8 +1045,177 @@ final class File extends EventDispatcher {
 			// by another process all used to be reported as a missing file,
 			// which sends whoever is reading the error looking for the wrong
 			// thing entirely.
-			throw new Error('Unable to copy "$__path" to "$newPath": ${Std.string(e)}', 3006);
+			throw __ioError('Unable to copy "$source" to "$target": ${Std.string(e)}', 3006);
 		}
+	}
+
+	/**
+		Whether the file at `target` already is the file at `source`, so that
+		copying one onto the other has nothing to do -- and would empty it.
+
+		copyTo refuses its own two ends when they are one file, but a
+		directory merged into another can find a second name of one of its
+		own files there, a hard link, and that copy truncated the file before
+		reading it. Where the target cannot tell two files apart -- neko and
+		hl under Windows, whose `stat` has no file index -- two files with
+		the same bytes count as one: copying either onto the other changes
+		nothing, and a second name of one file always has the same bytes.
+	**/
+	@:noCompletion private static function __alreadyThere(source:String, target:String):Bool {
+		var windows:Bool = System.isWindows;
+
+		if (FileOps.sameFile(source, target, windows)) {
+			return true;
+		}
+
+		#if (neko || hl)
+		if (windows && (FileOps.identity(source) == null || FileOps.identity(target) == null)) {
+			return __sameBytes(source, target);
+		}
+		#end
+
+		return false;
+	}
+
+	#if (neko || hl)
+	/** Whether two files hold the same bytes, read a block at a time. **/
+	@:noCompletion private static function __sameBytes(a:String, b:String):Bool {
+		if (FileSystem.stat(a).size != FileSystem.stat(b).size) {
+			return false;
+		}
+
+		var left = HaxeFile.read(a, true);
+		var right = try HaxeFile.read(b, true) catch (e:Dynamic) {
+			left.close();
+			throw e;
+		};
+		var one:Bytes = Bytes.alloc(__COPY_BLOCK);
+		var two:Bytes = Bytes.alloc(__COPY_BLOCK);
+		var same:Bool = true;
+
+		try {
+			while (same) {
+				var got:Int = __fill(left, one);
+				if (got != __fill(right, two)) {
+					same = false;
+				} else if (got == 0) {
+					break;
+				} else {
+					same = one.sub(0, got).compare(two.sub(0, got)) == 0;
+				}
+			}
+		} catch (e:Dynamic) {
+			left.close();
+			right.close();
+			throw e;
+		}
+
+		left.close();
+		right.close();
+		return same;
+	}
+
+	/** As many bytes as `input` has, up to `block`'s length. **/
+	@:noCompletion private static function __fill(input:haxe.io.Input, block:Bytes):Int {
+		var got:Int = 0;
+
+		try {
+			while (got < block.length) {
+				var read:Int = input.readBytes(block, got, block.length - got);
+				if (read <= 0) {
+					break;
+				}
+				got += read;
+			}
+		} catch (_:haxe.io.Eof) {}
+
+		return got;
+	}
+	#end
+
+	/**
+		A file's copy, a block at a time, asking `cancelled` before each;
+		stopped, what it had written is removed. The standard library's copy
+		is one call nothing can interrupt, so a cancelled copy ran to its end.
+	**/
+	@:noCompletion private static function __copyFileInBlocks(source:String, target:String, cancelled:Void->Bool):Void {
+		var input = HaxeFile.read(source, true);
+		var output = try FileOps.write(target) catch (e:Dynamic) {
+			input.close();
+			throw e;
+		};
+		var block:Bytes = Bytes.alloc(__COPY_BLOCK);
+		var stopped:Bool = false;
+		var copied:Float = 0;
+
+		try {
+			while (true) {
+				if (cancelled()) {
+					stopped = true;
+					break;
+				}
+
+				var read:Int = 0;
+				try {
+					read = input.readBytes(block, 0, block.length);
+				} catch (_:haxe.io.Eof) {}
+
+				if (read <= 0) {
+					break;
+				}
+
+				output.writeFullBytes(block, 0, read);
+				copied += read;
+				__copiedBlock(target, copied);
+			}
+		} catch (e:Dynamic) {
+			input.close();
+			output.close();
+			throw e;
+		}
+
+		input.close();
+		output.close();
+
+		if (stopped) {
+			try {
+				FileSystem.deleteFile(target);
+			} catch (_:Dynamic) {}
+			throw new FileCancelled();
+		}
+	}
+
+	@:noCompletion private static inline var __COPY_BLOCK:Int = 1 << 20;
+
+	/**
+		Told of each block a cancellable copy writes. Does nothing; dynamic so
+		that a test can slow a copy down enough to cancel it part way through.
+	**/
+	@:noCompletion private static dynamic function __copiedBlock(target:String, copied:Float):Void {}
+
+	/**
+		Whether a rename reaches from `path` into `directory`. Dynamic so that
+		a test on a machine with one volume can take the path a second one
+		would.
+	**/
+	@:noCompletion private static dynamic function __sameVolume(path:String, directory:String, windows:Bool):Bool {
+		return FileOps.sameVolume(path, directory, windows);
+	}
+
+	/** Whether `path` is `directory` or below it, once both are absolute and normalized. **/
+	@:noCompletion private static function __inside(directory:String, path:String):Bool {
+		#if (js && !nodejs)
+		return false;
+		#else
+		return FilePath.relative(FileSystem.absolutePath(directory), FileSystem.absolutePath(path), false, System.isWindows) != null;
+		#end
+	}
+
+	/** An IOError carrying one of AIR's error numbers, as File's documentation promises. **/
+	@:noCompletion private static function __ioError(message:String, id:Int):IOError {
+		var error:IOError = new IOError(message);
+		@:privateAccess error.errorID = id;
+		return error;
 	}
 
 	/**
@@ -782,10 +1231,9 @@ final class File extends EventDispatcher {
 		exists. If true, the operation overwrites existing file or directory of the same name.
 		@event complete Dispatched when the file or directory has been successfully copied.
 		@event ioError The source does not exist; or the source could not be copied to the target; or the source
-		and destination refer to the same file or folder and overwrite is set to true. On Windows, you cannot
-		copy a file that is open or a directory that contains a
-		file that is open.
-		@throws SecurityError The application does not have the necessary permissions to write to the destination.
+		and destination refer to the same file or folder. A file that is open is copied as it stands on
+		disk, and so is a directory with one inside it, unless whatever has the file open refused other
+		readers, as a program can on Windows.
 
 		The following code shows how to use the copyToAsync() method to copy a file. Before running this code,
 		be sure to create a test1.txt file in the CrossByte Test subdirectory of the documents directory on your computer.
@@ -810,40 +1258,10 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function copyToAsync(newLocation:File, overwrite:Bool = false):Void {
-		__fileWorker = new Worker();
-		__fileWorker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
-		__fileWorker.addEventListener(ThreadEvent.ERROR, __onWorkerError);
-
-		__fileWorker.doWork = __asyncCopyWork;
-		__fileWorker.run({"newLocation": newLocation, "overwrite": overwrite});
-	}
-
-	private function __onWorkerError(e:ThreadEvent):Void {
-		__disposeFileWorker();
-		__dispatchIoError(e.message);
-	}
-
-	private function __onWorkerComplete(e:ThreadEvent):Void {
-		__disposeFileWorker();
-		dispatchEvent(new Event(Event.COMPLETE));
-	}
-
-	private function __asyncCopyWork(m:Dynamic) {
-		try {
-			copyTo(m.newLocation, m.overwrite);
-		} catch (e:Dynamic) {
-			__fileWorker.sendError(e);
-			return;
-		}
-
-		__fileWorker.sendComplete();
-	}
-
-	private function __disposeFileWorker():Void {
-		__fileWorker.removeEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
-		__fileWorker.removeEventListener(ThreadEvent.ERROR, __onWorkerError);
-		__fileWorker.cancel();
-		__fileWorker = null;
+		__startAsync(cancelled -> {
+			__copyTo(newLocation, overwrite, cancelled);
+			return null;
+		}, _ -> dispatchEvent(new Event(Event.COMPLETE)));
 	}
 
 	/**
@@ -851,7 +1269,6 @@ final class File extends EventDispatcher {
 		no action is taken.
 
 		@throws	IOError The directory did not exist and could not be created.
-		@throws SecurityError The application does not have the necessary permissions.
 
 		The following code moves a file named test.txt on the desktop to the CrossByte Test subdirectory of the
 		documents directory. The call to the createDirectory() method ensures that the CrossByte Test directory
@@ -869,8 +1286,11 @@ final class File extends EventDispatcher {
 
 	**/
 	public function createDirectory():Void {
-		FileSystem.createDirectory(__path);
-		__updateFileStats();
+		try {
+			FileSystem.createDirectory(__path);
+		} catch (e:Dynamic) {
+			throw __ioError('Could not create the directory "$__path": ${Std.string(e)}', FileSystem.exists(__path) ? 3002 : 0);
+		}
 	}
 
 	/**
@@ -879,9 +1299,9 @@ final class File extends EventDispatcher {
 		@param deleteDirectoryContents Specifies whether or not to delete a directory that contains files or
 		subdirectories. When false, if the directory contains files or directories, a call to this method throws
 		an exception.
-		@throws	IOError The directory does not exist, or the directory could not be deleted. On Windows, you
-		cannot delete a directory that contains a file that is open.
-		@throws SecurityError The application does not have the necessary permissions to delete the directory.
+		@throws	IOError The directory does not exist, or the directory could not be deleted. On Windows a
+		directory with a file open inside it cannot be deleted, unless whatever has the file open allowed
+		that: most programs do not, nor does `FileStream` except on Node.
 
 		The following code creates an empty directory and then uses the deleteDirectory() method to delete the directory.
 
@@ -896,63 +1316,68 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function deleteDirectory(deleteDirectoryContents:Bool = false):Void {
+		__deleteDirectory(deleteDirectoryContents, null);
+	}
+
+	/** deleteDirectory, which `cancelled`, when given, can stop between entries. **/
+	@:noCompletion private function __deleteDirectory(deleteDirectoryContents:Bool, cancelled:Null<Void->Bool>):Void {
 		if (!FileSystem.exists(__path)) {
-			throw new Error("File or directory does not exist.", 3003);
+			throw __ioError('"$__path" does not exist.', 3003);
+		}
+
+		if (!FileSystem.isDirectory(__path)) {
+			throw __ioError('"$__path" is not a directory; deleteFile() deletes a file.', 3007);
 		}
 
 		if (deleteDirectoryContents) {
 			for (item in __listPath(__path)) {
-				__deletePath(Path.join([__path, item]));
+				try {
+					__removePath(Path.join([__path, item]), cancelled);
+				} catch (e:FileCancelled) {
+					throw e;
+				} catch (e:Dynamic) {
+					throw __ioError('Could not delete "${Path.join([__path, item])}": ${Std.string(e)}', 3012);
+				}
 			}
+		} else if (__listPath(__path).length > 0) {
+			throw __ioError('"$__path" is not empty, and deleteDirectoryContents is false.', 3010);
 		}
 
+		// Each failure was "Folder is not empty", whatever it was -- a
+		// directory held open, a permission refused -- and the base Error,
+		// where an IOError is documented.
 		try {
 			FileSystem.deleteDirectory(__path);
 		} catch (e:Dynamic) {
-			throw new Error("Folder is not empty.", 3010);
+			throw __ioError('Could not delete "$__path": ${Std.string(e)}', 3012);
 		}
-
-		__updateFileStats();
 	}
 
 	/**
 		Deletes the directory asynchronously.
 
 		@param deleteDirectoryContents Specifies whether or not to delete a directory that contains files or
-		subdirectories. When false, if the directory contains files or directories, a call to this method throws
-		an exception.
+		subdirectories. When false, a directory that contains files or directories is reported as an
+		`ioError`.
 		@events complete Dispatched when the directory has been deleted successfully.
-		@events ioError The directory does not exist or could not be deleted. On Windows, you cannot delete a
-		directory that contains a file that is open.
-		@throws SecurityError The application does not have the necessary permissions to delete the directory.
+		@events ioError The directory does not exist or could not be deleted. On Windows a directory with a
+		file open inside it cannot be deleted, unless whatever has the file open allowed that: most programs
+		do not, nor does `FileStream` except on Node.
 
 	**/
 	public function deleteDirectoryAsync(deleteDirectoryContents:Bool = false):Void {
-		__fileWorker = new Worker();
-		__fileWorker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
-		__fileWorker.addEventListener(ThreadEvent.ERROR, __onWorkerError);
-
-		__fileWorker.doWork = __asyncDeleteDirWork;
-		__fileWorker.run(deleteDirectoryContents);
-	}
-
-	private function __asyncDeleteDirWork(deleteDirectoryContents:Bool):Void {
-		try {
-			deleteDirectory(deleteDirectoryContents);
-		} catch (e:Dynamic) {
-			__fileWorker.sendError(e);
-			return;
-		}
-
-		__fileWorker.sendComplete();
+		__startAsync(cancelled -> {
+			__deleteDirectory(deleteDirectoryContents, cancelled);
+			return null;
+		}, _ -> dispatchEvent(new Event(Event.COMPLETE)));
 	}
 
 	/**
 		Deletes the file.
 
-		@throws	IOError The directory does not exist, or the directory could not be deleted. On Windows, you
-		cannot delete a directory that contains a file that is open.
-		@throws SecurityError The application does not have the necessary permissions to delete the directory.
+		@throws	IOError The file does not exist (3003), is a directory (3006), or could not be deleted
+		(3012). On Windows a file that is open cannot be deleted, unless whatever has it open allowed that:
+		most programs do not, nor does `FileStream` except on Node.
 
 		The following code creates a temporary file and then calls the deleteFile() method to delete it.
 
@@ -966,35 +1391,34 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function deleteFile():Void {
-		FileSystem.deleteFile(__path);
-		__updateFileStats();
+		if (!FileSystem.exists(__path)) {
+			throw __ioError('"$__path" does not exist.', 3003);
+		}
+
+		if (FileSystem.isDirectory(__path)) {
+			throw __ioError('"$__path" is a directory; deleteDirectory() deletes one.', 3006);
+		}
+
+		try {
+			FileSystem.deleteFile(__path);
+		} catch (e:Dynamic) {
+			throw __ioError('Could not delete "$__path": ${Std.string(e)}', 3012);
+		}
 	}
 
 	/**
 		Deletes the file asynchronously.
 
-		@events complete Dispatched when the directory has been deleted successfully.
-		@events ioError The directory does not exist or could not be deleted. On Windows, you cannot delete a
-		directory that contains a file that is open.
-		@throws SecurityError The application does not have the necessary permissions to delete the directory.
+		@events complete Dispatched when the file has been deleted successfully.
+		@events ioError The file does not exist, is a directory, or could not be deleted. On Windows a file
+		that is open cannot be deleted, unless whatever has it open allowed that: most programs do not, nor
+		does `FileStream` except on Node.
 	**/
 	public function deleteFileAsync():Void {
-		__fileWorker = new Worker();
-		__fileWorker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
-		__fileWorker.addEventListener(ThreadEvent.ERROR, __onWorkerError);
-
-		__fileWorker.doWork = __asyncDeleteFileWork;
-		__fileWorker.run();
-	}
-
-	private function __asyncDeleteFileWork(m:Dynamic):Void {
-		try {
+		__startAsync(_ -> {
 			deleteFile();
-		} catch (e:Dynamic) {
-			__fileWorker.sendError(e);
-			return;
-		}
-		__fileWorker.sendComplete();
+			return null;
+		}, _ -> dispatchEvent(new Event(Event.COMPLETE)));
 	}
 
 	/**
@@ -1018,9 +1442,7 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function getDirectoryListing():Array<File> {
-		if (!isDirectory) {
-			throw new Error("Not a directory.", 3007);
-		}
+		__checkDirectory();
 
 		var directories:Array<String> = __listPath(__path);
 		var files:Array<File> = [];
@@ -1060,52 +1482,32 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function getDirectoryListingAsync():Void {
-		if (!isDirectory) {
-			throw new Error("Not a directory.", 3007);
-		}
+		__startAsync(cancelled -> {
+			// On the worker, so that what is wrong with the directory is the
+			// documented ioError event. It was thrown, synchronously.
+			__checkDirectory();
+			var files:Array<File> = [];
 
-		__fileWorker = new Worker();
-		__fileWorker.addEventListener(ThreadEvent.COMPLETE, __onAsyncGetDirectoryListingWorkerComplete);
-		__fileWorker.addEventListener(ThreadEvent.ERROR, __onAsyncGetDirectoryListingWorkerError);
-
-		__fileWorker.doWork = __asyncGetDirectoryListingWork;
-		__fileWorker.run();
-	}
-
-	private function __asyncGetDirectoryListingWork(m:Dynamic):Void {
-		var files:Array<File> = [];
-
-		try {
-			var directoryItems:Array<String> = __listPath(__path);
-
-			for (item in directoryItems) {
+			for (item in __listPath(__path)) {
+				if (cancelled()) {
+					throw new FileCancelled();
+				}
 				files.push(new File(Path.join([__path, item])));
 			}
-		} catch (e:Dynamic) {
-			__fileWorker.sendError(e);
-			return;
+
+			return files;
+		}, (files:Array<File>) -> dispatchEvent(new FileListEvent(FileListEvent.DIRECTORY_LISTING, files)));
+	}
+
+	/** An IOError unless this is a directory: 3003 when nothing is there, 3007 when a file is. **/
+	@:noCompletion private function __checkDirectory():Void {
+		if (!FileSystem.exists(__path)) {
+			throw __ioError('"$__path" does not exist.', 3003);
 		}
 
-		__fileWorker.sendComplete(files);
-	}
-
-	private function __onAsyncGetDirectoryListingWorkerError(e:ThreadEvent):Void {
-		__disposeAsyncGetDirectoryListingWorker();
-		__dispatchIoError(e.message);
-	}
-
-	private function __onAsyncGetDirectoryListingWorkerComplete(e:ThreadEvent):Void {
-		var files:Array<File> = e.message;
-
-		__disposeAsyncGetDirectoryListingWorker();
-		dispatchEvent(new FileListEvent(FileListEvent.DIRECTORY_LISTING, files));
-	}
-
-	private function __disposeAsyncGetDirectoryListingWorker():Void {
-		__fileWorker.removeEventListener(ThreadEvent.COMPLETE, __onAsyncGetDirectoryListingWorkerComplete);
-		__fileWorker.removeEventListener(ThreadEvent.ERROR, __onAsyncGetDirectoryListingWorkerError);
-		__fileWorker.cancel();
-		__fileWorker = null;
+		if (!FileSystem.isDirectory(__path)) {
+			throw __ioError('"$__path" is not a directory.', 3007);
+		}
 	}
 
 	/**
@@ -1118,90 +1520,115 @@ final class File extends EventDispatcher {
 		Optionally, relative paths may include ".." references, but such paths will not cross conspicuous volume
 		boundaries.
 
+		Without `useDotDot` the answer is null for anything that is not this
+		File's path or below it, which makes this the check to run on a path
+		that came from outside: see `resolvePath`. It is `""` when the two are
+		the same place. Both paths are normalized first, and a relative one is
+		read against the working directory. Names are compared without regard
+		to case on Windows and exactly everywhere else -- macOS included,
+		whose default volume ignores case: a name that differs only in case
+		reads as somewhere else, which for an inside-this-directory check is
+		the side to err on. Two drives, or two shares, are two volumes, and
+		the answer between them is null even with `useDotDot`.
+
 		@param ref A File object against which the path is given.
 		@param useDotDot  Specifies whether the resulting relative path can use ".." components.
 		@returns String The relative path between this file (or directory) and the ref file (or directory), if possible; otherwise null.
 		@throws	ArgumentError The reference is null.
-		@throws SecurityError The caller is not in the application security sandbox.
 	**/
 	public function getRelativePath(ref:File, useDotDot:Bool = false):Null<String> {
-		var thisPath:Array<String> = __path.split(separator);
-		var refPath:Array<String> = ref.__path.split(separator);
-
-		var relatives:Array<String> = [];
-
-		var minLength:Int = Std.int(Math.min(thisPath.length, refPath.length));
-		var commonSegments:Int = 0;
-
-		// Count the number of common segments
-		while (commonSegments < minLength && thisPath[commonSegments] == refPath[commonSegments]) {
-			commonSegments++;
+		// It compared raw strings split on the separator: a sibling came back
+		// as its bare name rather than null, the answer was joined with `\` on
+		// Windows, a null ref was a null access, and nothing stopped it
+		// answering across two drives.
+		if (ref == null) {
+			throw new ArgumentError("getRelativePath needs a File to compare against.");
 		}
 
-		if (useDotDot) {
-			// Add ".." for each segment beyond the common segments
-			var numUpSegments:Int = thisPath.length - commonSegments;
+		var windows:Bool = System.isWindows;
+		var from:String = __path;
+		var to:String = ref.__path;
+		var fromAbsolute:Bool = FilePath.isAbsolute(from, windows);
+		var toAbsolute:Bool = FilePath.isAbsolute(to, windows);
 
-			for (i in 0...numUpSegments) {
-				relatives.push("..");
+		if (fromAbsolute != toAbsolute) {
+			#if (js && !nodejs)
+			return null;
+			#else
+			if (!fromAbsolute) {
+				from = FileSystem.absolutePath(from);
 			}
+			if (!toAbsolute) {
+				to = FileSystem.absolutePath(to);
+			}
+			#end
 		}
 
-		// Add remaining segments from the refPath
-		for (j in commonSegments...refPath.length) {
-			relatives.push(refPath[j]);
-		}
-
-		var relativePath:String = relatives.join(separator);
-
-		return relativePath.length == 0 && ref.__path != __path ? null : relativePath;
+		return FilePath.relative(from, to, useDotDot, windows);
 	}
 
 	/**
 		Loads a file synchronously. The data is loaded into the data property of the File instance.
+
+		@throws IOError The file does not exist (3003) or cannot be read.
 	**/
 	public function load():Void {
-		__data = HaxeFile.getBytes(__path);
+		// Unset first: a load that fails leaves no data from an earlier one.
+		__data = null;
+		__data = getFileBytes(__path);
 	}
 
 	/**
 		Loads a file asynchronously. The file data is stored in the `data` property and a
 		`complete` event is dispatched when loading finishes.
+
+		@event complete The file has been read into `data`.
+		@event ioError The file does not exist or cannot be read.
 	**/
 	public function loadAsync():Void {
-		__fileWorker = new Worker();
-		__fileWorker.addEventListener(ThreadEvent.COMPLETE, __onAsyncLoadWorkerComplete);
-		__fileWorker.addEventListener(ThreadEvent.ERROR, __onAsyncLoadWorkerError);
+		__data = null;
+		__startAsync(cancelled -> {
+			// A block at a time, so that a cancel stops it, into one buffer of
+			// the file's size.
+			var size:Float = __sizeNow();
 
-		__fileWorker.doWork = __asyncLoadWork;
-		__fileWorker.run();
-	}
+			if (size > 2147483647.0) {
+				throw __ioError('"$__path" is larger than 2 GB, more than one ByteArray holds.', 3005);
+			}
 
-	private function __asyncLoadWork(m:Dynamic):Void {
-		try {
-			var bytes:Bytes = HaxeFile.getBytes(__path);
-			__fileWorker.sendComplete(bytes);
-		} catch (e:Dynamic) {
-			__fileWorker.sendError(e);
-		}
-	}
+			var data:Bytes = Bytes.alloc(Std.int(size));
+			var input = HaxeFile.read(__path, true);
+			var got:Int = 0;
 
-	private function __onAsyncLoadWorkerError(e:ThreadEvent):Void {
-		__disposeAsyncLoadWorker();
-		__dispatchIoError(e.message);
-	}
+			try {
+				while (got < data.length) {
+					if (cancelled()) {
+						throw new FileCancelled();
+					}
 
-	private function __onAsyncLoadWorkerComplete(e:ThreadEvent):Void {
-		__data = ByteArray.fromBytes(cast e.message);
-		__disposeAsyncLoadWorker();
-		dispatchEvent(new Event(Event.COMPLETE));
-	}
+					var want:Int = data.length - got < __COPY_BLOCK ? data.length - got : __COPY_BLOCK;
+					var read:Int = 0;
+					try {
+						read = input.readBytes(data, got, want);
+					} catch (_:haxe.io.Eof) {}
 
-	private function __disposeAsyncLoadWorker():Void {
-		__fileWorker.removeEventListener(ThreadEvent.COMPLETE, __onAsyncLoadWorkerComplete);
-		__fileWorker.removeEventListener(ThreadEvent.ERROR, __onAsyncLoadWorkerError);
-		__fileWorker.cancel();
-		__fileWorker = null;
+					if (read <= 0) {
+						break;
+					}
+
+					got += read;
+				}
+			} catch (e:Dynamic) {
+				input.close();
+				throw e;
+			}
+
+			input.close();
+			return got == data.length ? data : data.sub(0, got);
+		}, (bytes:Bytes) -> {
+			__data = ByteArray.fromBytes(bytes);
+			dispatchEvent(new Event(Event.COMPLETE));
+		});
 	}
 
 	/**
@@ -1213,15 +1640,24 @@ final class File extends EventDispatcher {
 
 		The move process creates any required parent directories (if possible).
 
+		On one volume a move is a rename: as quick for a directory of any size as for one file, and a
+		file replaced through it is never seen half written. A name changed only in case is renamed,
+		even where the file system ignores case and the two names are the same file. Onto another
+		volume, where no rename reaches, the source is copied and then deleted, and if the copy fails
+		nothing of it is left behind. With `overwrite`, an existing destination is replaced -- a
+		directory as a whole, not merged into -- and is put back if the move fails.
+
 		@param newLocation The target location for the move. This object specifies the path to the
 		resulting (moved) file or directory, not the path to the containing directory.
 		@param overwrite If false, the move fails if the target file already exists. If true, the
 		operation overwrites any existing file or directory of the same name.
 		@throws	IOError  The source does not exist; or the destination exists and overwrite is set to
 		false; or the source file or directory could not be moved to the target location; or the source
-		and destination refer to the same file or folder and overwrite is set to true. On Windows, you
-		cannot move a file that is open or a directory that contains a file that is open.
-		@throws SecurityError The application does not have the necessary permissions to move the file.
+		and destination refer to the same file or folder (other than by a name changed only in case); or
+		a directory would be moved into itself. On Windows a file that is open cannot be moved, nor a
+		directory with one inside it, unless whatever has the file open allowed that: most programs do
+		not, nor does `FileStream` except on Node.
+		@throws ArgumentError `newLocation` is null.
 
 		The following code shows how to use the moveTo() method to rename a file. The original filename
 		is test1.txt and the resulting filename is test2.txt. Since both the source and destination File
@@ -1248,14 +1684,141 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function moveTo(newLocation:File, overwrite:Bool = false):Void {
-		if (!overwrite && FileSystem.exists(newLocation.__path)) {
-			throw new Error("Overwrite is set to false");
+		__moveTo(newLocation, overwrite, null);
+	}
+
+	/** moveTo, whose copy across volumes `cancelled`, when given, can stop. **/
+	@:noCompletion private function __moveTo(newLocation:File, overwrite:Bool, cancelled:Null<Void->Bool>):Void {
+		// It was a copy followed by a delete, always. Onto itself that copy
+		// emptied the file; a rename of a name's case -- the same file to
+		// Windows and to macOS by default -- copied the file onto itself and
+		// then deleted it. It is a rename now, and a copy and a delete only
+		// where a rename cannot go: to another volume.
+		if (newLocation == null) {
+			throw new ArgumentError("moveTo needs a destination.");
 		}
-		copyTo(newLocation, overwrite);
-		if (isDirectory) {
-			deleteDirectory(true);
-		} else {
-			deleteFile();
+
+		var windows:Bool = System.isWindows;
+		var source:String = __path;
+		var target:String = newLocation.__path;
+
+		if (!FileSystem.exists(source)) {
+			throw __ioError('"$source" does not exist.', 3003);
+		}
+
+		if (FileOps.sameFile(source, target, windows)) {
+			var from:String = FilePath.normalize(FileSystem.absolutePath(source), windows);
+			var to:String = FilePath.normalize(FileSystem.absolutePath(target), windows);
+
+			if (from != to && from.toLowerCase() == to.toLowerCase()) {
+				// One name in another case: nothing is overwritten, whatever
+				// overwrite says.
+				try {
+					FileSystem.rename(source, target);
+				} catch (e:Dynamic) {
+					throw __ioError('Could not rename "$source" to "$target": ${Std.string(e)}', 3006);
+				}
+
+				return;
+			}
+
+			throw __ioError('"$source" and "$target" are the same file.', 3011);
+		}
+
+		var targetExists:Bool = FileSystem.exists(target);
+
+		if (targetExists && !overwrite) {
+			throw __ioError('"$target" exists, and overwrite is false.', 3011);
+		}
+
+		var sourceIsDirectory:Bool = FileSystem.isDirectory(source);
+
+		if (sourceIsDirectory && __inside(source, target)) {
+			throw __ioError('Cannot move "$source" into itself, as "$target".', 3014);
+		}
+
+		var targetParts:FilePathParts = FilePath.parse(FileSystem.absolutePath(target), windows);
+		var parentSegments:Array<String> = FilePath.walk([], targetParts.segments, true, 0);
+		parentSegments.pop();
+		var parentDirectory:String = FilePath.join(targetParts.root, parentSegments, windows);
+
+		if (!FileSystem.exists(parentDirectory)) {
+			FileSystem.createDirectory(parentDirectory);
+		}
+
+		var across:Bool = !__sameVolume(source, parentDirectory, windows);
+
+		if (targetExists && !across && !sourceIsDirectory && !FileSystem.isDirectory(target)) {
+			// A file over a file on one volume: one step, which a reader of
+			// the old file never sees half done.
+			try {
+				FileOps.replace(source, target);
+			} catch (e:Dynamic) {
+				throw __ioError('Could not move "$source" over "$target": ${Std.string(e)}', 3006);
+			}
+
+			return;
+		}
+
+		// Anything else in the way -- a directory, or a file a directory is
+		// moving onto -- is set aside first, under a name of its own in the
+		// same directory, and put back if the move fails. Overwrite replaces
+		// it, as documented, rather than merging into it.
+		var aside:Null<String> = null;
+
+		if (targetExists) {
+			aside = target + ".moving-" + __tempNonce();
+
+			try {
+				FileSystem.rename(target, aside);
+			} catch (e:Dynamic) {
+				throw __ioError('Could not move "$target" out of the way: ${Std.string(e)}', 3006);
+			}
+		}
+
+		try {
+			if (across) {
+				__copyPath(source, target, false, cancelled);
+			} else {
+				FileSystem.rename(source, target);
+			}
+		} catch (e:Dynamic) {
+			// Cancelled or failed alike: what the copy made goes, and what the
+			// move was replacing comes back.
+			if (across && FileSystem.exists(target)) {
+				try {
+					__removePath(target);
+				} catch (_:Dynamic) {}
+			}
+
+			if (aside != null) {
+				try {
+					FileSystem.rename(aside, target);
+				} catch (_:Dynamic) {}
+			}
+
+			if (Std.isOfType(e, Error) || Std.isOfType(e, FileCancelled)) {
+				throw e;
+			}
+
+			throw __ioError('Could not move "$source" to "$target": ${Std.string(e)}', 3006);
+		}
+
+		if (across) {
+			// The copy is whole; only now does the source go.
+			try {
+				__removePath(source);
+			} catch (e:Dynamic) {
+				throw __ioError('Copied "$source" to "$target", on another volume, but could not then delete it: ${Std.string(e)}', 3012);
+			}
+		}
+
+		if (aside != null) {
+			try {
+				__removePath(aside);
+			} catch (e:Dynamic) {
+				throw __ioError('Moved "$source" to "$target", but the "$target" it replaced is still at "$aside": ${Std.string(e)}', 3012);
+			}
 		}
 	}
 
@@ -1275,9 +1838,9 @@ final class File extends EventDispatcher {
 			@event complete Dispatched when the file or directory has been successfully moved.
 			@event ioError The source does not exist; or the destination exists and overwrite is false; or
 			the source could not be moved to the target; or the source and destination refer to the same file
-			or folder and overwrite is set to true. On Windows, you cannot move a file that is open or a directory
-			that contains a file that is open.
-			@throws SecurityError The application does not have the necessary permissions to move the file.
+			or folder (other than by a name changed only in case). On Windows a file that is open cannot be
+			moved, nor a directory with one inside it, unless whatever has the file open allowed that: most
+			programs do not, nor does `FileStream` except on Node.
 
 			The following code shows how to use the moveToAsync() method to rename a file. The original filename
 			is test1.txt and the resulting name is test2.txt. Since both the source and destination File object
@@ -1304,31 +1867,153 @@ final class File extends EventDispatcher {
 			```
 	**/
 	public function moveToAsync(newLocation:File, overwrite:Bool = false):Void {
-		__fileWorker = new Worker();
-		__fileWorker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
-		__fileWorker.addEventListener(ThreadEvent.ERROR, __onWorkerError);
-
-		__fileWorker.doWork = __asyncMoveWork;
-		__fileWorker.run({"newLocation": newLocation, "overwrite": overwrite});
-	}
-
-	private function __asyncMoveWork(m:Dynamic):Void {
-		try {
-			moveTo(m.newLocation, m.overwrite);
-		} catch (e:Dynamic) {
-			__fileWorker.sendError(e);
-			return;
-		}
-
-		__fileWorker.sendComplete();
+		__startAsync(cancelled -> {
+			__moveTo(newLocation, overwrite, cancelled);
+			return null;
+		}, _ -> dispatchEvent(new Event(Event.COMPLETE)));
 	}
 
 	/**
 		Opens the file in the application registered by the operating system to open this file type.
+
+		A directory opens in the file manager. The application is started and this returns: it does
+		not wait for it, nor report what it does after starting. Through `explorer.exe` on Windows,
+		`open` on macOS and `xdg-open` elsewhere -- on Node through `child_process` -- so it opens on
+		the desktop of the user the program runs as, and does nothing visible for a service with no
+		desktop.
+
+		As in AIR, a file the operating system would run rather than open is refused: one with an
+		executable's extension (`exe`, `bat`, `cmd`, `com`, `msi`, `ps1`, `vbs`, `js`, `jar`, `lnk`,
+		`sh`, `app`, `command`, `desktop` and the like), and on Linux and macOS a file marked
+		executable.
+
+		@throws IOError The file does not exist.
+		@throws IllegalOperationError The file's type is one that would be run; or there is no way to
+		open a file here -- a browser, an operating system other than Windows, macOS, Linux and BSD, or
+		`xdg-open` not installed.
 	**/
 	public function openWithDefaultApplication():Void {
-		// System.openFile(__path);
+		// It was empty: a public, documented member that did nothing at all.
+		#if (js && !nodejs)
+		throw new IllegalOperationError("A browser cannot open a file in another application.");
+		#else
+		if (!FileSystem.exists(__path)) {
+			throw __ioError('"$__path" does not exist.', 3003);
+		}
+
+		var path:String = FilePath.normalize(FileSystem.absolutePath(__path), System.isWindows);
+
+		if (!FileSystem.isDirectory(path) && __runsRatherThanOpens(path)) {
+			throw new IllegalOperationError('"$path" is a type of file the operating system would run rather than open, and is not opened.');
+		}
+
+		var launch:Null<{command:String, args:Array<String>}> = __defaultApplicationCommand(path, System.PLATFORM);
+
+		if (launch == null) {
+			throw new IllegalOperationError("There is no way to open a file with its default application on " + System.PLATFORM + ".");
+		}
+
+		__launch(launch.command, launch.args);
+		#end
 	}
+
+	/**
+		The command that opens `path` with its default application on
+		`platform`, or null where there is none.
+	**/
+	@:noCompletion private static function __defaultApplicationCommand(path:String, platform:String):Null<{command:String, args:Array<String>}> {
+		return switch (platform) {
+			// explorer.exe rather than cmd's `start`, which a quoted argument --
+			// and Process quotes each -- stops being: cmd reads `"start"` as
+			// the name of a program.
+			case "windows": {command: "explorer.exe", args: [path]};
+			case "mac": {command: "open", args: [path]};
+			case "linux" | "freebsd" | "openbsd" | "netbsd" | "bsd": {command: "xdg-open", args: [path]};
+			default: null;
+		}
+	}
+
+	/**
+		Whether the operating system would run `path` rather than open it:
+		an executable's extension anywhere, and on POSIX the executable bit.
+	**/
+	@:noCompletion private static function __runsRatherThanOpens(path:String):Bool {
+		var extension:Null<String> = Path.extension(path);
+
+		if (extension != null && __RUNNABLE.indexOf(extension.toLowerCase()) >= 0) {
+			return true;
+		}
+
+		#if !(js && !nodejs)
+		if (!System.isWindows) {
+			try {
+				// Any of the three execute bits.
+				return FileSystem.stat(path).mode & 0x49 != 0;
+			} catch (_:Dynamic) {}
+		}
+		#end
+
+		return false;
+	}
+
+	@:noCompletion private static final __RUNNABLE:Array<String> = [
+		"exe", "com", "bat", "cmd", "msi", "msp", "msc", "scr", "pif", "cpl", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "wsc", "hta",
+		"lnk", "reg", "scf", "url", "inf", "jar", "appref-ms", "application", "gadget", "sh", "bash", "csh", "ksh", "zsh", "app", "command", "tool",
+		"terminal", "workflow", "desktop", "run"
+	];
+
+	/**
+		Starts `command` and lets it run. Dynamic so a test can see what
+		would be started without starting it.
+	**/
+	@:noCompletion private static dynamic function __launch(command:String, args:Array<String>):Void {
+		#if (js && !nodejs)
+		throw new IllegalOperationError("A browser cannot start a program.");
+		#elseif nodejs
+		var child:Dynamic = js.node.ChildProcess.spawn(command, args, cast {detached: true, stdio: "ignore"});
+		// Reported on the child, not thrown here, so it is caught and dropped:
+		// once started it is not this call's to answer for.
+		child.on("error", (_:Dynamic) -> {});
+		child.unref();
+		#else
+		if (System.PLATFORM != "windows" && !__onPath(command)) {
+			throw new IllegalOperationError('"$command", which opens files with their default applications here, is not installed.');
+		}
+
+		var process:sys.io.Process = new sys.io.Process(command, args);
+
+		#if target.threaded
+		// Waited for elsewhere, so this call does not wait, and a POSIX child
+		// is reaped rather than left a zombie for the life of the process.
+		sys.thread.Thread.create(() -> {
+			try {
+				process.exitCode();
+			} catch (_:Dynamic) {}
+			try {
+				process.close();
+			} catch (_:Dynamic) {}
+		});
+		#end
+		#end
+	}
+
+	#if !(js && !nodejs)
+	@:noCompletion private static function __onPath(command:String):Bool {
+		var path:Null<String> = Sys.getEnv("PATH");
+
+		if (path == null) {
+			return false;
+		}
+
+		for (directory in path.split(System.isWindows ? ";" : ":")) {
+			if (directory != "" && FileSystem.exists(Path.join([directory, command]))) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+	#end
 
 	/**
 		Creates a new File object with a path relative to this File object's path, based on the path
@@ -1357,31 +2042,130 @@ final class File extends EventDispatcher {
 
 		Filenames and directory names are case-sensitive on Linux.
 
+		What counts as absolute: on POSIX a path starting with `/`. On Windows a
+		drive (`C:\test`, and `C:test`, which is taken to mean `C:\test`), a
+		share (`\\server\share\test`, which covers `\\?\C:\test` too), or a path
+		starting with a separator, which is read against this File's own drive
+		or share. `\` separates on every platform, as it does in `nativePath`.
+		A relative File stays relative, and its `..` past the start is kept.
+
+		**This is not a sandbox.** An absolute `path` is returned as it is,
+		wherever it points, and the `..` rule above only stops a path climbing
+		out of the storage root by `..` -- it does not stop one that names
+		somewhere else outright. To keep a path that came from a user or a peer
+		inside a directory, resolve it and then check where it landed:
+
+		```hx
+		// Given requestedName:String.
+		import crossbyte.io.File;
+
+		var dir:File = File.applicationStorageDirectory.resolvePath("uploads");
+		var target:File = dir.resolvePath(requestedName);
+
+		if (dir.getRelativePath(target) == null) {
+			throw new crossbyte.errors.SecurityError(requestedName + " is not inside " + dir.nativePath);
+		}
+		```
+
+		`getRelativePath` answers null for anything that is not the directory
+		or below it. It compares paths, not what is on disk: a symbolic link
+		inside the directory that points out of it passes.
+
 		@param path The path to append to this File object's path (if the path parameter is a relative path); or
 		the path to return (if the path parameter is an absolute path).
 		@returns File A new File object pointing to the resulting path.
+		@throws ArgumentError `path` is null.
 	**/
 	public function resolvePath(path:String):File {
-		var directoryPath:String = Path.removeTrailingSlashes(__path);
-		return new File('$directoryPath$separator$path');
+		// It concatenated: "../x" came back as "<this>\..\x", an absolute path
+		// came back appended, "<this>\C:\Windows\win.ini", and nothing stopped
+		// at the storage root. So applicationStorageDirectory.resolvePath(name)
+		// climbed out of it on a name holding "..".
+		if (path == null) {
+			throw new ArgumentError("resolvePath needs a path; null names nowhere.");
+		}
+
+		var windows:Bool = System.isWindows;
+		var target:FilePathParts = FilePath.parse(path, windows);
+
+		if (target.root != "") {
+			var root:String = target.root;
+
+			if (windows && root == "\\") {
+				// Rooted on no drive in particular: this File's own.
+				var own:String = FilePath.parse(__path, true).root;
+				if (own != "") {
+					root = own;
+				}
+			}
+
+			return new File(FilePath.join(root, FilePath.walk([], target.segments, true, 0), windows));
+		}
+
+		var base:FilePathParts = FilePath.parse(__path, windows);
+		var rooted:Bool = base.root != "";
+		var start:Array<String> = FilePath.walk([], base.segments, rooted, 0);
+		var floor:Int = 0;
+		var storage:Array<String> = null;
+
+		if (rooted) {
+			// The storage root's own rule: a `..` never climbs out of it, from
+			// inside it or from a path that passes through it.
+			var storageRoot:Null<String> = @:privateAccess System.__storageRootOrNull();
+
+			if (storageRoot != null) {
+				var parts:FilePathParts = FilePath.parse(storageRoot, windows);
+
+				if (parts.root != "" && FilePath.sameRoot(parts.root, base.root, windows)) {
+					storage = FilePath.walk([], parts.segments, true, 0);
+
+					if (FilePath.sameSegments(start, storage, windows, storage.length)) {
+						floor = storage.length;
+					}
+				}
+			}
+		}
+
+		var segments:Array<String> = FilePath.walk(start, target.segments, rooted, floor, storage, windows);
+		var result:String = FilePath.join(base.root, segments, windows);
+
+		if (!rooted && result.indexOf(separator) < 0) {
+			// A relative File stays one. A bare name says nothing about where
+			// the file is and the constructor refuses it, so it is given the
+			// directory it is in: this one.
+			result = "." + separator + result;
+		}
+
+		return new File(result);
 	}
 
 	/**
 		Saves the data parameter passed to the location of the file.
+
+		@param data The bytes to write: all `length` of them, whatever its `position`.
+		@param overwrite Whether to replace a file already there.
+		@throws ArgumentError `data` is null.
+		@throws IOError A file is there and `overwrite` is false (3002), or the file cannot be written.
 	**/
 	public function save(data:ByteArray, overwrite:Bool = false):Void {
-		if (exists && overwrite == false) {
-			throw "File exists at this location and overwrite param is false";
-			return;
+		// Plain strings were thrown, and every failure to write was "File is
+		// open": a missing directory, a permission refused and a full disk all
+		// read as that.
+		if (data == null) {
+			throw new ArgumentError("save needs the data to write.");
 		}
+
+		if (exists && overwrite == false) {
+			throw __ioError('"$__path" exists, and overwrite is false.', 3002);
+		}
+
 		try {
-			HaxeFile.saveBytes(__path, (data : haxe.io.Bytes));
+			FileOps.saveBytes(__path, (data : haxe.io.Bytes));
 		} catch (e:Dynamic) {
-			throw("File is open");
+			throw __ioError('Could not write "$__path": ${Std.string(e)}', 0);
 		}
 
 		this.__data = data;
-		__updateFileStats();
 	}
 
 	/**
@@ -1478,6 +2262,44 @@ final class File extends EventDispatcher {
 		return rootDirs;
 	}
 
+	/**
+		The file system's own path for `path` -- every link followed, each
+		name in its case on disk -- or null when there is no such file, or no
+		way here to ask: the interpreter, neko and hl under Windows, whose
+		`fullPath` follows no link.
+	**/
+	@:noCompletion private static function __realPath(path:String):Null<String> {
+		#if (js && !nodejs)
+		return null;
+		#elseif cpp
+		var real:String = crossbyte.io._internal.NativeFileSync.realPath(path);
+		return real == null || real == "" ? null : real;
+		#elseif jvm
+		try {
+			return java.nio.file.Paths.get(path).toRealPath().toString();
+		} catch (_:Dynamic) {
+			return null;
+		}
+		#elseif nodejs
+		try {
+			return js.Syntax.code("require('fs').realpathSync.native({0})", path);
+		} catch (_:Dynamic) {
+			return null;
+		}
+		#else
+		if (System.isWindows || !FileSystem.exists(path)) {
+			return null;
+		}
+
+		try {
+			// realpath, on POSIX.
+			return FileSystem.fullPath(path);
+		} catch (_:Dynamic) {
+			return null;
+		}
+		#end
+	}
+
 	@:noCompletion private function __canonicalize(cpath:String, seg:String):String {
 		seg = seg.toLowerCase();
 		var items:Array<String> = FileSystem.readDirectory(Path.directory(cpath));
@@ -1517,17 +2339,33 @@ final class File extends EventDispatcher {
 		catchable `Error` everywhere.
 	**/
 	@:noCompletion private static function __listPath(path:String):Array<String> {
-		var items:Array<String> = FileSystem.readDirectory(path);
+		var items:Array<String> = null;
+
+		try {
+			items = FileSystem.readDirectory(path);
+		} catch (e:Dynamic) {
+			throw __missingOr(path, e);
+		}
+
 		if (items == null) {
-			throw new Error("File or directory does not exist.", 3003);
+			throw __missingOr(path, "it could not be read");
 		}
 		return items;
 	}
 
-	@:noCompletion private function __deletePath(path:String):Void {
+	/**
+		Deletes `path`, and everything in it if it is a directory. `cancelled`,
+		when given, is asked before each entry; what is deleted by then stays
+		deleted.
+	**/
+	@:noCompletion private static function __removePath(path:String, ?cancelled:Void->Bool):Void {
+		if (cancelled != null && cancelled()) {
+			throw new FileCancelled();
+		}
+
 		if (FileSystem.isDirectory(path)) {
 			for (item in __listPath(path)) {
-				__deletePath(Path.join([path, item]));
+				__removePath(Path.join([path, item]), cancelled);
 			}
 			FileSystem.deleteDirectory(path);
 		} else {
@@ -1708,86 +2546,136 @@ final class File extends EventDispatcher {
 		#end
 	}
 
-	@:noCompletion private function __replaceWindowsEnvVars(path:String):String {
-		#if (js && !nodejs)
-		throw new crossbyte.errors.IllegalOperationError("A browser has no process environment to expand a path against.");
-		#else
-		// Define the regular expression to match the path component to be replaced
-		var pattern:EReg = ~/%(.+?)%/;
-
-		// Find the first match of the regular expression in the path
-		var match:Bool = pattern.match(path);
-
-		if (match) {
-			// Extract the matched path component
-			var matchedPath:String = pattern.matched(0);
-
-			// Get the environment variable name by removing the first and last characters ("%")
-			var envVar:String = matchedPath.substring(1, matchedPath.length - 1);
-
-			// Get the value of the environment variable
-			var envVarValue:Null<String> = Sys.getEnv(envVar);
-
-			if (envVarValue == null) {
-				return path;
-			}
-			// Replace the matched path component with the environment variable value
-			return StringTools.replace(path, matchedPath, envVarValue);
-		}
-		return path;
-		#end
-	}
-
 	@:noCompletion private function __winGetHiddenAttr():Bool {
 		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("Reading a file attribute means shelling out, and a browser has no shell.");
+		#elseif cpp
+		// GetFileAttributesW. It started `attrib` through cmd.exe for each
+		// question, and cmd expanded any %NAME% in the path, so a file with
+		// one in its name was asked about under another name.
+		return crossbyte.io._internal.NativeFileSync.hidden(__path) == 1;
+		#elseif (jvm || java)
+		// On Windows the JVM's isHidden is the attribute.
+		return new java.io.File(__path).isHidden();
 		#else
-		// Shelling out to `attrib` costs a process per call. GetFileAttributesW
-		// through a `@:cppInclude` bridge would not, in the style the sodium
-		// and blake3 bridges already use -- but only on cpp, and this is
-		// reachable from every target with a filesystem, so the shell stays
-		// until there is a path for the others.
-		#if nodejs
-		// Node has no sys.io.Process. It type-checks here, because hxnodejs
-		// allows the `sys` package, and generates nothing -- the same trap
-		// that made spaceAvailable throw `ReferenceError: sys is not defined`
-		// once anything called it.
-		var r:String = js.Syntax.code("require('child_process').execSync({0}).toString()", 'attrib "' + nativePath + '"');
-		#else
-		var process:Process = new Process('attrib "$nativePath"');
-		var r:String = process.stdout.readLine();
-
-		process.close();
-		#end
-
-		var s:String = r.split(nativePath)[0];
-		var flag:Bool = s.indexOf(" H ") > -1;
-
-		return flag;
+		// No call for the attribute here, so `attrib` still answers -- run
+		// directly, not through cmd.exe, which expanded any %NAME% in the
+		// path. Node has no sys.io.Process; System's helper runs it there
+		// through child_process.
+		return __attribSaysHidden(@:privateAccess System.__programOutput("attrib", [__path]));
 		#end
 	}
 
-	@:noCompletion private function __updateFileStats(?path:String):Void {
-		if (path == null) {
-			path = __path;
+	/**
+		Whether `attrib`'s answer for one file has the `H` attribute: a letter
+		among those before the path, which starts at a drive (`C:\`) or a
+		share (`\\`). "File not found - C:\x" has none.
+	**/
+	@:noCompletion private static function __attribSaysHidden(output:Null<String>):Bool {
+		if (output == null) {
+			return false;
 		}
 
-		if (FileSystem.exists(path)) {
-			var fileInfo = FileSystem.stat(path);
-			creationDate = fileInfo.ctime;
-			modificationDate = fileInfo.mtime;
-			size = fileInfo.size;
-			__sizeOverflows = __exceedsInt(path, fileInfo.size);
-		} else {
-			creationDate = null;
-			modificationDate = null;
-			size = 0;
-			__sizeOverflows = false;
+		var line:String = StringTools.trim(output.split("\n")[0]);
+		var drive:Int = line.indexOf(":\\");
+		var end:Int = drive > 0 ? drive - 1 : line.indexOf("\\\\");
+
+		if (end < 0) {
+			return false;
 		}
-		extension = Path.extension(path);
-		type = extension;
+
+		return line.substr(0, end).split(" ").indexOf("H") >= 0;
+	}
+
+	/**
+		The names a path gives -- `name`, `extension`, `type` -- which need
+		nothing from the disk. What the disk says is asked when it is wanted:
+		`size`, `modificationDate` and `creationDate` were a snapshot taken
+		when the path was set, while `exists` was live, so a File made before
+		its file was written reported a size of 0 for good.
+	**/
+	@:noCompletion private function __updateNames(path:String):Void {
 		name = Path.withoutDirectory(path);
-		__fileStatsDirty = false;
+		// null for a name with no dot, as documented. It was "", which reads
+		// as an extension that happens to be empty, as "name." has.
+		extension = name.indexOf(".") < 0 ? null : Path.extension(path);
+		type = extension;
+	}
+
+	/**
+		The file's stat, or an IOError saying why there is none. Dynamic in a
+		browser, where the sys package cannot be named and NoFileSystem's
+		stat refuses anyway.
+	**/
+	@:noCompletion private function __stat():#if (js && !nodejs) Dynamic #else sys.FileStat #end {
+		var stat:#if (js && !nodejs) Dynamic #else sys.FileStat #end;
+
+		try {
+			stat = FileSystem.stat(__path);
+		} catch (e:Dynamic) {
+			throw __missingOr(__path, e);
+		}
+
+		// hxcpp answers a missing file with a stat of zeros rather than a
+		// throw. A file or a directory always has its type in `mode`.
+		if (stat == null || (stat.mode == 0 && !FileSystem.exists(__path))) {
+			throw __missingOr(__path, "it could not be examined");
+		}
+
+		return stat;
+	}
+
+	#if jvm
+	// A Java long as a double, from its two halves: masking with 0xFFFFFFFF
+	// masks with -1, an Int, which keeps every bit.
+	@:noCompletion private static function __longToFloat(value:haxe.Int64):Float {
+		var low:Float = haxe.Int64.getLow(value);
+		if (low < 0) {
+			low += 4294967296.0;
+		}
+		return haxe.Int64.getHigh(value) * 4294967296.0 + low;
+	}
+	#end
+
+	/** An IOError for `path`: 3003 when it is not there, else what went wrong. **/
+	@:noCompletion private static function __missingOr(path:String, cause:Dynamic):IOError {
+		if (!FileSystem.exists(path)) {
+			return __ioError('"$path" does not exist.', 3003);
+		}
+		return __ioError('Could not examine "$path": ${Std.string(cause)}', 3001);
+	}
+
+	/**
+		The file's size, exact past 2 GB where the target can say, or an
+		IOError. On the interpreter, neko and hl `stat` has an Int size, and
+		`__exceedsInt` asks the file whether there is more past it.
+	**/
+	@:noCompletion private function __sizeNow():Float {
+		#if (js && !nodejs)
+		return FileSystem.stat(__path).size;
+		#elseif cpp
+		// One call: the exact size, or -1 when there is no file to measure.
+		var size:Float = crossbyte.io._internal.NativeFileSync.size(__path);
+		if (size < 0) {
+			throw __missingOr(__path, "it could not be examined");
+		}
+		return size;
+		#elseif jvm
+		var file = new java.io.File(__path);
+		if (!file.exists()) {
+			throw __missingOr(__path, "it could not be examined");
+		}
+		return __longToFloat(file.length());
+		#elseif nodejs
+		try {
+			return (js.node.Fs.statSync(__path).size : Float);
+		} catch (e:Dynamic) {
+			throw __missingOr(__path, e);
+		}
+		#else
+		var reported:Int = __stat().size;
+		return __exceedsInt(__path, reported) ? 2147483648.0 : reported;
+		#end
 	}
 
 	@:noCompletion private static function get_applicationDirectory():File {
@@ -1810,41 +2698,69 @@ final class File extends EventDispatcher {
 		return new File(System.userDir);
 	}
 
-	@:noCompletion private function get_creationDate():Date {
-		if (__fileStatsDirty) {
-			__updateFileStats();
+	@:noCompletion private function get_creationDate():Null<Date> {
+		// When the file was made. It was stat's ctime, which on POSIX is when
+		// the file's status last changed: a chmod, a rename, a write moved it
+		// on. Windows' ctime is the creation time, which is the one platform
+		// where that was right.
+		#if (js && !nodejs)
+		return FileSystem.stat(__path).ctime;
+		#elseif cpp
+		var created:Float = crossbyte.io._internal.NativeFileSync.created(__path);
+		if (created == -2) {
+			throw __missingOr(__path, "it could not be examined");
 		}
-		return creationDate;
+		return created < 0 ? null : Date.fromTime(created);
+		#elseif nodejs
+		try {
+			var stats:Dynamic = js.node.Fs.statSync(__path);
+			var created:Float = stats.birthtimeMs;
+			return created > 0 ? Date.fromTime(created) : null;
+		} catch (e:Dynamic) {
+			throw __missingOr(__path, e);
+		}
+		#elseif jvm
+		try {
+			var time:java.nio.file.attribute.FileTime = cast java.nio.file.Files.getAttribute(java.nio.file.Paths.get(__path), "basic:creationTime");
+			return Date.fromTime(__longToFloat(time.toMillis()));
+		} catch (e:Dynamic) {
+			throw __missingOr(__path, e);
+		}
+		#else
+		if (System.isWindows) {
+			return __stat().ctime;
+		}
+		__stat();
+		throw new IllegalOperationError("A file's creation time cannot be read on " + #if eval "the interpreter" #elseif neko "neko" #elseif hl "HashLink" #else "this target" #end
+			+ " on " + System.PLATFORM + ": its stat reports when the file's status last changed, which is not when it was made. Natively, on the jvm and on Node it is read.");
+		#end
 	}
 
-	@:noCompletion private inline function get_data():ByteArray {
+	@:noCompletion private function get_data():ByteArray {
+		// As documented: an error rather than null when nothing has been
+		// loaded, or the load failed.
+		if (__data == null) {
+			throw new IllegalOperationError("No data: load() or loadAsync() has not completed on this File.");
+		}
 		return __data;
 	}
 
 	@:noCompletion private function get_modificationDate():Date {
-		if (__fileStatsDirty) {
-			__updateFileStats();
-		}
-		return modificationDate;
+		return __stat().mtime;
 	}
 
 	@:noCompletion private function get_name():String {
-		if (__fileStatsDirty) {
-			__updateFileStats();
-		}
 		return name;
 	}
 
 	@:noCompletion private function get_size():Int {
-		if (__fileStatsDirty) {
-			__updateFileStats();
-		}
+		var size:Float = __sizeNow();
 
-		if (__sizeOverflows) {
+		if (size > 2147483647.0) {
 			throw new crossbyte.errors.IOError('$__path is larger than 2 GB, which File.size, an Int, cannot state.');
 		}
 
-		return size;
+		return Std.int(size);
 	}
 
 	/**
@@ -1891,9 +2807,6 @@ final class File extends EventDispatcher {
 	}
 
 	@:noCompletion private function get_type():String {
-		if (__fileStatsDirty) {
-			__updateFileStats();
-		}
 		return type;
 	}
 
@@ -1902,9 +2815,12 @@ final class File extends EventDispatcher {
 	}
 
 	@:noCompletion private function set_nativePath(path:String):String {
-		if (System.isWindows && path.indexOf("%") > -1) {
-			path = __replaceWindowsEnvVars(path);
-		}
+		// Taken literally. On Windows the first %NAME% in a path was replaced
+		// by that environment variable, after resolvePath had normalized it --
+		// so a name sent by a peer, "%SystemRoot%" or "%USERPROFILE%",
+		// reached a directory the caller had never named, out of a server's
+		// root among them. AIR's File expands nothing, and neither does the
+		// operating system's own file API.
 		if (path.charAt(path.length - 1) == ":" /*|| FileSystem.isDirectory(path)*/) {
 			path = Path.addTrailingSlash(path);
 		}
@@ -1919,7 +2835,7 @@ final class File extends EventDispatcher {
 			throw new ArgumentError("One of the parameters is invalid.");
 		}
 
-		__updateFileStats(path);
+		__updateNames(path);
 
 		// Reformat when the path carries the *other* platform's separator, so
 		// that what is stored is joined on `separator` throughout.
@@ -1996,6 +2912,13 @@ final class File extends EventDispatcher {
 	@:noCompletion private function get_spaceAvailable():Float {
 		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("Free disk space means asking the filesystem, and a browser has neither a filesystem nor a disk to report on.");
+		#elseif cpp
+		// GetDiskFreeSpaceEx or statvfs, without starting fsutil or df.
+		var bytes:Float = crossbyte.io._internal.NativeFileSync.spaceAvailable(__path);
+		return bytes < 0 ? 0 : bytes;
+		#elseif (jvm || java)
+		// 0 for a path with nothing there, as documented.
+		return __longToFloat(new java.io.File(__path).getUsableSpace());
 		#elseif nodejs
 		// The syscall directly, no shell and no output parsing. Node has had
 		// statfsSync since 18.15; older ones are told so rather than handed a
@@ -2006,9 +2929,18 @@ final class File extends EventDispatcher {
 			throw new crossbyte.errors.IllegalOperationError("Reading free disk space needs fs.statfsSync, which arrived in Node 18.15; this is " + js.Node.process.version + ".");
 		}
 
+		if (!FileSystem.exists(__path)) {
+			// As documented, where statfs threw ENOENT.
+			return 0;
+		}
+
 		var stats:Dynamic = fs.statfsSync(__path);
 		return stats.bsize * stats.bavail;
 		#else
+		if (!FileSystem.exists(__path)) {
+			return 0;
+		}
+
 		// Sys.systemName(), not `#if windows`. That define says which target the
 		// compiler was aimed at, not which machine is running -- eval does not
 		// set it at all, so on Windows this took the `df` branch, found no df,
@@ -2016,8 +2948,12 @@ final class File extends EventDispatcher {
 		// four targets and silently wrong on the fifth is worse than a runtime
 		// check that is right on all of them.
 		var onWindows:Bool = Sys.systemName() == "Windows";
+		// fsutil takes a directory, and refused a file's path: every file read
+		// as having no room to grow. A file is asked about through the
+		// directory it is in.
+		var directory:String = !onWindows || FileSystem.isDirectory(__path) ? __path : Path.directory(FileSystem.absolutePath(__path));
 		var cmd:String = onWindows ? "fsutil" : "df";
-		var args:Array<String> = onWindows ? ["volume", "diskfree", Path.addTrailingSlash(__path)] : ["-k", __path];
+		var args:Array<String> = onWindows ? ["volume", "diskfree", Path.addTrailingSlash(directory)] : ["-k", __path];
 
 		var process:Process = new Process(cmd, args);
 		var output:String = process.stdout.readAll().toString();
@@ -2084,4 +3020,10 @@ final class File extends EventDispatcher {
 		#end
 	}
 	// #end
+}
+
+/** What a cancelled operation throws, to stop where it is; never seen outside File. **/
+@:noCompletion
+private class FileCancelled {
+	public function new() {}
 }
