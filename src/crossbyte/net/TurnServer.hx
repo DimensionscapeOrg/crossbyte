@@ -32,6 +32,14 @@ typedef TurnServer = {
 		the system does not trust, a private relay's own. See
 		`TurnClient.certAuthority`.
 	**/
-	?certAuthority:Certificate
+	?certAuthority:Certificate,
+
+	/**
+		For a relay reached over TLS: false to accept its certificate unchecked,
+		for a test against a relay with a throwaway one, never otherwise, and
+		`certAuthority` is better even then. Checked when left out. See
+		`TurnClient.verifyCert`.
+	**/
+	?verifyCert:Bool
 	#end
 }

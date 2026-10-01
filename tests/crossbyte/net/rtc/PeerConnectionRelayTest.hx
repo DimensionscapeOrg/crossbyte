@@ -842,6 +842,64 @@ class PeerConnectionRelayTest extends utest.Test {
 	}
 
 	/**
+		New TURN REST credentials leave the allocation held on the username it
+		was made with, and are used for the next relay asked.
+
+		Their username carries their expiry, so every renewal is a new one,
+		and a relay refuses a request on an allocation signed by any other
+		(441). `setRelayCredentials` compared the new username with the held
+		allocation's after rewriting the list entry that allocation was made
+		from, comparing it with itself, and handed it over, so the next
+		Refresh was refused and the allocation lost. Called twice, because a
+		fix that read the entry before rewriting it would pass once.
+	**/
+	public function testNewRestCredentialsLeaveTheAllocationHeldAlone():Void {
+		if (unsupported()) return;
+
+		var first:String = "1700000000:alice";
+		var second:String = "1700003600:alice";
+		var server = relayServer();
+		server.relay.users = [first => "first-password", second => "second-password"];
+		var connection = new PeerConnection(true);
+
+		try {
+			server.start();
+			connection.bind(0, "127.0.0.1");
+
+			var gathered:IceCandidate = null;
+			connection.gatherRelayed("127.0.0.1", first, "first-password", server.port).then(c -> gathered = c, _ -> {});
+			pumpUntil(() -> gathered != null, 8.0);
+			Require.notNull(gathered, "the relay never allocated");
+
+			for (renewal in 0...2) {
+				connection.setRelayCredentials(second, "second-password");
+
+				var refreshes:Int = server.relay.count("refreshed");
+				@:privateAccess connection.__turn.refresh(haxe.Timer.stamp());
+
+				// Until the client has the answer too, so the next renewal's
+				// Refresh is not refused as one already in flight.
+				pumpUntil(() -> (server.relay.count("refreshed") > refreshes && !@:privateAccess connection.__turn.__refreshing)
+					|| server.relay.count("refused-441") > 0, 5.0);
+
+				Assert.equals(0, server.relay.count("refused-441"), "renewal " + renewal + ": a Refresh was signed with the new username");
+				Assert.equals(refreshes + 1, server.relay.count("refreshed"), "renewal " + renewal + ": the Refresh was not accepted: " + server.relay.events.join(","));
+			}
+
+			Require.notNull(connection.relayedCandidate, "the allocation was lost");
+			Assert.equals(gathered.port, connection.relayedCandidate.port, "the allocation was replaced");
+
+			// And the next relay asked is asked as the new username.
+			Assert.equals(second, @:privateAccess connection.__relayServers[0].username);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		connection.close();
+		server.close();
+	}
+
+	/**
 		A datagram in the STUN range is decoded once, however many things on
 		the socket might want it.
 
@@ -957,6 +1015,60 @@ class PeerConnectionRelayTest extends utest.Test {
 
 		alice.close();
 		bob.close();
+		server.close();
+	}
+
+	/**
+		A relay reached over TLS can be told not to have its certificate
+		checked, for a test against one with a throwaway certificate, as
+		`TurnClient.verifyCert` allows, and is checked otherwise.
+
+		`TurnServer` carried `certAuthority` and not this, so through
+		`PeerConnection` the check could not be turned off at all.
+	**/
+	public function testARelaysCertificateCheckCanBeTurnedOffForATest():Void {
+		if (unsupported()) return;
+
+		var fixture = crossbyte.net.TLSTestFixture.trusted();
+
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the TURN over TLS case did not run");
+			return;
+		}
+
+		var server = relayServer();
+		var checked = new PeerConnection(true);
+		var unchecked = new PeerConnection(true);
+
+		try {
+			server.start();
+			server.startTcp(fixture.certificate, fixture.key);
+			checked.bind(0, "127.0.0.1");
+			unchecked.bind(0, "127.0.0.1");
+
+			// The fixture's authority is trusted by nothing unless named.
+			var refused:String = null;
+			checked.gatherRelayedFrom([
+				{address: "127.0.0.1", port: server.tcpPort, username: USERNAME, password: PASSWORD, transport: TLS}
+			]).then(_ -> {}, error -> refused = error);
+
+			var gathered:IceCandidate = null;
+			var failure:String = null;
+			unchecked.gatherRelayedFrom([
+				{address: "127.0.0.1", port: server.tcpPort, username: USERNAME, password: PASSWORD, transport: TLS, verifyCert: false}
+			]).then(candidate -> gathered = candidate, error -> failure = error);
+
+			pumpUntil(() -> refused != null && (gathered != null || failure != null), 10.0);
+
+			Assert.notNull(refused, "a relay whose certificate nothing vouches for was used with the check on");
+			Assert.isNull(failure, "the check was not turned off: " + failure);
+			Assert.notNull(gathered, "no relayed candidate with the check off");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		checked.close();
+		unchecked.close();
 		server.close();
 	}
 
