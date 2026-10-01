@@ -51,6 +51,24 @@ import sys.net.Socket as SysSocket;
 /**
 	High-level TCP socket with binary read/write helpers, event dispatch, and
 	CrossByte runtime integration.
+
+	What a connection dispatches, once each where it says so:
+
+	- `connect` once it is up (and, for a `secure` one, its TLS handshake
+	  done).
+	- `ioError` for a connect that failed, refused, a name that does not
+	  resolve, a handshake that failed, or not made within `timeout`, whose
+	  event's `errorID` is then `IOErrorEvent.TIMEOUT_ERROR_ID`, and nothing
+	  after it, since no connection came up: no `close` follows, as in AIR.
+	  Once connected, for a write that failed; the connection's `close`
+	  follows.
+	- `close` once, when a connection that came up ends, whichever end ended
+	  it, `close()` included, after any data that arrived with the end.
+	- `peerClose` when the peer stops sending and `peerShutdownPolicy` is
+	  `HALF_OPEN`.
+@event close    Dispatched once when a connection that came up ends, from either end.
+@event connect  Dispatched when the connection is up.
+@event ioError  Dispatched when a connect fails, or a write on a connection fails.
 **/
 #if !debug
 @:fileXml('tags="haxe,release"')
@@ -603,8 +621,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	/**
 		Closes the socket. You cannot read or write any data after the
 		`close()` method has been called.
-		The `close` event is dispatched only when the server closes the
-		connection; it is not dispatched when you call the `close()` method.
+
+		The `close` event is dispatched for it, before this returns, if the
+		connection had come up, once, as for a close by the peer, so code
+		that lets go of a connection's resources on `close` does so whichever
+		end closed it. AIR dispatches `close` only for the peer's close;
+		CrossByte dispatches it for every end of a connection. A connect still
+		under way is abandoned, with no event.
+
 		You can reuse the Socket object by calling the `connect()` method on
 		it again.
 		@throws IOError The socket could not be closed, or the socket was not
@@ -633,7 +657,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		socket is already connected, the existing connection is closed first.
 
 		A host that cannot be resolved is reported as an `ioError` event rather
-		than thrown, so a listener is the only way to see it.
+		than thrown, so a listener is the only way to see it. A connect that
+		fails is reported by `ioError` alone; no `close` follows it.
 
 		A name is looked up off the runtime's thread, so nothing else on the
 		runtime waits on the resolver, and `timeout` counts the lookup as part
@@ -1007,7 +1032,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// loop, where a listener that threw would end the process.
 			try {
 				__dispatchPooledIOError("Connection failed: " + __host + (secure ? " was not connected over TLS within " : " was not connected within ")
-					+ limit + " ms");
+					+ limit + " ms", IOErrorEvent.TIMEOUT_ERROR_ID);
 			} catch (e:Dynamic) {
 				__contain(e, IOErrorEvent.IO_ERROR);
 			}
@@ -2348,7 +2373,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// on past it.
 			if (haxe.Timer.stamp() - __timestamp > timeout / 1000) {
 				__cleanSocket();
-				__dispatchPooledIOError("Connection failed: " + __host + " was not looked up within " + timeout + " ms");
+				__dispatchPooledIOError("Connection failed: " + __host + " was not looked up within " + timeout + " ms", IOErrorEvent.TIMEOUT_ERROR_ID);
 			}
 			return;
 		}
@@ -2356,8 +2381,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		var doConnect = false;
 		var doClose = false;
 		var doPeerClose = false;
-		// Why a connect failed, where there is more to say than that it did.
+		// Why a connect failed, where there is more to say than that it did,
+		// and whether what failed it was the deadline.
 		var failure:Null<String> = null;
+		var timedOut:Bool = false;
 
 		if (!connected && !__tlsHandshaking) {
 			// Asked about on both sets. A connect that fails is reported in the
@@ -2432,9 +2459,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (!connected && !doConnect && !doClose && haxe.Timer.stamp() - __timestamp > timeout / 1000) {
 			// The deadline counts the TLS handshake with the connect.
 			doClose = true;
-			if (__tlsHandshaking) {
-				failure = "the TLS handshake did not finish within " + timeout + " ms";
-			}
+			timedOut = true;
+			failure = __tlsHandshaking ? "the TLS handshake did not finish within " + timeout + " ms" : __host + " was not connected within " + timeout
+				+ " ms";
 		}
 
 		var bLength = 0;
@@ -2568,7 +2595,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			if (closeWasConnected) {
 				__announceClose();
 			} else {
-				__dispatchPooledIOError(failure != null ? "Connection failed: " + failure : "Connection failed");
+				__dispatchPooledIOError(failure != null ? "Connection failed: " + failure : "Connection failed", timedOut ? IOErrorEvent.TIMEOUT_ERROR_ID : 0);
 			}
 		}
 
@@ -2751,21 +2778,22 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__pooledSocketDataEventInUse = false;
 	}
 
-	@:noCompletion private function __dispatchPooledIOError(text:String = ""):Void {
+	@:noCompletion private function __dispatchPooledIOError(text:String = "", id:Int = 0):Void {
 		if (!hasEventListener(IOErrorEvent.IO_ERROR)) {
 			return;
 		}
 
 		if (__pooledIOErrorEventInUse) {
-			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text));
+			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text, id));
 			return;
 		}
 
 		if (__pooledIOErrorEvent == null) {
-			__pooledIOErrorEvent = new IOErrorEvent(IOErrorEvent.IO_ERROR, text);
+			__pooledIOErrorEvent = new IOErrorEvent(IOErrorEvent.IO_ERROR, text, id);
 		} else {
 			@:privateAccess {
 				__pooledIOErrorEvent.text = text;
+				__pooledIOErrorEvent.errorID = id;
 				__pooledIOErrorEvent.target = null;
 				__pooledIOErrorEvent.currentTarget = null;
 			}

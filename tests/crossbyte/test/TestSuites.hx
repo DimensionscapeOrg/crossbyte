@@ -227,6 +227,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.NetConnectionTest());
 		// Also in PortableSuite: Node is where a TCP NetConnection carried nothing.
 		runner.addCase(new crossbyte.net.NetConnectionTcpTest());
+		// Also in PortableSuite: one end, told once, over TCP and WebSocket.
+		runner.addCase(new crossbyte.net.NetConnectionLifecycleTest());
 		runner.addCase(new crossbyte.net.NetHostTest());
 		// Also in PortableSuite: Node is where a key kept its PEM in plain view.
 		runner.addCase(new crossbyte.net.KeyTest());

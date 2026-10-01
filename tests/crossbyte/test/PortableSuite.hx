@@ -97,6 +97,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.KeyTest());
 		// A NetConnection dialled over TCP, and an RPC call over one.
 		runner.addCase(new crossbyte.net.NetConnectionTcpTest());
+		// How a NetConnection ends, told once, the same over each transport.
+		runner.addCase(new crossbyte.net.NetConnectionLifecycleTest());
 		#end
 		// A page's Socket against the echo endpoint ci/browser/run.js serves.
 		// The browser only: it is the one target where a Socket is a WebSocket.
