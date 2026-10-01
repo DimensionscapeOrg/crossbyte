@@ -3,34 +3,34 @@ package crossbyte.io;
 // Not built for the browser. This is a synchronous, seekable handle on an open file, and a browser has no such thing -- its storage APIs are asynchronous and are not addressed by byte offset. crossbyte.io.File keeps its type there and refuses the operation instead; see NoFileSystem.
 #if !(js && !nodejs)
 
-import crossbyte.events.ThreadEvent;
-import haxe.Json;
-import haxe.Serializer;
-import haxe.Timer;
-import haxe.Unserializer;
-import haxe.io.BytesInput;
-import haxe.io.BytesOutput;
-import haxe.io.Encoding;
-import haxe.io.Bytes;
-import haxe.io.Path;
-import crossbyte.sys.Worker;
-import crossbyte.errors.Error;
+import crossbyte.core.CrossByte;
 import crossbyte.errors.EOFError;
+import crossbyte.errors.Error;
+import crossbyte.errors.IOError;
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.errors.RangeError;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
-import crossbyte.io.FileMode;
-import crossbyte.errors.IOError;
-import crossbyte.errors.IllegalOperationError;
 import crossbyte.events.IOErrorEvent;
-import crossbyte.net.ObjectEncoding;
 import crossbyte.events.OutputProgressEvent;
 import crossbyte.events.ProgressEvent;
+import crossbyte.events.ThreadEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.io.Endian;
+import crossbyte.io.FileMode;
 import crossbyte.io.IDataInput;
 import crossbyte.io.IDataOutput;
-import crossbyte.Object;
+import crossbyte.io._internal.FileOps;
+import crossbyte.net.ObjectEncoding;
+import crossbyte.sys.Worker;
+import haxe.Json;
+import haxe.Serializer;
+import haxe.Unserializer;
+import haxe.io.Bytes;
+import haxe.io.BytesInput;
+import haxe.io.BytesOutput;
+import haxe.io.FPHelper;
+import haxe.io.Path;
 import sys.FileSystem;
 import sys.io.File as HaxeFile;
 import sys.io.FileInput;
@@ -75,6 +75,18 @@ import format.amf3.Tools as AMF3Tools;
 	and consumes the data as it becomes available by calling read methods. Alternatively, an
 	application can simply wait until all of the data is available by registering for the complete
 	event and processing the entire data set when the complete event is dispatched.
+
+	The reads and writes keep the contract `IDataInput` and `IDataOutput` describe and `ByteArray`
+	keeps, opened either way: `readByte` is signed, `readBoolean` is true for any nonzero byte,
+	`writeShort` and `writeByte` keep the low bits of what they are given, a read with too little
+	data throws `EOFError` and consumes nothing, and `writeBytes` clamps its range to the source.
+	`endian` and `objectEncoding` start as `ByteArray.defaultEndian` and
+	`ByteArray.defaultObjectEncoding` -- little-endian and HXSF unless the application changed them --
+	and can be set before or after a file is opened.
+
+	The events of an asynchronously opened file are the stream's own -- `progress`,
+	`outputProgress`, `complete`, `ioError`, `close` -- with the stream as their target. Where there
+	are no threads (Node), a file can be opened asynchronously only to read.
 **/
 @:access(crossbyte.io.ByteArray)
 @:access(crossbyte.io.ByteArrayData)
@@ -90,6 +102,12 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	/**
 		The byte order for the data, either the BIG_ENDIAN or LITTLE_ENDIAN constant from the Endian
 		class.
+
+		`ByteArray.defaultEndian` when the stream is made, as for every CrossByte `IDataInput` and
+		`IDataOutput` -- little-endian unless the application changed it. It holds across `open()` and
+		`openAsync()`, and changing it while a file is open applies to what is read and written next.
+
+		@default ByteArray.defaultEndian
 	**/
 	public var endian(get, set):Endian;
 
@@ -97,11 +115,13 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		Specifies whether the HXSF, JSON, AMF3 or AMF0 format is used when writing or reading binary
 		data by using the readObject() or writeObject() method.
 
-		The value is a constant from the ObjectEncoding class. `HXSF` is the default and `JSON`
-		is always available. `AMF0` and `AMF3` are read and written only when the optional
-		`format` haxelib is on the build -- `-lib format`. Asking for one this build cannot do
-		throws, rather than reading `null` or writing nothing.
+		The value is a constant from the ObjectEncoding class, and starts as
+		`ByteArray.defaultObjectEncoding`: `HXSF` unless the application changed it. `JSON` is always
+		available. `AMF0` and `AMF3` are read and written only when the optional `format` haxelib is on
+		the build -- `-lib format`. Asking for one this build cannot do throws, rather than reading
+		`null` or writing nothing.
 
+		@default ByteArray.defaultObjectEncoding
 	**/
 	public var objectEncoding:ObjectEncoding;
 
@@ -114,15 +134,17 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		* When reading from the FileStream object (by using one of the read methods)
 		* When writing to the FileStream object
 
-		The position is defined as a Number (instead of uint) in order to support files larger than
-		232 bytes in length. The value of this property is always a whole number less than 253. If
-		you set this value to a number with a fractional component, the value is rounded down to
-		the nearest integer.
+		A position is a `UInt` read and set as an `Int`: a file can be addressed up to 2,147,483,647
+		bytes (2 GB), and `File.size` refuses a larger one rather than answering wrongly. (AIR's
+		position is a Number, for files past 2^32 bytes; this one is not.)
 
 		When reading a file asyncronously, if you set the position property, the application begins
 		filling the read buffer with the data starting at the specified position, and the bytesAvailable
 		property may be set to 0. Wait for a complete event before using a read method to read data;
 		or wait for a progress event and check the bytesAvailable property before using a read method.
+
+		When writing a file asynchronously, setting the position moves where the next write goes, as
+		it does when writing synchronously; in `APPEND` mode every write goes to the end.
 	**/
 	@:isVar public var position(get, set):UInt;
 
@@ -130,22 +152,24 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		The minimum amount of data to read from disk when reading files asynchronously.
 
 		This property specifies how much data an asynchronous stream attempts to read beyond the current
-		position. Data is read in blocks based on the file system page size. Thus if you set readAhead to
-		9,000 on a computer system with an 8KB (8192 byte) page size, the runtime reads ahead 2 blocks,
-		or 16384 bytes at a time. The default value of this property is infinity: by default a file that
-		is opened to read asynchronously reads as far as the end of the file.
+		position. Data is read in whole blocks of 4,096 bytes: set to 9,000, the stream reads ahead
+		three blocks, 12,288 bytes. The default value of this property is infinity: by default a file
+		that is opened to read asynchronously reads as far as the end of the file, and keeps what it has
+		read, so the stream can seek back without reading it again. A finite value bounds the buffer: what
+		has been read is let go of as the reader moves on.
 
 		Reading data from the read buffer does not change the value of the readAhead property. When you
 		read data from the buffer, new data is read in to refill the read buffer.
 
-		The readAhead property has no effect on a file that is opened synchronously.
+		The readAhead property has no effect on a file that is opened synchronously, nor where there
+		are no threads (Node), where the file is read to its end at once.
 
 		As data is read in asynchronously, the FileStream object dispatches progress events. In the event
 		handler method for the progress event, check to see that the required number of bytes is available
 		(by checking the bytesAvailable property), and then read the data from the read buffer by using a
 		read method.
 	**/
-	public var readAhead:Float = Math.POSITIVE_INFINITY;
+	public var readAhead(default, set):Float = Math.POSITIVE_INFINITY;
 
 	/**
 		The isWriting property returns a bool used to identify the write state of asynchronous Update,
@@ -157,38 +181,31 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	@:noCompletion private var __output:FileOutput;
 	@:noCompletion private var __fileMode:FileMode;
 	@:noCompletion private var __file:File;
-	@:noCompletion private var __fileStreamWorker:Worker;
-	@:noCompletion private var __isOpen:Bool;
-	@:noCompletion private var __isWrite:Bool;
-	@:noCompletion private var __isAsync:Bool;
-	@:noCompletion private var __pendingClose:Bool;
-	// TODO:
-	// Find another way to handle the situation where writeBytes has zero length during WRITE async mode.
-	@:noCompletion private var __isZeroLength:Bool = false;
+	@:noCompletion private var __isOpen:Bool = false;
+	@:noCompletion private var __isAsync:Bool = false;
+	@:noCompletion private var __endian:Endian;
 	@:noCompletion private var __positionDirty:Bool = false;
-	@:noCompletion private var __buffer:ByteArray;
-	@:noCompletion private var __fileStreamMutex:Mutex;
+	// Eight bytes to read a number into, or write one from, in the stream's
+	// byte order: one call into the file instead of one per byte, and no
+	// allocation per number.
+	@:noCompletion private var __scratch:Bytes;
+	// Everything about an asynchronously opened file, its worker included.
+	// A reopened stream gets a new one, so a worker still finishing the last
+	// file never touches the next.
+	@:noCompletion private var __async:Null<AsyncFile>;
+	// The most an asynchronous stream reads from the file at once.
 	@:noCompletion private var __pageSize:Int = 4096000;
-	// Asynchronous reading. The buffer holds the file from __bufferStart on;
-	// a position outside it bumps __loadGeneration, which tells the loader to
-	// start again from there. __loaded says it has reached the end.
-	@:noCompletion private var __bufferStart:Int = 0;
-	@:noCompletion private var __loadGeneration:Int = 0;
-	@:noCompletion private var __loaded:Bool = false;
-	@:noCompletion private var __reloadPending:Bool = false;
-	@:noCompletion private var __loaderWork:Dynamic->Void;
+	// Where an asynchronous write began in its segment; see __endAsyncWrite.
+	@:noCompletion private var __segmentStart:Int = 0;
 
 	/**
 		Creates a FileStream object. Use the open() or openAsync() method to open a file.
 	**/
 	public function new() {
 		super();
-		__isOpen = false;
-		isWriting = false;
-		__pendingClose = false;
-
-		objectEncoding = HXSF;
-		position = 0;
+		__endian = ByteArray.defaultEndian;
+		objectEncoding = ByteArray.defaultObjectEncoding;
+		__scratch = Bytes.alloc(8);
 	}
 
 	/**
@@ -219,54 +236,39 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		Output data is still available to written, and output-related events (such as the
 		outputProgress event or the ioError event) have registered event listeners.
 
+		An asynchronous file closed while it is still being read stops reading: no `complete`
+		follows, only `close`. One closed with writes still pending writes them first.
+
 		@event close    			The file, which was opened asynchronously, is closed.
 	**/
 	public function close():Void {
-		if (!__isOpen || __pendingClose) {
+		if (!__isOpen) {
 			return;
 		}
 
-		var async = __isAsync;
-		if (async) {
-			__fileStreamMutex.acquire();
-			// Only defer the close to the worker if it is still actively
-			// running. If the worker has already finished (completed or
-			// canceled) there will be no further worker event to honor
-			// __pendingClose, so we must close the handle here to avoid
-			// leaking it.
-			if (__fileStreamWorker != null && __fileStreamWorker.running && !__fileStreamWorker.canceled) {
-				__pendingClose = true;
-				__fileStreamMutex.release();
-				return;
-			}
+		var session:Null<AsyncFile> = __async;
+
+		if (session == null) {
+			__releaseSync();
+			return;
 		}
 
-		__isOpen = false;
-		__isAsync = false;
-		__pendingClose = false;
-		__buffer = null;
+		session.mutex.acquire();
+		var already:Bool = session.closing;
+		session.closing = true;
+		session.mutex.release();
 
-		if (__output != null) {
-			__output.close();
-			__output = null;
+		if (already) {
+			return;
 		}
 
-		if (__input != null) {
-			__input.close();
-			__input = null;
+		if (session.worker != null && session.worker.running) {
+			// The worker writes what is pending, or stops reading, lets go of
+			// the file and says so; `close` follows that.
+			return;
 		}
 
-		if (async) {
-			__fileStreamMutex.release();
-		}
-
-		position = 0;
-		__positionDirty = false;
-
-		if (__fileStreamWorker != null) {
-			__disposeFileStreamWorker();
-			dispatchEvent(new Event(Event.CLOSE));
-		}
+		__finishAsyncClose(session);
 	}
 
 	/**
@@ -278,7 +280,8 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		file.
 
 		On systems that support file locking, a file opened in "write" or "update" mode
-		(FileMode.WRITE or FileMode.UPDATE) is not readable until it is closed.
+		(FileMode.WRITE or FileMode.UPDATE) is not readable until it is closed. CrossByte locks
+		nothing: on every platform it runs on, another reader sees the file as it is.
 
 		Once you are done performing operations on the file, call the close() method of the
 		FileStream object. Some operating systems limit the number of concurrently open files.
@@ -289,27 +292,12 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		open the file; you are opening a file for read access, and you do not have read
 		permissions; or you are opening a file for write access, and you do not have write
 		permissions.
-		@throws 	SecurityError The file location is in the application directory, and the
-		fileMode parameter is set to "append", "update", or "write" mode.
 	 */
 	public function open(file:File, fileMode:FileMode):Void {
+		__closeQuietly();
 		__file = file;
 		__fileMode = fileMode;
-
-		__openFile();
-	}
-
-	@:noCompletion private function __disposeFileStreamWorker():Void {
-		if (__fileStreamWorker == null) {
-			return;
-		}
-
-		__fileStreamWorker.removeEventListener(ThreadEvent.COMPLETE, __onFileStreamWorkerComplete);
-		__fileStreamWorker.removeEventListener(ThreadEvent.ERROR, __onFileStreamWorkerError);
-		__fileStreamWorker.removeEventListener(ThreadEvent.PROGRESS, __onFileStreamWorkerProgress);
-
-		__fileStreamWorker.cancel();
-		__fileStreamWorker = null;
+		__openSync();
 	}
 
 	/**
@@ -324,10 +312,17 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		as the data is read to the input buffer.
 
 		On systems that support file locking, a file opened in "write" or "update" mode (FileMode.WRITE
-		or FileMode.UPDATE) is not readable until it is closed.
+		or FileMode.UPDATE) is not readable until it is closed. CrossByte locks nothing.
 
 		Once you are done performing operations on the file, call the close() method of the FileStream
 		object. Some operating systems limit the number of concurrently open files.
+
+		A file that cannot be opened is reported as an `ioError` event, after this returns, so a
+		listener added straight afterwards hears it; the stream is then not open.
+
+		In `UPDATE` mode the file is read into the buffer as in `READ` mode, reads come from it, and
+		a write lands in the file and in the buffer at the stream's position, so what is read
+		afterwards is what was written.
 
 		@param 		file The File object specifying the file to open.
 		@param 		 A string from the FileMode class that defines the capabilities of the
@@ -339,8 +334,8 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		with the fileMode parameter set to FileMode.READ or FileMode.UPDATE.)
 		@event		complete The file data has been read to the input buffer. (The file must be opened
 		with the fileMode parameter set to FileMode.READ or FileMode.UPDATE.)
-		@throws 	SecurityError The file location is in the application directory, and the
-		fileMode parameter is set to "append", "update", or "write" mode.
+		@throws 	IllegalOperationError `fileMode` writes, and the target has no threads to write
+		with (Node).
 	 */
 	public function openAsync(file:File, fileMode:FileMode):Void {
 		#if !target.threaded
@@ -352,314 +347,233 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		}
 		#end
 
+		// It made the new worker first and then closed the open stream, which
+		// disposed of the new worker: a Null Access, whether what was open had
+		// been opened with open() or openAsync().
+		__closeQuietly();
+		__file = file;
+		__fileMode = fileMode;
+
+		var session:AsyncFile = new AsyncFile(file, fileMode, __endian, readAhead, __pageSize);
+
+		try {
+			session.openHandles();
+		} catch (e:Dynamic) {
+			session.releaseHandles();
+			// An event, as documented, which it was not: this threw. Posted,
+			// so that a listener added after this returns hears it.
+			var text:String = 'Could not open "${file.nativePath}" to ${Std.string(fileMode)}: ${__describe(e)}';
+			if (!__postIoError(text, 3003)) {
+				throw new IOError(text);
+			}
+			return;
+		}
+
+		__async = session;
 		__isAsync = true;
+		__isOpen = true;
+		__positionDirty = false;
 
-		__fileStreamMutex = new Mutex();
-
-		__fileStreamWorker = new Worker();
-		__fileStreamWorker.addEventListener(ThreadEvent.COMPLETE, __onFileStreamWorkerComplete);
-		__fileStreamWorker.addEventListener(ThreadEvent.ERROR, __onFileStreamWorkerError);
-		__fileStreamWorker.addEventListener(ThreadEvent.PROGRESS, __onFileStreamWorkerProgress);
-
-		open(file, fileMode);
-
-		if (fileMode == READ) {
-			// Grows as data arrives. It was allocated at the file's full size
-			// up front, so bytesAvailable counted bytes nobody had read from
-			// disk yet, and reading "what is available" from a progress handler
-			// -- as this class's own documentation says to -- returned zeros:
-			// 6.4 MB of them from a 10 MB file. The whole file also stayed in
-			// memory whatever readAhead said.
-			__buffer = new ByteArray();
-			__bufferStart = 0;
-			__loadGeneration = 0;
-			__loaded = false;
-
-			var fileSize:Int = file.size;
-
-			__loaderWork = function(m:Dynamic) {
-				__loadAsync(fileSize);
-			};
-			__fileStreamWorker.doWork = __loaderWork;
-		} else {
-			__buffer = new ByteArray();
-
-			__fileStreamWorker.doWork = function(m:Dynamic) {
-				var bytesLoaded:Int = 0;
-
-				while (__fileStreamWorker != null) {
-					crossbyte._internal.system.Sleep.sleep(.001);
-
-					__fileStreamMutex.acquire();
-					while (isWriting) {
-						while (__buffer.length > bytesLoaded || __isZeroLength) {
-							try {
-								var maxBytes:Int = Std.int(Math.min(__pageSize, __buffer.length - bytesLoaded));
-
-								__output.writeBytes(__buffer, bytesLoaded, maxBytes);
-								bytesLoaded += maxBytes;
-
-								__file.__fileStatsDirty = true;
-								__isZeroLength = false;
-
-								__fileStreamWorker.sendProgress(new OutputProgressEvent(OutputProgressEvent.OUTPUT_PROGRESS, __buffer.length - bytesLoaded,
-									__buffer.length));
-							} catch (e:Dynamic) {
-								__fileStreamWorker.sendError(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Index is out of bounds."));
-								break;
-							}
-						}
-
-						isWriting = false;
-					}
-					__fileStreamMutex.release();
-					if (__pendingClose) {
-						// close() was called
-						__fileStreamWorker.sendComplete();
-						return;
-					}
-				}
-			}
-		}
-
-		__fileStreamWorker.run();
+		var worker:Worker = new Worker();
+		session.worker = worker;
+		// Closures, not methods: each worker belongs to one file, and what it
+		// says about another is dropped by the session check in each.
+		worker.addEventListener(ThreadEvent.PROGRESS, (event:ThreadEvent) -> __onAsyncNotice(session, event.message));
+		worker.addEventListener(ThreadEvent.COMPLETE, (event:ThreadEvent) -> __onAsyncFinished(session, event.message));
+		worker.addEventListener(ThreadEvent.ERROR, (event:ThreadEvent) -> __onAsyncFailed(session, event.message));
+		worker.doWork = session.run;
+		worker.run();
 	}
 
-	/**
-	 * Loads an asynchronously opened file into the read buffer, on the
-	 * stream's worker.
-	 *
-	 * Appends as it reads, so the buffer only ever holds what has really been
-	 * read. Where the worker has a thread of its own it also waits for the
-	 * reader, loading only while less than `readAhead` is waiting to be read,
-	 * and a finite `readAhead` drops what has been consumed -- together those
-	 * bound the memory to about `readAhead`. Where the worker runs inline
-	 * there is nobody to wait for, so it reads to the end, dispatching
-	 * progress as it goes.
-	 *
-	 * A position set outside what the buffer holds starts the load again
-	 * from there; `__loadGeneration` is how this learns of it.
-	 */
-	@:noCompletion private function __loadAsync(fileSize:Int):Void {
-		var generation:Int = -1;
-		var chunk:Bytes = null;
-
-		while (true) {
-			if (__pendingClose) {
-				// close() was called
-				__fileStreamWorker.sendComplete();
-				return;
-			}
-
-			__fileStreamMutex.acquire();
-
-			if (__buffer == null) {
-				__fileStreamMutex.release();
-				return;
-			}
-
-			var reposition:Bool = generation != __loadGeneration;
-			generation = __loadGeneration;
-			var next:Int = __bufferStart + __buffer.length;
-			var remaining:Int = fileSize - next;
-			var want:Int = remaining < __pageSize ? remaining : __pageSize;
-
-			#if target.threaded
-			if (readAhead != Math.POSITIVE_INFINITY) {
-				var unread:Int = __buffer.length - __buffer.position;
-				// Up to readAhead, in whole 4 KB pages, and nothing while the
-				// reader has that much waiting already.
-				var room:Float = readAhead - unread;
-				want = room <= 0 ? 0 : Std.int(Math.min(want, Math.ceil(room / 4096) * 4096));
-			}
-			#end
-
-			if (remaining <= 0) {
-				__loaded = true;
-			}
-
-			__fileStreamMutex.release();
-
-			if (remaining <= 0) {
-				break;
-			}
-
-			if (want <= 0) {
-				crossbyte._internal.system.Sleep.sleep(0.001);
-				continue;
-			}
-
-			var got:Int = 0;
-
-			try {
-				if (reposition) {
-					__input.seek(next, FileSeek.SeekBegin);
-				}
-
-				if (chunk == null || chunk.length < want) {
-					chunk = Bytes.alloc(want);
-				}
-
-				while (got < want) {
-					var read:Int = 0;
-
-					try {
-						read = __input.readBytes(chunk, got, want - got);
-					} catch (_:haxe.io.Eof) {
-						break;
-					}
-
-					if (read <= 0) {
-						break;
-					}
-
-					got += read;
-				}
-			} catch (e:Dynamic) {
-				__fileStreamWorker.sendError(new IOErrorEvent(IOErrorEvent.IO_ERROR, "The file could not be read: " + Std.string(e)));
-				return;
-			}
-
-			if (got <= 0) {
-				// Shorter than it was when opened.
-				__fileStreamMutex.acquire();
-				__loaded = true;
-				__fileStreamMutex.release();
-				break;
-			}
-
-			__fileStreamMutex.acquire();
-
-			if (__buffer == null || generation != __loadGeneration) {
-				// The reader moved while this was being read; start again.
-				__fileStreamMutex.release();
-				continue;
-			}
-
-			__discardConsumed();
-
-			var cursor:Int = __buffer.position;
-			__buffer.position = __buffer.length;
-			__buffer.writeBytes(ByteArray.fromBytes(chunk), 0, got);
-			__buffer.position = cursor;
-
-			var loaded:Int = __bufferStart + __buffer.length;
-			__fileStreamMutex.release();
-
-			__fileStreamWorker.sendProgress(new ProgressEvent(ProgressEvent.PROGRESS, loaded, fileSize));
-		}
-
-		__fileStreamWorker.sendComplete(new Event(Event.COMPLETE));
-	}
-
-	/**
-	 * Drops what the reader has consumed, when `readAhead` bounds the buffer.
-	 * By default it does not -- the whole file is kept, as it always was, so a
-	 * stream can seek back without reading anything again. Held under the
-	 * stream's mutex.
-	 */
-	@:noCompletion private function __discardConsumed():Void {
-		if (readAhead == Math.POSITIVE_INFINITY) {
+	/** Dispatches what the worker reports, if it reports on the file now open. **/
+	@:noCompletion private function __onAsyncNotice(session:AsyncFile, notice:AsyncNotice):Void {
+		if (session != __async) {
 			return;
 		}
 
-		var consumed:Int = __buffer.position;
+		session.mutex.acquire();
+		var closing:Bool = session.closing;
+		session.mutex.release();
 
-		// Half the buffer or more, so the move is paid for by what it frees.
-		if (consumed == 0 || consumed < __buffer.length - consumed) {
+		switch (notice) {
+			case Read(_, _) | Loaded if (closing):
+				// Reading stopped when close() was called; what it had got to
+				// is not news.
+			case Read(loaded, total):
+				dispatchEvent(new ProgressEvent(ProgressEvent.PROGRESS, loaded, total));
+			case Wrote(pending, total):
+				isWriting = pending > 0;
+				dispatchEvent(new OutputProgressEvent(OutputProgressEvent.OUTPUT_PROGRESS, pending, total));
+			case Loaded:
+				dispatchEvent(new Event(Event.COMPLETE));
+			case Failed(text):
+				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text));
+			case Finished(_):
+		}
+	}
+
+	/** The worker has stopped: for good once the file closes, or until a seek needs more read. **/
+	@:noCompletion private function __onAsyncFinished(session:AsyncFile, notice:AsyncNotice):Void {
+		if (session != __async) {
 			return;
 		}
 
-		var unread:Int = __buffer.length - consumed;
-		var data:Bytes = __buffer;
+		session.mutex.acquire();
+		var closing:Bool = session.closing;
+		var reload:Bool = session.reloadPending;
+		session.reloadPending = false;
+		session.mutex.release();
 
-		if (unread > 0) {
-			data.blit(0, data, consumed, unread);
-		}
-
-		__buffer.length = unread;
-		__buffer.position = 0;
-		__bufferStart += consumed;
-	}
-
-	/**
-	 * Moves the read position of an asynchronously opened file, and when that
-	 * is outside what the buffer holds, starts loading from there instead.
-	 * Held under the stream's mutex; returns whether the loader has to be
-	 * started again because it had already finished.
-	 */
-	@:noCompletion private function __seekAsync(value:Int):Bool {
-		var offset:Int = value - __bufferStart;
-
-		if (offset >= 0 && offset <= __buffer.length) {
-			__buffer.position = offset;
-			return false;
-		}
-
-		__buffer.length = 0;
-		__buffer.position = 0;
-		__bufferStart = value;
-		__loadGeneration++;
-
-		var restart:Bool = __loaded;
-		__loaded = false;
-		return restart;
-	}
-
-	/**
-	 * Starts the loader again after a position outside the buffer, or, while
-	 * it is still finishing its last load, has its completion do so.
-	 */
-	@:noCompletion private function __restartLoader():Void {
-		if (__fileStreamWorker == null || __loaderWork == null) {
+		if (closing) {
+			// No complete for a file closed while it was being read.
+			__finishAsyncClose(session);
 			return;
 		}
 
-		if (__fileStreamWorker.running) {
-			__reloadPending = true;
+		switch (notice) {
+			case Finished(true):
+				dispatchEvent(new Event(Event.COMPLETE));
+			default:
+		}
+
+		if (reload && session == __async && session.worker != null) {
+			__restartLoader(session);
+		}
+	}
+
+	/** The worker threw: the file could not be read or written. **/
+	@:noCompletion private function __onAsyncFailed(session:AsyncFile, error:Dynamic):Void {
+		if (session != __async) {
+			return;
+		}
+
+		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "The file could not be read or written: " + __describe(error)));
+
+		session.mutex.acquire();
+		var closing:Bool = session.closing;
+		session.mutex.release();
+
+		if (closing) {
+			__finishAsyncClose(session);
+		}
+	}
+
+	/** Starts reading again after a seek outside what the buffer holds. **/
+	@:noCompletion private function __restartLoader(session:AsyncFile):Void {
+		var worker:Null<Worker> = session.worker;
+
+		if (worker == null) {
+			return;
+		}
+
+		if (worker.running) {
+			session.mutex.acquire();
+			session.reloadPending = true;
+			session.mutex.release();
 			return;
 		}
 
 		// cancel() cleared the body along with everything else.
-		__fileStreamWorker.doWork = __loaderWork;
-		__fileStreamWorker.run();
+		worker.doWork = session.run;
+		worker.run();
 	}
 
-	private function __onFileStreamWorkerComplete(e:ThreadEvent):Void {
-		var event:Event = e.message;
+	@:noCompletion private function __finishAsyncClose(session:AsyncFile):Void {
+		if (session != __async) {
+			return;
+		}
 
-		// close() checks the canceled property to determine if it should
-		// actually close or wait for the worker to finish
-		__fileStreamWorker.cancel();
-		if (e != null) {
-			dispatchEvent(e);
-		}
-		if (__pendingClose) {
-			__pendingClose = false;
-			close();
-		} else if (__reloadPending && __fileStreamWorker != null) {
-			__reloadPending = false;
-			__restartLoader();
-		}
+		session.releaseHandles();
+		__disposeWorker(session);
+		__async = null;
+		__isOpen = false;
+		__isAsync = false;
+		isWriting = false;
+		position = 0;
+		__positionDirty = false;
+		dispatchEvent(new Event(Event.CLOSE));
 	}
 
-	private function __onFileStreamWorkerProgress(e:ThreadEvent):Void {
-		var event:Event = e.message;
-		dispatchEvent(event);
+	/**
+		Whatever is open, closed without a `close` event: what opening another
+		file does first. Pending asynchronous writes are still written, and
+		waited for, briefly, so that the next file is not opened while the
+		last is still being written.
+	**/
+	@:noCompletion private function __closeQuietly():Void {
+		if (!__isOpen) {
+			return;
+		}
+
+		var session:Null<AsyncFile> = __async;
+
+		if (session != null) {
+			__async = null;
+			session.mutex.acquire();
+			session.abandoned = true;
+			session.mutex.release();
+
+			var worker:Null<Worker> = session.worker;
+			var running:Bool = worker != null && worker.running;
+			__disposeWorker(session);
+
+			if (running) {
+				#if target.threaded
+				var deadline:Float = haxe.Timer.stamp() + 10;
+
+				while (!session.isFinished() && haxe.Timer.stamp() < deadline) {
+					crossbyte._internal.system.Sleep.sleep(0.001);
+				}
+				#end
+			}
+
+			if (!running || session.isFinished()) {
+				session.releaseHandles();
+			}
+		} else {
+			__releaseSync();
+		}
+
+		__isOpen = false;
+		__isAsync = false;
+		isWriting = false;
+		position = 0;
+		__positionDirty = false;
 	}
 
-	private function __onFileStreamWorkerError(e:ThreadEvent):Void {
-		var event:Event = e.message;
-		// close() checks the canceled property to determine if it should
-		// actually close or wait for the worker to finish
-		__fileStreamWorker.cancel();
-		if (e != null) {
-			dispatchEvent(e);
+	@:noCompletion private function __disposeWorker(session:AsyncFile):Void {
+		var worker:Null<Worker> = session.worker;
+
+		if (worker == null) {
+			return;
 		}
-		if (__pendingClose) {
-			__pendingClose = false;
-			close();
+
+		session.worker = null;
+		worker.removeAllListeners();
+		// Without cleaning: cleaning clears the body, and a worker whose
+		// thread has not yet reached it would then never run -- and never
+		// write what was pending, nor let go of the file.
+		worker.cancel(false);
+	}
+
+	@:noCompletion private function __releaseSync():Void {
+		if (__output != null) {
+			try {
+				__output.close();
+			} catch (_:Dynamic) {}
+			__output = null;
 		}
+
+		if (__input != null) {
+			try {
+				__input.close();
+			} catch (_:Dynamic) {}
+			__input = null;
+		}
+
+		__isOpen = false;
+		position = 0;
+		__positionDirty = false;
 	}
 
 	/**
@@ -677,14 +591,25 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 */
 	public function readBoolean():Bool {
 		__checkIfReadable();
-		__positionDirty = true;
+
 		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			var result = __buffer.readBoolean();
-			__fileStreamMutex.release();
-			return result;
+			var buffer:ByteArray = __lockReadBuffer();
+			var start:Int = buffer.position;
+			try {
+				var value:Bool = buffer.readBoolean();
+				__async.mutex.release();
+				return value;
+			} catch (e:Dynamic) {
+				// Nothing consumed by a read that fails, as on a synchronous stream.
+				buffer.position = start;
+				__async.mutex.release();
+				throw e;
+			}
 		}
-		return __input.readByte() == 1;
+
+		// Any nonzero byte, as documented and as ByteArray reads one. It was
+		// `== 1`, so a 2 read as false.
+		return __take(1).get(0) != 0;
 	}
 
 	/**
@@ -701,16 +626,24 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 */
 	public function readByte():Int {
 		__checkIfReadable();
-		__positionDirty = true;
 
 		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			var result = __buffer.readByte();
-			__fileStreamMutex.release();
-			return result;
+			var buffer:ByteArray = __lockReadBuffer();
+			var start:Int = buffer.position;
+			try {
+				var value:Int = buffer.readByte();
+				__async.mutex.release();
+				return value;
+			} catch (e:Dynamic) {
+				buffer.position = start;
+				__async.mutex.release();
+				throw e;
+			}
 		}
 
-		return __input.readByte();
+		// Signed, as documented. It was the unsigned byte: 0xFF read as 255.
+		var value:Int = __take(1).get(0);
+		return value >= 0x80 ? value - 0x100 : value;
 	}
 
 	/**
@@ -733,17 +666,24 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		__checkIfReadable();
 
 		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			__buffer.readBytes(bytes, offset, length);
-			__fileStreamMutex.release();
-			__positionDirty = true;
-			return;
+			var buffer:ByteArray = __lockReadBuffer();
+			var start:Int = buffer.position;
+			try {
+				buffer.readBytes(bytes, offset, length);
+				__async.mutex.release();
+				return;
+			} catch (e:Dynamic) {
+				buffer.position = start;
+				__async.mutex.release();
+				throw e;
+			}
 		}
 
 		if (length == 0) {
+			var at:Int = __input.tell();
 			__input.seek(0, FileSeek.SeekEnd);
-			length = __input.tell() - position;
-			__input.seek(position, FileSeek.SeekBegin);
+			length = __input.tell() - at;
+			__input.seek(at, FileSeek.SeekBegin);
 		}
 
 		var byteArrayData:ByteArrayData = bytes;
@@ -755,23 +695,9 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		// `Bytes` per call and copy it across, which at a 64 KB slice is
 		// roughly sixteen thousand transient allocations and a second copy
 		// of every byte for each gigabyte streamed.
-		var read:Int = 0;
+		var read:Int = __readFully(byteArrayData, offset, length);
 
-		while (read < length) {
-			var got:Int = 0;
-
-			try {
-				got = __input.readBytes(byteArrayData, offset + read, length - read);
-			} catch (_:haxe.io.Eof) {
-				break;
-			}
-
-			if (got <= 0) {
-				break;
-			}
-
-			read += got;
-		}
+		__positionDirty = true;
 
 		if (read < length) {
 			// The contract above: not enough data is an EOFError. A short read
@@ -784,11 +710,8 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 				__input.seek(-read, FileSeek.SeekCur);
 			}
 
-			__positionDirty = true;
 			throw new EOFError('Asked for $length bytes with ${read} left in the file.');
 		}
-
-		__positionDirty = true;
 	}
 
 	/**
@@ -806,16 +729,24 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 */
 	public function readDouble():Float {
 		__checkIfReadable();
-		__positionDirty = true;
 
 		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			var result = __buffer.readDouble();
-			__fileStreamMutex.release();
-			return result;
+			var buffer:ByteArray = __lockReadBuffer();
+			var start:Int = buffer.position;
+			try {
+				var value:Float = buffer.readDouble();
+				__async.mutex.release();
+				return value;
+			} catch (e:Dynamic) {
+				buffer.position = start;
+				__async.mutex.release();
+				throw e;
+			}
 		}
 
-		return __input.readDouble();
+		var bytes:Bytes = __take(8);
+		return __endian == LITTLE_ENDIAN ? FPHelper.i64ToDouble(__i32(bytes, 0), __i32(bytes, 4)) : FPHelper.i64ToDouble(__i32(bytes, 4),
+			__i32(bytes, 0));
 	}
 
 	/**
@@ -832,16 +763,22 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 */
 	public function readFloat():Float {
 		__checkIfReadable();
-		__positionDirty = true;
 
 		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			var result = __buffer.readFloat();
-			__fileStreamMutex.release();
-			return result;
+			var buffer:ByteArray = __lockReadBuffer();
+			var start:Int = buffer.position;
+			try {
+				var value:Float = buffer.readFloat();
+				__async.mutex.release();
+				return value;
+			} catch (e:Dynamic) {
+				buffer.position = start;
+				__async.mutex.release();
+				throw e;
+			}
 		}
 
-		return __input.readFloat();
+		return FPHelper.i32ToFloat(__i32(__take(4), 0));
 	}
 
 	/**
@@ -858,25 +795,34 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 */
 	public function readInt():Int {
 		__checkIfReadable();
-		__positionDirty = true;
 
 		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			var result = __buffer.readInt();
-			__fileStreamMutex.release();
-			return result;
+			var buffer:ByteArray = __lockReadBuffer();
+			var start:Int = buffer.position;
+			try {
+				var value:Int = buffer.readInt();
+				__async.mutex.release();
+				return value;
+			} catch (e:Dynamic) {
+				buffer.position = start;
+				__async.mutex.release();
+				throw e;
+			}
 		}
 
-		return __input.readInt32();
+		return __i32(__take(4), 0);
 	}
 
 	/**
-	 * Reads a multibyte string of specified length from the file stream, byte stream, or byte array using
-	 * the specified character set.
+	 * Reads a multibyte string of specified length from the file stream, byte stream, or byte array.
+	 *
+	 * The bytes are read as UTF-8, whatever `charSet` names, as `ByteArray.readMultiByte` reads them:
+	 * CrossByte reads and writes text as UTF-8 everywhere, and carries no tables for other character
+	 * sets. `charSet` is accepted so that code written for AIR compiles; a file in another encoding has
+	 * to be decoded by the caller, from `readBytes`.
 	 *
 	 * @param		length The number of bytes from the byte stream to read.
-	 * @param		charSet The string denoting the character set to use to interpret the bytes. Possible
-	 * character set strings include "shift-jis", "cn-gb", "iso-8859-1", and others.	 *
+	 * @param		charSet Ignored: the bytes are read as UTF-8.
 	 * @return		UTF-8 encoded string.
 	 * @event 		ioError The file cannot be read or the file is not open. This event is dispatched only
 	 * for files opened for asynchronous operations (by using the openAsync() method).
@@ -887,21 +833,16 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * (specified by the bytesAvailable property).
 	 */
 	public function readMultiByte(length:Int, charSet:String):String {
-		__checkIfReadable();
-		__positionDirty = true;
-
-		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			var result = __buffer.readMultiByte(length, charSet);
-			__fileStreamMutex.release();
-			return result;
-		}
-
 		return readUTFBytes(length);
 	}
 
 	/**
-	 * Reads an object from the file stream, byte stream, or byte array, encoded in AMF serialized format.
+	 * Reads an object from the file stream, byte stream, or byte array, in the format
+	 * `objectEncoding` names, as `writeObject` wrote it.
+	 *
+	 * One object, and only its bytes: what follows it in the file is left for the next read. HXSF and
+	 * JSON are a 32-bit length in the stream's byte order and then that many bytes of UTF-8; AMF0 and
+	 * AMF3 are their own encodings, which say where they end.
 	 *
 	 * @return The deserialized object
 	 * @event 		ioError The file cannot be read or the file is not open. This event is dispatched only
@@ -916,47 +857,100 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		__checkIfReadable();
 
 		if (__isAsync) {
-			__positionDirty = true;
-			__fileStreamMutex.acquire();
-			var result = __buffer.readObject();
-			__fileStreamMutex.release();
-			return result;
+			var buffer:ByteArray = __lockReadBuffer();
+			var start:Int = buffer.position;
+			try {
+				var value:Dynamic = __readObjectFrom(buffer);
+				__async.mutex.release();
+				return value;
+			} catch (e:Dynamic) {
+				buffer.position = start;
+				__async.mutex.release();
+				throw e;
+			}
 		}
+
+		__positionDirty = true;
 
 		switch (objectEncoding) {
 			#if format
-			case AMF0:
-				var bytes:Bytes = Bytes.alloc(bytesAvailable);
-				__input.readBytes(bytes, 0, bytesAvailable);
-
-				var input = new BytesInput(bytes, 0);
-				var reader = new AMFReader(input);
-				var data = ByteArrayData.unwrapAMFValue(reader.read());
-				__positionDirty = true;
-				return data;
-
-			case AMF3:
-				var bytes:Bytes = Bytes.alloc(bytesAvailable);
-				__input.readBytes(bytes, 0, bytesAvailable);
-
-				var input = new BytesInput(bytes, 0);
-				var reader = new AMF3Reader(input);
-				var data = ByteArrayData.unwrapAMF3Value(reader.read());
-				__positionDirty = true;
-				return data;
+			case AMF0 | AMF3:
+				// Read through the file itself, which stops where the object
+				// does. Every byte from here to the end of the file was read
+				// into a buffer and the rest thrown away, so a second object
+				// was never there to read.
+				var start:Int = __input.tell();
+				try {
+					return objectEncoding == AMF0 ? ByteArrayData.unwrapAMFValue(new AMFReader(__input).read()) : ByteArrayData.unwrapAMF3Value(new AMF3Reader(__input).read());
+				} catch (_:haxe.io.Eof) {
+					__input.seek(start, FileSeek.SeekBegin);
+					throw new EOFError("The object runs past the end of the file.");
+				}
 			#end
 
-			case HXSF:
-				var data = readUTF();
-				return Unserializer.run(data);
+			case HXSF | JSON:
+				var length:Int = __i32(__take(4), 0);
 
-			case JSON:
-				var data = readUTF();
-				return Json.parse(data);
+				if (length < 0 || length > __getStreamBytesAvailable()) {
+					__input.seek(-4, FileSeek.SeekCur);
+					throw new EOFError("The object runs past the end of the file.");
+				}
+
+				var body:Bytes = Bytes.alloc(length);
+				var read:Int = __readFully(body, 0, length);
+
+				if (read < length) {
+					__input.seek(-(read + 4), FileSeek.SeekCur);
+					throw new EOFError("The object runs past the end of the file.");
+				}
+
+				return __parseObject(crossbyte._internal.Utf8.stringOf(body, 0, length));
 
 			default:
 				throw new Error(ByteArrayData.__unsupportedEncoding(objectEncoding));
 		}
+	}
+
+	/** One object from the asynchronous read buffer, under its lock. **/
+	@:noCompletion private function __readObjectFrom(buffer:ByteArray):Dynamic {
+		var start:Int = buffer.position;
+
+		switch (objectEncoding) {
+			#if format
+			case AMF0 | AMF3:
+				var input:BytesInput = new BytesInput(buffer, start, buffer.length - start);
+				try {
+					var value:Dynamic = objectEncoding == AMF0 ? ByteArrayData.unwrapAMFValue(new AMFReader(input).read()) : ByteArrayData.unwrapAMF3Value(new AMF3Reader(input).read());
+					buffer.position = input.position;
+					return value;
+				} catch (_:haxe.io.Eof) {
+					buffer.position = start;
+					throw new EOFError("The object runs past what has been read.");
+				}
+			#end
+
+			case HXSF | JSON:
+				if (buffer.bytesAvailable < 4) {
+					throw new EOFError("The object runs past what has been read.");
+				}
+
+				buffer.endian = __endian;
+				var length:Int = buffer.readUnsignedInt();
+
+				if (length < 0 || length > buffer.bytesAvailable) {
+					buffer.position = start;
+					throw new EOFError("The object runs past what has been read.");
+				}
+
+				return __parseObject(buffer.readUTFBytes(length));
+
+			default:
+				throw new Error(ByteArrayData.__unsupportedEncoding(objectEncoding));
+		}
+	}
+
+	@:noCompletion private function __parseObject(text:String):Dynamic {
+		return objectEncoding == JSON ? Json.parse(text) : Unserializer.run(text);
 	}
 
 	/**
@@ -973,16 +967,23 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 */
 	public function readShort():Int {
 		__checkIfReadable();
-		__positionDirty = true;
 
 		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			var result = __buffer.readShort();
-			__fileStreamMutex.release();
-			return result;
+			var buffer:ByteArray = __lockReadBuffer();
+			var start:Int = buffer.position;
+			try {
+				var value:Int = buffer.readShort();
+				__async.mutex.release();
+				return value;
+			} catch (e:Dynamic) {
+				buffer.position = start;
+				__async.mutex.release();
+				throw e;
+			}
 		}
 
-		return __input.readInt16();
+		var value:Int = __u16(__take(2));
+		return value >= 0x8000 ? value - 0x10000 : value;
 	}
 
 	/**
@@ -999,16 +1000,22 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 */
 	public function readUnsignedByte():UInt {
 		__checkIfReadable();
-		__positionDirty = true;
 
 		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			var result = __buffer.readUnsignedByte();
-			__fileStreamMutex.release();
-			return result;
+			var buffer:ByteArray = __lockReadBuffer();
+			var start:Int = buffer.position;
+			try {
+				var value:Int = buffer.readUnsignedByte();
+				__async.mutex.release();
+				return value;
+			} catch (e:Dynamic) {
+				buffer.position = start;
+				__async.mutex.release();
+				throw e;
+			}
 		}
 
-		return ByteArray.fromBytes(__input.read(1)).readUnsignedByte();
+		return __take(1).get(0);
 	}
 
 	/**
@@ -1025,16 +1032,22 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 */
 	public function readUnsignedInt():UInt {
 		__checkIfReadable();
-		__positionDirty = true;
 
 		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			var result = __buffer.readUnsignedInt();
-			__fileStreamMutex.release();
-			return result;
+			var buffer:ByteArray = __lockReadBuffer();
+			var start:Int = buffer.position;
+			try {
+				var value:Int = buffer.readUnsignedInt();
+				__async.mutex.release();
+				return value;
+			} catch (e:Dynamic) {
+				buffer.position = start;
+				__async.mutex.release();
+				throw e;
+			}
 		}
 
-		return __input.readInt32();
+		return __i32(__take(4), 0);
 	}
 
 	/**
@@ -1050,16 +1063,22 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 */
 	public function readUnsignedShort():UInt {
 		__checkIfReadable();
-		__positionDirty = true;
 
 		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			var result = __buffer.readUnsignedShort();
-			__fileStreamMutex.release();
-			return result;
+			var buffer:ByteArray = __lockReadBuffer();
+			var start:Int = buffer.position;
+			try {
+				var value:Int = buffer.readUnsignedShort();
+				__async.mutex.release();
+				return value;
+			} catch (e:Dynamic) {
+				buffer.position = start;
+				__async.mutex.release();
+				throw e;
+			}
 		}
 
-		return __input.readUInt16();
+		return __u16(__take(2));
 	}
 
 	/**
@@ -1078,17 +1097,31 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 */
 	public function readUTF():String {
 		__checkIfReadable();
-		__positionDirty = true;
 
 		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			var result = __buffer.readUTF();
-			__fileStreamMutex.release();
-			return result;
+			var buffer:ByteArray = __lockReadBuffer();
+			var start:Int = buffer.position;
+			try {
+				var value:String = buffer.readUTF();
+				__async.mutex.release();
+				return value;
+			} catch (e:Dynamic) {
+				buffer.position = start;
+				__async.mutex.release();
+				throw e;
+			}
 		}
 
-		var length:Int = __input.readUInt16();
-		return __input.readString(length);
+		var length:Int = __u16(__take(2));
+		var body:Bytes = Bytes.alloc(length);
+		var read:Int = __readFully(body, 0, length);
+
+		if (read < length) {
+			__input.seek(-(read + 2), FileSeek.SeekCur);
+			throw new EOFError('The string is $length bytes, and ${read} are left in the file.');
+		}
+
+		return crossbyte._internal.Utf8.stringOf(body, 0, length);
 	}
 
 	/**
@@ -1105,52 +1138,83 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 */
 	public function readUTFBytes(length:Int):String {
 		__checkIfReadable();
-		__positionDirty = true;
 
 		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			var result = __buffer.readUTFBytes(length);
-			__fileStreamMutex.release();
-			return result;
+			var buffer:ByteArray = __lockReadBuffer();
+			var start:Int = buffer.position;
+			try {
+				var value:String = buffer.readUTFBytes(length);
+				__async.mutex.release();
+				return value;
+			} catch (e:Dynamic) {
+				buffer.position = start;
+				__async.mutex.release();
+				throw e;
+			}
 		}
 
-		return __input.readString(length);
+		if (length < 0) {
+			throw new EOFError('Asked for $length bytes.');
+		}
+
+		var body:Bytes = Bytes.alloc(length);
+		var read:Int = __readFully(body, 0, length);
+
+		if (read < length) {
+			if (read > 0) {
+				__input.seek(-read, FileSeek.SeekCur);
+			}
+			throw new EOFError('Asked for $length bytes with ${read} left in the file.');
+		}
+
+		return crossbyte._internal.Utf8.stringOf(body, 0, length);
 	}
 
 	/**
 	 * Truncates the file at the position specified by the position property of the FileStream object.
 	 *
 	 * Bytes from the position specified by the position property to the end of the file are deleted.
-	 * The file must be open for writing.
+	 * The file must be open for writing. A position past the end extends the file with zeros. The
+	 * stream stays open, at the same position; an asynchronous stream truncates after the writes
+	 * already pending, and its read buffer loses what was past the position too.
+	 *
 	 * @throws 		IllegalOperationError The file is not open for writing.
 	 */
 	public function truncate():Void {
 		__checkIfOpen();
 
-		var targetPosition:Int = position;
-		var fileMode:FileMode = __fileMode;
-		var isAsync:Bool = __isAsync;
-		var reopenMode = switch (fileMode) {
-			case WRITE, APPEND: UPDATE;
-			default: fileMode;
+		// It checked only that the stream was open, so a stream opened to read
+		// cut the file it was reading.
+		if (__fileMode == READ) {
+			throw new IllegalOperationError("The file is open to read; truncate() needs it open to write.");
 		}
-		close();
 
-		var fileBytes:Bytes = HaxeFile.getBytes(__file.nativePath);
-		var truncatedLength = Std.int(Math.min(targetPosition, fileBytes.length));
-		var truncatedBytes = Bytes.alloc(targetPosition);
-		truncatedBytes.blit(0, fileBytes, 0, truncatedLength);
+		var at:Int = position;
 
-		HaxeFile.saveBytes(__file.nativePath, truncatedBytes);
-
-		if (isAsync) {
-			openAsync(__file, reopenMode);
-		} else {
-			open(__file, reopenMode);
+		if (__isAsync) {
+			__async.truncate(at);
+			isWriting = true;
+			return;
 		}
-		position = targetPosition;
 
-		__file.__fileStatsDirty = true;
+		// In place, through the system's truncate. It closed the stream, read
+		// the whole file into memory, wrote back the part it kept and opened
+		// the file again: a file's size of memory, and a window in which a
+		// crash left the file empty.
+		try {
+			__output.flush();
+			FileOps.truncate(__file.nativePath, at);
+		} catch (e:Dynamic) {
+			throw new IOError('Could not truncate "${__file.nativePath}" at $at: ${__describe(e)}');
+		}
+
+		__output.seek(at, FileSeek.SeekBegin);
+		if (__input != null) {
+			__input.seek(at, FileSeek.SeekBegin);
+		}
+
+		position = at;
+		__positionDirty = false;
 	}
 
 	/**
@@ -1167,20 +1231,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
 	 */
 	public function writeBoolean(value:Bool):Void {
-		__checkIfWritable();
-
-		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			__buffer.writeBoolean(value);
-			isWriting = true;
-			__fileStreamMutex.release();
-
-			return;
-		}
-
-		__output.writeByte(value ? 1 : 0);
-		__file.__fileStatsDirty = true;
-		__positionDirty = true;
+		writeByte(value ? 1 : 0);
 	}
 
 	/**
@@ -1198,17 +1249,14 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		__checkIfWritable();
 
 		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			__buffer.writeByte(value);
-			isWriting = true;
-			__fileStreamMutex.release();
-
+			var segment:ByteArray = __beginAsyncWrite();
+			segment.writeByte(value);
+			__endAsyncWrite(segment);
 			return;
 		}
 
-		__output.writeByte(value);
-		__file.__fileStatsDirty = true;
-		__positionDirty = true;
+		__scratch.set(0, value);
+		__writeScratch(1);
 	}
 
 	/**
@@ -1234,24 +1282,29 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
 		__checkIfWritable();
 
+		// Clamped, as documented and as ByteArray clamps. An offset or length
+		// past the source went straight to the file layer, which read past the
+		// source's end -- on the interpreter that ended the process.
+		var available:Int = bytes == null ? 0 : bytes.length;
+		if (offset < 0) {
+			offset = 0;
+		}
+		if (available == 0 || offset >= available) {
+			return;
+		}
+		var remaining:Int = available - offset;
+		if (length <= 0 || length > remaining) {
+			length = remaining;
+		}
+
 		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			__buffer.writeBytes(bytes, offset, length);
-
-			if (length == 0)
-				__isZeroLength = true;
-			isWriting = true;
-			__fileStreamMutex.release();
-
+			var segment:ByteArray = __beginAsyncWrite();
+			segment.writeBytes(bytes, offset, length);
+			__endAsyncWrite(segment);
 			return;
 		}
 
-		if (length == 0) {
-			length = bytes.length - offset;
-		}
-
-		__output.writeBytes(bytes, offset, length);
-
+		__output.writeFullBytes(bytes, offset, length);
 		__file.__fileStatsDirty = true;
 		__positionDirty = true;
 	}
@@ -1271,17 +1324,21 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		__checkIfWritable();
 
 		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			__buffer.writeDouble(value);
-			isWriting = true;
-			__fileStreamMutex.release();
-
+			var segment:ByteArray = __beginAsyncWrite();
+			segment.writeDouble(value);
+			__endAsyncWrite(segment);
 			return;
 		}
 
-		__output.writeDouble(value);
-		__file.__fileStatsDirty = true;
-		__positionDirty = true;
+		var bits = FPHelper.doubleToI64(value);
+		if (__endian == LITTLE_ENDIAN) {
+			__put32(0, bits.low);
+			__put32(4, bits.high);
+		} else {
+			__put32(0, bits.high);
+			__put32(4, bits.low);
+		}
+		__writeScratch(8);
 	}
 
 	/**
@@ -1299,17 +1356,14 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		__checkIfWritable();
 
 		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			__buffer.writeFloat(value);
-			isWriting = true;
-			__fileStreamMutex.release();
-
+			var segment:ByteArray = __beginAsyncWrite();
+			segment.writeFloat(value);
+			__endAsyncWrite(segment);
 			return;
 		}
 
-		__output.writeFloat(value);
-		__file.__fileStatsDirty = true;
-		__positionDirty = true;
+		__put32(0, FPHelper.floatToI32(value));
+		__writeScratch(4);
 	}
 
 	/**
@@ -1327,26 +1381,27 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		__checkIfWritable();
 
 		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			__buffer.writeInt(value);
-			isWriting = true;
-			__fileStreamMutex.release();
-
+			var segment:ByteArray = __beginAsyncWrite();
+			segment.writeInt(value);
+			__endAsyncWrite(segment);
 			return;
 		}
 
-		__output.writeInt32(value);
-		__file.__fileStatsDirty = true;
-		__positionDirty = true;
+		__put32(0, value);
+		__writeScratch(4);
 	}
 
 	/**
 	 * Writes a multibyte string to the file stream, byte stream, or byte array, using the specified
 	 * character set.
 	 *
+	 * The string is written as UTF-8, whatever `charSet` names, as `ByteArray.writeMultiByte` writes
+	 * it: CrossByte carries no tables for other character sets. `charSet` is accepted so that code
+	 * written for AIR compiles; to write another encoding, encode the bytes yourself and use
+	 * `writeBytes`.
+	 *
 	 * @param		value The string value to be written.
-	 * @param		charSet The string denoting the character set to use. Possible character set strings
-	 * include "shift-jis", "cn-gb", "iso-8859-1", and others
+	 * @param		charSet Ignored: the string is written as UTF-8.
 	 * @event 		ioError  You cannot write to the file (for example, because the file is missing).
 	 * This event is dispatched only for files that have been opened for asynchronous operations (by
 	 * using the openAsync() method).
@@ -1355,25 +1410,17 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
 	 */
 	public function writeMultiByte(value:String, charSet:String):Void {
-		__checkIfWritable();
-
-		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			__buffer.writeMultiByte(value, charSet);
-			isWriting = true;
-			__fileStreamMutex.release();
-
-			return;
-		}
-
 		writeUTFBytes(value);
-		__file.__fileStatsDirty = true;
-		__positionDirty = true;
 	}
 
 	/**
 	 * Writes an object to the file stream, byte stream, or byte array, in AMF, HXSF, or JSON serialized
 	 * format. The optional `format` haxelib -- `-lib format` -- is required for AMF.
+	 *
+	 * HXSF and JSON are written as a 32-bit length, in the stream's byte order, and then that many bytes
+	 * of UTF-8, as `ByteArray.writeObject` writes them, so either reads what the other wrote. There is
+	 * no limit below 2 GB on an object's size. (A 16-bit length was written before 1.0, which capped an
+	 * object at 65,535 bytes; files written that way do not read back.)
 	 *
 	 * @param		object The object to be serialized.
 	 * @event 		ioError  You cannot write to the file (for example, because the file is missing).
@@ -1386,18 +1433,61 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	public function writeObject(object:Dynamic):Void {
 		__checkIfWritable();
 
-		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			__buffer.writeObject(object);
-			isWriting = true;
-			__fileStreamMutex.release();
+		// Encoded first, so that one which cannot be leaves nothing behind.
+		var encoded:Bytes = __encodeObject(object);
 
+		if (__isAsync) {
+			var segment:ByteArray = __beginAsyncWrite();
+			segment.writeBytes(ByteArray.fromBytes(encoded), 0, encoded.length);
+			__endAsyncWrite(segment);
 			return;
 		}
 
-		__writeObject(object);
+		__output.writeFullBytes(encoded, 0, encoded.length);
 		__file.__fileStatsDirty = true;
 		__positionDirty = true;
+	}
+
+	/**
+		`object` as `writeObject` writes it. The asynchronous stream wrote
+		through its buffer's own `writeObject`, which ignored the stream's
+		`objectEncoding` -- HXSF whatever it said -- and its byte order.
+	**/
+	@:noCompletion private function __encodeObject(object:Dynamic):Bytes {
+		switch (objectEncoding) {
+			#if format
+			case AMF0:
+				var output:BytesOutput = new BytesOutput();
+				new AMFWriter(output).write(AMFTools.encode(object));
+				return output.getBytes();
+
+			case AMF3:
+				var output:BytesOutput = new BytesOutput();
+				new AMF3Writer(output).write(AMF3Tools.encode(object));
+				return output.getBytes();
+			#end
+
+			case HXSF | JSON:
+				var text:String = objectEncoding == JSON ? Json.stringify(object) : Serializer.run(object);
+				var body:Bytes = crossbyte._internal.Utf8.bytesOf(text);
+				var encoded:Bytes = Bytes.alloc(body.length + 4);
+				var length:Int = body.length;
+
+				if (__endian == LITTLE_ENDIAN) {
+					encoded.setInt32(0, length);
+				} else {
+					encoded.set(0, length >>> 24);
+					encoded.set(1, length >> 16);
+					encoded.set(2, length >> 8);
+					encoded.set(3, length);
+				}
+
+				encoded.blit(4, body, 0, length);
+				return encoded;
+
+			default:
+				throw new Error(ByteArrayData.__unsupportedEncoding(objectEncoding));
+		}
 	}
 
 	/**
@@ -1415,17 +1505,17 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		__checkIfWritable();
 
 		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			__buffer.writeShort(value);
-			isWriting = true;
-			__fileStreamMutex.release();
-
+			var segment:ByteArray = __beginAsyncWrite();
+			segment.writeShort(value);
+			__endAsyncWrite(segment);
 			return;
 		}
 
-		__output.writeInt16(value);
-		__file.__fileStatsDirty = true;
-		__positionDirty = true;
+		// The low sixteen bits, as documented. writeInt16 threw Overflow for
+		// anything outside -32768..32767, so 0xFFFF -- which writeShort is
+		// for as much as -1 is -- could not be written.
+		__put16(value);
+		__writeScratch(2);
 	}
 
 	/**
@@ -1440,20 +1530,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
 	 */
 	public function writeUnsignedInt(value:UInt):Void {
-		__checkIfWritable();
-
-		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			__buffer.writeUnsignedInt(value);
-			isWriting = true;
-			__fileStreamMutex.release();
-
-			return;
-		}
-
-		__output.writeInt32(value);
-		__file.__fileStatsDirty = true;
-		__positionDirty = true;
+		writeInt(value);
 	}
 
 	/**
@@ -1472,35 +1549,26 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	public function writeUTF(value:String):Void {
 		__checkIfWritable();
 
-		if (__isAsync) {
-			__fileStreamMutex.acquire();
-
-			try {
-				__buffer.writeUTF(value);
-			} catch (e:Dynamic) {
-				__fileStreamMutex.release();
-				throw e;
-			}
-
-			isWriting = true;
-			__fileStreamMutex.release();
-
-			return;
-		}
-
-		var bytes = Bytes.ofString(value);
+		var bytes:Bytes = crossbyte._internal.Utf8.bytesOf(value);
 
 		if (bytes.length > 0xFFFF) {
 			throw new RangeError('writeUTF takes at most 65535 bytes, and this string is ${bytes.length}. Use writeUTFBytes with a length of your own.');
 		}
 
+		if (__isAsync) {
+			var segment:ByteArray = __beginAsyncWrite();
+			segment.writeShort(bytes.length);
+			segment.writeBytes(ByteArray.fromBytes(bytes), 0, bytes.length);
+			__endAsyncWrite(segment);
+			return;
+		}
+
 		// Unsigned: the prefix is a 16-bit length, and writeInt16 refused
 		// anything from 32768 up with an Overflow the documentation does not
 		// mention -- where ByteArray took the same string.
-		__output.writeUInt16(bytes.length);
-		__output.writeBytes(bytes, 0, bytes.length);
-		__file.__fileStatsDirty = true;
-		__positionDirty = true;
+		__put16(bytes.length);
+		__writeScratch(2);
+		__output.writeFullBytes(bytes, 0, bytes.length);
 	}
 
 	/**
@@ -1518,23 +1586,23 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	public function writeUTFBytes(value:String):Void {
 		__checkIfWritable();
 
-		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			__buffer.writeUTFBytes(value);
-			isWriting = true;
-			__fileStreamMutex.release();
+		var bytes:Bytes = crossbyte._internal.Utf8.bytesOf(value);
 
+		if (__isAsync) {
+			var segment:ByteArray = __beginAsyncWrite();
+			segment.writeBytes(ByteArray.fromBytes(bytes), 0, bytes.length);
+			__endAsyncWrite(segment);
 			return;
 		}
 
-		__output.writeString(value);
+		__output.writeFullBytes(bytes, 0, bytes.length);
 		__file.__fileStatsDirty = true;
 		__positionDirty = true;
 	}
 
 	@:noCompletion private function __checkIfOpen():Void {
 		if (!__isOpen) {
-			throw new Error("This FileStream object does not have a stream opened.", 2092);
+			throw new IOError("This FileStream object does not have a stream opened.");
 		}
 	}
 
@@ -1542,17 +1610,20 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		__checkIfOpen();
 
 		if (__isAsync) {
-			if (__fileMode != READ) {
-				throw new Error("This FileStream object does not have a input stream opened.", 2092);
+			if (__async.buffer == null) {
+				throw new IOError("This FileStream is open to write; it has nothing to read.");
 			}
 			return;
 		}
 
 		if (__input == null) {
-			throw new Error("This FileStream object does not have a input stream opened.", 2092);
+			throw new IOError("This FileStream is open to write; it has nothing to read.");
 		}
 
 		if (__output != null) {
+			// The two handles of an UPDATE stream: what the writer holds back
+			// is not in the file for the reader to see until it is flushed.
+			__output.flush();
 			__input.seek(__getSynchronousPosition(), FileSeek.SeekBegin);
 		}
 	}
@@ -1560,25 +1631,143 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	@:noCompletion private function __checkIfWritable():Void {
 		__checkIfOpen();
 
-		if (__output == null) {
-			throw new Error("This FileStream object does not have a output stream opened.", 2092);
+		if (__isAsync) {
+			if (__fileMode == READ) {
+				throw new IOError("This FileStream is open to read; it cannot write.");
+			}
+			return;
 		}
 
-		if (!__isAsync) {
-			if (__fileMode == APPEND) {
-				// O_APPEND semantics: writes always go to the end regardless of
-				// position. cpp's native append handle enforces this; targets with
-				// a seekable append handle (e.g. jvm) would otherwise honor a prior
-				// seek and overwrite, so seek to the end explicitly before writing.
-				__output.seek(0, FileSeek.SeekEnd);
-			} else if (__input != null) {
-				__output.seek(__getSynchronousPosition(), FileSeek.SeekBegin);
-			}
+		if (__output == null) {
+			throw new IOError("This FileStream is open to read; it cannot write.");
+		}
+
+		if (__fileMode == APPEND) {
+			// O_APPEND semantics: writes always go to the end regardless of
+			// position. cpp's native append handle enforces this; targets with
+			// a seekable append handle (e.g. jvm) would otherwise honor a prior
+			// seek and overwrite, so seek to the end explicitly before writing.
+			__output.seek(0, FileSeek.SeekEnd);
+		} else if (__input != null) {
+			__output.seek(__getSynchronousPosition(), FileSeek.SeekBegin);
 		}
 	}
 
+	/**
+		`count` bytes from the file into the scratch buffer, or an EOFError
+		with nothing consumed. haxe.io.Eof escaped every read before: the
+		documented error was never thrown, and what a short read had taken
+		stayed taken.
+	**/
+	@:noCompletion private function __take(count:Int):Bytes {
+		var read:Int = __readFully(__scratch, 0, count);
+		__positionDirty = true;
+
+		if (read < count) {
+			if (read > 0) {
+				__input.seek(-read, FileSeek.SeekCur);
+			}
+			throw new EOFError('Asked for $count bytes with $read left in the file.');
+		}
+
+		return __scratch;
+	}
+
+	/** As much of `count` bytes as the file has, into `bytes`; how many. **/
+	@:noCompletion private function __readFully(bytes:Bytes, offset:Int, count:Int):Int {
+		var read:Int = 0;
+		__positionDirty = true;
+
+		while (read < count) {
+			var got:Int = 0;
+
+			try {
+				got = __input.readBytes(bytes, offset + read, count - read);
+			} catch (_:haxe.io.Eof) {
+				break;
+			}
+
+			if (got <= 0) {
+				break;
+			}
+
+			read += got;
+		}
+
+		return read;
+	}
+
+	@:noCompletion private inline function __u16(bytes:Bytes):Int {
+		return __endian == LITTLE_ENDIAN ? (bytes.get(0) | (bytes.get(1) << 8)) : ((bytes.get(0) << 8) | bytes.get(1));
+	}
+
+	@:noCompletion private inline function __i32(bytes:Bytes, at:Int):Int {
+		return __endian == LITTLE_ENDIAN ? bytes.getInt32(at) : ((bytes.get(at) << 24) | (bytes.get(at + 1) << 16) | (bytes.get(at + 2) << 8)
+			| bytes.get(at + 3));
+	}
+
+	@:noCompletion private inline function __put16(value:Int):Void {
+		if (__endian == LITTLE_ENDIAN) {
+			__scratch.set(0, value);
+			__scratch.set(1, value >> 8);
+		} else {
+			__scratch.set(0, value >> 8);
+			__scratch.set(1, value);
+		}
+	}
+
+	@:noCompletion private inline function __put32(at:Int, value:Int):Void {
+		if (__endian == LITTLE_ENDIAN) {
+			__scratch.setInt32(at, value);
+		} else {
+			__scratch.set(at, value >>> 24);
+			__scratch.set(at + 1, value >> 16);
+			__scratch.set(at + 2, value >> 8);
+			__scratch.set(at + 3, value);
+		}
+	}
+
+	@:noCompletion private inline function __writeScratch(count:Int):Void {
+		__output.writeFullBytes(__scratch, 0, count);
+		__file.__fileStatsDirty = true;
+		__positionDirty = true;
+	}
+
+	/** The read buffer, under its lock; the caller releases it. **/
+	@:noCompletion private inline function __lockReadBuffer():ByteArray {
+		var session:AsyncFile = __async;
+		session.mutex.acquire();
+		var buffer:ByteArray = session.buffer;
+		buffer.endian = __endian;
+		return buffer;
+	}
+
+	/**
+		The segment the next asynchronous write goes into, at the stream's
+		position, under the session's lock; `__endAsyncWrite` releases it.
+		Writes at consecutive positions share a segment. They were written
+		into one buffer that only grew, from wherever the writer had reached,
+		so a write after moving the position went nowhere.
+	**/
+	@:noCompletion private function __beginAsyncWrite():ByteArray {
+		var session:AsyncFile = __async;
+		session.mutex.acquire();
+		var segment:ByteArray = session.segmentForWrite();
+		segment.endian = __endian;
+		__segmentStart = segment.length;
+		segment.position = segment.length;
+		return segment;
+	}
+
+	@:noCompletion private function __endAsyncWrite(segment:ByteArray):Void {
+		var session:AsyncFile = __async;
+		session.wrote(segment, __segmentStart, segment.length - __segmentStart);
+		session.mutex.release();
+		isWriting = true;
+	}
+
 	@:noCompletion private function __getStreamBytesAvailable():Int {
-		if (!__isAsync && __input != null && __output != null) {
+		if (__input != null && __output != null) {
 			var pos = __getSynchronousPosition();
 			__output.seek(0, FileSeek.SeekEnd);
 			var length = __output.tell();
@@ -1587,40 +1776,18 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			return length - pos;
 		}
 
-		if (__output != null && __input == null) {
-			var pos:Int = position;
-
-			if (__isAsync) {
-				__fileStreamMutex.acquire();
-				pos = __output.tell();
-			}
-
+		if (__output != null) {
+			var pos:Int = __output.tell();
 			__output.seek(0, FileSeek.SeekEnd);
 			var length = __output.tell();
 			__output.seek(pos, FileSeek.SeekBegin);
-
-			if (__isAsync) {
-				__fileStreamMutex.release();
-			}
-
 			return length - pos;
 		}
 
-		var pos:Int = position;
-
-		if (__isAsync) {
-			__fileStreamMutex.acquire();
-			pos = __input.tell();
-		}
-
+		var pos:Int = __input.tell();
 		__input.seek(0, FileSeek.SeekEnd);
 		var length = __input.tell();
 		__input.seek(pos, FileSeek.SeekBegin);
-
-		if (__isAsync) {
-			__fileStreamMutex.release();
-		}
-
 		return length - pos;
 	}
 
@@ -1640,161 +1807,119 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		return position;
 	}
 
-	@:noCompletion private function __openFile():Void {
-		if (__isOpen) {
-			if (__fileStreamWorker != null) {
-				// when opening a new file, if an existing file is already open,
-				// we should not dispatch Event.CLOSE, so dispose the worker
-				// right away
-				__disposeFileStreamWorker();
+	@:noCompletion private function __openSync():Void {
+		var path:String = __file.nativePath;
+
+		try {
+			switch (__fileMode) {
+				case READ:
+					__input = HaxeFile.read(path, true);
+				case WRITE:
+					var dirPath:String = Path.directory(path);
+					if (dirPath != "" && !FileSystem.exists(dirPath)) {
+						FileSystem.createDirectory(dirPath);
+					}
+					__output = HaxeFile.write(path, true);
+				case APPEND:
+					__output = HaxeFile.append(path, true);
+					__output.seek(0, FileSeek.SeekEnd);
+				case UPDATE:
+					__output = HaxeFile.update(path, true);
+					__output.seek(0, FileSeek.SeekBegin);
+					__input = HaxeFile.read(path, true);
 			}
-			close();
+		} catch (e:Dynamic) {
+			__releaseSync();
+			throw new IOError('Could not open "$path" to ${Std.string(__fileMode)}: ${__describe(e)}');
 		}
 
 		__isOpen = true;
+		__isAsync = false;
+		position = __fileMode == APPEND ? __output.tell() : 0;
+		__positionDirty = false;
+	}
 
-		switch (__fileMode) {
-			case READ:
-				try {
-					__input = HaxeFile.read(__file.nativePath, true);
-					__input.seek(0, FileSeek.SeekBegin);
-					__isWrite = false;
-				} catch (e:Dynamic) {
-					throw new IOError("Invalid parameters.");
-				}
-			case WRITE:
-				try {
-					var dirPath:String = Path.directory(__file.nativePath);
-					if (!FileSystem.exists(dirPath))
-						FileSystem.createDirectory(dirPath);
-					__output = HaxeFile.write(__file.nativePath, true);
-					__isWrite = true;
-				} catch (e:Dynamic) {
-					throw new IOError("Invalid parameters.");
-				}
-			case APPEND:
-				try {
-					__output = HaxeFile.append(__file.nativePath, true);
-					__output.seek(0, sys.io.FileSeek.SeekEnd);
-					__isWrite = true;
-				} catch (d:Dynamic) {
-					throw new IOError("Invalid parameters.");
-				}
-			case UPDATE:
-				try {
-					__output = HaxeFile.update(__file.nativePath, true);
-					__output.seek(0, sys.io.FileSeek.SeekBegin);
-					if (!__isAsync) {
-						__input = HaxeFile.read(__file.nativePath, true);
-						__input.seek(0, FileSeek.SeekBegin);
-					}
-					__isWrite = true;
-				} catch (d:Dynamic) {
-					throw new IOError("Invalid parameters.");
-				}
-		}
-
-		if (__output != null) {
-			__output.bigEndian = true;
-		}
-		if (__input != null) {
-			__input.bigEndian = true;
-		}
-
-		if (!__isAsync) {
-			position = (__fileMode == APPEND) ? __file.size : __getSynchronousPosition();
-			__positionDirty = false;
+	/**
+		Dispatches an ioError after this call returns, on the runtime's
+		thread; false if there is no runtime here to do it.
+	**/
+	@:noCompletion private function __postIoError(text:String, id:Int):Bool {
+		try {
+			return CrossByte.current().post(() -> dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text, id)));
+		} catch (_:Dynamic) {
+			return false;
 		}
 	}
 
-	@:noCompletion private function __writeObject(object:Dynamic):Void {
-		switch (objectEncoding) {
-			#if format
-			case AMF0:
-				var value = AMFTools.encode(object);
-				var output:BytesOutput = new BytesOutput();
-				var writer = new AMFWriter(output);
-				writer.write(value);
-				var bytes:Bytes = output.getBytes();
-				__output.writeBytes(bytes, 0, bytes.length);
-
-			case AMF3:
-				var value = AMF3Tools.encode(object);
-				var output = new BytesOutput();
-				var writer = new AMF3Writer(output);
-				writer.write(value);
-				var bytes:Bytes = output.getBytes();
-				__output.writeBytes(bytes, 0, bytes.length);
-			#end
-
-			case HXSF:
-				var value = Serializer.run(object);
-				writeUTF(value);
-
-			case JSON:
-				var value = Json.stringify(object);
-				writeUTF(value);
-
-			default:
-				throw new Error(ByteArrayData.__unsupportedEncoding(objectEncoding));
+	@:noCompletion private static function __describe(e:Dynamic):String {
+		if (Std.isOfType(e, Error)) {
+			return (e : Error).message;
 		}
+		return Std.string(e);
 	}
 
 	@:noCompletion private function get_endian():Endian {
-		if (__output != null) {
-			return __output.bigEndian ? BIG_ENDIAN : LITTLE_ENDIAN;
-		}
-
-		return __input.bigEndian ? BIG_ENDIAN : LITTLE_ENDIAN;
+		return __endian;
 	}
 
 	@:noCompletion private function set_endian(value:Endian):Endian {
-		if (__output != null) {
-			__output.bigEndian = value == BIG_ENDIAN ? true : false;
+		// A field: set before open() it was lost, open() setting big-endian on
+		// the handles regardless, and read before open() it was a null access
+		// on the handle it asked. The asynchronous buffer never saw it at all.
+		return __endian = value;
+	}
+
+	@:noCompletion private function set_readAhead(value:Float):Float {
+		var session:Null<AsyncFile> = __async;
+
+		if (session != null) {
+			session.mutex.acquire();
+			session.readAhead = value;
+			session.mutex.release();
 		}
 
-		if (__input != null) {
-			__input.bigEndian = value == BIG_ENDIAN ? true : false;
-		}
-
-		return value;
+		return readAhead = value;
 	}
 
 	@:noCompletion private function get_bytesAvailable():Int {
-		if (__isOpen) {
-			if (!__isAsync) {
-				return __getStreamBytesAvailable();
-			}
-
-			if (__fileMode == READ) {
-				__fileStreamMutex.acquire();
-				var result = 0;
-				if (__buffer != null) {
-					result = __buffer.bytesAvailable;
-				}
-				__fileStreamMutex.release();
-				return result;
-			}
+		if (!__isOpen) {
+			return 0;
 		}
 
-		return 0;
+		if (!__isAsync) {
+			return __input == null ? 0 : __getStreamBytesAvailable();
+		}
+
+		var session:AsyncFile = __async;
+
+		if (session.buffer == null) {
+			return 0;
+		}
+
+		session.mutex.acquire();
+		var available:Int = session.buffer.bytesAvailable;
+		session.mutex.release();
+		return available;
 	}
 
 	@:noCompletion private function get_position():UInt {
-		if (__positionDirty) {
-			if (!__isAsync) {
-				__positionDirty = false;
-				return position = __getSynchronousPosition();
-			}
-			if (__fileMode == READ) {
-				__fileStreamMutex.acquire();
-				// The buffer may no longer start at the start of the file.
-				position = __bufferStart + __buffer.position;
-				__fileStreamMutex.release();
-				return position;
-			}
+		if (!__isOpen) {
+			return position;
 		}
-		return position;
+
+		if (!__isAsync) {
+			if (__positionDirty) {
+				__positionDirty = false;
+				position = __getSynchronousPosition();
+			}
+			return position;
+		}
+
+		var session:AsyncFile = __async;
+		session.mutex.acquire();
+		var at:Int = session.position();
+		session.mutex.release();
+		return position = at;
 	}
 
 	@:noCompletion private function set_position(value:UInt):UInt {
@@ -1806,25 +1931,544 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 				if (__input != null) {
 					__input.seek(value, FileSeek.SeekBegin);
 				}
+				__positionDirty = false;
 			} else {
-				var restart:Bool = false;
-				__fileStreamMutex.acquire();
-
-				if (__fileMode == READ) {
-					restart = __seekAsync(value);
-				} else {
-					__buffer.position = value;
-				}
-
-				__fileStreamMutex.release();
+				var session:AsyncFile = __async;
+				session.mutex.acquire();
+				var restart:Bool = session.seek(value);
+				session.mutex.release();
 
 				if (restart) {
-					__restartLoader();
+					__restartLoader(session);
 				}
 			}
 		}
 
 		return position = value;
 	}
+}
+
+/** What an asynchronous file's worker reports, delivered on the runtime's thread. **/
+@:noCompletion
+private enum AsyncNotice {
+	Read(loaded:Int, total:Int);
+	Wrote(pending:Float, total:Float);
+	Loaded;
+	Failed(text:String);
+	// The worker has stopped; true when it read to the end of the file.
+	Finished(loadedToEnd:Bool);
+}
+
+/** Bytes waiting to be written at `at` -- `-1` at the end -- or, with `truncate`, a cut there. **/
+@:noCompletion
+private class AsyncWrite {
+	public final at:Int;
+	public final data:Null<ByteArray>;
+	public final truncate:Bool;
+
+	public function new(at:Int, data:Null<ByteArray>, truncate:Bool) {
+		this.at = at;
+		this.data = data;
+		this.truncate = truncate;
+	}
+}
+
+/**
+	One asynchronously opened file: its handles, its read buffer, the writes
+	waiting to reach it, and the work its worker does on both.
+
+	The stream's thread reads and writes the buffers under `mutex`; the worker
+	moves bytes between them and the file. Everything the worker touches is
+	here, so a stream reopened while its last worker is still finishing hands
+	that worker nothing of the new file.
+**/
+@:noCompletion
+@:access(crossbyte.io.ByteArrayData)
+@:access(crossbyte.io.File)
+private class AsyncFile {
+	public final mutex:Mutex = new Mutex();
+	public final file:File;
+	public final path:String;
+	public final mode:FileMode;
+	public var worker:Null<Worker>;
+	public var input:Null<FileInput>;
+	public var output:Null<FileOutput>;
+	public var endian:Endian;
+	public var readAhead:Float;
+	public var pageSize:Int;
+
+	// Reading (READ, UPDATE). The buffer holds the file from bufferStart on;
+	// a position outside it bumps generation, which tells the loader to start
+	// again from there. loaded says it has reached the end.
+	public var buffer:Null<ByteArray>;
+	public var bufferStart:Int = 0;
+	public var generation:Int = 0;
+	public var loaded:Bool = false;
+	public var fileSize:Int = 0;
+	public var reloadPending:Bool = false;
+
+	// Writing (WRITE, APPEND, UPDATE).
+	public var writes:Array<AsyncWrite> = [];
+	public var pending:Int = 0;
+	public var written:Float = 0;
+	// Where the next write goes in WRITE and APPEND, which have no read
+	// buffer to keep the position in.
+	public var cursor:Int = 0;
+
+	public var closing:Bool = false;
+	public var abandoned:Bool = false;
+	@:noCompletion private var __finished:Bool = false;
+
+	public function new(file:File, mode:FileMode, endian:Endian, readAhead:Float, pageSize:Int) {
+		this.file = file;
+		this.path = file.nativePath;
+		this.mode = mode;
+		this.endian = endian;
+		this.readAhead = readAhead;
+		this.pageSize = pageSize;
+	}
+
+	public function openHandles():Void {
+		switch (mode) {
+			case READ:
+				input = HaxeFile.read(path, true);
+			case WRITE:
+				var directory:String = Path.directory(path);
+				if (directory != "" && !FileSystem.exists(directory)) {
+					FileSystem.createDirectory(directory);
+				}
+				output = HaxeFile.write(path, true);
+			case APPEND:
+				output = HaxeFile.append(path, true);
+				output.seek(0, FileSeek.SeekEnd);
+				cursor = output.tell();
+			case UPDATE:
+				// Read as READ reads, as documented: the writer alone was opened,
+				// so an UPDATE stream read nothing, and every read threw.
+				output = HaxeFile.update(path, true);
+				input = HaxeFile.read(path, true);
+		}
+
+		if (input != null) {
+			buffer = new ByteArray();
+			buffer.endian = endian;
+			// Grows as data arrives. It was allocated at the file's full size
+			// up front, so bytesAvailable counted bytes nobody had read from
+			// disk yet, and reading "what is available" from a progress
+			// handler -- as this class's own documentation says to --
+			// returned zeros: 6.4 MB of them from a 10 MB file.
+			//
+			// Measured now, from a File of its own: the stream's File may be
+			// holding sizes from before the file was last written.
+			fileSize = new File(path).size;
+		}
+	}
+
+	public function releaseHandles():Void {
+		mutex.acquire();
+		var reader:Null<FileInput> = input;
+		var writer:Null<FileOutput> = output;
+		input = null;
+		output = null;
+		mutex.release();
+
+		if (writer != null) {
+			try {
+				writer.close();
+			} catch (_:Dynamic) {}
+		}
+
+		if (reader != null) {
+			try {
+				reader.close();
+			} catch (_:Dynamic) {}
+		}
+	}
+
+	public function isFinished():Bool {
+		mutex.acquire();
+		var finished:Bool = __finished;
+		mutex.release();
+		return finished;
+	}
+
+	/** The stream's position. Held under the lock. **/
+	public function position():Int {
+		return buffer != null ? bufferStart + buffer.position : cursor;
+	}
+
+	/**
+		Moves the stream's position, and when that is outside what the read
+		buffer holds, starts reading from there instead. Held under the lock;
+		returns whether the worker has to be started again because it had
+		already finished.
+	**/
+	public function seek(value:Int):Bool {
+		if (buffer == null) {
+			cursor = value;
+			return false;
+		}
+
+		var offset:Int = value - bufferStart;
+
+		if (offset >= 0 && offset <= buffer.length) {
+			buffer.position = offset;
+			return false;
+		}
+
+		buffer.length = 0;
+		buffer.position = 0;
+		bufferStart = value;
+		generation++;
+
+		var restart:Bool = loaded && mode == READ;
+		loaded = false;
+		return restart;
+	}
+
+	/**
+		The segment a write at the position goes into: the last one, when the
+		write carries straight on from it. Held under the lock.
+	**/
+	public function segmentForWrite():ByteArray {
+		var at:Int = mode == APPEND ? -1 : position();
+		var last:Null<AsyncWrite> = writes.length > 0 ? writes[writes.length - 1] : null;
+
+		if (last != null && !last.truncate) {
+			if (at < 0 ? last.at < 0 : (last.at >= 0 && last.at + last.data.length == at)) {
+				return last.data;
+			}
+		}
+
+		var write:AsyncWrite = new AsyncWrite(at, new ByteArray(), false);
+		writes.push(write);
+		return write.data;
+	}
+
+	/**
+		Accounts for `count` bytes just written at `start` in `segment`, and in
+		UPDATE puts them in the read buffer too, at the position: what is read
+		back is what was written. Held under the lock.
+	**/
+	public function wrote(segment:ByteArray, start:Int, count:Int):Void {
+		pending += count;
+
+		if (buffer != null) {
+			buffer.writeBytes(segment, start, count);
+		} else {
+			cursor += count;
+		}
+	}
+
+	/** Queues a cut at `at`, after whatever is pending. **/
+	public function truncate(at:Int):Void {
+		mutex.acquire();
+		writes.push(new AsyncWrite(at, null, true));
+
+		if (buffer != null) {
+			if (at - bufferStart < buffer.length) {
+				buffer.length = at - bufferStart < 0 ? 0 : at - bufferStart;
+			}
+			if (fileSize > at) {
+				fileSize = at;
+			}
+		}
+		mutex.release();
+	}
+
+	/**
+		The worker: writes what is pending, reads ahead of the reader, and
+		reports both, until the stream closes -- or, for a file opened only to
+		read, until it reaches the end, after which a seek outside the buffer
+		starts it again.
+	**/
+	public function run(_:Dynamic):Void {
+		try {
+			__work();
+		} catch (e:Dynamic) {
+			// Whoever waits for this to stop is not left waiting; the Worker
+			// reports what was thrown.
+			mutex.acquire();
+			__finished = true;
+			mutex.release();
+			throw e;
+		}
+	}
+
+	// Not __run: hxcpp gives every object a __run of its own.
+	private function __work():Void {
+		var lastGeneration:Int = -1;
+
+		while (true) {
+			mutex.acquire();
+			var batch:Null<Array<AsyncWrite>> = null;
+			if (writes.length > 0) {
+				batch = writes;
+				writes = [];
+			}
+			var stopping:Bool = closing || abandoned;
+			var quiet:Bool = abandoned;
+			mutex.release();
+
+			if (batch != null) {
+				var failure:Null<String> = __flush(batch);
+				var count:Int = 0;
+				for (write in batch) {
+					if (write.data != null) {
+						count += write.data.length;
+					}
+				}
+
+				mutex.acquire();
+				pending -= count;
+				written += count;
+				var stillPending:Float = pending;
+				var total:Float = written + pending;
+				mutex.release();
+
+				if (!quiet) {
+					__send(failure != null ? Failed(failure) : Wrote(stillPending, total));
+				}
+				continue;
+			}
+
+			if (stopping) {
+				releaseHandles();
+				__finish(false);
+				return;
+			}
+
+			if (buffer != null) {
+				switch (__loadStep(lastGeneration)) {
+					case Moved(generation):
+						lastGeneration = generation;
+						continue;
+					case Added(generation, loadedTo, total):
+						lastGeneration = generation;
+						__send(Read(loadedTo, total));
+						continue;
+					case End:
+						if (mode == READ) {
+							__finish(true);
+							return;
+						}
+						__send(Loaded);
+					case Broken(text):
+						__send(Failed(text));
+						if (mode == READ) {
+							__finish(false);
+							return;
+						}
+					case Idle | Waiting:
+				}
+			}
+
+			crossbyte._internal.system.Sleep.sleep(0.001);
+		}
+	}
+
+	/** One step of reading the file into the buffer. **/
+	private function __loadStep(lastGeneration:Int):LoadStep {
+		mutex.acquire();
+
+		if (buffer == null || loaded) {
+			mutex.release();
+			return Idle;
+		}
+
+		var generation:Int = this.generation;
+		var reposition:Bool = generation != lastGeneration;
+		var next:Int = bufferStart + buffer.length;
+		var remaining:Int = fileSize - next;
+		var want:Int = remaining < pageSize ? remaining : pageSize;
+
+		#if target.threaded
+		if (readAhead != Math.POSITIVE_INFINITY) {
+			var unread:Int = buffer.length - buffer.position;
+			// Up to readAhead, in whole 4 KB pages, and nothing while the
+			// reader has that much waiting already.
+			var room:Float = readAhead - unread;
+			want = room <= 0 ? 0 : Std.int(Math.min(want, Math.ceil(room / 4096) * 4096));
+		}
+		#end
+
+		if (remaining <= 0) {
+			loaded = true;
+			mutex.release();
+			return End;
+		}
+
+		var reader:Null<FileInput> = input;
+		mutex.release();
+
+		if (want <= 0 || reader == null) {
+			return Waiting;
+		}
+
+		if (chunkBytes == null || chunkBytes.length < want) {
+			chunkBytes = Bytes.alloc(want);
+		}
+
+		var got:Int = 0;
+
+		try {
+			// Always from where the read belongs: in UPDATE the writer may have
+			// changed what the reader's own buffer last saw, and a seek drops it.
+			reader.seek(next, FileSeek.SeekBegin);
+
+			while (got < want) {
+				var read:Int = 0;
+
+				try {
+					read = reader.readBytes(chunkBytes, got, want - got);
+				} catch (_:haxe.io.Eof) {
+					break;
+				}
+
+				if (read <= 0) {
+					break;
+				}
+
+				got += read;
+			}
+		} catch (e:Dynamic) {
+			return Broken("The file could not be read: " + Std.string(e));
+		}
+
+		mutex.acquire();
+
+		if (buffer == null || generation != this.generation) {
+			// The reader moved while this was being read; start again.
+			mutex.release();
+			return Moved(generation);
+		}
+
+		if (got <= 0) {
+			// Shorter than it was when opened.
+			loaded = true;
+			mutex.release();
+			return End;
+		}
+
+		// Writes may have carried the buffer past `next` while this was read,
+		// and a truncate may have cut the file short of it: what they cover
+		// is theirs.
+		var end:Int = bufferStart + buffer.length;
+		var skip:Int = end - next;
+		var limit:Int = fileSize - next < got ? fileSize - next : got;
+
+		if (skip < limit) {
+			__discardConsumed();
+			var cursor:Int = buffer.position;
+			buffer.position = buffer.length;
+			buffer.writeBytes(ByteArray.fromBytes(chunkBytes), skip, limit - skip);
+			buffer.position = cursor;
+		}
+
+		var loadedTo:Int = bufferStart + buffer.length;
+		var total:Int = fileSize > loadedTo ? fileSize : loadedTo;
+		mutex.release();
+
+		return Added(generation, loadedTo, total);
+	}
+
+	// The worker's read scratch, kept between steps.
+	private var chunkBytes:Null<Bytes>;
+
+	/**
+		Drops what the reader has consumed, when `readAhead` bounds the buffer.
+		By default it does not -- the whole file is kept, as it always was, so a
+		stream can seek back without reading anything again. Held under the
+		lock.
+	**/
+	private function __discardConsumed():Void {
+		if (readAhead == Math.POSITIVE_INFINITY) {
+			return;
+		}
+
+		var consumed:Int = buffer.position;
+
+		// Half the buffer or more, so the move is paid for by what it frees.
+		if (consumed == 0 || consumed < buffer.length - consumed) {
+			return;
+		}
+
+		var unread:Int = buffer.length - consumed;
+		var data:Bytes = buffer;
+
+		if (unread > 0) {
+			data.blit(0, data, consumed, unread);
+		}
+
+		buffer.length = unread;
+		buffer.position = 0;
+		bufferStart += consumed;
+	}
+
+	/** Writes `batch` to the file in order; why not, or null. **/
+	private function __flush(batch:Array<AsyncWrite>):Null<String> {
+		var writer:Null<FileOutput> = output;
+
+		if (writer == null) {
+			return "The file is closed.";
+		}
+
+		try {
+			for (write in batch) {
+				if (write.truncate) {
+					writer.flush();
+					FileOps.truncate(path, write.at);
+				} else {
+					if (write.at < 0) {
+						// APPEND: the end, whatever the handle would honor.
+						writer.seek(0, FileSeek.SeekEnd);
+					} else {
+						writer.seek(write.at, FileSeek.SeekBegin);
+					}
+					writer.writeFullBytes(write.data, 0, write.data.length);
+				}
+			}
+
+			writer.flush();
+			file.__fileStatsDirty = true;
+			return null;
+		} catch (e:Dynamic) {
+			return "The file could not be written: " + Std.string(e);
+		}
+	}
+
+	private function __send(notice:AsyncNotice):Void {
+		var current:Null<Worker> = worker;
+		if (current != null) {
+			current.sendProgress(notice);
+		}
+	}
+
+	private function __finish(loadedToEnd:Bool):Void {
+		mutex.acquire();
+		__finished = true;
+		mutex.release();
+
+		var current:Null<Worker> = worker;
+		if (current != null) {
+			current.sendComplete(Finished(loadedToEnd));
+		}
+	}
+}
+
+/** What one step of loading did. **/
+@:noCompletion
+private enum LoadStep {
+	// Nothing to read: loaded already, or no read buffer.
+	Idle;
+	// Not now: the reader has readAhead waiting already.
+	Waiting;
+	// Read into the buffer, which now reaches `loadedTo` of `total`.
+	Added(generation:Int, loadedTo:Int, total:Int);
+	// The reader moved while this read; start again from there.
+	Moved(generation:Int);
+	// The end of the file.
+	End;
+	Broken(text:String);
 }
 #end

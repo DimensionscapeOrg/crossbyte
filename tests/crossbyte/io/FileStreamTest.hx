@@ -1,9 +1,13 @@
 package crossbyte.io;
 
 import crossbyte.core.CrossByte;
+import crossbyte.errors.IOError;
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.events.Event;
+import crossbyte.events.IOErrorEvent;
 import crossbyte.events.OutputProgressEvent;
 import crossbyte.events.ProgressEvent;
+import crossbyte.events.ThreadEvent;
 import utest.Assert;
 
 class FileStreamTest extends utest.Test {
@@ -650,6 +654,302 @@ class FileStreamTest extends utest.Test {
 		}
 	}
 	#end
+
+	public function testTruncateRefusesAStreamOpenToRead():Void {
+		// It checked only that the stream was open, so a stream opened to read
+		// cut the file it was reading: "0123456789" became "0123".
+		var file = __textFile("0123456789");
+
+		for (async in [false, true]) {
+			var stream = new FileStream();
+			__openAndLoad(stream, file, READ, async);
+			stream.position = 4;
+			Assert.raises(() -> stream.truncate(), IllegalOperationError);
+			__closeAndWait(stream);
+			Assert.equals("0123456789", sys.io.File.getContent(file.nativePath), async ? "openAsync" : "open");
+		}
+
+		__delete(file);
+	}
+
+	public function testTruncateKeepsTheStreamOpenWhereItWas():Void {
+		// In place now, rather than by closing, rewriting the file from memory
+		// and opening it again.
+		var file = __textFile("0123456789");
+		var stream = new FileStream();
+
+		try {
+			stream.open(file, FileMode.UPDATE);
+			stream.position = 4;
+			stream.truncate();
+			Assert.equals(4, stream.position);
+			Assert.equals(4, sys.FileSystem.stat(file.nativePath).size);
+			stream.writeUTFBytes("XY");
+			Assert.equals(6, stream.position);
+			stream.position = 0;
+			Assert.equals("0123XY", stream.readUTFBytes(6));
+			Assert.equals(0, stream.bytesAvailable);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		__closeAndWait(stream);
+		Assert.equals("0123XY", sys.io.File.getContent(file.nativePath));
+		__delete(file);
+	}
+
+	#if target.threaded
+	public function testAnAsynchronousTruncateComesAfterThePendingWrites():Void {
+		// It closed the stream -- which an asynchronous one with writes pending
+		// only defers -- and read the file before they had reached it.
+		var file = File.createTempFile();
+		var stream = new FileStream();
+
+		try {
+			stream.openAsync(file, FileMode.WRITE);
+			stream.writeUTFBytes("0123456789");
+			stream.position = 4;
+			stream.truncate();
+			stream.writeUTFBytes("XY");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		__closeAndWait(stream);
+		Assert.equals("0123XY", sys.io.File.getContent(file.nativePath));
+		__delete(file);
+	}
+	#end
+
+	public function testOpeningAnOpenStreamClosesItFirst():Void {
+		// openAsync made its worker and then closed the open stream, which
+		// disposed of that worker: a Null Access, whether the stream had been
+		// opened with open() or openAsync().
+		var file = __textFile("abc");
+		var stream = new FileStream();
+		var closes:Int = 0;
+		stream.addEventListener(Event.CLOSE, _ -> closes++);
+
+		try {
+			stream.open(file, FileMode.READ);
+			__openAndLoad(stream, file, FileMode.READ, true);
+			Assert.equals("abc", stream.readUTFBytes(3));
+			__openAndLoad(stream, file, FileMode.READ, true);
+			Assert.equals("abc", stream.readUTFBytes(3));
+			stream.open(file, FileMode.READ);
+			Assert.equals("abc", stream.readUTFBytes(3));
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		// Nothing more is heard from a file the stream has moved on from.
+		__pumpFor(0.1);
+		Assert.equals(0, closes);
+
+		__closeAndWait(stream);
+		__delete(file);
+	}
+
+	#if target.threaded
+	public function testReopeningWritesWhatWasPendingFirst():Void {
+		var first = File.createTempFile();
+		var second = File.createTempFile();
+		var stream = new FileStream();
+		var closes:Int = 0;
+		stream.addEventListener(Event.CLOSE, _ -> closes++);
+
+		try {
+			stream.openAsync(first, FileMode.WRITE);
+			stream.writeUTFBytes("first");
+			stream.openAsync(second, FileMode.WRITE);
+			stream.writeUTFBytes("second");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		__closeAndWait(stream);
+		Assert.equals("first", sys.io.File.getContent(first.nativePath));
+		Assert.equals("second", sys.io.File.getContent(second.nativePath));
+		Assert.equals(1, closes, "a close for the second file only");
+		__delete(first);
+		__delete(second);
+	}
+	#end
+
+	public function testOpenAsyncReportsAMissingFileAsAnIoErrorEvent():Void {
+		// As documented. It threw, synchronously.
+		var directory = File.createTempDirectory();
+		var missing = directory.resolvePath("missing.bin");
+		var stream = new FileStream();
+		var raised:Dynamic = null;
+		var error:IOErrorEvent = null;
+
+		try {
+			stream.openAsync(missing, FileMode.READ);
+		} catch (e:Dynamic) {
+			raised = e;
+		}
+
+		// Listened for after the call returned, and still heard.
+		stream.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> error = event);
+		__pumpUntil(() -> error != null, 5.0);
+
+		Assert.isNull(raised);
+		crossbyte.test.Require.notNull(error);
+		Assert.equals(stream, error.target);
+		Assert.isTrue(error.text.indexOf("missing.bin") >= 0, error.text);
+		// And the stream is not open.
+		Assert.raises(() -> stream.readByte(), IOError);
+
+		try directory.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	#if target.threaded
+	public function testOpenAsyncInUpdateModeReadsAndWrites():Void {
+		// UPDATE took the writer's branch: no progress, no complete, and every
+		// read threw. Now it loads as READ does, and a write lands in the file
+		// and in what is read back.
+		var file = __textFile("hello world");
+		var stream = new FileStream();
+		var progress:Int = 0;
+		var complete:Bool = false;
+
+		try {
+			stream.addEventListener(ProgressEvent.PROGRESS, _ -> progress++);
+			stream.addEventListener(Event.COMPLETE, _ -> complete = true);
+			stream.openAsync(file, FileMode.UPDATE);
+			__pumpUntil(() -> complete, 5.0);
+
+			Assert.isTrue(complete);
+			Assert.isTrue(progress > 0);
+			Assert.equals(11, stream.bytesAvailable);
+			Assert.equals("hello", stream.readUTFBytes(5));
+			stream.writeUTFBytes(", big");
+			Assert.equals(10, stream.position);
+			Assert.equals("d", stream.readUTFBytes(1));
+			stream.position = 0;
+			Assert.equals("hello, bigd", stream.readUTFBytes(11));
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		__closeAndWait(stream);
+		Assert.equals("hello, bigd", sys.io.File.getContent(file.nativePath));
+		__delete(file);
+	}
+
+	public function testAWriteFailureIsAnIoErrorEvent():Void {
+		// The worker's failures were dispatched as the Worker's own "error"
+		// event, which no ioError listener hears.
+		var file = File.createTempFile();
+		var stream = new FileStream();
+		var error:IOErrorEvent = null;
+
+		try {
+			stream.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> error = event);
+			stream.openAsync(file, FileMode.WRITE);
+			// The handle taken away underneath, so the write cannot land.
+			@:privateAccess stream.__async.releaseHandles();
+			stream.writeUTFBytes("lost");
+			__pumpUntil(() -> error != null, 5.0);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		crossbyte.test.Require.notNull(error);
+		Assert.equals(stream, error.target);
+		__closeAndWait(stream);
+		__delete(file);
+	}
+
+	public function testClosingWhileReadingDispatchesCloseAndNoComplete():Void {
+		// The loader answered close() by reporting itself complete, so a file
+		// closed half read dispatched complete and then close. readAhead keeps
+		// it from reaching the end before close() is called.
+		var file = __fileOf(1024 * 1024);
+		var stream = new FileStream();
+		var events:Array<String> = [];
+
+		stream.readAhead = 64 * 1024;
+		stream.addEventListener(Event.COMPLETE, _ -> events.push("complete"));
+		stream.addEventListener(Event.CLOSE, _ -> events.push("close"));
+		stream.openAsync(file, FileMode.READ);
+		stream.close();
+		__pumpUntil(() -> events.indexOf("close") >= 0, 10.0);
+		__pumpFor(0.1);
+
+		Assert.same(["close"], events);
+		__delete(file);
+	}
+	#end
+
+	public function testAsynchronousEventsComeFromTheStream():Void {
+		// The worker's events were dispatched as they were: ThreadEvents, their
+		// target the stream's private Worker.
+		var file = __textFile("payload");
+		var stream = new FileStream();
+		var complete:Event = null;
+		var progress:Event = null;
+
+		stream.addEventListener(ProgressEvent.PROGRESS, (event:Event) -> progress = event);
+		stream.addEventListener(Event.COMPLETE, (event:Event) -> complete = event);
+		stream.openAsync(file, FileMode.READ);
+		__pumpUntil(() -> complete != null, 5.0);
+
+		crossbyte.test.Require.notNull(complete);
+		Assert.equals(stream, complete.target);
+		Assert.isFalse(Std.isOfType(complete, ThreadEvent));
+		crossbyte.test.Require.notNull(progress);
+		Assert.equals(stream, progress.target);
+		Assert.isTrue(Std.isOfType(progress, ProgressEvent));
+
+		__closeAndWait(stream);
+		__delete(file);
+	}
+
+	private static function __openAndLoad(stream:FileStream, file:File, mode:FileMode, async:Bool):Void {
+		if (!async) {
+			stream.open(file, mode);
+			return;
+		}
+
+		var complete:Bool = false;
+		var listener = (_:Event) -> complete = true;
+		stream.addEventListener(Event.COMPLETE, listener);
+		stream.openAsync(file, mode);
+		__pumpUntil(() -> complete, 10.0);
+		stream.removeEventListener(Event.COMPLETE, listener);
+	}
+
+	private static function __textFile(text:String):File {
+		var file = File.createTempFile();
+		sys.io.File.saveContent(file.nativePath, text);
+		return file;
+	}
+
+	private static function __delete(file:File):Void {
+		try {
+			if (file.exists) {
+				file.deleteFile();
+			}
+		} catch (_:Dynamic) {}
+	}
+
+	private static function __pumpFor(seconds:Float):Void {
+		var until:Float = haxe.Timer.stamp() + seconds;
+		while (haxe.Timer.stamp() < until) {
+			__pump();
+			crossbyte.sys.System.sleep(0.001);
+		}
+	}
+
+	private static function __pumpUntil(done:Void->Bool, timeoutSeconds:Float):Void {
+		var deadline:Float = haxe.Timer.stamp() + timeoutSeconds;
+		while (!done() && haxe.Timer.stamp() < deadline) {
+			__pump();
+			crossbyte.sys.System.sleep(0.001);
+		}
+	}
 
 	private static function __pump():Void {
 		CrossByte.current().pump(1 / 60, 0);

@@ -93,6 +93,11 @@ entry below says how:
   directory instead of the working directory. The build copies `resources`
   beside the program; a tool that moves the program afterwards must carry
   `resources` with it.
+- `FileStream` reads and writes in `ByteArray.defaultEndian`,
+  little-endian unless changed. Set `endian = Endian.BIG_ENDIAN` on a
+  stream reading numbers that rc.1's synchronous `FileStream` wrote. Its
+  `writeObject` frames HXSF and JSON with a 32-bit length, so objects in
+  files written by rc.1 do not read back.
 
 ### Added
 - `System.applicationId`, the name an application's storage directory and
@@ -1162,6 +1167,15 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `FileStream` starts in `ByteArray.defaultEndian` and
+  `ByteArray.defaultObjectEncoding`, as every CrossByte `IDataInput` and
+  `IDataOutput` does -- little-endian and HXSF unless the application
+  changed them. A synchronous stream was big-endian, set by `open()`
+  whatever `endian` said, and an asynchronous one little-endian.
+- `FileStream.writeObject` frames HXSF and JSON with a 32-bit length in the
+  stream's byte order, as `ByteArray.writeObject` does, and `readObject`
+  reads it: an object is no longer capped at 65,535 bytes of UTF-8, the
+  limit of the 16-bit `writeUTF` framing it used.
 - `File.applicationDirectory`, `System.appDir` and `Resources` are the
   program's own directory -- the executable's natively, the jar's on the
   jvm, the script's on Node, the bytecode file's on neko and HashLink --
@@ -1977,6 +1991,58 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `FileStream` keeps the contract `IDataInput` and `IDataOutput` describe,
+  and `ByteArray` keeps, opened either way. A synchronous stream's
+  `readByte` returned the unsigned byte, `readBoolean` was true only for
+  1, `writeShort` threw `Overflow` outside -32768..32767 rather than
+  keeping the low sixteen bits, every read but `readBytes` let
+  `haxe.io.Eof` escape -- having consumed what it read -- where an
+  `EOFError` consuming nothing is documented, and `writeBytes` passed an
+  out-of-range offset or length to the file, which on the interpreter
+  ended the process. Each does what `ByteArray`'s does now, and an
+  asynchronous read that fails leaves the position where it was too.
+- `FileStream.endian`, `objectEncoding` and `position` mean the same
+  whether the file was opened with `open()` or `openAsync()`. `endian`
+  read a file handle, so before opening it was a null access, set before
+  opening it was lost, and `open()` made it big-endian whatever it said;
+  an asynchronous stream read and wrote through a plain `ByteArray` --
+  little-endian and HXSF whatever the stream said -- and its writes went
+  on from wherever the writer had got to, so moving `position` back and
+  writing changed nothing. Writes to an asynchronous file are now queued
+  where the position is, and the buffer that held everything ever
+  written to one is gone.
+- `FileStream.truncate()` refuses a stream opened to read, as documented,
+  rather than cutting the file it was reading, and truncates in place
+  through the system's own call -- natively `SetEndOfFile` or `truncate`,
+  `RandomAccessFile.setLength` on the jvm, `fs.truncateSync` on Node --
+  where it closed the stream, read the whole file into memory and wrote
+  back the part it kept. An asynchronous stream truncates after the
+  writes already pending, which it read the file before.
+- `FileStream.openAsync` keeps its documentation. On a stream already
+  open it closes that file first, without a `close` event; it made its
+  worker and then disposed of it in the close, a null access. A file that
+  cannot be opened is an `ioError` event, heard by a listener added after
+  the call returns; it threw. `UPDATE` reads the file into the buffer with
+  `progress` and `complete`, as `READ` does, and a write lands in the file
+  and in what is read back; it opened only the writer, and every read
+  threw. Writes still pending on a stream reopened elsewhere are written
+  before the next file opens.
+- An asynchronous `FileStream`'s events are its own: `complete`,
+  `progress` and `outputProgress` with the stream as their target, and
+  failures as `ioError`. The worker's own events were passed on as they
+  were -- `ThreadEvent`s whose target was a private `Worker` -- and its
+  failures were its `"error"` event, which no `ioError` listener hears. A
+  file closed while it was still being read dispatched `complete` before
+  `close`; it dispatches only `close`.
+- `FileStream.readObject` in AMF0 and AMF3 reads one object: it read the
+  rest of the file into a buffer, decoded one object from it and threw
+  away the rest, so a second `readObject` found nothing.
+- `FileStream.readMultiByte` and `writeMultiByte` say what they do: UTF-8,
+  whatever `charSet` names, as `ByteArray`'s do. They listed `shift-jis`,
+  `cn-gb` and `iso-8859-1` among the character sets they would honour.
+- `FileStream`'s documentation no longer claims files past 2^32 bytes --
+  a position is an Int, 2 GB -- or a read-ahead in file-system pages it
+  does not have; it reads in 4 KB blocks.
 - `File.copyTo` and `moveTo` refuse to copy or move a file onto itself, and
   `moveTo` is a rename. The standard library's copy truncates its
   destination before it reads the source, so `copyTo(itself, true)`
