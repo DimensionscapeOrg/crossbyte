@@ -1,6 +1,6 @@
 package crossbyte.url;
 
-// Not built for the browser. It loads over CrossByte's own raw-socket HTTP; a page issues requests through fetch or XMLHttpRequest, which is a separate implementation rather than a gate.
+// Built for every target. Off JavaScript a load runs CrossByte's own client on a pool thread (LoaderRun); on Node and in a browser it runs the platform's (JsHttpClient).
 
 import crossbyte.http.HTTPCancelToken;
 import crossbyte.events.Event;
@@ -56,11 +56,14 @@ class URLLoader extends EventDispatcher {
 	/**
 	 * Cancels the load in progress.
 	 *
-	 * Created per `load()` and handed to the thread running it, because the
-	 * request runs on a thread this one does not: by the time `load()` could
-	 * return a handle the request would be over. `close()` is the ordinary way
-	 * to reach it; this is here for code that wants to cancel from somewhere
-	 * else.
+	 * A new one for each `load()`, on every target, so cancelling one load
+	 * cannot touch the next. Cancelling it ends the request and the load
+	 * fails with an `IO_ERROR` saying "Request cancelled"; `close()` cancels it
+	 * too, and dispatches nothing. Natively it is handed to the thread the
+	 * request runs on, which is why it is a token and not a handle `load()`
+	 * returns: whoever cancels is on another thread. `close()` is the
+	 * ordinary way to reach it; this is here for code that wants to cancel
+	 * from somewhere else.
 	 */
 	public var cancelToken(default, null):HTTPCancelToken;
 
@@ -183,17 +186,30 @@ class URLLoader extends EventDispatcher {
 		}
 
 		__busy = true;
+		// A fresh token per load, as natively. It is how a load is told apart
+		// from the next: what one close() or a later load() has replaced
+		// still reports as it winds down, and is dropped.
+		var token:HTTPCancelToken = new HTTPCancelToken();
+		cancelToken = token;
 
 		// No worker: the runtime's own client is asynchronous, so there is no
 		// blocking call here for one to keep off the loop.
 		var finalStatus:Int = 0;
 		crossbyte.url._internal.JsHttpClient.send(request, function(status:Int):Void {
-			dispatchEvent(new HTTPStatusEvent(HTTPStatusEvent.HTTP_STATUS, status));
+			if (__isCurrent(token)) {
+				dispatchEvent(new HTTPStatusEvent(HTTPStatusEvent.HTTP_STATUS, status));
+			}
 		}, function(loaded:Int, total:Int):Void {
+			if (!__isCurrent(token)) {
+				return;
+			}
 			bytesLoaded = loaded;
 			bytesTotal = total;
 			dispatchEvent(new ProgressEvent(ProgressEvent.PROGRESS, loaded, total));
 		}, function(dataBytes:Bytes):Void {
+			if (!__isCurrent(token)) {
+				return;
+			}
 			__busy = false;
 			var unreadable:Null<String> = __parseData(dataBytes);
 			// The native client's contract, and AS3's: a 4xx or 5xx is an
@@ -209,12 +225,18 @@ class URLLoader extends EventDispatcher {
 			}
 			dispatchEvent(new Event(Event.COMPLETE));
 		}, function(message:String):Void {
+			if (!__isCurrent(token)) {
+				return;
+			}
 			__busy = false;
 			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
 		}, function(status:Int, headers:Array<URLRequestHeader>, url:String, redirected:Bool):Void {
+			if (!__isCurrent(token)) {
+				return;
+			}
 			finalStatus = status;
 			__dispatchResponse(status, headers, url, redirected);
-		});
+		}, token);
 		#else
 		if (__busy) {
 			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "URLLoader is already loading"));
@@ -233,12 +255,32 @@ class URLLoader extends EventDispatcher {
 		#end
 	}
 
+	#if js
+	/** Whether the load `token` was made for is still the one in progress. */
+	@:noCompletion private inline function __isCurrent(token:HTTPCancelToken):Bool {
+		return __busy && cancelToken == token;
+	}
+	#end
+
+	/**
+	 * Ends the load in progress, on every target: its request is abandoned
+	 * where it stands, which the server sees at once, an HTTP/1.1
+	 * connection is shut, an HTTP/2 stream reset, and nothing more is
+	 * dispatched for it. The loader is free for its next `load()` as soon as
+	 * this returns.
+	 */
 	public function close():Void {
 		#if js
-		// The request is the runtime's to cancel and it does not offer a handle
-		// back, so this only stops a further load() being refused as busy. A
-		// response still in flight is discarded when it arrives.
+		// Let go of before it is cancelled. The client reports a cancel at
+		// once, from inside cancel(), and that report belongs to the load
+		// being closed, so it is dropped with the rest of what it says. The
+		// request itself is aborted: close() only stopped the next load being
+		// refused as busy, and the closed one went on and delivered its
+		// answer after the next one's.
 		__busy = false;
+		if (cancelToken != null) {
+			cancelToken.cancel();
+		}
 		#else
 		// Cancelled before it is let go of. The token reaches the request
 		// itself, an HTTP/2 stream is reset, freeing the slot it held on a

@@ -4,12 +4,36 @@ import crossbyte.http.HTTPVersion;
 
 /** Mutable request descriptor consumed by `URLLoader` and related APIs. */
 class URLRequest {
+	/**
+		The `Content-Type` of the body `data` makes, or null, as it starts, for
+		the client's choice. Name the type of what `data` holds: nothing checks
+		that the two agree.
+
+		Left null, natively a `String` or `haxe.io.Bytes` body goes as
+		`application/octet-stream`, a number or `Bool` as
+		`text/plain; charset=utf-8`, and a form as
+		`application/x-www-form-urlencoded; charset=utf-8`. On Node and in a
+		browser a form goes as `application/x-www-form-urlencoded` and any
+		other body with no `Content-Type`, which RFC 9110 lets a server read as
+		`application/octet-stream`: save that a browser labels a `String`
+		`text/plain;charset=UTF-8` itself.
+	**/
 	public var contentType:String;
 
 	/**
-		**Note**: The value of `contentType` must correspond to
-		the type of data in the `data` property. See the note in the
-		description of the `contentType` property.
+		What the request sends: a body, or a form's fields.
+
+		- A `String` or `haxe.io.Bytes`, a `ByteArray` among them, sent as its
+		  `length` bytes, is the body as it is, labelled with `contentType`.
+		- A `URLVariables`, or any other object, is a form: its fields go as the
+		  query of a GET or HEAD, and as an `application/x-www-form-urlencoded`
+		  body otherwise, an array's items each as `name[]`, an object's
+		  fields as `name[field]`.
+		- A number or a `Bool` is sent as `Std.string` writes it.
+
+		A redirect that turns the request into a GET, a 301, 302 or 303, for
+		anything but a HEAD, leaves the body behind. In a browser a GET or
+		HEAD carries no body at all: the browser drops it.
 	**/
 	public var data:Dynamic;
 
@@ -17,6 +41,11 @@ class URLRequest {
 		Whether to follow HTTP redirects (`true`) or hand the 3xx response back
 		as the result (`false`). The default comes from
 		`URLRequestDefaults.followRedirects`, which is `true`.
+
+		In a browser a request with this `false` is refused with an
+		`IO_ERROR`, and nothing is sent: the browser follows every redirect
+		itself and shows a page none of them, so the 3xx could not be handed
+		back.
 	**/
 	public var followRedirects:Bool;
 
@@ -28,6 +57,11 @@ class URLRequest {
 		response holds, in the clear, on the word of the server being left.
 		Set this only for a server known to redirect that way.
 
+		In a browser the browser makes the hop, one leaving an `https` page
+		for `http` it blocks itself, and a page learns of it only once it has
+		been made: the request then fails, with the response unread, but what
+		the hop sent has gone in the clear.
+
 		Separately, and always, `Authorization`, `Proxy-Authorization` and a
 		`Cookie` set in `requestHeaders` are dropped once a redirect leaves the
 		origin the request started at, as browsers, curl and Go drop them.
@@ -35,16 +69,32 @@ class URLRequest {
 	public var followInsecureRedirects:Bool = false;
 
 	/**
-		Specifies the HTTP protocol version requested by URLLoader.
+		The HTTP version to speak. `HTTP_1_1` unless set.
 
-		HTTP/1.1 is implemented by CrossByte core. HTTP/2 and HTTP/3 require
-		an HTTPBackend registered with HTTPBackendRegistry.
+		HTTP/1.1 and HTTP/1.0 are CrossByte's own client. HTTP/2 is the
+		bundled `HTTP2Backend`, registered on first use unless
+		`HTTPBackendRegistry.autoRegisterBundled` is turned off, and it speaks
+		HTTP/2 or fails rather than falling back to HTTP/1.1. HTTP/3 needs an
+		`HTTPBackend` registered with `HTTPBackendRegistry`: none ships.
+
+		On eval HTTP/2 is refused; see `HTTP2Backend.isSupported`. On Node a
+		request for anything but HTTP/1.1 is refused with an `IO_ERROR`, since
+		Node's http client speaks no other. In a browser the browser
+		negotiates the version itself, HTTP/2 or HTTP/3 over `https`, where
+		the server offers it, and this is not consulted.
 	**/
 	public var httpVersion:HTTPVersion;
 
 	/**
-		How long, in milliseconds, to wait for a response after the connection is
-		established before abandoning the request.
+		How long, in milliseconds, the request may go with nothing arriving,
+		waiting for the response, reading its body, and connecting too but on
+		Node, where it starts once the connection is made, before it is
+		abandoned with an `IO_ERROR`. Time without progress, not a deadline on
+		the whole exchange: a large download that keeps moving is waited for.
+
+		`0` or less is no limit, on every target: the load waits for as long
+		as the server takes, until `close()` ends it. It was 30 seconds
+		natively and no limit on JavaScript.
 
 		Taken from `URLRequestDefaults.idleTimeout` when that is greater than
 		zero, and 30000 otherwise.
@@ -70,6 +120,12 @@ class URLRequest {
 		oldest going first, as a browser's do, and one longer than 4,096
 		characters is ignored.
 
+		By these rules on every target but the browser. In a browser the
+		browser's own jar is used instead, whatever this says, by the
+		browser's rules: it keeps cookies between requests too, and a request
+		to another origin carries none, since `XMLHttpRequest.withCredentials`
+		is left off.
+
 		The default comes from `URLRequestDefaults.manageCookies`.
 	**/
 	public var manageCookies:Bool;
@@ -83,6 +139,13 @@ class URLRequest {
 		compression ratios have no ceiling, and a few hundred bytes of gzip or
 		Brotli can name gigabytes. The limit used to be an internal setting of
 		the native client only.
+
+		In a browser the browser decodes a response before a page sees any of
+		it, so the limit is held to the whole body once it has arrived: a load
+		past it fails as it does elsewhere, but the browser has spent the
+		memory by then. A response from another origin whose
+		`Content-Encoding` the server does not expose to the page is not
+		checked.
 	**/
 	public var maxDecompressedSize:Int = 64 * 1024 * 1024;
 
@@ -103,10 +166,16 @@ class URLRequest {
 		`Accept-Encoding` only when you have not: name one here and yours is the
 		one sent.
 
-		`User-Agent`, `Host` and `Connection` are not checked that way. The
-		client writes all three unconditionally, so a `User-Agent` added here
-		goes out as a second header rather than replacing the first, set the
-		`userAgent` property instead.
+		`User-Agent`, `Host` and `Connection` are not checked that way over
+		HTTP/1.1: the client writes all three unconditionally, so a
+		`User-Agent` added here goes out as a second header rather than
+		replacing the first, set the `userAgent` property instead. Over
+		HTTP/2, and on Node, which send one, a `User-Agent` here is the one
+		sent.
+
+		In a browser the browser refuses the headers the Fetch standard keeps
+		for itself, `Accept-Encoding`, `Content-Length`, `Cookie`, `Host` and
+		`Connection` among them, and says so in the console.
 	**/
 	public var requestHeaders:Array<URLRequestHeader>;
 
@@ -183,7 +252,11 @@ class URLRequest {
 		The `User-Agent` string to send.
 
 		Initialised from `URLRequestDefaults.userAgent`, which is unset. While it
-		is null the client sends `CrossByte`.
+		is null the client sends `CrossByte`, on every target but the browser.
+
+		In a browser the browser has the last word: unset, it sends its own,
+		and one set here it sends or refuses as it sees fit, Firefox sends
+		it, Chrome and Safari keep their own and say so in the console.
 	**/
 	public var userAgent:String;
 

@@ -176,7 +176,8 @@ class H2ClientSession {
 	 * `timeoutSeconds` is an idle limit: the longest the response may go with
 	 * nothing arriving for it, and the longest a window may keep its body
 	 * from going out. A response that keeps coming is waited for however
-	 * long it takes.
+	 * long it takes. `0` or less is no limit: the request waits until its
+	 * stream ends, it is cancelled, or the connection goes.
 	 */
 	public function execute(method:String, scheme:String, authority:String, path:String, headers:Array<HpackHeader>, body:Null<Bytes>,
 			timeoutSeconds:Float, ?cancelToken:HTTPCancelToken):H2Stream {
@@ -298,6 +299,14 @@ class H2ClientSession {
 	 * reached early, and at most a quarter of it late.
 	 */
 	private function __awaitEnd(target:H2Stream, waiter:Lock, timeoutSeconds:Float):Bool {
+		if (timeoutSeconds <= 0) {
+			// No limit. Each thing that wakes the waiter, the stream ending,
+			// a cancel, the connection going, ends this wait. A limit of
+			// zero was a wait of none, and failed every such request at once.
+			waiter.wait();
+			return true;
+		}
+
 		var slice:Float = timeoutSeconds / 4;
 		__lock.acquire();
 		var seen:Int = target.framesIn;
@@ -529,8 +538,12 @@ class H2ClientSession {
 			return false;
 		}
 
+		// A timeout of 0 or less is none: the window may stay shut for as long
+		// as the connection lasts, and the wait ends only on a frame, a
+		// cancel or the connection going.
+		var limited:Bool = upload.timeout > 0;
 		var remaining:Float = upload.timeout - stalledSeconds;
-		if (remaining <= 0) {
+		if (limited && remaining <= 0) {
 			upload.timedOut = true;
 			try {
 				connection.resetStream(target.id, H2ErrorCode.CANCEL);
@@ -540,7 +553,11 @@ class H2ClientSession {
 
 		upload.blocked = true;
 		__lock.release();
-		upload.wake.wait(remaining);
+		if (limited) {
+			upload.wake.wait(remaining);
+		} else {
+			upload.wake.wait();
+		}
 		__lock.acquire();
 		upload.blocked = false;
 
