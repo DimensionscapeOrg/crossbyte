@@ -725,6 +725,160 @@ class IceAgentTest extends utest.Test {
 	}
 
 	/**
+		An agent with no pair to check gives up at its deadline, and says why.
+
+		`__settleIfFinished` waits for every pair to fail, and with none there
+		is nothing to fail: an agent whose peer offered only names, and from
+		which no check came, was still CHECKING ten minutes on, and so was
+		whatever waited on `connected`.
+	**/
+	public function testAnAgentWithNothingToCheckGivesUpAtItsDeadline():Void {
+		if (unsupported()) return;
+
+		var agent = new IceAgent(true, credentials("alice"));
+		var now = 0.0;
+		var failure:String = null;
+		var failedAt:Float = -1;
+
+		agent.connected.then(_ -> {}, function(error:String):Void {
+			failure = error;
+			failedAt = now;
+		});
+
+		agent.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+
+		// What a browser hiding its addresses offers: a name, which is dropped.
+		agent.addRemoteCandidate(IceCandidate.host("8f21c9eb-1565-459c-8b08-2666fbf74b81.local", PORT));
+		agent.start(credentials("bob"), 0);
+
+		while (now < 600 && failure == null) {
+			agent.poll(now);
+			now += 0.25;
+		}
+
+		Assert.equals(IceAgentState.FAILED, agent.state, "an agent with nothing to check never gave up");
+		Assert.isTrue(failedAt >= IceAgent.DEFAULT_TIMEOUT && failedAt < IceAgent.DEFAULT_TIMEOUT + 0.5, "it gave up at " + failedAt + " seconds");
+		Require.notNull(failure);
+		Assert.isTrue(failure.indexOf("No candidate pair could be formed") >= 0, "the reason does not say what was missing: " + failure);
+	}
+
+	/**
+		A controlled agent whose pairs answer, and which is never nominated,
+		gives up at its deadline.
+
+		Its own checks succeeding keep `__settleIfFinished` from concluding
+		anything, and only the controlling peer can select a pair. With the
+		nominations lost on the way, or a peer that never sends one, it
+		waited for good.
+	**/
+	public function testAControlledAgentNeverNominatedGivesUpAtItsDeadline():Void {
+		if (unsupported()) return;
+
+		var alice = new IceAgent(true, credentials("alice"));
+		var bob = new IceAgent(false, credentials("bob"));
+		var wire = new Wire(alice, ALICE_ADDRESS, bob, BOB_ADDRESS);
+		wire.loseNominations = true;
+
+		var failure:String = null;
+		bob.connected.then(_ -> {}, error -> failure = error);
+
+		alice.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		bob.addLocalCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		alice.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		bob.addRemoteCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		alice.start(bob.localCredentials, 0);
+		bob.start(alice.localCredentials, 0);
+
+		wire.advance(0, IceAgent.DEFAULT_TIMEOUT + 2.0, 0.05);
+
+		Assert.isTrue(bob.validPairs().length > 0, "no pair answered, so this is not the case being tested");
+		Assert.equals(IceAgentState.FAILED, bob.state, "a controlled agent that was never nominated was still waiting");
+		Require.notNull(failure, "`connected` was never settled");
+		Assert.isTrue(failure.indexOf("nominated none") >= 0, "the reason does not say the nomination never came: " + failure);
+	}
+
+	/**
+		A nomination that goes unanswered moves on to another pair that
+		answered.
+
+		`__nominating` was set as a nomination went out and cleared by nothing
+		but a change of role, so a controlling agent whose first choice went
+		quiet after it was proved never nominated again, while another pair
+		that had answered sat unused. The deadline is off here, so what is
+		measured is the agent moving on rather than giving up.
+	**/
+	public function testAnUnansweredNominationMovesToAnotherPair():Void {
+		if (unsupported()) return;
+
+		var alice = new IceAgent(true, credentials("alice"));
+		var bob = new IceAgent(false, credentials("bob"));
+		alice.timeout = 0;
+		bob.timeout = 0;
+
+		var wire = new Wire(alice, ALICE_ADDRESS, bob, BOB_ADDRESS);
+		var second:String = "10.0.0.4";
+
+		// Bob is reachable at two addresses, the first preferred, and a
+		// nomination to the first is lost however often it is sent.
+		wire.loseNominationsTo.push(BOB_ADDRESS + ":" + PORT);
+
+		alice.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		bob.addLocalCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		bob.addLocalCandidate(IceCandidate.host(second, PORT));
+		alice.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		alice.addRemoteCandidate(new IceCandidate(HOST, second, PORT, IceCandidate.COMPONENT_RTP, IceCandidate.computePriority(HOST, 100)));
+		bob.addRemoteCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		alice.start(bob.localCredentials, 0);
+		bob.start(alice.localCredentials, 0);
+
+		wire.advance(0, 60, 0.05);
+
+		Assert.equals(IceAgentState.CONNECTED, alice.state, "after its first nomination went unanswered the controlling agent never nominated again");
+		Assert.equals(IceAgentState.CONNECTED, bob.state, "the controlled agent was never nominated");
+
+		if (alice.selectedPair != null) {
+			Assert.equals(second, alice.selectedPair.remote.address, "the pair selected is not the one that answered");
+		}
+	}
+
+	/**
+		A late copy of the answer that proved a pair is not taken for the
+		answer to its nomination.
+
+		The nomination went out under the transaction of the check that had
+		proved the pair, so the peer's answer to a retransmission of that
+		check, arriving after the nomination left, selected the pair, though
+		the peer had never been sent USE-CANDIDATE, and would wait for one.
+	**/
+	public function testALateAnswerIsNotTakenForTheNominations():Void {
+		if (unsupported()) return;
+
+		var bob = credentials("bob");
+		var alice = new IceAgent(true, credentials("alice"));
+		var sent:Array<ByteArray> = [];
+		alice.onSend = (payload, _, _) -> sent.push(payload);
+		alice.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		alice.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		alice.start(bob, 0);
+		alice.poll(0);
+
+		var check = Require.notNull(sent.length > 0 ? StunMessage.decode(sent[0]) : null, "no check went out");
+		var answer = new StunMessage(StunMessage.BINDING_SUCCESS, check.transactionId, []);
+
+		// The pair is proved, and nominated on the next poll.
+		alice.receive(answer.encodeSigned(bob.password), BOB_ADDRESS, PORT, 0.1);
+		alice.poll(0.2);
+
+		var nomination = Require.notNull(StunMessage.decode(sent[sent.length - 1]));
+		Assert.isTrue(nomination.hasUseCandidate(), "the agent did not nominate the pair it had proved");
+
+		// And the same answer again, late.
+		alice.receive(answer.encodeSigned(bob.password), BOB_ADDRESS, PORT, 0.3);
+
+		Assert.equals(IceAgentState.CHECKING, alice.state, "a late copy of the proving answer selected the pair");
+	}
+
+	/**
 		A pair nothing answers is given up on at 39.5 seconds, as RFC 8489 has
 		a transaction given up on: seven transmissions over 31.5 seconds, and
 		sixteen times the first timeout for the last to be answered.
@@ -1107,12 +1261,24 @@ private class Wire {
 				return;
 			}
 
+			// Lost on the way, as a nomination can be while the checks before
+			// it got through.
+			if (message != null && message.hasUseCandidate() && (loseNominations || loseNominationsTo.indexOf(key) >= 0)) {
+				return;
+			}
+
 			queue.push(new Packet(endpoint, payload, toAddress, toPort));
 		};
 	}
 
 	/** "address:port" of anywhere that no longer answers: what is sent there is lost. **/
 	public var unreachable:Array<String> = [];
+
+	/** Every check carrying USE-CANDIDATE is lost, and nothing else. **/
+	public var loseNominations:Bool = false;
+
+	/** "address:port" a check carrying USE-CANDIDATE is lost on the way to. **/
+	public var loseNominationsTo:Array<String> = [];
 
 	/** How many datagrams were sent to each "address:port", lost or not. **/
 	public var sentTo:Map<String, Int> = new Map();

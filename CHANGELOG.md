@@ -1937,6 +1937,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An `IceAgent` gives up when it has not selected a pair within `timeout`
+  seconds of `start`, 40 by default, 0 for none, and `connected` fails
+  saying what it was waiting for. It could wait for ever: with no pair to
+  check (a peer offering only names, and no check arriving), as a
+  controlled agent whose pairs answered and was never nominated, or as a
+  controlling agent whose nomination went unanswered while another pair
+  had answered, which now nominates that pair instead. A nomination also
+  goes out under a transaction of its own, so a late copy of the answer
+  that proved the pair is no longer taken for the nomination's.
 - An `IceAgent` that has failed stays failed, answering and sending
   nothing, as RFC 7675 has a sender whose consent expired stop. A check
   nominating a pair brought one whose consent had run out back to

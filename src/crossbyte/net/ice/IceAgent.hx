@@ -105,6 +105,16 @@ class IceAgent {
 	public static inline var CONSENT_TIMEOUT:Float = 30.0;
 
 	/**
+		The deadline an agent is given to select a pair unless `timeout` says
+		otherwise, in seconds from `start`.
+
+		Forty: a moment past the 39.5 seconds one pair is checked for, so it
+		ends only the waits nothing else would, no pair to check, or a
+		nomination that never comes.
+	**/
+	public static inline var DEFAULT_TIMEOUT:Float = 40.0;
+
+	/**
 		The most remote candidates one agent will hold: those the peer
 		advertised, and those learned from where its checks arrived.
 
@@ -214,6 +224,22 @@ class IceAgent {
 	public var connected(default, null):Future<IceCandidatePair>;
 
 	/**
+		How long, in seconds from `start`, the agent has to select a pair
+		before it gives up: FAILED, and `connected` failed with a reason that
+		says what it was waiting for. 0 for no deadline. Read at every poll, so
+		it can be changed while checking.
+
+		There was none, and an agent could wait for ever: with no pair to check,
+		the peer's candidates all names, or none reachable from this agent's,
+		and no check arriving; as the controlled agent, its pairs answering
+		and the controlling peer never nominating one; or as the controlling
+		agent, its nomination unanswered while another pair had answered. That
+		last one now moves on to the next pair that answered; the deadline is
+		for the rest.
+	**/
+	public var timeout:Float = DEFAULT_TIMEOUT;
+
+	/**
 		Called with a datagram to put on the wire.
 
 		The caller wires this to whatever socket the local candidates describe.
@@ -243,7 +269,12 @@ class IceAgent {
 	@:noCompletion private var __consentedAt:Float = 0;
 	@:noCompletion private var __valid:Array<IceCandidatePair> = [];
 	@:noCompletion private var __nextCheckAt:Float = 0;
+
+	/** Whether a nomination is in flight; cleared when it goes unanswered, so another is made. **/
 	@:noCompletion private var __nominating:Bool = false;
+
+	/** When `start` was called, which `timeout` is measured from. **/
+	@:noCompletion private var __startedAt:Float = 0;
 
 	/** Whether any pair created or triggered since connecting may still need checking. **/
 	@:noCompletion private var __lateChecks:Bool = false;
@@ -380,6 +411,7 @@ class IceAgent {
 
 		this.remoteCredentials = remoteCredentials;
 		state = CHECKING;
+		__startedAt = now;
 		__nextCheckAt = now;
 		__rebuild();
 		onStateChanged(CHECKING);
@@ -412,12 +444,17 @@ class IceAgent {
 			return;
 		}
 
+		if (timeout > 0 && now - __startedAt >= timeout) {
+			__giveUp(__overdue());
+			return;
+		}
+
 		for (check in __checks) {
 			if (check.state == IN_PROGRESS && now >= check.nextAttemptAt) {
 				if (check.attempts >= MAX_ATTEMPTS) {
 					// Nothing came back through seven transmissions and the
 					// wait after the last: 39.5 seconds. The pair is not a path.
-					check.state = FAILED;
+					__checkFailed(check);
 				} else {
 					__transmit(check, now);
 				}
@@ -555,7 +592,7 @@ class IceAgent {
 			}
 
 			if (check.pair.local.sameAs(local) && check.pair.remote.address == remoteAddress) {
-				check.state = FAILED;
+				__checkFailed(check);
 				changed = true;
 			}
 		}
@@ -615,8 +652,61 @@ class IceAgent {
 
 		check.nominate = true;
 		check.attempts = 0;
+
+		// A transaction of its own. The check that proved the pair was
+		// answered under the old one, and a late copy of that answer, the
+		// peer replying to a retransmission, was taken for the nomination's,
+		// selecting a pair the peer had never been asked to use.
+		check.transaction = __freshTransaction();
 		check.state = WAITING;
 		__transmit(check, now);
+	}
+
+	/**
+		A check is given up on. When it was this agent's nomination, the pair
+		it nominated has stopped answering since it was proved, and is no
+		longer valid: the next poll nominates the best of the pairs left. The
+		nomination used to stay in flight for good, so a controlling agent
+		whose first choice went quiet never chose again, while another pair
+		that had answered sat unused.
+	**/
+	@:noCompletion private function __checkFailed(check:IceCheck):Void {
+		check.state = FAILED;
+
+		if (!check.nominate) {
+			return;
+		}
+
+		check.nominate = false;
+		__nominating = false;
+
+		for (pair in __valid) {
+			if (pair.sameAs(check.pair)) {
+				__valid.remove(pair);
+				break;
+			}
+		}
+	}
+
+	/** Why an agent that ran out of time had not connected, for `connected`'s failure. **/
+	@:noCompletion private function __overdue():String {
+		var within:String = " within " + timeout + " seconds";
+
+		if (__checks.length == 0) {
+			return "No candidate pair could be formed" + within + ": "
+				+ (__locals.length == 0 ? "this agent has no candidate of its own" : (__remotes.length == 0 ? "the peer offered no candidate this agent could use, and no check came from it" : "none of this agent's candidates can reach the peer's"))
+				+ ".";
+		}
+
+		if (__valid.length > 0 && !controlling) {
+			return __valid.length + " candidate pair" + (__valid.length == 1 ? "" : "s") + " answered, and the controlling peer nominated none" + within + ".";
+		}
+
+		if (__valid.length > 0) {
+			return "No pair this agent nominated was answered" + within + ".";
+		}
+
+		return "No candidate pair answered" + within + ".";
 	}
 
 	// ------------------------------------------------------------------
@@ -838,7 +928,7 @@ class IceAgent {
 
 		if (response.errorCodeValue() != ROLE_CONFLICT) {
 			// Any other refusal is this pair failing, not the session.
-			check.state = FAILED;
+			__checkFailed(check);
 			__settleIfFinished();
 			return true;
 		}
@@ -882,6 +972,11 @@ class IceAgent {
 
 		for (check in __checks) {
 			check.pair = new IceCandidatePair(check.pair.local, check.pair.remote, controlling);
+
+			// A nomination made under the old role is withdrawn with it: its
+			// answer would otherwise select the pair as though the peer had been
+			// asked by the agent entitled to ask.
+			check.nominate = false;
 		}
 
 		var revalued:Array<IceCandidatePair> = [];
