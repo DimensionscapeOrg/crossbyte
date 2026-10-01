@@ -85,6 +85,8 @@ entry below says how:
   choosing: bind first, to port 0 for one the system picks.
 - `Socket.writeBytes` and the `Socket` constructor throw for arguments
   out of range, as documented, where they clamped or did nothing.
+- A TCP or WebSocket `NetHost`'s `discoverPublicAddress` and
+  `allocateRelay` fail the `Future` they return rather than throwing.
 
 ### Added
 - `new NetHost("wss://...")` takes the certificate and key it presents,
@@ -1960,6 +1962,9 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `socketData` event's `bytesLoaded` is the bytes that arrived for it,
+  on Node and in a page as natively; there it was everything still
+  unread, so an event for 4 bytes said 7 when 3 before them were unread.
 - A TCP or WebSocket `NetHost` reports `discoverPublicAddress` and
   `allocateRelay`, which it cannot do, as a failed `Future`, as every
   member answering with a `Future` reports failure; they threw, so a

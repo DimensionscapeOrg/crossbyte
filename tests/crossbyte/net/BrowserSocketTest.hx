@@ -123,6 +123,41 @@ class BrowserSocketTest extends utest.Test {
 	}
 
 	/**
+		A `socketData` event's `bytesLoaded` is what arrived for it, as it
+		is natively; in a page it was everything still unread.
+	**/
+	@:timeout(15000)
+	public function testBytesLoadedIsWhatArrived(async:Async):Void {
+		var port:Null<Int> = Std.parseInt(js.Browser.location.port);
+		if (port == null || port <= 0) {
+			Assert.warn("the page was not served by ci/browser/run.js, so there is no echo endpoint to reach");
+			async.done();
+			return;
+		}
+
+		var socket = new Socket();
+		var loaded:Array<Int> = [];
+		// Nothing is read, so the first message is still unread when the
+		// second arrives.
+		socket.addEventListener(ProgressEvent.SOCKET_DATA, function(e:ProgressEvent) loaded.push(e.bytesLoaded));
+		socket.addEventListener(Event.CONNECT, function(_) {
+			socket.writeUTFBytes("abc");
+			socket.flush();
+		});
+		socket.connect(js.Browser.location.hostname + "/" + ECHO_PATH, port);
+
+		NetPump.until(() -> loaded.length >= 1, 5.0, function(_) {
+			socket.writeUTFBytes("defg");
+			socket.flush();
+			NetPump.until(() -> socket.bytesAvailable >= 7, 5.0, function(_) {
+				Assert.same([3, 4], loaded, "bytesLoaded was not what arrived for each event");
+				try socket.close() catch (_:Dynamic) {}
+				async.done();
+			});
+		});
+	}
+
+	/**
 		One socket connected to the echo endpoint: `before` runs ahead of
 		`connect()`, `after` once it has been called, and everything is
 		closed when `after` says it is finished.
