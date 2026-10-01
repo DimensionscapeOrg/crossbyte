@@ -775,10 +775,10 @@ class HTTPServerH2Test extends utest.Test {
 		var session = new H2Session(config -> config.keepAliveMaxRequests = 2);
 
 		session.start(() -> {
-			session.request(1, "GET", "/index.html", true);
-			session.request(3, "GET", "/index.html", true);
-			session.request(5, "GET", "/index.html", true);
-			session.until(() -> (session.finished(1) && session.finished(3) && session.finished(5) && session.dropped) || session.dropped, () -> {
+			// One write: a stream read after the connection has closed is not
+			// refused, it is never seen.
+			session.requestAll([1, 3, 5], "GET", "/index.html");
+			session.until(() -> session.dropped, () -> {
 				session.close();
 				Assert.equals(200, session.status(1));
 				Assert.equals(200, session.status(3));
@@ -795,8 +795,7 @@ class HTTPServerH2Test extends utest.Test {
 		var session = new H2Session(config -> config.keepAlive = false);
 
 		session.start(() -> {
-			session.request(1, "GET", "/index.html", true);
-			session.request(3, "GET", "/index.html", true);
+			session.requestAll([1, 3], "GET", "/index.html");
 			session.until(() -> session.dropped, () -> {
 				session.close();
 				Assert.equals(200, session.status(1));
@@ -1678,6 +1677,25 @@ private class H2Session {
 				then();
 			});
 		});
+	}
+
+	/**
+	 * Opens each of `streamIds` with a bodiless request for `path`, in one
+	 * write, so the server reads them together however its reads fall.
+	 */
+	public function requestAll(streamIds:Array<Int>, method:String, path:String):Void {
+		var out = new BytesBuffer();
+		for (streamId in streamIds) {
+			__streamWindows.set(streamId, 65535);
+			var block:Bytes = __encoder.encode([
+				new HpackHeader(":method", method),
+				new HpackHeader(":scheme", "http"),
+				new HpackHeader(":authority", "127.0.0.1"),
+				new HpackHeader(":path", path)
+			]);
+			__writeFrame(out, H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, streamId, block);
+		}
+		__send(out);
 	}
 
 	/** Opens `streamId` with a request, left open for a body unless `endStream`. */
