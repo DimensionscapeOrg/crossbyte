@@ -100,6 +100,7 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		// frames needs three past the gap, and there is only ever one.
 		sendMessages(sender, 2);
 		sender.take();
+		var mapAt:Float = Timer.stamp();
 		sender.__acceptFrame(ack(1000, [0]));
 
 		// Past its allowance, the round trip of the frame that arrived,
@@ -109,10 +110,19 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		waitFor(0.005);
 		sender.__checkRetransmits();
 
-		// Named in the message: neko on a Linux runner once saw two frames
-		// here, and "expected 1 elements but they are 2" said which no more.
+		// One resend. And, if a loaded machine stretched the 5 ms past the
+		// tail probe's floor, the probe that follows a silence that long,
+		// which resends the same frame: neko on a Linux runner once saw two
+		// frames here, and so did cpp in WSL beside a running build. With no
+		// probe, a second frame is a resend repeated, which is a fault.
 		var frames = described(sender.take());
-		Assert.same(["PACKET 1000 resend"], frames, "the frames sent: " + frames.join(", "));
+		if (sender.__probes == 0) {
+			Assert.same(["PACKET 1000 resend"], frames, "the frames sent: " + frames.join(", "));
+		} else {
+			Assert.isTrue(Timer.stamp() - mapAt >= ReliableDatagramSocket.MIN_PROBE_TIMEOUT, "a tail probe went before its floor");
+			Assert.same(["PACKET 1000 resend", "PACKET 1000 resend"], frames, "the frames sent, with a probe: " + frames.join(", "));
+			Assert.equals(1, sender.__probes);
+		}
 		Assert.equals(0, sender.__timeoutResends);
 		sender.close();
 	}
