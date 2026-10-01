@@ -378,6 +378,31 @@ class ConcurrencyLimiterTest extends utest.Test {
 		Assert.same(["second"], heard);
 	}
 
+	/**
+		`tryAcquire` delivers what it decided before it takes capacity, so a
+		callback that throws on the way leaves nothing held. It took the
+		capacity first: a waiter's refusal that threw then carried the
+		exception out of `tryAcquire`, and the permit it had made went with
+		it, held, and never returned to anyone who could release it.
+	**/
+	public function testATryAcquireThatAThrowingCallbackInterruptsHoldsNothing():Void {
+		var limiter = new ConcurrencyLimiter(2, 10, 5.0, clock);
+		var holder = limiter.tryAcquire();
+		Require.notNull(holder);
+		// Too big for what is left, so it waits; and its refusal throws.
+		var waiter = limiter.acquire(_ -> Assert.fail("granted"), _ -> throw "a refusal callback's own bug", 2);
+		Assert.isTrue(waiter.waiting);
+
+		now = 10.0;
+		// The sweep inside refuses the waiter, whose callback throws.
+		Assert.raises(() -> limiter.tryAcquire());
+		Assert.equals(1, limiter.inFlight, "the interrupted tryAcquire kept capacity nobody holds a permit for");
+
+		Assert.isTrue(holder.release());
+		Assert.equals(0, limiter.inFlight, "capacity was lost for good");
+		Assert.equals(2, limiter.available);
+	}
+
 	public function testConfigurationThatCannotWorkIsRefused():Void {
 		Assert.raises(() -> new ConcurrencyLimiter(-1));
 		Assert.raises(() -> new ConcurrencyLimiter(1, -1));
