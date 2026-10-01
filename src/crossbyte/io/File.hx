@@ -8,9 +8,11 @@ import crossbyte.sys.Worker;
 import crossbyte.errors.IllegalOperationError;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.Error;
+import crossbyte.errors.IOError;
 import crossbyte.events.Event;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.FileListEvent;
+import crossbyte.io._internal.FileOps;
 import crossbyte.io._internal.FilePath;
 #if (js && !nodejs)
 // No filesystem here. The class keeps its type and its API; the calls
@@ -666,14 +668,21 @@ final class File extends EventDispatcher {
 		specified by the newLocation parameter. The copy process creates any required parent directories
 		(if possible). When overwriting files using copyTo(), the file attributes are also overwritten.
 
+		The source and destination are compared as files, not only as names: a name for the same file in
+		another case on Windows, a hard link to it, or a path to it through a junction or a symbolic link is
+		the same file, and copying a file onto itself is refused whatever `overwrite` says. A directory
+		copied onto an existing directory with `overwrite` is merged into it: its files replace those of
+		the same name, and the others stay.
+
 		@param newLocation The target location of the new file. Note that this File object specifies the
 		resulting (copied) file or directory, not the path to the containing directory.
 		@param overwrite If false, the copy fails if the file specified by the target parameter already
 		exists. If true, the operation overwrites existing file or directory of the same name.
 		@throws IOError The source does not exist; or the source could not be copied to the target; or
-		the source and destination refer to the same file or folder and overwrite is set to true. On
-		Windows, you cannot copy a file that is open or a directory that contains a file that is open.
-		@throws SecurityError The application does not have the necessary permissions.
+		the source and destination refer to the same file or folder; or a directory would be copied into
+		itself. On Windows, you cannot copy a file that is open or a directory that contains a file that
+		is open.
+		@throws ArgumentError `newLocation` is null.
 
 		The following code shows how to use the copyTo() method to copy a file. Before running this code,
 		create a test1.txt file in the CrossByte Test subdirectory of the documents directory on your computer.
@@ -710,51 +719,58 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function copyTo(newLocation:File, overwrite:Bool = false):Void {
-		if (!overwrite && FileSystem.exists(newLocation.__path)) {
-			throw new Error("Overwrite is false.");
+		if (newLocation == null) {
+			throw new ArgumentError("copyTo needs a destination.");
 		}
+
 		var newPath:String = newLocation.__path;
-		/*
-			* What if we had an additional argument, duplicate for copy and move that would
-			* work like this below:
-			*
-			if (!overwrite && FileSystem.exists(newPath))
-			{
-				var ext:String = Path.extension(newPath);
-
-				if (ext.length > 0)
-				{
-					ext = '.$ext';
-				}
-
-				var newPathWithoutExt:String = Path.withoutExtension(newPath);
-				var i:Int = 2;
-
-				while (FileSystem.exists(newPath))
-				{
-					newPath = newPathWithoutExt + '($i)$ext';
-					i++;
-				}
-		}*/
 
 		if (!FileSystem.exists(__path)) {
-			throw new Error("File or directory does not exist.", 3003);
+			throw __ioError('"$__path" does not exist.', 3003);
 		}
 
+		// Onto itself, whatever overwrite says. The standard library's copy
+		// truncates the destination before it reads the source, and the
+		// source was the destination: the file was left empty. A different
+		// spelling of the same file -- its name in another case, a hard
+		// link, a path through a junction -- did the same.
+		if (FileOps.sameFile(__path, newPath, System.isWindows)) {
+			throw __ioError('"$__path" and "$newPath" are the same file, and copying it onto itself would empty it.', 3011);
+		}
+
+		if (!overwrite && FileSystem.exists(newPath)) {
+			throw __ioError('"$newPath" exists, and overwrite is false.', 3011);
+		}
+
+		// Nor a directory into itself, which copied what it had just copied
+		// until the path grew too long.
+		if (isDirectory && __inside(__path, newPath)) {
+			throw __ioError('Cannot copy "$__path" into itself, as "$newPath".', 3014);
+		}
+
+		__copyPath(__path, newPath, overwrite);
+	}
+
+	/** The copy itself, once copyTo has checked the two ends. **/
+	@:noCompletion private static function __copyPath(source:String, target:String, overwrite:Bool):Void {
 		try {
-			if (isDirectory) {
-				FileSystem.createDirectory(newPath);
-				var files:Array<File> = getDirectoryListing();
-				for (file in files) {
-					var newFile = new File(Path.join([newPath, file.name]));
-					file.copyTo(newFile, overwrite);
+			if (FileSystem.isDirectory(source)) {
+				FileSystem.createDirectory(target);
+				for (item in __listPath(source)) {
+					var child:String = Path.join([target, item]);
+
+					if (!overwrite && FileSystem.exists(child)) {
+						throw __ioError('"$child" exists, and overwrite is false.', 3011);
+					}
+
+					__copyPath(Path.join([source, item]), child, overwrite);
 				}
 			} else {
-				var newDirectory:String = Path.directory(newPath);
-				if (!FileSystem.exists(newDirectory)) {
+				var newDirectory:String = Path.directory(target);
+				if (newDirectory != "" && !FileSystem.exists(newDirectory)) {
 					FileSystem.createDirectory(newDirectory);
 				}
-				HaxeFile.copy(__path, newPath);
+				HaxeFile.copy(source, target);
 			}
 		} catch (e:Error) {
 			// A recursive call has already described the failure against the
@@ -766,8 +782,33 @@ final class File extends EventDispatcher {
 			// by another process all used to be reported as a missing file,
 			// which sends whoever is reading the error looking for the wrong
 			// thing entirely.
-			throw new Error('Unable to copy "$__path" to "$newPath": ${Std.string(e)}', 3006);
+			throw __ioError('Unable to copy "$source" to "$target": ${Std.string(e)}', 3006);
 		}
+	}
+
+	/**
+		Whether a rename reaches from `path` into `directory`. Dynamic so that
+		a test on a machine with one volume can take the path a second one
+		would.
+	**/
+	@:noCompletion private static dynamic function __sameVolume(path:String, directory:String, windows:Bool):Bool {
+		return FileOps.sameVolume(path, directory, windows);
+	}
+
+	/** Whether `path` is `directory` or below it, once both are absolute and normalized. **/
+	@:noCompletion private static function __inside(directory:String, path:String):Bool {
+		#if (js && !nodejs)
+		return false;
+		#else
+		return FilePath.relative(FileSystem.absolutePath(directory), FileSystem.absolutePath(path), false, System.isWindows) != null;
+		#end
+	}
+
+	/** An IOError carrying one of AIR's error numbers, as File's documentation promises. **/
+	@:noCompletion private static function __ioError(message:String, id:Int):IOError {
+		var error:IOError = new IOError(message);
+		@:privateAccess error.errorID = id;
+		return error;
 	}
 
 	/**
@@ -1222,15 +1263,23 @@ final class File extends EventDispatcher {
 
 		The move process creates any required parent directories (if possible).
 
+		On one volume a move is a rename: as quick for a directory of any size as for one file, and a
+		file replaced through it is never seen half written. A name changed only in case is renamed,
+		even where the file system ignores case and the two names are the same file. Onto another
+		volume, where no rename reaches, the source is copied and then deleted, and if the copy fails
+		nothing of it is left behind. With `overwrite`, an existing destination is replaced -- a
+		directory as a whole, not merged into -- and is put back if the move fails.
+
 		@param newLocation The target location for the move. This object specifies the path to the
 		resulting (moved) file or directory, not the path to the containing directory.
 		@param overwrite If false, the move fails if the target file already exists. If true, the
 		operation overwrites any existing file or directory of the same name.
 		@throws	IOError  The source does not exist; or the destination exists and overwrite is set to
 		false; or the source file or directory could not be moved to the target location; or the source
-		and destination refer to the same file or folder and overwrite is set to true. On Windows, you
-		cannot move a file that is open or a directory that contains a file that is open.
-		@throws SecurityError The application does not have the necessary permissions to move the file.
+		and destination refer to the same file or folder (other than by a name changed only in case); or
+		a directory would be moved into itself. On Windows, you cannot move a file that is open or a
+		directory that contains a file that is open.
+		@throws ArgumentError `newLocation` is null.
 
 		The following code shows how to use the moveTo() method to rename a file. The original filename
 		is test1.txt and the resulting filename is test2.txt. Since both the source and destination File
@@ -1257,15 +1306,139 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function moveTo(newLocation:File, overwrite:Bool = false):Void {
-		if (!overwrite && FileSystem.exists(newLocation.__path)) {
-			throw new Error("Overwrite is set to false");
+		// It was a copy followed by a delete, always. Onto itself that copy
+		// emptied the file; a rename of a name's case -- the same file to
+		// Windows and to macOS by default -- copied the file onto itself and
+		// then deleted it. It is a rename now, and a copy and a delete only
+		// where a rename cannot go: to another volume.
+		if (newLocation == null) {
+			throw new ArgumentError("moveTo needs a destination.");
 		}
-		copyTo(newLocation, overwrite);
-		if (isDirectory) {
-			deleteDirectory(true);
-		} else {
-			deleteFile();
+
+		var windows:Bool = System.isWindows;
+		var source:String = __path;
+		var target:String = newLocation.__path;
+
+		if (!FileSystem.exists(source)) {
+			throw __ioError('"$source" does not exist.', 3003);
 		}
+
+		if (FileOps.sameFile(source, target, windows)) {
+			var from:String = FilePath.normalize(FileSystem.absolutePath(source), windows);
+			var to:String = FilePath.normalize(FileSystem.absolutePath(target), windows);
+
+			if (from != to && from.toLowerCase() == to.toLowerCase()) {
+				// One name in another case: nothing is overwritten, whatever
+				// overwrite says.
+				try {
+					FileSystem.rename(source, target);
+				} catch (e:Dynamic) {
+					throw __ioError('Could not rename "$source" to "$target": ${Std.string(e)}', 3006);
+				}
+
+				__updateFileStats();
+				return;
+			}
+
+			throw __ioError('"$source" and "$target" are the same file.', 3011);
+		}
+
+		var targetExists:Bool = FileSystem.exists(target);
+
+		if (targetExists && !overwrite) {
+			throw __ioError('"$target" exists, and overwrite is false.', 3011);
+		}
+
+		var sourceIsDirectory:Bool = FileSystem.isDirectory(source);
+
+		if (sourceIsDirectory && __inside(source, target)) {
+			throw __ioError('Cannot move "$source" into itself, as "$target".', 3014);
+		}
+
+		var targetParts:FilePathParts = FilePath.parse(FileSystem.absolutePath(target), windows);
+		var parentSegments:Array<String> = FilePath.walk([], targetParts.segments, true, 0);
+		parentSegments.pop();
+		var parentDirectory:String = FilePath.join(targetParts.root, parentSegments, windows);
+
+		if (!FileSystem.exists(parentDirectory)) {
+			FileSystem.createDirectory(parentDirectory);
+		}
+
+		var across:Bool = !__sameVolume(source, parentDirectory, windows);
+
+		if (targetExists && !across && !sourceIsDirectory && !FileSystem.isDirectory(target)) {
+			// A file over a file on one volume: one step, which a reader of
+			// the old file never sees half done.
+			try {
+				FileOps.replace(source, target);
+			} catch (e:Dynamic) {
+				throw __ioError('Could not move "$source" over "$target": ${Std.string(e)}', 3006);
+			}
+
+			__updateFileStats();
+			return;
+		}
+
+		// Anything else in the way -- a directory, or a file a directory is
+		// moving onto -- is set aside first, under a name of its own in the
+		// same directory, and put back if the move fails. Overwrite replaces
+		// it, as documented, rather than merging into it.
+		var aside:Null<String> = null;
+
+		if (targetExists) {
+			aside = target + ".moving-" + __tempNonce();
+
+			try {
+				FileSystem.rename(target, aside);
+			} catch (e:Dynamic) {
+				throw __ioError('Could not move "$target" out of the way: ${Std.string(e)}', 3006);
+			}
+		}
+
+		try {
+			if (across) {
+				__copyPath(source, target, false);
+			} else {
+				FileSystem.rename(source, target);
+			}
+		} catch (e:Dynamic) {
+			if (across && FileSystem.exists(target)) {
+				try {
+					__deletePath(target);
+				} catch (_:Dynamic) {}
+			}
+
+			if (aside != null) {
+				try {
+					FileSystem.rename(aside, target);
+				} catch (_:Dynamic) {}
+			}
+
+			if (Std.isOfType(e, Error)) {
+				throw e;
+			}
+
+			throw __ioError('Could not move "$source" to "$target": ${Std.string(e)}', 3006);
+		}
+
+		if (across) {
+			// The copy is whole; only now does the source go.
+			try {
+				__deletePath(source);
+			} catch (e:Dynamic) {
+				throw __ioError('Copied "$source" to "$target", on another volume, but could not then delete it: ${Std.string(e)}', 3012);
+			}
+		}
+
+		if (aside != null) {
+			try {
+				__deletePath(aside);
+			} catch (e:Dynamic) {
+				throw __ioError('Moved "$source" to "$target", but the "$target" it replaced is still at "$aside": ${Std.string(e)}', 3012);
+			}
+		}
+
+		__updateFileStats();
 	}
 
 	/**

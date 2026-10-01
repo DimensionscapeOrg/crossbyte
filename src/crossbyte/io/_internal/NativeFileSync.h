@@ -19,3 +19,7 @@ void crossbyte_file_sync_directory(::String path);
 // Creates a file, or a directory, only if nothing is at `path`. Returns 0 when
 // it was created, 1 when something was already there, -1 on any other failure.
 int crossbyte_file_create_exclusive(::String path, bool directory);
+
+// The file at `path` as "<volume>:<index>", the same for every name the file
+// has, or an empty string if it cannot be examined.
+::String crossbyte_file_identity(::String path);
