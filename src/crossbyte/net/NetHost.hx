@@ -19,11 +19,34 @@ import crossbyte.net.Endpoint.parseURL;
  * and later disconnects are forwarded to `onDisconnect`.
  */
 abstract NetHost(INetHost) from INetHost to INetHost {
-	/** Creates and optionally starts a host from a transport URI. */
+	/**
+		Creates a host from a transport URI -- `tcp://`, `ws://`, `wss://` or
+		`rudp://` -- binds it, and starts it listening if asked.
+
+		A `wss://` host terminates TLS, and needs the certificate it presents
+		and its key in `cert`, which is installed before the host binds, as
+		a TLS server's material has to be. For anything more -- client
+		certificates, SNI -- make the `ServerWebSocket` and wrap it with
+		`fromServerWebSocket`.
+
+		@throws crossbyte.errors.ArgumentError For a `wss://` host without a
+			`cert`, and for `cert` given to a host of any other scheme, which
+			would not use it.
+	**/
 	public inline function new(uri:String, ?onAccept:INetConnection->Void, ?onDisconnect:(INetConnection, Reason) -> Void, ?onError:Reason->Void,
-			startListening:Bool = false):Void {
+			startListening:Bool = false, ?cert:{certificate:Certificate, key:Key}):Void {
 		var endpoint:Endpoint = parseURL(uri);
 		var secureWebSocket = __isSecureWebSocketUri(uri);
+		// Before anything is bound. A wss:// host bound in this constructor
+		// with no way to reach its certificate: every handshake failed, and
+		// nothing said why.
+		if (secureWebSocket && cert == null) {
+			throw new crossbyte.errors.ArgumentError("A wss:// host needs the certificate it presents: pass `cert` to NetHost's constructor, or make "
+				+ "the ServerWebSocket yourself and wrap it with NetHost.fromServerWebSocket.");
+		}
+		if (!secureWebSocket && cert != null) {
+			throw new crossbyte.errors.ArgumentError("Only a wss:// host takes a certificate; " + uri + " would not use it.");
+		}
 		this = switch (endpoint.protocol) {
 			case TCP:
 				var server = new ServerSocket();
@@ -31,6 +54,9 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 				fromServerSocket(server, onAccept, onDisconnect, onError);
 			case WEBSOCKET:
 				var server = new ServerWebSocket(secureWebSocket);
+				if (cert != null) {
+					server.cert = cert;
+				}
 				server.bind(endpoint.port, endpoint.address);
 				fromServerWebSocket(server, onAccept, onDisconnect, onError);
 			case RUDP:
@@ -105,21 +131,25 @@ private class BaseNetHost<TServer:ServerSocket> implements INetHost {
 	}
 
 	/**
-	 * Always refuses, for the same reason as `dial`: there is no single
-	 * endpoint here whose outside appearance would mean anything.
+	 * Always fails, for the same reason as `dial` refuses: there is no single
+	 * endpoint here whose outside appearance would mean anything. Failed
+	 * rather than thrown, as everything this answers with a `Future` reports
+	 * failure; see `INetHost`.
 	 */
 	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<ReflexiveAddress> {
-		throw new crossbyte.errors.IllegalOperationError("A " + protocol.toString()
+		var refusal = new crossbyte.errors.IllegalOperationError("A " + protocol.toString()
 			+ " host has no listening endpoint to discover: accepting and connecting are separate sockets on a stream transport.");
+		return Future.failed(refusal.message, refusal);
 	}
 
 	/**
-	 * Always refuses, as `dial` does: a relay is reached through one socket
+	 * Always fails, as `dial` refuses: a relay is reached through one socket
 	 * that both listens and dials, and a stream host has two.
 	 */
 	public function allocateRelay(server:String, port:Int = 3478, username:String, password:String, useChannels:Bool = false,
 			?transport:TurnTransport):Future<ReflexiveAddress> {
-		throw __noRelay("allocateRelay");
+		var refusal = __noRelay("allocateRelay");
+		return Future.failed(refusal.message, refusal);
 	}
 
 	/** Always refuses; see `allocateRelay`. **/
