@@ -921,6 +921,31 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	public function testAnHttp2MethodIsReadAsAnHttp11OneIs(async:Async):Void {
+		// The HTTP/1.1 parser upper-cases the method, as `method` says, and
+		// HTTP/2 took it as it came: "get" was refused 405 there and served
+		// over HTTP/1.1.
+		var seen:String = null;
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> {
+					seen = handler.method;
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "get", "/index.html", true);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.close();
+				Assert.equals("GET", seen);
+				Assert.equals(200, session.status(1));
+				async.done();
+			});
+		});
+	}
+
 	public function testALongPollOutlivesTheRequestTimeout(async:Async):Void {
 		// Every open stream counted as a request still arriving, so a long
 		// poll answered after requestTimeout found its connection closed with

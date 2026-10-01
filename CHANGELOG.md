@@ -1932,6 +1932,10 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An HTTP/2 request's method is read in capitals, as an HTTP/1.1 one is and
+  as `HTTPRequestHandler.method` says. It was taken as it came, so `get`
+  was refused `405` over HTTP/2 and served over HTTP/1.1, and a route
+  matched one and not the other.
 - An HTTP/2 request is held to `requestTimeout` from its own HEADERS. Every
   frame read or written set the connection's one clock back, so a client
   sending a byte of body every 0.4 s held a request open under a

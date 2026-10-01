@@ -936,7 +936,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __takeDecodedRequest(method:String, queryString:String, headers:Map<String, String>, startedAt:Float):Void {
-		__method = method;
+		__method = __uppercaseMethod(method);
 		__queryString = queryString;
 		__headers = headers;
 		// HTTP/2 carries no version token; the value only reaches logging and
@@ -945,6 +945,22 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (startedAt > 0) {
 			__requestStartedAt = startedAt;
 		}
+	}
+
+	/**
+	 * `method` in capitals, as `method` promises and the HTTP/1.1 parser
+	 * reads one, and the same string when it already is, as nearly every one
+	 * is. HTTP/2 passed it on as it came, so `get` was refused `405` there and
+	 * served over HTTP/1.1.
+	 */
+	@:noCompletion private static function __uppercaseMethod(method:String):String {
+		for (i in 0...method.length) {
+			var code:Int = StringTools.fastCodeAt(method, i);
+			if (code >= "a".code && code <= "z".code) {
+				return method.toUpperCase();
+			}
+		}
+		return method;
 	}
 
 	/**
