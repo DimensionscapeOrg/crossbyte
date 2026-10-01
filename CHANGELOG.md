@@ -105,6 +105,11 @@ entry below says how:
   succeeded, where it answered `null`: check for a load first, or catch
   it. `File.extension` and `type` are `null` for a name with no dot, where
   they were `""`.
+- `System.processAffinity`, `hasProcessAffinity` and `setProcessAffinity`
+  throw an `IllegalOperationError` off native and on macOS, where they
+  answered `[false]`, `[]` and `false`: check `System.PLATFORM` and the
+  target first. `System.getDeviceId()` answers `null`, not `""`, where
+  there is no identifier.
 
 ### Added
 - `System.applicationId`, the name an application's storage directory and
@@ -1998,6 +2003,24 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `System.totalCpuUsage()` measures the process: the processor time all
+  its threads used since the previous call, as a percentage of all the
+  machine's processors, one busy thread of eight reads 12.5. It
+  returned 0. On Node it asks `process.cpuUsage()` and on the jvm the
+  HotSpot bean, since `Sys.cpuTime()` is the wall clock on both; it
+  throws an `IllegalOperationError` in a browser.
+- `System.getDeviceId()` answers on every target: Windows' `MachineGuid`,
+  Linux's machine id, macOS's `IOPlatformUUID`, the same on every target
+  on one machine and read once. It answered `""` everywhere but native,
+  and `null` natively on Linux and macOS. `null` now means there is none:
+  in a browser, or on a Linux system without `/etc/machine-id`.
+- `System.processAffinity`, `hasProcessAffinity` and `setProcessAffinity`
+  throw an `IllegalOperationError` where there is no process affinity,
+  natively on macOS, and on every target but native, where they
+  answered `[false]`, `[]` and `false`, which read as "no processor
+  usable". Natively on Windows and Linux an index past the processors,
+  or past the 64 a Windows mask holds, is a `RangeError`; it shifted a
+  bit past the mask in C.
 - `File.canonicalize()` follows links, as documented, to the path the file
   system gives for the file, natively and on Node through the system's
   own call, on the jvm `toRealPath`, and on the interpreter, neko and

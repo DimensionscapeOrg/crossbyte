@@ -174,8 +174,18 @@ class System {
 	public static var userDir(get, never):String;
 
 	/**
-	 * Returns an array of Bool representing a full list of processors that are accessible to the process.
-	 */
+		Which of the machine's processors this process may run on: one entry
+		per processor, as `processorCount` counts them, `true` where the
+		process may use it.
+
+		Natively on Windows and Linux. A Windows process's mask covers one
+		processor group, at most 64 processors.
+
+		@throws IllegalOperationError Anywhere else: natively on macOS, which
+		has no process affinity, and on the jvm, Node, the interpreter, neko,
+		HashLink and in a browser, which have no call to ask. It reported
+		`[false]` there, every processor unusable, and `[]` on macOS.
+	**/
 	public static var processAffinity(get, never):Array<Bool>;
 
 	/**
@@ -183,30 +193,84 @@ class System {
 	 */
 	public static var processorCount(get, never):Int;
 
-	/* public static inline function setTicksPerSecond(value:Int):Void
-		{
-			CrossByte.current.tps = value;
+	/**
+		An identifier of this machine, the same for every program on it and
+		across restarts: Windows' `MachineGuid`, in capitals, without
+		braces, Linux's `/etc/machine-id` (or D-Bus's copy of it in
+		`/var/lib/dbus`), and macOS's `IOPlatformUUID`. The same on every
+		target on one machine; read once, then kept.
+
+		`null` where there is none: in a browser, which lets a page read no
+		such thing, on a Linux system without a machine id (some containers),
+		and on any other system. It answered `""` everywhere but native, and
+		`null` natively on Linux and macOS.
+
+		It identifies the machine to anyone who sees it. systemd's advice for
+		its machine id holds for all three: to tell machines apart from a
+		server, send a keyed hash of it, an HMAC under a key of your
+		application's own, rather than the identifier itself.
+	**/
+	public static function getDeviceId():Null<String> {
+		if (!__deviceIdRead) {
+			__deviceId = __readDeviceId();
+			__deviceIdRead = true;
 		}
 
-		public static inline function getTicksPerSecond():Int
-		{
-			return CrossByte.current.tps;
-	}*/
-	public static inline function getDeviceId():String {
-		#if cpp
-		return NativeSystem.getDeviceId();
-		#else
-		//no-op for now
-		return "";
-		#end
+		return __deviceId;
 	}
 
+	/**
+		The share of the runtime thread's last frame spent working, as a
+		percentage from 0 to 100: `CrossByte.current().cpuLoad`.
+
+		@throws IllegalOperationError Off a runtime's thread, where there is
+		no runtime to ask.
+	**/
 	public static inline function currentThreadCpuUsage():Float {
 		return CrossByte.current().cpuLoad;
 	}
 
-	public static inline function totalCpuUsage():Float {
-		return 0.0;
+	/**
+		How much of the machine's processing this process has used, all of
+		its threads, in user and kernel time, since the previous call, as a
+		percentage of all its processors from 0 to 100: a process keeping one
+		of eight processors busy reads 12.5. The first call measures from the
+		start: of the process on Node, of the JVM on the jvm, and elsewhere of
+		the program, when its classes were set up.
+
+		Meant to be read now and then, a second or more apart. Processor time
+		is counted in steps, 15.6 ms on Windows, 10 ms on Linux, so a
+		reading over a few milliseconds is mostly the step; a call within
+		10 ms of the previous one returns the previous reading and leaves the
+		next to measure from where that one did. It returned 0.
+
+		@throws IllegalOperationError In a browser, which reports no
+		processor time, and on a JVM that does not report the process's
+		(the HotSpot JVMs do, through `com.sun.management`).
+	**/
+	public static function totalCpuUsage():Float {
+		#if (js && !nodejs)
+		throw new crossbyte.errors.IllegalOperationError("A browser reports no processor time, so System.totalCpuUsage() is not available there.");
+		#else
+		var elapsed:Float = __processSeconds();
+		var used:Float = __processCpuSeconds();
+
+		if (__cpuMarked && elapsed - __cpuMarkElapsed < 0.01) {
+			return __cpuReading;
+		}
+
+		var window:Float = __cpuMarked ? elapsed - __cpuMarkElapsed : elapsed;
+		var spent:Float = __cpuMarked ? used - __cpuMarkUsed : used;
+		var reading:Float = window > 0 ? spent / window / processorCount * 100 : 0;
+
+		// Two clocks, each counted in steps: a short window can put the
+		// ratio a step past either end.
+		__cpuReading = reading < 0 ? 0 : (reading > 100 ? 100 : reading);
+		__cpuMarkElapsed = elapsed;
+		__cpuMarkUsed = used;
+		__cpuMarked = true;
+		return __cpuReading;
+		#end
 	}
 
 	/**
@@ -251,6 +315,144 @@ class System {
 	@:noCompletion private static var __desktopDirPath:String;
 	@:noCompletion private static var __documentsDirPath:String;
 	@:noCompletion private static var __userDirPath:String;
+	@:noCompletion private static var __deviceId:Null<String> = null;
+	@:noCompletion private static var __deviceIdRead:Bool = false;
+	@:noCompletion private static var __cpuMarked:Bool = false;
+	@:noCompletion private static var __cpuMarkElapsed:Float = 0;
+	@:noCompletion private static var __cpuMarkUsed:Float = 0;
+	@:noCompletion private static var __cpuReading:Float = 0;
+	#if !(js || jvm || java)
+	// The program's start, near enough: statics are set up before main. The
+	// processor time too, because on the interpreter the process is the
+	// compiler, and its compiling is not the program's.
+	@:noCompletion private static var __startStamp:Float = haxe.Timer.stamp();
+	@:noCompletion private static var __startCpu:Float = Sys.cpuTime();
+	#end
+
+	#if !(js && !nodejs)
+	/** Seconds since the start a first `totalCpuUsage()` measures from. **/
+	@:noCompletion private static function __processSeconds():Float {
+		#if nodejs
+		return js.Syntax.code("process.uptime()");
+		#elseif (jvm || java)
+		return __longToFloat(java.lang.management.ManagementFactory.getRuntimeMXBean().getUptime()) / 1000;
+		#else
+		return haxe.Timer.stamp() - __startStamp;
+		#end
+	}
+
+	/** The processor time the process has used, all threads, user and kernel, in seconds. **/
+	@:noCompletion private static function __processCpuSeconds():Float {
+		#if nodejs
+		// Not Sys.cpuTime(), which hxnodejs answers with the process's age.
+		return js.Syntax.code("(function (u) { return (u.user + u.system) / 1e6; })(process.cpuUsage())");
+		#elseif (jvm || java)
+		// Not Sys.cpuTime(), which the jvm answers with System.nanoTime(),
+		// the wall clock. The HotSpot bean's own interface is not one Haxe
+		// can name here, so it is asked by reflection.
+		try {
+			var bean:Dynamic = java.lang.management.ManagementFactory.getOperatingSystemMXBean();
+			var method = java.lang.Class.forName("com.sun.management.OperatingSystemMXBean").getMethod("getProcessCpuTime");
+			var nanos:java.lang.Number = cast method.invoke(bean);
+			var value:Float = nanos.doubleValue();
+
+			if (value >= 0) {
+				return value / 1e9;
+			}
+		} catch (_:Dynamic) {}
+
+		throw new crossbyte.errors.IllegalOperationError("This JVM does not report the process's processor time, so System.totalCpuUsage() is not available on it.");
+		#else
+		// User and kernel time of every thread: GetProcessTimes on Windows,
+		// times() elsewhere.
+		return Sys.cpuTime() - __startCpu;
+		#end
+	}
+
+	/**
+		What `command` prints, run directly rather than through a shell, or
+		null if it cannot be run or fails.
+	**/
+	@:noCompletion private static function __programOutput(command:String, args:Array<String>):Null<String> {
+		#if nodejs
+		try {
+			return js.Syntax.code("require('child_process').execFileSync({0}, {1}, {encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore']})", command, args);
+		} catch (_:Dynamic) {
+			return null;
+		}
+		#else
+		try {
+			var process:Process = new Process(command, args);
+			var output:String = process.stdout.readAll().toString();
+			// Before close(): eval refuses the exit code of a closed process.
+			var status:Int = process.exitCode();
+			process.close();
+			return status == 0 ? output : null;
+		} catch (_:Dynamic) {
+			return null;
+		}
+		#end
+	}
+	#end
+
+	@:noCompletion private static function __readDeviceId():Null<String> {
+		#if (js && !nodejs)
+		return null;
+		#else
+		try {
+			switch (PLATFORM) {
+				case "windows":
+					#if cpp
+					return __parseMachineGuid("MachineGuid REG_SZ " + NativeSystem.getDeviceId());
+					#else
+					// The 64-bit view: a 32-bit process is shown another,
+					// which has no MachineGuid.
+					return __parseMachineGuid(__programOutput("reg", ["query", "HKLM\\SOFTWARE\\Microsoft\\Cryptography", "/v", "MachineGuid", "/reg:64"]));
+					#end
+				case "mac":
+					return __parseIoregUuid(__programOutput("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"]));
+				default:
+					for (path in ["/etc/machine-id", "/var/lib/dbus/machine-id"]) {
+						if (sys.FileSystem.exists(path)) {
+							var id:String = StringTools.trim(sys.io.File.getContent(path));
+
+							if (~/^[0-9a-f]{32}$/.match(id)) {
+								return id;
+							}
+						}
+					}
+
+					return null;
+			}
+		} catch (_:Dynamic) {
+			return null;
+		}
+		#end
+	}
+
+	/**
+		The `MachineGuid` in `reg query`'s output, in capitals and without
+		braces, as the native build reads it from the registry; null if
+		there is none.
+	**/
+	@:noCompletion private static function __parseMachineGuid(output:Null<String>):Null<String> {
+		if (output == null) {
+			return null;
+		}
+
+		var guid:EReg = ~/MachineGuid\s+REG_SZ\s+\{?([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})\}?/;
+		return guid.match(output) ? guid.matched(1).toUpperCase() : null;
+	}
+
+	/** The `IOPlatformUUID` in `ioreg`'s output, in capitals; null if there is none. **/
+	@:noCompletion private static function __parseIoregUuid(output:Null<String>):Null<String> {
+		if (output == null) {
+			return null;
+		}
+
+		var uuid:EReg = ~/"IOPlatformUUID"\s*=\s*"([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})"/;
+		return uuid.match(output) ? uuid.matched(1).toUpperCase() : null;
+	}
 
 	public static inline function totalSystemMemory():Float {
 		#if nodejs
@@ -346,28 +548,93 @@ class System {
 	}
 
 	/**
-	 * Sets the affinity of a specific processor by it's index from 0 to processorCount
-	 * 
-	 * Returns false if polling fails to retrieve a value
-	 */
-	public static inline function setProcessAffinity(index:Int, value:Bool):Bool {
+		Lets this process run on the processor at `index`, from 0 to
+		`processorCount - 1`, or stops it running there.
+
+		Natively on Windows and Linux; see `processAffinity`.
+
+		@return Whether the system accepted the change: it refuses one that
+		would leave the process no processor at all.
+		@throws RangeError `index` names no processor, or, on Windows, one
+		past the 64 a process's mask can hold.
+		@throws IllegalOperationError Anywhere else, as for `processAffinity`.
+		It answered `false` there.
+	**/
+	public static function setProcessAffinity(index:Int, value:Bool):Bool {
+		__checkAffinityIndex(index);
 		#if cpp
 		return NativeSystem.setProcessAffinity(index, value);
 		#else
-		// no-op for now
 		return false;
 		#end
 	}
 
 	/**
-	 * Returns an a Boolean that reflects whether or not the processor at the supplied index is accessible to the process.
-	 */
-	public static inline function hasProcessAffinity(index:Int):Bool {
+		Whether this process may run on the processor at `index`, from 0 to
+		`processorCount - 1`.
+
+		Natively on Windows and Linux; see `processAffinity`.
+
+		@throws RangeError `index` names no processor, or, on Windows, one
+		past the 64 a process's mask can hold.
+		@throws IllegalOperationError Anywhere else, as for `processAffinity`.
+		It answered `false` there: no processor usable.
+	**/
+	public static function hasProcessAffinity(index:Int):Bool {
+		__checkAffinityIndex(index);
 		#if cpp
 		return NativeSystem.hasProcessAffinity(index);
-		#else 
-		//no-op for now
+		#else
 		return false;
+		#end
+	}
+
+	/** Refuses a target with no process affinity, then an index out of range. **/
+	@:noCompletion private static function __checkAffinityIndex(index:Int):Void {
+		__requireAffinity();
+
+		// The native calls shift a bit by it: past the mask, that is
+		// undefined behaviour, not an answer.
+		var limit:Int = processorCount;
+		if (isWindows && limit > 64) {
+			limit = 64;
+		}
+
+		if (index < 0 || index >= limit) {
+			throw new crossbyte.errors.RangeError('Processor $index is not one of this machine\'s $limit.');
+		}
+	}
+
+	@:noCompletion private static function __requireAffinity():Void {
+		#if cpp
+		if (PLATFORM == "windows" || PLATFORM == "linux") {
+			return;
+		}
+
+		throw new crossbyte.errors.IllegalOperationError(PLATFORM == "mac" ? "macOS has no process affinity: no processor can be granted or denied to a process there." : 'Process affinity is not available natively on $PLATFORM; only Windows and Linux have it.');
+		#else
+		throw new crossbyte.errors.IllegalOperationError('Process affinity is not available on ${__targetName()}: only native builds for Windows and Linux can ask for it or set it.');
+		#end
+	}
+
+	/** The target, as an error message names it. **/
+	@:noCompletion private static function __targetName():String {
+		#if cpp
+		return "native " + PLATFORM;
+		#elseif (jvm || java)
+		return "the jvm";
+		#elseif nodejs
+		return "Node";
+		#elseif js
+		return "a browser";
+		#elseif eval
+		return "the interpreter";
+		#elseif neko
+		return "neko";
+		#elseif hl
+		return "HashLink";
+		#else
+		return "this target";
 		#end
 	}
 
@@ -669,12 +936,12 @@ class System {
 		#end
 	}
 
-	@:noCompletion private static inline function get_processAffinity():Array<Bool> {
+	@:noCompletion private static function get_processAffinity():Array<Bool> {
+		__requireAffinity();
 		#if cpp
 		return NativeSystem.getProcessAffinity();
 		#else
-		// no op for now
-		return [false];
+		return null;
 		#end
 	}
 
