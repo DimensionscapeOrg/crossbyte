@@ -2095,6 +2095,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `SharedObject` opens on macOS. A region's name there was the one Linux
+  uses, longer than the 31 characters macOS allows a shared memory name,
+  and its lock was `flock()` on the region's descriptor, which macOS
+  refuses for anything but a file, so no `SharedObject` could open. On
+  macOS a region now takes a short name, a hash of its whole name, and is
+  locked through a file beside it, `/tmp/cbso_<hash>.lock`. Linux and
+  Windows are unchanged.
 - An `RPCSession` whose heartbeat hears nothing closes its connection as
   `Reason.Timeout`, so the connection's `onClose`, a `NetHost`'s
   `onDisconnect` and the session's `onDown` hear `Timeout`; they heard
