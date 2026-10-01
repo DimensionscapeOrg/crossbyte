@@ -70,14 +70,28 @@ typedef MongoConfig = {
 	**/
 	@:optional var tlsAllowInvalidCertificates:Bool;
 
-	/** Seconds to wait for a connection. Defaults to 10. **/
+	/**
+		Seconds `open()` may take with each server it tries -- the connect,
+		TLS, the hello and the login together -- before that server fails
+		with an `IOError`, as MySQL's `connectTimeout` covers its login.
+		Defaults to 10; 0 for no limit. Once open, a read waits on
+		`socketTimeout` instead. Looking a host name up is not bounded by it.
+
+		On the interpreter (eval) the connect and a TLS handshake have no
+		limit -- eval connects blocking, and fails an expired socket timeout
+		by aborting the process -- so only the hello and the login are
+		bounded. On hl the connect is bounded where the system applies a
+		send timeout to it: on Linux, not on Windows.
+	**/
 	@:optional var connectTimeout:Float;
 
 	/**
-		Seconds a read may wait for the server, or 0 -- the default, as in
-		MongoDB's drivers -- for no limit. A long aggregation may legitimately
-		run for minutes; bound a single operation with its `maxTimeMS` option
-		instead, which the server enforces.
+		Seconds a read may wait for the server once the connection is open,
+		or 0 -- the default, as in MongoDB's drivers -- for no limit. A long
+		aggregation may legitimately run for minutes; bound a single
+		operation with its `maxTimeMS` option instead, which the server
+		enforces. Not applied on the interpreter, which fails an expired
+		socket timeout by aborting the process.
 	**/
 	@:optional var socketTimeout:Float;
 

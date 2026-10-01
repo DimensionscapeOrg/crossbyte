@@ -1944,6 +1944,16 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `MongoConfig.connectTimeout` bounds the whole of `open()` with each
+  server -- the connect, TLS, the hello and the login -- as MySQL's bounds
+  its login. It was only a socket timeout set before the connect, which
+  Windows ignores for a connect (21 s to a host that drops the SYN), and
+  was replaced by `socketTimeout`, no limit by default, before the hello:
+  a server that accepted and never answered held `open()` for good, and on
+  the interpreter neither timeout applied at all. The connect is made
+  without blocking and finished within the deadline natively and on neko;
+  the interpreter bounds the hello and login with `select`. Where a target
+  cannot bound a step, `connectTimeout` says so.
 - `itemClass` works on every statement -- SQLite, MySQL, Postgres and
   MongoDB -- as AIR's does: each row is made an instance of the class, with
   no arguments, and each field set from the column of its name, and a
