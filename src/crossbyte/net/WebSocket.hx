@@ -14,8 +14,10 @@ import crossbyte._internal.websocket.FlexSocket;
 import crossbyte._internal.websocket.WebSocket as InternalWS;
 import crossbyte._internal.websocket.WebsocketEvent;
 import crossbyte.core.CrossByte;
+import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
 import crossbyte.errors.IllegalOperationError;
+import crossbyte.errors.RangeError;
 import crossbyte.errors.SecurityError;
 import crossbyte.events.Event;
 import crossbyte.events.EventType;
@@ -300,9 +302,12 @@ class WebSocket extends Socket {
 		@throws IOError if the session is not open, or, under the `THROW`
 			`outputOverflowPolicy`, if more than `maxOutputBufferSize` is
 			left waiting; the message is sent all the same.
+		@throws RangeError If the range falls outside `bytes`.
+		@throws ArgumentError If `bytes` is `null`.
 	**/
 	public function sendBinary(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
 		__requireOpen();
+		__checkRange(bytes, offset, length);
 
 		if (length == 0) {
 			length = bytes.length - offset;
@@ -824,13 +829,36 @@ class WebSocket extends Socket {
 						   ByteArray specified in `bytes` or if the amount of
 						   data specified to be written by `offset` plus
 						   `length` exceeds the data available.
+		@throws ArgumentError If `bytes` is `null`.
 	**/
 	override public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
 		if (__webSocket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
+		__checkRange(bytes, offset, length);
 		__output.writeBytes(bytes, offset, length);
+	}
+
+	/**
+		Refuses a range outside `bytes`, as `DatagramSocket.send` does: a
+		`ByteArray` copy takes whatever part of a range falls inside its
+		source and drops the rest, so a message cut short went without a word.
+	**/
+	@:noCompletion private static function __checkRange(bytes:ByteArray, offset:Int, length:Int):Void {
+		if (bytes == null) {
+			throw new ArgumentError("One of the parameters is invalid");
+		}
+
+		var total:Int = bytes.length;
+		if (offset < 0 || offset > total) {
+			throw new RangeError("The supplied index is out of bounds.");
+		}
+		// Against what is left after `offset` rather than `offset + length`,
+		// which overflows for a large length and wraps negative.
+		if (length < 0 || length > total - offset) {
+			throw new RangeError("The supplied index is out of bounds.");
+		}
 	}
 
 	/**
