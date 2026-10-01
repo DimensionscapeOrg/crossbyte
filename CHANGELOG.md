@@ -1683,6 +1683,10 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A native or jvm `Socket` reads its peer's address and port once per
+  connection. Each `remoteAddress` or `remotePort` was a `getpeername`
+  call, a `Host` and a string, and the HTTP server asks for the address on
+  every response it sends, about one percent of its time.
 - Converting `Bytes` to a `ByteArray`, `ByteArray.fromBytes`, and every
   implicit conversion, no longer allocates and zero-fills a buffer the
   size of the bytes only to drop it for theirs. Every socket read went
