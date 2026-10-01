@@ -1192,16 +1192,18 @@ All notable changes to CrossByte will be documented in this file.
   taking uploads. 64 KB uploads: 23,600 a second where a Node server took
   16,500, and 49,300 where a native one took 43,300; 1 MB uploads to Node,
   1,250 where it took 920.
-- On native, what one pass of the runtime sends a WebSocket goes in one
-  write when the pass ends, where each message was a write of its own, a
-  system call apiece. A server relaying a chat room's messages to everyone
-  in it made one for every message to every member. Nothing waits past
-  the pass -- the loop flushes before it polls again -- and a frame of
-  64 KB or more is written at once, as is a send from another thread than
-  the session's runtime. `outputBufferLength` counts what the pass holds.
-  64 clients each sending 20 messages a second, every one relayed to all:
-  107 microseconds of CPU a message where it took 485 (Node with `ws`:
-  521). At 60 a second it kept up where it fell 2 seconds behind,
+- What one pass of the runtime sends a WebSocket goes in one write when
+  the pass ends -- on Node, a turn of its event loop -- where each message
+  was a write of its own, a system call apiece. A server relaying a chat
+  room's messages to everyone in it made one for every message to every
+  member. Nothing waits past the pass -- the loop flushes before it polls
+  again -- and what is held goes at once from 64 KB, as does a send from
+  another thread than the session's runtime. `outputBufferLength` counts
+  what the pass holds. 64 clients each sending 20 messages a second, every
+  one relayed to all: natively 107 microseconds of CPU a message where it
+  took 485, and on Node 98 where it took 589, a median of 0.8 ms from send
+  to receipt where it was 12 (Node with `ws`: 516, and 6.2 ms). At 60 a
+  second the native server kept up where it fell 2 seconds behind,
   delivering 253,000 messages a second at an eighth of a core.
 - libsodium built by gcc and clang -- native Linux, macOS, Android and iOS
   -- works the curve25519 field in 64-bit limbs where the target has

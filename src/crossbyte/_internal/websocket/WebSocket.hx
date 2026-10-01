@@ -42,7 +42,7 @@ import haxe.io.Error;
  *
  * @author Christopher Speciale
  */
-class WebSocket #if !nodejs implements IPollableSocket implements crossbyte.core._internal.PassFlush #end {
+class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implements IPollableSocket #end {
 	public static inline var CLOSED:Int = 3;
 	public static inline var CLOSING:Int = 2;
 	public static inline var CONNECTING:Int = 0;
@@ -918,6 +918,7 @@ class WebSocket #if !nodejs implements IPollableSocket implements crossbyte.core
 			@:privateAccess __runtime.queueWritable(__socket);
 		}
 	}
+	#end
 
 	/**
 	 * Whether what is pending can wait for the end of the runtime's pass:
@@ -951,7 +952,6 @@ class WebSocket #if !nodejs implements IPollableSocket implements crossbyte.core
 		__passFlushQueued = false;
 		__flushPendingOutput();
 	}
-	#end
 
 	private function __doHandshake():Void {
 		var headers:Array<String> = [
@@ -999,51 +999,49 @@ class WebSocket #if !nodejs implements IPollableSocket implements crossbyte.core
 	 * partially-accepted or momentarily-full socket retains the remainder
 	 * instead of losing it.
 	 *
-	 * On native, what a pass sends a session goes in one write as the pass
-	 * ends -- every message a handler sends, a timer's, a tick's -- where
-	 * each frame was a write of its own, a system call apiece. A server
-	 * relaying a chat room's messages to everyone in it made one for every
-	 * message to every member. Nothing waits past the pass: the loop flushes
-	 * before it polls again. A frame of 64 KB or more is written at once, as
-	 * is what has been held once it reaches that; so is everything where no
-	 * pass is coming -- no runtime, one that has exited, or a send from
-	 * another thread than the session's runtime.
+	 * What a pass sends a session goes in one write as the pass ends -- every
+	 * message a handler sends, a timer's, a tick's -- where each frame was a
+	 * write of its own, a system call apiece. A server relaying a chat room's
+	 * messages to everyone in it made one for every message to every member.
+	 * Nothing waits past the pass: the loop flushes before it polls again,
+	 * and on Node a pass is a turn of its event loop. What has been held goes
+	 * at once when it reaches 64 KB, and on native a frame that size goes
+	 * straight from where it was built; so does everything where no pass is
+	 * coming -- no runtime, one that has exited, or a send from another
+	 * thread than the session's runtime.
 	 */
 	private function __queueOutput(data:ByteArray, length:Int):Void {
-		#if !nodejs
 		if (data != null && length > 0 && __socket != null) {
 			var pending:Int = __pendingOutput.length - __pendingSent;
-			if (pending > 0 || length < PASS_BATCH) {
-				__pendingOutput.position = __pendingOutput.length;
-				__pendingOutput.writeBytes(data, 0, length);
-				if (pending + length < PASS_BATCH && __holdForPass()) {
+			#if !nodejs
+			// Nothing queued ahead of it, and too large to be worth holding, so it
+			// is offered to the socket straight from where it was built, and only
+			// what the socket does not take is copied into the pending buffer.
+			if (pending <= 0 && length >= PASS_BATCH) {
+				var accepted:Int = __offer(data, 0, length);
+				if (accepted < 0) {
+					__close(1006, null);
 					return;
 				}
-				__flushPendingOutput();
-				return;
-			}
-		}
+				if (accepted >= length) {
+					return;
+				}
 
-		// Nothing queued ahead of it, and too large to be worth holding, so it
-		// is offered to the socket straight from where it was built, and only
-		// what the socket does not take is copied into the pending buffer.
-		if (data != null && length > 0 && __socket != null && __pendingSent >= __pendingOutput.length) {
-			var accepted:Int = __offer(data, 0, length);
-			if (accepted < 0) {
-				__close(1006, null);
+				__pendingOutput.clear();
+				__pendingSent = 0;
+				__pendingOutput.writeBytes(data, accepted, length - accepted);
+				__afterPartialWrite();
 				return;
 			}
-			if (accepted >= length) {
+			#end
+			__pendingOutput.position = __pendingOutput.length;
+			__pendingOutput.writeBytes(data, 0, length);
+			if (pending + length < PASS_BATCH && __holdForPass()) {
 				return;
 			}
-
-			__pendingOutput.clear();
-			__pendingSent = 0;
-			__pendingOutput.writeBytes(data, accepted, length - accepted);
-			__afterPartialWrite();
+			__flushPendingOutput();
 			return;
 		}
-		#end
 
 		if (data != null && length > 0) {
 			__pendingOutput.position = __pendingOutput.length;
@@ -1134,6 +1132,15 @@ class WebSocket #if !nodejs implements IPollableSocket implements crossbyte.core
 		// always took, and so never.
 		if (maxOutputBufferSize > 0 && __socket != null && __socket.writableLength > maxOutputBufferSize) {
 			__close(1011, "output buffer limit exceeded");
+			return;
+		}
+
+		// A close that was waiting for this to go: Node has it now, and sends
+		// it ahead of the end. Nothing waited here while each frame was written
+		// as it was made, but one held for the turn is still pending when the
+		// closing handshake finishes.
+		if (__closeWhenDrained) {
+			__close(__drainedCode, __drainedReason);
 		}
 		#else
 		var accepted:Int = __offer(__pendingOutput, __pendingSent, pending);
@@ -2458,7 +2465,21 @@ class WebSocket #if !nodejs implements IPollableSocket implements crossbyte.core
 		}
 
 		if (__socket != null) {
-			#if !nodejs
+			#if nodejs
+			// What the turn was holding goes before the socket ends, as it went
+			// before it was held -- the close frame `abort` and a protocol
+			// failure send just ahead of this, and whatever was sent before it.
+			// Node sends what it was given ahead of the end.
+			if (__connected && __pendingOutput != null && __pendingOutput.length > __pendingSent) {
+				var held:ByteArray = new ByteArray();
+				held.writeBytes(__pendingOutput, __pendingSent, __pendingOutput.length - __pendingSent);
+				__pendingOutput.clear();
+				__pendingSent = 0;
+				try {
+					__socket.write(Buffer.hxFromBytes(held));
+				} catch (_:Dynamic) {}
+			}
+			#else
 			// What the pass was holding goes before the socket does, as it went
 			// before it was held: the close frame `abort` and a protocol
 			// failure send just ahead of this, and whatever was sent before it.
