@@ -14,7 +14,10 @@ import crossbyte._internal.websocket.FlexSocket;
 import crossbyte._internal.websocket.WebSocket as InternalWS;
 import crossbyte._internal.websocket.WebsocketEvent;
 import crossbyte.core.CrossByte;
+import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
+import crossbyte.errors.IllegalOperationError;
+import crossbyte.errors.RangeError;
 import crossbyte.errors.SecurityError;
 import crossbyte.events.Event;
 import crossbyte.events.EventType;
@@ -32,9 +35,36 @@ import haxe.Unserializer;
 import haxe.io.Error;
 
 /**
- * ...
- * @author Christopher Speciale
- */
+	A WebSocket session (RFC 6455): a client that connects to a `ws://` or
+	`wss://` server, or a session a `ServerWebSocket` accepted.
+
+	It is a `Socket`. What is written and then flushed goes as one binary
+	message, and what arrives is read as a stream, or, with a listener for
+	`WebSocketMessageEvent.MESSAGE`, delivered a whole message at a time.
+	`sendText` and `sendBinary` send a message at once.
+
+	Where it differs from a plain socket it follows the browser's WebSocket:
+
+	- A connect that fails, refused, unreachable, a TLS handshake or a
+	  certificate refused, an upgrade the server declined or never answered,
+	  `timeout` passed, dispatches `ioError` saying why, and then `close`
+	  with code 1006. `connect` is never dispatched. A plain `Socket`
+	  dispatches `ioError` alone.
+	- `close` is a `WebSocketCloseEvent` carrying the code and reason, and is
+	  dispatched however the session ends, `close()` included.
+	- There is no half-close: a session ends both ways at once, with a close
+	  frame. `shutdown()` throws, and `peerShutdownPolicy` is not consulted,
+	  a peer that shuts its side ends the session, as 1006.
+
+	@event connect  Dispatched when the session has opened: the upgrade is
+	                done, and messages can be sent.
+	@event close    Dispatched when the session ends, as a
+	                `WebSocketCloseEvent`.
+	@event ioError  Dispatched when a connect fails, ahead of `close`; and
+	                ahead of `close` when an open session is given up on,
+	                its peer silent past `idleTimeout`, say.
+	@author Christopher Speciale
+**/
 class WebSocket extends Socket {
 	// The server half: `ServerWebSocket` accepts a connection and hands the
 	// raw socket here to be framed.
@@ -46,6 +76,9 @@ class WebSocket extends Socket {
 		webSocket.__server = server;
 		webSocket.__cbInstance = CrossByte.current();
 		webSocket.__webSocket = crossbyte._internal.websocket.WebSocket.fromAcceptedSocket(socket);
+		// Said, as a socket a secure ServerSocket accepted says it: every
+		// session a secure server accepted read false.
+		webSocket.secure = server != null ? server.secure : @:privateAccess webSocket.__webSocket.__tls;
 		webSocket.__webSocket.maxOutputBufferSize = webSocket.__maxOutputBufferSize;
 		if (server != null) {
 			webSocket.__webSocket.pingInterval = server.pingInterval;
@@ -60,7 +93,11 @@ class WebSocket extends Socket {
 	}
 
 	private var __webSocket:crossbyte._internal.websocket.WebSocket;
+	// The server that accepted this session, until it opens or ends.
 	private var __server:ServerWebSocket;
+	// Whether the server's `upgrade` hook turned this session down, which
+	// the server does not count as a failed handshake.
+	@:noCompletion private var __upgradeRefused:Bool = false;
 
 	/**
 		The subprotocols a client asks for, most preferred first. Set before
@@ -148,13 +185,16 @@ class WebSocket extends Socket {
 	// Socket's: a secure Socket checks its server the same way.
 
 	/**
-		Bytes of unsent frame data allowed to accumulate for this session
-		before it is closed with 1011, or `0` for no limit.
+		Bytes of unsent frame data allowed to accumulate for this session, or
+		`0` for no limit. Past it `outputOverflowPolicy` decides, as on a
+		`Socket`: `CLOSE`, the default, dispatches `ioError` and closes the
+		session with 1011, throwing away what was waiting; `THROW` throws an
+		`IOError` from the send that left it past the limit, and keeps the
+		session.
 
 		A peer that stops reading, a slept phone, a half-open connection,
 		leaves everything sent to it buffered with nothing to reclaim it.
-		Frames are never dropped to stay under the limit; the session is
-		closed once it is clear the peer is not draining.
+		Frames are never dropped to stay under the limit.
 
 		Overrides `Socket.maxOutputBufferSize` to bound the session's frame
 		buffer instead of the base socket's. A WebSocket writes through its
@@ -244,11 +284,14 @@ class WebSocket extends Socket {
 		browser hands its page as a `Blob` or an `ArrayBuffer`, the wrong
 		shape for the JSON most pages expect.
 
-		@throws IOError if the session is not open.
+		@throws IOError if the session is not open, or, under the `THROW`
+			`outputOverflowPolicy`, if more than `maxOutputBufferSize` is
+			left waiting; the message is sent all the same.
 	**/
 	public function sendText(text:String):Void {
 		__requireOpen();
 		__webSocket.sendString(text == null ? "" : text);
+		__checkOutputLimit();
 	}
 
 	/**
@@ -256,10 +299,15 @@ class WebSocket extends Socket {
 		once rather than when the socket is next flushed. A `length` of 0 sends
 		everything from `offset`.
 
-		@throws IOError if the session is not open.
+		@throws IOError if the session is not open, or, under the `THROW`
+			`outputOverflowPolicy`, if more than `maxOutputBufferSize` is
+			left waiting; the message is sent all the same.
+		@throws RangeError If the range falls outside `bytes`.
+		@throws ArgumentError If `bytes` is `null`.
 	**/
 	public function sendBinary(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
 		__requireOpen();
+		__checkRange(bytes, offset, length);
 
 		if (length == 0) {
 			length = bytes.length - offset;
@@ -268,6 +316,55 @@ class WebSocket extends Socket {
 		var message:ByteArray = new ByteArray();
 		message.writeBytes(bytes, offset, length);
 		__webSocket.sendBytes(message);
+		__checkOutputLimit();
+	}
+
+	/**
+		`THROW`'s half of `outputOverflowPolicy`, after a send: anything the
+		pass is holding is offered to the socket at once, as a `Socket`'s
+		flush offers its buffer before it measures, and if more than
+		`maxOutputBufferSize` is still waiting an `IOError` is thrown and the
+		session kept. `CLOSE`'s half is the session's own, at the write that
+		left it past the limit; see `__overflowCloses`.
+
+		Both were missing: whatever the policy, the session closed with 1011
+		and said nothing.
+	**/
+	@:noCompletion private inline function __checkOutputLimit():Void {
+		if (__maxOutputBufferSize > 0 && outputOverflowPolicy == OutputOverflowPolicy.THROW) {
+			__throwPastOutputLimit();
+		}
+	}
+
+	@:noCompletion private function __throwPastOutputLimit():Void {
+		var session = __webSocket;
+		if (session == null || session.outputBufferLength <= __maxOutputBufferSize) {
+			return;
+		}
+
+		@:privateAccess session.__flushPendingOutput();
+		var waiting:Int = session.outputBufferLength;
+		if (waiting > __maxOutputBufferSize) {
+			throw new IOError('WebSocket output buffer reached $waiting bytes, exceeding the $__maxOutputBufferSize byte limit; the peer is not reading.');
+		}
+	}
+
+	/** Whether the session closes when its output passes the limit. **/
+	@:noCompletion private function __overflowCloses():Bool {
+		return outputOverflowPolicy != OutputOverflowPolicy.THROW;
+	}
+
+	/**
+		Not for a `WebSocket`: a session ends both ways at once, with a close
+		frame, `closeWith()` or `close()`, and RFC 6455 has no half-close
+		for `shutdown(false, true)` to stand for. `peerShutdownPolicy` is not
+		consulted either: a peer that shuts its side ends the session, as 1006.
+
+		@throws IllegalOperationError Always. It returned, having done
+			nothing.
+	**/
+	override public function shutdown(read:Bool, write:Bool):Void {
+		throw new IllegalOperationError("A WebSocket has no half-close: a session ends both ways at once, with closeWith() or close().");
 	}
 
 	/**
@@ -340,6 +437,18 @@ class WebSocket extends Socket {
 		return __idleTimeout;
 	}
 
+	/**
+		Connects to the WebSocket server at `host` and `port`: `ws://`, or
+		`wss://` when `secure` is set. `host` may carry a path, as in
+		`"example.com/chat"`, and may be an IPv6 literal.
+
+		`timeout` bounds the whole of it, from this call to `connect`: the
+		host's lookup, the TCP connect, a `wss://` TLS handshake and the
+		upgrade together. `0` waits for as long as it takes.
+
+		@throws SecurityError The port is outside 0-65535.
+		@throws IOError The host is not one a URL can name.
+	**/
 	override public function connect(host:String, port:Int):Void {
 		if (__webSocket != null) {
 			close();
@@ -378,8 +487,8 @@ class WebSocket extends Socket {
 
 		__webSocket = new crossbyte._internal.websocket.WebSocket(schema + "://" + crossbyte._internal.websocket.WebSocketHost.forUrl(__webHost) + ":"
 			+ port + "/" + __webPath, protocols, null, verifyCert, certAuthority);
-		// `timeout` bounds the connection and the upgrade after it, as it
-		// bounds a plain socket's connect. The session used a fixed ten
+		// `timeout` bounds the connection and the upgrade after it, as one
+		// deadline from here; see connect's doc. The session used a fixed ten
 		// seconds of its own and never waited on the upgrade at all.
 		__webSocket.connectTimeout = timeout;
 		__webSocket.maxOutputBufferSize = __maxOutputBufferSize;
@@ -401,7 +510,9 @@ class WebSocket extends Socket {
 		Written while the session is still connecting, it waits and goes once
 		the session opens, where it threw; see `sendText` for a text message.
 
-		@throws IOError if the session is closing or closed.
+		@throws IOError if the session is closing or closed, or, under the
+			`THROW` `outputOverflowPolicy`, if more than `maxOutputBufferSize`
+			is left waiting; the message is sent all the same.
 	**/
 	override public function flush():Void {
 		if (__webSocket == null) {
@@ -422,6 +533,7 @@ class WebSocket extends Socket {
 
 			__webSocket.sendBytes(__output);
 			__output.clear();
+			__checkOutputLimit();
 		}
 	}
 
@@ -527,24 +639,13 @@ class WebSocket extends Socket {
 	}
 
 	/**
-		Reads a multibyte string from the byte stream, using the specified
-		character set.
+		Reads `length` bytes and decodes them as UTF-8.
 		@param length  The number of bytes from the byte stream to read.
-		@param charSet The string denoting the character set to use to
-					   interpret the bytes. Possible character set strings
-					   include `"shift_jis"`, `"CN-GB"`, and `"iso-8859-1"`.
-					   For a complete list, see <a
-					   href="../../charset-codes.html">Supported Character
-					   Sets</a>.
-					   **Note:** If the value for the `charSet` parameter is
-					   not recognized by the current system, then the
-					   application uses the system's default code page as the
-					   character set. For example, a value for the `charSet`
-					   parameter, as in `myTest.readMultiByte(22,
-					   "iso-8859-01")` that uses `01` instead of `1` might
-					   work on your development machine, but not on another
-					   machine. On the other machine, the application will use
-					   the system's default code page.
+		@param charSet Accepted for source compatibility and **ignored**. No
+					   character set conversion happens: the bytes are decoded
+					   as UTF-8, exactly as `readUTFBytes` would. Passing
+					   "shift-jis" does not decode Shift-JIS. Transcode the
+					   bytes yourself if you need another encoding.
 		@return A UTF-8 encoded string.
 		@throws EOFError There is insufficient data available to read.
 	**/
@@ -557,7 +658,9 @@ class WebSocket extends Socket {
 	}
 
 	/**
-		Reads an object from the socket, encoded in AMF serialized format.
+		Reads an object from the socket, in whichever format `objectEncoding`
+		names, as a `ByteArray` reads one: `HXSF` unless it was changed. An
+		encoding this build cannot do throws.
 		@return The deserialized object
 		@throws EOFError There is insufficient data available to read.
 		@throws IOError  An I/O error occurred on the socket, or the socket is
@@ -717,13 +820,37 @@ class WebSocket extends Socket {
 						   ByteArray specified in `bytes` or if the amount of
 						   data specified to be written by `offset` plus
 						   `length` exceeds the data available.
+		@throws ArgumentError If `bytes` is `null`.
 	**/
 	override public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
 		if (__webSocket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
+		__checkRange(bytes, offset, length);
 		__output.writeBytes(bytes, offset, length);
+	}
+
+	/**
+		Refuses a range outside `bytes`, as `DatagramSocket.send` does: a
+		`ByteArray` copy takes whatever part of a range falls inside its
+		source and drops the rest, so a message cut short went without a word.
+	**/
+	@:noCompletion private static inline function __checkRange(bytes:ByteArray, offset:Int, length:Int):Void {
+		// One branch on the way through, since every message sent passes
+		// here. Against what is left after `offset` rather than
+		// `offset + length`, which overflows for a large length and wraps
+		// negative.
+		if (bytes == null || offset < 0 || length < 0 || offset > bytes.length || length > bytes.length - offset) {
+			__refuseRange(bytes);
+		}
+	}
+
+	@:noCompletion private static function __refuseRange(bytes:ByteArray):Void {
+		if (bytes == null) {
+			throw new ArgumentError("One of the parameters is invalid");
+		}
+		throw new RangeError("The supplied index is out of bounds.");
 	}
 
 	/**
@@ -771,15 +898,12 @@ class WebSocket extends Socket {
 	}
 
 	/**
-		Writes a multibyte string from the byte stream, using the specified
-		character set.
+		Writes a string as UTF-8.
 		@param value   The string value to be written.
-		@param charSet The string denoting the character set to use to
-					   interpret the bytes. Possible character set strings
-					   include `"shift_jis"`, `"CN-GB"`, and `"iso-8859-1"`.
-					   For a complete list, see <a
-					   href="../../charset-codes.html">Supported Character
-					   Sets</a>.
+		@param charSet Accepted for source compatibility and **ignored**. The
+					   string is encoded as UTF-8, exactly as `writeUTFBytes`
+					   would. Transcode the bytes yourself if you need another
+					   encoding.
 	**/
 	override public function writeMultiByte(value:String, charSet:String):Void {
 		if (__webSocket == null) {
@@ -790,7 +914,9 @@ class WebSocket extends Socket {
 	}
 
 	/**
-		Write an object to the socket in AMF serialized format.
+		Writes an object to the socket, in whichever format `objectEncoding`
+		names, as a `ByteArray` writes one: `HXSF` unless it was changed. An
+		encoding this build cannot do throws.
 		@param object The object to be serialized.
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
@@ -889,6 +1015,14 @@ class WebSocket extends Socket {
 		__connected = false;
 		__webSocket = null;
 
+		// Ended before it opened: its server stops waiting on it, and counts
+		// it if it failed to arrive.
+		if (__server != null) {
+			var server:ServerWebSocket = __server;
+			__server = null;
+			@:privateAccess server.__upgradeEnded(this);
+		}
+
 		// The session underneath knows why it ended; this used to drop that
 		// on the floor and dispatch a bare Event.CLOSE, so an application
 		// could not tell a peer disconnecting from a peer being dropped for
@@ -942,10 +1076,14 @@ class WebSocket extends Socket {
 		// kept until a reader happens to take everything.
 		__compactInput();
 
+		var arrived:Int = newData.length;
 		newData.readBytes(__input, __input.length);
 
-		if (__input.bytesAvailable > 0) {
-			dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, __input.bytesAvailable, 0));
+		// What has just arrived, as a plain socket reports it on every target;
+		// this reported everything unread, so a reader that had left one
+		// message in the stream was told the next was both together.
+		if (arrived > 0) {
+			dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, arrived, 0));
 		}
 	}
 
@@ -977,8 +1115,11 @@ class WebSocket extends Socket {
 		// what makes the server's CONNECT mean "ready to send" and not merely
 		// "attached".
 		if (__server != null) {
-			__server.dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, this));
+			// Let go of first, so a listener closing the session at once is
+			// not taken for an upgrade that failed.
+			var server:ServerWebSocket = __server;
 			__server = null;
+			server.dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, this));
 		}
 	}
 
@@ -994,6 +1135,7 @@ class WebSocket extends Socket {
 		__webSocket.onmessage = socket_onMessage;
 		__webSocket.onclose = socket_onClose;
 		__webSocket.onerror = socket_onError;
+		__webSocket.onoverflow = __overflowCloses;
 		__syncProgressHook();
 
 		// A server's session asks its server about its upgrade, through
@@ -1002,7 +1144,12 @@ class WebSocket extends Socket {
 		if (__server != null) {
 			var server:ServerWebSocket = __server;
 			__webSocket.onupgrade = function(request:WebSocketRequest):Bool {
-				return server.upgrade(request);
+				// Refused unless the hook says otherwise: one that throws
+				// refuses too.
+				__upgradeRefused = true;
+				var accepted:Bool = server.upgrade(request);
+				__upgradeRefused = !accepted;
+				return accepted;
 			};
 		}
 	}
@@ -1070,6 +1217,12 @@ class WebSocket extends Socket {
 			return __webSocket.remotePort;
 		}
 		return __port;
+	}
+
+	// The session's: a WebSocket's TLS is its session's, and the socket the
+	// base class would ask is never set.
+	@:noCompletion override private function get_alpnProtocol():Null<String> {
+		return __webSocket == null ? null : __webSocket.alpnProtocol;
 	}
 
 	@:noCompletion override private inline function get_registryClosed():Bool {
