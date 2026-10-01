@@ -32,6 +32,13 @@ import haxe.Int64;
 /**
  * SQLite-specific connection with convenience properties and helpers
  * around common PRAGMAs and maintenance operations.
+ *
+ * Failures are reported as the other drivers report theirs. On a
+ * synchronous connection an operation SQLite refuses -- `begin()`,
+ * `commit()`, a statement -- is dispatched as an `SQLErrorEvent` and thrown
+ * as its `SQLError`; `request()` throws the `SQLError` and dispatches
+ * nothing, as `MySQLConnection.request()` does. On an asynchronous
+ * connection it is dispatched, since the caller has returned by then.
  */
 @:access(crossbyte.db.sql.sqlite.SQLiteStatement)
 class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransactionalConnection {
@@ -142,6 +149,10 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	public var readUncommitted(get, set):Bool;
 
 	@:noCompletion private var __async:Bool = false;
+	// Whether open() or openAsync() has been called, and close() has not, as
+	// the calling thread sees it. An asynchronous connection is open from
+	// openAsync() on, before its worker has opened anything.
+	@:noCompletion private var __opened:Bool = false;
 	@:noCompletion private var __savepoints:Array<String> = [];
 	@:noCompletion private var __savepointSeq:Int = 0;
 	@:noCompletion private var __inTransaction:Bool = false;
@@ -325,7 +336,11 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				__sqlWorker.sendProgress(event);
 			});
 		} else {
-			__schemaResult = __readSchema(database);
+			try {
+				__schemaResult = __readSchema(database);
+			} catch (e:Dynamic) {
+				__fail(SQLEvent.SCHEMA, e);
+			}
 			__dispatchSQLEvent(SQLEvent.SCHEMA);
 		}
 	}
@@ -398,9 +413,76 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				__sqlWorker.sendProgress(event);
 			});
 		} else {
-			__connection.request(sql);
+			try {
+				__connection.request(sql);
+			} catch (e:Dynamic) {
+				__fail(type, e);
+			}
 			__dispatchSQLEvent(type);
 		}
+	}
+
+	/**
+		Reports a failed operation both ways, as the other drivers do: as the
+		`SQLErrorEvent` it never was, for listeners, and as the `SQLError` it
+		throws in place of the driver's raw `String`.
+	**/
+	@:noCompletion private function __fail(operation:String, e:Dynamic):Void {
+		var error:SQLError = __asSQLError(operation, e);
+		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
+		throw error;
+	}
+
+	/** `e` as an `SQLError`: itself when it is one, or carrying its text, never itself. **/
+	@:noCompletion private static function __asSQLError(operation:String, e:Dynamic):SQLError {
+		if (Std.isOfType(e, SQLError)) {
+			return e;
+		}
+
+		var detail:String = Std.string(e);
+		return new SQLError(operation, detail, "Execution failed: " + detail);
+	}
+
+	/**
+		`value` as an SQLite literal: `NULL`, `1` or `0` for a `Bool`, a
+		number as one, and anything else as a quoted string -- a hex blob when
+		it holds a NUL, which a quoted string would cut short. Needs no open
+		connection, so an asynchronous statement's parameters can be bound on
+		the calling thread before the worker has opened one.
+	**/
+	@:noCompletion private static function __literal(value:Dynamic):String {
+		if (value == null) {
+			return "NULL";
+		}
+
+		if (Std.isOfType(value, Bool)) {
+			return value ? "1" : "0";
+		}
+
+		if (Std.isOfType(value, Int) || Std.isOfType(value, Float)) {
+			return Std.string(value);
+		}
+
+		var text:String = Std.string(value);
+
+		if (text.indexOf(String.fromCharCode(0)) >= 0) {
+			var hex:StringBuf = new StringBuf();
+			hex.add("x'");
+
+			for (i in 0...text.length) {
+				hex.add(StringTools.hex(StringTools.fastCodeAt(text, i), 2));
+			}
+
+			hex.add("'");
+			return hex.toString();
+		}
+
+		return "'" + text.split("'").join("''") + "'";
+	}
+
+	/** Whether the connection is open, as the calling thread sees it. **/
+	@:noCompletion private inline function __isOpen():Bool {
+		return __async ? __opened : __connection != null;
 	}
 
 	/** `name` as an SQL identifier, quoted, so any name -- one with a space or a quote -- is one. **/
@@ -420,7 +502,11 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		if (__async) {
 			__addToQueue(__analyzeAsync);
 		} else {
-			__connection.request("ANALYZE;");
+			try {
+				__connection.request("ANALYZE;");
+			} catch (e:Dynamic) {
+				__fail(SQLEvent.ANALYZE, e);
+			}
 			__dispatchSQLEvent(SQLEvent.ANALYZE);
 		}
 	}
@@ -429,7 +515,11 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		if (__async) {
 			__addToQueue(__beginAsync(options));
 		} else {
-			__beginWith(options);
+			try {
+				__beginWith(options);
+			} catch (e:Dynamic) {
+				__fail(SQLEvent.BEGIN, e);
+			}
 			__inTransaction = true;
 			__dispatchSQLEvent(SQLEvent.BEGIN);
 		}
@@ -522,13 +612,46 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				__sqlClosing = true;
 			});
 		} else {
-			__connection.close();
+			var connection:Connection = __connection;
+
+			if (connection == null) {
+				// Not open, or closed already: nothing to close, as on the
+				// other drivers. It dereferenced the connection it did not
+				// have.
+				return;
+			}
+
+			// Let go of first, so a connection whose close failed is not
+			// reported open, and is not closed a second time.
+			__connection = null;
+			#if cpp
+			__native = null;
+			#end
+			__opened = false;
+			// Closing ends any transaction, as SQLite does by rolling it back.
+			__inTransaction = false;
+			__savepoints = [];
+
+			try {
+				connection.close();
+			} catch (e:Dynamic) {
+				__fail(SQLEvent.CLOSE, e);
+			}
 			__dispatchSQLEvent(SQLEvent.CLOSE);
 		}
 	}
 
-	public inline function request(sql:String):ResultSet {
-		return __connection.request(sql);
+	/**
+		Runs `sql` now, on the calling thread, and answers its result. Throws
+		an `SQLError` when SQLite refuses it, where it let the driver's raw
+		`String` escape.
+	**/
+	public function request(sql:String):ResultSet {
+		try {
+			return __connection.request(sql);
+		} catch (e:Dynamic) {
+			throw __asSQLError("request", e);
+		}
 	}
 
 	public inline function escape(value:String):String {
@@ -543,7 +666,11 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		if (__async) {
 			__addToQueue(__commitAsync);
 		} else {
-			__connection.commit();
+			try {
+				__connection.commit();
+			} catch (e:Dynamic) {
+				__fail(SQLEvent.COMMIT, e);
+			}
 			__inTransaction = false;
 			__savepoints = [];
 			__dispatchSQLEvent(SQLEvent.COMMIT);
@@ -554,7 +681,11 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		if (__async) {
 			__addToQueue(__compactAsync);
 		} else {
-			__connection.request("VACUUM;");
+			try {
+				__connection.request("VACUUM;");
+			} catch (e:Dynamic) {
+				__fail(SQLEvent.COMPACT, e);
+			}
 			__dispatchSQLEvent(SQLEvent.COMPACT);
 		}
 	}
@@ -562,12 +693,14 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	public function open(reference:Object = null, openMode:SQLiteMode = CREATE, autoCompact:Bool = false, pageSize:Int = 1024):Void {
 		__async = false;
 		__open(reference, openMode, autoCompact, pageSize);
+		__opened = true;
 
 		__dispatchSQLEvent(SQLEvent.OPEN);
 	}
 
 	public function openAsync(reference:Object = null, openMode:SQLiteMode = CREATE, autoCompact:Bool = false, pageSize:Int = 1024):Void {
 		__async = true;
+		__opened = true;
 		__initSQLWorker();
 		__addToQueue(__openAsync(reference, openMode, autoCompact, pageSize));
 	}
@@ -587,7 +720,11 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		if (__async) {
 			__addToQueue(__releaseSavePointAsync(resolved));
 		} else {
-			__connection.request('RELEASE $resolved;');
+			try {
+				__connection.request('RELEASE $resolved;');
+			} catch (e:Dynamic) {
+				__fail(SQLEvent.RELEASE_SAVEPOINT, e);
+			}
 			__dispatchSQLEvent(SQLEvent.RELEASE_SAVEPOINT);
 		}
 	}
@@ -596,9 +733,22 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		if (__async) {
 			__addToQueue(__rollbackAsync);
 		} else {
-			__connection.rollback();
+			var failure:Dynamic = null;
+
+			try {
+				__connection.rollback();
+			} catch (e:Dynamic) {
+				failure = e;
+			}
+
+			// Over either way, as the other drivers have it: a ROLLBACK that
+			// fails has no transaction left to end.
 			__inTransaction = false;
 			__savepoints = [];
+
+			if (failure != null) {
+				__fail(SQLEvent.ROLLBACK, failure);
+			}
 			__dispatchSQLEvent(SQLEvent.ROLLBACK);
 		}
 	}
@@ -624,7 +774,11 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		if (__async) {
 			__addToQueue(rollbackToSavepointAsync(resolved));
 		} else {
-			__connection.request('ROLLBACK TO $resolved;');
+			try {
+				__connection.request('ROLLBACK TO $resolved;');
+			} catch (e:Dynamic) {
+				__fail(SQLEvent.ROLLBACK_TO_SAVEPOINT, e);
+			}
 			__dispatchSQLEvent(SQLEvent.ROLLBACK_TO_SAVEPOINT);
 		}
 	}
@@ -636,12 +790,20 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	**/
 	public function setSavepoint(name:String = null):String {
 		var resolved:String = __sanitizeSavePoint(name);
-		__savepoints.push(resolved);
 
 		if (__async) {
+			__savepoints.push(resolved);
 			__addToQueue(__setSavepointAsync(resolved));
 		} else {
-			__connection.request('SAVEPOINT $resolved;');
+			try {
+				__connection.request('SAVEPOINT $resolved;');
+			} catch (e:Dynamic) {
+				__fail(SQLEvent.SET_SAVEPOINT, e);
+			}
+			// Recorded only once SQLite has it, as the other drivers do, so a
+			// savepoint that failed is not the one a nameless release or
+			// rollback reaches for next.
+			__savepoints.push(resolved);
 			__dispatchSQLEvent(SQLEvent.SET_SAVEPOINT);
 		}
 
