@@ -1408,9 +1408,9 @@ class HTTPServerH2Test extends utest.Test {
 
 	/**
 	 * Cuts the file at `path` to `length` bytes, where another handle has it
-	 * open for reading. `sys.io.File.saveBytes` does on every target but the
-	 * jvm, whose opens the file without truncating it and overwrites the
-	 * start.
+	 * open for reading. `sys.io.File.saveBytes` does that on every target but
+	 * the jvm: there, with a reader open on the file, it overwrites the start
+	 * and leaves the length, throwing nothing. With none open it truncates.
 	 */
 	private static function __truncate(path:String, length:Int):Void {
 		#if (jvm || java)
