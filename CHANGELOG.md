@@ -1942,6 +1942,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `ServerWebSocket.listen()` throws an `IOError` for a server that is not
+  bound, as its doc says, natively as on Node. Natively it never asked:
+  Windows refused the listen with an error of the socket's own, and Linux
+  and macOS bound the socket to a port of their own choosing and listened
+  there.
 - A `ServerWebSocket` survives a connection the system will not hand over,
   the process out of descriptors, the system out of memory, as
   `ServerSocket` does: counted in `acceptFailures`, reported once as an
