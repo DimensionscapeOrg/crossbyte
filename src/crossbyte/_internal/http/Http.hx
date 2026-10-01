@@ -1607,10 +1607,6 @@ class Http {
 		}
 	}
 
-	private static inline function __encodeKV(k:String, v:String):String {
-		return StringTools.urlEncode(k) + "=" + StringTools.urlEncode(v);
-	}
-
 	/**
 	 * Reads a `Content-Length` field, or answers null when it is not one.
 	 *
@@ -1638,55 +1634,12 @@ class Http {
 
 	/**
 		`requestData` encoded as a form: a GET's or HEAD's query, any other
-		method's body. Shared with the HTTP/2 backend, which never read
-		`requestData` and sent a form as nothing at all.
+		method's body. The encoding every client shares; see `FormEncoding`.
 	**/
 	@:allow(crossbyte.http.HTTP2Backend)
 	private static function __buildQuery(obj:Dynamic):String {
-		// A URLVariables is a StringMap at run time, and its fields are the
-		// map's, not the caller's: a POST of one went out with an empty body.
-		var form:Null<String> = crossbyte.url.URLVariables.encodeData(obj);
-		if (form != null) {
-			return form;
-		}
-
-		var parts:Array<String> = [];
-
-		var fields = Reflect.fields(obj);
-		for (f in fields) {
-			buildQueryAdd(parts, f, Reflect.field(obj, f));
-		}
-
-		return parts.join("&");
-	}
-
-	private static function buildQueryAdd(parts:Array<String>, k:String, v:Dynamic):Void {
-		if (v == null) {
-			return;
-		}
-
-		switch (Type.typeof(v)) {
-			case TBool:
-				parts.push(__encodeKV(k, (v : Bool) ? "true" : "false"));
-			case TInt, TFloat:
-				parts.push(__encodeKV(k, Std.string(v)));
-			case TClass(String):
-				parts.push(__encodeKV(k, (v : String)));
-			case TClass(Array):
-				var arr = (v : Array<Dynamic>);
-				for (i in 0...arr.length) {
-					buildQueryAdd(parts, k + "[]", arr[i]);
-				}
-
-			case TObject:
-				var fields = Reflect.fields(v);
-				for (f in fields) {
-					buildQueryAdd(parts, k + "[" + f + "]", Reflect.field(v, f));
-				}
-
-			default:
-				parts.push(__encodeKV(k, Std.string(v)));
-		}
+		var form:Null<String> = crossbyte.url._internal.FormEncoding.encode(obj);
+		return form != null ? form : "";
 	}
 
 	@:allow(crossbyte.http.HTTP2Backend)

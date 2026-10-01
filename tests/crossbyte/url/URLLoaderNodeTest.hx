@@ -406,6 +406,32 @@ class URLLoaderNodeTest extends utest.Test {
 		});
 	}
 
+	/**
+		An object's fields go as a form, as they do natively: a POST's as its
+		body, a GET's as its query. Only a `URLVariables` was encoded here;
+		an object went out as `Std.string` made it, "{ user : bob }", and
+		a GET sent it as a body.
+	**/
+	public function testAnObjectsFieldsGoAsAForm(async:Async):Void {
+		serveWith((request:Dynamic, body:js.node.Buffer, response:Dynamic) -> {
+			response.writeHead(200, {"Content-Type": "text/plain"});
+			response.end(Std.string(request.method) + " " + Std.string(request.url) + " [" + Std.string(Reflect.field(request.headers, "content-type")) + "] "
+				+ body.toString());
+		}, (port, close) -> {
+			loadWith('http://127.0.0.1:$port/form', request -> {
+				request.method = URLRequestMethod.POST;
+				request.data = {user: "bob", tags: ["a", "b"]};
+			}, posted -> {
+				loadWith('http://127.0.0.1:$port/form?page=2', request -> request.data = {user: "bob"}, got -> {
+					close();
+					Assert.equals("ok POST /form [application/x-www-form-urlencoded] user=bob&tags%5B%5D=a&tags%5B%5D=b", posted);
+					Assert.equals("ok GET /form?page=2&user=bob [null] ", got);
+					async.done();
+				});
+			});
+		});
+	}
+
 	/** Records what `loader` dispatches into `events`, as "COMPLETE <data>" or "IO_ERROR <text>". */
 	private static function listen(loader:URLLoader, events:Array<String>):Void {
 		loader.addEventListener(Event.COMPLETE, _ -> events.push("COMPLETE " + Std.string(loader.data)));
