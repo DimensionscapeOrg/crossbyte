@@ -2406,7 +2406,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		__openDeadline = CBTimer.setTimeout(remaining > 0 ? remaining : 0, function():Void {
 			__openDeadlineArmed = false;
 			if (readyState == CONNECTING) {
-				__onError(__openFailure());
+				__onError(__openFailure(), crossbyte.events.IOErrorEvent.TIMEOUT_ERROR_ID);
 				__close(1006);
 			}
 		});
@@ -2524,9 +2524,11 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	}
 	#end
 
-	private function __onError(errorMessage:String):Void {
+	private function __onError(errorMessage:String, errorID:Int = 0):Void {
 		__errorReported = true;
-		onerror(new WebsocketEvent(WebsocketEvent.ERROR, this, errorMessage));
+		var event = new WebsocketEvent(WebsocketEvent.ERROR, this, errorMessage);
+		event.errorID = errorID;
+		onerror(event);
 	}
 
 	private function __onMessage(data:Dynamic):Void {
@@ -2855,7 +2857,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 		if (__idleTimeout > 0 && __silentFor >= __idleTimeout) {
 			Logger.debug('WebSocket peer silent for ${__silentFor}s, closing session');
-			__onError('Nothing was heard from the peer for ${Math.round(__silentFor)} s; the session was closed as idle.');
+			__onError('Nothing was heard from the peer for ${Math.round(__silentFor)} s; the session was closed as idle.',
+				crossbyte.events.IOErrorEvent.TIMEOUT_ERROR_ID);
 			__close(1006, "idle timeout");
 			return;
 		}

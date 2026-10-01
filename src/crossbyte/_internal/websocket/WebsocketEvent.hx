@@ -22,6 +22,12 @@ class WebsocketEvent {
 	/** On a message: whether it was sent as text rather than binary. **/
 	public var isText:Bool = false;
 
+	/**
+		On an error: the `IOErrorEvent` id the owner reports it with --
+		`IOErrorEvent.TIMEOUT_ERROR_ID` for a deadline that passed, else 0.
+	**/
+	public var errorID:Int = 0;
+
 	public function new(type:String, target:WebSocket, ?data:Dynamic, ?code:Int, ?reason:String) {
 		this.type = type;
 		this.target = target;
