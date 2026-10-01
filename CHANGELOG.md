@@ -1836,6 +1836,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A WebSocket server receiving large messages spent its time copying, not
+  receiving. After every 64 KB parsed, the session copied the whole unread
+  rest of its input into a new buffer, so a burst cost the square of its
+  length: one client uploading 64 KB messages was received at 19 MB/s, at
+  50 ms of server CPU a megabyte, 82% of it in that copy, and four such
+  clients stalled the runtime for seconds at a time. The unread tail is
+  now moved down once per arrival, in place, and only once the parsed part
+  is at least as long. The first frame of a message is also kept as the
+  message rather than copied into an empty buffer, and the masking key is
+  read where it lies instead of into a buffer made for each frame. One
+  uploader: 650 to 930 MB/s at about 1.05 ms a megabyte; four: 700 to
+  820 MB/s.
 - A `POLL` loop reads its sockets every frame. Poll was given only what was
   left of a frame once that was at least a millisecond, so a runtime at
   1,000 ticks a second, whose frames never have a whole millisecond left
