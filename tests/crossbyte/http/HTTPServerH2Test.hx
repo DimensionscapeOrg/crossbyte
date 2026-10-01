@@ -1086,10 +1086,7 @@ class HTTPServerH2Test extends utest.Test {
 			session.request(1, "GET", "/big.bin", true);
 			session.until(() -> session.received(1) >= 65535 || session.ended, () -> {
 				// The sweep, as it would run once the deadline has passed.
-				var later:Float = haxe.Timer.stamp() + 31;
-				for (connection in @:privateAccess session.server.__activeHttp2) {
-					connection.checkDeadline(later);
-				}
+				@:privateAccess session.server.__sweep(haxe.Timer.stamp() + 31);
 				session.until(() -> session.finished(1) || session.ended, () -> {
 					session.request(3, "GET", "/index.html", true);
 					session.until(() -> session.finished(3) || session.ended, () -> {
@@ -1100,6 +1097,58 @@ class HTTPServerH2Test extends utest.Test {
 						async.done();
 					});
 				});
+			});
+		});
+	}
+
+	public function testAStalledHttp2DownloadIsEndedWithBothTimeoutsOff(async:Async):Void {
+		// requestTimeout and keepAliveTimeout at 0 set no deadline for what
+		// they bound, and the stall deadline is not theirs: a download whose
+		// client stops taking it is still ended. It was checked from the walk
+		// those two arm, so with both off nothing looked at it, and the file
+		// stayed open for as long as the connection did. The deadline is held
+		// in the past while this waits, as 30 s without a byte taken would
+		// leave it: what is under test is whether the running server looks.
+		var held:HTTPRequestHandler = null;
+		var session = new H2Session(config -> {
+			config.requestTimeout = 0;
+			config.keepAliveTimeout = 0;
+			__bigFile(config, 1024 * 1024);
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/big.bin") {
+						held = handler;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/big.bin", true);
+			session.until(() -> session.received(1) >= 65535 || session.ended, () -> {
+				var pumping:Bool = held != null && @:privateAccess held.__streaming;
+				session.until(() -> {
+					if (held != null && @:privateAccess held.__streaming) {
+						@:privateAccess held.__streamStallDeadline = haxe.Timer.stamp() - 1;
+					}
+					return session.finished(1) || session.ended;
+				}, () -> {
+					session.request(3, "GET", "/index.html", true);
+					session.until(() -> session.finished(3) || session.ended, () -> {
+						// A few sweeps' worth, for it to find nothing left to do.
+						session.pause(0.75, () -> {
+							var stillSweeping:Bool = @:privateAccess session.server.__sweepArmed;
+							session.close();
+							Assert.isTrue(pumping, "the download was not being pumped, so this shows nothing");
+							Assert.isFalse(@:privateAccess held.__streaming, "a stalled download outlived its deadline with both timeouts off");
+							Assert.equals(2, session.resetCode(1), "the stalled stream was not reset");
+							Assert.equals(200, session.status(3), "the connection went with the stalled stream");
+							Assert.isFalse(stillSweeping, "the sweep kept running with both timeouts off and nothing being sent");
+							async.done();
+						});
+					});
+				}, 3.0);
 			});
 		});
 	}

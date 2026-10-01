@@ -25,8 +25,12 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 	// Set by a head that promised chunked framing, until endResponse.
 	private var __chunked:Bool = false;
 
-	public function new(socket:Socket) {
+	// Where sweepWith registers: the server's sweep, when a server made this.
+	private final __sweepWith:Null<(HTTPResponseWriter, Null<Float->Void>) -> Void>;
+
+	public function new(socket:Socket, ?sweepWith:(HTTPResponseWriter, Null<Float->Void>) -> Void) {
 		__socket = socket;
+		__sweepWith = sweepWith;
 	}
 
 	private inline function get_connected():Bool {
@@ -64,8 +68,11 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 		return __onAbandoned = value;
 	}
 
-	// The server's sweep reaches the handler itself; see HTTPResponseWriter.
-	public function sweepWith(check:Null<Float->Void>):Void {}
+	public function sweepWith(check:Null<Float->Void>):Void {
+		if (__sweepWith != null) {
+			__sweepWith(this, check);
+		}
+	}
 
 	public function writeContinue():Void {
 		__socket.writeUTFBytes("HTTP/1.1 100 Continue\r\n\r\n");
