@@ -1935,6 +1935,10 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `HTTPServerConfig.http2ResetWindowSeconds` says that it also measures the
+  budget of PING and SETTINGS frames a peer may make the server answer, a
+  hundred a window, and that `0` turns both defences off: it read as the
+  reset budget's window alone.
 - An `HTTPServer` given a TLS certificate path and no key path, or a key
   and no certificate, is refused at construction. `tlsEnabled` asks for
   both, so it was false, and the server listened in plain HTTP for a

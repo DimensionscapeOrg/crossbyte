@@ -424,7 +424,20 @@ class HTTPServerConfig {
 	**/
 	public var http2MaxResetStreams:Int;
 
-	/** Seconds the `http2MaxResetStreams` budget is measured over. **/
+	/**
+		Seconds the `http2MaxResetStreams` budget is measured over. Defaults
+		to 30.
+
+		The same window measures a second budget: the PING and SETTINGS frames
+		a peer may make the server answer, a hundred in a window, past which
+		the connection is closed with `ENHANCE_YOUR_CALM` (the ping and
+		settings floods, CVE-2019-9512 and CVE-2019-9515). Each obliges a
+		reply, and none opens a stream, so no other limit sees them.
+
+		`0` or below makes every window end as it starts, so nothing
+		accumulates and both defences are off. To turn off the reset check
+		alone, make `http2MaxResetStreams` negative instead.
+	**/
 	public var http2ResetWindowSeconds:Float;
 
 	/**
