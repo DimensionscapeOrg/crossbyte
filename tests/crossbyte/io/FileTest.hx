@@ -1224,11 +1224,57 @@ class FileTest extends utest.Test {
 			return;
 		}
 
+		#if (neko || hl)
+		if (System.isWindows) {
+			// No file index here to tell the two names apart: the copy finds
+			// the same bytes and leaves them. It emptied the file.
+			try {
+				file.copyTo(link, true);
+			} catch (e:crossbyte.errors.IOError) {}
+		} else
+		#end
 		Assert.raises(() -> file.copyTo(link, true), crossbyte.errors.IOError);
 		Assert.equals("precious data", HaxeFile.getContent(file.nativePath));
 		Assert.equals("precious data", HaxeFile.getContent(link.nativePath));
 
 		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testAMergeLeavesAHardLinkToItsOwnFile():Void {
+		// copyTo compared only its two ends. A directory merged into one
+		// holding a second name of one of its own files, a hard link,
+		// copied that file onto itself, truncating it before reading it.
+		var root = File.createTempDirectory();
+		var source = root.resolvePath("source");
+		var target = root.resolvePath("target");
+		source.createDirectory();
+		target.createDirectory();
+		var file = source.resolvePath("data.txt");
+		var link = target.resolvePath("data.txt");
+		HaxeFile.saveContent(file.nativePath, "precious data");
+		HaxeFile.saveContent(source.resolvePath("other.txt").nativePath, "new");
+		HaxeFile.saveContent(target.resolvePath("other.txt").nativePath, "old");
+
+		var made:Int = System.isWindows ? __quietly("fsutil", ["hardlink", "create", link.nativePath, file.nativePath]) : __quietly("ln",
+			[file.nativePath, link.nativePath]);
+
+		if (made != 0 || !link.exists) {
+			Assert.pass();
+			try root.deleteDirectory(true) catch (_:Dynamic) {}
+			return;
+		}
+
+		try {
+			source.copyTo(target, true);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		Assert.equals("precious data", HaxeFile.getContent(file.nativePath));
+		Assert.equals("precious data", HaxeFile.getContent(link.nativePath));
+		Assert.equals("new", HaxeFile.getContent(target.resolvePath("other.txt").nativePath));
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
 	public function testMoveToIsARename():Void {
