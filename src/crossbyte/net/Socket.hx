@@ -29,8 +29,10 @@ import crossbyte._internal.socket.IPollableSocket;
 #if cpp
 import crossbyte._internal.socket.AlpnSocket;
 #end
+import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IllegalOperationError;
 import crossbyte.errors.IOError;
+import crossbyte.errors.RangeError;
 import crossbyte.errors.SecurityError;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
@@ -245,6 +247,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		Indicates the number of milliseconds to wait for a connection.
 		If the connection doesn't succeed within the specified time, the
 		connection fails. The default value is 20,000 (twenty seconds).
+
+		0 means no deadline: the connect is waited on for as long as the
+		system keeps trying, on every target. (It failed every native connect
+		at once, where on Node it meant no deadline.)
 
 		It counts a secure connection's TLS handshake, and a name's lookup,
 		with the connect. Not kept in a browser, whose WebSocket has its own.
@@ -612,8 +618,13 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		// 65535 inclusive, which is what connect() accepts. This read
 		// `port < 65535`, so the highest valid TCP port was the one port
-		// number for which the constructor quietly declined to connect.
-		if (port > 0 && port <= 65535) {
+		// number for which the constructor quietly declined to connect --
+		// and any port out of range was declined as quietly, where the
+		// SecurityError above was promised.
+		if (port < 0 || port > 65535) {
+			throw new SecurityError("Invalid socket port number specified.");
+		}
+		if (port > 0) {
 			connect(host, port);
 		}
 	}
@@ -629,6 +640,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		CrossByte dispatches it for every end of a connection. A connect still
 		under way is abandoned, with no event.
 
+		What was written and not yet sent goes first, as far as the system
+		takes it without waiting; to know all of it reached the network,
+		close once `bytesPending` is 0 (see `OutputProgressEvent`).
+
 		You can reuse the Socket object by calling the `connect()` method on
 		it again.
 		@throws IOError The socket could not be closed, or the socket was not
@@ -641,12 +656,35 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// that releases per-connection resources on CLOSE (e.g. HTTPServer's
 			// connection counter) leaks every time it closes a socket itself.
 			var wasConnected:Bool = __connected;
+			if (wasConnected && !__discardOnClose) {
+				__sendBeforeClose();
+			}
 			__cleanSocket();
 			if (wasConnected) {
 				__announceClose();
 			}
 		} else {
 			throw new IOError("Operation attempted on invalid socket.");
+		}
+	}
+
+	/**
+		What was written goes before the connection closes, as far as the
+		system takes it now. Every write is sent at the end of the pass on its
+		own, and a close() in the same pass came first: what was written just
+		before it was thrown away, on every target.
+	**/
+	@:noCompletion private function __sendBeforeClose():Void {
+		if (__output == null || __output.length <= __outputSent) {
+			return;
+		}
+		try {
+			// Asked now even when a retry is queued: that retry finds the
+			// socket gone.
+			flushFull = false;
+			flush();
+		} catch (_:Dynamic) {
+			// A peer gone already takes nothing, and the close goes on.
 		}
 	}
 
@@ -1048,13 +1086,19 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	#end
 
 	/**
-		Flushes any accumulated data in the socket's output buffer.
-		On some operating systems, flush() is called automatically between
-		execution frames, but on other operating systems, such as Windows, the
-		data is never sent unless you call `flush()` explicitly. To ensure
-		your application behaves reliably across all operating systems, it is
-		a good practice to call the `flush()` method after writing each
-		message (or related group of data) to the socket.
+		Sends what has been written and not yet sent, now.
+
+		There is no need to call it for data to go. Every write is sent by
+		the runtime on its own, on every target and operating system --
+		natively the next time the runtime services its sockets, which its
+		own loop does within the frame, and on Node at the end of the pass --
+		with the writes made meanwhile sent together. `flush()` sends straight
+		away instead, for a caller that wants the bytes handed to the system
+		before it goes on. Natively what the system will not take yet waits,
+		and goes as it makes room; `bytesPending` says how much is left.
+
+		A `WebSocket` is the exception: its writes go as a message only when
+		it is flushed.
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
@@ -1344,24 +1388,13 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	/**
-		Reads a multibyte string from the byte stream, using the specified
-		character set.
+		Reads `length` bytes from the socket and decodes them as UTF-8.
 		@param length  The number of bytes from the byte stream to read.
-		@param charSet The string denoting the character set to use to
-					   interpret the bytes. Possible character set strings
-					   include `"shift_jis"`, `"CN-GB"`, and `"iso-8859-1"`.
-					   For a complete list, see <a
-					   href="../../charset-codes.html">Supported Character
-					   Sets</a>.
-					   **Note:** If the value for the `charSet` parameter is
-					   not recognized by the current system, then the
-					   application uses the system's default code page as the
-					   character set. For example, a value for the `charSet`
-					   parameter, as in `myTest.readMultiByte(22,
-					   "iso-8859-01")` that uses `01` instead of `1` might
-					   work on your development machine, but not on another
-					   machine. On the other machine, the application will use
-					   the system's default code page.
+		@param charSet Accepted for source compatibility and **ignored**. No
+					   character set conversion happens: the bytes are decoded
+					   as UTF-8, exactly as `readUTFBytes` would. Passing
+					   "shift-jis" does not decode Shift-JIS. Transcode the
+					   bytes yourself if you need another encoding.
 		@return A UTF-8 encoded string.
 		@throws EOFError There is insufficient data available to read.
 	**/
@@ -1541,14 +1574,27 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					  value specified by the `offset` parameter.
 		@throws IOError    An I/O error occurred on the socket, or the socket
 						   is not open.
-		@throws RangeError If `offset` is greater than the length of the
-						   ByteArray specified in `bytes` or if the amount of
-						   data specified to be written by `offset` plus
-						   `length` exceeds the data available.
+		@throws RangeError If `offset` is negative or greater than the length
+						   of the ByteArray specified in `bytes`, or if the
+						   amount of data specified to be written by `offset`
+						   plus `length` exceeds the data available.
+		@throws ArgumentError If `bytes` is null.
 	**/
 	public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
 		if (__socket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
+		}
+		if (bytes == null) {
+			throw new ArgumentError("writeBytes needs bytes to write.");
+		}
+
+		// Checked as DatagramSocket.send checks, against what is left after
+		// the offset -- `offset + length` overflows. ByteArray.writeBytes
+		// clamps, so an offset or length past the bytes wrote whatever part
+		// of them there was, where a RangeError was promised.
+		var available:Int = bytes.length;
+		if (offset < 0 || offset > available || length < 0 || length > available - offset) {
+			throw new RangeError("The supplied index is out of bounds.");
 		}
 
 		__output.writeBytes(bytes, offset, length);
@@ -1603,15 +1649,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	/**
-		Writes a multibyte string from the byte stream, using the specified
-		character set.
+		Writes a string to the socket as UTF-8.
 		@param value   The string value to be written.
-		@param charSet The string denoting the character set to use to
-					   interpret the bytes. Possible character set strings
-					   include `"shift_jis"`, `"CN-GB"`, and `"iso-8859-1"`.
-					   For a complete list, see <a
-					   href="../../charset-codes.html">Supported Character
-					   Sets</a>.
+		@param charSet Accepted for source compatibility and **ignored**. The
+					   string is encoded as UTF-8, exactly as `writeUTFBytes`
+					   would. Transcode the bytes yourself if you need another
+					   encoding.
+		@throws IOError An I/O error occurred on the socket, or the socket is
+						not open.
 	**/
 	public function writeMultiByte(value:String, charSet:String):Void {
 		if (__socket == null) {
@@ -2371,7 +2416,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// ask the socket about yet -- only the attempt's deadline, which
 			// counts the lookup. A resolver that never answers is not waited
 			// on past it.
-			if (haxe.Timer.stamp() - __timestamp > timeout / 1000) {
+			if (__pastDeadline()) {
 				__cleanSocket();
 				__dispatchPooledIOError("Connection failed: " + __host + " was not looked up within " + timeout + " ms", IOErrorEvent.TIMEOUT_ERROR_ID);
 			}
@@ -2456,7 +2501,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 		#end
 
-		if (!connected && !doConnect && !doClose && haxe.Timer.stamp() - __timestamp > timeout / 1000) {
+		if (!connected && !doConnect && !doClose && __pastDeadline()) {
 			// The deadline counts the TLS handshake with the connect.
 			doClose = true;
 			timedOut = true;
@@ -2610,6 +2655,15 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	#if !js
+	/**
+		Whether the attempt under way has run past `timeout`. A timeout of 0
+		or less is no deadline, as it was already on Node: natively it failed
+		every connect that took any time at all.
+	**/
+	@:noCompletion private inline function __pastDeadline():Bool {
+		return timeout > 0 && haxe.Timer.stamp() - __timestamp > timeout / 1000;
+	}
+
 	/**
 		Takes the socket out of the poll set's reads, once nothing more will
 		be read from it. It stays open, and what is written to it still goes:
