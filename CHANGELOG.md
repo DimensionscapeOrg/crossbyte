@@ -1932,6 +1932,10 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A rewrite's `Header` condition matches its field in any case, as HTTP
+  names one. Both parsers store a request's fields lowercase, and the key
+  was looked up as written, so `X-Test` matched nothing a client could
+  send and only `x-test` worked.
 - DATA on an HTTP/2 stream its client has already ended is refused with
   `STREAM_CLOSED`, as RFC 9113 5.1 has it. It was taken as more body, and
   a second END_STREAM delivered the request again, so a second handler

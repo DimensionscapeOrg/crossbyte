@@ -307,7 +307,10 @@ class RewriteEngine {
 					var re:EReg = __compile(c.pattern, true);
 					re.match(method);
 				case RewriteConditionType.Header:
-					var v:String = headers != null ? headers.get(c.key) : null;
+					// Lowercase, as both parsers store a request's fields: a
+					// key written "X-Test" was looked up as written and
+					// matched nothing a client could send.
+					var v:String = (headers != null && c.key != null) ? headers.get(c.key.toLowerCase()) : null;
 					var re:EReg = __compile(c.pattern, true);
 					re.match(v == null ? "" : v);
 			}

@@ -268,15 +268,48 @@ class HTTPSupportTest extends utest.Test {
 				}]
 			);
 
+			// Lowercase, as both parsers store a request's fields. This case
+			// stored "User-Agent" as written, which no request ever has, and so
+			// passed while the condition matched nothing a client sent.
 			var headers = new StringMap<String>();
-			headers.set("User-Agent", "Mobile Safari");
+			headers.set("user-agent", "Mobile Safari");
 			var allowed = RewriteEngine.decide(cfg, "/content/mobile", "", "GET", headers);
 			Require.notNull(allowed);
 			Assert.equals("/mobile.html", allowed.finalPath);
 
-			headers.set("User-Agent", "Desktop");
+			headers.set("user-agent", "Desktop");
 			var fallback = RewriteEngine.decide(cfg, "/content/mobile", "", "GET", headers);
 			Assert.isNull(fallback);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testAHeaderConditionMatchesWhateverCaseItsKeyIsWrittenIn():Void {
+		// A field's name has no case (RFC 9110 5.1), and both parsers store a
+		// request's fields lowercase. The condition looked its key up as
+		// written, so "X-Test" -- how a header is written, and how the doc's
+		// example would be -- matched nothing a client could send.
+		var root = File.createTempDirectory();
+		try {
+			root.resolvePath("a.txt").save(ByteArray.fromBytes(Bytes.ofString("A")));
+			var cfg = new HTTPServerConfig("127.0.0.1", 0, root);
+			cfg.rewrites = [{
+				pattern: "^/x$",
+				target: "/a.txt",
+				conditions: [{type: RewriteConditionType.Header, key: "X-Test", pattern: "^yes$", negate: false}]
+			}];
+
+			var headers = new StringMap<String>();
+			headers.set("x-test", "yes");
+			var matched = RewriteEngine.decide(cfg, "/x", "", "GET", headers);
+			Require.notNull(matched, "a Header condition keyed X-Test did not see x-test");
+			Assert.equals("/a.txt", matched.finalPath);
+
+			headers.set("x-test", "no");
+			Assert.isNull(RewriteEngine.decide(cfg, "/x", "", "GET", headers));
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
