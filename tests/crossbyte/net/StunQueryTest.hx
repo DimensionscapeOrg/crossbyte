@@ -165,20 +165,28 @@ class StunQueryTest extends utest.Test {
 	}
 
 	/**
-		A non-positive timeout is three seconds, which is what callers passed,
-		and the question says so: `timeoutMs` is the time it has, which its
-		failure reports.
+		A timeout of 0 or less sets no deadline, as it does for a connection:
+		the question never expires, and goes on being asked, each gap twice
+		the last. It was three seconds.
 	**/
-	public function testANonPositiveTimeoutIsThreeSeconds():Void {
+	public function testANonPositiveTimeoutSetsNoDeadline():Void {
 		if (unsupported()) return;
 
 		var query = new StunQuery(10, 0);
 
-		Assert.isFalse(query.expired(12.999));
-		Assert.isTrue(query.expired(13.0));
-		Assert.equals(StunQuery.DEFAULT_TIMEOUT_MS, query.timeoutMs);
-		Assert.equals(3000, new StunQuery(10, -5).timeoutMs);
+		Assert.isFalse(query.expired(13.0), "a question with no deadline expired at the three seconds 0 used to mean");
+		Assert.isFalse(query.expired(1e9), "a question with no deadline expired");
+		Assert.equals(0, query.timeoutMs);
+		Assert.isTrue(query.shouldRetransmit(10.5), "a question with no deadline was not asked again");
+		Assert.isFalse(query.shouldRetransmit(11.4), "the gap did not double");
+		Assert.isTrue(query.shouldRetransmit(11.5));
+
+		var negative = new StunQuery(10, -5);
+		Assert.equals(0, negative.timeoutMs);
+		Assert.isFalse(negative.expired(1e9), "a question with a negative timeout expired");
+
 		Assert.equals(750, new StunQuery(10, 750).timeoutMs);
+		Assert.isTrue(new StunQuery(10, 750).expired(10.75));
 	}
 
 	/**
