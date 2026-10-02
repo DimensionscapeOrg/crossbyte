@@ -395,10 +395,25 @@ jobs:
       - name: Run native suite
         working-directory: export/ci-posix-native
         # A whole run takes about five minutes on Linux, longer on the Intel
-        # macOS runner. Past thirty it has hung, and the last [TEST] line
-        # names the case.
-        timeout-minutes: 30
-        run: ./NativeSmokeMain
+        # macOS runner. Past forty it has hung, and the last [TEST] line
+        # names the case. A crash says only "Segmentation fault", so a run
+        # that ends on a signal is run again under a debugger: a crash that
+        # repeats leaves every thread's stack in the log. The step fails
+        # with the first run's status either way.
+        timeout-minutes: 40
+        run: |
+          rc=0
+          ./NativeSmokeMain || rc=$?
+          if [ "$rc" -ge 128 ]; then
+            echo "The suite ended on signal $((rc - 128)); running it again under a debugger."
+            if command -v lldb > /dev/null; then
+              sudo DevToolsSecurity -enable > /dev/null 2>&1 || true
+              lldb --batch -o run -k "thread backtrace all" -k "quit 1" -- ./NativeSmokeMain || true
+            elif command -v gdb > /dev/null; then
+              gdb -batch -ex run -ex "thread apply all bt" ./NativeSmokeMain || true
+            fi
+          fi
+          exit $rc
 
   postgres:
     name: Data | Postgres
