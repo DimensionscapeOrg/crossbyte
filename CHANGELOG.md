@@ -2283,6 +2283,17 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `SharedChannel` client method that throws is reported instead of
+  dropped without a word: logged, and dispatched as
+  `UncaughtErrorEvent.UNCAUGHT_ERROR` on the channel's runtime, as a
+  posted callback's failure is, and the channel goes on listening. So is
+  what a `LocalConnection` callback throws, which still ends the
+  connection, as a socket handler's does, but went unreported when no
+  `onError` was set, and entirely when `close()` called `onClose`, and
+  what a `Task`'s listeners and handlers throw: one of them stopped the
+  rest from hearing the outcome and kept the task in its pool for good,
+  and on a pool thread, for a task with no runtime, nothing at all was
+  reported. `cancel()` no longer throws what a `CANCEL` listener threw.
 - A `Task` made on a thread no runtime belongs to always calls the
   handlers given to `onComplete`, `onError` and `onCancel`. Each looked at
   the task's state and then added a listener, in two steps, and such a task

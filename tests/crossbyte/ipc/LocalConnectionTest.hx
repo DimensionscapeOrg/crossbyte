@@ -2,7 +2,9 @@ package crossbyte.ipc;
 
 import crossbyte.core.CrossByte;
 import crossbyte.events.TickEvent;
+import crossbyte.events.UncaughtErrorEvent;
 import crossbyte.io.ByteArray;
+import crossbyte.utils.Logger;
 import crossbyte.net.NetConnection;
 import crossbyte.net.Protocol;
 import haxe.io.Bytes;
@@ -730,6 +732,65 @@ class LocalConnectionTest extends utest.Test {
 			closeQuietly(b);
 		}
 		Assert.equals(0, problems.length, problems.join("; "));
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		A callback that throws is reported as a socket handler's failure is,
+		logged, and dispatched as `UncaughtErrorEvent.UNCAUGHT_ERROR`, and,
+		as before, ends the connection and is told to `onError`. With no
+		`onError` set it went without a word, and so did whatever `onClose`
+		threw as `close()` called it.
+	**/
+	public function testACallbackThatThrowsIsReported():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var runtime = CrossByte.current();
+		var reports:Array<UncaughtErrorEvent> = [];
+		var watch = (event:UncaughtErrorEvent) -> reports.push(event);
+		runtime.addEventListener(UncaughtErrorEvent.UNCAUGHT_ERROR, watch);
+		Logger.sink = _ -> {};
+		var name = uniqueName("throws");
+		var server = new LocalConnection();
+		var client = new LocalConnection();
+
+		var leaving = new LocalConnection();
+
+		try {
+			server.readEnabled = true;
+			server.listen(name);
+			// onClose, as close() calls it.
+			leaving.connect(name);
+			pumpUntil(() -> server.connected, 2.0);
+			leaving.onClose = _ -> throw "close bug";
+			leaving.close();
+			pumpUntil(() -> !server.connected, 2.0);
+
+			// onData, as the runtime delivers what arrived.
+			server.onData = _ -> throw "data bug";
+			client.connect(name);
+			pumpUntil(() -> server.connected, 2.0);
+			client.send(bytesOf("anything"));
+			pumpUntil(() -> reports.length >= 2, 2.0);
+		} catch (e:Dynamic) {
+			Assert.fail("a callback's failure escaped: " + e);
+		}
+
+		Logger.sink = null;
+		runtime.removeEventListener(UncaughtErrorEvent.UNCAUGHT_ERROR, watch);
+		closeQuietly(leaving);
+		closeQuietly(client);
+		closeQuietly(server);
+		Assert.equals(2, reports.length, "reported: " + [for (report in reports) Std.string(report.error)]);
+		if (reports.length == 2) {
+			Assert.equals("close bug", Std.string(reports[0].error));
+			Assert.equals(leaving, reports[0].origin);
+			Assert.equals("data bug", Std.string(reports[1].error));
+			Assert.equals(UncaughtErrorEvent.SOCKET, reports[1].source);
+			Assert.equals(server, reports[1].origin);
+		}
+		Assert.isFalse(server.connected, "the connection whose callback threw is still open");
 		#else
 		Assert.pass();
 		#end

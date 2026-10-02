@@ -1,6 +1,8 @@
 package crossbyte.ipc;
 
 import crossbyte.core.CrossByte;
+import crossbyte.events.UncaughtErrorEvent;
+import crossbyte.utils.Logger;
 import haxe.Serializer;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
@@ -124,6 +126,44 @@ class SharedChannelTest extends utest.Test {
 		channel.__onData(frame("label", []));
 
 		Assert.equals(0, receiver.calls);
+	}
+
+	/**
+		A client method that throws is reported as any callback the runtime
+		runs is, logged, and dispatched as `UncaughtErrorEvent.UNCAUGHT_ERROR`
+		on the runtime, and the channel goes on. It was caught and dropped
+		without a word: a bug in a handler looked like a message never sent.
+	**/
+	public function testAClientMethodThatThrowsIsReported():Void {
+		var runtime = CrossByte.current();
+		var reports:Array<UncaughtErrorEvent> = [];
+		var watch = (event:UncaughtErrorEvent) -> reports.push(event);
+		var logged:Array<String> = [];
+		runtime.addEventListener(UncaughtErrorEvent.UNCAUGHT_ERROR, watch);
+		Logger.sink = line -> logged.push(line);
+
+		var channel = new SharedChannel();
+		var receiver = new SharedChannelReceiver();
+		channel.client = receiver;
+		try {
+			channel.__onData(frame("explode", ["handler bug"]));
+			channel.__onData(frame("receive", ["after", 7]));
+		} catch (e:Dynamic) {
+			Assert.fail("the failure escaped the channel: " + e);
+		}
+
+		Logger.sink = null;
+		runtime.removeEventListener(UncaughtErrorEvent.UNCAUGHT_ERROR, watch);
+		Assert.equals(1, reports.length, "the failure was not reported");
+		if (reports.length == 1) {
+			Assert.equals("handler bug", Std.string(reports[0].error));
+			Assert.equals(UncaughtErrorEvent.POSTED, reports[0].source);
+			Assert.equals(channel, reports[0].origin);
+		}
+		Assert.isTrue(logged.filter(line -> line.indexOf("handler bug") >= 0).length == 1, "the failure was not logged: " + logged);
+		// And the channel goes on.
+		Assert.equals(1, receiver.calls);
+		Assert.equals("after", receiver.lastMessage);
 	}
 
 	public function testNullClientIgnoresData():Void {
@@ -280,5 +320,9 @@ private class SharedChannelReceiver {
 
 	public function receiveAny(value:Dynamic):Void {
 		calls++;
+	}
+
+	public function explode(message:String):Void {
+		throw message;
 	}
 }
