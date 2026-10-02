@@ -2283,6 +2283,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A reliable UDP session asks for its window of socket buffer on Linux
+  whatever the system's default reads. Linux reads back twice what was
+  asked, counting its own bookkeeping, and a default that read a window's
+  size -- the GitHub runner's -- was taken for enough and kept: half the
+  buffer asking grants. It asks unless the buffer reads past twice the
+  window, and puts back a default larger than asking grants.
 - On the jvm on Linux, a `NativeProcess` stopped with `exit()` reports
   `EXIT`. The JDK's `destroy()` closes the child's streams there, and the
   wait for its exit code first read what was left of them, which threw;

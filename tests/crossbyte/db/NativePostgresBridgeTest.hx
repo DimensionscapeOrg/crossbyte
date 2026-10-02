@@ -228,9 +228,11 @@ class NativePostgresBridgeTest extends utest.Test {
 		var config = __config("localhost");
 		var stop:Bool = false;
 		var done = new Lock();
+		var started = new Lock();
 		var cancels:Int = 0;
 
 		Thread.create(function():Void {
+			started.release();
 			while (!stop) {
 				connection.cancel();
 				cancels++;
@@ -239,6 +241,10 @@ class NativePostgresBridgeTest extends utest.Test {
 			done.release();
 		});
 
+		// Running before the first open: on the four-core CI runner the 300
+		// opens and closes were over before the thread had started, and it
+		// cancelled nothing at all.
+		Assert.isTrue(started.wait(5.0));
 		for (_ in 0...300) {
 			connection.open(config);
 			connection.close();
