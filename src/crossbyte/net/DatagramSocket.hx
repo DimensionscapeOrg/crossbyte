@@ -12,6 +12,7 @@ import crossbyte._internal.socket.IPollableSocket;
 #end
 import crossbyte.core.CrossByte;
 import crossbyte._internal.net.IPv6;
+import crossbyte.net._internal.RuntimeHandOff;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
 import crossbyte.errors.IllegalOperationError;
@@ -402,10 +403,30 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	/**
 		Closes the socket and stops any active receive loop.
 		After a socket has been closed, create a new instance to use UDP again.
+
+		It may be called from any thread, as `Socket.close()` may. From one
+		that is not the runtime's the socket receives on, the close is handed
+		to the runtime, as `CrossByte.post` hands work over, and happens there
+		after this returns: `close` is dispatched on the runtime's thread, and
+		a datagram may still be delivered until then. Made elsewhere, it took
+		the socket out of the runtime's poll set from the wrong thread, while
+		the runtime might be polling it, and told the `close` listeners there.
 	**/
 	public function close():Void {
 		if (__socket == null) {
 			return;
+		}
+
+		var runtime:Null<CrossByte> = __cbInstance;
+		if (RuntimeHandOff.offThread(runtime)) {
+			var socket = __socket;
+			if (runtime.post(function():Void {
+				if (__socket == socket) {
+					close();
+				}
+			})) {
+				return;
+			}
 		}
 
 		stopReceiving();
@@ -978,8 +999,16 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	/**
 		Stops receiving datagrams and removes the socket from the registry if it is
 		currently being polled.
+
+		It may be called from any thread, as `close()` may, and is handed to
+		the runtime the same way.
 	**/
 	public function stopReceiving():Void {
+		var runtime:Null<CrossByte> = __cbInstance;
+		if (__receiving && RuntimeHandOff.offThread(runtime) && runtime.post(stopReceiving)) {
+			return;
+		}
+
 		__receiving = false;
 		__syncPolling();
 	}

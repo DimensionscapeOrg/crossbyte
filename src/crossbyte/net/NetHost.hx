@@ -130,7 +130,7 @@ private class BaseNetHost<TServer:ServerSocket> implements INetHost {
 	 * Always refuses. Accepting and connecting are separate sockets on a stream
 	 * transport, so there is no listening endpoint here to leave from.
 	 */
-	public function dial(address:String, port:Int, timeoutMs:Int = 0):INetConnection {
+	public function dial(address:String, port:Int, timeoutMs:Int = ReliableDatagramSocket.DEFAULT_TIMEOUT):INetConnection {
 		throw new crossbyte.errors.IllegalOperationError("A " + protocol.toString()
 			+ " host cannot dial from its listening endpoint: accepting and connecting are separate sockets on a stream transport. Use NetConnection for an outgoing session.");
 	}
@@ -158,7 +158,7 @@ private class BaseNetHost<TServer:ServerSocket> implements INetHost {
 	}
 
 	/** Always refuses; see `allocateRelay`. **/
-	public function dialRelayed(address:String, port:Int, timeoutMs:Int = 0):INetConnection {
+	public function dialRelayed(address:String, port:Int, timeoutMs:Int = ReliableDatagramSocket.DEFAULT_TIMEOUT):INetConnection {
 		throw __noRelay("dialRelayed");
 	}
 
@@ -355,7 +355,7 @@ private class RUDPHost implements INetHost {
 	 * surface through `onAccept`: it was initiated here, and the caller
 	 * already holds it.
 	 */
-	public function dial(address:String, port:Int, timeoutMs:Int = 0):INetConnection {
+	public function dial(address:String, port:Int, timeoutMs:Int = ReliableDatagramSocket.DEFAULT_TIMEOUT):INetConnection {
 		return NetConnection.fromReliableDatagramSocket(__server.connect(address, port, timeoutMs));
 	}
 
@@ -388,7 +388,7 @@ private class RUDPHost implements INetHost {
 	 * A session dialled through the relay, surfacing no more through
 	 * `onAccept` than one dialled directly.
 	 */
-	public function dialRelayed(address:String, port:Int, timeoutMs:Int = 0):INetConnection {
+	public function dialRelayed(address:String, port:Int, timeoutMs:Int = ReliableDatagramSocket.DEFAULT_TIMEOUT):INetConnection {
 		return NetConnection.fromReliableDatagramSocket(__server.connectRelayed(address, port, timeoutMs));
 	}
 

@@ -220,6 +220,12 @@ entry below says how:
   `\.\pipe\crossbyte-<SID>-<name>` on Windows, where it was
   `\.\pipe\<name>`: a program of your own that opened those directly
   must follow.
+- A `timeoutMs` of 0 is no deadline for a STUN question (`StunClient`,
+  `discoverPublicAddress`, `gatherReflexive`) and for
+  `ReliableDatagramServerSocket.connect` and `connectRelayed`, where it
+  meant three and twenty seconds: pass the time wanted, or leave the
+  argument out for the default. `StunClient.classifyFiltering` fails for 0,
+  and a dial throws for a negative timeout.
 
 ### Added
 - `SharedObject.remove(name)` takes a region away on Linux and macOS,
@@ -1407,6 +1413,23 @@ entry below says how:
   connect to a listener a moment late failed at once. A timeout of 50 or
   less makes the single try now, 50 ms being the pause between tries.
   `NetConnection`'s `connectTimeout` for `local://` is this `timeout`.
+- A `timeoutMs` of 0 sets no deadline for a STUN question,
+  `StunClient.discover`, `probe` and `classifyMapping`,
+  `ReliableDatagramServerSocket.discoverPublicAddress` and
+  `PeerConnection.gatherReflexive`: and for a session that
+  `ReliableDatagramServerSocket.connect` or `connectRelayed` dials, as 0
+  does for every connection's `timeout`; it meant three seconds for a
+  question and twenty for a dial, so neither could wait longer without a
+  number. A question with no deadline is asked, each gap twice the last,
+  until it is answered, or until what it is asked through closes, a
+  `StunClient` question through a socket of the caller's now ends the
+  moment that socket closes, where it lasted until its next ask failed. A
+  dial's timeout is twenty seconds unless given, as
+  `ReliableDatagramSocket.DEFAULT_TIMEOUT`, new, says, and a negative one
+  throws a `RangeError`, as the session's `timeout` does.
+  `StunClient.classifyFiltering` needs a deadline, a filtering NAT
+  answers with silence, and fails at once for 0 or less, its cause an
+  `ArgumentError`.
 - `IceAgent.DEFAULT_TIMEOUT`, the time an agent has from `start` to select
   a pair, is 80 seconds, where round three made it 40. A nomination is a
   check, given up on 39.5 seconds after it goes out, and forty was a moment
@@ -2416,6 +2439,37 @@ entry below says how:
   handler given before the task is done is now kept by the task and taken
   by the step that makes it done, under the same lock; one given after is
   called at once.
+- On eval a read or a write on a connection its peer reset, a write to
+  one the peer had closed, a `shutdown`, a `bind` to a port in use, a
+  `listen`, and a `select` naming a closed socket throw an error that can
+  be caught, as on every other target. eval raised each as an OCaml
+  `Unix_error` that passed every Haxe `catch` and ended the interpreter,
+  on Linux a second write to a closed connection ended it with SIGPIPE,
+  so a development server ended over one client's reset, and a
+  `ServerSocket.bind` to a port in use ended the program it should have
+  told with an `IOError`. A call that could fail that way is made on a
+  helper thread, where the error ends only the helper, and SIGPIPE is
+  taken by a libuv signal handle; a read or a write that a zero-time
+  `select` and `peer()` show cannot fail is made at once, as before. A
+  reset landing in the microseconds between that check and a write made
+  at once can still end the interpreter. eval's `setTimeout` waits as
+  long as it is told on Linux and macOS, where it handed the system a
+  thousand times the timeout, and a read that times out throws
+  `Blocked`, as natively. The interpreter suite runs 5% longer on
+  Windows, where every read is made on a helper, and 8% on Linux, most of
+  it in four HTTP client tests that read an endless header a byte at a
+  time.
+- A `ServerSocket`, `ServerWebSocket` or `DatagramSocket` closed from
+  another thread closes on its runtime, as a `Socket` does: `close()`
+  hands the close over and returns. Made on the calling thread, it took
+  the listener or the socket out of the runtime's poll set and its tick
+  listeners, neither thread-safe, while the runtime might be polling
+  them, and a `DatagramSocket` dispatched `close` there. The same for
+  `stopAccepting()`; `ServerWebSocket.drain()`, which with no session open
+  called `onComplete` on the calling thread; `DatagramSocket.stopReceiving()`;
+  and `ReliableDatagramServerSocket`'s `detachIceAgent()` and
+  `releaseRelay()`, which failed an `allocateRelay` still waiting on the
+  calling thread.
 - A reliable UDP session asks for its window of socket buffer on Linux
   whatever the system's default reads. Linux reads back twice what was
   asked, counting its own bookkeeping, and a default that read a window's

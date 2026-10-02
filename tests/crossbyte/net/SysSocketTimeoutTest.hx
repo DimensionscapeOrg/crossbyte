@@ -11,11 +11,15 @@ import utest.Assert;
 	its idle limit as the timeout, so it could wait for ever on a server that
 	stopped sending.
 
-	Not on eval, which raises a socket timeout as a native error no Haxe code
-	can catch.
+	On eval too, where the timeout was a native error no Haxe code could
+	catch, which ended the interpreter, and where on Linux and macOS it came
+	a thousand times too late, eval hands the system a thousand times the
+	timeout, which only Windows counts in milliseconds. The read now runs
+	where that error ends only a helper thread (see the eval
+	`sys.net.Socket`), and arrives as `Blocked`, on time.
 **/
 class SysSocketTimeoutTest extends utest.Test {
-	#if (cpp || java || jvm)
+	#if (cpp || java || jvm || eval)
 	public function testABlockingReadGivesUpAtItsTimeout():Void {
 		var server = new sys.net.Socket();
 		var client = new sys.net.Socket();
