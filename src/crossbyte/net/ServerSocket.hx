@@ -15,6 +15,7 @@ import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.net.Socket as CBSocket;
+import crossbyte.net._internal.RuntimeHandOff;
 import crossbyte.io.ByteArray;
 #if nodejs
 import js.node.Net;
@@ -721,9 +722,24 @@ class ServerSocket extends EventDispatcher {
 		still completing its TLS handshake is dropped, and no `close` event is
 		dispatched: that is for the system closing the listener.
 		Closed sockets cannot be reopened. Create a new ServerSocket instance instead.
+
+		It may be called from any thread, as `Socket.close()` may. From one
+		that is not the runtime's the server listens on, the close is handed
+		to the runtime, as `CrossByte.post` hands work over, and happens there
+		after this returns: a connection may still be announced until then.
+		A runtime's poll set and tick listeners are not thread-safe, and a
+		close made elsewhere took the listener out of them from the wrong
+		thread, while the runtime might be polling it.
 		@throws Error This error occurs if the socket could not be closed, or the socket was not open.
+			From another thread nothing is thrown here: a close that fails on
+			the runtime is reported as any posted callback's failure is.
 	**/
 	public function close():Void {
+		var runtime:Null<CrossByte> = __cbInstance;
+		if (RuntimeHandOff.offThread(runtime) && runtime.post(__closeOnRuntime)) {
+			return;
+		}
+
 		#if !nodejs
 		__dropPendingHandshakes();
 		// Out of the poll set before the listener is closed; see
@@ -745,6 +761,16 @@ class ServerSocket extends EventDispatcher {
 		bound = false;
 		__closed = true;
 		__cbInstance = null;
+	}
+
+	/**
+		A close handed over from another thread, on the runtime: nothing if
+		the server was closed there meanwhile.
+	**/
+	@:noCompletion private function __closeOnRuntime():Void {
+		if (!__closed) {
+			close();
+		}
 	}
 
 	/**
@@ -1259,9 +1285,17 @@ class ServerSocket extends EventDispatcher {
 
 		On Node a handshake under way finishes after the listener has
 		stopped, and is closed as it does, as one in flight is natively.
+
+		It may be called from any thread, as `close()` may, and is handed to
+		the runtime the same way.
 	**/
 	public function stopAccepting():Void {
 		if (!listening && !bound) {
+			return;
+		}
+
+		var runtime:Null<CrossByte> = __cbInstance;
+		if (RuntimeHandOff.offThread(runtime) && runtime.post(stopAccepting)) {
 			return;
 		}
 

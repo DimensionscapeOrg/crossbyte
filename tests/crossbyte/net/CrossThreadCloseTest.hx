@@ -361,6 +361,257 @@ class CrossThreadCloseTest extends utest.Test {
 		});
 	}
 
+	/**
+		A server closed from another thread lets go of its runtime there: its
+		listener leaves the runtime's poll set, and its tick the runtime's
+		listeners, on the runtime's thread, plain and WebSocket alike.
+
+		Each was taken out from the closing thread, while the runtime might
+		be polling the listener or dispatching its tick: neither is
+		thread-safe.
+	**/
+	@:timeout(30000)
+	public function testAServerClosedFromAnotherThreadLetsGoOnItsRuntime(async:Async):Void {
+		var runtime:CrossByte = CrossByte.current();
+		var before:Int = __tickListeners(runtime);
+		var plain = new ThreadNotingServerSocket(runtime);
+		var web = new ThreadNotingServerWebSocket(runtime);
+		var servers:Array<ServerSocket> = [plain, web];
+		for (server in servers) {
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, _ -> {});
+			server.bind(0, "127.0.0.1");
+			server.listen();
+		}
+		Assert.isTrue(__tickListeners(runtime) > before, "the WebSocket server put no tick on the runtime, so its absence says nothing");
+
+		for (server in servers) {
+			var thrown:String = __fromAnotherThread(() -> server.close());
+			Assert.isNull(thrown, "close() threw on another thread: " + thrown);
+		}
+
+		NetPump.until(() -> !plain.listening && !web.listening, DEADLINE, function(_) {
+			Assert.isTrue(plain.letGo && web.letGo, "a server closed from another thread never let go of its runtime");
+			Assert.isFalse(plain.letGoOffRuntime, "the server let go of its runtime's poll set from the closing thread");
+			Assert.isFalse(web.letGoOffRuntime, "the WebSocket server let go of its runtime's poll set and tick from the closing thread");
+			Assert.isFalse(plain.listening || web.listening, "a server closed from another thread is still listening");
+			Assert.equals(before, __tickListeners(runtime), "a server closed from another thread left its tick on the runtime");
+			async.done();
+		});
+	}
+
+	/** `stopAccepting()`, the first half of a graceful shutdown, likewise. **/
+	@:timeout(30000)
+	public function testAServerStoppedFromAnotherThreadLetsGoOnItsRuntime(async:Async):Void {
+		var runtime:CrossByte = CrossByte.current();
+		var before:Int = __tickListeners(runtime);
+		var plain = new ThreadNotingServerSocket(runtime);
+		var web = new ThreadNotingServerWebSocket(runtime);
+		var servers:Array<ServerSocket> = [plain, web];
+		for (server in servers) {
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, _ -> {});
+			server.bind(0, "127.0.0.1");
+			server.listen();
+		}
+
+		for (server in servers) {
+			var thrown:String = __fromAnotherThread(() -> server.stopAccepting());
+			Assert.isNull(thrown, "stopAccepting() threw on another thread: " + thrown);
+		}
+
+		NetPump.until(() -> !plain.listening && !web.listening, DEADLINE, function(_) {
+			Assert.isTrue(plain.letGo && web.letGo, "a server stopped from another thread never let go of its runtime");
+			Assert.isFalse(plain.letGoOffRuntime, "the server let go of its runtime's poll set from the stopping thread");
+			Assert.isFalse(web.letGoOffRuntime, "the WebSocket server let go of its runtime's poll set and tick from the stopping thread");
+			Assert.equals(before, __tickListeners(runtime), "a server stopped from another thread left its tick on the runtime");
+			for (server in servers) {
+				try server.close() catch (_:Dynamic) {}
+			}
+			async.done();
+		});
+	}
+
+	/**
+		A WebSocket server drained from another thread: `onComplete` is
+		called on the runtime's thread, as `drain` promises. With no session
+		open the drain finished at once, on the calling thread, the server
+		closed there, and `onComplete` called there.
+	**/
+	@:timeout(30000)
+	public function testAServerDrainedFromAnotherThreadCompletesOnItsRuntime(async:Async):Void {
+		var runtime:CrossByte = CrossByte.current();
+		var server = new ThreadNotingServerWebSocket(runtime);
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, _ -> {});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		var completed:Bool = false;
+		var completedOnRuntime:Bool = false;
+		var thrown:String = __fromAnotherThread(() -> server.drain(1.0, function() {
+			completed = true;
+			completedOnRuntime = CrossByte.__currentOrNull() == runtime;
+		}));
+		Assert.isNull(thrown, "drain() threw on another thread: " + thrown);
+
+		NetPump.until(() -> completed, DEADLINE, function(_) {
+			Assert.isTrue(completed, "a drain begun on another thread never completed");
+			Assert.isTrue(completedOnRuntime, "onComplete was called off the server's runtime's thread");
+			Assert.isFalse(server.letGoOffRuntime, "the drained server let go of its runtime from the draining thread");
+			Assert.isFalse(server.listening, "the drained server is still listening");
+			async.done();
+		});
+	}
+
+	/**
+		A datagram socket closed from another thread closes on its runtime:
+		out of the runtime's poll set there, and `close` dispatched there,
+		once. Both happened on the closing thread.
+	**/
+	@:timeout(30000)
+	public function testADatagramSocketClosedFromAnotherThreadClosesOnItsRuntime(async:Async):Void {
+		if (!DatagramSocket.isSupported) {
+			Assert.isFalse(DatagramSocket.isSupported);
+			async.done();
+			return;
+		}
+
+		var runtime:CrossByte = CrossByte.current();
+		var socket = new ThreadNotingDatagramSocket(runtime);
+		socket.bind(0, "127.0.0.1");
+		socket.addEventListener(crossbyte.events.DatagramSocketDataEvent.DATA, _ -> {});
+		socket.receive();
+		Assert.isTrue(@:privateAccess socket.__registered, "the socket is not in the runtime's poll set, so leaving it says nothing");
+
+		var closes:Int = 0;
+		var closedOnRuntime:Bool = false;
+		socket.addEventListener(Event.CLOSE, function(_) {
+			closes++;
+			closedOnRuntime = CrossByte.__currentOrNull() == runtime;
+		});
+
+		var thrown:String = __fromAnotherThread(() -> socket.close());
+		Assert.isNull(thrown, "close() threw on another thread: " + thrown);
+
+		NetPump.until(() -> closes > 0, DEADLINE, function(_) {
+			Assert.equals(1, closes, "the socket's close was dispatched " + closes + " times");
+			Assert.isTrue(closedOnRuntime, "the socket's close was dispatched off its runtime's thread");
+			Assert.isFalse(socket.pollChangedOffRuntime, "the socket left its runtime's poll set from the closing thread");
+			Assert.isFalse(@:privateAccess socket.__registered, "the closed socket is still in its runtime's poll set");
+			async.done();
+		});
+	}
+
+	/** `stopReceiving()` likewise leaves the poll set on the runtime's thread. **/
+	@:timeout(30000)
+	public function testADatagramSocketStoppedFromAnotherThreadStopsOnItsRuntime(async:Async):Void {
+		if (!DatagramSocket.isSupported) {
+			Assert.isFalse(DatagramSocket.isSupported);
+			async.done();
+			return;
+		}
+
+		var runtime:CrossByte = CrossByte.current();
+		var socket = new ThreadNotingDatagramSocket(runtime);
+		socket.bind(0, "127.0.0.1");
+		socket.addEventListener(crossbyte.events.DatagramSocketDataEvent.DATA, _ -> {});
+		socket.receive();
+
+		var thrown:String = __fromAnotherThread(() -> socket.stopReceiving());
+		Assert.isNull(thrown, "stopReceiving() threw on another thread: " + thrown);
+
+		NetPump.until(() -> !socket.receiving, DEADLINE, function(_) {
+			Assert.isFalse(socket.receiving, "a socket stopped from another thread is still receiving");
+			Assert.isFalse(socket.pollChangedOffRuntime, "the socket left its runtime's poll set from the stopping thread");
+			Assert.isFalse(@:privateAccess socket.__registered, "the stopped socket is still in its runtime's poll set");
+			try socket.close() catch (_:Dynamic) {}
+			async.done();
+		});
+	}
+
+	/**
+		An ICE agent detached from another thread stops on its server's
+		runtime: its tick comes off the runtime there. It came off from the
+		detaching thread.
+	**/
+	@:timeout(30000)
+	public function testAnAgentDetachedFromAnotherThreadStopsOnItsRuntime(async:Async):Void {
+		if (!ReliableDatagramSocket.isSupported || !crossbyte.net.ice.IceAgent.isSupported) {
+			Assert.isFalse(ReliableDatagramSocket.isSupported && crossbyte.net.ice.IceAgent.isSupported);
+			async.done();
+			return;
+		}
+
+		var runtime:CrossByte = CrossByte.current();
+		var server = new ThreadNotingReliableServer(runtime);
+		server.bind(0, "127.0.0.1");
+		server.listen();
+		server.attachIceAgent(new crossbyte.net.ice.IceAgent(true));
+		var tick = @:privateAccess server.__iceTick;
+		Assert.isTrue(__listening(runtime, tick), "the agent is not on the runtime's tick, so its absence says nothing");
+
+		var thrown:String = __fromAnotherThread(() -> server.detachIceAgent());
+		Assert.isNull(thrown, "detachIceAgent() threw on another thread: " + thrown);
+
+		NetPump.until(() -> !__listening(runtime, tick), DEADLINE, function(_) {
+			Assert.isFalse(__listening(runtime, tick), "the detached agent is still on the runtime's tick");
+			Assert.isFalse(server.untickedOffRuntime, "the agent's tick was taken off the runtime from the detaching thread");
+			__quietly(() -> server.close());
+			async.done();
+		});
+	}
+
+	/**
+		A relay released from another thread, its allocation still waiting:
+		the `allocateRelay` it fails is failed on the server's runtime, and the
+		relay's tick comes off there. Both happened on the releasing thread.
+	**/
+	@:timeout(30000)
+	public function testARelayReleasedFromAnotherThreadEndsOnItsRuntime(async:Async):Void {
+		if (!ReliableDatagramSocket.isSupported || !TurnClient.isSupported) {
+			Assert.isFalse(ReliableDatagramSocket.isSupported && TurnClient.isSupported);
+			async.done();
+			return;
+		}
+
+		var runtime:CrossByte = CrossByte.current();
+		// A relay that never answers, so the allocation waits.
+		var silent = new DatagramSocket();
+		silent.bind(0, "127.0.0.1");
+		silent.receive();
+
+		var server = new ThreadNotingReliableServer(runtime);
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		var failure:String = null;
+		var failedOnRuntime:Bool = false;
+		server.allocateRelay("127.0.0.1", silent.localPort, "user", "secret").then(_ -> {}, function(error:String) {
+			failure = error;
+			failedOnRuntime = CrossByte.__currentOrNull() == runtime;
+		});
+		var tick = @:privateAccess server.__relayTick;
+		Assert.isTrue(__listening(runtime, tick), "the relay is not on the runtime's tick, so its absence says nothing");
+
+		var thrown:String = __fromAnotherThread(() -> server.releaseRelay());
+		Assert.isNull(thrown, "releaseRelay() threw on another thread: " + thrown);
+
+		NetPump.until(() -> failure != null, DEADLINE, function(_) {
+			Assert.notNull(failure, "the waiting allocation was never failed");
+			Assert.isTrue(failedOnRuntime, "the allocation was failed off the runtime's thread");
+			Assert.isNull(server.relay, "the released relay is still the server's");
+			Assert.isFalse(__listening(runtime, tick), "the released relay is still on the runtime's tick");
+			Assert.isFalse(server.untickedOffRuntime, "the relay's tick was taken off the runtime from the releasing thread");
+			__quietly(() -> server.close());
+			__quietly(() -> silent.close());
+			async.done();
+		});
+	}
+
+	@:access(crossbyte.events.EventDispatcher)
+	private static function __tickListeners(runtime:CrossByte):Int {
+		var list:Array<Dynamic> = runtime.__eventMap == null ? null : runtime.__eventMap.get(crossbyte.events.TickEvent.TICK);
+		return list == null ? 0 : list.length;
+	}
+
 	/** Whether `listener` is among `runtime`'s tick listeners. **/
 	@:access(crossbyte.events.EventDispatcher)
 	private static function __listening(runtime:CrossByte, listener:Dynamic):Bool {
@@ -444,3 +695,106 @@ class CrossThreadCloseTest extends utest.Test {
 	}
 	#end
 }
+
+#if target.threaded
+/**
+	Notes the thread a server lets go of its runtime on: where its listener
+	leaves the runtime's poll set and its tick the runtime's listeners.
+	The fields are set in the constructor, before another thread can write
+	them: on neko a field first set by another thread can move the object's
+	field table under the runtime.
+**/
+@:access(crossbyte.core.CrossByte)
+private class ThreadNotingServerSocket extends ServerSocket {
+	public var letGo:Bool;
+	public var letGoOffRuntime:Bool;
+
+	private var __owner:CrossByte;
+
+	public function new(owner:CrossByte) {
+		letGo = false;
+		letGoOffRuntime = false;
+		__owner = owner;
+		super();
+	}
+
+	override private function __detachAcceptTick():Void {
+		if (__acceptRuntime != null) {
+			letGo = true;
+			if (CrossByte.__currentOrNull() != __owner) {
+				letGoOffRuntime = true;
+			}
+		}
+		super.__detachAcceptTick();
+	}
+}
+
+/** The same, for a WebSocket server, which lets go through the same path natively. **/
+@:access(crossbyte.core.CrossByte)
+private class ThreadNotingServerWebSocket extends ServerWebSocket {
+	public var letGo:Bool;
+	public var letGoOffRuntime:Bool;
+
+	private var __owner:CrossByte;
+
+	public function new(owner:CrossByte) {
+		letGo = false;
+		letGoOffRuntime = false;
+		__owner = owner;
+		super();
+	}
+
+	override private function __detachAcceptTick():Void {
+		if (__acceptRuntime != null) {
+			letGo = true;
+			if (CrossByte.__currentOrNull() != __owner) {
+				letGoOffRuntime = true;
+			}
+		}
+		super.__detachAcceptTick();
+	}
+}
+
+/** Notes whether a reliable server took a tick off its runtime from another thread. **/
+@:access(crossbyte.core.CrossByte)
+private class ThreadNotingReliableServer extends ReliableDatagramServerSocket {
+	public var untickedOffRuntime:Bool;
+
+	private var __owner:CrossByte;
+
+	public function new(owner:CrossByte) {
+		untickedOffRuntime = false;
+		__owner = owner;
+		super();
+	}
+
+	override private function __untick(listener:crossbyte.events.TickEvent->Void):Void {
+		if (CrossByte.__currentOrNull() != __owner) {
+			untickedOffRuntime = true;
+		}
+		super.__untick(listener);
+	}
+}
+
+/** Notes whether a datagram socket's poll set entry changed off its runtime's thread. **/
+@:access(crossbyte.core.CrossByte)
+private class ThreadNotingDatagramSocket extends DatagramSocket {
+	public var pollChangedOffRuntime:Bool;
+
+	private var __owner:CrossByte;
+
+	public function new(owner:CrossByte) {
+		pollChangedOffRuntime = false;
+		__owner = owner;
+		super();
+	}
+
+	override private function __syncPolling():Void {
+		var was:Bool = __registered;
+		super.__syncPolling();
+		if (__registered != was && CrossByte.__currentOrNull() != __owner) {
+			pollChangedOffRuntime = true;
+		}
+	}
+}
+#end

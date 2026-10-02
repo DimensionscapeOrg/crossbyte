@@ -2283,6 +2283,17 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `ServerSocket`, `ServerWebSocket` or `DatagramSocket` closed from
+  another thread closes on its runtime, as a `Socket` does: `close()`
+  hands the close over and returns. Made on the calling thread, it took
+  the listener or the socket out of the runtime's poll set and its tick
+  listeners, neither thread-safe, while the runtime might be polling
+  them, and a `DatagramSocket` dispatched `close` there. The same for
+  `stopAccepting()`; `ServerWebSocket.drain()`, which with no session open
+  called `onComplete` on the calling thread; `DatagramSocket.stopReceiving()`;
+  and `ReliableDatagramServerSocket`'s `detachIceAgent()` and
+  `releaseRelay()`, which failed an `allocateRelay` still waiting on the
+  calling thread.
 - A reliable UDP session asks for its window of socket buffer on Linux
   whatever the system's default reads. Linux reads back twice what was
   asked, counting its own bookkeeping, and a default that read a window's

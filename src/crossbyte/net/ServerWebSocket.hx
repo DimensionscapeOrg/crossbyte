@@ -25,6 +25,7 @@ import crossbyte.events.EventDispatcher;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.net.Socket as CBSocket;
+import crossbyte.net._internal.RuntimeHandOff;
 import crossbyte.io.ByteArray;
 #if !nodejs
 import sys.net.Host;
@@ -660,9 +661,17 @@ class ServerWebSocket extends ServerSocket {
 		a handshake in flight: nothing opens on a server that has stopped.
 		Unlike `close()`, no `close` event is dispatched and the server is
 		not marked closed. Safe to call more than once.
+
+		It may be called from any thread, as `close()` may, and is handed to
+		the runtime the same way.
 	**/
 	override public function stopAccepting():Void {
 		if (!listening && !bound) {
+			return;
+		}
+
+		var runtime:Null<CrossByte> = __cbInstance;
+		if (RuntimeHandOff.offThread(runtime) && runtime.post(stopAccepting)) {
 			return;
 		}
 
@@ -700,6 +709,12 @@ class ServerWebSocket extends ServerSocket {
 		ProcessLifecycle.installDefaultHandlers();
 		```
 
+		It may be called from any thread, as `close()` may: from one that is
+		not the server's runtime's, the drain is handed to the runtime and
+		begins there after this returns. Begun elsewhere, it put its wait on
+		the runtime's tick from the wrong thread, or, with no session open,
+		closed the server and called `onComplete` there.
+
 		@param timeoutSeconds How long to wait for clients to acknowledge
 			before dropping them. Values at or below zero close at once.
 		@param onComplete Invoked once shutdown finishes, on the runtime
@@ -717,6 +732,12 @@ class ServerWebSocket extends ServerSocket {
 		// the wait with nothing to tell them why.
 		if (!@:privateAccess WebSocket.__isSendableCloseCode(closeCode)) {
 			throw new ArgumentError('$closeCode is not a close code that may be sent; use 1000, 1001, 1002-1014 (but 1004-1006), or 3000-4999.');
+		}
+		// Refused above on the caller's thread, where it can be heard; the
+		// rest runs on the runtime.
+		var runtime:Null<CrossByte> = __cbInstance;
+		if (RuntimeHandOff.offThread(runtime) && runtime.post(() -> drain(timeoutSeconds, onComplete, closeCode))) {
+			return;
 		}
 		if (draining) {
 			return;
@@ -776,9 +797,18 @@ class ServerWebSocket extends ServerSocket {
 		session still completing its TLS handshake or its upgrade. Sessions
 		already open are left to their owners, or to `drain()`.
 		Closed sockets cannot be reopened. Create a new ServerSocket instance instead.
+
+		It may be called from any thread, as `ServerSocket.close()` may, and
+		is handed to the runtime the same way.
 		@throws Error This error occurs if the socket could not be closed, or the socket was not open.
+			From another thread nothing is thrown here; see `ServerSocket.close()`.
 	**/
 	override public function close():Void {
+		var runtime:Null<CrossByte> = __cbInstance;
+		if (RuntimeHandOff.offThread(runtime) && runtime.post(__closeOnRuntime)) {
+			return;
+		}
+
 		// stopAccepting() may already have released the listener as the
 		// first half of a graceful shutdown; closing again is not an error.
 		if (__listenerReleased) {
