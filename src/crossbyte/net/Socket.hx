@@ -2484,6 +2484,17 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// on Windows.
 			var r = SysSocket.select([], [__socket], [__socket], 0);
 
+			#if ((java || jvm) && !macro)
+			// Settled by whichever select reached it first, the runtime's
+			// poll as often as this one, and that one filed the reason on the
+			// socket. NIO closes a channel whose connect failed, so this select
+			// found nothing, and the refusal waited out the connect deadline.
+			if (r.write.length == 0 && r.others.length == 0 && __socket.__connectFailure != null) {
+				failure = __socket.__connectFailure;
+				doClose = true;
+			}
+			#end
+
 			#if (cpp && !macro)
 			// Writable is not connected. POSIX makes a refused or unreachable
 			// connect writable too, so on Linux and macOS a refusal was
