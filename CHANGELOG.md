@@ -2292,6 +2292,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On macOS a `LocalConnection` send to a peer that has stopped reading no
+  longer waits for good. The socket was left blocking and each write asked
+  not to wait with `MSG_DONTWAIT`, which Linux honours for a send and macOS
+  does not: once the 8 KB macOS gives a local socket was full, the send
+  waited on the runtime's thread, holding the lock the reader thread and
+  `close()` need -- the native suite hung there on the macOS runner. Every
+  connected socket is non-blocking now. So is a connect, which on Linux
+  waited in the kernel, past any `timeout`, for a listener whose backlog
+  was full to take someone; it is tried again until the deadline instead.
 - A `SharedChannel` client method that throws is reported instead of
   dropped without a word: logged, and dispatched as
   `UncaughtErrorEvent.UNCAUGHT_ERROR` on the channel's runtime, as a
