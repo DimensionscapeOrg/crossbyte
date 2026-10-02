@@ -10,6 +10,7 @@ import crossbyte._internal.net.IPv6;
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
 import crossbyte.events.DatagramSocketDataEvent;
+import crossbyte.events.Event;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.TickEvent;
 import crossbyte.io.ByteArray;
@@ -94,15 +95,19 @@ class StunClient {
 
 		@param timeoutMs How long to keep asking before giving up. UDP has no
 		failure to report, a request that reaches nothing looks exactly like
-		one still in flight, so a deadline is the only thing that ends this,
-		and 0 or less asks for the default, three seconds, rather than for none
-		as 0 is for a connection's `timeout`. The same for every question here.
+		one still in flight, so only a deadline ends a question nobody
+		answers. 0 or less sets none, as it does for a connection's `timeout`:
+		the question is asked until it is answered, or until the socket it is
+		asked through closes, so one asked through a socket of its own, with
+		no deadline, holds that socket until the server answers. The same for
+		every question here. 0 meant three seconds.
 		@param socket The socket to ask through, whose mapping is then what the
 		answer describes; bound, and not connected. It is left open, and left
 		not receiving if it was not. The answer reaches its other `data`
 		listeners too, as every datagram does, a STUN message is the one
 		whose first byte is below 4 (RFC 7983). Without one, a socket of the
-		question's own is bound and closed.
+		question's own is bound and closed. Closing it ends the question,
+		which fails.
 	**/
 	public static function discover(server:String, port:Int = DEFAULT_PORT, timeoutMs:Int = 3000,
 			?socket:DatagramSocket):Future<ReflexiveAddress> {
@@ -125,7 +130,7 @@ class StunClient {
 		from. The building block `classifyMapping` and `classifyFiltering` are
 		made of, for a caller running RFC 5780's other tests.
 
-		@param timeoutMs As for `discover`: 0 or less is three seconds.
+		@param timeoutMs As for `discover`: 0 or less is no deadline.
 		@param socket As for `discover`. Every question about one mapping has
 		to go through the socket that owns it.
 		@param changeAddress Ask the server to answer from its other address.
@@ -160,7 +165,7 @@ class StunClient {
 		saying so.
 
 		@param timeoutMs For each question, as for `discover`: 0 or less is
-		three seconds.
+		no deadline.
 		@param socket As for `discover`. Without one, a socket of its own is
 		used for all three and closed.
 	**/
@@ -236,8 +241,10 @@ class StunClient {
 		only once `timeoutMs` has passed for each question it stopped, up to
 		two deadlines on top of the first answer's time.
 
-		@param timeoutMs For each question, as for `discover`: 0 or less is
-		three seconds.
+		@param timeoutMs For each question, as for `discover`, but it has to
+		be more than 0. Silence is the answer this listens for, and a question
+		with no deadline would wait out a filtering NAT for good, so 0 or less
+		fails at once, with an `ArgumentError` as its `cause`.
 		@param socket As for `discover`. Without one, a socket of its own is
 		used for all three and closed.
 	**/
@@ -254,6 +261,12 @@ class StunClient {
 			} else {
 				@:privateAccess future.__fail(failure, failure == REQUIRED ? new ArgumentError("server") : null);
 			}
+		}
+
+		if (timeoutMs <= 0) {
+			@:privateAccess future.__fail("Classifying a NAT's filtering needs a deadline of more than 0 ms: a filtering NAT answers with "
+				+ "silence, which only a deadline can hear.", new ArgumentError("timeoutMs"));
+			return future;
 		}
 
 		if (socket == null && __usable(server) == null) {
@@ -381,6 +394,7 @@ class StunClient {
 		var target:Null<String> = IPv6.isNumericAddress(server) ? server : null;
 		var onData:DatagramSocketDataEvent->Void = null;
 		var onError:IOErrorEvent->Void = null;
+		var onClose:Event->Void = null;
 		var onTick:TickEvent->Void = null;
 
 		function finish(answer:Null<StunAnswer>, failure:Null<String>, timedOut:Bool):Void {
@@ -396,6 +410,7 @@ class StunClient {
 			} else {
 				socket.removeEventListener(DatagramSocketDataEvent.DATA, onData);
 				socket.removeEventListener(IOErrorEvent.IO_ERROR, onError);
+				socket.removeEventListener(Event.CLOSE, onClose);
 
 				if (!wasReceiving) {
 					try {
@@ -453,6 +468,13 @@ class StunClient {
 			finish(null, "Could not ask " + server + ":" + port + " for a reflexive address: " + event.text, false);
 		};
 
+		// A caller's socket closed under the question ends it now. It ended
+		// at the next ask, whose send failed, with no deadline, gaps that
+		// double put that hours away.
+		onClose = function(_:Event):Void {
+			finish(null, "The socket asking " + server + ":" + port + " for a reflexive address closed before an answer came.", false);
+		};
+
 		onTick = function(_:TickEvent):Void {
 			if (settled) {
 				return;
@@ -463,8 +485,7 @@ class StunClient {
 			if (query.expired(now)) {
 				// Damaged answers are not silence: the server answered, and a
 				// filtering test must not read what reached it as filtered.
-				// The time the question had, not the timeout given: 0 asks for
-				// the default, and this said "within 0ms".
+				// Only a question with a deadline gets here.
 				var damage:Null<String> = query.damage();
 				if (damage != null) {
 					finish(null, "No usable reply from the STUN server at " + server + ":" + port + " within " + query.timeoutMs + "ms: " + damage
@@ -488,6 +509,8 @@ class StunClient {
 				socket = new DatagramSocket();
 				socket.bind(0, "0.0.0.0");
 				socket.addEventListener(IOErrorEvent.IO_ERROR, onError);
+			} else {
+				socket.addEventListener(Event.CLOSE, onClose);
 			}
 
 			socket.addEventListener(DatagramSocketDataEvent.DATA, onData);

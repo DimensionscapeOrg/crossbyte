@@ -457,6 +457,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private static inline var CONNECTION_ATTEMPT_INTERVAL:Float = 3.0;
 	@:noCompletion private static inline var DELIVERY_WINDOW:Int = 500;
 
+	/** `timeout` unless changed, in milliseconds. **/
+	public static inline var DEFAULT_TIMEOUT:Int = 20000;
+
 	/** `keepAliveInterval` unless changed, in seconds. **/
 	public static inline var DEFAULT_KEEP_ALIVE_INTERVAL:Float = 15.0;
 
@@ -767,7 +770,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	**/
 	@:noCompletion private var __relay:TurnClient = null;
 
-	@:noCompletion private var __timeout:Int = 20000;
+	@:noCompletion private var __timeout:Int = DEFAULT_TIMEOUT;
 	@:noCompletion private var __transport:DatagramSocket;
 
 	/**
@@ -1653,10 +1656,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 
 		// Set before the handshake begins, or the first retransmission window
-		// is measured against the default rather than what the caller asked for.
-		if (timeoutMs > 0) {
-			socket.timeout = timeoutMs;
-		}
+		// is measured against the default rather than what the caller asked
+		// for. 0 is no deadline here too, where it was taken for the default.
+		socket.timeout = timeoutMs;
 
 		socket.__ownsTransport = false;
 		socket.__incoming = false;
