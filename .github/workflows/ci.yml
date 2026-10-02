@@ -257,7 +257,7 @@ jobs:
     # Two native builds from cold: on the Intel macOS runner they take ten to
     # thirteen minutes each, and at 25 the job was cancelled at the very end
     # with both suites green (2026-10-01, 25:00 exactly).
-    timeout-minutes: 45
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -310,6 +310,20 @@ jobs:
 
       # libsodium is compiled from vendored sources, so there is nothing
       # to install; this job proves that build works off Windows.
+      # Two native builds from cold took 24 and 20+ minutes on the Intel
+      # macOS runner on 2026-10-02 and ran into the job's bound; the compiler
+      # cache the native suite's job keeps makes the second run of each warm.
+      - name: Point hxcpp at a compiler cache
+        run: echo "HXCPP_COMPILE_CACHE=$RUNNER_TEMP/hxcpp-cache" >> "$GITHUB_ENV"
+
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/hxcpp-cache
+          key: hxcpp-posix-cryptosys-${{ matrix.os }}-${{ env.HXCPP_REF }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            hxcpp-posix-cryptosys-${{ matrix.os }}-${{ env.HXCPP_REF }}-
+
       - name: Build crypto suite
         run: haxe ci/posix-crypto-tests.hxml
 
@@ -393,6 +407,15 @@ jobs:
         # stack taken below names its functions: stripped, every frame read
         # ___lldb_unnamed_symbol.
         run: haxe ci/posix-native-tests.hxml -D test_trace -D nostrip
+
+      # The relay tests bind 127.0.0.2 and 127.0.0.3, so that what a peer
+      # sends itself and what the relay forwards do not share a source. Linux
+      # answers on all of 127/8; macOS has only 127.0.0.1 until told.
+      - name: Add the loopback addresses the relay tests bind
+        if: runner.os == 'macOS'
+        run: |
+          sudo ifconfig lo0 alias 127.0.0.2 up
+          sudo ifconfig lo0 alias 127.0.0.3 up
 
       - name: Run native suite
         working-directory: export/ci-posix-native

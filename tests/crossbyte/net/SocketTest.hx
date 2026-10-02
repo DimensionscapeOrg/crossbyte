@@ -179,6 +179,10 @@ class SocketTest extends utest.Test {
 		var socket = new Socket();
 		var errors = 0;
 		socket.addEventListener(IOErrorEvent.IO_ERROR, _ -> errors++);
+		// Ended by the lookup failing or, wherever the resolver takes longer
+		// to give up than this waits, by the attempt's deadline, which counts
+		// the lookup: the macOS CI runner's resolver did not answer in 10 s.
+		socket.timeout = 3000;
 
 		socket.connect("bad host name", 80);
 		Assert.equals(0, errors, "the lookup was waited on inside connect()");
