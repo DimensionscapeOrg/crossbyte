@@ -2442,6 +2442,20 @@ entry below says how:
   system. A directory given there stands for `libpq.so.5` as well as
   `libpq.so` on Linux, it stood for the development package's
   `libpq.so` alone, and a failed open names each path it tried once.
+- A `LocalConnection` moves large frames through small socket buffers
+  quickly: on macOS, which gives a local socket 8 KB a direction, three
+  3 MB frames took longer than ten seconds. Two costs grew as the buffer
+  shrank. The reader thread moved at most what the socket held each pass
+  and then slept, from 1 ms to 10 ms as passes found the socket still full
+  or still empty, so the two sides took turns at 8 KB a turn; it now waits
+  on Linux and macOS for the socket to be readable or writable, up to the
+  same time, and is woken by it. And each pass copied whatever of a frame
+  had arrived to a new array and back, so a 3 MB frame arriving 8 KB at a
+  time was copied 384 times over; what has arrived now stays where it is
+  until what has been framed outweighs it. On Linux, through 8 KB buffers,
+  the nine megabytes took 3.0 s and take 0.12 s, and through the system's
+  0.32 s and 0.10 s. A send that macOS refuses for want of buffer space
+  (`ENOBUFS`) waits, where it ended the connection.
 - A connected `DatagramSocket` sends on macOS and the BSDs. Every send
   named the peer, as the socket names it whether or not it is connected,
   and those systems refuse an address on a connected datagram socket's
