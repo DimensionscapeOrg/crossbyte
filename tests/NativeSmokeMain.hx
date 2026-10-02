@@ -12,6 +12,13 @@ class NativeSmokeMain {
 			crossbyte.metrics.MetricsTest.firstReadChild();
 			return;
 		}
+		// Another process of the same user's, over a local name: see
+		// LocalConnectionTest.
+		var localChild:Int = Sys.args().indexOf(crossbyte.ipc.LocalConnectionTest.CHILD);
+		if (localChild >= 0) {
+			crossbyte.ipc.LocalConnectionTest.crossProcessChild(Sys.args()[localChild + 1]);
+			return;
+		}
 
 		crossbyte.test.TestHarness.run(crossbyte.test.TestSuites.addNativeSmoke);
 	}
