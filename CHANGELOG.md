@@ -207,6 +207,9 @@ entry below says how:
   were `Int`s.
 - `LocalConnection.timeout` and `SharedChannel.timeout` of 0 wait without
   a deadline, where they made a single try; set 1 for a single try.
+- On Linux and macOS a `SharedObject` region is not shared between users:
+  one another user made under the name throws an `IOError`, where it was
+  shared when the first user's umask let others write it.
 
 ### Added
 - `SharedObject.remove(name)` takes a region away on Linux and macOS --
@@ -2292,6 +2295,30 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On Linux and macOS a `SharedObject` is its user's alone. A region was
+  made readable by every local user (0666 less the umask: 0644 as a rule),
+  so any of them could read what any `SharedObject` held, and on Linux
+  hold its lock and stop every participant; and one another user had made
+  first under the name, writable by all, was used as if it were this
+  user's, where the system allowed it, as macOS does. Regions and macOS's
+  lock files are made 0600 now, an older one of this user's is made so as
+  it is opened, and one that is not this user's is refused with an
+  `IOError` saying so.
+- macOS's `SharedObject` lock file, `/tmp/cbso_<hash>.lock`, is not opened
+  through a link -- another user's link there made the process make, or
+  lock, a file wherever it pointed -- nor waited on as a FIFO, which held
+  the constructor, and the process's collections, until someone wrote to
+  it. And one deleted while its region is open -- macOS's cleaner deletes
+  what in /tmp nobody has touched for three days, and a lock touches
+  nothing -- no longer parts the participants: the next to open made a
+  new file and locked that while those open locked the old, so two wrote
+  at once. A participant checks, each time it locks, that the file it
+  holds is the one at the path still, and takes that one if not; a lock
+  file in use has its times brought up to date hourly; and only
+  `SharedObject.remove` deletes one. A `LocalConnection` listener's lock
+  file on Linux and macOS is opened the same way and kept up to date while
+  it listens: a cleaner that deleted a long-lived listener's let a second
+  `listen()` take the name.
 - On macOS a `LocalConnection` send to a peer that has stopped reading no
   longer waits for good. The socket was left blocking and each write asked
   not to wait with `MSG_DONTWAIT`, which Linux honours for a send and macOS
