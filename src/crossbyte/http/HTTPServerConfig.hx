@@ -31,6 +31,9 @@ class HTTPServerConfig {
 	/** The request body a server accepts by default: one megabyte. **/
 	public static inline var DEFAULT_MAX_REQUEST_BODY:Int = 1024 * 1024;
 
+	/** What one HTTP/2 connection holds of request bodies by default: four megabytes. **/
+	public static inline var DEFAULT_HTTP2_REQUEST_BODY_BUFFER:Int = 4 * 1024 * 1024;
+
 	/**
 		Bytes a request body may reach, on the wire and once decoded, over
 		HTTP/1.1 and HTTP/2 alike. A larger one is answered `413 Payload Too
@@ -42,8 +45,59 @@ class HTTPServerConfig {
 		headers too, and a `Content-Length` past it was answered `400`, which
 		tells a client its request was malformed rather than too big. Raise it
 		for uploads; the whole body is held in memory before middleware runs.
+		An HTTP/1.1 connection reads one request at a time, so it holds one
+		such body; an HTTP/2 connection carries many at once, and
+		`http2MaxRequestBodyBuffer` is what all of them may hold together.
 	**/
 	public var maxRequestBodySize:Int = DEFAULT_MAX_REQUEST_BODY;
+
+	/**
+		Bytes of request body one HTTP/2 connection holds at once, across
+		every stream whose body is still arriving, or `0` and below for no
+		limit. Defaults to `DEFAULT_HTTP2_REQUEST_BODY_BUFFER`, and is never
+		less than `maxRequestBodySize`: one body of the largest size the
+		server takes always fits.
+
+		HTTP/1.1 reads one request at a time, so a connection holds one body.
+		HTTP/2 carries up to 128 requests at once, and each body was let grow
+		to `maxRequestBodySize`: a client uploading slowly on every stream made
+		the server hold 128 of them, 128 MB at the defaults, from one
+		connection, and with `requestTimeout` at `0` for as long as it liked.
+		Nothing checked that a client kept to its flow-control windows either,
+		so one that ignored them sent whatever it pleased.
+
+		Held to it with HTTP/2's own flow control. The server opens its
+		windows only as far as this has room, so a client that keeps to them
+		never sends more, and one that does not is refused with
+		`FLOW_CONTROL_ERROR`. The room goes to the oldest stream first. Every
+		stream may send its first window unasked, so that window is made
+		small enough for all 128 streams' to fit with one whole body besides:
+		the largest of 64, 32 or 16 KB that does, 16 KB at the defaults,
+		and 64 KB, the protocol's own, from about 9 MB up with the default
+		`maxRequestBodySize`. Past it, a stream's
+		window is opened as its HEADERS arrive, from what is left once those
+		first windows and every older stream's remaining body, its
+		`Content-Length`, or else `maxRequestBodySize`, are set aside, up
+		to a megabyte at a time. Uploads that fit together go together; ones
+		that do not go a few at a time, the rest waiting for window, and
+		none is turned away for it. What a client sees:
+
+		- a body larger than the first window waits a round trip for the
+		  rest of its window; one between 16 and 64 KB used not to, and one
+		  past 64 KB waited one per 64 KB, where now it waits one per
+		  megabyte;
+		- a stream waits for window while the bodies ahead of it arrive, its
+		  `requestTimeout` still counted from its HEADERS. One left waiting
+		  with no body arriving and none finished on its connection for 30
+		  seconds is reset with `REFUSED_STREAM`, which tells the client the
+		  request was not processed and may be sent again;
+		- nothing is answered `413` for it: that is `maxRequestBodySize`'s.
+
+		A body counts from its first byte until it has all arrived and is
+		handed to the application, or is refused. What the application then
+		holds while it answers is its own, as for an HTTP/1.1 request.
+	**/
+	public var http2MaxRequestBodyBuffer:Int = DEFAULT_HTTP2_REQUEST_BODY_BUFFER;
 
 	/**
 		What this server compresses, and how hard: text of a kilobyte or more,
