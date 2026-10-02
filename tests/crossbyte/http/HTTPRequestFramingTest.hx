@@ -167,23 +167,26 @@ class HTTPRequestFramingTest extends utest.Test {
 		var server:HTTPServer = __serve(seen, config -> config.middleware.push((handler, next) -> {
 			haxe.Timer.delay(() -> next(), 1000);
 		}));
+		var request = new crossbyte.io.ByteArray();
 		var body:String = __repeat("x".code, size);
-		var request:String = "";
 		for (i in 0...3) {
-			request += 'POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: $size\r\n\r\n' + body;
+			request.writeUTFBytes('POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: $size\r\n\r\n' + body);
 		}
 
-		HTTPTestSupport.exchangeEach(server, [request], function(responses:Array<HTTPTestResponse>):Void {
+		__pipeline(server, request, function(received:crossbyte.io.ByteArray, closed:Bool):Void {
 			try server.close() catch (_:Dynamic) {}
 
-			var response:HTTPTestResponse = responses[0];
+			received.position = 0;
+			var raw:String = received.readUTFBytes(received.length);
+			var response:HTTPTestResponse = HTTPTestSupport.parseResponse(raw);
 			Assert.equals(200, response.status, "the answer being given was replaced");
 			Assert.equals('got $size', response.body);
 			Assert.equals("close", response.headers.get("connection"), "the answer did not say the connection was closing");
-			Assert.equals(1, HTTPTestSupport.countResponses(response.raw), "requests past what was held were answered");
+			Assert.isTrue(closed, "the connection was not closed after the answer");
+			Assert.equals(1, HTTPTestSupport.countResponses(raw), "requests past what was held were answered");
 			Assert.equals("POST /upload", seen.join(", "));
 			async.done();
-		}, true, 10.0);
+		});
 	}
 
 	/**
@@ -206,6 +209,30 @@ class HTTPRequestFramingTest extends utest.Test {
 			request.writeUTFBytes('POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: ${body.length}\r\n\r\n' + body);
 		}
 
+		__pipeline(server, request, function(received:crossbyte.io.ByteArray, closed:Bool):Void {
+			try server.close() catch (_:Dynamic) {}
+			try root.deleteDirectory(true) catch (_:Dynamic) {}
+
+			// The head, then the file: zeros, which no status line is.
+			received.position = 0;
+			var head:String = received.readUTFBytes(received.length < 512 ? received.length : 512);
+			var headEnd:Int = head.indexOf("\r\n\r\n");
+			Assert.isTrue(closed, "the connection was not closed after the file");
+			Assert.isTrue(StringTools.startsWith(head, "HTTP/1.1 200 "), "the file was not answered: " + head.substr(0, 40));
+			Assert.equals(size, headEnd < 0 ? -1 : received.length - (headEnd + 4), "the file was cut off, or more than it was answered");
+			async.done();
+		});
+	}
+
+	/**
+		Sends `request` on a connection of its own, in one write, and hands
+		over all it received once the server has closed it, or 20 seconds on.
+		Pumped on the wall's clock, so a route's `Timer.delay` and the bytes
+		in flight keep the same time on every target: `exchangeEach` steps a
+		sixtieth of a second a millisecond's sleep, which on Linux runs the
+		runtime's clock some fifteen times faster than the transfer.
+	**/
+	private static function __pipeline(server:HTTPServer, request:crossbyte.io.ByteArray, then:(crossbyte.io.ByteArray, Bool) -> Void):Void {
 		var client = new crossbyte.net.Socket();
 		var received = new crossbyte.io.ByteArray();
 		var closed:Bool = false;
@@ -223,17 +250,7 @@ class HTTPRequestFramingTest extends utest.Test {
 		HTTPTestSupport.connectThen(client, server, function():Void {
 			HTTPTestSupport.pumpWallUntilAsync(() -> closed, 20.0, function(_):Void {
 				try client.close() catch (_:Dynamic) {}
-				try server.close() catch (_:Dynamic) {}
-				try root.deleteDirectory(true) catch (_:Dynamic) {}
-
-				// The head, then the file: zeros, which no status line is.
-				received.position = 0;
-				var head:String = received.readUTFBytes(received.length < 512 ? received.length : 512);
-				var headEnd:Int = head.indexOf("\r\n\r\n");
-				Assert.isTrue(closed, "the connection was not closed after the file");
-				Assert.isTrue(StringTools.startsWith(head, "HTTP/1.1 200 "), "the file was not answered: " + head.substr(0, 40));
-				Assert.equals(size, headEnd < 0 ? -1 : received.length - (headEnd + 4), "the file was cut off, or more than it was answered");
-				async.done();
+				then(received, closed);
 			});
 		});
 	}
