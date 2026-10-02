@@ -80,6 +80,17 @@ class H2ServerConnection {
 	// time, or at once while it has less than this left.
 	private static inline var CONNECTION_REFRESH:Int = 32768;
 
+	/**
+		Seconds the first GOAWAY of `goAwayGracefully` waits for its PING to
+		be answered before the final one goes out anyway. A client answers
+		within a round trip; this is for one that does not answer at all.
+	**/
+	public static inline var RETIRE_GRACE_SECONDS:Float = 2.0;
+
+	// The PING sent after the first GOAWAY of goAwayGracefully; nothing else
+	// this side sends is a PING, so its answer is known by its payload.
+	private static final RETIRE_PING:Bytes = Bytes.ofHex("6362726574697265");
+
 	// The first window each stream may be given, largest first: see
 	// __fixBudget.
 	private static final PREREAD_WINDOWS:Array<Int> = [H2Settings.DEFAULT_INITIAL_WINDOW_SIZE, 32768, 16384];
@@ -205,11 +216,12 @@ class H2ServerConnection {
 	public var heldRequestBytes(get, never):Int;
 
 	/**
-	 * Streams this connection takes before it says it will take no more, or
-	 * `0` and below for no limit. The stream that reaches it is answered as
-	 * any other; a GOAWAY naming it goes out as it opens, any the peer opens
-	 * after are refused with REFUSED_STREAM, which tells it they are safe to
-	 * send elsewhere, and `onDrained` is called once the last open one ends.
+	 * Streams this connection asks for before it says it will take no more,
+	 * or `0` and below for no limit. The stream that reaches it is answered
+	 * as any other, and `goAwayGracefully` runs as it opens: those the peer
+	 * had already sent are taken too, any it opens after the final GOAWAY
+	 * are refused with REFUSED_STREAM, which tells it they are safe to send
+	 * elsewhere, and `onDrained` is called once the last open one ends.
 	 *
 	 * `HTTPServerConfig.keepAliveMaxRequests`, and `1` for `keepAlive` off:
 	 * HTTP/2 took no notice of either, so a connection lived for as long as
@@ -243,6 +255,13 @@ class H2ServerConnection {
 	 * the owner closes it later rather than there.
 	 */
 	public var onDrained:Void->Void = () -> {};
+
+	/**
+		Called when `goAwayGracefully` has sent its first GOAWAY: the owner
+		then has `expireRetiring` asked a few times a second while `retiring`
+		is set.
+	**/
+	public var onRetiring:Void->Void = () -> {};
 
 	/**
 	 * `haxe.Timer.stamp()` when the connection last had no stream open: when
@@ -376,6 +395,12 @@ class H2ServerConnection {
 	// promised to process, which a later final GOAWAY must not raise.
 	private var __goingAway:Bool = false;
 	private var __goAwayLastStreamId:Int = 0;
+	// Set between the two GOAWAYs of goAwayGracefully, with when the second
+	// goes out if the client has not answered the PING between them.
+	private var __retiring:Bool = false;
+	private var __retireDeadline:Float = 0;
+	// Set once the final GOAWAY has gone, so closing does not say it again.
+	private var __finalGoAwaySent:Bool = false;
 
 	// Every stream's queued bytes, kept as they change: see queuedBytes.
 	private var __queuedTotal:Int = 0;
@@ -857,7 +882,9 @@ class H2ServerConnection {
 				// Between requests from here, which is what the idle
 				// allowance measures.
 				idleSince = haxe.Timer.stamp();
-				if (__goingAway) {
+				// Not between the two GOAWAYs: streams the client sent before
+				// it read the first may still be on their way.
+				if (retired) {
 					onDrained();
 				}
 			}
@@ -975,8 +1002,11 @@ class H2ServerConnection {
 
 	/**
 	 * Tells the peer no new streams will be taken, while those already open
-	 * run to their end (§6.8). The connection stays up; the owner closes it
-	 * once `openStreams` reaches zero, or with `goAway` at a deadline.
+	 * -- and those it sent before it read this -- run to their end (§6.8).
+	 * The connection stays up; `onDrained` is called once the client has
+	 * answered the PING sent with the first GOAWAY (or `expireRetiring` has
+	 * given up on it) and `openStreams` has reached zero, for the owner to
+	 * close it, or the owner closes it with `goAway` at a deadline.
 	 *
 	 * What a server shutting down owes its HTTP/2 clients up front. They saw a
 	 * GOAWAY only at the drain's deadline, so for the whole drain they kept
@@ -988,14 +1018,66 @@ class H2ServerConnection {
 			return;
 		}
 		__goingAway = true;
-		__goAwayLastStreamId = __highestStreamId;
 
-		var payload:Bytes = Bytes.alloc(8);
-		__writeUInt32(payload, 0, __goAwayLastStreamId);
-		__writeUInt32(payload, 4, cast H2ErrorCode.NO_ERROR);
+		// In two steps, as 6.8 describes. The first says no new streams, and
+		// names none: the client may already have sent some, and they are
+		// taken. The PING after it comes back once the client has read it,
+		// and so once every stream it sent before then has arrived: only then
+		// does the final GOAWAY name the last stream taken (__finishRetiring).
+		// The one GOAWAY named the last stream at once, so the streams a busy
+		// client already had in flight were refused, REFUSED_STREAM: 42 of
+		// 12,001 small requests from eight concurrent clients, with a
+		// connection ended every thousand requests (keepAliveMaxRequests).
+		__retiring = true;
+		__retireDeadline = haxe.Timer.stamp() + RETIRE_GRACE_SECONDS;
 		try {
-			__writeFrame(H2FrameType.GOAWAY, 0, 0, payload);
+			__writeGoAway(H2Settings.MAX_WINDOW_SIZE);
+			__writeFrame(H2FrameType.PING, 0, 0, RETIRE_PING);
 		} catch (_:Dynamic) {}
+		onRetiring();
+	}
+
+	/**
+		The second step of `goAwayGracefully`: the client has read the first
+		GOAWAY, or `RETIRE_GRACE_SECONDS` have passed without it saying so.
+		The last stream taken is named, any opened after is refused, and the
+		connection is drained once the open ones end.
+	**/
+	private function __finishRetiring():Void {
+		if (!__retiring || closed) {
+			return;
+		}
+		__retiring = false;
+		__goAwayLastStreamId = __highestStreamId;
+		__finalGoAwaySent = true;
+		try {
+			__writeGoAway(__goAwayLastStreamId);
+		} catch (_:Dynamic) {}
+		if (__openStreams == 0) {
+			onDrained();
+		}
+	}
+
+	/**
+		Sends the final GOAWAY of `goAwayGracefully` if the client has not
+		answered its PING within `RETIRE_GRACE_SECONDS`, for one that does
+		not answer PINGs: the streams it opens meanwhile are taken, and a
+		client could otherwise keep the connection from draining. The owner
+		asks a few times a second while `retiring` is set (`onRetiring`).
+
+		@param now `haxe.Timer.stamp()`.
+	**/
+	public function expireRetiring(now:Float):Void {
+		if (__retiring && now >= __retireDeadline) {
+			__finishRetiring();
+		}
+	}
+
+	private function __writeGoAway(lastStreamId:Int):Void {
+		var payload:Bytes = Bytes.alloc(8);
+		__writeUInt32(payload, 0, lastStreamId);
+		__writeUInt32(payload, 4, cast H2ErrorCode.NO_ERROR);
+		__writeFrame(H2FrameType.GOAWAY, 0, 0, payload);
 	}
 
 	/** Whether `goAwayGracefully` has been called, or the client has sent a GOAWAY of its own. */
@@ -1005,15 +1087,38 @@ class H2ServerConnection {
 		return __goingAway;
 	}
 
+	/**
+		Whether the connection is going away and has said which stream was
+		the last it takes: past the first step of `goAwayGracefully`, or the
+		client's own GOAWAY. What the owner waits for, with no stream open,
+		to close it.
+	**/
+	public var retired(get, never):Bool;
+
+	private inline function get_retired():Bool {
+		return __goingAway && !__retiring;
+	}
+
+	/** Whether the first step of `goAwayGracefully` waits on its PING. See `expireRetiring`. */
+	public var retiring(get, never):Bool;
+
+	private inline function get_retiring():Bool {
+		return __retiring;
+	}
+
 	public function goAway(code:H2ErrorCode, ?debug:String):Void {
 		if (closed) {
 			return;
 		}
 		closed = true;
+		if (__finalGoAwaySent && code == H2ErrorCode.NO_ERROR && debug == null) {
+			// The final GOAWAY of goAwayGracefully said this already.
+			return;
+		}
 
 		var message:Bytes = debug == null ? Bytes.alloc(0) : Bytes.ofString(debug);
 		var payload:Bytes = Bytes.alloc(8 + message.length);
-		__writeUInt32(payload, 0, __goingAway ? __goAwayLastStreamId : __highestStreamId);
+		__writeUInt32(payload, 0, retired ? __goAwayLastStreamId : __highestStreamId);
 		__writeUInt32(payload, 4, cast code);
 		if (message.length > 0) {
 			payload.blit(8, message, 0, message.length);
@@ -1148,9 +1253,11 @@ class H2ServerConnection {
 		var refusal:Null<H2ErrorCode> = null;
 		if (!__streams.exists(frame.streamId)) {
 			var limit:Int = localSettings.maxConcurrentStreams;
-			if (__goingAway) {
-				// §6.8: after GOAWAY, streams the peer opens are not processed.
-				// REFUSED_STREAM tells it this one is safe to send elsewhere.
+			if (retired) {
+				// §6.8: after the final GOAWAY, streams the peer opens are not
+				// processed. REFUSED_STREAM tells it this one is safe to send
+				// elsewhere. Between the two GOAWAYs of goAwayGracefully they
+				// are taken: the client sent them before it read the first.
 				refusal = H2ErrorCode.REFUSED_STREAM;
 			} else if (limit >= 0 && __openStreams >= limit) {
 				// §5.1.2 makes exceeding the advertised limit a stream error,
@@ -1177,9 +1284,9 @@ class H2ServerConnection {
 				__streamsTaken++;
 
 				if (maxRequests > 0 && __streamsTaken >= maxRequests) {
-					// The last this connection takes. Said now, as it opens,
-					// so the client sends what comes next elsewhere instead of
-					// learning it from a refusal.
+					// The last this connection asks for. Said now, as it
+					// opens, so the client sends what comes next elsewhere;
+					// what it had already sent is taken too (goAwayGracefully).
 					goAwayGracefully();
 				}
 			}
@@ -1733,7 +1840,12 @@ class H2ServerConnection {
 			return;
 		}
 
-		// As after goAwayGracefully, without sending one: the client knows.
+		// As after goAwayGracefully, without sending one: the client knows,
+		// and opens no more streams, so there is none in flight to wait for.
+		if (__retiring) {
+			__finishRetiring();
+			return;
+		}
 		if (!__goingAway) {
 			__goingAway = true;
 			__goAwayLastStreamId = __highestStreamId;
@@ -1748,6 +1860,11 @@ class H2ServerConnection {
 			throw new H2ConnectionError(H2ErrorCode.FRAME_SIZE_ERROR, 'PING payload is ${frame.payload.length} bytes, not 8');
 		}
 		if (frame.has(H2Flags.ACK)) {
+			// The client has read the first GOAWAY of goAwayGracefully, and
+			// every stream it sent before that has arrived.
+			if (__retiring && frame.payload.compare(RETIRE_PING) == 0) {
+				__finishRetiring();
+			}
 			return;
 		}
 		__noteControlReply();
