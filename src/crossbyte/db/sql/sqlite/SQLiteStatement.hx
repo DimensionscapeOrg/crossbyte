@@ -22,7 +22,18 @@ import sys.db.ResultSet;
  */
 @:access(crossbyte.db.sql.sqlite.SQLiteConnection)
 class SQLiteStatement extends EventDispatcher {
+	// hxcpp lays fields out in the order they are declared, padding each to
+	// its own size: each Int below sits in the room a flag before it leaves,
+	// so a statement takes no more memory than it did without them. Placed
+	// after the rest, they made each 16 bytes bigger, and moved the
+	// collector's schedule enough to add a collection inside a batch of
+	// asynchronous statements.
 	public var executing(get, null):Bool;
+	// How many times cancel() has been called on an asynchronous
+	// connection. Work asked of the statement before the latest is dropped
+	// where it waits, and what it sent back is not dispatched. Moved on by
+	// the thread that calls the statement.
+	@:noCompletion private var __cancels:Int = 0;
 
 	/**
 		A class each row is made an instance of, as AIR's `itemClass`: made
@@ -37,6 +48,9 @@ class SQLiteStatement extends EventDispatcher {
 
 	private var __sqlConnection:SQLiteConnection;
 	private var __executing:Bool = false;
+	// Where the statement runs, the worker, on an asynchronous connection,
+	// the cancel count __resultSet was made under.
+	@:noCompletion private var __resultEpoch:Int = 0;
 	// The result being read. On an asynchronous connection it is the
 	// worker's alone: made, read and dropped there.
 	private var __resultSet:ResultSet;
@@ -55,13 +69,13 @@ class SQLiteStatement extends EventDispatcher {
 	@:noCompletion private var __affected:Float = 0;
 	// Whether the page __readRows last read took the last row.
 	@:noCompletion private var __pageDone:Bool = false;
-	// How many times cancel() has been called. Work asked of the statement
-	// before the latest is dropped where it waits, and what it sent back is
-	// not dispatched. Moved on under the connection's __lockRuns().
-	@:noCompletion private var __cancels:Int = 0;
-	// Where the statement runs, the worker, on an asynchronous connection,
-	// the cancel count __resultSet was made under.
-	@:noCompletion private var __resultEpoch:Int = 0;
+	// On a synchronous connection: whether execute() or next() is under way,
+	// for a cancel() from another thread to interrupt it.
+	@:noCompletion private var __running:Bool = false;
+	// The number the worker gave the last run of this statement's work, so a
+	// cancel() can ask that run, and no other, to stop. Written before the
+	// run is published (SQLiteConnection.__sqlWork).
+	@:noCompletion private var __runId:Int = 0;
 
 	public function new() {
 		super();
@@ -79,10 +93,13 @@ class SQLiteStatement extends EventDispatcher {
 		are cleared.
 
 		On a synchronous connection a statement runs on the thread that
-		executes it, so it is another thread that cancels one running: it
-		is interrupted, and its `execute()` or `next()` fails there with
-		"interrupted", dispatching its `SQLErrorEvent` and throwing the
-		`SQLError`, as any failure does. On targets other than cpp work
+		executes it. Called there between pages, `cancel()` lets go of the
+		rows left unread. Called from another thread while the statement
+		runs, it interrupts it at its next step, and its `execute()` or
+		`next()` fails there with "interrupted", dispatching its
+		`SQLErrorEvent` and throwing the `SQLError`, as any failure does,
+		but SQLite clears an interrupt that lands as a statement starts, and
+		one only starting then runs on. On targets other than cpp work
 		already running is not interrupted, and finishes first.
 
 		It reset only the statement's own fields: the work queued for it
@@ -97,29 +114,29 @@ class SQLiteStatement extends EventDispatcher {
 		}
 
 		var connection:SQLiteConnection = __sqlConnection;
-		var running:Bool = connection != null && connection.__cancelStatement(this);
 
-		if (running && !connection.__async) {
-			// On another thread, which puts the statement right as its
-			// execute() or next() fails there.
-			return;
+		if (connection != null && connection.__async) {
+			// Its work queued is dropped and its run under way stopped; the
+			// rows it left unread are the worker's, and let go of there.
+			connection.__cancelStatement(this);
+			connection.__dropPage();
+		} else {
+			if (__running && connection != null) {
+				// On another thread, which puts the statement right as its
+				// execute() or next() fails there.
+				connection.__interrupt();
+				return;
+			}
+
+			if (connection != null) {
+				connection.__letGo(__resultSet);
+			}
+
+			__resultSet = null;
 		}
 
 		__executing = false;
 		__resultQueue = [];
-
-		if (connection != null) {
-			if (connection.__async) {
-				// The result is the worker's: let go of there.
-				connection.__dropPage();
-			} else {
-				connection.__letGo(__resultSet);
-				__resultSet = null;
-			}
-		} else {
-			__resultSet = null;
-		}
-
 		text = "";
 		clearParameters();
 	}
@@ -157,7 +174,7 @@ class SQLiteStatement extends EventDispatcher {
 
 		if (connection.__async) {
 			try {
-				connection.__addToQueue(__executeAsync(sql, prefetch, __cancels, connection.__cancelEpoch), SQLEvent.RESULT, this);
+				connection.__queueStatement(this, true, sql, prefetch);
 			} catch (e:Dynamic) {
 				// Refused: its worker has stopped, after an open that failed.
 				__executing = false;
@@ -168,11 +185,18 @@ class SQLiteStatement extends EventDispatcher {
 		}
 
 		__rowId = 0;
-		// What a run before left unread is let go of, not read first.
-		connection.__letGo(__resultSet);
-		__resultSet = null;
+
+		if (__resultSet != null) {
+			// What a run before left unread is let go of, not read first.
+			connection.__letGo(__resultSet);
+			__resultSet = null;
+		}
+
+		// What another statement left unread is read before this one is
+		// marked running: an interrupt from its cancel() cannot cut those
+		// rows short.
 		connection.__settle();
-		connection.__enter(this, __cancels, connection.__cancelEpoch);
+		__running = true;
 
 		try {
 			__resultSet = connection.__connection.request(sql);
@@ -189,13 +213,13 @@ class SQLiteStatement extends EventDispatcher {
 
 			__noteRowId();
 		} catch (e:Dynamic) {
-			connection.__leave();
+			__running = false;
 			__executing = false;
 			__resultSet = null;
 			__fail(e);
 		}
 
-		connection.__leave();
+		__running = false;
 		// Outside the try: a RESULT listener that throws has not made the
 		// statement fail, and must not be reported as though it had.
 		__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
@@ -233,57 +257,46 @@ class SQLiteStatement extends EventDispatcher {
 		statement and reads its first page on the worker, then sends both to
 		the runtime's thread.
 	**/
-	private function __executeAsync(sql:String, prefetch:Int, epoch:Int, connectionEpoch:Int):Void->Void {
-		// The worker this is queued for: the one that runs it.
-		var worker:crossbyte.sys.Worker = __sqlConnection.__sqlWorker;
-		return function() {
-			// Read here, on the worker, when the job runs: the connection the
-			// worker opened.
-			var connection:SQLiteConnection = __sqlConnection;
-			connection.__letGo(__resultSet);
-			__resultSet = null;
-			connection.__settle();
-
-			if (!__start(connection, epoch, connectionEpoch, worker)) {
-				return;
-			}
-
-			var message:SQLiteStatementMessage = new SQLiteStatementMessage(this, true, epoch);
-
-			try {
-				__resultSet = connection.__connection.request(sql);
-				__resultEpoch = epoch;
-				message.affected = __affectedOf(__resultSet);
-				var rows:Array<Dynamic> = __readRows(__resultSet, prefetch);
-				message.rows = prefetch != 0 ? rows : null;
-				__finishPage(message);
-				message.event = new SQLEvent(SQLEvent.RESULT);
-			} catch (e:Dynamic) {
-				__resultSet = null;
-				message.fail(SQLiteConnection.__asSQLError(SQLEvent.RESULT, e));
-			}
-
-			connection.__leave();
-			__notePaged(message);
-			worker.sendProgress(message);
+	/**
+		On the worker: the work `job` asks of the statement, its `execute()`
+		or its `next()`, run from the job itself, a function was made for
+		each, which every statement's run paid to allocate and collect.
+	**/
+	@:noCompletion private function __work(job:SQLiteJob):Void {
+		if (job.fresh) {
+			__executeOnWorker(job.sql, job.prefetch, job.statementEpoch);
+		} else {
+			__nextOnWorker(job.prefetch, job.statementEpoch);
 		}
 	}
 
 	/**
-		On the worker, as work asked of the statement under its cancel count
-		`epoch` and the connection's `connectionEpoch` is taken up: whether it
-		runs. Dropped unheard when the statement's `cancel()` has been called
-		since, and told it will not run, as the rest of the connection's work
-		queued then is, when the connection's has.
+		The work `execute()` queues on an asynchronous connection, on the
+		worker, which has let go of what a run before left unread and
+		published this run (SQLiteConnection.__sqlWork): runs the statement and
+		reads its first page, then sends both to the runtime's thread. The
+		connection the worker opened is read here, as the job runs, and the
+		worker is the connection's while a statement's work runs on it.
 	**/
-	@:noCompletion private function __start(connection:SQLiteConnection, epoch:Int, connectionEpoch:Int, worker:crossbyte.sys.Worker):Bool {
-		var verdict:Int = connection.__enter(this, epoch, connectionEpoch);
+	@:noCompletion private function __executeOnWorker(sql:String, prefetch:Int, epoch:Int):Void {
+		var connection:SQLiteConnection = __sqlConnection;
+		var message:SQLiteStatementMessage = new SQLiteStatementMessage(this, true, epoch);
 
-		if (verdict == SQLiteConnection.ENTER_CANCELLED) {
-			connection.__refuseStatement(this, epoch, worker);
+		try {
+			__resultSet = connection.__connection.request(sql);
+			__resultEpoch = epoch;
+			message.affected = __affectedOf(__resultSet);
+			var rows:Array<Dynamic> = __readRows(__resultSet, prefetch);
+			message.rows = prefetch != 0 ? rows : null;
+			__finishPage(message);
+			message.event = new SQLEvent(SQLEvent.RESULT);
+		} catch (e:Dynamic) {
+			__resultSet = null;
+			message.fail(SQLiteConnection.__asSQLError(SQLEvent.RESULT, e));
 		}
 
-		return verdict == SQLiteConnection.ENTER_RUN;
+		__notePaged(message);
+		connection.__sqlWorker.sendProgress(message);
 	}
 
 	/**
@@ -426,7 +439,7 @@ class SQLiteStatement extends EventDispatcher {
 		var connection:SQLiteConnection = __sqlConnection;
 
 		if (connection != null && connection.__async) {
-			connection.__addToQueue(__nextAsync(prefetch, __cancels, connection.__cancelEpoch), SQLEvent.RESULT, this);
+			connection.__queueStatement(this, false, null, prefetch);
 			return;
 		}
 
@@ -436,9 +449,7 @@ class SQLiteStatement extends EventDispatcher {
 			throw new SQLError(SQLEvent.RESULT, "Invalid result set", "Invalid result set: execute() the statement first");
 		}
 
-		if (connection != null) {
-			connection.__enter(this, __cancels, connection.__cancelEpoch);
-		}
+		__running = true;
 
 		try {
 			var rows:Array<Dynamic> = __readRows(__resultSet, prefetch);
@@ -453,50 +464,35 @@ class SQLiteStatement extends EventDispatcher {
 
 			__noteRowId();
 		} catch (e:Dynamic) {
-			if (connection != null) {
-				connection.__leave();
-			}
-
+			__running = false;
 			__executing = false;
 			__fail(e);
 		}
 
-		if (connection != null) {
-			connection.__leave();
-		}
-
+		__running = false;
 		__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 	}
 
 	/** The work `next()` queues on an asynchronous connection: the next page, read on the worker. **/
-	private function __nextAsync(prefetch:Int, epoch:Int, connectionEpoch:Int):Void->Void {
-		var worker:crossbyte.sys.Worker = __sqlConnection.__sqlWorker;
-		return function() {
-			var connection:SQLiteConnection = __sqlConnection;
+	@:noCompletion private function __nextOnWorker(prefetch:Int, epoch:Int):Void {
+		var connection:SQLiteConnection = __sqlConnection;
+		var message:SQLiteStatementMessage = new SQLiteStatementMessage(this, false, epoch);
 
-			if (!__start(connection, epoch, connectionEpoch, worker)) {
-				return;
+		try {
+			if (__resultSet == null) {
+				throw new SQLError(SQLEvent.RESULT, "Invalid result set", "Invalid result set: execute() the statement first");
 			}
 
-			var message:SQLiteStatementMessage = new SQLiteStatementMessage(this, false, epoch);
-
-			try {
-				if (__resultSet == null) {
-					throw new SQLError(SQLEvent.RESULT, "Invalid result set", "Invalid result set: execute() the statement first");
-				}
-
-				var rows:Array<Dynamic> = __readRows(__resultSet, prefetch);
-				message.rows = rows.length > 0 ? rows : null;
-				__finishPage(message);
-				message.event = new SQLEvent(SQLEvent.RESULT);
-			} catch (e:Dynamic) {
-				message.fail(SQLiteConnection.__asSQLError(SQLEvent.RESULT, e));
-			}
-
-			connection.__leave();
-			__notePaged(message);
-			worker.sendProgress(message);
+			var rows:Array<Dynamic> = __readRows(__resultSet, prefetch);
+			message.rows = rows.length > 0 ? rows : null;
+			__finishPage(message);
+			message.event = new SQLEvent(SQLEvent.RESULT);
+		} catch (e:Dynamic) {
+			message.fail(SQLiteConnection.__asSQLError(SQLEvent.RESULT, e));
 		}
+
+		__notePaged(message);
+		connection.__sqlWorker.sendProgress(message);
 	}
 
 	private function get_executing():Bool {
