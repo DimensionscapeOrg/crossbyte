@@ -339,7 +339,8 @@ class H2ConnectionHandler implements PassFlush {
 	 * answer, for as long as that takes -- a long poll, a slow upstream -- as
 	 * an HTTP/1.1 request stops its clock once read. And a connection with no
 	 * stream open is between requests, which HTTP/2 is designed for, so it
-	 * has the keep-alive allowance, counted from when its last stream ended.
+	 * has the keep-alive allowance, counted from when its last stream ended
+	 * and what it sent has gone.
 	 *
 	 * Neither is moved by what does not advance a request. Every frame read
 	 * or written set one clock back, so a client trickling a byte of body
