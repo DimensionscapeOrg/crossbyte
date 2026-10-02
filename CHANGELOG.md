@@ -2416,6 +2416,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `PostgresConnection` loads libpq on macOS. It looked there for
+  `libpq.so.5` and `libpq.so`, names macOS does not use, so a Mac could
+  load libpq only from a path given in full. It looks for `libpq.5.dylib`
+  and `libpq.dylib` where dyld looks, beside the program, and in
+  Homebrew's, Postgres.app's, the PostgreSQL installer's and MacPorts'
+  directories; `PostgresConfig.libraryPath` lists every place, on each
+  system. A directory given there stands for `libpq.so.5` as well as
+  `libpq.so` on Linux, it stood for the development package's
+  `libpq.so` alone, and a failed open names each path it tried once.
 - A connected `DatagramSocket` sends on macOS and the BSDs. Every send
   named the peer, as the socket names it whether or not it is connected,
   and those systems refuse an address on a connected datagram socket's
