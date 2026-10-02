@@ -2557,7 +2557,9 @@ entry below says how:
   asynchronous connection, and one asked for before a cancel but not yet
   started fails as interrupted. It costs nothing measurable: trivial
   requests, inserts and a 20,000-row aggregate moved +0.7%, +0.1% and
-  -0.7% (medians of 16 interleaved runs).
+  -0.7% (medians of 16 interleaved runs). On an ARM processor the cancel's
+  stop is fenced ahead of SQLite's interrupt, which there could otherwise
+  be seen first, cleared as the statement started, and lost.
 - A `MySQLStatement`'s `SQLResult.rowsAffected` is the server's count,
   whole past 2^31, as `MySQLConnection.affectedRows` is. It was the length
   of the driver's result: for a write natively held at 2^31 - 1, though
