@@ -2283,6 +2283,16 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `Task` made on a thread no runtime belongs to always calls the
+  handlers given to `onComplete`, `onError` and `onCancel`. Each looked at
+  the task's state and then added a listener, in two steps, and such a task
+  finishes on the pool thread: one finishing between the two was never
+  heard, and whatever waited on the handler -- a password hash's `Future`
+  among them -- waited for good. About one handler in two hundred was lost
+  natively, one in two thousand on the jvm, and more for `onCancel`. A
+  handler given before the task is done is now kept by the task and taken
+  by the step that makes it done, under the same lock; one given after is
+  called at once.
 - A reliable UDP session asks for its window of socket buffer on Linux
   whatever the system's default reads. Linux reads back twice what was
   asked, counting its own bookkeeping, and a default that read a window's
