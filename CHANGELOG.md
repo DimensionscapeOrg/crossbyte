@@ -2363,6 +2363,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `Socket` whose `CONNECT` listener closes it, in the tick the peer
+  also hangs up, no longer ends a native process. The tick went on to the
+  close it had already decided on and cleaned the socket up a second time,
+  calling `close()` on the one the listener's close had let go: a null
+  dereference, which a native build does not catch. A server that answers
+  and closes at once lands its hangup in the connect's tick on macOS,
+  where the native suite died this way every run. After each event it
+  announces the tick now stops if a listener closed the socket.
 - An HTTP/2 connection that reaches `keepAliveMaxRequests`, has
   `keepAlive` off, or is drained, no longer refuses the requests its
   client already had in flight. Its one GOAWAY named the last stream at
