@@ -346,6 +346,57 @@ class LocalConnectionTest extends utest.Test {
 		#end
 	}
 
+	/**
+		A connect to a listener that takes nobody ends at its deadline. On
+		Linux a connect to a listener whose backlog was full waited in the
+		kernel for it to take someone, past any `timeout`, on the calling
+		thread: a listener hung, or simply busy, held every client's runtime
+		for good. The connects run on a thread of their own, so a wait that
+		never ends fails the case instead of the run.
+	**/
+	@:timeout(60000)
+	public function testAConnectToAListenerTakingNobodyEndsAtItsDeadline():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var name = uniqueName("backlog");
+		var peer = LocalConnection.__createInboundPipe(name);
+		var results = new sys.thread.Deque<String>();
+		var finished = new sys.thread.Lock();
+		sys.thread.Thread.create(() -> {
+			var slowest = 0.0;
+			// Past any backlog: Linux queues 17 for a listen(16), macOS 16
+			// and Windows' one instance one. A client closed at once still
+			// holds its place until the listener takes it.
+			for (_ in 0...40) {
+				var started = haxe.Timer.stamp();
+				var handle = LocalConnection.__connect(name, 300);
+				var took = haxe.Timer.stamp() - started;
+				if (took > slowest) {
+					slowest = took;
+				}
+				if (handle != null) {
+					LocalConnection.__close(handle);
+				}
+			}
+			results.add('$slowest');
+			finished.release();
+		});
+
+		var ended = finished.wait(30.0);
+		LocalConnection.__close(peer);
+		if (!ended) {
+			// Closing the listener ends a connect still waiting on it.
+			finished.wait(10.0);
+		}
+		Assert.isTrue(ended, "a connect to a listener taking nobody never ended");
+		var slowest:Null<String> = results.pop(false);
+		if (slowest != null) {
+			Assert.isTrue(Std.parseFloat(slowest) < 2.0, 'a connect with a 300 ms timeout took ${slowest}s');
+		}
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testTwoSidesSendingAtOnceDoNotWaitOnEachOther():Void {
 		// Each side's send held its own lock while it waited for the other to
 		// read, and its reader needed that lock to read: two sides filling each

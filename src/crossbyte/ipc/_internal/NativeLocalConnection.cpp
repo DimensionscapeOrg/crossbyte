@@ -11,6 +11,7 @@
 #else
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -387,7 +388,7 @@ namespace
 		return handle == nullptr;
 	}
 
-	void configureListeningSocket(int fd)
+	void setNonBlocking(int fd)
 	{
 		int flags = fcntl(fd, F_GETFL, 0);
 		if (flags != -1)
@@ -396,12 +397,58 @@ namespace
 		}
 	}
 
+	void configureListeningSocket(int fd)
+	{
+		setNonBlocking(fd);
+	}
+
+	// A connected socket, and one about to connect, never makes its
+	// caller wait: each read, write and connect takes what the socket can
+	// do now, and what has to wait does so in poll(), with a deadline.
+	//
+	// The socket was left blocking, and a write relied on MSG_DONTWAIT not
+	// to wait. Linux honours that for a send; macOS's kernel does not, a
+	// send there gives up rather than waits only on a socket set
+	// non-blocking, so a send to a peer that had stopped reading, once
+	// the 8 KB macOS gives a local socket was full, waited for good, on
+	// the runtime's thread and holding the lock the reader thread and
+	// close() need. And a connect to a listener whose backlog was full
+	// waited in Linux's kernel for it to take someone, past any timeout.
 	void configureConnectedSocket(int fd)
 	{
+		setNonBlocking(fd);
 #if defined(__APPLE__)
 		int optionValue = 1;
 		setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &optionValue, sizeof(optionValue));
 #endif
+	}
+
+	// Waits for `fd` to be ready for `events` until `deadline`: whether it
+	// became so. Called inside a GC-free zone, which the caller enters.
+	bool waitReady(int fd, short events, std::chrono::steady_clock::time_point deadline)
+	{
+		while (true)
+		{
+			auto now = std::chrono::steady_clock::now();
+			if (now >= deadline)
+			{
+				return false;
+			}
+			int leftMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count()) + 1;
+			pollfd entry;
+			entry.fd = fd;
+			entry.events = events;
+			entry.revents = 0;
+			int ready = poll(&entry, 1, leftMs);
+			if (ready > 0)
+			{
+				return true;
+			}
+			if (ready < 0 && errno != EINTR)
+			{
+				return false;
+			}
+		}
 	}
 
 	// The socket path for `name`.
@@ -653,6 +700,10 @@ namespace
 			return -1;
 		}
 
+		// The bytes asked for are ones the socket said it holds, so a read
+		// that finds none yet waits for them a while, as Windows' does: it
+		// never waits for good on a socket that is no longer blocking.
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(CONNECT_TIMEOUT_MS);
 		int bytesReadTotal = 0;
 		while (bytesReadTotal < bufferSize)
 		{
@@ -670,6 +721,16 @@ namespace
 			if (errno == EINTR)
 			{
 				continue;
+			}
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+			{
+				// `buffer` stays where it is meanwhile: the caller holds it,
+				// and hxcpp's collector does not move objects.
+				hx::AutoGCFreeZone waiting;
+				if (waitReady(fd, POLLIN, deadline))
+				{
+					continue;
+				}
 			}
 			return -1;
 		}
@@ -716,9 +777,10 @@ namespace
 		return bytesWritten;
 	}
 
-	// All of `buffer`: for tests that write a raw frame. LocalConnection
-	// writes through native_writeSome. It waits outside the collector's
-	// reach; see the Windows version.
+	// All of `buffer`, waiting up to CONNECT_TIMEOUT_MS: for tests that write
+	// a raw frame. LocalConnection writes through native_writeSome. It waits
+	// outside the collector's reach; see the Windows version. It waited
+	// without a deadline for a peer that had stopped reading.
 	extern "C" bool native_write(void* pipe, const unsigned char* buffer, int bufferSize)
 	{
 		auto* handle = static_cast<NativeLocalConnectionHandle*>(pipe);
@@ -734,6 +796,7 @@ namespace
 		}
 
 		hx::AutoGCFreeZone waiting;
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(CONNECT_TIMEOUT_MS);
 		int bytesWritten = 0;
 		while (bytesWritten < bufferSize)
 		{
@@ -748,6 +811,10 @@ namespace
 				return false;
 			}
 			if (errno == EINTR)
+			{
+				continue;
+			}
+			if ((errno == EAGAIN || errno == EWOULDBLOCK) && waitReady(fd, POLLOUT, deadline))
 			{
 				continue;
 			}
@@ -826,16 +893,32 @@ namespace
 				return nullptr;
 			}
 
-			if (connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0)
+			// Non-blocking before it connects: a listener whose backlog is
+			// full answers EAGAIN on Linux, tried again below like a name
+			// nobody listens on yet, where the connect waited in the kernel
+			// for it to take someone, past any deadline. macOS refuses
+			// one at once, and either may say the connect is in progress,
+			// which is waited for a slice at most.
+			configureConnectedSocket(fd);
+			int result = connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address));
+			int error = result == 0 ? 0 : errno;
+			if (result != 0 && error == EINPROGRESS)
 			{
-				configureConnectedSocket(fd);
+				auto slice = std::chrono::steady_clock::now() + std::chrono::milliseconds(CONNECT_WAIT_SLICE_MS);
+				socklen_t length = sizeof(error);
+				if (!waitReady(fd, POLLOUT, slice) || getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) != 0)
+				{
+					error = EAGAIN;
+				}
+			}
+			if (error == 0)
+			{
 				handle->clientFd = fd;
 				return handle;
 			}
 
-			int error = errno;
 			close(fd);
-			if ((error != ENOENT && error != ECONNREFUSED) || !anotherTry(forever, deadline))
+			if ((error != ENOENT && error != ECONNREFUSED && error != EAGAIN && error != EWOULDBLOCK) || !anotherTry(forever, deadline))
 			{
 				delete handle;
 				return nullptr;
