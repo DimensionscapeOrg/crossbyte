@@ -2424,6 +2424,15 @@ entry below says how:
   where "abXYef" had been written, and the same after `truncate()`. The
   reading handle is opened for reading and writing natively, which BSD
   stdio seeks for every time.
+- `StunClient.classifyMapping` answers `ENDPOINT_INDEPENDENT` after its
+  first question when the server saw the socket as it is -- its address
+  and its port -- as RFC 5780 section 4.3 does: with no NAT the mapping is
+  the socket itself. It went on to its other two questions, so a host
+  whose source address follows the destination was reported
+  `ADDRESS_DEPENDENT`, its own addresses taken for a NAT's mappings: a
+  host with a route out on each of two networks, or macOS on loopback,
+  which sends to an alias from that alias -- the native suite failed on
+  the macOS runner that way.
 - A connected `DatagramSocket` sends on macOS and the BSDs. Every send
   named the peer, as the socket names it whether or not it is connected,
   and those systems refuse an address on a connected datagram socket's
