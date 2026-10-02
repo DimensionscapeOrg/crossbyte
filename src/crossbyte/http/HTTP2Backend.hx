@@ -85,7 +85,12 @@ class HTTP2Backend implements HTTPBackend {
 	 */
 	public static var isSupported(default, null):Bool = #if eval false #else true #end;
 
-	/** Our SETTINGS, sent at the head of every connection. */
+	/**
+		Our SETTINGS, sent at the head of every connection. Push is refused
+		whatever these say, nothing here takes a pushed stream, and a
+		connection's HPACK encoder holds no more than the protocol's default
+		4 KB, whatever table the server offers.
+	**/
 	public var settings:H2Settings;
 
 	public function new(?settings:H2Settings) {

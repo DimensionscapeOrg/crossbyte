@@ -369,6 +369,51 @@ class H2Test extends utest.Test {
 		Assert.isTrue(__sawReset(server, 1, H2ErrorCode.CANCEL), "the stream was not reset");
 	}
 
+	public function testTheServersTableSizeDoesNotGrowTheClientsTable():Void {
+		// SETTINGS_HEADER_TABLE_SIZE is the most the server's decoder will
+		// hold, and the client's encoder followed it all the way: a server
+		// saying a megabyte, or 2^31 - 1, let every distinct field the
+		// client sent stay in the client's table for the connection's life,
+		// each one searched for every field after. An encoder may use less
+		// (RFC 7541 4.2), and this one keeps to the default 4 KB.
+		var server = new ServerScript();
+		server.frame(H2FrameType.SETTINGS, 0, 0, Bytes.ofHex("000100100000"));
+		var connection = server.connect();
+		connection.request("GET", "http", "example.com", "/", []);
+		connection.pump();
+
+		for (i in 0...300) {
+			connection.request("GET", "http", "example.com", "/", [new HpackHeader("x-request-id", 'request-$i-' + StringTools.rpad("", "x", 40))]);
+		}
+		var held:Int = @:privateAccess connection.__encoder.tableSize;
+		Assert.isTrue(held <= H2Settings.DEFAULT_HEADER_TABLE_SIZE, 'the client\'s table held $held bytes for a server that would take a megabyte');
+	}
+
+	public function testTheClientRefusesPushWhateverItsSettingsSay():Void {
+		// Nothing in the client can take a pushed stream, and a PUSH_PROMISE
+		// is a connection error here. H2Settings allows push unless told
+		// otherwise, so a client given settings of its own said it took
+		// pushes, and then failed the connection over the first one.
+		var server = new ServerScript();
+		server.settings();
+		var connection = new H2Connection(new haxe.io.BytesInput(Bytes.alloc(0)), server.sink(), new H2Settings());
+		connection.start();
+
+		var frames:Array<H2Frame> = ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length);
+		Require.notNull(frames[0]);
+		Assert.equals(H2FrameType.SETTINGS, frames[0].type);
+		var push:Int = -1;
+		var payload:Bytes = frames[0].payload;
+		var offset:Int = 0;
+		while (offset + 6 <= payload.length) {
+			if (((payload.get(offset) << 8) | payload.get(offset + 1)) == 0x2) {
+				push = payload.get(offset + 5);
+			}
+			offset += 6;
+		}
+		Assert.equals(0, push, "SETTINGS_ENABLE_PUSH 0 was not sent");
+	}
+
 	/** Whether the client reset `id` with `code`. */
 	private static function __sawReset(server:ServerScript, id:Int, code:H2ErrorCode):Bool {
 		for (frame in ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length)) {
@@ -929,6 +974,12 @@ private class ServerScript {
 
 	public function written():Bytes {
 		return __sink.getBytes();
+	}
+
+	/** A sink for a connection made by hand, read back with `written`. */
+	public function sink():BytesOutput {
+		__sink = new BytesOutput();
+		return __sink;
 	}
 
 	public function raw(bytes:Bytes):Void {

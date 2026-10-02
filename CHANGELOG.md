@@ -2353,6 +2353,18 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The HTTP/2 client's HPACK encoder holds no more than the protocol's
+  default 4 KB table, whatever SETTINGS_HEADER_TABLE_SIZE the server
+  sends; an encoder may use less than the peer allows (RFC 7541 4.2), and
+  Go's and nghttp2's clients keep to the same. It held what it was told,
+  so a server saying a megabyte, or 2^31 - 1, kept every distinct field
+  the client sent in the client's memory for the connection's life, each
+  searched for every field after: 300 requests with an id of their own
+  left 28,743 bytes in the table, and the next 300 would have left twice
+  that. And the client says SETTINGS_ENABLE_PUSH 0 whatever settings it is
+  given: `H2Settings` allows push unless told otherwise, so an
+  `HTTP2Backend` given settings of its own invited pushes and then failed
+  the connection over the first.
 - The HTTP/2 client holds a response's header section to one 64 KB
   allowance, its interim (1xx) responses included, as the HTTP/1.1 client
   does, and takes a header block after the response's own only as its
