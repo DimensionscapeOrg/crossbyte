@@ -16,6 +16,7 @@
 #define PIPE_REJECT_REMOTE_CLIENTS 0x00000008
 #endif
 #else
+#include <atomic>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -539,6 +540,24 @@ namespace
 	extern "C" void native_keepName(void* pipe)
 	{
 	}
+
+	// A pipe's buffers are the size it is made with.
+	extern "C" void native_setSocketBufferForTest(int bytes)
+	{
+	}
+
+	// A pipe has no descriptor to wait on: its reader sleeps between looks.
+	extern "C" int native_descriptorOf(void* pipe)
+	{
+		return -1;
+	}
+
+	extern "C" bool native_waitForWork(int fd, bool read, bool write, int timeoutMs)
+	{
+		hx::AutoGCFreeZone waiting;
+		Sleep(static_cast<DWORD>(timeoutMs));
+		return false;
+	}
 #else
 	// A send to a peer that has gone raises SIGPIPE, whose default action
 	// ends the process, unless the send says not to. macOS has no flag for
@@ -599,6 +618,11 @@ namespace
 	// the runtime's thread and holding the lock the reader thread and
 	// close() need. And a connect to a listener whose backlog was full
 	// waited in Linux's kernel for it to take someone, past any timeout.
+	// Tests only: the buffer size asked of each socket connected or taken
+	// from now on, in each direction; 0 leaves the system's. A Linux build
+	// asks for macOS's small one with it.
+	std::atomic<int> testSocketBuffer(0);
+
 	void configureConnectedSocket(int fd)
 	{
 		setNonBlocking(fd);
@@ -606,6 +630,12 @@ namespace
 		int optionValue = 1;
 		setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &optionValue, sizeof(optionValue));
 #endif
+		int buffer = testSocketBuffer.load();
+		if (buffer > 0)
+		{
+			setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buffer, sizeof(buffer));
+			setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buffer, sizeof(buffer));
+		}
 	}
 
 	// Waits for `fd` to be ready for `events` until `deadline`: whether it
@@ -1025,7 +1055,10 @@ namespace
 			{
 				continue;
 			}
-			if (sendResult < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			// Full for now. macOS may also say ENOBUFS of a local socket
+			// whose peer has not caught up, "the operation may succeed when
+			// buffers become available", which ended the connection.
+			if (sendResult < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS))
 			{
 				break;
 			}
@@ -1289,6 +1322,45 @@ namespace
 	extern "C" bool native_admitsOthersForTest(void* pipe)
 	{
 		return false;
+	}
+
+	extern "C" void native_setSocketBufferForTest(int bytes)
+	{
+		testSocketBuffer.store(bytes);
+	}
+
+	// The descriptor a reader thread waits on for `pipe`: its client's, or
+	// its listener's while it has none; -1 for none. Read under the lock
+	// that close() takes, and waited on after: a descriptor closed and its
+	// number reused meanwhile costs one wait, not a handle freed under it.
+	extern "C" int native_descriptorOf(void* pipe)
+	{
+		return getActiveFd(static_cast<NativeLocalConnectionHandle*>(pipe));
+	}
+
+	// Waits up to `timeoutMs` for `fd` to have something to read (or a
+	// client to take), when `read`, or room to write, when `write`, outside
+	// the collector's reach: whether it woke for that. A plain wait for
+	// `fd` -1 or nothing asked.
+	//
+	// The reader thread slept between passes instead, from 1 ms to 10 ms as
+	// passes found nothing to do: a pass moved at most what the socket held
+	// and a pass that found it still full, or still empty, waited longer.
+	// Through the 8 KB macOS gives a local socket, the two sides took turns
+	// at 8 KB a turn, and three 3 MB frames took longer than ten seconds.
+	extern "C" bool native_waitForWork(int fd, bool read, bool write, int timeoutMs)
+	{
+		hx::AutoGCFreeZone waiting;
+		if (fd < 0 || (!read && !write))
+		{
+			poll(nullptr, 0, timeoutMs);
+			return false;
+		}
+		pollfd entry;
+		entry.fd = fd;
+		entry.events = static_cast<short>((read ? POLLIN : 0) | (write ? POLLOUT : 0));
+		entry.revents = 0;
+		return poll(&entry, 1, timeoutMs) > 0;
 	}
 #endif
 
