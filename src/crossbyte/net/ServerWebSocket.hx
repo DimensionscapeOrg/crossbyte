@@ -981,8 +981,9 @@ class ServerWebSocket extends ServerSocket {
 	**/
 	@:noCompletion private function __askAdmit(socket:FlexSocket):Bool {
 		try {
+			// Null for a peer already gone; see ServerSocket.__fromSocket.
 			var peer = socket.peer();
-			return admit(crossbyte._internal.net.IPv6.compress(peer.host.toString()), peer.port);
+			return peer != null && admit(crossbyte._internal.net.IPv6.compress(peer.host.toString()), peer.port);
 		} catch (_:Dynamic) {
 			return false;
 		}
