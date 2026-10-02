@@ -142,8 +142,8 @@ class HTTPServerH2Test extends utest.Test {
 	public function testDrainSendsGoAwayFirstAndLetsStreamsFinish(async:Async):Void {
 		// A GOAWAY came only at the drain's deadline, so clients kept opening
 		// streams on a connection about to close. Now it comes at once: a
-		// stream opened after it is refused, the one in flight finishes, and
-		// the drain ends with it rather than at the deadline.
+		// stream opened after the final one is refused, the one in flight
+		// finishes, and the drain ends with it rather than at the deadline.
 		// Answered by the test rather than by a timer: the harness pumps the
 		// runtime's clock faster than the wall clock, so a timed answer can land
 		// before the drain it is meant to straddle.
@@ -167,7 +167,8 @@ class HTTPServerH2Test extends utest.Test {
 				var drained:Bool = false;
 				session.server.drain(5.0, () -> drained = true);
 
-				session.until(() -> session.goAwayAt >= 0 || session.ended, () -> {
+				// The final GOAWAY, which follows the PING after the first.
+				session.until(() -> session.goAways.length >= 2 || session.dropped, () -> {
 					var goAwayAfter:Float = session.goAwayAt - started;
 					session.request(3, "GET", "/index.html", true);
 
@@ -184,7 +185,8 @@ class HTTPServerH2Test extends utest.Test {
 						Assert.isTrue(session.goAwayAt >= 0 && goAwayAfter < 0.25, 'no GOAWAY at the start of the drain (${goAwayAfter}s)');
 						Assert.equals(200, session.status(1), "the stream in flight did not finish");
 						Assert.equals("done", session.body(1));
-						Assert.equals(7, session.resetCode(3), "a stream opened after the GOAWAY was not refused");
+						Assert.equals(7, session.resetCode(3), "a stream opened after the final GOAWAY was not refused");
+						Assert.equals("2147483647,1", session.goAways.join(","), "the GOAWAYs did not say first none, then the last stream taken");
 						Assert.isTrue(drained && took < 3.0, 'the drain took ${took}s, waiting on its deadline');
 						async.done();
 					}, 8.0);
@@ -769,21 +771,25 @@ class HTTPServerH2Test extends utest.Test {
 
 	public function testKeepAliveMaxRequestsEndsAnHttp2Connection(async:Async):Void {
 		// HTTP/2 took no notice of keepAliveMaxRequests, so a connection served
-		// requests for as long as its client kept it. Now the stream that
-		// reaches the limit is the last one taken: a GOAWAY names it, a stream
-		// opened past it is refused, and the connection closes once it ends.
+		// requests for as long as its client kept it. The stream that reaches
+		// the limit now sends a GOAWAY as it opens, and the connection closes
+		// once the streams it took have ended. A stream the client had already
+		// sent is taken too, it was refused, REFUSED_STREAM, and a busy
+		// client lost requests that way at every limit, and only once the
+		// client has answered the PING after the first GOAWAY does the final
+		// one name the last stream.
 		var session = new H2Session(config -> config.keepAliveMaxRequests = 2);
 
 		session.start(() -> {
-			// One write: a stream read after the connection has closed is not
-			// refused, it is never seen.
+			// One write, so the third is on its way before the GOAWAY is read.
 			session.requestAll([1, 3, 5], "GET", "/index.html");
 			session.until(() -> session.dropped, () -> {
 				session.close();
 				Assert.equals(200, session.status(1));
 				Assert.equals(200, session.status(3));
-				Assert.equals(7, session.resetCode(5), "a stream past the limit was not refused");
-				Assert.equals(3, session.goAwayLastStream, "the GOAWAY did not name the last stream taken");
+				Assert.equals(200, session.status(5), "a stream sent before the GOAWAY was read was not taken");
+				Assert.equals(-1, session.resetCode(5));
+				Assert.equals("2147483647,5", session.goAways.join(","), "the GOAWAYs did not say first none, then the last stream taken");
 				Assert.equals(H2ErrorCode.NO_ERROR, session.goAwayCode);
 				Assert.isTrue(session.dropped, "the connection outlived its last request");
 				async.done();
@@ -792,6 +798,8 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testKeepAliveOffEndsAnHttp2ConnectionAfterOneRequest(async:Async):Void {
+		// Off, the first stream ends the connection: what the client had
+		// already sent with it is answered, and the connection then closes.
 		var session = new H2Session(config -> config.keepAlive = false);
 
 		session.start(() -> {
@@ -799,10 +807,77 @@ class HTTPServerH2Test extends utest.Test {
 			session.until(() -> session.dropped, () -> {
 				session.close();
 				Assert.equals(200, session.status(1));
-				Assert.equals(7, session.resetCode(3), "a second stream was taken with keepAlive off");
-				Assert.equals(1, session.goAwayLastStream);
+				Assert.equals(200, session.status(3), "a stream sent with the first was refused");
+				Assert.equals(3, session.goAwayLastStream);
 				Assert.isTrue(session.dropped, "the connection outlived its one request");
 				async.done();
+			});
+		});
+	}
+
+	public function testAStreamOpenedAfterTheFinalGoAwayIsRefused(async:Async):Void {
+		// Once the final GOAWAY has named the last stream, one opened after it
+		// is refused, REFUSED_STREAM, and safe to send elsewhere (6.8). The
+		// first stream's answer is held, so the connection is still there.
+		var held:HTTPRequestHandler = null;
+		var session = new H2Session(config -> {
+			config.keepAlive = false;
+			config.middleware = [(handler, next) -> {
+				held = handler;
+			}];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/index.html", true);
+			session.until(() -> session.goAways.length >= 2 || session.dropped, () -> {
+				session.request(3, "GET", "/index.html", true);
+				session.until(() -> session.finished(3) || session.dropped, () -> {
+					if (held != null) {
+						held.respond(200, "text/plain", "held");
+					}
+					session.until(() -> session.dropped, () -> {
+						session.close();
+						Assert.equals("2147483647,1", session.goAways.join(","));
+						Assert.equals(7, session.resetCode(3), "a stream opened after the final GOAWAY was taken");
+						Assert.equals(200, session.status(1));
+						Assert.equals("held", session.body(1));
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
+	public function testAClientThatNeverAnswersThePingStillGetsTheFinalGoAway(async:Async):Void {
+		// The final GOAWAY waits for the client to answer the PING after the
+		// first; one that never answers gets it RETIRE_GRACE_SECONDS on, from
+		// the server's sweep, whatever the timeouts are, and the connection
+		// then closes: a client could otherwise keep it open for good.
+		var session = new H2Session(config -> {
+			config.keepAlive = false;
+			config.requestTimeout = 0;
+			config.keepAliveTimeout = 0;
+		});
+		session.answerPings = false;
+
+		session.start(() -> {
+			session.request(1, "GET", "/index.html", true);
+			session.until(() -> session.finished(1) || session.dropped, () -> {
+				session.pause(0.2, () -> {
+					var waited:Bool = session.goAways.length == 1 && !session.dropped;
+					var now:Float = haxe.Timer.stamp();
+					@:privateAccess session.server.__sweep(now);
+					// RETIRE_GRACE_SECONDS, two, and a second.
+					@:privateAccess session.server.__sweep(now + 3);
+					session.until(() -> session.dropped, () -> {
+						session.close();
+						Assert.equals(200, session.status(1));
+						Assert.isTrue(waited, "the final GOAWAY did not wait for the PING's answer");
+						Assert.equals("2147483647,1", session.goAways.join(","));
+						Assert.isTrue(session.dropped, "the connection was kept for a client that never answered");
+						async.done();
+					});
+				});
 			});
 		});
 	}
@@ -2658,14 +2733,23 @@ private class H2Session {
 	/** `haxe.Timer.stamp()` when this side last wrote a frame. */
 	public var lastSentAt(default, null):Float = -1;
 
-	/** When a GOAWAY arrived, or -1. */
+	/** When the first GOAWAY arrived, or -1. */
 	public var goAwayAt(default, null):Float = -1;
 
-	/** The error code that GOAWAY carried, or -1. */
+	/** The error code the latest GOAWAY carried, or -1. */
 	public var goAwayCode(default, null):Int = -1;
 
-	/** The last stream that GOAWAY said the server would process, or -1. */
+	/** The last stream the latest GOAWAY said the server would process, or -1. */
 	public var goAwayLastStream(default, null):Int = -1;
+
+	/**
+		The last stream each GOAWAY named, in the order they came: a server
+		going away gracefully sends two, the first naming none (2^31-1).
+	**/
+	public final goAways:Array<Int> = [];
+
+	/** Whether the server's PINGs are answered: false for a case about a client that does not. */
+	public var answerPings:Bool = true;
 
 	/**
 		PINGs the server has acknowledged. It answers one once it has read
@@ -2719,9 +2803,10 @@ private class H2Session {
 	private final __streamWindows:Map<Int, Int> = new Map();
 	private var __initialWindow:Int = 65535;
 
-	// SETTINGS acknowledgements owed, sent from the pump rather than from the
-	// socket's data dispatch, for the reason `exchange` gives.
+	// SETTINGS and PING acknowledgements owed, sent from the pump rather than
+	// from the socket's data dispatch, for the reason `exchange` gives.
 	private var __acksOwed:Int = 0;
+	private final __pingsOwed:Array<Bytes> = [];
 
 	// Bytes of each stream's body uploadAll has sent, and when the server
 	// last opened a window.
@@ -3074,12 +3159,19 @@ private class H2Session {
 		}, timeout, _ -> then());
 	}
 
-	/** Acknowledges the server's SETTINGS, as a client keeping to the protocol does (6.5.3). */
+	/** Acknowledges the server's SETTINGS (6.5.3) and PINGs (6.7), as a client keeping to the protocol does. */
 	private function __sendOwed():Void {
 		while (__acksOwed > 0 && !ended) {
 			__acksOwed--;
 			var out = new BytesBuffer();
 			__writeFrame(out, H2FrameType.SETTINGS, H2Flags.ACK, 0, Bytes.alloc(0));
+			__send(out);
+		}
+		// Answered after a GOAWAY too: a server going away gracefully sends
+		// one and waits for its answer.
+		while (__pingsOwed.length > 0 && !dropped) {
+			var out = new BytesBuffer();
+			__writeFrame(out, H2FrameType.PING, H2Flags.ACK, 0, __pingsOwed.shift());
 			__send(out);
 		}
 	}
@@ -3265,11 +3357,20 @@ private class H2Session {
 			__finish(frame.streamId);
 		} else if (frame.type == H2FrameType.PING && frame.has(H2Flags.ACK)) {
 			pingAcks++;
-		} else if (frame.type == H2FrameType.GOAWAY && goAwayAt < 0) {
-			goAwayAt = haxe.Timer.stamp();
+		} else if (frame.type == H2FrameType.PING) {
+			// Answered, as 6.7 requires, unless the case is a client that does
+			// not.
+			if (answerPings) {
+				__pingsOwed.push(frame.payload);
+			}
+		} else if (frame.type == H2FrameType.GOAWAY) {
+			if (goAwayAt < 0) {
+				goAwayAt = haxe.Timer.stamp();
+			}
 			var payload:Bytes = frame.payload;
 			goAwayLastStream = ((payload.get(0) & 0x7f) << 24) | (payload.get(1) << 16) | (payload.get(2) << 8) | payload.get(3);
 			goAwayCode = (payload.get(4) << 24) | (payload.get(5) << 16) | (payload.get(6) << 8) | payload.get(7);
+			goAways.push(goAwayLastStream);
 		}
 
 		if ((frame.type == H2FrameType.HEADERS || frame.type == H2FrameType.DATA) && frame.has(H2Flags.END_STREAM)) {
