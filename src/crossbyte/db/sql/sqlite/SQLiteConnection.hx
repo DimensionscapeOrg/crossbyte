@@ -865,13 +865,13 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		On a synchronous connection nothing is queued: a statement running on
 		another thread, a `request()`, or a statement's `execute()` or
 		`next()`: is interrupted at its next step, and `CANCEL` is
-		dispatched at once. One asked for before the call that has not yet
-		reached SQLite fails as interrupted without running, and one SQLite
-		is still preparing is stopped within a thousand steps of its virtual
-		machine, or at its next step when its first one ends sooner: SQLite
-		clears an interrupt that lands as a statement starts, and such a
-		statement ran on, for as long as it took. What is asked for after the
-		call runs as usual.
+		dispatched at once. A `request()` or a statement's `execute()` called
+		before the call that has not yet reached SQLite fails as interrupted
+		without running, and a statement SQLite is still preparing is
+		stopped within a thousand steps of its virtual machine, or at its next
+		step when its first one ends sooner: SQLite clears an interrupt that
+		lands as a statement starts, and such a statement ran on, for as long
+		as it took. What is asked for after the call runs as usual.
 
 		SQLite takes a whole transaction back when a write inside it is
 		interrupted, and leaves one open otherwise: `inTransaction` says which.
