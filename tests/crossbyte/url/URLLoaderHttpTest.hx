@@ -278,15 +278,12 @@ Content-Length: ${body.length}
 		Assert.isTrue(fixture.requests[0].body.indexOf("ok=false") >= 0);
 	}
 
-	#if !eval
 	/**
 		Form data reaches the server over HTTP/2 as it does over HTTP/1.1: a
 		GET's as its query, a POST's as a form body. The HTTP/2 backend never
 		read `requestData`, so a `URLVariables` or an object went nowhere --
 		a POST with an empty body and no Content-Type, a GET with no query --
 		though setting `httpVersion` is all a request is told to change.
-
-		Not on eval, where HTTP/2 is refused: see `HTTP2Backend.isSupported`.
 	**/
 	public function testFormDataGoesOutOverHttp2AsOverHttp11():Void {
 		var config = new crossbyte.http.HTTPServerConfig("127.0.0.1", 0);
@@ -326,7 +323,6 @@ Content-Length: ${body.length}
 		server.close();
 		crossbyte._internal.http.h2.H2ConnectionPool.closeAll();
 	}
-	#end
 
 	public function testRelativeRedirectNormalizesDotSegments():Void {
 		var fixture = serveRequests(request -> {
