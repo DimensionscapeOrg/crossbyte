@@ -2286,6 +2286,16 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On a synchronous `SQLiteConnection`, a `cancel()` from another thread
+  stops a `request()` or a statement that is only starting. SQLite clears
+  an interrupt that lands while a statement is prepared, so a cancel made
+  within the first dozen microseconds or so of a request was lost, and
+  the request ran on: an aggregate for its hours, a SELECT through every
+  row. Each request is now a run the progress handler can stop, as on an
+  asynchronous connection, and one asked for before a cancel but not yet
+  started fails as interrupted. It costs nothing measurable: trivial
+  requests, inserts and a 20,000-row aggregate moved +0.7%, +0.1% and
+  -0.7% (medians of 16 interleaved runs).
 - A `MySQLStatement`'s `SQLResult.rowsAffected` is the server's count,
   whole past 2^31, as `MySQLConnection.affectedRows` is. It was the length
   of the driver's result: for a write natively held at 2^31 - 1, though
