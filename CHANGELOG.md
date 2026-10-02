@@ -2303,12 +2303,17 @@ entry below says how:
   it, and past that the request being answered was answered `413` over its
   own answer, which was lost: three pipelined 600 KB uploads, each under
   the 1 MB limit, behind a route answering a moment later came back as one
-  `413`. Behind a file being sent, the file was cut off where it was and
-  the connection closed. What does not fit is dropped now, with whatever
-  arrives after it, and the connection closes once the answer has gone,
-  saying `Connection: close` when its head has not gone yet; the requests
-  it held go unanswered, which a client that pipelines sends again (RFC
-  9112 9.3.2).
+  `413`. The whole buffer was held to the limit before any of it was
+  parsed, too, so a read bringing the end of one request and the ones
+  behind it at once, as reads on Linux do, was answered `413` before
+  the first was handed over. Behind a file being sent, the file was cut
+  off where it was and the connection closed. A read is parsed first now,
+  and what is left behind the request being answered is held to the
+  limit: what does not fit is dropped, with whatever arrives after it,
+  and the connection closes once the answer has gone, saying
+  `Connection: close` when its head has not gone yet; the requests it
+  held go unanswered, which a client that pipelines sends again (RFC 9112
+  9.3.2). A request still arriving is held to the limit as before.
 - One HTTP/2 connection holds no more than
   `HTTPServerConfig.http2MaxRequestBodyBuffer` of request bodies at once,
   4 MB by default, never less than one body at `maxRequestBodySize`.

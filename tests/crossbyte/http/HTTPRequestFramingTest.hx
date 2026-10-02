@@ -190,6 +190,68 @@ class HTTPRequestFramingTest extends utest.Test {
 	}
 
 	/**
+		The same when one read brings them all, the request to be answered
+		and those behind it, as Linux reads do: the whole buffer was held to
+		the limit before anything in it was parsed, so the first request was
+		answered `413` before it was handed over. Four 60 KB uploads at a
+		100 KB limit land in one read anywhere, and are over it however they
+		are split.
+	**/
+	public function testPipelinedBodiesPastWhatIsHeldInOneReadLeaveTheAnswerBeingGiven(async:Async):Void {
+		var seen:Array<String> = [];
+		var size:Int = 60 * 1024;
+		var server:HTTPServer = __serve(seen, config -> {
+			config.maxRequestBodySize = 100 * 1024;
+			config.middleware.push((handler, next) -> {
+				haxe.Timer.delay(() -> next(), 1000);
+			});
+		});
+		var request = new crossbyte.io.ByteArray();
+		var body:String = __repeat("x".code, size);
+		for (i in 0...4) {
+			request.writeUTFBytes('POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: $size\r\n\r\n' + body);
+		}
+
+		__pipeline(server, request, function(received:crossbyte.io.ByteArray, closed:Bool):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			received.position = 0;
+			var raw:String = received.readUTFBytes(received.length);
+			var response:HTTPTestResponse = HTTPTestSupport.parseResponse(raw);
+			Assert.equals(200, response.status, "the answer being given was replaced");
+			Assert.equals('got $size', response.body);
+			Assert.equals("close", response.headers.get("connection"), "the answer did not say the connection was closing");
+			Assert.isTrue(closed, "the connection was not closed after the answer");
+			Assert.equals(1, HTTPTestSupport.countResponses(raw), "requests past what was held were answered");
+			Assert.equals("POST /upload", seen.join(", "));
+			async.done();
+		});
+	}
+
+	/**
+		A request still arriving is held to what one request may be all the
+		same: a chunk-size line that never ends is answered `413`, rather
+		than read into the buffer for as long as it comes.
+	**/
+	public function testAChunkSizeLineThatNeverEndsIs413(async:Async):Void {
+		var seen:Array<String> = [];
+		var server:HTTPServer = __serve(seen, config -> config.maxRequestBodySize = 10);
+		var request = new crossbyte.io.ByteArray();
+		request.writeUTFBytes("POST /upload HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n" + __repeat("0".code, 80 * 1024));
+
+		__pipeline(server, request, function(received:crossbyte.io.ByteArray, closed:Bool):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			received.position = 0;
+			var response:HTTPTestResponse = HTTPTestSupport.parseResponse(received.readUTFBytes(received.length));
+			Assert.equals(413, response.status, "a chunk-size line past what one request may be was not refused");
+			Assert.isTrue(closed);
+			Assert.equals(0, seen.length);
+			async.done();
+		});
+	}
+
+	/**
 		The same behind a file being sent: it was cut off where it was, and
 		the connection closed with it. It goes out whole now, and the
 		connection closes after it.

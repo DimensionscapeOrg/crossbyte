@@ -450,8 +450,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// the next request, held for when the answer has gone, as above.
 			// Held to what one request may be, and counted alone: with the
 			// request being answered counted in, three pipelined 600 KB
-			// uploads under the 1 MB limit had the first answered 413 below,
-			// over its own answer, which was then lost.
+			// uploads under the 1 MB limit had the first answered 413, over
+			// its own answer, which was then lost.
 			if (__requestConsumed && !__responded && !__idle) {
 				if (__incomingBuffer.length - __incomingBuffer.position > __bufferLimit()) {
 					__dropSurplus();
@@ -469,28 +469,36 @@ final class HTTPRequestHandler extends EventDispatcher {
 				__requestStartedAt = haxe.Timer.stamp();
 				__receiveDeadline = __config.requestTimeout > 0 ? haxe.Timer.stamp() + __config.requestTimeout : 0;
 				// This edge is a request-slot boundary just like a driver
-				// iteration, and must clear the previous slot's flag
-				// itself: a flood tripping the size check below never
-				// reaches __processBuffer, and a still-set __responded
-				// would swallow the 413, leaving the connection wedged
-				// with an over-limit buffer nothing will ever reclaim.
+				// iteration, and clears the previous slot's flag itself.
 				__responded = false;
-			}
-
-			if (__incomingBuffer.length > __bufferLimit()) {
-				__sendErrorResponse(413, "Payload Too Large");
-				return;
 			}
 
 			if (__awaitingBody) {
 				if (__readRequestBodyFromBuffer()) {
 					__finishRequestBody();
 				}
-
-				return;
+			} else {
+				__processBuffer();
 			}
 
-			__processBuffer();
+			// Parsed first, then held to what one request may be. What is
+			// left behind a request being answered, or a body going out, is
+			// the next request, given up past it (__dropSurplus); a request
+			// still arriving past it, a chunk-size or trailer line that
+			// never ends, say, is answered 413. The whole buffer was held
+			// to this before anything in it was parsed, so a read bringing
+			// the end of one request and the ones pipelined behind it, as
+			// Linux reads do, was answered 413 before the first was handed
+			// over.
+			if (!__surplusDropped && !__closeWhenSent && __origin.connected) {
+				if (__streaming || __openStream != null || (__requestConsumed && !__responded)) {
+					if (__incomingBuffer.length - __incomingBuffer.position > __bufferLimit()) {
+						__dropSurplus();
+					}
+				} else if (!__requestConsumed && __incomingBuffer.length > __bufferLimit()) {
+					__sendErrorResponse(413, "Payload Too Large");
+				}
+			}
 		} catch (error:Dynamic) {
 			Logger.error("Error reading data: " + error);
 			__sendErrorResponse(500, "Internal Server Error");
