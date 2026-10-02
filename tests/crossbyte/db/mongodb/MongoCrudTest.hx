@@ -330,6 +330,46 @@ class MongoCrudTest extends utest.Test {
 		Assert.equals(100, concern.get("wtimeout"));
 	}
 
+	public function testCountsPastThirtyTwoBitsAreWhole():Void {
+		// MongoDB counts in 64 bits: an update or delete over a large
+		// collection answers past 2^31, as an int64. Every count was read as
+		// an Int, held at 2^31 - 1, so three billion documents updated read
+		// 2147483647, and affectedRows, count() and a statement's
+		// rowsAffected with them.
+		__start();
+		server.replyNext("update", new BsonDocument()
+			.add("n", Int64.fromFloat(3000000000.0))
+			.add("nModified", Int64.fromFloat(2500000000.0))
+			.add("ok", 1));
+		var update:MongoWriteResult = connection.update("people", {}, {"$set": {seen: true}}, {multi: true});
+		Assert.equals(3000000000.0, update.matched);
+		Assert.equals(2500000000.0, update.modified);
+		Assert.equals(3000000000.0, connection.affectedRows);
+
+		server.replyNext("delete", new BsonDocument().add("n", Int64.fromFloat(5000000001.0)).add("ok", 1));
+		Assert.equals(5000000001.0, connection.delete("people", {}).deleted);
+		Assert.equals(5000000001.0, connection.affectedRows);
+
+		server.replyNext("count", new BsonDocument().add("n", Int64.fromFloat(6000000000.0)).add("ok", 1));
+		Assert.equals(6000000000.0, connection.count("people"));
+		// A count can come back as a double, too.
+		server.replyNext("count", new BsonDocument().add("n", 7000000000.0).add("ok", 1));
+		Assert.equals(7000000000.0, connection.count("people"));
+
+		var statement = new MongoStatement();
+		statement.sqlConnection = connection;
+		statement.text = '{"delete": "people", "deletes": [{"q": {}, "limit": 0}]}';
+		server.replyNext("delete", new BsonDocument().add("n", Int64.fromFloat(4000000000.0)).add("ok", 1));
+		statement.execute();
+		Assert.equals(4000000000.0, Require.notNull(statement.getResult()).rowsAffected);
+
+		// And an insert's counts add up past it, batch by batch.
+		var result:MongoWriteResult = new MongoWriteResult(true);
+		result.__add(2000000000, 0, 0, 0);
+		result.__add(2000000000, 0, 0, 0);
+		Assert.equals(4000000000.0, result.inserted);
+	}
+
 	public function testAnUnacknowledgedWriteIsNotWaitedFor():Void {
 		__start();
 		var result:MongoWriteResult = connection.insert("fire", [{x: 1}], {writeConcern: {w: 0}});
