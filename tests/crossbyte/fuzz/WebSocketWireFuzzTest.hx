@@ -62,8 +62,8 @@ class WebSocketWireFuzzTest extends utest.Test {
 		// Closes are dispatched from the runtime loop rather than from close(),
 		// so a session torn down here surfaces during the next case and is read
 		// as that case's outcome unless it is drained now.
-		var until:Float = Sys.time() + 0.2;
-		while (Sys.time() < until) {
+		var until:Float = haxe.Timer.stamp() + 0.2;
+		while (haxe.Timer.stamp() < until) {
 			@:privateAccess __runtime.pump(1 / 240, 0);
 		}
 	}
@@ -232,8 +232,8 @@ class WebSocketWireFuzzTest extends utest.Test {
 	}
 
 	private function __pumpUntil(check:Void->Bool, seconds:Float):Bool {
-		var deadline:Float = Sys.time() + seconds;
-		while (!check() && Sys.time() < deadline) {
+		var deadline:Float = haxe.Timer.stamp() + seconds;
+		while (!check() && haxe.Timer.stamp() < deadline) {
 			@:privateAccess __runtime.pump(1 / 240, 0);
 		}
 

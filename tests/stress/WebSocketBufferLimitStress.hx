@@ -97,14 +97,14 @@ class WebSocketBufferLimitStress implements StressCase {
 			+ "Sec-WebSocket-Version: 13\r\n\r\n");
 		client.output.flush();
 
-		var deadline:Float = Sys.time() + 30;
-		while (!closedByPolicy && queued < FRAMES && Sys.time() < deadline) {
+		var deadline:Float = haxe.Timer.stamp() + 30;
+		while (!closedByPolicy && queued < FRAMES && haxe.Timer.stamp() < deadline) {
 			@:privateAccess runtime.pump(0.008);
 		}
 
 		// Let the close propagate to listeners.
-		var settle:Float = Sys.time() + 2;
-		while (Sys.time() < settle) {
+		var settle:Float = haxe.Timer.stamp() + 2;
+		while (haxe.Timer.stamp() < settle) {
 			@:privateAccess runtime.pump(0.008);
 		}
 

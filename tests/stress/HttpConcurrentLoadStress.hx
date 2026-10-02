@@ -74,7 +74,7 @@ class HttpConcurrentLoadStress implements StressCase {
 		var server = new HTTPServer(config);
 		var port:Int = server.localPort;
 
-		var started:Float = Sys.time();
+		var started:Float = haxe.Timer.stamp();
 
 		for (i in 0...CLIENTS) {
 			Thread.create(function() {
@@ -83,10 +83,10 @@ class HttpConcurrentLoadStress implements StressCase {
 		}
 
 		var runtime:CrossByte = CrossByte.current();
-		var deadline:Float = Sys.time() + TIMEOUT;
+		var deadline:Float = haxe.Timer.stamp() + TIMEOUT;
 		var expected:Int = CLIENTS * REQUESTS_PER_CLIENT;
 
-		while (Sys.time() < deadline) {
+		while (haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 120, 0);
 
 			lock.acquire();
@@ -98,12 +98,12 @@ class HttpConcurrentLoadStress implements StressCase {
 			}
 		}
 
-		var elapsed:Float = Sys.time() - started;
+		var elapsed:Float = haxe.Timer.stamp() - started;
 
 		// The clients are gone; let the server observe their closes and settle
 		// its accounting before it is asked what it still holds.
-		var settleUntil:Float = Sys.time() + 3.0;
-		while (Sys.time() < settleUntil && server.activeConnections > 0) {
+		var settleUntil:Float = haxe.Timer.stamp() + 3.0;
+		while (haxe.Timer.stamp() < settleUntil && server.activeConnections > 0) {
 			runtime.pump(1 / 120, 0);
 		}
 
@@ -160,7 +160,7 @@ class HttpConcurrentLoadStress implements StressCase {
 			var pending:String = "";
 
 			for (i in 0...REQUESTS_PER_CLIENT) {
-				var sentAt:Float = Sys.time();
+				var sentAt:Float = haxe.Timer.stamp();
 				socket.output.writeString("GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n");
 				socket.output.flush();
 
@@ -181,7 +181,7 @@ class HttpConcurrentLoadStress implements StressCase {
 					pending += chunk;
 				}
 
-				var took:Float = Sys.time() - sentAt;
+				var took:Float = haxe.Timer.stamp() - sentAt;
 
 				lock.acquire();
 				if (body == BODY) {

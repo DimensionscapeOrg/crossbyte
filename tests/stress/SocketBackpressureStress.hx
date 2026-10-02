@@ -61,10 +61,10 @@ class SocketBackpressureStress implements StressCase {
 			payload.writeByte(i & 0xFF);
 		}
 
-		var deadline:Float = Sys.time() + 20;
+		var deadline:Float = haxe.Timer.stamp() + 20;
 		var finished:Bool = false;
 
-		while (!finished && Sys.time() < deadline) {
+		while (!finished && haxe.Timer.stamp() < deadline) {
 			@:privateAccess runtime.pump(0.016);
 
 			if (served != null && writes < CHUNKS) {

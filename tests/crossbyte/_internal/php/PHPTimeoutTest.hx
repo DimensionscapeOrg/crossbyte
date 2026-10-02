@@ -28,9 +28,9 @@ class PHPTimeoutTest extends utest.Test {
 		var port:Int = listener.host().port;
 		var bridge = new PHPBridge(PHPMode.Connect("127.0.0.1", port), "", ["index.php"], 0.5);
 
-		var started:Float = Sys.time();
+		var started:Float = haxe.Timer.stamp();
 		var future = bridge.execute(request());
-		var returned:Float = Sys.time() - started;
+		var returned:Float = haxe.Timer.stamp() - started;
 
 		// The assertion the blocking bridge could not have: execute() comes
 		// back at once. It used to sit here for the whole exchange, inside the
@@ -40,14 +40,14 @@ class PHPTimeoutTest extends utest.Test {
 		Assert.isTrue(returned < 0.25, "execute() blocked for " + returned + "s instead of returning a Future");
 
 		var runtime = CrossByte.current();
-		var deadline:Float = Sys.time() + 15;
+		var deadline:Float = haxe.Timer.stamp() + 15;
 
-		while (!future.completed && Sys.time() < deadline) {
+		while (!future.completed && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0.0);
 			crossbyte.sys.System.sleep(0.005);
 		}
 
-		var elapsed:Float = Sys.time() - started;
+		var elapsed:Float = haxe.Timer.stamp() - started;
 
 		try {
 			listener.close();
@@ -79,9 +79,9 @@ class PHPTimeoutTest extends utest.Test {
 
 		runtime.addEventListener(crossbyte.events.TickEvent.TICK, onTick);
 
-		var deadline:Float = Sys.time() + 15;
+		var deadline:Float = haxe.Timer.stamp() + 15;
 
-		while (!future.completed && Sys.time() < deadline) {
+		while (!future.completed && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0.0);
 			crossbyte.sys.System.sleep(0.005);
 		}
