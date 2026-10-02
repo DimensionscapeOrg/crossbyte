@@ -21,22 +21,55 @@ import sys.thread.Thread;
  * several at once, the reads have to belong to somebody, so a reader thread
  * owns them and every caller waits on its own stream.
  *
- * Two rules hold it together:
+ * Three rules hold it together:
  *
  * - A mutex guards every mutation of the connection, including HPACK. The
- *   encoder's dynamic table evolves in the order blocks are written, so
- *   encoding and writing a header block must be one atomic step; two threads
+ *   encoder's dynamic table evolves in the order blocks are queued, so
+ *   encoding and queueing a header block must be one atomic step; two threads
  *   interleaving there desynchronizes the table from the peer's decoder and
  *   corrupts every later request on the connection, not just theirs.
- * - The reader thread never holds that mutex across a read. Blocking on the
- *   socket with the connection locked would stall every other stream for as
- *   long as the peer stayed quiet.
+ * - Nothing holds that mutex across the socket. The reader thread reads
+ *   outside it, and what the connection queues (`H2Connection.deferWrites`)
+ *   is written outside it, in the order it was queued, by whichever thread
+ *   holds the write: the session's writer thread, the reader writing its
+ *   own answers, or a request with no body writing its own head while the
+ *   writer watches it. Every write was made where its frame was made, under
+ *   the mutex: a server that stopped reading held that thread in the write
+ *   for good, and the mutex with it, so no request on the connection reached
+ *   its timeout, a cancel waited with them, on whatever thread made it,
+ *   and so did a close.
+ * - No caller waits on the socket past its own deadline: a request waits on
+ *   its stream, a body on a window or on its queued frames going out, a
+ *   request's own head is watched, and every one of those waits has the
+ *   request's deadline or none, as the request asked. A request whose
+ *   deadline passes while a write has been held up that long gives the
+ *   connection up, a cancel gives its own held head `CLOSE_GRACE`, and a
+ *   closed connection whose last write does not go out is given up
+ *   `CLOSE_GRACE` after it closed.
  *
  * Waiting is on `Lock`, never `Condition`: parking a thread on a condition
  * variable stalls the hxcpp collector, and a GC pause that only reproduces
  * under concurrent requests is not a thing anyone wants to debug twice.
  */
 class H2ClientSession {
+	/**
+		Seconds a closed session's writer has to send what was queued before
+		it, its GOAWAY last, before the connection is ended under it.
+	**/
+	public static inline var CLOSE_GRACE:Float = 1.0;
+
+	/**
+		Bytes of answers the peer obliged, PING and SETTINGS acknowledgements,
+		WINDOW_UPDATEs, that may wait unwritten before the reader stops
+		reading until they have gone (`H2Connection.queuedReplyBytes`). A peer
+		that sends those and reads nothing is then stopped by its own socket,
+		and holds no more of this side than this.
+	**/
+	public static inline var MAX_QUEUED_REPLIES:Int = 64 * 1024;
+
+	/** Frames smaller than this are gathered into one write. */
+	private static inline var GATHER_LIMIT:Int = 16 * 1024;
+
 	/** Origin this session serves, as `scheme://host:port`. */
 	public final origin:String;
 
@@ -74,9 +107,41 @@ class H2ClientSession {
 	// on, which is what lets the pool close it without racing a request.
 	private var __retired:Bool = false;
 	private var __failure:String = null;
-	// Set, under the lock, once the reader thread has left its loop. Until
-	// then only the reader may close the socket: see close().
-	private var __readerDone:Bool = false;
+
+	// The reader and the writer each own one direction of the socket. The
+	// socket is closed by whichever of them leaves last, under the lock,
+	// never while the other may still be in a call on it, which for TLS frees
+	// the mbedTLS context under that call.
+	private var __threadsRunning:Int = 2;
+	private var __socketClosed:Bool = false;
+	// Set once the socket has been shut down to end the reader's read and any
+	// write the peer is not taking.
+	private var __interrupted:Bool = false;
+
+	// Released for every batch queued; the writer waits on it.
+	private final __writerWake:Lock = new Lock();
+	// Held, under the lock, by whichever thread is writing the socket, the
+	// writer, the reader writing its own answers, or a request writing its
+	// own head, so one writes at a time, in the order frames were queued.
+	private var __writing:Bool = false;
+	// The stream whose request is writing its own head, or -1, and the
+	// longest that write may go without progress before the writer, which
+	// watches it, gives the connection up: the request's timeout, cut to
+	// CLOSE_GRACE by a cancel, and 0 for none.
+	private var __directStream:Int = -1;
+	private var __directLimit:Float = 0;
+	// The limit the connection was given up for, when it was given up for
+	// taking nothing: what a request held up by it reports.
+	private var __stalledLimit:Float = -1;
+	// When the write under way began, or -1 between writes. Written by the
+	// thread holding the write, read by anyone: one field, so a reader
+	// without the lock sees one value or the other.
+	private var __writingSince:Float = -1;
+	// Released by the writer as it takes a batch, for a reader waiting on its
+	// answers to go (MAX_QUEUED_REPLIES).
+	private final __drained:Lock = new Lock();
+	private var __readerWaiting:Bool = false;
+	private var __closedAt:Float = -1;
 
 	public function new(origin:String, socket:FlexSocket, connection:H2Connection, ?tls:crossbyte.http.HTTPTLSOptions) {
 		this.origin = origin;
@@ -86,11 +151,15 @@ class H2ClientSession {
 
 		connection.onStreamClosed = __onStreamClosed;
 		connection.onWindowBlocked = __onWindowBlocked;
+		connection.deferWrites = true;
 
 		__idleSince = haxe.Timer.stamp();
 
+		__noteThreads(2);
 		connection.start();
 		Thread.create(__read);
+		Thread.create(__write);
+		__writerWake.release();
 	}
 
 	private inline function get_active():Int {
@@ -132,9 +201,8 @@ class H2ClientSession {
 	 * connections with a stream just opened on them.
 	 *
 	 * The lock is only tried. One that is held means the session is being
-	 * used right now, and the pool must not wait on it: a request writing to
-	 * a peer that has stopped reading holds it for as long as the peer likes,
-	 * and the pool's own lock would be held all that while too.
+	 * used right now, and the pool, which holds its own lock here, has no
+	 * reason to wait for it.
 	 */
 	public function retireIfIdle(timeoutSeconds:Float):Bool {
 		if (!__lock.tryAcquire()) {
@@ -201,6 +269,14 @@ class H2ClientSession {
 			__lock.release();
 			throw new H2ConnectionError(H2ErrorCode.REFUSED_STREAM, __failure != null ? __failure : "Connection is no longer usable");
 		}
+		if (__stalledFor(timeoutSeconds)) {
+			// The peer has taken nothing for longer than this request would
+			// wait, so it would only time out behind what is queued. Given up
+			// here, and refused, so it goes again on another connection.
+			__lock.release();
+			__giveUp(timeoutSeconds);
+			throw new H2ConnectionError(H2ErrorCode.REFUSED_STREAM, 'Connection to $origin stopped taking writes');
+		}
 
 		try {
 			target = connection.openStream(method, scheme, authority, path, headers, hasBody);
@@ -251,6 +327,7 @@ class H2ClientSession {
 			} catch (e:Dynamic) {
 				__uploads.remove(streamId);
 				__lock.release();
+				__writerWake.release();
 				__finish(streamId, cancelToken, onCancelled);
 				throw e;
 			}
@@ -258,7 +335,39 @@ class H2ClientSession {
 		}
 
 		var alreadyDone:Bool = target.isClosed();
+		// A request with no body writes its head itself when no one else is
+		// writing: handed to the writer thread, the hand-off was most of
+		// what a request cost on a fast link. The writer watches the write
+		// instead, so a peer that does not take it holds this thread no
+		// longer than the request's timeout, or a cancel's grace.
+		var direct:Null<Array<Bytes>> = null;
+		if (!hasBody && !__writing && !dead) {
+			direct = connection.takeOutbox();
+			if (direct != null) {
+				__writing = true;
+				__directStream = streamId;
+				__directLimit = timeoutSeconds > 0 ? timeoutSeconds : 0;
+			}
+		}
 		__lock.release();
+		// The head, and whatever of the body is left, to the writer, or,
+		// written here, for the writer to watch.
+		__writerWake.release();
+		if (direct != null) {
+			var failure:Null<String> = __writeDirect(direct);
+			if (failure != null) {
+				// Given up by the writer, for this request's own timeout or a
+				// cancel's grace, or the connection failed under the write.
+				__finish(streamId, cancelToken, onCancelled);
+				if (cancelToken != null && cancelToken.cancelled) {
+					throw new H2ConnectionError(H2ErrorCode.CANCEL, "Request was cancelled");
+				}
+				if (timeoutSeconds > 0 && __stalledLimit >= timeoutSeconds) {
+					throw __timedOut(streamId, timeoutSeconds);
+				}
+				throw new H2ConnectionError(H2ErrorCode.INTERNAL_ERROR, __failure != null ? __failure : failure);
+			}
+		}
 
 		if (upload != null && upload.timedOut) {
 			__finish(streamId, cancelToken, onCancelled);
@@ -279,6 +388,13 @@ class H2ClientSession {
 				connection.resetStream(target.id, H2ErrorCode.CANCEL);
 			} catch (_:Dynamic) {}
 			__lock.release();
+			__writerWake.release();
+			if (__stalledFor(timeoutSeconds)) {
+				// And it has taken nothing all that while either: the
+				// connection goes too, rather than wait on for the next
+				// request to find it so.
+				__giveUp(timeoutSeconds);
+			}
 
 			__finish(streamId, cancelToken, onCancelled);
 			throw __timedOut(streamId, timeoutSeconds);
@@ -374,6 +490,9 @@ class H2ClientSession {
 	 * has run, the stream is closed and whatever the peer sends for it is
 	 * discarded, so a response arriving after a cancel cannot complete the
 	 * request it was for.
+	 *
+	 * Never waits on the peer: the RST_STREAM is queued for the writer, and
+	 * the request's own thread is woken to report the cancel.
 	 */
 	public function cancel(streamId:Int):Void {
 		__lock.acquire();
@@ -387,7 +506,18 @@ class H2ClientSession {
 
 		var waiter:Null<Lock> = __waiters.get(streamId);
 		var upload:Null<H2Upload> = __uploads.get(streamId);
+		if (__writing && __directStream == streamId) {
+			// Its own thread is writing its head, which a peer not reading
+			// can hold: the writer gives that write CLOSE_GRACE from now, if
+			// it had longer.
+			var since:Float = __writingSince;
+			var limit:Float = CLOSE_GRACE + (since >= 0 ? haxe.Timer.stamp() - since : 0);
+			if (__directLimit <= 0 || __directLimit > limit) {
+				__directLimit = limit;
+			}
+		}
 		__lock.release();
+		__writerWake.release();
 
 		// Released outside the lock, and unconditionally: a stream already
 		// closed by the peer has no waiter left to wake, and one whose reset
@@ -403,9 +533,11 @@ class H2ClientSession {
 	}
 
 	/**
-		Ends the session: a GOAWAY, then the socket shut down, which ends the
-		reader's read; the reader closes the socket on its way out, or this
-		does when the reader has gone already.
+		Ends the session, without waiting on the peer: a GOAWAY is queued
+		behind whatever was, and once it is written the writer shuts the
+		socket down, which ends the reader's read; whichever of the two
+		leaves last closes the socket. A write the peer keeps from going out
+		has `CLOSE_GRACE`, and is then ended by the shutdown.
 
 		The socket was closed here, from whichever thread closed the session,
 		the pool's sweep, a request discarding it, `closeAll`, while the
@@ -424,45 +556,83 @@ class H2ClientSession {
 			return;
 		}
 		__stopped = true;
+		__closedAt = haxe.Timer.stamp();
 
 		try {
 			connection.goAway(H2ErrorCode.NO_ERROR);
 		} catch (_:Dynamic) {}
-
-		// Decided under the lock the reader takes on its way out, so exactly
-		// one of the two closes the socket; and closed under it, which a
-		// writer holds while it writes.
-		var readerGone:Bool = __readerDone;
-		if (readerGone) {
-			__closeSocket();
-		}
+		var running:Bool = __threadsRunning > 0;
 		__lock.release();
 
-		if (!readerGone) {
-			Http.__interrupt(__socket);
+		__writerWake.release();
+		if (running) {
+			__watchClosing(this);
 		}
-
 		__wakeEveryone();
 	}
 
-	private function __closeSocket():Void {
-		try {
-			__socket.close();
-		} catch (_:Dynamic) {}
+	/**
+		Shuts the socket down, once, unless both threads have left already:
+		what ends the reader's read, and, with `endWrite`, for a write the
+		peer is not taking, the writer's.
+
+		On the jvm a write still under way is ended by closing the socket.
+		A shutdown does not end one already waiting on Windows there, the
+		JDK signals the writing thread only on POSIX, and closing a channel
+		under a call on it is what NIO is made for: the call throws, and
+		nothing native is freed under it, as closing a TLS socket natively
+		would be. Only then: a reader is left its read, as everywhere.
+
+		Natively on Windows a TLS write the peer is not taking is not ended
+		by a shutdown, as a read is not: the thread waits until the peer
+		reads or goes. The requests on the connection do not wait with it.
+	**/
+	private function __interrupt(endWrite:Bool):Void {
+		__lock.acquire();
+		var shut:Bool = !__interrupted && !__socketClosed;
+		__interrupted = true;
+		#if (java || jvm)
+		var close:Bool = endWrite && __writing && !__socketClosed;
+		if (close) {
+			__socketClosed = true;
+		}
+		#end
+		__lock.release();
+		if (shut) {
+			Http.__interrupt(__socket);
+		}
+		#if (java || jvm)
+		if (close) {
+			try {
+				__socket.close();
+			} catch (_:Dynamic) {}
+		}
+		#end
+	}
+
+	/** Called by the reader and the writer as each leaves; the last closes the socket. */
+	private function __leave():Void {
+		__lock.acquire();
+		__threadsRunning--;
+		var last:Bool = __threadsRunning == 0 && !__socketClosed;
+		if (last) {
+			__socketClosed = true;
+			try {
+				__socket.close();
+			} catch (_:Dynamic) {}
+		}
+		__lock.release();
+		__noteThreads(-1);
 	}
 
 	// ----------------------------------------------------------- reader
 
 	private function __read():Void {
 		__readFrames();
-
-		__lock.acquire();
-		__readerDone = true;
-		if (__stopped) {
-			// close() left the socket to this thread, which was in a read on it.
-			__closeSocket();
-		}
-		__lock.release();
+		// The writer may be waiting for something to write: it has nothing
+		// more coming, and leaves.
+		__writerWake.release();
+		__leave();
 	}
 
 	private function __readFrames():Void {
@@ -485,6 +655,7 @@ class H2ClientSession {
 			}
 
 			__lock.acquire();
+			var queued:Int = connection.queuedBytes;
 			var failure:String = null;
 			try {
 				connection.processFrame(frame);
@@ -500,14 +671,40 @@ class H2ClientSession {
 					upload.wake.release();
 				}
 			}
+			var answered:Bool = connection.queuedBytes > queued;
+
+			// A peer that sends what must be answered, a PING, a SETTINGS,
+			// DATA earning a WINDOW_UPDATE, and reads none of the answers
+			// would grow them here without end. Past MAX_QUEUED_REPLIES this
+			// stops reading until they have gone, so its own socket stops it,
+			// as a write held up under the lock once did, but holding nothing
+			// anyone else needs. The wait ends when the writer takes them, or
+			// the session ends.
+			while (failure == null && connection.queuedReplyBytes > MAX_QUEUED_REPLIES && !dead && !__stopped) {
+				__readerWaiting = true;
+				__lock.release();
+				__writerWake.release();
+				__drained.wait();
+				__lock.acquire();
+				__readerWaiting = false;
+			}
 			__lock.release();
+			if (answered && failure == null) {
+				// Its own answers, a WINDOW_UPDATE the server is waiting on
+				// to send more, written here when no one else is writing,
+				// rather than handed to the writer thread: the hand-off held
+				// each one up, and downloads with it. This thread may wait in
+				// the write, which only stops it reading, as a peer not reading
+				// should; the requests do not wait with it.
+				__drainQueue(1);
+			}
 
 			if (failure != null) {
 				__fail(failure);
 				return;
 			}
 
-			if (__stopped) {
+			if (__stopped || dead) {
 				return;
 			}
 		}
@@ -521,7 +718,8 @@ class H2ClientSession {
 	}
 
 	/**
-	 * Waits for the reader to make progress while a window is closed, for no
+	 * Waits for the reader to make progress while a window is closed, or for
+	 * the writer to while the body's queued frames wait to go out, for no
 	 * longer than what is left of the request's timeout.
 	 *
 	 * The lock is dropped across the wait and retaken after. Holding it would
@@ -530,10 +728,12 @@ class H2ClientSession {
 	 *
 	 * The timeout is the longest the window may stay shut, so an upload that
 	 * is slow but moving is not cut off. Once it has passed, only this stream
-	 * is reset; the body's write sees it closed and stops. This used to wait
-	 * for any frame at all, thirty seconds at a time: on a busy connection a
-	 * body the peer had stopped taking waited forever, and on a quiet one the
-	 * thirty seconds failed the connection and every request on it.
+	 * is reset; the body's write sees it closed and stops, and if what kept
+	 * it waiting is a writer the peer has not taken a byte from all that
+	 * while, the connection is given up too. This used to wait for any frame
+	 * at all, thirty seconds at a time: on a busy connection a body the peer
+	 * had stopped taking waited forever, and on a quiet one the thirty
+	 * seconds failed the connection and every request on it.
 	 */
 	private function __onWindowBlocked(target:H2Stream, stalledSeconds:Float):Bool {
 		if (dead || __stopped) {
@@ -550,16 +750,31 @@ class H2ClientSession {
 		// cancel or the connection going.
 		var limited:Bool = upload.timeout > 0;
 		var remaining:Float = upload.timeout - stalledSeconds;
+		var writerBound:Bool = connection.windowOpen(target);
+		if (writerBound) {
+			// The windows are open, and it is the frames already queued that
+			// keep the body waiting: the clock is the writer's, one frame at a
+			// time, so a peer taking it slowly is not cut off.
+			var since:Float = __writingSince;
+			remaining = upload.timeout - (since >= 0 ? haxe.Timer.stamp() - since : 0);
+		}
 		if (limited && remaining <= 0) {
 			upload.timedOut = true;
 			try {
 				connection.resetStream(target.id, H2ErrorCode.CANCEL);
 			} catch (_:Dynamic) {}
+			if (writerBound) {
+				// Nothing it was sent was taken all that while: the
+				// connection goes too.
+				__giveUp(upload.timeout);
+			}
 			return true;
 		}
 
 		upload.blocked = true;
 		__lock.release();
+		// What the body has queued so far has to go out for it to queue more.
+		__writerWake.release();
 		if (limited) {
 			upload.wake.wait(remaining);
 		} else {
@@ -583,8 +798,36 @@ class H2ClientSession {
 	}
 
 	/**
+		Whether the writer has been in one write for `seconds` or more: the
+		peer has taken nothing for that long. `0` or less is never.
+	**/
+	private inline function __stalledFor(seconds:Float):Bool {
+		var since:Float = __writingSince;
+		return seconds > 0 && since >= 0 && haxe.Timer.stamp() - since >= seconds;
+	}
+
+	/**
+		Gives the connection up because its peer has stopped taking what it
+		is sent: every request on it fails, and the socket is shut down,
+		which ends the write the peer is holding up. With the lock held or
+		not.
+	**/
+	private function __giveUp(seconds:Float):Void {
+		__lock.acquire();
+		if (__failure == null) {
+			__failure = 'Connection to $origin took nothing it was sent for ${seconds}s';
+			__stalledLimit = seconds;
+		}
+		dead = true;
+		__lock.release();
+		__interrupt(true);
+		__wakeEveryone();
+	}
+
+	/**
 	 * Wakes every waiter, so a dead connection surfaces as a failed request
-	 * rather than as one that waits out its whole timeout.
+	 * rather than as one that waits out its whole timeout, and the writer
+	 * and the reader, so they notice it too.
 	 */
 	private function __wakeEveryone():Void {
 		__lock.acquire();
@@ -600,6 +843,279 @@ class H2ClientSession {
 		for (waiter in waiting) {
 			waiter.release();
 		}
+		__drained.release();
+		__writerWake.release();
+	}
+
+	// ----------------------------------------------------------- writer
+
+	/**
+		Writes what the connection queues, in the order it was queued, until
+		the session is over; then shuts the socket down, which ends the
+		reader's read. The reader writes its own answers when this is idle,
+		and whichever holds the write (`__writing`) writes all that is queued.
+	**/
+	private function __write():Void {
+		while (true) {
+			// A request writing its own head is watched: given up on once it
+			// has gone its limit without progress.
+			var watch:Float = -1;
+			var overdue:Float = -1;
+			__lock.acquire();
+			if (__writing && __directStream >= 0 && __directLimit > 0) {
+				var since:Float = __writingSince;
+				watch = __directLimit - (since >= 0 ? haxe.Timer.stamp() - since : 0);
+				if (watch <= 0) {
+					overdue = __directLimit;
+				}
+			}
+			__lock.release();
+			if (overdue > 0) {
+				__giveUp(overdue);
+				watch = -1;
+			}
+
+			if (watch > 0) {
+				// Whole milliseconds: a fraction spins on Windows natively.
+				__writerWake.wait(Math.max(0.001, Math.ffloor(watch * 1000) / 1000));
+			} else {
+				__writerWake.wait();
+			}
+			__drainQueue(-1);
+
+			__lock.acquire();
+			// Decided in the same hold as the last take: a GOAWAY close()
+			// queued is written first, by this thread or the reader.
+			var over:Bool = !__writing && (dead || (__stopped && connection.queuedBytes == 0));
+			__lock.release();
+			if (over) {
+				break;
+			}
+		}
+		// Its GOAWAY sent, or nothing more can be: the reader is ended by the
+		// shutdown, or was already.
+		__interrupt(false);
+		__leave();
+	}
+
+	/**
+		Writes a request's own head, `batch`, taken with the write by
+		`execute`: the writer watches it meanwhile. What was queued behind it
+		is handed to the writer. Answers why the write failed, or null.
+	**/
+	private function __writeDirect(batch:Array<Bytes>):Null<String> {
+		var failure:Null<String> = null;
+		try {
+			__writeBatch(batch);
+		} catch (e:Dynamic) {
+			failure = "Connection failed while writing: " + Std.string(e);
+		}
+		__writingSince = -1;
+
+		__lock.acquire();
+		__writing = false;
+		__directStream = -1;
+		if (failure != null) {
+			// What is queued can no longer go: dropped, so nothing waits on it.
+			connection.takeOutbox();
+		}
+		var more:Bool = connection.queuedBytes > 0;
+		__lock.release();
+
+		if (failure != null) {
+			__fail(failure);
+		} else if (more) {
+			__writerWake.release();
+		}
+		return failure;
+	}
+
+	/**
+		Writes what is queued, batch by batch, unless another thread is
+		writing, false then, and that thread takes what was queued, or
+		the connection is dead. At most `batches` of them, `-1` for all; what
+		is left after is handed to the writer thread.
+	**/
+	private function __drainQueue(batches:Int):Bool {
+		__lock.acquire();
+		if (__writing) {
+			__lock.release();
+			return false;
+		}
+		__writing = true;
+		var written:Int = 0;
+		while (true) {
+			var batch:Null<Array<Bytes>> = (dead || written == batches) ? null : connection.takeOutbox();
+			// Room again, for a body or a reader waiting on what was queued
+			// to go: they queue the next batch while this one is written.
+			for (upload in __uploads) {
+				if (upload.blocked) {
+					upload.wake.release();
+				}
+			}
+			var readerWaiting:Bool = __readerWaiting;
+			if (batch == null) {
+				__writing = false;
+				var more:Bool = !dead && connection.queuedBytes > 0;
+				__lock.release();
+				if (readerWaiting) {
+					__drained.release();
+				}
+				if (more || dead || __stopped) {
+					// The rest to the writer, which also leaves once the
+					// session is over and nothing is being written.
+					__writerWake.release();
+				}
+				return true;
+			}
+			__lock.release();
+			if (readerWaiting) {
+				__drained.release();
+			}
+
+			var failure:Null<String> = null;
+			try {
+				__writeBatch(batch);
+			} catch (e:Dynamic) {
+				failure = "Connection failed while writing: " + Std.string(e);
+			}
+			__writingSince = -1;
+			written++;
+			if (failure != null) {
+				// What is queued can no longer go: dropped, so nothing waits on
+				// it, and the connection fails.
+				__lock.acquire();
+				connection.takeOutbox();
+				__writing = false;
+				__lock.release();
+				__fail(failure);
+				return true;
+			}
+			__lock.acquire();
+		}
+	}
+
+	/** Writes `frames` out, the small ones gathered into a write of up to `GATHER_LIMIT`. */
+	private function __writeBatch(frames:Array<Bytes>):Void {
+		var output:haxe.io.Output = __socket.output;
+		if (frames.length == 1) {
+			__send(output, frames[0]);
+		} else {
+			var gathered:Null<haxe.io.BytesBuffer> = null;
+			for (frame in frames) {
+				if (frame.length >= GATHER_LIMIT) {
+					if (gathered != null) {
+						__send(output, gathered.getBytes());
+						gathered = null;
+					}
+					__send(output, frame);
+					continue;
+				}
+				if (gathered == null) {
+					gathered = new haxe.io.BytesBuffer();
+				}
+				gathered.addBytes(frame, 0, frame.length);
+				if (gathered.length >= GATHER_LIMIT) {
+					__send(output, gathered.getBytes());
+					gathered = null;
+				}
+			}
+			if (gathered != null) {
+				__send(output, gathered.getBytes());
+			}
+		}
+		output.flush();
+	}
+
+	/**
+		One write, timed: `__writingSince` says how long the peer has been
+		keeping it, for a request deciding whether to give the connection up.
+	**/
+	private inline function __send(output:haxe.io.Output, bytes:Bytes):Void {
+		__writingSince = haxe.Timer.stamp();
+		// Full, not writeBytes, which may write only part and says how much:
+		// over TLS a call takes at most one 16 KB record.
+		output.writeFullBytes(bytes, 0, bytes.length);
+	}
+
+	// --------------------------------------------------------- watchdog
+
+	// Closed sessions whose threads have not left yet, and whether a thread
+	// is watching them. The watcher runs only while there are some.
+	private static final __closingLock:Mutex = new Mutex();
+	private static var __closing:Array<H2ClientSession> = [];
+	private static var __watching:Bool = false;
+
+	/**
+		Holds a closed session to `CLOSE_GRACE`: if its threads have not left
+		by then, its writer held in a write the peer is not taking, or its
+		reader in a read nothing ends, the socket is shut down under them.
+		Nothing else would end them: everyone who could has gone.
+	**/
+	private static function __watchClosing(session:H2ClientSession):Void {
+		__closingLock.acquire();
+		__closing.push(session);
+		var start:Bool = !__watching;
+		__watching = true;
+		__closingLock.release();
+		if (start) {
+			Thread.create(__watchLoop);
+		}
+	}
+
+	private static function __watchLoop():Void {
+		var tick:Lock = new Lock();
+		while (true) {
+			// Whole milliseconds: a fraction spins on Windows natively.
+			tick.wait(0.25);
+			var now:Float = haxe.Timer.stamp();
+			var expired:Array<H2ClientSession> = [];
+			__closingLock.acquire();
+			var index:Int = __closing.length - 1;
+			while (index >= 0) {
+				var session:H2ClientSession = __closing[index];
+				if (session.__threadsRunning <= 0) {
+					__closing.splice(index, 1);
+				} else if (now - session.__closedAt >= CLOSE_GRACE) {
+					__closing.splice(index, 1);
+					expired.push(session);
+				}
+				index--;
+			}
+			var idle:Bool = __closing.length == 0;
+			if (idle) {
+				__watching = false;
+			}
+			__closingLock.release();
+
+			for (session in expired) {
+				session.__interrupt(true);
+			}
+			if (idle) {
+				return;
+			}
+		}
+	}
+
+	// Reader and writer threads running, across every session.
+	private static final __countLock:Mutex = new Mutex();
+	private static var __liveThreads:Int = 0;
+
+	private static function __noteThreads(change:Int):Void {
+		__countLock.acquire();
+		__liveThreads += change;
+		__countLock.release();
+	}
+
+	/**
+		Reader and writer threads still running, across every session: two a
+		session until it is over. Diagnostics and tests.
+	**/
+	public static function liveThreads():Int {
+		__countLock.acquire();
+		var count:Int = __liveThreads;
+		__countLock.release();
+		return count;
 	}
 
 	private function __release(streamId:Int):Void {
