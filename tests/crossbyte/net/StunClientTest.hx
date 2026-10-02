@@ -130,39 +130,62 @@ class StunClientTest extends utest.Test {
 	}
 
 	/**
-		A timeout of 0 asks for the default, three seconds, and the failure
-		says how long that was.
-
-		0 cannot mean no deadline here, as it does for a connection: nothing
-		but a deadline ends a question UDP may never answer. It was read as
-		the default already, saying so nowhere, and the failure blamed the
-		server for not answering "within 0ms".
+		A timeout of 0 sets no deadline, as it does for a connection: the
+		question is still being asked past the three seconds 0 used to mean.
+		Closing the socket it is asked through ends it at once -- it ended
+		only at the next ask, whose send failed, and with no deadline the
+		gaps double out of reach.
 	**/
-	public function testATimeoutOfZeroAsksForTheDefaultAndSaysSo():Void {
+	public function testATimeoutOfZeroAsksUntilItsSocketCloses():Void {
 		if (unsupported()) return;
 
 		var server = new FakeStunServer();
 		var answer = new Outcome();
+		var socket = new DatagramSocket();
 
 		try {
 			server.ignoreEverything = true;
 			server.start();
+			socket.bind(0, "127.0.0.1");
 
-			var started:Float = haxe.Timer.stamp();
-			StunClient.discover("127.0.0.1", server.port, 0).then(answer.succeed, answer.fail);
-			pumpUntil(answer.settled, 8.0);
-			var took:Float = haxe.Timer.stamp() - started;
+			StunClient.discover("127.0.0.1", server.port, 0, socket).then(answer.succeed, answer.fail);
+			// Past the three seconds 0 meant, and the fourth ask, at 3.5 s.
+			pumpUntil(answer.settled, 4.0);
 
-			Assert.notNull(answer.error, "a question with a timeout of 0 never ended");
-			Assert.isTrue(took >= 2.5, "a timeout of 0 gave the question up after " + took + " s, short of the default three");
-			if (answer.error != null) {
-				Assert.isTrue(answer.error.indexOf("3000ms") >= 0, "the failure does not say how long it waited: " + answer.error);
-			}
+			Assert.isFalse(answer.settled(), "a question with no deadline was given up: " + answer.error);
+			Assert.isTrue(server.received >= 4, "the question stopped being asked, after " + server.received);
+
+			var closedAt:Float = haxe.Timer.stamp();
+			socket.close();
+			pumpUntil(answer.settled, 2.0);
+			Assert.notNull(answer.error, "closing the socket did not end a question with no deadline");
+			Assert.isTrue(haxe.Timer.stamp() - closedAt < 1.0, "the question outlived its socket by " + (haxe.Timer.stamp() - closedAt) + " s");
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
 
+		try socket.close() catch (_:Dynamic) {}
 		server.close();
+	}
+
+	/**
+		Classifying filtering needs a deadline -- a filtering NAT answers with
+		silence -- so a timeout of 0, which is none, fails at once, saying so,
+		rather than waiting out such a NAT for good.
+	**/
+	public function testClassifyingFilteringWithNoDeadlineFailsAtOnce():Void {
+		if (unsupported()) return;
+
+		var answer:String = null;
+		var cause:Dynamic = null;
+		var future = StunClient.classifyFiltering("127.0.0.1", 3478, 0);
+		future.then(_ -> {}, function(error:String) {
+			answer = error;
+			cause = future.cause;
+		});
+
+		Assert.notNull(answer, "a filtering test with no deadline did not fail at once");
+		Assert.isTrue(Std.isOfType(cause, crossbyte.errors.ArgumentError), "its cause is not an ArgumentError: " + cause);
 	}
 
 	/**

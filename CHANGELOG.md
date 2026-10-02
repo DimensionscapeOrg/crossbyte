@@ -205,6 +205,12 @@ entry below says how:
 - `affectedRows` and `lastInsertRowID` of `PostgresConnection` and
   `MySQLConnection`, and `PostgresRawResult`'s, are `Float`s, where they
   were `Int`s.
+- A `timeoutMs` of 0 is no deadline for a STUN question (`StunClient`,
+  `discoverPublicAddress`, `gatherReflexive`) and for
+  `ReliableDatagramServerSocket.connect` and `connectRelayed`, where it
+  meant three and twenty seconds: pass the time wanted, or leave the
+  argument out for the default. `StunClient.classifyFiltering` fails for 0,
+  and a dial throws for a negative timeout.
 
 ### Added
 - `SharedObject.remove(name)` takes a region away on Linux and macOS --
@@ -1364,6 +1370,23 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A `timeoutMs` of 0 sets no deadline for a STUN question --
+  `StunClient.discover`, `probe` and `classifyMapping`,
+  `ReliableDatagramServerSocket.discoverPublicAddress` and
+  `PeerConnection.gatherReflexive` -- and for a session that
+  `ReliableDatagramServerSocket.connect` or `connectRelayed` dials, as 0
+  does for every connection's `timeout`; it meant three seconds for a
+  question and twenty for a dial, so neither could wait longer without a
+  number. A question with no deadline is asked, each gap twice the last,
+  until it is answered, or until what it is asked through closes -- a
+  `StunClient` question through a socket of the caller's now ends the
+  moment that socket closes, where it lasted until its next ask failed. A
+  dial's timeout is twenty seconds unless given, as
+  `ReliableDatagramSocket.DEFAULT_TIMEOUT`, new, says, and a negative one
+  throws a `RangeError`, as the session's `timeout` does.
+  `StunClient.classifyFiltering` needs a deadline -- a filtering NAT
+  answers with silence -- and fails at once for 0 or less, its cause an
+  `ArgumentError`.
 - `IceAgent.DEFAULT_TIMEOUT`, the time an agent has from `start` to select
   a pair, is 80 seconds, where round three made it 40. A nomination is a
   check, given up on 39.5 seconds after it goes out, and forty was a moment
