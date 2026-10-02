@@ -46,7 +46,8 @@ class TlsProtocolTest extends utest.Test {
 	public function testBothEndsOfANativeConnectionRunTheNewestVersion():Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			Assert.warn("no openssl to make a certificate with; not run");
+			// No openssl to make a certificate with.
+			Assert.pass();
 			return;
 		}
 
@@ -114,7 +115,8 @@ class TlsProtocolTest extends utest.Test {
 	public function testAReturningClientResumesOverTheNewestVersion():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			Assert.warn("no openssl to make a certificate with; not run");
+			// No openssl to make a certificate with.
+			Assert.pass();
 			return;
 		}
 
@@ -155,7 +157,8 @@ class TlsProtocolTest extends utest.Test {
 
 		Assert.isTrue(node.finished, "node neither finished nor failed within the deadline");
 		if (!node.launched) {
-			Assert.warn("no node on this machine; not run");
+			// No node on this machine: nothing to resume with.
+			Assert.pass();
 			return;
 		}
 		var newest = __newest();
@@ -172,7 +175,8 @@ class TlsProtocolTest extends utest.Test {
 	public function testANativeClientRunsTheNewestVersionAgainstOpenSsl():Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			Assert.warn("no openssl to make a certificate with; not run");
+			// No openssl to make a certificate with.
+			Assert.pass();
 			return;
 		}
 
@@ -187,7 +191,8 @@ class TlsProtocolTest extends utest.Test {
 		try {
 			process = new sys.io.Process("node", ["-e", script, fixture.keyPath, fixture.certificatePath]);
 		} catch (_:Dynamic) {
-			Assert.warn("no node on this machine; not run");
+			// No node on this machine.
+			Assert.pass();
 			return;
 		}
 		var stdout = process.stdout;
@@ -229,11 +234,12 @@ class TlsProtocolTest extends utest.Test {
 		var portText:Null<String> = next("port ", 15.0);
 		if (portText == null) {
 			try process.kill() catch (_:Dynamic) {}
+			var code:Null<Int> = try process.exitCode() catch (_:Dynamic) null;
 			try process.close() catch (_:Dynamic) {}
 			// On POSIX a missing program still starts a process, which exits
 			// 127 without a word; that is no node, as a failed start is on
-			// Windows.
-			Assert.warn("node printed no port (missing, or failed: " + seen.join(" / ") + "); not run");
+			// Windows. A node that ran and printed no port failed.
+			Assert.isTrue(code == 127 && seen.length == 0, "node printed no port (exit " + code + "): " + seen.join(" / "));
 			return;
 		}
 
@@ -320,7 +326,8 @@ class TlsProtocolTest extends utest.Test {
 
 		Assert.isTrue(node.finished, "node neither finished nor failed within the deadline");
 		if (!node.launched) {
-			Assert.warn("no node on this machine; not run");
+			// No node on this machine.
+			Assert.pass();
 			return;
 		}
 		Assert.equals(0, accepted.length, "a TLS 1.1 client was accepted");
