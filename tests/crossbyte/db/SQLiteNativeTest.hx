@@ -1241,17 +1241,16 @@ class SQLiteNativeTest extends utest.Test {
 		// an interrupt that lands as a statement starts, while no other is
 		// running, so a cancel() landing while the request was being prepared,
 		// up to about 12 microseconds after request() was called, here,
-		// was lost: an aggregate ran its hours, and a SELECT read row by row
-		// gave every row. Each is swept across the start.
+		// was lost: an aggregate ran its hours, a SELECT read row by row gave
+		// every row, and a statement's own cancel() was lost the same way.
+		// Each is swept across the start.
 		var connection:SQLiteConnection = new SQLiteConnection();
 		connection.open(null, SQLiteMode.CREATE, false, 4096);
 		connection.request("CREATE TABLE t AS WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200000) SELECT i FROM n");
 		var hours:String = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100000000000) SELECT COUNT(*) AS c FROM n";
 
 		// Stopped within a thousand steps, by the progress handler.
-		var lost:Array<String> = __sweepCancels(connection, function() {
-			connection.request(hours);
-		});
+		var lost:Array<String> = __sweepCancels(connection, () -> connection.request(hours), null, connection.cancel);
 		Assert.same([], lost.slice(0, 3), '${lost.length} cancels of an aggregate were lost: ' + lost.join(" | "));
 
 		// Its first step over before that: it fails at its next.
@@ -1261,29 +1260,37 @@ class SQLiteNativeTest extends utest.Test {
 			while (rows.hasNext()) {
 				rows.next();
 			}
-		});
+		}, null, connection.cancel);
 		Assert.same([], lost.slice(0, 3), '${lost.length} cancels of a SELECT read row by row were lost: ' + lost.join(" | "));
+
+		// A statement's own cancel(), once the statement says it is running.
+		var statement:SQLiteStatement = new SQLiteStatement();
+		statement.sqlConnection = connection;
+		statement.text = hours;
+		lost = __sweepCancels(connection, () -> statement.execute(), () -> @:privateAccess statement.__running, statement.cancel);
+		Assert.same([], lost.slice(0, 3), '${lost.length} cancels of a running statement were lost: ' + lost.join(" | "));
 
 		Assert.equals(1, __count(connection, "(SELECT 1)"));
 		connection.close();
 	}
 
 	/**
-		Runs `ask` on another thread 150 times, cancelling `connection` a
-		little later each time, from as it asks to about ten microseconds on,
-		and answers the rounds in which it was not interrupted, the first
-		three.
+		Runs `ask` on another thread 150 times and calls `cancel` a little
+		later each time, up to about ten microseconds after the other thread
+		says, through `started`, that its work has started, or, without it,
+		after it stamps the time and asks, and answers the rounds in which
+		the work was not interrupted: the first three.
 	**/
-	private static function __sweepCancels(connection:SQLiteConnection, ask:Void->Void):Array<String> {
+	private static function __sweepCancels(connection:SQLiteConnection, ask:Void->Void, started:Null<Void->Bool>, cancel:Void->Void):Array<String> {
 		var lost:Array<String> = [];
 
 		for (round in 0...150) {
-			var asking:sys.thread.Lock = new sys.thread.Lock();
 			var done:sys.thread.Lock = new sys.thread.Lock();
 			var failure:String = null;
+			var asked:Float = 0.0;
 
 			sys.thread.Thread.create(function() {
-				asking.release();
+				asked = haxe.Timer.stamp();
 
 				try {
 					ask();
@@ -1294,7 +1301,15 @@ class SQLiteNativeTest extends utest.Test {
 				done.release();
 			});
 
-			asking.wait();
+			// Spun for, not waited on: a thread woken from a wait can be run at
+			// once in place of the one that woke it, and cancel before that
+			// one has asked for anything.
+			var limit:Float = haxe.Timer.stamp() + 5;
+
+			while ((started != null ? !started() : asked == 0) && haxe.Timer.stamp() < limit) {
+				cpp.vm.Gc.safePoint();
+			}
+
 			// A few nanoseconds each.
 			var delay:Int = (round % 50) * 100;
 
@@ -1302,14 +1317,22 @@ class SQLiteNativeTest extends utest.Test {
 				cpp.vm.Gc.safePoint();
 			}
 
-			connection.cancel();
+			var cancelled:Float = haxe.Timer.stamp();
+			cancel();
+			// Without a word from the work, a cancel made within two
+			// microseconds of the stamp may have come before the call it was
+			// meant for: not that call's to stop.
+			var counts:Bool = started != null || cancelled - asked > 0.000002;
 
 			if (!done.wait(5.0)) {
 				// Running now, so this one lands.
 				connection.cancel();
 				done.wait(10.0);
-				lost.push('round $round ran on');
-			} else if (failure == null || failure.indexOf("interrupt") < 0) {
+
+				if (counts) {
+					lost.push('round $round ran on');
+				}
+			} else if ((failure == null || failure.indexOf("interrupt") < 0) && counts) {
 				lost.push('round $round ended with $failure');
 			}
 
