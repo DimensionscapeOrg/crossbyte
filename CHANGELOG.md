@@ -1360,6 +1360,19 @@ entry below says how:
   `TlsProtocolTest` pins the version at both ends of a native connection,
   against OpenSSL in either role, the resumption and the refusal,
   expecting TLS 1.2 where the build still has 2.28.
+- On mbedTLS 3.6.7, AES-GCM runs on AES-NI in MSVC builds too, where 2.28
+  did every byte of AES in plain C. Measured on Windows (Ryzen 9 9950X) as
+  Node uploading into one native TLS socket, medians of three interleaved
+  runs: AES-256-GCM over TLS 1.2 went from 129 to 328 MB/s, and from 7.7
+  to 3.0 ms of server CPU per MB. mbedTLS's ChaCha20-Poly1305 is still its
+  faster cipher here (415 to 440 MB/s over TLS 1.2, 473 over TLS 1.3, 2.1
+  ms per MB), and it is what CrossByte's own client offers first, so
+  CrossByte talking to itself got faster. But where 2.28's TLS 1.2 server
+  chose ChaCha20 for every client by its own order, a TLS 1.3 server takes
+  the client's, and OpenSSL's comes with AES-256-GCM first: a Node client
+  that uploaded at 361 MB/s (2.7 ms per MB) now uploads at 324 (3.1), about
+  10% slower. AES-128-GCM, which BoringSSL-based clients put first on AES
+  hardware, gives 384 MB/s (2.6).
 - CrossByte's native code that calls mbedTLS -- RSA and ECDSA signatures,
   DTLS certificates and sessions, ALPN, a TLS peer's certificate -- builds
   against mbedTLS 3.x as well as 2.28, so it works with the hxcpp fork
