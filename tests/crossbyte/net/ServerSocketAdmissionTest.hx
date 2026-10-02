@@ -107,6 +107,50 @@ class ServerSocketAdmissionTest extends utest.Test {
 		});
 	}
 
+	#if cpp
+	/**
+		A client that connects and resets before the server takes it, and one
+		that connects after it. Linux hands the reset connection over all the
+		same, with no address for its peer: `peer()` answers null, and the
+		server read through it, asking `admit` and again naming the
+		connection. In a release build that ended the process -- any client
+		could take a native server on Linux down by connecting and resetting
+		at once. macOS fails the accept instead, which the server reported as
+		its own failure.
+
+		Only on cpp, the one target with a way to make a socket reset
+		(`ResetProbe`).
+	**/
+	@:timeout(5000)
+	public function testAPeerGoneBeforeItIsTakenIsPassedOver(async:Async):Void {
+		var server = new ServerSocket();
+		var accepted:Array<Socket> = [];
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, event -> accepted.push(cast event.socket));
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		var client = new Socket();
+		afterListening(server, () -> {
+			// Both in the listen queue before the server's next turn, the
+			// first already reset.
+			Assert.equals(0, ResetProbe.connectAndReset(server.localPort), "the probe could not reset a connection");
+			client.connect("127.0.0.1", server.localPort);
+			HTTPTestSupport.pumpUntilAsync(() -> client.localPort != 0 && Lambda.exists(accepted, s -> s.remotePort == client.localPort), 3.0,
+				arrived -> {
+					Assert.isTrue(arrived, "the client after the reset one was never taken");
+					Assert.equals(0, server.acceptFailures, "a client that reset was counted as the server failing to accept");
+					for (socket in accepted) {
+						Assert.notNull(socket.remoteAddress, "a connection was announced with no peer");
+						closeQuietly(socket);
+					}
+					closeQuietly(client);
+					server.close();
+					async.done();
+				});
+		});
+	}
+	#end
+
 	#if !nodejs
 	/**
 		Connections that have finished their TCP handshake and are waiting in

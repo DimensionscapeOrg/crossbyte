@@ -203,13 +203,19 @@ Dynamic crossbyte_socket_accept(Dynamic socket) {
 #if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
 	accepted = accept(nativeSocket, reinterpret_cast<sockaddr*>(&address), &addressLength);
 #else
+	// ECONNABORTED is a connection reset while it waited in the queue: macOS
+	// and the BSDs fail its accept, where Linux and Windows hand it over.
+	// That connection is gone, not the listener, so this takes the next, as
+	// libuv and Go do. Thrown, it read as the server's own failure -- "could
+	// not accept a connection" -- whenever a client connected and reset.
 	do {
+		addressLength = sizeof(address);
 	#if defined(HX_LINUX) && defined(SOCK_CLOEXEC)
 		accepted = accept4(nativeSocket, reinterpret_cast<sockaddr*>(&address), &addressLength, SOCK_CLOEXEC);
 	#else
 		accepted = accept(nativeSocket, reinterpret_cast<sockaddr*>(&address), &addressLength);
 	#endif
-	} while (accepted == INVALID_SOCKET && errno == EINTR);
+	} while (accepted == INVALID_SOCKET && (errno == EINTR || errno == ECONNABORTED));
 #endif
 	if (accepted == INVALID_SOCKET) {
 		crossbyte_block_error();

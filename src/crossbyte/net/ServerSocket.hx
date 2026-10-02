@@ -826,7 +826,27 @@ class ServerSocket extends EventDispatcher {
 	}
 
 	#if !nodejs
-	@:noCompletion private function __fromSocket(socket:sys.net.Socket):CBSocket {
+	@:noCompletion private function __fromSocket(socket:sys.net.Socket, ?accepted:{host:sys.net.Host, port:Int}):Null<CBSocket> {
+		// Asked once, and first. A peer already gone has no address on Linux
+		// and macOS -- getpeername fails once a connection is reset, and
+		// Linux hands over one reset before it was accepted -- and peer()
+		// answers null, which was read through twice below and ended the
+		// process: any client that connected and reset at once took a native
+		// server on Linux down. A TLS 1.3
+		// client finishes its handshake before the server does, and one that
+		// hangs up at once is often gone by the time its connection is
+		// promoted: it is announced all the same, from the address it was
+		// accepted with, as Windows announces it and as TLS 1.2 always did,
+		// and its first read finds it gone. With no address at all there is
+		// nothing to announce; the caller closes the socket.
+		var peer = socket.peer();
+		if (peer == null) {
+			peer = accepted;
+		}
+		if (peer == null) {
+			return null;
+		}
+
 		socket.setFastSend(true);
 		socket.setBlocking(false);
 
@@ -845,8 +865,8 @@ class ServerSocket extends EventDispatcher {
 		// Canonical for the same reason `Socket.localAddress` is: a peer
 		// address that reads differently per target is one a whitelist written
 		// on one of them silently fails to match on another.
-		cbSocket.__host = crossbyte._internal.net.IPv6.compress(socket.peer().host.toString());
-		cbSocket.__port = socket.peer().port;
+		cbSocket.__host = crossbyte._internal.net.IPv6.compress(peer.host.toString());
+		cbSocket.__port = peer.port;
 
 		cbSocket.__output = new ByteArray();
 		cbSocket.__output.endian = cbSocket.__endian;
@@ -949,7 +969,7 @@ class ServerSocket extends EventDispatcher {
 				// no application bytes are readable) until TLS completes.
 				sysSocket.setBlocking(false);
 				var pending:PendingHandshake = new PendingHandshake(this, sysSocket,
-					handshakeTimeout > 0 ? haxe.Timer.stamp() + handshakeTimeout : Math.POSITIVE_INFINITY);
+					handshakeTimeout > 0 ? haxe.Timer.stamp() + handshakeTimeout : Math.POSITIVE_INFINITY, sysSocket.peer());
 				__pendingHandshakes.push(pending);
 
 				// In the poll set, so each flight the peer sends steps the
@@ -965,7 +985,14 @@ class ServerSocket extends EventDispatcher {
 				return true;
 			}
 
-			var socket:CBSocket = __fromSocket(sysSocket);
+			var socket:Null<CBSocket> = __fromSocket(sysSocket);
+			if (socket == null) {
+				// Gone already; the next one may not be.
+				try {
+					sysSocket.close();
+				} catch (_:Dynamic) {}
+				return true;
+			}
 			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
 			return true;
 		} catch (e:Error) {
@@ -991,8 +1018,10 @@ class ServerSocket extends EventDispatcher {
 	@:noCompletion private function __admits(sysSocket:Socket):Bool {
 		var admitted:Bool = false;
 		try {
+			// Null for a peer already gone (see __fromSocket), which the catch
+			// below never caught: reading through null is no exception on hxcpp.
 			var peer = sysSocket.peer();
-			admitted = admit(crossbyte._internal.net.IPv6.compress(peer.host.toString()), peer.port);
+			admitted = peer != null && admit(crossbyte._internal.net.IPv6.compress(peer.host.toString()), peer.port);
 		} catch (_:Dynamic) {
 			admitted = false;
 		}
@@ -1345,7 +1374,11 @@ class ServerSocket extends EventDispatcher {
 		try {
 			// Its socket stays in the poll set, answering to the connection
 			// from here on.
-			var cbSocket:CBSocket = __fromSocket(pending.socket);
+			var cbSocket:Null<CBSocket> = __fromSocket(pending.socket, pending.peer);
+			if (cbSocket == null) {
+				__closeHandshake(pending);
+				return;
+			}
 			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, cbSocket));
 		} catch (_:Dynamic) {
 			__closeHandshake(pending);
@@ -1401,6 +1434,11 @@ final class PendingHandshake implements IPollableSocket {
 	public var socket(default, null):Socket;
 	public var deadline(default, null):Float;
 
+	// The peer's address when the connection was accepted: a client that
+	// leaves the moment its handshake is done has none by the time the
+	// connection is announced, on Linux and macOS. Null if it had none then.
+	public var peer(default, null):Null<{host:sys.net.Host, port:Int}>;
+
 	// The runtime whose poll set it is in, if it is in one.
 	public var runtime:CrossByte = null;
 
@@ -1411,10 +1449,11 @@ final class PendingHandshake implements IPollableSocket {
 
 	@:noCompletion private var __server:ServerSocket;
 
-	public function new(server:ServerSocket, socket:Socket, deadline:Float) {
+	public function new(server:ServerSocket, socket:Socket, deadline:Float, ?peer:{host:sys.net.Host, port:Int}) {
 		__server = server;
 		this.socket = socket;
 		this.deadline = deadline;
+		this.peer = peer;
 	}
 
 	@:noCompletion private inline function get_registryClosed():Bool {
