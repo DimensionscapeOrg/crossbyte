@@ -90,10 +90,11 @@ final class File extends EventDispatcher {
 		on macOS, and on Linux where the C library has `statx` (glibc 2.28)
 		and the file system records a birth time, natively, on the jvm and
 		on Node. `null` where the file system keeps none. On Node it is
-		Node's `birthtime`; on the jvm the attribute `creationTime`, which
-		before Java 22 on Linux is the modification time, the JVM's own
-		fallback. It is never POSIX's `ctime`, which is when the file's status
-		last changed, a chmod, a rename or a write moves it on.
+		Node's `birthtime`; on the jvm the attribute `creationTime`, and
+		`null` on Linux before Java 22, whose JVM answers the modification
+		time in its place. It is never POSIX's `ctime`, which is when the
+		file's status last changed, a chmod, a rename or a write moves it
+		on.
 
 		@throws IOError               The file does not exist or cannot be
 									  examined.
@@ -2722,6 +2723,13 @@ final class File extends EventDispatcher {
 		#elseif jvm
 		try {
 			var time:java.nio.file.attribute.FileTime = cast java.nio.file.Files.getAttribute(java.nio.file.Paths.get(__path), "basic:creationTime");
+			// Before Java 22 the JVM reads no birth time on Linux, and answers
+			// the modification time in its place: a rewrite moved the file's
+			// "creation" on, as ctime did. Asked all the same, so that a file
+			// that is not there still throws.
+			if (__jvmGuessesCreation()) {
+				return null;
+			}
 			return Date.fromTime(__longToFloat(time.toMillis()));
 		} catch (e:Dynamic) {
 			throw __missingOr(__path, e);
@@ -2735,6 +2743,25 @@ final class File extends EventDispatcher {
 			+ " on " + System.PLATFORM + ": its stat reports when the file's status last changed, which is not when it was made. Natively, on the jvm and on Node it is read.");
 		#end
 	}
+
+	#if jvm
+	@:noCompletion private static var __creationGuessed:Null<Bool> = null;
+
+	/**
+		Whether this JVM's `creationTime` is the modification time standing in
+		for a birth time it cannot read: on Linux before Java 22, which read
+		it through `statx`.
+	**/
+	@:noCompletion private static function __jvmGuessesCreation():Bool {
+		if (__creationGuessed == null) {
+			var version:String = java.lang.System.getProperty("java.specification.version");
+			// "1.8" through Java 8, then "9", "11", "22".
+			var feature:Null<Int> = version == null ? null : Std.parseInt(StringTools.startsWith(version, "1.") ? version.substr(2) : version);
+			__creationGuessed = System.PLATFORM == "linux" && (feature == null || feature < 22);
+		}
+		return __creationGuessed;
+	}
+	#end
 
 	@:noCompletion private function get_data():ByteArray {
 		// As documented: an error rather than null when nothing has been

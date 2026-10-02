@@ -400,12 +400,15 @@ class HTTPServerConfig {
 		second, so the deadline is precise to roughly a quarter second.
 
 		Neither this at `0` nor `keepAliveTimeout` at `0` lifts the deadline
-		a response being sent keeps of its own: one the server sends in
-		bursts, a file over 256 KB, or a body too large for the output
-		buffer, whose client takes none of it for 30 seconds is given up,
-		the connection closed under HTTP/1.1 and the stream reset under
-		HTTP/2. With both at `0` that deadline went unchecked, and a client
-		that stopped reading held its file and its connection for good.
+		a response keeps of its own while it goes out: one whose client takes
+		none of it for 30 seconds is given up, a file the server sends in
+		bursts, a body written whole and waiting on an HTTP/2 stream's window,
+		or bytes in a socket its client stopped reading, the connection
+		closed under HTTP/1.1, and under HTTP/2 the stream reset, or the
+		connection closed when its own window is what holds them. With both at
+		`0` that deadline went unchecked for a file, and a body written whole
+		had none at all: a client that stopped reading held either, and its
+		connection, for good.
 	**/
 	public var requestTimeout:Float;
 
@@ -490,6 +493,13 @@ class HTTPServerConfig {
 		is closed without a `408`. Enforced by the same sweep as
 		`requestTimeout`, so precision is roughly a quarter second.
 
+		A connection is idle from when its last response has gone to the
+		client, not from when it was written: counted from then, a response
+		larger than the system takes at once, to a client slower to read it
+		than this, was cut off as though the connection sat idle. One with
+		`Connection: close`, and one `HTTPServer.drain` closes, likewise close
+		once what they sent has gone, where it was thrown away.
+
 		An HTTP/2 connection is idle while it has no stream open, counted
 		from when its last one ended. Its PINGs, SETTINGS and WINDOW_UPDATEs
 		ask nothing of the server and do not count: they used to, so a client
@@ -542,6 +552,20 @@ class HTTPServerConfig {
 		`0` restores the old behaviour of no limit at all, which bounds nothing:
 		a client that stops reading mid-response then holds its whole response in
 		memory for as long as it likes, and many of them hold many.
+
+		Over HTTP/2 the limit is the connection's, across its streams: what
+		flow control holds back on each stream counts with what the socket
+		holds. While a connection holds this much, the requests it sends next
+		wait to be handed to the application, as an HTTP/1.1 connection's
+		next request waits behind the response going out, and go on, in the
+		order they came, as its client takes what is held. They wait rather
+		than being refused: `REFUSED_STREAM` would turn a slow reader's page
+		into errors and retries. Each stream's response used to wait whole on
+		its client's window, up to this much apiece, so a client that opened
+		128 streams and no window held 128 times this, a gigabyte at the
+		default. An answer an application gives later, to a request it was
+		handed before the connection filled, is held as well; what bounds that
+		is the stall deadline (see `requestTimeout`).
 	**/
 	public var maxOutputBufferSize:Int = DEFAULT_MAX_OUTPUT_BUFFER;
 

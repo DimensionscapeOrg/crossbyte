@@ -219,9 +219,9 @@ class MetricsTest extends utest.Test {
 		Assert.isTrue(text.indexOf("disk_free_bytes 5000000000\n") >= 0, text);
 		Assert.isTrue(text.indexOf("balance -5000000000\n") >= 0, text);
 		Assert.isTrue(text.indexOf("largest_exact 9007199254740991\n") >= 0, text);
-		#if neko
-		// Printed as the Float it is, which neko's Std.string gives to 14
-		// significant digits: 1.8014398509482e+16.
+		#if (neko || hl)
+		// Printed as the Float it is, which neko's and HashLink's Std.string
+		// give to 14 significant digits: 1.8014398509482e+16.
 		Assert.isTrue(Math.abs(__sample(text, "past_exact") / 18014398509481984.0 - 1) < 1e-13, text);
 		#else
 		Assert.equals(18014398509481984.0, __sample(text, "past_exact"));

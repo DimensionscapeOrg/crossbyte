@@ -81,6 +81,12 @@ class Worker extends EventDispatcher {
 		super();
 		#if target.threaded
 		__lock = new Mutex();
+		// Made here, before any thread can write this object. A neko object
+		// gains a field when it is first set, which can move its field table,
+		// and run() first set this one just after starting the thread: work
+		// that cancelled itself at once wrote CANCELLED into the table being
+		// left, and the worker read RUNNING for good (35 runs in 20,000).
+		__workerThread = null;
 		#end
 		__resetState();
 	}

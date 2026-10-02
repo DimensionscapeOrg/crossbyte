@@ -59,14 +59,17 @@ interface HTTPResponseWriter {
 
 	/**
 	 * Has the server's sweep call `check` with its `haxe.Timer.stamp()`, a
-	 * few times a second, while a body is pumped out, so a transfer the peer
-	 * has stopped taking has a deadline; `null` stops it. The sweep runs for
-	 * these whatever `requestTimeout` and `keepAliveTimeout` are, and visits
-	 * only these when both are off: a stall deadline was checked from the
-	 * walk those two arm, so with both at `0` it never was. A writer with no
-	 * server behind it has no sweep, and ignores this.
+	 * few times a second, while a body is pumped out or bytes wait on the
+	 * peer, so a transfer the peer has stopped taking has a deadline; `null`
+	 * stops it. The sweep runs for these whatever `requestTimeout` and
+	 * `keepAliveTimeout` are, and visits only these when both are off: a
+	 * stall deadline was checked from the walk those two arm, so with both
+	 * at `0` it never was.
+	 *
+	 * @return Whether a sweep runs it: false for a writer with no server
+	 *         behind it, which has no sweep and ignores this.
 	 */
-	function sweepWith(check:Null<Float->Void>):Void;
+	function sweepWith(check:Null<Float->Void>):Bool;
 
 	/**
 	 * Tells a client that sent `Expect: 100-continue` to send its body: an
