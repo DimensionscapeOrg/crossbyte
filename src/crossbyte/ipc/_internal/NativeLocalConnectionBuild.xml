@@ -9,5 +9,9 @@
 
 	<target id="haxe">
 		<files id="crossbyte-ipc-localconnection-native"/>
+		<!-- A pipe's security descriptor and its owner: ConvertStringSecurity-
+		     DescriptorToSecurityDescriptor, GetSecurityInfo and the token calls
+		     live in advapi32. -->
+		<lib name="advapi32.lib" if="windows"/>
 	</target>
 </xml>
