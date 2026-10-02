@@ -127,6 +127,24 @@ class FileOps {
 	}
 
 	/**
+		`path` opened to be read while another handle writes it, as an UPDATE
+		`FileStream`'s two handles do. BSD stdio -- macOS's -- keeps a read-only
+		stream's buffer across a seek into what it holds, so the reader went
+		on reading what the writer had since overwritten. A stream opened for
+		reading and writing seeks to the file every time, so it is opened so
+		natively, and only read. Elsewhere the plain read handle.
+	**/
+	public static function readSeeingWrites(path:String):#if (js && !nodejs) Dynamic #else sys.io.FileInput #end {
+		#if (js && !nodejs)
+		throw new crossbyte.errors.IllegalOperationError("Cannot read " + path + ": this target has no filesystem.");
+		#elseif cpp
+		return @:privateAccess new sys.io.FileInput(cpp.NativeFile.file_open(path, "rb+"));
+		#else
+		return sys.io.File.read(path, true);
+		#end
+	}
+
+	/**
 		`path` opened to be written from empty, as `sys.io.File.write` promises
 		and on the jvm under Windows does not keep: it deletes the file and
 		opens it afresh, Windows refuses the delete while any other handle has

@@ -1834,7 +1834,9 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 				case UPDATE:
 					__output = HaxeFile.update(path, true);
 					__output.seek(0, FileSeek.SeekBegin);
-					__input = HaxeFile.read(path, true);
+					// One that sees what __output writes: on macOS a plain read
+					// handle read back what had been overwritten (see FileOps).
+					__input = FileOps.readSeeingWrites(path);
 			}
 		} catch (e:Dynamic) {
 			__releaseSync();

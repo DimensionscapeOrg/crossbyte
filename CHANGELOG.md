@@ -2416,6 +2416,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `FileStream` open in `UPDATE` mode reads back what it wrote on macOS.
+  It reads and writes through two handles, flushing the writer and
+  seeking the reader before each read; BSD stdio, macOS's, keeps a
+  read-only stream's buffer across a seek into what it holds, so the
+  reader went on reading what had since been overwritten -- "abcdef"
+  where "abXYef" had been written, and the same after `truncate()`. The
+  reading handle is opened for reading and writing natively, which BSD
+  stdio seeks for every time.
 - A connected `DatagramSocket` sends on macOS and the BSDs. Every send
   named the peer, as the socket names it whether or not it is connected,
   and those systems refuse an address on a connected datagram socket's
