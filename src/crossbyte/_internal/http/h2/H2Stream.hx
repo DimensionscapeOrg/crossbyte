@@ -74,6 +74,13 @@ class H2Stream {
 	public var headerSectionReceived:Bool = false;
 
 	/**
+		On the client, the most response body this stream holds, in bytes;
+		`0` or less for no limit. Past it the stream is given up -- `failure`
+		says why -- and reset.
+	**/
+	public var maxBodyLength:Int = 0;
+
+	/**
 	 * Frames the peer has sent this stream: one per header block and one per
 	 * DATA frame. Counted rather than timed, so the frame path pays an
 	 * increment and not a clock read; a client waiting on the stream reads it
@@ -174,6 +181,12 @@ class H2Stream {
 		__body = new BytesBuffer();
 		__bodyLength = 0;
 		return out;
+	}
+
+	/** Lets go of the body received so far, for a response given up on. */
+	public function dropBody():Void {
+		__body = new BytesBuffer();
+		__bodyLength = 0;
 	}
 
 	/** Bytes waiting on a flow-control window. */

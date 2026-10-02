@@ -178,9 +178,12 @@ class H2ClientSession {
 	 * from going out. A response that keeps coming is waited for however
 	 * long it takes. `0` or less is no limit: the request waits until its
 	 * stream ends, it is cancelled, or the connection goes.
+	 *
+	 * `maxBodyLength` is the most response body the stream holds, `0` or
+	 * less for none; absent, the connection's `maxResponseBodySize`.
 	 */
 	public function execute(method:String, scheme:String, authority:String, path:String, headers:Array<HpackHeader>, body:Null<Bytes>,
-			timeoutSeconds:Float, ?cancelToken:HTTPCancelToken):H2Stream {
+			timeoutSeconds:Float, ?cancelToken:HTTPCancelToken, ?maxBodyLength:Int):H2Stream {
 		var target:H2Stream;
 		var waiter:Lock = new Lock();
 		var hasBody:Bool = body != null && body.length > 0;
@@ -204,6 +207,10 @@ class H2ClientSession {
 		} catch (e:Dynamic) {
 			__lock.release();
 			throw e;
+		}
+		// Before the lock is let go, so before any of the response is read.
+		if (maxBodyLength != null) {
+			target.maxBodyLength = maxBodyLength;
 		}
 
 		// Registered before the lock is dropped so the reader cannot close the

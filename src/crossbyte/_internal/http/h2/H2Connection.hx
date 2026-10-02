@@ -49,6 +49,25 @@ class H2Connection {
 	 */
 	public var maxHeaderBlockSize:Int = 256 * 1024;
 
+	/**
+		The HTTP/1.1 client's limit on a response body, 64 MB: what a stream
+		opened from here holds before it is given up, unless its opener says
+		otherwise (`H2Stream.maxBodyLength`).
+	**/
+	public static inline var DEFAULT_MAX_RESPONSE_BODY_SIZE:Int = 64 * 1024 * 1024;
+
+	/**
+		The most response body each stream opened from here holds, in bytes;
+		`0` or less for no limit. A stream whose body goes past it is reset
+		with CANCEL, its body let go and `failure` saying why, and the
+		connection carries on.
+
+		Flow control did not bound it: the stream's window is opened again as
+		each half of it arrives, so the client can never fall behind, and a
+		server sending without end grew the body without end.
+	**/
+	public var maxResponseBodySize:Int = DEFAULT_MAX_RESPONSE_BODY_SIZE;
+
 	/** Our settings, sent at startup. */
 	public final localSettings:H2Settings;
 
@@ -189,6 +208,7 @@ class H2Connection {
 		__nextStreamId += 2;
 
 		var target:H2Stream = new H2Stream(id, remoteSettings.initialWindowSize, localSettings.initialWindowSize);
+		target.maxBodyLength = maxResponseBodySize;
 		__streams.set(id, target);
 
 		var block:Array<HpackHeader> = [
@@ -593,6 +613,18 @@ class H2Connection {
 			target.framesIn++;
 			target.recvWindow -= counted;
 			target.unacknowledged += counted;
+
+			if (target.maxBodyLength > 0 && content.length > target.maxBodyLength - target.bodyLength) {
+				// Given up, as the HTTP/1.1 client gives up a body past its
+				// limit, and let go of at once: the caller is told why, and
+				// what the server sends the stream from here is counted for
+				// the connection's window and dropped.
+				target.failure = 'Response body exceeded ${target.maxBodyLength} bytes';
+				target.dropBody();
+				resetStream(target.id, H2ErrorCode.CANCEL);
+				__topUpConnectionWindow();
+				return;
+			}
 			target.appendBody(content);
 
 			if (frame.has(H2Flags.END_STREAM)) {

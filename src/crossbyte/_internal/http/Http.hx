@@ -40,9 +40,10 @@ class Http {
 
 	/**
 	 * Maximum number of bytes a response body framed by `Content-Length`, or by
-	 * the connection closing, may declare or deliver. Defaults to 64 MB; set to
-	 * `<= 0` to disable. `MAX_CHUNKED_BODY_SIZE` is the same bound for a
-	 * chunked body.
+	 * the connection closing, may declare or deliver -- and, over HTTP/2, what
+	 * a response's DATA frames may deliver. Defaults to 64 MB; set to `<= 0`
+	 * to disable. `MAX_CHUNKED_BODY_SIZE` is the same bound for a chunked
+	 * body.
 	 *
 	 * A declared length is checked before anything is allocated for it. The
 	 * body used to be allocated whole from the header, so one response saying
