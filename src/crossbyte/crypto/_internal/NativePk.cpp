@@ -21,6 +21,7 @@
 #include <mutex>
 #include <vector>
 
+#include <mbedtls/version.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/ecdsa.h>
 #include <mbedtls/ecp.h>
@@ -83,16 +84,16 @@ namespace {
 #endif
 	}
 
+	// The curve's size, through the one accessor both mbedTLS 2.28 and 3.x
+	// have: 3.x made the key's group private. The bit length mbedTLS reports
+	// for an EC key is the field's, which for every curve JOSE names (P-256,
+	// P-384, P-521) is also the order's, so the width matches either way.
 	size_t ecCoordinateSize(mbedtls_pk_context *ctx) {
 		mbedtls_pk_type_t type = mbedtls_pk_get_type(ctx);
 		if (type != MBEDTLS_PK_ECKEY && type != MBEDTLS_PK_ECKEY_DH && type != MBEDTLS_PK_ECDSA) {
 			return 0;
 		}
-		mbedtls_ecp_keypair *ec = mbedtls_pk_ec(*ctx);
-		if (ec == nullptr) {
-			return 0;
-		}
-		return (ec->grp.nbits + 7) / 8;
+		return (mbedtls_pk_get_bitlen(ctx) + 7) / 8;
 	}
 
 	// JOSE carries ECDSA signatures as the fixed-width concatenation r||s;
@@ -272,8 +273,14 @@ bool crossbyte_pk_available() {
 	g_parses++;
 
 	hx::EnterGCFreeZone();
+#if MBEDTLS_VERSION_NUMBER >= 0x03000000
+	// 3.x wants randomness to check an EC private key against its public half.
+	int rc = isPrivate ? mbedtls_pk_parse_key(&state->pk, buffer, parseLength, nullptr, 0, osRandom, nullptr)
+		: mbedtls_pk_parse_public_key(&state->pk, buffer, parseLength);
+#else
 	int rc = isPrivate ? mbedtls_pk_parse_key(&state->pk, buffer, parseLength, nullptr, 0)
 		: mbedtls_pk_parse_public_key(&state->pk, buffer, parseLength);
+#endif
 	hx::ExitGCFreeZone();
 
 	mbedtls_platform_zeroize(buffer, capacity);
@@ -354,7 +361,11 @@ int crossbyte_pk_key_sign_sha256(::Dynamic key, const uint8_t *hash, uint8_t *ou
 		} else {
 			unsigned char der[kMaxSignatureLength];
 			size_t derLength = 0;
+#if MBEDTLS_VERSION_NUMBER >= 0x03000000
+			rc = mbedtls_pk_sign(&state->pk, MBEDTLS_MD_SHA256, digest, kSha256Length, der, sizeof(der), &derLength, osRandom, nullptr);
+#else
 			rc = mbedtls_pk_sign(&state->pk, MBEDTLS_MD_SHA256, digest, kSha256Length, der, &derLength, osRandom, nullptr);
+#endif
 
 			if (rc == 0) {
 				if (signatureFormat == 1) {

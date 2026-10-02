@@ -13,6 +13,12 @@
 #include <pthread.h>
 #endif
 
+// mbedTLS 3 marks the config's fields private, and MBEDTLS_PRIVATE(x) is the
+// name each one has there. 2.28 has neither the macro nor the renaming.
+#ifndef MBEDTLS_PRIVATE
+#define MBEDTLS_PRIVATE(member) member
+#endif
+
 namespace {
 
 // hxcpp wraps each mbedTLS handle in an hx::Object whose definition lives
@@ -142,10 +148,11 @@ int crossbyte_alpn_set(::Dynamic conf, ::Array<::String> protocols) {
 	int count = (protocols == null()) ? 0 : protocols->length;
 	if (count <= 0) {
 		// `mbedtls_ssl_conf_alpn_protocols` walks *protos before testing
-		// protos, so passing NULL to turn ALPN off segfaults. The handshake
-		// guards on `alpn_list == NULL`, which is the supported way off.
+		// protos, so passing NULL to turn ALPN off segfaults (2.28 and 3.6
+		// alike). The handshake guards on `alpn_list == NULL`, which is the
+		// supported way off.
 		remember(config, 0);
-		config->alpn_list = 0;
+		config->MBEDTLS_PRIVATE(alpn_list) = 0;
 		return 0;
 	}
 
@@ -197,7 +204,7 @@ void crossbyte_alpn_release(::Dynamic conf) {
 	remember(config, 0);
 
 #if defined(MBEDTLS_SSL_ALPN)
-	config->alpn_list = 0;
+	config->MBEDTLS_PRIVATE(alpn_list) = 0;
 #endif
 }
 
