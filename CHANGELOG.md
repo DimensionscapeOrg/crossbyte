@@ -2306,6 +2306,24 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A connection a native TLS server accepted no longer reads freed memory
+  once the server has closed its listener: after `stopAccepting()` or
+  `HTTPServer.drain()`, or under a server closed with connections still
+  open. hxcpp sets every accepted connection up on its listener's TLS
+  configuration, and freed that configuration with the listener. With the
+  fork's mbedTLS 3.6.7 on Linux the next read on such a connection
+  crashed the process -- the posix native suite did, in
+  `HTTPServerTLSTest`, on every run -- where 2.28 read zeros unnoticed.
+  The fork's `feature/mbedtls-3.6.7` keeps a configuration until the last
+  connection on it has gone; `TlsProtocolTest` reads the configuration
+  through an accepted connection after `stopAccepting()`, and sends over
+  it.
+- `Socket.alpnProtocol` on such a connection still names the protocol it
+  agreed. The connection points into its listener's ALPN list, which
+  CrossByte freed when the listener closed, and the next allocations of
+  that size took the memory over. Each distinct list is now kept for the
+  life of the process, one copy however many sockets install it, so the
+  HTTP/2 client no longer allocates one for every connection either.
 - `FileStream.readObject` refuses an object nested past the same depth
   `ByteArray.readObject` now does, with an `IOError`, in both open modes:
   a file holding an object nested a few thousand deep ran the reader out

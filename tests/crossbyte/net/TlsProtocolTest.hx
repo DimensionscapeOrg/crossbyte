@@ -2,6 +2,8 @@ package crossbyte.net;
 
 #if cpp
 import crossbyte._internal.http.NativeTlsPeer;
+import crossbyte._internal.socket.AlpnSocket;
+import crossbyte._internal.socket.NativeAlpn;
 import crossbyte.core.CrossByte;
 import crossbyte.events.Event;
 import crossbyte.events.IOErrorEvent;
@@ -41,6 +43,15 @@ class TlsProtocolTest extends utest.Test {
 	private static function __protocolOf(socket:Socket):Null<String> {
 		var inner:Dynamic = @:privateAccess socket.__socket;
 		return NativeTlsPeer.protocol(@:privateAccess (cast inner : sys.ssl.Socket).ssl);
+	}
+
+	/**
+		Which end the configuration under a secure `Socket`'s TLS context says
+		it is: 1 for a server, 0 for a client.
+	**/
+	private static function __endpointOf(socket:Socket):Int {
+		var inner:Dynamic = @:privateAccess socket.__socket;
+		return NativeTlsPeer.endpoint(@:privateAccess (cast inner : sys.ssl.Socket).ssl);
 	}
 
 	public function testBothEndsOfANativeConnectionRunTheNewestVersion():Void {
@@ -333,6 +344,156 @@ class TlsProtocolTest extends utest.Test {
 		Assert.equals(0, accepted.length, "a TLS 1.1 client was accepted");
 		Assert.equals("error ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION", node.lines.join("|"),
 			"the client should hear the server's protocol_version alert");
+	}
+
+	/**
+		A connection a TLS server accepted carries on after the server stops
+		accepting, on a configuration that is still its own.
+
+		hxcpp gives every connection a listener accepts the listener's mbedTLS
+		configuration, which mbedTLS reads on each record, and closing the
+		listener freed it: from then on every connection the server had
+		accepted read freed memory. `stopAccepting()` closes the listener so a
+		successor can bind while the connections finish -- a graceful
+		shutdown did exactly that. 2.28 kept the configuration's flags at the
+		end of the structure and read zeros there; 3.6 keeps them first, where
+		the allocator writes its own bookkeeping, and on Linux a connection
+		took the garbage for a renegotiation request and crashed in the
+		handshake it began. The fork keeps a configuration until the last
+		connection on it has gone.
+	**/
+	public function testAnAcceptedConnectionOutlivesItsListener():Void {
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			// No openssl to make a certificate with.
+			Assert.pass();
+			return;
+		}
+
+		var server = new ServerSocket(true);
+		server.setCertificate(fixture.certificate, fixture.key);
+		var accepted:Array<Socket> = [];
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
+			var peer = e.socket;
+			accepted.push(peer);
+			peer.addEventListener(ProgressEvent.SOCKET_DATA, function(_) {
+				var text = peer.readUTFBytes(peer.bytesAvailable);
+				peer.writeUTFBytes(text.toUpperCase());
+				peer.flush();
+			});
+		});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		var heard:String = "";
+		var failure:String = null;
+		var client = new Socket();
+		client.secure = true;
+		client.certAuthority = fixture.certificate;
+		client.addEventListener(Event.CONNECT, function(_) {
+			client.writeUTFBytes(HELLO);
+			client.flush();
+		});
+		client.addEventListener(ProgressEvent.SOCKET_DATA, function(_) {
+			heard += client.readUTFBytes(client.bytesAvailable);
+		});
+		client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) {
+			if (failure == null) {
+				failure = e.text;
+			}
+		});
+
+		var before:Int = -2;
+		var after:Int = -2;
+		NetPump.until(() -> server.localPort != 0, 5.0, _ -> {});
+		client.connect("127.0.0.1", server.localPort);
+		NetPump.until(() -> heard.length >= HELLO.length || failure != null, 15.0, _ -> {});
+		if (accepted.length == 1) {
+			before = __endpointOf(accepted[0]);
+			server.stopAccepting();
+			after = __endpointOf(accepted[0]);
+		}
+		client.writeUTFBytes(HELLO);
+		client.flush();
+		NetPump.until(() -> heard.length >= HELLO.length * 2 || failure != null, 15.0, _ -> {});
+
+		try client.close() catch (_:Dynamic) {}
+		for (peer in accepted) {
+			try peer.close() catch (_:Dynamic) {}
+		}
+		try server.close() catch (_:Dynamic) {}
+
+		Assert.isNull(failure, "the connection failed: " + failure);
+		Assert.equals(1, accepted.length, "the server did not accept the one connection");
+		Assert.equals(1, before, "the accepted connection's configuration is not a server's");
+		Assert.equals(1, after, "the accepted connection's configuration went with its listener");
+		Assert.equals(HELLO.toUpperCase() + HELLO.toUpperCase(), heard, "the connection did not carry on after the listener closed");
+	}
+
+	/**
+		An accepted connection still names the protocol it agreed after its
+		listener has closed.
+
+		A connection points at the name its handshake agreed on, inside the
+		listener's ALPN list, and keeps no copy; the list is CrossByte's, and
+		it was freed when the listener closed -- under connections that, now
+		the configuration outlives the listener, carry on. Asked after that,
+		a connection read its protocol from freed memory, and lists made
+		next took the memory over: these of the same sizes, on Linux, every
+		time.
+	**/
+	public function testAnAcceptedConnectionKeepsItsProtocolAfterItsListenerCloses():Void {
+		var fixture = TLSTestFixture.selfSigned();
+		if (fixture == null) {
+			// No openssl to make a certificate with.
+			Assert.pass();
+			return;
+		}
+
+		// AlpnSocket, which ServerSocket listens with, driven directly: one
+		// connection, accepted and handshaken in step with the client thread.
+		var server = new AlpnSocket();
+		server.verifyCert = false;
+		server.setCertificate(fixture.certificate.__native, fixture.key.__native);
+		server.setALPN(["h2", "http/1.1"]);
+		server.bind(new sys.net.Host("127.0.0.1"), 0);
+		server.listen(1);
+		var port:Int = server.host().port;
+
+		var client = sys.thread.Thread.create(() -> {
+			try {
+				var socket = new AlpnSocket();
+				socket.verifyCert = false;
+				socket.setALPN(["h2"]);
+				socket.connect(new sys.net.Host("127.0.0.1"), port);
+				sys.thread.Thread.readMessage(true);
+				socket.close();
+			} catch (_:Dynamic) {}
+		});
+
+		var accepted = server.accept();
+		accepted.handshake();
+		var agreed:Null<String> = AlpnSocket.negotiated(accepted);
+
+		server.close();
+		// Allocations the size of the listener's list and its names.
+		var others:Array<Dynamic> = [];
+		for (_ in 0...16) {
+			var conf:Dynamic = cpp.NativeSsl.conf_new(false);
+			NativeAlpn.set(conf, ["xy", "abcdefgh"]);
+			others.push(conf);
+		}
+		var later:Null<String> = AlpnSocket.negotiated(accepted);
+
+		client.sendMessage("done");
+		accepted.close();
+		for (conf in others) {
+			NativeAlpn.release(conf);
+			cpp.NativeSsl.conf_close(conf);
+		}
+
+		Assert.equals("h2", agreed, "the handshake did not agree on h2");
+		Assert.equals("h2", later, "the connection's protocol went with its listener");
 	}
 
 	/**
