@@ -2377,6 +2377,18 @@ entry below says how:
   Only a stream opened after that is refused. A connection may carry a
   few requests past `keepAliveMaxRequests` for it. Closing it no longer
   repeats the final GOAWAY.
+- The HTTP/2 client no longer fails the requests in flight on a
+  connection whose server has said GOAWAY. A request refused on such a
+  connection was retried on another, as it should be, but the connection
+  it was refused on was closed on the spot, and every other request still
+  waiting on it failed with "connection closed before the response
+  headers arrived" though the server was answering it. With the server
+  fix above, eight concurrent clients making 12,001 small requests still
+  lost 42, 330 and 1,599 of them to this when CrossByte's server ended a
+  connection every 1,000, 100 and 20 requests; none now. The pool takes a
+  connection that has heard GOAWAY out of service and leaves it to close
+  once its last request ends; so does the pool's idle sweep, for a
+  connection still carrying requests when it is swept.
 - An HTTP/2 server that stops reading no longer holds the client's
   requests past their timeouts, nor a cancel, nor a close. Every frame a
   connection sent -- a request's head and body, a reset, the answers to
