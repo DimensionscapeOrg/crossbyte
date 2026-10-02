@@ -230,6 +230,12 @@ class H2ConnectionPool {
 				// Reaped on the way past rather than by a sweep: a dead
 				// session is only interesting to whoever next wants one.
 				list.splice(index, 1);
+			} else if (candidate.goingAway) {
+				// Its peer has said GOAWAY, so it takes no new stream: out of
+				// the pool, and retired by the caller, which leaves the
+				// streams it carries to finish (H2ClientSession.retire).
+				list.splice(index, 1);
+				expired.push(candidate);
 			} else if (__isExpired(candidate)) {
 				// Closed by the caller, outside the lock: close() wakes
 				// waiters and touches the socket, which is more than should
@@ -288,10 +294,15 @@ class H2ConnectionPool {
 		return idleTimeoutSeconds >= 0 && session.retireIfIdle(idleTimeoutSeconds);
 	}
 
+	/**
+		Retires sessions taken out of the pool: closed at once when they carry
+		nothing, dead, or idle, and otherwise once the last stream on them
+		ends (`H2ClientSession.retire`).
+	**/
 	private static function __closeAll(sessions:Array<H2ClientSession>):Void {
 		for (session in sessions) {
 			try {
-				session.close();
+				session.retire();
 			} catch (_:Dynamic) {}
 		}
 	}
@@ -318,7 +329,7 @@ class H2ConnectionPool {
 			var index:Int = list.length - 1;
 			while (index >= 0) {
 				var candidate:H2ClientSession = list[index];
-				if (candidate.dead || __isExpired(candidate)) {
+				if (candidate.dead || candidate.goingAway || __isExpired(candidate)) {
 					list.splice(index, 1);
 					expired.push(candidate);
 				}
@@ -333,6 +344,29 @@ class H2ConnectionPool {
 
 		__closeAll(expired);
 		return expired.length;
+	}
+
+	/**
+		Takes a session out of the pool without cutting short the requests it
+		carries: it closes once the last of them ends. For one that refused a
+		new request, its peer said GOAWAY, or the pool retired it as idle a
+		moment after handing it over, where `discard` would fail every other
+		request still on it.
+	**/
+	public static function retire(session:H2ClientSession):Void {
+		__lock.acquire();
+		var list:Null<Array<H2ClientSession>> = __sessions.get(session.origin);
+		if (list != null) {
+			list.remove(session);
+			if (list.length == 0) {
+				__sessions.remove(session.origin);
+			}
+		}
+		__lock.release();
+
+		try {
+			session.retire();
+		} catch (_:Dynamic) {}
 	}
 
 	/** Drops a session, closing it if it is still alive. */

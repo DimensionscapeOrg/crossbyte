@@ -1829,7 +1829,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			page.onerror = null;
 			page.close();
 			#else
-			__socket.close();
+			// Guarded, not left to the catch: natively a call on null is no
+			// exception but the end of the process.
+			if (__socket != null) {
+				__socket.close();
+			}
 			#end
 		} catch (e:Dynamic) {}
 
@@ -2664,6 +2668,15 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			@:privateAccess
 			__cbInstance.unwatchWritable(__socket);
 			__dispatchPooledSimpleEvent(Event.CONNECT);
+			// Closed by a listener: nothing more is announced, and what this
+			// tick decided, a close the peer's hangup asked for, in the same
+			// tick on macOS, is not acted on a second time. It cleaned the
+			// socket up again, and natively called close() on the one the
+			// listener's close had let go: a null dereference that ended the
+			// process.
+			if (__socket == null) {
+				return;
+			}
 		}
 
 		// Data is delivered before the close is announced. This block used to
@@ -2676,6 +2689,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// problem; every target read in that order.
 		if (bLength > 0) {
 			__dispatchPooledSocketData(bLength, 0);
+			// As after CONNECT: a data listener may close it.
+			if (__socket == null) {
+				return;
+			}
 		}
 
 		// Announced after the data for the same reason CLOSE is: the peer's
@@ -2684,6 +2701,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (doPeerClose && !doClose) {
 			__dropReadInterest();
 			__dispatchPooledSimpleEvent(Event.PEER_CLOSE);
+			if (__socket == null) {
+				return;
+			}
 		}
 
 		if (doClose) {

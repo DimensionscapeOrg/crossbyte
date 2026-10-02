@@ -2416,6 +2416,53 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `Socket` whose `CONNECT` listener closes it, in the tick the peer
+  also hangs up, no longer ends a native process. The tick went on to the
+  close it had already decided on and cleaned the socket up a second time,
+  calling `close()` on the one the listener's close had let go: a null
+  dereference, which a native build does not catch. A server that answers
+  and closes at once lands its hangup in the connect's tick on macOS,
+  where the native suite died this way every run. After each event it
+  announces the tick now stops if a listener closed the socket.
+- An HTTP/2 connection that reaches `keepAliveMaxRequests`, has
+  `keepAlive` off, or is drained, no longer refuses the requests its
+  client already had in flight. Its one GOAWAY named the last stream at
+  once, so every stream the client had sent before reading it was reset
+  `REFUSED_STREAM`: 42 of 12,001 small requests from eight concurrent
+  CrossByte clients, a connection ending every thousand requests, as on
+  the base before the request-body budget. The server now ends a
+  connection in the two steps RFC 9113 6.8 describes: a GOAWAY naming no
+  stream and a PING, the streams that arrive meanwhile taken and
+  answered, and once the client has answered the PING, two seconds on
+  for one that never does, a final GOAWAY naming the last stream taken.
+  Only a stream opened after that is refused. A connection may carry a
+  few requests past `keepAliveMaxRequests` for it. Closing it no longer
+  repeats the final GOAWAY.
+- The HTTP/2 client no longer fails the requests in flight on a
+  connection whose server has said GOAWAY. A request refused on such a
+  connection was retried on another, as it should be, but the connection
+  it was refused on was closed on the spot, and every other request still
+  waiting on it failed with "connection closed before the response
+  headers arrived" though the server was answering it. With the server
+  fix above, eight concurrent clients making 12,001 small requests still
+  lost 42, 330 and 1,599 of them to this when CrossByte's server ended a
+  connection every 1,000, 100 and 20 requests; none now. The pool takes a
+  connection that has heard GOAWAY out of service and leaves it to close
+  once its last request ends; so does the pool's idle sweep, for a
+  connection still carrying requests when it is swept.
+- An HTTP/2 client can no longer stall the server, nor grow the server's
+  HPACK table, with its SETTINGS_HEADER_TABLE_SIZE. The server's encoder
+  followed whatever size a client advertised: a megabyte kept every
+  distinct response field in the server's memory for the connection's
+  life (28,745 bytes after 300 responses, where 4,096 is the default),
+  each searched for every field after; and a size of 2^31 or more, which
+  reads negative, sent the thread reading the connection round the
+  table's eviction loop forever on the one SETTINGS frame, and with it
+  every connection that thread serves. The server's encoder now keeps to 4 KB
+  (`H2Connection.MAX_ENCODER_TABLE_SIZE`) whatever the client says, as
+  the client's does, and still uses less when told less; and the HPACK
+  table takes a capacity below zero as zero rather than evicting toward
+  it.
 - An HTTP/2 server that stops reading no longer holds the client's
   requests past their timeouts, nor a cancel, nor a close. Every frame a
   connection sent, a request's head and body, a reset, the answers to
@@ -2444,8 +2491,10 @@ entry below says how:
   timeout, and the connection's threads with it. Natively, and on neko and
   HashLink, on Windows a TLS write the server is not taking still holds the
   writer thread until the server reads or goes, as a TLS read there already
-  does; the requests do not wait with it. Sequential small requests over loopback cost about the
-  same (106.6 to 109.1 microseconds, medians of nine native runs);
+  does; the requests do not wait with it. On HashLink under Linux the
+  request under a PING flood still did not end in CI, for a reason not
+  yet found (HashLink is not run locally). Sequential small requests over
+  loopback cost about the same (106.6 to 109.1 microseconds, medians of nine native runs);
   downloads and uploads are as fast or faster, a DATA frame no longer being
   copied twice.
 - The HTTP/2 client's HPACK encoder holds no more than the protocol's
