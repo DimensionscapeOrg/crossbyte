@@ -469,38 +469,89 @@ class LocalConnectionTest extends utest.Test {
 		// Each is written as far as the channel takes it and the rest queued,
 		// from where it stopped.
 		#if (cpp && (windows || linux || mac || macos))
+		var outcome = sendLargeFrames(0);
+		Assert.same([0, 1, 2, -2], outcome.received, 'after ${outcome.seconds} s; errors: ${outcome.errors}');
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		The same through socket buffers as small as macOS gives a local socket
+		-- 8 KB a direction, where Linux gives over 200 -- asked for on Linux
+		(which doubles what is asked: 4 KB asked is 8 KB had), and quickly.
+
+		On macOS the case above delivered two of the four frames in ten
+		seconds. Two costs grew as the buffer shrank. The reader moved at most
+		what the socket held each pass, then slept, from 1 ms to 10 ms as
+		passes found the socket still full or still empty, so the two sides
+		took turns at 8 KB a turn. And each pass copied whatever of a frame
+		had arrived so far to a new array and back, so a 3 MB frame arriving
+		8 KB at a time was copied 384 times over. Here on Linux the nine
+		megabytes took 3.0 s at that size, and take about 0.12 s now; more
+		than 2 s fails the case. macOS runs it at its own size, against the
+		ten-second deadline alone.
+	**/
+	@:timeout(60000)
+	public function testFramesArriveWholeThroughBuffersAsSmallAsMacOSGives():Void {
+		#if (cpp && (linux || mac || macos))
+		var outcome = sendLargeFrames(#if linux 4096 #else 0 #end);
+		Assert.same([0, 1, 2, -2], outcome.received, 'after ${outcome.seconds} s; errors: ${outcome.errors}');
+		#if linux
+		Assert.isTrue(outcome.seconds < 2.0, 'nine megabytes through 8 KB buffers took ${outcome.seconds} s');
+		#end
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		Three 3 MB frames and a small one, sent at once from a client to a
+		listener with sockets of `buffer` bytes a direction (0: the system's):
+		what arrived within ten seconds -- each frame's number, -2 for the
+		small one -- how long it took, and what either side was told went
+		wrong.
+	**/
+	private static function sendLargeFrames(buffer:Int):{received:Array<Int>, seconds:Float, errors:Array<String>} {
 		var name = uniqueName("large");
 		var server = new LocalConnection();
 		var client = new LocalConnection();
 		var received:Array<Int> = [];
+		var errors:Array<String> = [];
 		var readyCount = 0;
 		var size = 3 * 1024 * 1024;
 		server.readEnabled = true;
 		server.onData = input -> received.push(input.length == 5 ? -2 : numberOf(input, size));
 		server.onReady = () -> readyCount++;
 		client.onReady = () -> readyCount++;
+		server.onError = reason -> errors.push('server: $reason');
+		client.onError = reason -> errors.push('client: $reason');
+		var started = 0.0;
+		var seconds = 0.0;
 
+		LocalConnection.__setSocketBufferForTest(buffer);
 		try {
 			server.listen(name);
 			client.connect(name);
 			pumpUntil(() -> readyCount == 2, 2.0);
+			started = haxe.Timer.stamp();
 			for (i in 0...3) {
 				client.send(numbered(i, size));
 			}
 			client.send(bytesOf("after"));
 			pumpUntil(() -> received.length >= 4, 10.0);
+			seconds = haxe.Timer.stamp() - started;
 		} catch (e:Dynamic) {
+			LocalConnection.__setSocketBufferForTest(0);
 			closeQuietly(client);
 			closeQuietly(server);
 			throw e;
 		}
+		LocalConnection.__setSocketBufferForTest(0);
 
 		closeQuietly(client);
 		closeQuietly(server);
-		Assert.same([0, 1, 2, -2], received);
-		#else
-		Assert.pass();
-		#end
+		return {received: received, seconds: Math.round(seconds * 100) / 100, errors: errors};
 	}
 
 	public function testManyMessagesAreDeliveredInATick():Void {
