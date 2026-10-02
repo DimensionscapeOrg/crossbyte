@@ -33,6 +33,11 @@ import sys.thread.Thread;
  * It preserves the classic method-name plus serialized-arguments programming
  * model that used to live on `LocalConnection`, but now runs on top of the
  * low-level byte-oriented `LocalConnection` transport.
+ *
+ * A channel name is its user's own, as a `LocalConnection` name is: the
+ * processes of one user meet over it, those of two users never do, and what
+ * another user put under it is refused with an `IOError` -- by `connect`, or
+ * by `send` as an error `StatusEvent`.
  */
 @:access(haxe.Serializer)
 @:access(crossbyte.ipc.LocalConnection)

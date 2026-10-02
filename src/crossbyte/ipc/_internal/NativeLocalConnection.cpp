@@ -8,6 +8,13 @@
 #include <cstring>
 #if defined(_WIN32)
 #include <Windows.h>
+#include <aclapi.h>
+#include <sddl.h>
+#include <vector>
+// Vista's; older SDKs leave it out.
+#ifndef PIPE_REJECT_REMOTE_CLIENTS
+#define PIPE_REJECT_REMOTE_CLIENTS 0x00000008
+#endif
 #else
 #include <errno.h>
 #include <fcntl.h>
@@ -31,8 +38,10 @@ namespace
 	constexpr int CONNECT_WAIT_SLICE_MS = 50;
 	constexpr int PIPE_LISTEN_BACKLOG = 16;
 
-	const char* PIPE_PREFIX = "/tmp/crossbyte_local_connection_";
-	const size_t PIPE_PREFIX_LENGTH = std::strlen(PIPE_PREFIX);
+	// Why the last listen or connect on this thread failed: what
+	// native_localConnectionLastError answers, so the caller can tell a name
+	// that is not this user's from one in use or not listened on.
+	thread_local int lastError = LOCAL_CONNECTION_ERROR_NONE;
 
 	// Whether another attempt fits before `deadline`: a connect with no time
 	// left makes one attempt, and does not sleep a slice first.
@@ -55,9 +64,78 @@ namespace
 		return pipe == nullptr || pipe == INVALID_HANDLE_VALUE;
 	}
 
+	// This process's user: its SID, and the SID as text. Read once; empty
+	// when the process's token cannot be read.
+	struct ProcessUser
+	{
+		std::vector<unsigned char> sid;
+		std::string text;
+	};
+
+	const ProcessUser& processUser()
+	{
+		static const ProcessUser user = []() {
+			ProcessUser found;
+			HANDLE token = nullptr;
+			if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+			{
+				return found;
+			}
+			DWORD size = 0;
+			GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+			std::vector<unsigned char> buffer(size > 0 ? size : 1);
+			if (size > 0 && GetTokenInformation(token, TokenUser, buffer.data(), size, &size))
+			{
+				PSID sid = reinterpret_cast<TOKEN_USER*>(buffer.data())->User.Sid;
+				LPSTR text = nullptr;
+				if (IsValidSid(sid) && ConvertSidToStringSidA(sid, &text))
+				{
+					DWORD length = GetLengthSid(sid);
+					found.sid.assign(static_cast<unsigned char*>(sid), static_cast<unsigned char*>(sid) + length);
+					found.text = text;
+					LocalFree(text);
+				}
+			}
+			CloseHandle(token);
+			return found;
+		}();
+		return user;
+	}
+
+	// The pipe for `name`: this user's, by the user's SID in it. Pipe names
+	// are one namespace for every user of the machine, so two users' names
+	// were one pipe, and whoever made it first had the other's clients. A
+	// name of another user's cannot be this one. Empty when the user cannot
+	// be read.
 	std::string makePipeName(const char* name)
 	{
-		return std::string("\\\\.\\pipe\\") + (name == nullptr ? "" : name);
+		const ProcessUser& user = processUser();
+		if (user.text.empty())
+		{
+			return std::string();
+		}
+		return std::string("\\\\.\\pipe\\crossbyte-") + user.text + "-" + (name == nullptr ? "" : name);
+	}
+
+	// Whether `pipe` is owned by this user. A listener sets this user as its
+	// pipe's owner, which another user cannot: one finding a pipe under its
+	// name owned by anyone else has found someone else's, put there first.
+	bool ownedByProcessUser(HANDLE pipe)
+	{
+		const ProcessUser& user = processUser();
+		if (user.sid.empty())
+		{
+			return false;
+		}
+		PSID owner = nullptr;
+		PSECURITY_DESCRIPTOR descriptor = nullptr;
+		if (GetSecurityInfo(pipe, SE_KERNEL_OBJECT, OWNER_SECURITY_INFORMATION, &owner, nullptr, nullptr, nullptr, &descriptor) != ERROR_SUCCESS)
+		{
+			return false;
+		}
+		bool same = owner != nullptr && IsValidSid(owner) && EqualSid(owner, const_cast<unsigned char*>(user.sid.data()));
+		LocalFree(descriptor);
+		return same;
 	}
 
 	// The one instance of the name, or nothing if the name is taken.
@@ -65,24 +143,100 @@ namespace
 	// The pipe was made with PIPE_UNLIMITED_INSTANCES, so a second listen()
 	// on a name in use made a second instance beside the first, and clients
 	// went to whichever the system picked. FILE_FLAG_FIRST_PIPE_INSTANCE
-	// refuses a name any instance of which exists, and one instance is all a
-	// listener needs: it takes each client in turn, and native_disconnect
-	// makes it ready for the next.
+	// refuses a name any instance of which exists -- another user's put
+	// there first included -- and one instance is all a listener needs: it
+	// takes each client in turn, and native_disconnect makes it ready for
+	// the next.
+	//
+	// It admits this user and SYSTEM alone, and no client on another
+	// machine. It was made with the default security, which lets everyone
+	// -- the anonymous user included -- open a pipe to read: another user
+	// could take what the listener sent. Its owner is this user, set here,
+	// so a client can tell it from another user's.
 	extern "C" void* native_createInboundPipe(const char* name)
 	{
+		lastError = LOCAL_CONNECTION_ERROR_FAILED;
 		std::string pipeName = makePipeName(name);
+		if (pipeName.empty())
+		{
+			return nullptr;
+		}
+
+		const std::string& user = processUser().text;
+		std::string sddl = "O:" + user + "D:P(A;;GA;;;" + user + ")(A;;GA;;;SY)";
+		PSECURITY_DESCRIPTOR descriptor = nullptr;
+		if (!ConvertStringSecurityDescriptorToSecurityDescriptorA(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr))
+		{
+			return nullptr;
+		}
+		SECURITY_ATTRIBUTES attributes;
+		attributes.nLength = sizeof(attributes);
+		attributes.lpSecurityDescriptor = descriptor;
+		attributes.bInheritHandle = FALSE;
 
 		HANDLE pipe = CreateNamedPipeA(
 			pipeName.c_str(),
 			PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
-			PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT,
+			PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
 			1,
 			PIPE_BUFFER_SIZE,
 			PIPE_BUFFER_SIZE,
 			0,
-			nullptr);
+			&attributes);
+		LocalFree(descriptor);
 
-		return pipe == INVALID_HANDLE_VALUE ? nullptr : pipe;
+		if (pipe == INVALID_HANDLE_VALUE)
+		{
+			return nullptr;
+		}
+		lastError = LOCAL_CONNECTION_ERROR_NONE;
+		return pipe;
+	}
+
+	extern "C" bool native_admitsOthersForTest(void* pipe)
+	{
+		HANDLE handle = static_cast<HANDLE>(pipe);
+		const ProcessUser& user = processUser();
+		if (isInvalid(handle) || user.sid.empty())
+		{
+			return true;
+		}
+		if (!ownedByProcessUser(handle))
+		{
+			return true;
+		}
+		PACL dacl = nullptr;
+		PSECURITY_DESCRIPTOR descriptor = nullptr;
+		if (GetSecurityInfo(handle, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &dacl, nullptr, &descriptor) != ERROR_SUCCESS)
+		{
+			return true;
+		}
+		// No DACL at all admits everyone.
+		bool others = dacl == nullptr;
+		BYTE systemSid[SECURITY_MAX_SID_SIZE];
+		DWORD systemSize = sizeof(systemSid);
+		CreateWellKnownSid(WinLocalSystemSid, nullptr, systemSid, &systemSize);
+		for (DWORD i = 0; !others && i < dacl->AceCount; i++)
+		{
+			void* ace = nullptr;
+			if (!GetAce(dacl, i, &ace))
+			{
+				others = true;
+				break;
+			}
+			auto* header = static_cast<ACE_HEADER*>(ace);
+			if (header->AceType != ACCESS_ALLOWED_ACE_TYPE)
+			{
+				continue;
+			}
+			PSID sid = reinterpret_cast<PSID>(&static_cast<ACCESS_ALLOWED_ACE*>(ace)->SidStart);
+			if (!EqualSid(sid, const_cast<unsigned char*>(user.sid.data())) && !EqualSid(sid, systemSid))
+			{
+				others = true;
+			}
+		}
+		LocalFree(descriptor);
+		return others;
 	}
 
 	extern "C" bool native_accept(void* pipe)
@@ -264,7 +418,12 @@ namespace
 
 	extern "C" void* native_connectWithTimeout(const char* name, int timeoutMs)
 	{
+		lastError = LOCAL_CONNECTION_ERROR_FAILED;
 		std::string pipeName = makePipeName(name);
+		if (pipeName.empty())
+		{
+			return nullptr;
+		}
 		bool forever = timeoutMs <= 0;
 		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(forever ? 0 : timeoutMs);
 
@@ -275,19 +434,30 @@ namespace
 		hx::AutoGCFreeZone waiting;
 		while (true)
 		{
+			// The listener may learn who this is, and no more: it cannot act
+			// as this user, as by default any pipe's listener can.
 			HANDLE pipe = CreateFileA(
 				pipeName.c_str(),
 				GENERIC_READ | GENERIC_WRITE,
 				0,
 				nullptr,
 				OPEN_EXISTING,
-				0,
+				SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
 				nullptr);
 
 			if (pipe != INVALID_HANDLE_VALUE)
 			{
+				// A pipe under this user's name that another user made is
+				// theirs, listening for this one's clients: refused.
+				if (!ownedByProcessUser(pipe))
+				{
+					CloseHandle(pipe);
+					lastError = LOCAL_CONNECTION_ERROR_NOT_OWNED;
+					return nullptr;
+				}
 				DWORD mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
 				SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr);
+				lastError = LOCAL_CONNECTION_ERROR_NONE;
 				return pipe;
 			}
 
@@ -466,7 +636,60 @@ namespace
 		}
 	}
 
-	// The socket path for `name`.
+	// The directory this user's names live in: /tmp/crossbyte-<uid>, made
+	// 0700.
+	//
+	// They lived in /tmp itself, where any user can put anything at a name
+	// first: a listener there took the name's clients, and a link there took
+	// them wherever it pointed, since connect() follows one. In a directory
+	// of this user's that nobody else can enter, nobody else can put
+	// anything. The same directory for every process of the user, however
+	// started: one under $XDG_RUNTIME_DIR, which a login session has and a
+	// cron job or a service running as the user does not, would part a
+	// command-line tool from a service it talks to; and macOS's per-user
+	// $TMPDIR is too long for a socket path, which has 104 bytes there.
+	std::string userDirectory()
+	{
+		return "/tmp/crossbyte-" + std::to_string(static_cast<unsigned long>(geteuid()));
+	}
+
+	// Whether `directory` is there and this user's own: 1 if so; 0 if
+	// nothing is there (made first when `make`); -1 if something else is,
+	// or it cannot be looked at, lastError saying which.
+	//
+	// Its own is a directory, not a link to one, that this user owns and
+	// nobody else can enter or write. Anything else is refused, not
+	// repaired: what another user's, or one others could write, holds may
+	// be theirs.
+	int checkUserDirectory(const std::string& directory, bool make)
+	{
+		struct stat info;
+		if (lstat(directory.c_str(), &info) != 0)
+		{
+			if (errno != ENOENT)
+			{
+				lastError = LOCAL_CONNECTION_ERROR_FAILED;
+				return -1;
+			}
+			if (!make)
+			{
+				return 0;
+			}
+			if ((mkdir(directory.c_str(), 0700) != 0 && errno != EEXIST) || lstat(directory.c_str(), &info) != 0)
+			{
+				lastError = LOCAL_CONNECTION_ERROR_FAILED;
+				return -1;
+			}
+		}
+		if (!S_ISDIR(info.st_mode) || info.st_uid != geteuid() || (info.st_mode & 077) != 0)
+		{
+			lastError = LOCAL_CONNECTION_ERROR_NOT_OWNED;
+			return -1;
+		}
+		return 1;
+	}
+
+	// The socket's name for `name`, in the user's directory.
 	//
 	// It was the name with everything outside [A-Za-z0-9_-] made '_' and cut to
 	// 48 characters, so "a.b" and "a_b", or two long names alike for their
@@ -495,7 +718,7 @@ namespace
 
 		if (!changed && sanitized.size() <= budget)
 		{
-			return std::string(PIPE_PREFIX) + sanitized;
+			return sanitized;
 		}
 
 		uint64_t hash = 1469598103934665603ULL;
@@ -508,12 +731,13 @@ namespace
 		std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(hash));
 
 		const size_t keep = budget - 17;
-		return std::string(PIPE_PREFIX) + sanitized.substr(0, sanitized.size() < keep ? sanitized.size() : keep) + "_" + hex;
+		return sanitized.substr(0, sanitized.size() < keep ? sanitized.size() : keep) + "_" + hex;
 	}
 
-	std::string makePipeName(const char* name)
+	// The socket path for `name`: in `directory`, the user's.
+	std::string makePipeName(const std::string& directory, const char* name)
 	{
-		return sanitizePipeName(name);
+		return directory + "/" + sanitizePipeName(name);
 	}
 
 	NativeLocalConnectionHandle* createHandle()
@@ -549,12 +773,12 @@ namespace
 	// listener closing removes it: a lock on one already removed holds
 	// nothing.
 	//
-	// It is in /tmp, where any user can put something at a name first, and
+	// It was in /tmp, where any user can put something at a name first, and
 	// it was opened following a link -- another user's link there made this
 	// process make or lock a file wherever it pointed -- and taken whatever
-	// it was. Now a link is not followed, a FIFO is not waited on, and only
-	// a regular file this user owns is taken: another user's could be held
-	// or swapped by them. Its times are brought up to date as it is taken.
+	// it was. It is in the user's own directory now, and still a link is not
+	// followed, a FIFO is not waited on, and only a regular file this user
+	// owns is taken. Its times are brought up to date as it is taken.
 	int lockName(const std::string& path)
 	{
 		std::string lockPath = path + ".lock";
@@ -589,9 +813,18 @@ namespace
 	// clients. The name is now held by a lock: a live listener's name is
 	// refused, and only a stale file -- from a listener that has gone -- is
 	// removed.
+	//
+	// In the user's own directory, made if it is not there yet; refused if
+	// what is there is not the user's own (see checkUserDirectory).
 	extern "C" void* native_createInboundPipe(const char* name)
 	{
-		std::string pipeName = makePipeName(name);
+		lastError = LOCAL_CONNECTION_ERROR_FAILED;
+		std::string directory = userDirectory();
+		if (checkUserDirectory(directory, true) < 0)
+		{
+			return nullptr;
+		}
+		std::string pipeName = makePipeName(directory, name);
 		if (pipeName.size() + 5 >= sizeof(((sockaddr_un*)nullptr)->sun_path))
 		{
 			return nullptr;
@@ -640,6 +873,7 @@ namespace
 		handle->lockFd = lockFd;
 		std::memcpy(handle->path, pipeName.data(), pipeName.size());
 		handle->path[pipeName.size()] = '\0';
+		lastError = LOCAL_CONNECTION_ERROR_NONE;
 		return handle;
 	}
 
@@ -883,9 +1117,39 @@ namespace
 		delete handle;
 	}
 
+	// Whether what is at `path` may be connected to: 1 if a socket of this
+	// user's is there, 0 if nothing is, -1 if anything else is -- a link,
+	// which connect() would follow wherever it led, or something another
+	// user made -- lastError saying so.
+	int checkSocketPath(const std::string& path)
+	{
+		struct stat info;
+		if (lstat(path.c_str(), &info) != 0)
+		{
+			if (errno == ENOENT)
+			{
+				return 0;
+			}
+			lastError = LOCAL_CONNECTION_ERROR_FAILED;
+			return -1;
+		}
+		if (!S_ISSOCK(info.st_mode) || info.st_uid != geteuid())
+		{
+			lastError = LOCAL_CONNECTION_ERROR_NOT_OWNED;
+			return -1;
+		}
+		return 1;
+	}
+
+	// A connect to the user's own listener on `name`: the user's directory
+	// and the socket in it are checked before each try, and anything not the
+	// user's own is refused at once rather than waited out. Nothing there
+	// yet -- the directory or the socket -- is a name nobody listens on.
 	extern "C" void* native_connectWithTimeout(const char* name, int timeoutMs)
 	{
-		std::string pipeName = makePipeName(name);
+		lastError = LOCAL_CONNECTION_ERROR_FAILED;
+		std::string directory = userDirectory();
+		std::string pipeName = makePipeName(directory, name);
 		if (pipeName.size() >= sizeof(((sockaddr_un*)nullptr)->sun_path))
 		{
 			return nullptr;
@@ -910,38 +1174,54 @@ namespace
 		hx::AutoGCFreeZone waiting;
 		while (true)
 		{
-			int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-			if (fd < 0)
+			int present = checkUserDirectory(directory, false);
+			if (present > 0)
+			{
+				present = checkSocketPath(pipeName);
+			}
+			if (present < 0)
 			{
 				delete handle;
 				return nullptr;
 			}
 
-			// Non-blocking before it connects: a listener whose backlog is
-			// full answers EAGAIN on Linux, tried again below like a name
-			// nobody listens on yet, where the connect waited in the kernel
-			// for it to take someone, past any deadline. macOS refuses
-			// one at once, and either may say the connect is in progress,
-			// which is waited for a slice at most.
-			configureConnectedSocket(fd);
-			int result = connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address));
-			int error = result == 0 ? 0 : errno;
-			if (result != 0 && error == EINPROGRESS)
+			int error = ENOENT;
+			if (present > 0)
 			{
-				auto slice = std::chrono::steady_clock::now() + std::chrono::milliseconds(CONNECT_WAIT_SLICE_MS);
-				socklen_t length = sizeof(error);
-				if (!waitReady(fd, POLLOUT, slice) || getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) != 0)
+				int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+				if (fd < 0)
 				{
-					error = EAGAIN;
+					delete handle;
+					return nullptr;
 				}
-			}
-			if (error == 0)
-			{
-				handle->clientFd = fd;
-				return handle;
+
+				// Non-blocking before it connects: a listener whose backlog is
+				// full answers EAGAIN on Linux, tried again below like a name
+				// nobody listens on yet, where the connect waited in the kernel
+				// for it to take someone, past any deadline. macOS refuses
+				// one at once, and either may say the connect is in progress,
+				// which is waited for a slice at most.
+				configureConnectedSocket(fd);
+				int result = connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address));
+				error = result == 0 ? 0 : errno;
+				if (result != 0 && error == EINPROGRESS)
+				{
+					auto slice = std::chrono::steady_clock::now() + std::chrono::milliseconds(CONNECT_WAIT_SLICE_MS);
+					socklen_t length = sizeof(error);
+					if (!waitReady(fd, POLLOUT, slice) || getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) != 0)
+					{
+						error = EAGAIN;
+					}
+				}
+				if (error == 0)
+				{
+					handle->clientFd = fd;
+					lastError = LOCAL_CONNECTION_ERROR_NONE;
+					return handle;
+				}
+				close(fd);
 			}
 
-			close(fd);
 			if ((error != ENOENT && error != ECONNREFUSED && error != EAGAIN && error != EWOULDBLOCK) || !anotherTry(forever, deadline))
 			{
 				delete handle;
@@ -1004,5 +1284,16 @@ namespace
 			handle->lockRefreshed = now;
 		}
 	}
+
+	// No pipe security to look at.
+	extern "C" bool native_admitsOthersForTest(void* pipe)
+	{
+		return false;
+	}
 #endif
+
+	extern "C" int native_localConnectionLastError()
+	{
+		return lastError;
+	}
 }

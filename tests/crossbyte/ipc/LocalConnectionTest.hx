@@ -11,6 +11,7 @@ import haxe.io.Bytes;
 import utest.Assert;
 
 @:access(crossbyte.ipc.LocalConnection)
+@:access(crossbyte.core.CrossByte)
 class LocalConnectionTest extends utest.Test {
 	public function testSupportFlagMatchesTarget():Void {
 		#if (cpp && (windows || linux || mac || macos))
@@ -902,17 +903,180 @@ class LocalConnectionTest extends utest.Test {
 		#end
 	}
 
+	/** The argument that runs the native suite's binary as `crossProcessChild`. **/
+	public static inline var CHILD:String = "--crossbyte-child=localconnection";
+
+	/**
+		Another process of this user's meets this one over a name, both ways:
+		a name being the user's own -- a directory only the user can enter on
+		Linux and macOS, a pipe only the user can open on Windows -- keeps out
+		other users, not the user's other processes. The child is this suite's
+		own binary, run again: it connects, says so, and waits for an answer.
+	**/
+	@:timeout(60000)
+	public function testAnotherProcessOfThisUserMeetsItOverAName():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var name = uniqueName("child");
+		var server = new LocalConnection();
+		var heard:String = null;
+		server.readEnabled = true;
+		server.onData = input -> {
+			heard = input.readUTFBytes(input.length);
+			server.send(bytesOf("from the parent"));
+		};
+		var code:Null<Int> = null;
+		var output = "";
+		try {
+			server.listen(name);
+			var child = new sys.io.Process(Sys.programPath(), [CHILD, name]);
+			var deadline = haxe.Timer.stamp() + 30.0;
+			while (code == null && haxe.Timer.stamp() < deadline) {
+				pumpUntil(() -> false, 0.02);
+				code = child.exitCode(false);
+			}
+			if (code == null) {
+				child.kill();
+			}
+			output = child.stdout.readAll().toString();
+			child.close();
+		} catch (e:Dynamic) {
+			Assert.fail("threw " + e);
+		}
+		closeQuietly(server);
+
+		Assert.equals("from the child", heard, "the parent did not hear the child: " + output);
+		Assert.equals(0, code, "the child did not hear the parent: " + output);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		The child's side of testAnotherProcessOfThisUserMeetsItOverAName:
+		connects to `name`, sends, and exits 0 once answered, or with a code
+		saying where it stopped.
+	**/
+	public static function crossProcessChild(name:String):Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var runtime = new CrossByte(false, DEFAULT, true);
+		var connection = new LocalConnection();
+		var answer:String = null;
+		connection.readEnabled = true;
+		connection.onData = input -> answer = input.readUTFBytes(input.length);
+		try {
+			connection.connect(name);
+		} catch (e:Dynamic) {
+			Sys.println("child: connect threw " + e);
+			Sys.exit(2);
+		}
+		connection.send(bytesOf("from the child"));
+		var deadline = haxe.Timer.stamp() + 10.0;
+		while (answer == null && haxe.Timer.stamp() < deadline) {
+			runtime.pump(1 / 60, 0);
+			crossbyte.sys.System.sleep(0.005);
+		}
+		connection.close();
+		runtime.exit();
+		Sys.println("child: answered " + answer);
+		Sys.exit(answer == "from the parent" ? 0 : 3);
+		#end
+	}
+
+	/**
+		Two listeners racing for one name leave exactly one listening, and a
+		client reaches it. Each pair starts on threads of their own, released
+		together, forty times over.
+	**/
+	@:timeout(60000)
+	public function testListenersRacingForANameLeaveOneListening():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var problems:Array<String> = [];
+		for (round in 0...40) {
+			var name = uniqueName("race");
+			var ready = new sys.thread.Lock();
+			var go = new sys.thread.Lock();
+			var results = new sys.thread.Deque<LocalConnection>();
+			for (_ in 0...2) {
+				sys.thread.Thread.create(() -> {
+					var server = new LocalConnection();
+					ready.release();
+					go.wait();
+					try {
+						server.listen(name);
+						results.add(server);
+					} catch (_:Dynamic) {
+						results.add(null);
+					}
+				});
+			}
+			ready.wait();
+			ready.wait();
+			go.release();
+			go.release();
+			var listening:Array<LocalConnection> = [];
+			for (_ in 0...2) {
+				var server = results.pop(true);
+				if (server != null) {
+					listening.push(server);
+				}
+			}
+			if (listening.length != 1) {
+				problems.push('round $round: ${listening.length} listened');
+			}
+			var client = new LocalConnection();
+			client.timeout = 2000;
+			try {
+				client.connect(name);
+			} catch (e:Dynamic) {
+				problems.push('round $round: no listener took the client: $e');
+			}
+			closeQuietly(client);
+			for (server in listening) {
+				closeQuietly(server);
+			}
+		}
+		Assert.equals(0, problems.length, problems.join("; "));
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		On Windows a listener's pipe admits this user and SYSTEM alone. It was
+		made with the default security, which lets everyone read a pipe -- the
+		anonymous user included -- so another local user could open it and
+		take what the listener sent.
+	**/
+	public function testAPipeAdmitsNoneButItsUser():Void {
+		#if (cpp && windows)
+		var server = new LocalConnection();
+		var admitsOthers = true;
+		try {
+			server.listen(uniqueName("acl"));
+			admitsOthers = LocalConnection.__admitsOthersForTest(server.__listeningPipe);
+		} catch (e:Dynamic) {
+			Assert.fail("listen() threw " + e);
+		}
+		closeQuietly(server);
+		Assert.isFalse(admitsOthers, "the pipe admits someone besides this user and SYSTEM, or another owns it");
+		#else
+		Assert.pass();
+		#end
+	}
+
 	#if (cpp && (linux || mac || macos))
 	/**
 		A link put where a listener's lock file goes is not followed, and the
 		name is not listened on. On Linux and macOS a listener holds its name
-		by a lock on a file in /tmp, where any user can put something first,
-		and it was opened following a link: another user's link there made
-		this process make, or lock, a file wherever it pointed.
+		by a lock on a file. It was in /tmp, where any user can put something
+		first, and was opened following a link: another user's link there
+		made this process make, or lock, a file wherever it pointed. The file
+		is in this user's own directory now, where only this user can put a
+		link, and one is still not followed.
 	**/
 	public function testALinkWhereTheListenersLockFileGoesIsNotFollowed():Void {
 		var name = uniqueName("lnk");
-		var lockPath = '/tmp/crossbyte_local_connection_$name.lock';
+		var lockPath = socketPathOf(name) + ".lock";
 		var target = lockPath + ".target";
 		Assert.equals(0, Sys.command("ln", ["-s", target, lockPath]), "could not make the link");
 		var server = new LocalConnection();
@@ -933,7 +1097,7 @@ class LocalConnectionTest extends utest.Test {
 	**/
 	public function testAFifoWhereTheListenersLockFileGoesIsRefused():Void {
 		var name = uniqueName("fifo");
-		var lockPath = '/tmp/crossbyte_local_connection_$name.lock';
+		var lockPath = socketPathOf(name) + ".lock";
 		Assert.equals(0, Sys.command("mkfifo", [lockPath]), "could not make the FIFO");
 		var server = new LocalConnection();
 		var refused = throws(() -> server.listen(name));
@@ -952,7 +1116,7 @@ class LocalConnectionTest extends utest.Test {
 	**/
 	public function testListeningBringsTheLockFilesTimesUpToDate():Void {
 		var name = uniqueName("fresh");
-		var lockPath = '/tmp/crossbyte_local_connection_$name.lock';
+		var lockPath = socketPathOf(name) + ".lock";
 		// Left by an earlier listener of this user's, four days ago.
 		sys.io.File.saveContent(lockPath, "");
 		Sys.command("chmod", ["600", lockPath]);
@@ -973,6 +1137,165 @@ class LocalConnectionTest extends utest.Test {
 
 		Assert.isTrue(Date.now().getTime() - aged > 3 * 24 * 3600 * 1000.0, "the file was not aged");
 		Assert.isTrue(Date.now().getTime() - refreshed < 3600 * 1000.0, "the lock file still looks old");
+	}
+
+	/**
+		A link at the socket path is not followed: a connect that finds one
+		is refused, not taken to wherever it points. The socket was in /tmp,
+		where any user could put a link under a name first, and connect()
+		followed it to their listener. The link here is planted where the
+		name's socket goes in either layout -- /tmp, and this user's own
+		directory, where only this user could put one -- and points at a
+		listener on another name.
+	**/
+	public function testALinkAtTheSocketPathIsNotFollowed():Void {
+		var directory = ensureUserDirectory();
+		var decoy = uniqueName("decoy");
+		var victim = uniqueName("victim");
+		var listener = LocalConnection.__createInboundPipe(decoy);
+		var links = [
+			['/tmp/crossbyte_local_connection_$victim', '/tmp/crossbyte_local_connection_$decoy'],
+			['$directory/$victim', '$directory/$decoy']
+		];
+		for (link in links) {
+			Sys.command("ln", ["-s", link[1], link[0]]);
+		}
+		var client = new LocalConnection();
+		client.timeout = 300;
+		var raised:Dynamic = null;
+		try {
+			client.connect(victim);
+		} catch (e:Dynamic) {
+			raised = e;
+		}
+		var reached = client.connected;
+		closeQuietly(client);
+		for (link in links) {
+			removeQuietly(link[0]);
+		}
+		if (listener != null) {
+			LocalConnection.__close(listener);
+		}
+
+		Assert.isFalse(reached, "a link at the socket path took the client to another name's listener");
+		Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), "a link at the socket path was not refused as not this user's: " + raised);
+	}
+
+	/**
+		A directory for this user's names that others can enter is refused,
+		by a listener and by a client alike: what is in it could be anyone's.
+		The directory here is this user's own, made 0755 for the case and
+		put back after; another process of this user's listening meanwhile
+		is refused its clients for that moment.
+	**/
+	public function testADirectoryOthersCanEnterIsRefused():Void {
+		var directory = ensureUserDirectory();
+		var name = uniqueName("mode");
+		Sys.command("chmod", ["755", directory]);
+		var refusals = listenAndConnect(name);
+		Sys.command("chmod", ["700", directory]);
+
+		for (refusal in refusals) {
+			Assert.isTrue(Std.isOfType(refusal, crossbyte.errors.IOError), "not refused as not this user's own: " + refusal);
+			Assert.isTrue(Std.string(refusal).indexOf("not this user's own") >= 0, Std.string(refusal));
+		}
+	}
+
+	/**
+		A link where the directory goes is refused, not followed: it could
+		lead anywhere. Made only while the directory is empty, so that no
+		listener of this user's loses its socket; otherwise the case passes
+		having checked nothing.
+	**/
+	public function testALinkInPlaceOfTheDirectoryIsRefused():Void {
+		var directory = userDirectory();
+		if (sys.FileSystem.exists(directory) && sys.FileSystem.readDirectory(directory).length > 0) {
+			Assert.pass();
+			return;
+		}
+		if (sys.FileSystem.exists(directory)) {
+			sys.FileSystem.deleteDirectory(directory);
+		}
+		var elsewhere = directory + "-elsewhere-" + Std.random(1000000);
+		Sys.command("mkdir", ["-m", "700", elsewhere]);
+		Sys.command("ln", ["-s", elsewhere, directory]);
+		var refusals = listenAndConnect(uniqueName("dirlnk"));
+		removeQuietly(directory);
+		Sys.command("rm", ["-rf", elsewhere]);
+		Sys.command("mkdir", ["-m", "700", directory]);
+
+		for (refusal in refusals) {
+			Assert.isTrue(Std.isOfType(refusal, crossbyte.errors.IOError), "a link in place of the directory was not refused: " + refusal);
+		}
+	}
+
+	/**
+		A directory another user owns is refused. Needs root, to give the
+		directory to another user for the moment; elsewhere the case passes
+		having checked nothing.
+	**/
+	public function testADirectoryAnotherUserOwnsIsRefused():Void {
+		var directory = ensureUserDirectory();
+		// Nothing to give it to without root, nor when this user is nobody.
+		if (Sys.command("chown", ["nobody", directory]) != 0 || Std.string(sys.FileSystem.stat(directory).uid) == userId()) {
+			Assert.pass();
+			return;
+		}
+		var refusals = listenAndConnect(uniqueName("theirs"));
+		Sys.command("chown", [userId(), directory]);
+
+		for (refusal in refusals) {
+			Assert.isTrue(Std.isOfType(refusal, crossbyte.errors.IOError), "another user's directory was not refused: " + refusal);
+		}
+	}
+
+	/** What `listen(name)` and then `connect(name)` threw, null for one that did not. **/
+	private static function listenAndConnect(name:String):Array<Dynamic> {
+		var thrown:Array<Dynamic> = [];
+		var server = new LocalConnection();
+		try {
+			server.listen(name);
+			thrown.push(null);
+		} catch (e:Dynamic) {
+			thrown.push(e);
+		}
+		closeQuietly(server);
+		var client = new LocalConnection();
+		client.timeout = 100;
+		try {
+			client.connect(name);
+			thrown.push(null);
+		} catch (e:Dynamic) {
+			thrown.push(e);
+		}
+		closeQuietly(client);
+		return thrown;
+	}
+
+	private static function userId():String {
+		var process = new sys.io.Process("id", ["-u"]);
+		var id = StringTools.trim(process.stdout.readAll().toString());
+		process.close();
+		return id;
+	}
+
+	/** Where this user's names live on Linux and macOS. **/
+	private static function userDirectory():String {
+		return "/tmp/crossbyte-" + userId();
+	}
+
+	/** userDirectory(), made 0700 if it is not there yet. **/
+	private static function ensureUserDirectory():String {
+		var directory = userDirectory();
+		if (!sys.FileSystem.exists(directory)) {
+			Sys.command("mkdir", ["-m", "700", directory]);
+		}
+		return directory;
+	}
+
+	/** The socket of `name`, a name of letters, digits, '_' and '-' and no more than 48 of them. **/
+	private static function socketPathOf(name:String):String {
+		return ensureUserDirectory() + "/" + name;
 	}
 
 	private static function removeQuietly(path:String):Void {
