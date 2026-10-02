@@ -469,7 +469,11 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private var __didExit:Bool = false;
 	// Hot-path tick events are reused to reduce per-frame allocation churn.
 	// These events are ephemeral during dispatch and must not be retained.
-	@:noCompletion private var __pooledTickEvent:TickEvent;
+	// Set to null rather than left unset: a neko object gains a field when
+	// it is first set, which can move its field table, and a write another
+	// thread makes meanwhile -- a post, a listener -- is lost with the old
+	// table.
+	@:noCompletion private var __pooledTickEvent:TickEvent = null;
 	@:noCompletion private var __pooledTickEventInUse:Bool = false;
 
 	// What asked to send its held output when this pass ends, in the order
@@ -520,8 +524,8 @@ final class CrossByte extends EventDispatcher {
 	#end
 	#if target.threaded
 	// The thread this runtime is bound to (its loop thread, or the host pump
-	// thread).
-	@:noCompletion private var __ownerThread:Thread;
+	// thread). Null from the start, for neko: see __pooledTickEvent.
+	@:noCompletion private var __ownerThread:Thread = null;
 	#end
 
 	// The runtime this one belongs to, and the ones that belong to it; see
