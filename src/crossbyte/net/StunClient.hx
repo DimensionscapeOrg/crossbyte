@@ -105,9 +105,9 @@ class StunClient {
 		answer describes; bound, and not connected. It is left open, and left
 		not receiving if it was not. The answer reaches its other `data`
 		listeners too, as every datagram does, a STUN message is the one
-		whose first byte is below 4 (RFC 7983). Without one, a socket of the
-		question's own is bound and closed. Closing it ends the question,
-		which fails.
+		whose first byte is below 4 (RFC 7983). Closing it ends the question,
+		which fails. Without one, a socket of the question's own is bound and
+		closed.
 	**/
 	public static function discover(server:String, port:Int = DEFAULT_PORT, timeoutMs:Int = 3000,
 			?socket:DatagramSocket):Future<ReflexiveAddress> {
