@@ -95,7 +95,8 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	 * ```
 	 *
 	 * @param connectTimeout For `local://`, whose connect waits for a listener
-	 * on the calling thread: how long, in milliseconds, 0 for a single try.
+	 * on the calling thread: how long, in milliseconds; 0 for no deadline, and
+	 * 50 or less for a single try.
 	 * `LocalConnection.timeout` when left out. The other transports connect
 	 * without waiting and ignore it.
 	 * @throws crossbyte.errors.ArgumentError For `local://`, when no listener
