@@ -891,6 +891,43 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		return (rs != null && rs.hasNext()) ? __parseWhole(Std.string(Reflect.field(rs.next(), "n"))) : 0;
 	}
 
+	/**
+		The rows the statement just answered with `result` changed, as the
+		server counts them, for a `MySQLStatement` to keep before another
+		statement replaces the count: a `Float`, exact to 2^53, and 0 for a
+		statement that returns rows, as AIR's `SQLResult.rowsAffected` has
+		it. Natively from the statement's own answer, at no cost. Elsewhere
+		the driver's count, an `Int`, where it can be right, and otherwise --
+		negative, held at 2^31 - 1, or none at all, as Haxe's JDBC binding
+		keeps none -- asked in SQL as text. On hl and neko, whose drivers read
+		it in 32 bits, a count past 2^32 wraps back into range there and is
+		taken as it is.
+	**/
+	@:noCompletion private function __affectedBy(result:ResultSet):Float {
+		#if cpp
+		if (__native != null) {
+			return __whole(__native.affectedRows);
+		}
+		#end
+
+		if (result != null && result.nfields != 0) {
+			return 0;
+		}
+
+		var count:Int = -1;
+
+		try {
+			if (result != null) {
+				count = result.length;
+			}
+		} catch (_:Dynamic) {
+			// The jvm's binding, whose result for a write holds no count and
+			// throws for one.
+		}
+
+		return count >= 0 && count < 0x7FFFFFFF ? count : get_affectedRows();
+	}
+
 	/** A count or id the native client gives -- an `Int`, or an `Int64` past 2^31 -- as a `Float`, exact to 2^53. **/
 	@:noCompletion private static function __whole(value:Dynamic):Float {
 		if (value == null) {

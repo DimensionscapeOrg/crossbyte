@@ -214,6 +214,62 @@ class MySQLNativeResultTest extends utest.Test {
 		connection.close();
 	}
 
+	public function testAStatementsCountsAreItsOwnAndWhole():Void {
+		// A statement's rowsAffected was the length of the client's result:
+		// for a write, the count as an Int, held at 2^31 - 1 though the client
+		// had it whole; for a SELECT read a page at a time, the rows read so
+		// far. And its lastInsertRowID was read from the connection as the
+		// page was taken: after a SELECT ran in between, 0.
+		__server.onQuery = function(session, sql) {
+			if (StringTools.startsWith(sql, "UPDATE")) {
+				session.ok(3000000000.0, 0);
+				return true;
+			}
+
+			if (StringTools.startsWith(sql, "INSERT")) {
+				session.ok(1, 5000000001.0);
+				return true;
+			}
+
+			if (sql == "SELECT TWENTY") {
+				session.resultSet([{name: "n", type: FakeMySQLServer.TYPE_LONG, charset: FakeMySQLServer.CHARSET_BINARY}],
+					[for (i in 0...20) [Std.string(i)]]);
+				return true;
+			}
+
+			return false;
+		};
+		__server.start();
+		var connection:MySQLConnection = __open();
+		var update:MySQLStatement = new MySQLStatement();
+		update.sqlConnection = connection;
+		update.text = "UPDATE users SET name = 'x'";
+		update.execute();
+		Assert.equals(3000000000.0, Require.notNull(update.getResult()).rowsAffected);
+
+		var insert:MySQLStatement = new MySQLStatement();
+		insert.sqlConnection = connection;
+		insert.text = "INSERT INTO users (email) VALUES ('a@example.com')";
+		insert.execute();
+
+		// Run before the insert's result is taken.
+		var select:MySQLStatement = new MySQLStatement();
+		select.sqlConnection = connection;
+		select.text = "SELECT TWENTY";
+		select.execute(5);
+		var page = Require.notNull(select.getResult());
+		Assert.equals(5, page.data.length);
+		Assert.equals(0.0, page.rowsAffected);
+
+		var inserted = Require.notNull(insert.getResult());
+		Assert.equals(1.0, inserted.rowsAffected);
+		Assert.equals(5000000001.0, inserted.lastInsertRowID);
+
+		select.next(-1);
+		Assert.equals(0.0, Require.notNull(select.getResult()).rowsAffected);
+		connection.close();
+	}
+
 	public function testResultsCostNoExtraRoundTrips():Void {
 		// Every getResult() sent SELECT LAST_INSERT_ID() -- 20 pages, 21
 		// extra statements -- after which affectedRows, itself a SELECT

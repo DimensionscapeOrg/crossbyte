@@ -2286,6 +2286,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `MySQLStatement`'s `SQLResult.rowsAffected` is the server's count,
+  whole past 2^31, as `MySQLConnection.affectedRows` is. It was the length
+  of the driver's result: for a write natively held at 2^31 - 1, though
+  the client had the count whole, and on hl negative past 2^31; for a
+  SELECT read a page at a time, the rows read so far. A statement that
+  returns rows reports 0, as AIR's and `SQLiteStatement`'s do. Natively
+  its `lastInsertRowID` is the statement's own as well, where it was read
+  from the connection as each page was taken: a SELECT run before an
+  INSERT's result was taken made the INSERT's id 0.
 - MongoDB counts are whole past 2^31. The server counts in 64 bits, and
   an update or delete over a large collection answers past 2^31; every
   count was read as an `Int`, held at 2^31 - 1, so three billion
