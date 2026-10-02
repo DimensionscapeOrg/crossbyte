@@ -16,7 +16,6 @@
 	<files id="crossbyte-dtls-native">
 		<depend files="hxcpp-depends"/>
 		<compilerflag value="-I${this_dir}"/>
-		<compilerflag value="-I${MBEDTLS_DIR}/include"/>
 
 		<!-- hxcpp does not compile mbedtls against its stock config. It passes
 		     MBEDTLS_USER_CONFIG_FILE, and that file turns on MBEDTLS_THREADING_C
@@ -31,15 +30,14 @@
 		     success and the process dies later somewhere with no visible
 		     connection to the cause.
 
-		     The macros are set here rather than by pointing at hxcpp's config
-		     file, because that is passed as `-DMBEDTLS_USER_CONFIG_FILE=<...>`
-		     and the angle brackets do not survive a Windows command line. The
-		     duplication is guarded: NativeDtls.cpp fails to compile if these
-		     ever stop matching what hxcpp uses. -->
-		<compilerflag value="-I${HXCPP}/project/thirdparty/config/mbedtls/include"/>
-		<compilerflag value="-DMBEDTLS_THREADING_C"/>
-		<compilerflag value="-DMBEDTLS_THREADING_ALT" if="windows"/>
-		<compilerflag value="-DMBEDTLS_THREADING_PTHREAD" unless="windows"/>
+		     So this compiles against hxcpp's own flags: the include path of
+		     whichever mbedTLS it ships, 2.28 or 3.6, and the very config file
+		     the library is built with. An earlier copy of the macros here
+		     assumed the angle brackets in -DMBEDTLS_USER_CONFIG_FILE=<...> do
+		     not survive a Windows command line; they do, as hxcpp's own build of
+		     mbedTLS relies on. NativeDtls.cpp still fails to compile if
+		     MBEDTLS_THREADING_C is missing. -->
+		<include name="${HXCPP}/project/thirdparty/mbedtls-flags.xml"/>
 
 		<file name="${this_dir}/NativeDtls.cpp">
 			<depend name="${this_dir}/NativeDtls.h"/>
