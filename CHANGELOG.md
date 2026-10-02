@@ -2283,6 +2283,16 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Work asked of an asynchronous `SQLiteConnection` just as its worker
+  stops, after an open that failed, is answered. A statement, a `begin()`
+  or any other operation that found the worker's queue still open, and
+  reached it only after the worker's last look at it, was neither run nor
+  refused, and never answered; a `close()` caught there left the
+  connection refusing every later open, waiting for a `CLOSE` that would
+  not come. Asked across that moment 6,000 times, about one in a hundred
+  was lost. Such work now takes itself back out and is refused, as on a
+  connection that is not open: an `IllegalOperationError`, and a
+  `close()` with nothing to close.
 - A reliable UDP session asks for its window of socket buffer on Linux
   whatever the system's default reads. Linux reads back twice what was
   asked, counting its own bookkeeping, and a default that read a window's
