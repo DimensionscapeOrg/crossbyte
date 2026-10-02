@@ -45,10 +45,10 @@ class H2ResponseWriter implements HTTPResponseWriter {
 	private final __flush:Void->Void;
 
 	// Where sweepWith registers: the server's sweep, when a server made this.
-	private final __sweepWith:Null<(HTTPResponseWriter, Null<Float->Void>) -> Void>;
+	private final __sweepWith:Null<({}, Null<Float->Void>) -> Void>;
 
 	public function new(connection:H2ServerConnection, socket:Socket, streamId:Int, ?flush:Void->Void,
-			?sweepWith:(HTTPResponseWriter, Null<Float->Void>) -> Void) {
+			?sweepWith:({}, Null<Float->Void>) -> Void) {
 		__connection = connection;
 		__socket = socket;
 		__streamId = streamId;
@@ -56,10 +56,12 @@ class H2ResponseWriter implements HTTPResponseWriter {
 		__sweepWith = sweepWith;
 	}
 
-	public function sweepWith(check:Null<Float->Void>):Void {
-		if (__sweepWith != null) {
-			__sweepWith(this, check);
+	public function sweepWith(check:Null<Float->Void>):Bool {
+		if (__sweepWith == null) {
+			return false;
 		}
+		__sweepWith(this, check);
+		return true;
 	}
 
 	// The stream as well as the connection: a stream the client has reset
