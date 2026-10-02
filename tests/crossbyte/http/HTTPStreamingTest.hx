@@ -18,6 +18,14 @@ class HTTPStreamingTest extends utest.Test {
 	// end of the transfer cannot hide behind a size that divides evenly.
 	private static inline var LARGE_SIZE:Int = 2 * 1024 * 1024 + 137;
 
+	// A response written whole and left waiting on its client, for the cases
+	// below that need one: more than loopback's buffers take at once on any
+	// of the systems CI runs, Linux's take about 10 MB, under an output
+	// cap raised past it, since a body over the cap is pumped, not written
+	// whole.
+	private static inline var HELD_SIZE:Int = 24 * 1024 * 1024;
+	private static inline var HELD_CAP:Int = 32 * 1024 * 1024;
+
 	public function testLargeFileStreamsWithBoundedBuffer(async:Async):Void {
 		__serveFixture(async, LARGE_SIZE, "GET /large.bin HTTP/1.1\r\nHost: localhost\r\n\r\n", function(result):Void {
 			Assert.equals(200, result.status);
@@ -318,11 +326,12 @@ class HTTPStreamingTest extends utest.Test {
 		// deadline's to end, and with keepAliveTimeout at 0 there is none. It
 		// is given up at the stall deadline, as a file the client takes
 		// nothing of is: the connection closed, and its bytes let go.
-		var size:Int = 7 * 1024 * 1024;
+		var size:Int = HELD_SIZE;
 		var body = new ByteArray();
 		body.length = size;
 		var handler:HTTPRequestHandler = null;
 		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.maxOutputBufferSize = HELD_CAP;
 		config.requestTimeout = 0;
 		config.keepAliveTimeout = 0;
 		config.middleware.push(function(h:HTTPRequestHandler, next:?Dynamic->Void):Void {
@@ -338,7 +347,11 @@ class HTTPStreamingTest extends utest.Test {
 
 		__whenParked(() -> handler, function(parked:Bool):Void {
 			if (parked) {
-				// The sweep, as it would run once the deadline has passed.
+				// The sweep, once now, seeing where the parked response stands,
+				// Linux's buffers go on taking a little after the response
+				// is written, which moves its deadline on, as progress should,
+				// and then as it would run once the deadline has passed.
+				server.__sweep(haxe.Timer.stamp());
 				server.__sweep(haxe.Timer.stamp() + 31);
 			}
 			HTTPTestSupport.pumpWallUntilAsync(() -> server.activeConnections == 0, parked ? 3.0 : 0.0, function(_):Void {
@@ -359,13 +372,12 @@ class HTTPStreamingTest extends utest.Test {
 		// cut off at that deadline as though the connection sat idle, the
 		// client got its whole Content-Length promised and part of the body.
 		// A connection is idle from when what it sent has gone.
-		var size:Int = 7 * 1024 * 1024;
+		var size:Int = HELD_SIZE;
 		var body = new ByteArray();
-		for (i in 0...size) {
-			body.writeByte(__patternAt(i));
-		}
+		body.length = size;
 		var handler:HTTPRequestHandler = null;
 		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.maxOutputBufferSize = HELD_CAP;
 		config.keepAliveTimeout = 0.5;
 		config.middleware.push(function(h:HTTPRequestHandler, next:?Dynamic->Void):Void {
 			handler = h;
@@ -398,13 +410,12 @@ class HTTPStreamingTest extends utest.Test {
 		// closed its connection as soon as it was written, and closing throws
 		// away whatever the system had not taken yet: a response larger than
 		// that reached its client cut off. It closes once all of it has gone.
-		var size:Int = 7 * 1024 * 1024;
+		var size:Int = HELD_SIZE;
 		var body = new ByteArray();
-		for (i in 0...size) {
-			body.writeByte(__patternAt(i));
-		}
+		body.length = size;
 		var handler:HTTPRequestHandler = null;
 		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.maxOutputBufferSize = HELD_CAP;
 		config.middleware.push(function(h:HTTPRequestHandler, next:?Dynamic->Void):Void {
 			handler = h;
 			h.respondBytes(200, "application/octet-stream", body);
@@ -433,13 +444,12 @@ class HTTPStreamingTest extends utest.Test {
 		// with nothing in flight, except the last response, still going out
 		// to a client reading it slowly, cut off by the close. It closes once
 		// that has gone.
-		var size:Int = 7 * 1024 * 1024;
+		var size:Int = HELD_SIZE;
 		var body = new ByteArray();
-		for (i in 0...size) {
-			body.writeByte(__patternAt(i));
-		}
+		body.length = size;
 		var handler:HTTPRequestHandler = null;
 		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.maxOutputBufferSize = HELD_CAP;
 		config.middleware.push(function(h:HTTPRequestHandler, next:?Dynamic->Void):Void {
 			handler = h;
 			h.respondBytes(200, "application/octet-stream", body);
