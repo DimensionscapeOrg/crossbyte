@@ -147,6 +147,183 @@ class HTTPRequestFramingTest extends utest.Test {
 	}
 
 	/**
+		Pipelined requests that outgrow what a connection holds, behind a
+		request still being answered, do not replace its answer.
+
+		What arrives behind a request being answered is the next request, kept
+		until the answer has gone. Past what one connection holds, the body
+		limit and the header allowance, it was answered `413`, on the request
+		being answered: three pipelined 600 KB uploads, each under the 1 MB
+		limit, behind a route answering a moment later came back as one `413`,
+		and the route's answer was lost. What does not fit is dropped now, with
+		everything after it, and the connection closes once the answer has
+		gone, saying so; the requests it held go unanswered, which a client
+		that pipelines sends again (RFC 9112 9.3.2).
+	**/
+	public function testPipelinedBodiesPastWhatIsHeldLeaveTheAnswerBeingGiven(async:Async):Void {
+		var seen:Array<String> = [];
+		var size:Int = 600 * 1024;
+		// Answers a second on, by when everything sent has long arrived.
+		var server:HTTPServer = __serve(seen, config -> config.middleware.push((handler, next) -> {
+			haxe.Timer.delay(() -> next(), 1000);
+		}));
+		var request = new crossbyte.io.ByteArray();
+		var body:String = __repeat("x".code, size);
+		for (i in 0...3) {
+			request.writeUTFBytes('POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: $size\r\n\r\n' + body);
+		}
+
+		__pipeline(server, request, function(received:crossbyte.io.ByteArray, closed:Bool):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			received.position = 0;
+			var raw:String = received.readUTFBytes(received.length);
+			var response:HTTPTestResponse = HTTPTestSupport.parseResponse(raw);
+			Assert.equals(200, response.status, "the answer being given was replaced");
+			Assert.equals('got $size', response.body);
+			Assert.equals("close", response.headers.get("connection"), "the answer did not say the connection was closing");
+			Assert.isTrue(closed, "the connection was not closed after the answer");
+			Assert.equals(1, HTTPTestSupport.countResponses(raw), "requests past what was held were answered");
+			Assert.equals("POST /upload", seen.join(", "));
+			async.done();
+		});
+	}
+
+	/**
+		The same when one read brings them all, the request to be answered
+		and those behind it, as Linux reads do: the whole buffer was held to
+		the limit before anything in it was parsed, so the first request was
+		answered `413` before it was handed over. Four 60 KB uploads at a
+		100 KB limit land in one read anywhere, and are over it however they
+		are split.
+	**/
+	public function testPipelinedBodiesPastWhatIsHeldInOneReadLeaveTheAnswerBeingGiven(async:Async):Void {
+		var seen:Array<String> = [];
+		var size:Int = 60 * 1024;
+		var server:HTTPServer = __serve(seen, config -> {
+			config.maxRequestBodySize = 100 * 1024;
+			config.middleware.push((handler, next) -> {
+				haxe.Timer.delay(() -> next(), 1000);
+			});
+		});
+		var request = new crossbyte.io.ByteArray();
+		var body:String = __repeat("x".code, size);
+		for (i in 0...4) {
+			request.writeUTFBytes('POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: $size\r\n\r\n' + body);
+		}
+
+		__pipeline(server, request, function(received:crossbyte.io.ByteArray, closed:Bool):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			received.position = 0;
+			var raw:String = received.readUTFBytes(received.length);
+			var response:HTTPTestResponse = HTTPTestSupport.parseResponse(raw);
+			Assert.equals(200, response.status, "the answer being given was replaced");
+			Assert.equals('got $size', response.body);
+			Assert.equals("close", response.headers.get("connection"), "the answer did not say the connection was closing");
+			Assert.isTrue(closed, "the connection was not closed after the answer");
+			Assert.equals(1, HTTPTestSupport.countResponses(raw), "requests past what was held were answered");
+			Assert.equals("POST /upload", seen.join(", "));
+			async.done();
+		});
+	}
+
+	/**
+		A request still arriving is held to what one request may be all the
+		same: a chunk-size line that never ends is answered `413`, rather
+		than read into the buffer for as long as it comes.
+	**/
+	public function testAChunkSizeLineThatNeverEndsIs413(async:Async):Void {
+		var seen:Array<String> = [];
+		var server:HTTPServer = __serve(seen, config -> config.maxRequestBodySize = 10);
+		var request = new crossbyte.io.ByteArray();
+		request.writeUTFBytes("POST /upload HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n" + __repeat("0".code, 80 * 1024));
+
+		__pipeline(server, request, function(received:crossbyte.io.ByteArray, closed:Bool):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			received.position = 0;
+			var response:HTTPTestResponse = HTTPTestSupport.parseResponse(received.readUTFBytes(received.length));
+			Assert.equals(413, response.status, "a chunk-size line past what one request may be was not refused");
+			Assert.isTrue(closed);
+			Assert.equals(0, seen.length);
+			async.done();
+		});
+	}
+
+	/**
+		The same behind a response still going out: it was cut off where it
+		was, and the connection closed with it. It goes out whole now, and the
+		connection closes after it.
+	**/
+	public function testPipelinedBodiesPastWhatIsHeldLeaveAResponseGoingOutWhole(async:Async):Void {
+		// Written as it goes, its end a second after its start (on the wall's
+		// clock), so the uploads behind it have all arrived while it is still
+		// going out. A file sent in bursts tests the same branch, but on Linux
+		// a 2 MB file is gone before them.
+		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.middleware.push((handler, next) -> {
+			var response:HTTPResponseStream = handler.beginResponse(200, "text/plain");
+			response.writeText("first;");
+			haxe.Timer.delay(() -> {
+				response.writeText("last");
+				response.end();
+			}, 1000);
+		});
+		var server:HTTPServer = new HTTPServer(config);
+
+		var request = new crossbyte.io.ByteArray();
+		request.writeUTFBytes("GET /stream HTTP/1.1\r\nHost: x\r\n\r\n");
+		var body:String = __repeat("x".code, 600 * 1024);
+		for (i in 0...3) {
+			request.writeUTFBytes('POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: ${body.length}\r\n\r\n' + body);
+		}
+
+		__pipeline(server, request, function(received:crossbyte.io.ByteArray, closed:Bool):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			received.position = 0;
+			var raw:String = received.readUTFBytes(received.length);
+			Assert.isTrue(StringTools.startsWith(raw, "HTTP/1.1 200 "), "the response was not given: " + raw.substr(0, 40));
+			Assert.isTrue(raw.indexOf("first;") > 0 && raw.indexOf("last") > 0, "the response going out was cut off: " + raw.substr(raw.length - 60));
+			Assert.equals(-1, raw.indexOf("HTTP/1.1 ", 1), "requests past what was held were answered");
+			Assert.isTrue(closed, "the connection was not closed after the response");
+			async.done();
+		});
+	}
+
+	/**
+		Sends `request` on a connection of its own, in one write, and hands
+		over all it received once the server has closed it, or 20 seconds on.
+		Pumped on the wall's clock, so a route's `Timer.delay` and the bytes
+		in flight keep the same time on every target: `exchangeEach` steps a
+		sixtieth of a second a millisecond's sleep, which on Linux runs the
+		runtime's clock some fifteen times faster than the transfer.
+	**/
+	private static function __pipeline(server:HTTPServer, request:crossbyte.io.ByteArray, then:(crossbyte.io.ByteArray, Bool) -> Void):Void {
+		var client = new crossbyte.net.Socket();
+		var received = new crossbyte.io.ByteArray();
+		var closed:Bool = false;
+		client.addEventListener(crossbyte.events.Event.CONNECT, _ -> {
+			client.writeBytes(request, 0, request.length);
+			client.flush();
+		});
+		client.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, _ -> {
+			if (client.bytesAvailable > 0) {
+				client.readBytes(received, received.length, client.bytesAvailable);
+			}
+		});
+		client.addEventListener(crossbyte.events.Event.CLOSE, _ -> closed = true);
+
+		HTTPTestSupport.connectThen(client, server, function():Void {
+			HTTPTestSupport.pumpWallUntilAsync(() -> closed, 20.0, function(_):Void {
+				try client.close() catch (_:Dynamic) {}
+				then(received, closed);
+			});
+		});
+	}
+
+	/**
 		`Expect: 100-continue` waits for the application.
 
 		The server told every such client to send before any middleware had

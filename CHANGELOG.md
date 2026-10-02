@@ -217,8 +217,33 @@ entry below says how:
   `mbedtls_ssl_setup`, which mbedTLS 3 requires: a two-line move in
   `project/lib/curl/lib/vtls/mbedtls.c`. A dynamic build, whose ndll
   carries its own mbedTLS, is unaffected.
+- `MongoConnection.affectedRows` and `count()`, and `MongoWriteResult`'s
+  `inserted`, `matched`, `modified` and `deleted`, are `Float`s, where
+  they were `Int`s: code that keeps one in an `Int` needs `Std.int()`.
+- `LocalConnection.timeout` and `SharedChannel.timeout` of 0 wait without
+  a deadline, where they made a single try; set 1 for a single try.
+- On Linux and macOS a `SharedObject` region is not shared between users:
+  one another user made under the name throws an `IOError`, where it was
+  shared when the first user's umask let others write it.
+- Two users can no longer meet over a `LocalConnection`, `SharedChannel` or
+  `local://` name: each user's names are their own. A name's socket is
+  `/tmp/crossbyte-<uid>/<name>` on Linux and macOS, where it was
+  `/tmp/crossbyte_local_connection_<name>`, and its pipe
+  `\.\pipe\crossbyte-<SID>-<name>` on Windows, where it was
+  `\.\pipe\<name>`: a program of your own that opened those directly
+  must follow.
+- A `timeoutMs` of 0 is no deadline for a STUN question (`StunClient`,
+  `discoverPublicAddress`, `gatherReflexive`) and for
+  `ReliableDatagramServerSocket.connect` and `connectRelayed`, where it
+  meant three and twenty seconds: pass the time wanted, or leave the
+  argument out for the default. `StunClient.classifyFiltering` fails for 0,
+  and a dial throws for a negative timeout.
 
 ### Added
+- `HTTPServerConfig.http2MaxRequestBodyBuffer`: what one HTTP/2 connection
+  holds of request bodies at once, across all its streams, 4 MB
+  (`DEFAULT_HTTP2_REQUEST_BODY_BUFFER`) unless changed, `0` for no limit,
+  never less than `maxRequestBodySize`. See Fixed.
 - `SharedObject.remove(name)` takes a region away on Linux and macOS,
   with, on macOS, its lock file, where it otherwise outlives every
   handle until the machine restarts, and nothing could remove it. Handles
@@ -1376,6 +1401,61 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- On eval HTTP/2 works, and the HTTP/1.1 client keeps connections for the
+  next request to their origin, as on every other target with threads.
+  Both were off there because eval raised a reset connection's error past
+  every `catch`, ending a pooled connection's reader thread or the
+  interpreter; it is an error a catch sees now. `HTTP2Backend.isSupported`
+  is true there, where a request for HTTP/2 was refused, and a request
+  that may be sent twice goes out on a kept connection with
+  `Connection: keep-alive`. An HTTP/2 connection's threads wait on a
+  `Semaphore` there, where a `Lock`'s wait polls and holds the interpreter
+  from the threads it waits for.
+- A `LocalConnection` name is its user's own, and with it a `SharedChannel`
+  name and a `local://` address. Names were one namespace for every user of
+  the machine: on Linux and macOS a name's socket was in /tmp, where another
+  user could listen on it first and take its clients, or put a link there
+  that `connect()` followed to their own listener; on Windows a pipe was made
+  with the default security, which lets everyone, the anonymous user
+  included, open it to read, and a client went to whichever pipe had the
+  name, another user's put there first included. On Linux and macOS a
+  name's socket and lock file now live in `/tmp/crossbyte-<uid>`, made 0700,
+  which `listen` and `connect` refuse with an `IOError` unless it is a
+  directory the user owns that nobody else can enter, not a link, and not
+  one another user made first, and `connect` refuses anything at the
+  socket's path but a socket of the user's. On Windows the pipe's name
+  carries the user's SID, its security admits the user and SYSTEM alone,
+  it refuses clients on other machines, and a client refuses, with an
+  `IOError`, a pipe under the name that another user made, and connects
+  for identification only, so the listener cannot act as it.
+- `System.totalSystemMemory()` and `freeSystemMemory()` ask macOS's kernel
+  directly in a native build, as Windows and Linux are asked. Each ran a
+  process, `sysctl` and `vm_stat`: the two took 0.11 s on the CI runner.
+  The jvm on macOS still runs them.
+- A `timeout` of 0 (or less) on `LocalConnection` and `SharedChannel`
+  means no deadline, as it does for every other connect: `connect()`, and
+  a `send` to a channel not yet connected to, wait on the calling thread
+  until something listens on the name. It made a single try, and a
+  connect to a listener a moment late failed at once. A timeout of 50 or
+  less makes the single try now, 50 ms being the pause between tries.
+  `NetConnection`'s `connectTimeout` for `local://` is this `timeout`.
+- A `timeoutMs` of 0 sets no deadline for a STUN question,
+  `StunClient.discover`, `probe` and `classifyMapping`,
+  `ReliableDatagramServerSocket.discoverPublicAddress` and
+  `PeerConnection.gatherReflexive`: and for a session that
+  `ReliableDatagramServerSocket.connect` or `connectRelayed` dials, as 0
+  does for every connection's `timeout`; it meant three seconds for a
+  question and twenty for a dial, so neither could wait longer without a
+  number. A question with no deadline is asked, each gap twice the last,
+  until it is answered, or until what it is asked through closes, a
+  `StunClient` question through a socket of the caller's now ends the
+  moment that socket closes, where it lasted until its next ask failed. A
+  dial's timeout is twenty seconds unless given, as
+  `ReliableDatagramSocket.DEFAULT_TIMEOUT`, new, says, and a negative one
+  throws a `RangeError`, as the session's `timeout` does.
+  `StunClient.classifyFiltering` needs a deadline, a filtering NAT
+  answers with silence, and fails at once for 0 or less, its cause an
+  `ArgumentError`.
 - `IceAgent.DEFAULT_TIMEOUT`, the time an agent has from `start` to select
   a pair, is 80 seconds, where round three made it 40. A nomination is a
   check, given up on 39.5 seconds after it goes out, and forty was a moment
@@ -2336,6 +2416,252 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An HTTP/2 server that stops reading no longer holds the client's
+  requests past their timeouts, nor a cancel, nor a close. Every frame a
+  connection sent, a request's head and body, a reset, the answers to
+  the server's PINGs and SETTINGS, its WINDOW_UPDATEs, was written under
+  the connection's lock by whichever thread made it, so once the socket's
+  buffers filled, that thread waited in the write for good holding the
+  lock: no request on the connection could look at its stream and reach
+  its timeout, `cancel()` waited with them on whatever thread called it,
+  the runtime's, for `URLLoader.close()`, and so did a pool closing the
+  connection. A 1.5 s request under a flood of PINGs whose answers the
+  server never read, and a 1.5 s upload to a server that opened every
+  window and read nothing, never ended; a cancel of that upload did not
+  return in five seconds. Nothing is written under the lock now: frames
+  are queued in order and written by whichever thread holds the write,
+  a writer thread each connection has now, the reader writing its own
+  answers, or a request with no body writing its own head while the
+  writer watches it. A request waits on its stream, or for its body's
+  queued frames to go, within its own timeout, the longest a window may
+  keep its body from going out now counts the socket's, and gives the
+  connection up when a write has been held that long; `cancel()` and
+  `close()` return at once, a cancelled request's held head has a second;
+  the reader stops reading while 64 KB of answers wait unwritten, and a
+  body has at most 256 KB queued, so a server that reads nothing holds no
+  more of the client than that; and a closed connection whose last write
+  does not go is ended a second after it closed. Each case now ends at its
+  timeout, and the connection's threads with it. Natively, and on neko and
+  HashLink, on Windows a TLS write the server is not taking still holds the
+  writer thread until the server reads or goes, as a TLS read there already
+  does; the requests do not wait with it. Sequential small requests over loopback cost about the
+  same (106.6 to 109.1 microseconds, medians of nine native runs);
+  downloads and uploads are as fast or faster, a DATA frame no longer being
+  copied twice.
+- The HTTP/2 client's HPACK encoder holds no more than the protocol's
+  default 4 KB table, whatever SETTINGS_HEADER_TABLE_SIZE the server
+  sends; an encoder may use less than the peer allows (RFC 7541 4.2), and
+  Go's and nghttp2's clients keep to the same. It held what it was told,
+  so a server saying a megabyte, or 2^31 - 1, kept every distinct field
+  the client sent in the client's memory for the connection's life, each
+  searched for every field after: 300 requests with an id of their own
+  left 28,743 bytes in the table, and the next 300 would have left twice
+  that. And the client says SETTINGS_ENABLE_PUSH 0 whatever settings it is
+  given: `H2Settings` allows push unless told otherwise, so an
+  `HTTP2Backend` given settings of its own invited pushes and then failed
+  the connection over the first.
+- The HTTP/2 client holds a response's header section to one 64 KB
+  allowance, its interim (1xx) responses included, as the HTTP/1.1 client
+  does, and takes a header block after the response's own only as its
+  trailer section, which ends the stream and carries no pseudo-header
+  (RFC 9113 8.1). Every block after the first was taken as more of the
+  response, its fields added to the stream's and its status put over the
+  last, so a server repeating a block grew the response by a block's
+  fields each time, 20 blocks of 1,200 fields kept 24,000 of them, at
+  three bytes a block after the first, and 200 grew the heap by 20 MB
+  natively, where the second is refused now; and 103s were held to the limit
+  one at a time and dropped, so a server could send them for as long as
+  it liked, each keeping the request from its idle timeout. Either is a
+  malformed or oversized response now: its stream is reset and the
+  request fails, and the connection carries on.
+- The HTTP/2 client holds a response body to `Http.MAX_BODY_SIZE`, 64 MB,
+  as the HTTP/1.1 client does: past it the request fails with "Response
+  body exceeded N bytes", its stream is reset and what had arrived is let
+  go, and the connection carries on with the requests on it. Nothing held
+  it. The stream's window was opened again as each half of it arrived, so
+  a server sending a body without end grew it, and the client's memory,
+  for as long as it went on: a 4 MB body completed against a 256 KB limit,
+  and 256 MB sent within the windows the client opened grew the heap by
+  688 MB natively. The same server now costs the 64 MB of the limit, 161
+  MB of heap at its peak, however much it sends.
+- On a synchronous `SQLiteConnection`, a `cancel()` from another thread
+  stops a `request()` or a statement that is only starting. SQLite clears
+  an interrupt that lands while a statement is prepared, so a cancel made
+  within the first dozen microseconds or so of a request was lost, and
+  the request ran on: an aggregate for its hours, a SELECT through every
+  row. Each request is now a run the progress handler can stop, as on an
+  asynchronous connection, and one asked for before a cancel but not yet
+  started fails as interrupted. It costs nothing measurable: trivial
+  requests, inserts and a 20,000-row aggregate moved +0.7%, +0.1% and
+  -0.7% (medians of 16 interleaved runs).
+- A `MySQLStatement`'s `SQLResult.rowsAffected` is the server's count,
+  whole past 2^31, as `MySQLConnection.affectedRows` is. It was the length
+  of the driver's result: for a write natively held at 2^31 - 1, though
+  the client had the count whole, and on hl negative past 2^31; for a
+  SELECT read a page at a time, the rows read so far. A statement that
+  returns rows reports 0, as AIR's and `SQLiteStatement`'s do. Natively
+  its `lastInsertRowID` is the statement's own as well, where it was read
+  from the connection as each page was taken: a SELECT run before an
+  INSERT's result was taken made the INSERT's id 0.
+- MongoDB counts are whole past 2^31. The server counts in 64 bits, and
+  an update or delete over a large collection answers past 2^31; every
+  count was read as an `Int`, held at 2^31 - 1, so three billion
+  documents updated read 2147483647. `MongoConnection.affectedRows` and
+  `count()`, `MongoWriteResult`'s `inserted`, `matched`, `modified` and
+  `deleted`, and a `MongoStatement`'s `SQLResult.rowsAffected` are
+  `Float`s, exact to 2^53, as MySQL's and Postgres's counts are.
+- Work asked of an asynchronous `SQLiteConnection` just as its worker
+  stops, after an open that failed, is answered. A statement, a `begin()`
+  or any other operation that found the worker's queue still open, and
+  reached it only after the worker's last look at it, was neither run nor
+  refused, and never answered; a `close()` caught there left the
+  connection refusing every later open, waiting for a `CLOSE` that would
+  not come. Asked across that moment 6,000 times, about one in a hundred
+  was lost. Such work now takes itself back out and is refused, as on a
+  connection that is not open: an `IllegalOperationError`, and a
+  `close()` with nothing to close.
+- On Linux and macOS a `SharedObject` is its user's alone. A region was
+  made readable by every local user (0666 less the umask: 0644 as a rule),
+  so any of them could read what any `SharedObject` held, and on Linux
+  hold its lock and stop every participant; and one another user had made
+  first under the name, writable by all, was used as if it were this
+  user's, where the system allowed it, as macOS does. Regions and macOS's
+  lock files are made 0600 now, an older one of this user's is made so as
+  it is opened, and one that is not this user's is refused with an
+  `IOError` saying so.
+- macOS's `SharedObject` lock file, `/tmp/cbso_<hash>.lock`, is not opened
+  through a link, another user's link there made the process make, or
+  lock, a file wherever it pointed, nor waited on as a FIFO, which held
+  the constructor, and the process's collections, until someone wrote to
+  it. And one deleted while its region is open, macOS's cleaner deletes
+  what in /tmp nobody has touched for three days, and a lock touches
+  nothing, no longer parts the participants: the next to open made a
+  new file and locked that while those open locked the old, so two wrote
+  at once. A participant checks, each time it locks, that the file it
+  holds is the one at the path still, and takes that one if not; a lock
+  file in use has its times brought up to date hourly; and only
+  `SharedObject.remove` deletes one. A `LocalConnection` listener's lock
+  file on Linux and macOS is opened the same way and kept up to date while
+  it listens: a cleaner that deleted a long-lived listener's let a second
+  `listen()` take the name.
+- On macOS a `LocalConnection` send to a peer that has stopped reading no
+  longer waits for good. The socket was left blocking and each write asked
+  not to wait with `MSG_DONTWAIT`, which Linux honours for a send and macOS
+  does not: once the 8 KB macOS gives a local socket was full, the send
+  waited on the runtime's thread, holding the lock the reader thread and
+  `close()` need, the native suite hung there on the macOS runner. Every
+  connected socket is non-blocking now. So is a connect, which on Linux
+  waited in the kernel, past any `timeout`, for a listener whose backlog
+  was full to take someone; it is tried again until the deadline instead.
+- A `SharedChannel` client method that throws is reported instead of
+  dropped without a word: logged, and dispatched as
+  `UncaughtErrorEvent.UNCAUGHT_ERROR` on the channel's runtime, as a
+  posted callback's failure is, and the channel goes on listening. So is
+  what a `LocalConnection` callback throws, which still ends the
+  connection, as a socket handler's does, but went unreported when no
+  `onError` was set, and entirely when `close()` called `onClose`, and
+  what a `Task`'s listeners and handlers throw: one of them stopped the
+  rest from hearing the outcome and kept the task in its pool for good,
+  and on a pool thread, for a task with no runtime, nothing at all was
+  reported. `cancel()` no longer throws what a `CANCEL` listener threw.
+- A `Task` made on a thread no runtime belongs to always calls the
+  handlers given to `onComplete`, `onError` and `onCancel`. Each looked at
+  the task's state and then added a listener, in two steps, and such a task
+  finishes on the pool thread: one finishing between the two was never
+  heard, and whatever waited on the handler, a password hash's `Future`
+  among them, waited for good. About one handler in two hundred was lost
+  natively, one in two thousand on the jvm, and more for `onCancel`. A
+  handler given before the task is done is now kept by the task and taken
+  by the step that makes it done, under the same lock; one given after is
+  called at once.
+- On eval a read or a write on a connection its peer reset, a write to
+  one the peer had closed, a `shutdown`, a `bind` to a port in use, a
+  `listen`, and a `select` naming a closed socket throw an error that can
+  be caught, as on every other target. eval raised each as an OCaml
+  `Unix_error` that passed every Haxe `catch` and ended the interpreter,
+  on Linux a second write to a closed connection ended it with SIGPIPE,
+  so a development server ended over one client's reset, and a
+  `ServerSocket.bind` to a port in use ended the program it should have
+  told with an `IOError`. A call that could fail that way is made on a
+  helper thread, where the error ends only the helper, and SIGPIPE is
+  taken by a libuv signal handle; a read or a write that a zero-time
+  `select` and `peer()` show cannot fail is made at once, as before. A
+  reset landing in the microseconds between that check and a write made
+  at once can still end the interpreter. eval's `setTimeout` waits as
+  long as it is told on Linux and macOS, where it handed the system a
+  thousand times the timeout, and a read that times out throws
+  `Blocked`, as natively. The interpreter suite runs 5% longer on
+  Windows, where every read is made on a helper, and 8% on Linux, most of
+  it in four HTTP client tests that read an endless header a byte at a
+  time.
+- A `ServerSocket`, `ServerWebSocket` or `DatagramSocket` closed from
+  another thread closes on its runtime, as a `Socket` does: `close()`
+  hands the close over and returns. Made on the calling thread, it took
+  the listener or the socket out of the runtime's poll set and its tick
+  listeners, neither thread-safe, while the runtime might be polling
+  them, and a `DatagramSocket` dispatched `close` there. The same for
+  `stopAccepting()`; `ServerWebSocket.drain()`, which with no session open
+  called `onComplete` on the calling thread; `DatagramSocket.stopReceiving()`;
+  and `ReliableDatagramServerSocket`'s `detachIceAgent()` and
+  `releaseRelay()`, which failed an `allocateRelay` still waiting on the
+  calling thread.
+- An HTTP/2 connection holds the header sections of requests whose bodies
+  are still to come to a quarter of `http2MaxRequestBodyBuffer`, a
+  megabyte at the default, by HPACK's count, and refuses a stream whose
+  section would go past it with `REFUSED_STREAM`, never having reached the
+  application. Each was held until its body had arrived, flow control
+  cannot hold a HEADERS back, and HPACK makes a large one cheap to send:
+  128 streams each carrying a 4 KB cookie fifteen times grew the heap by
+  9.3 MB from 318 KB on the wire, for good with `requestTimeout` at `0`.
+  The same client now has 17 streams taken and 2 MB held (native).
+  Bodiless requests are handed over at once and are not counted.
+- An HTTP/1.1 request still being answered keeps its answer when the
+  requests pipelined behind it outgrow what one connection holds,
+  `maxRequestBodySize` and the header allowance. They were counted with
+  it, and past that the request being answered was answered `413` over its
+  own answer, which was lost: three pipelined 600 KB uploads, each under
+  the 1 MB limit, behind a route answering a moment later came back as one
+  `413`. The whole buffer was held to the limit before any of it was
+  parsed, too, so a read bringing the end of one request and the ones
+  behind it at once, as reads on Linux do, was answered `413` before
+  the first was handed over. Behind a file being sent, the file was cut
+  off where it was and the connection closed. A read is parsed first now,
+  and what is left behind the request being answered is held to the
+  limit: what does not fit is dropped, with whatever arrives after it,
+  and the connection closes once the answer has gone, saying
+  `Connection: close` when its head has not gone yet; the requests it
+  held go unanswered, which a client that pipelines sends again (RFC 9112
+  9.3.2). A request still arriving is held to the limit as before.
+- One HTTP/2 connection holds no more than
+  `HTTPServerConfig.http2MaxRequestBodyBuffer` of request bodies at once,
+  4 MB by default, never less than one body at `maxRequestBodySize`.
+  Each stream let its body grow to `maxRequestBodySize`, and both
+  flow-control windows were opened again as every byte arrived, so a
+  client uploading slowly on all 128 streams made the server hold 128
+  bodies, 128 MB at the defaults, and with `requestTimeout` at `0` for
+  good: 16, 64 and 128 MB measured for 16, 64 and 128 uploads of a
+  megabyte stopped a byte short (heap +25, +99 and +197 MB, native). The
+  same client now leaves 2.3, 3 and 4 MB (heap +7, +9 and +13 MB), and
+  none of its uploads is refused. It is held with HTTP/2's own flow
+  control. The connection's window is opened to the budget and given back
+  only for bytes let go; every stream's first window, which a client may
+  use unasked, is made small enough for all 128 to fit beside one whole
+  body, 16 KB at the defaults, the protocol's 64 KB from a budget of
+  about 9 MB, and a stream's window is opened past it as its HEADERS
+  arrive, up to a megabyte at a time, oldest stream first, from what is
+  left once every older stream's remaining body is set aside. The oldest
+  upload always finishes, and uploads that do not all fit wait for window
+  rather than each taking a share and none finishing. Parallel uploads go
+  faster than before, a stream's window having been held to 64 KB (one
+  connection, native: 8 x 1 MB 292 to 313 MB/s, 1 x 4 MB 246 to 282, 32 x
+  64 KB 269 to 323); a body between 16 and 64 KB waits one round trip for
+  its window. Nothing checked that a client kept to its windows at all,
+  so one that ignored them sent what it liked: DATA past a stream's window
+  now resets the stream, and past the connection's ends the connection,
+  with `FLOW_CONTROL_ERROR`. A stream left waiting for window, with no
+  body arriving and none finishing on its connection for 30 s, is reset
+  with `REFUSED_STREAM`, never handed to the application, so safe to
+  send again, whatever the timeouts are.
 - A reliable UDP session asks for its window of socket buffer on Linux
   whatever the system's default reads. Linux reads back twice what was
   asked, counting its own bookkeeping, and a default that read a window's
@@ -2661,10 +2987,8 @@ entry below says how:
   interrupt as a statement starts when no other is running, so a cancel
   that landed while the worker prepared the statement was lost, and the
   statement ran on: an `execute()` and `cancel()` in a row lost it within
-  the first few of 150 tries. A progress handler stops it now. A
-  synchronous connection, whose statements a cancel from another thread
-  interrupts, has no handler and pays nothing for one: a cancel that lands
-  as its statement starts is still lost there, as SQLite has it.
+  the first few of 150 tries. A progress handler stops it now, and on a
+  synchronous connection too: see the entry for a synchronous `cancel()`.
 - An asynchronous `SQLiteConnection` no longer crashes the process when
   the calling thread asks it something while its worker runs a statement.
   `request()`, and the properties and methods that ask SQLite,

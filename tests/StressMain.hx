@@ -53,13 +53,13 @@ class StressMain {
 		}
 
 		var failed:Int = 0;
-		var started:Float = Sys.time();
+		var started:Float = haxe.Timer.stamp();
 
 		Sys.println("CrossByte concurrency stress suite");
 		Sys.println("==================================");
 
 		for (stressCase in cases) {
-			var caseStarted:Float = Sys.time();
+			var caseStarted:Float = haxe.Timer.stamp();
 			var result:StressResult;
 
 			try {
@@ -76,7 +76,7 @@ class StressMain {
 				};
 			}
 
-			var elapsed:Int = Std.int((Sys.time() - caseStarted) * 1000);
+			var elapsed:Int = Std.int((haxe.Timer.stamp() - caseStarted) * 1000);
 			Sys.println("");
 			Sys.println((result.passed ? "[PASS] " : "[FAIL] ") + result.name + " (" + elapsed + "ms)");
 			for (line in result.details) {
@@ -88,7 +88,7 @@ class StressMain {
 			}
 		}
 
-		var total:Int = Std.int((Sys.time() - started) * 1000);
+		var total:Int = Std.int((haxe.Timer.stamp() - started) * 1000);
 		Sys.println("");
 		Sys.println("==================================");
 		Sys.println(cases.length + " case(s), " + failed + " failed, " + total + "ms");

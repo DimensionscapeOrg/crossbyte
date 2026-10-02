@@ -37,17 +37,8 @@ class StunQuery {
 	public static inline var RETRANSMIT_FIRST:Float = 0.5;
 
 	/**
-		How long a question is asked for when its caller gives a timeout of 0
-		or less, in milliseconds. Not "no deadline", as 0 is for a connection:
-		UDP reports nothing when a datagram is dropped, so a deadline is the
-		only thing that ends a question nobody answers.
-	**/
-	public static inline var DEFAULT_TIMEOUT_MS:Int = 3000;
-
-	/**
-		How long this question is asked for, in milliseconds: the timeout it
-		was given, or `DEFAULT_TIMEOUT_MS` for one of 0 or less, what a
-		failure should say it waited.
+		How long this question is asked for, in milliseconds, what a failure
+		should say it waited, or 0 for no deadline.
 	**/
 	public var timeoutMs(default, null):Int;
 
@@ -72,9 +63,11 @@ class StunQuery {
 
 	/**
 		@param now The caller's clock, whatever it consistently uses.
-		@param timeoutMs How long to keep asking. 0 or less means
-		`DEFAULT_TIMEOUT_MS`, three seconds, which is what every caller here
-		passed for it.
+		@param timeoutMs How long to keep asking. 0 or less sets no deadline,
+		as it does for every timeout here: the question is asked, each gap
+		twice the last, until it is answered or its asker stops it. It meant
+		three seconds, so a question could not be asked for longer without a
+		number, where a connection's timeout of 0 waits.
 		@param attributes More for the request to carry: a CHANGE-REQUEST.
 	**/
 	public function new(now:Float, timeoutMs:Int, ?attributes:Array<StunAttribute>) {
@@ -86,13 +79,13 @@ class StunQuery {
 			}
 		}
 
-		this.timeoutMs = timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS;
-		__deadline = now + this.timeoutMs / 1000;
+		this.timeoutMs = timeoutMs > 0 ? timeoutMs : 0;
+		__deadline = timeoutMs > 0 ? now + timeoutMs / 1000 : Math.POSITIVE_INFINITY;
 		__interval = RETRANSMIT_FIRST;
 		__nextAttempt = now + __interval;
 	}
 
-	/** Whether the time allowed has run out. **/
+	/** Whether the time allowed has run out: never, with no deadline. **/
 	public inline function expired(now:Float):Bool {
 		return now >= __deadline;
 	}

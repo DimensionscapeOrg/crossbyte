@@ -61,6 +61,13 @@ class MySQLStatement extends EventDispatcher {
 	private var __connection:Connection;
 	private var __resultSet:ResultSet;
 	private var __prefetch:Int = 0;
+	// What the statement changed and the id it generated, as it ran: see
+	// __noteCounts.
+	@:noCompletion private var __affected:Float = 0.0;
+	@:noCompletion private var __rowId:Float = 0.0;
+	// Whether __rowId was read as the statement ran; elsewhere it is read as
+	// each page is taken.
+	@:noCompletion private var __rowIdNoted:Bool = false;
 
 	// Pages read and not yet taken by getResult(), oldest first. Only the
 	// thread running the statement touches it, so a plain Array serves every
@@ -109,11 +116,15 @@ class MySQLStatement extends EventDispatcher {
 		__executing = true;
 		__resultQueue = [];
 		__prefetch = prefetch;
+		__affected = 0.0;
+		__rowId = 0.0;
+		__rowIdNoted = false;
 
 		try {
 			// Read as the rows are asked for: a page of a million-row result
 			// no longer waits for, and holds, all million.
 			__resultSet = __sqlConnection != null ? __sqlConnection.__requestStream(sql) : __live().request(sql);
+			__noteCounts();
 			__queueResult();
 		} catch (e:Dynamic) {
 			__executing = false;
@@ -267,6 +278,22 @@ class MySQLStatement extends EventDispatcher {
 		The oldest page not yet taken, or `null` when none is waiting. Pages
 		come back in the order they were read, and only the last is
 		`complete`.
+
+		Its `rowsAffected` is the rows the statement changed, as the server
+		counts them, a `Float`, exact to 2^53, and 0 for a statement that
+		returns rows, as AIR's has it. Natively it comes from the statement's
+		own answer. Elsewhere it is the driver's count where that can be
+		right, and is asked in SQL otherwise: after every write on the jvm,
+		whose binding keeps no count. On hl and neko, whose drivers read it
+		in 32 bits, a count past 2^32 wraps back into range there and is
+		taken as it is. It was the length of the driver's result: for a
+		write its `Int`, held at 2^31 - 1 natively, and for a SELECT read a
+		page at a time, the rows read so far.
+
+		Natively `lastInsertRowID` is the statement's own as well, read as it
+		ran. Elsewhere it is the connection's as the page is taken, asked in
+		SQL on hl and neko, so another statement run in between answers
+		for it there.
 	**/
 	public function getResult():SQLResult {
 		var results:Array<Dynamic> = __resultQueue.shift();
@@ -276,15 +303,47 @@ class MySQLStatement extends EventDispatcher {
 		var complete:Bool = !__executing && __resultQueue.length == 0;
 
 		if (results != null) {
-			var len:Int = (__resultSet != null) ? __resultSet.length : 0;
 			// From the statement's answer. This was a SELECT LAST_INSERT_ID()
 			// on every call, a round trip per page, after which the
 			// connection's affectedRows read as that SELECT's.
-			var lastId:Float = __sqlConnection != null ? __sqlConnection.__insertIdFloat() : (__connection != null ? __connection.lastInsertId() : 0);
+			var lastId:Float = __rowIdNoted ? __rowId : (__sqlConnection != null ? __sqlConnection.__insertIdFloat() : (__connection != null ? __connection.lastInsertId() : 0));
 
-			return new SQLResult(results, len, complete, lastId);
+			return new SQLResult(results, __affected, complete, lastId);
 		}
 		return null;
+	}
+
+	/**
+		Takes the statement's counts as it runs, before another statement on
+		the connection replaces them: what it changed, and natively the id it
+		generated, both from its own answer at no cost. They were read from
+		the connection as each page was taken, after a paged SELECT had run
+		in between, the id read 0.
+	**/
+	@:noCompletion private function __noteCounts():Void {
+		var connection:MySQLConnection = __sqlConnection;
+
+		if (connection == null) {
+			// A handle given directly, as tests give one: its own count.
+			var result:ResultSet = __resultSet;
+
+			try {
+				__affected = result != null && result.nfields == 0 ? result.length : 0;
+			} catch (_:Dynamic) {
+				// The jvm's binding, which keeps none.
+			}
+
+			return;
+		}
+
+		__affected = connection.__affectedBy(__resultSet);
+
+		#if cpp
+		if (connection.__native != null) {
+			__rowId = connection.__insertIdFloat();
+			__rowIdNoted = true;
+		}
+		#end
 	}
 
 	private function __queueResult():Void {

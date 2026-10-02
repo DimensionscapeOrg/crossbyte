@@ -73,9 +73,10 @@ extern class NativeFileSync {
 	public static function spaceAvailable(path:String):Float;
 
 	/**
-		Windows' physical memory in bytes: all of it, or what is available to
-		start programs without swapping; `-1` on POSIX. Not a file
-		operation: System's, kept here so that it has a native bridge.
+		The physical memory in bytes on Windows and macOS: all of it, or what
+		is available to start programs without swapping; `-1` elsewhere, and
+		on a failure. Not a file operation: System's, kept here so that it
+		has a native bridge.
 	**/
 	@:native("crossbyte_system_memory")
 	public static function systemMemory(available:Bool):Float;

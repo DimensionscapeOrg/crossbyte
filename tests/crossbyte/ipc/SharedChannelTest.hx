@@ -1,6 +1,8 @@
 package crossbyte.ipc;
 
 import crossbyte.core.CrossByte;
+import crossbyte.events.UncaughtErrorEvent;
+import crossbyte.utils.Logger;
 import haxe.Serializer;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
@@ -126,6 +128,44 @@ class SharedChannelTest extends utest.Test {
 		Assert.equals(0, receiver.calls);
 	}
 
+	/**
+		A client method that throws is reported as any callback the runtime
+		runs is, logged, and dispatched as `UncaughtErrorEvent.UNCAUGHT_ERROR`
+		on the runtime, and the channel goes on. It was caught and dropped
+		without a word: a bug in a handler looked like a message never sent.
+	**/
+	public function testAClientMethodThatThrowsIsReported():Void {
+		var runtime = CrossByte.current();
+		var reports:Array<UncaughtErrorEvent> = [];
+		var watch = (event:UncaughtErrorEvent) -> reports.push(event);
+		var logged:Array<String> = [];
+		runtime.addEventListener(UncaughtErrorEvent.UNCAUGHT_ERROR, watch);
+		Logger.sink = line -> logged.push(line);
+
+		var channel = new SharedChannel();
+		var receiver = new SharedChannelReceiver();
+		channel.client = receiver;
+		try {
+			channel.__onData(frame("explode", ["handler bug"]));
+			channel.__onData(frame("receive", ["after", 7]));
+		} catch (e:Dynamic) {
+			Assert.fail("the failure escaped the channel: " + e);
+		}
+
+		Logger.sink = null;
+		runtime.removeEventListener(UncaughtErrorEvent.UNCAUGHT_ERROR, watch);
+		Assert.equals(1, reports.length, "the failure was not reported");
+		if (reports.length == 1) {
+			Assert.equals("handler bug", Std.string(reports[0].error));
+			Assert.equals(UncaughtErrorEvent.POSTED, reports[0].source);
+			Assert.equals(channel, reports[0].origin);
+		}
+		Assert.isTrue(logged.filter(line -> line.indexOf("handler bug") >= 0).length == 1, "the failure was not logged: " + logged);
+		// And the channel goes on.
+		Assert.equals(1, receiver.calls);
+		Assert.equals("after", receiver.lastMessage);
+	}
+
 	public function testNullClientIgnoresData():Void {
 		var channel = new SharedChannel();
 		channel.__onData(frame("receive", ["ignored", 1]));
@@ -179,7 +219,7 @@ class SharedChannelTest extends utest.Test {
 		var toB = new SharedChannelReceiver();
 		a.client = toA;
 		b.client = toB;
-		var suffix = '${Std.int(Sys.time() * 1000)}_${Std.random(1000000)}';
+		var suffix = '${Std.int(Sys.time() * 1000)}_${Std.random(1000000)}'; // time of day: a name no other run has used
 		var clientsOfA = 0;
 		var clientsOfB = 0;
 
@@ -207,6 +247,37 @@ class SharedChannelTest extends utest.Test {
 		Assert.equals(5, toB.calls);
 		Assert.equals(1, clientsOfA, 'the first channel was connected to $clientsOfA times');
 		Assert.equals(1, clientsOfB, 'the second channel was connected to $clientsOfB times');
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		`timeout = 0` means no deadline: a send to a channel nothing listens on
+		yet waits, on the calling thread, until something does. It made one
+		try and reported an error at once.
+	**/
+	@:timeout(30000)
+	public function testATimeoutOfZeroWaitsForTheListenerWithoutADeadline():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var name = '__crossbyte_channel_nodeadline_${Std.int(Sys.time() * 1000)}_${Std.random(1000000)}'; // time of day: a name no other run has used
+		var listening = LateListener.start(name, 0.4);
+		var sender = new SharedChannel();
+		sender.timeout = 0;
+		var levels:Array<String> = [];
+		sender.addEventListener(crossbyte.events.StatusEvent.STATUS, (event:crossbyte.events.StatusEvent) -> levels.push(event.level));
+		var started = haxe.Timer.stamp();
+		try {
+			sender.send(name, "receive", ("waited" : Dynamic), (1 : Dynamic));
+		} catch (e:Dynamic) {
+			levels.push("threw " + e);
+		}
+		var waited = haxe.Timer.stamp() - started;
+		sender.close();
+		listening.stop();
+
+		Assert.same(["status"], levels, 'the send gave up after $waited s');
+		Assert.isTrue(waited >= 0.3, 'the send returned after $waited s, before anything listened');
 		#else
 		Assert.pass();
 		#end
@@ -280,5 +351,9 @@ private class SharedChannelReceiver {
 
 	public function receiveAny(value:Dynamic):Void {
 		calls++;
+	}
+
+	public function explode(message:String):Void {
+		throw message;
 	}
 }
