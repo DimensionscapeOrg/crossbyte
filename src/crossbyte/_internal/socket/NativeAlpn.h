@@ -36,11 +36,10 @@ bool crossbyte_alpn_available();
 // empty list clears any previous one.
 int crossbyte_alpn_set(::Dynamic conf, ::Array<::String> protocols);
 
-// Releases the list installed for `conf` and clears it from the config.
-//
-// Deterministic rather than left to a finalizer: mbedTLS stores the list by
-// reference and never owns it, so something has to, and the socket that
-// installed it is the only thing that knows when it is done.
+// Called when the socket that installed a list on `conf` is done with it, and
+// does nothing: each distinct list is kept for the life of the process, since
+// the connections that agreed on one of its names point into it and can
+// outlive that socket. See NativeAlpn.cpp.
 void crossbyte_alpn_release(::Dynamic conf);
 
 // The protocol agreed during the handshake on the context wrapped by `ssl`, or

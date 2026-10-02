@@ -31,6 +31,16 @@ extern class NativeTlsPeer {
 	static function protocol(ssl:Dynamic):Null<String>;
 
 	/**
+		The end of the handshake the configuration under the context says it
+		is: `1` for a server, `0` for a client, `-1` for anything that is not
+		an hxcpp TLS context. Read through the context, as mbedTLS reads its
+		configuration on every record, which is what a test needs to see
+		that the configuration lives as long as the connections on it.
+	**/
+	@:native("crossbyte_tls_peer_endpoint")
+	static function endpoint(ssl:Dynamic):Int;
+
+	/**
 		`MBEDTLS_VERSION_NUMBER` of the mbedTLS hxcpp built this program with,
 		`0x03060700` for 3.6.7: 2.28 tops out at TLS 1.2, 3.x speaks TLS 1.3.
 	**/

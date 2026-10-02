@@ -2,8 +2,9 @@
 
 #include "NativeAlpn.h"
 
-#include <map>
+#include <string>
 #include <string.h>
+#include <vector>
 
 #include "mbedtls/ssl.h"
 
@@ -57,30 +58,40 @@ mbedtls_ssl_context *contextOf(::Dynamic ssl) {
 	return reinterpret_cast<HxSslCtx *>(ssl.mPtr)->s;
 }
 
-// mbedTLS stores the ALPN list by reference, `conf->alpn_list = protos`,
-// and `mbedtls_ssl_config_free` only zeroizes the struct without releasing it.
-// So the array and every string in it have to outlive the config, and
-// something has to own them. A field on hxcpp's struct would be the natural
-// home; this is the next best thing, keyed by the config it belongs to.
+// Every distinct list installed, kept for the life of the process.
+//
+// mbedTLS stores a config's list by reference, `conf->alpn_list = protos`,
+// and a connection set up on the config keeps a pointer to the name its
+// handshake agreed on, which is what `mbedtls_ssl_get_alpn_protocol` hands
+// back, with no copy of its own. So a list has to outlive every connection
+// that agreed on one of its names, and those outlive the socket that
+// installed it: hxcpp shares a listener's config with every connection the
+// listener accepts, and keeps the config until the last of them has gone. A
+// list was freed when its socket closed, and a connection a server kept on
+// after `stopAccepting()` then read its protocol from freed memory, which
+// the next allocation of that size had taken over.
+//
+// One copy of each distinct list rather than one per config keeps that
+// bounded. The lists come from the application, never from a peer, a
+// server's own, the HTTP/2 client's, so there are a handful, and a client
+// no longer allocates one for every connection it makes.
 //
 // Guarded, because the HTTP/2 client pools connections across threads and each
 // one configures its own socket.
-std::map<mbedtls_ssl_config *, char **> gLists;
+std::vector<char **> gInterned;
 
 #ifdef HX_WINDOWS
-CRITICAL_SECTION gLock;
-bool gLockReady = false;
+// Initialised statically, as the pthread one is. A critical section has to be
+// initialised by a call, which the first lock made, and two threads making
+// their first HTTP/2 connections at once could both make it.
+SRWLOCK gLock = SRWLOCK_INIT;
 
 void lockAcquire() {
-	if (!gLockReady) {
-		InitializeCriticalSection(&gLock);
-		gLockReady = true;
-	}
-	EnterCriticalSection(&gLock);
+	AcquireSRWLockExclusive(&gLock);
 }
 
 void lockRelease() {
-	LeaveCriticalSection(&gLock);
+	ReleaseSRWLockExclusive(&gLock);
 }
 #else
 pthread_mutex_t gLock = PTHREAD_MUTEX_INITIALIZER;
@@ -104,26 +115,32 @@ void freeList(char **list) {
 	free(list);
 }
 
-// Replaces whatever was installed for this config, freeing the old list.
-//
-// Replacing rather than only inserting also covers the one case a table keyed
-// by address cannot otherwise survive: a config freed without a release, whose
-// address is later handed back out by the allocator. The stale entry is
-// overwritten the first time the new owner configures itself.
-void remember(mbedtls_ssl_config *conf, char **list) {
-	lockAcquire();
-
-	std::map<mbedtls_ssl_config *, char **>::iterator found = gLists.find(conf);
-	if (found != gLists.end()) {
-		freeList(found->second);
-		gLists.erase(found);
+// A NULL-terminated copy of `names`, as mbedTLS walks it, or 0 when an
+// allocation fails.
+char **copyList(const std::vector<std::string> &names) {
+	char **list = (char **)calloc(names.size() + 1, sizeof(char *));
+	if (!list) {
+		return 0;
 	}
-
-	if (list) {
-		gLists[conf] = list;
+	for (size_t i = 0; i < names.size(); i++) {
+		list[i] = (char *)malloc(names[i].size() + 1);
+		if (!list[i]) {
+			freeList(list);
+			return 0;
+		}
+		memcpy(list[i], names[i].c_str(), names[i].size() + 1);
 	}
+	return list;
+}
 
-	lockRelease();
+bool sameList(char **list, const std::vector<std::string> &names) {
+	size_t i = 0;
+	for (; list[i]; i++) {
+		if (i >= names.size() || names[i] != list[i]) {
+			return false;
+		}
+	}
+	return i == names.size();
 }
 
 } // namespace
@@ -151,61 +168,68 @@ int crossbyte_alpn_set(::Dynamic conf, ::Array<::String> protocols) {
 		// protos, so passing NULL to turn ALPN off segfaults (2.28 and 3.6
 		// alike). The handshake guards on `alpn_list == NULL`, which is the
 		// supported way off.
-		remember(config, 0);
 		config->MBEDTLS_PRIVATE(alpn_list) = 0;
 		return 0;
 	}
 
-	// mbedTLS walks the list until it reads a NULL, hence the terminator slot.
-	char **list = (char **)calloc(count + 1, sizeof(char *));
-	if (!list) {
-		return -2;
-	}
-
+	std::vector<std::string> names;
+	names.reserve(count);
 	for (int i = 0; i < count; i++) {
 		::String protocol = protocols->__get(i);
 		if (protocol == null()) {
-			freeList(list);
 			return -3;
 		}
-
 		hx::strbuf buf;
-		const char *utf8 = protocol.utf8_str(&buf);
-		size_t length = strlen(utf8);
+		names.push_back(std::string(protocol.utf8_str(&buf)));
+	}
 
-		list[i] = (char *)malloc(length + 1);
-		if (!list[i]) {
-			freeList(list);
+	lockAcquire();
+
+	char **list = 0;
+	for (size_t i = 0; i < gInterned.size() && !list; i++) {
+		if (sameList(gInterned[i], names)) {
+			list = gInterned[i];
+		}
+	}
+
+	bool fresh = (list == 0);
+	if (fresh) {
+		list = copyList(names);
+		if (!list) {
+			lockRelease();
 			return -2;
 		}
-		memcpy(list[i], utf8, length + 1);
 	}
 
 	// Rejects empty names, names over MBEDTLS_SSL_MAX_ALPN_NAME_LEN and lists
 	// over MBEDTLS_SSL_MAX_ALPN_LIST_LEN. On failure it has not stored the
-	// pointer, so the list is still ours to free.
+	// pointer, so a list made for this call is still ours to free, and one
+	// already kept was accepted before, so is not refused now.
 	int result = mbedtls_ssl_conf_alpn_protocols(config, (const char **)list);
 	if (result != 0) {
-		freeList(list);
+		if (fresh) {
+			freeList(list);
+		}
+		lockRelease();
 		return result;
 	}
 
-	remember(config, list);
+	if (fresh) {
+		gInterned.push_back(list);
+	}
+
+	lockRelease();
 	return 0;
 #endif
 }
 
-void crossbyte_alpn_release(::Dynamic conf) {
-	mbedtls_ssl_config *config = configOf(conf);
-	if (!config) {
-		return;
-	}
-
-	remember(config, 0);
-
-#if defined(MBEDTLS_SSL_ALPN)
-	config->MBEDTLS_PRIVATE(alpn_list) = 0;
-#endif
+void crossbyte_alpn_release(::Dynamic) {
+	// Nothing to give back: the list stays for the connections that agreed on
+	// one of its names (see gInterned). The config is left pointing at it,
+	// too, rather than cleared: a listener's is shared with the connections
+	// it accepted, and one of those may still be in its handshake, on
+	// another thread, under hxcpp's own sockets, reading the list as this
+	// runs. Kept so a socket closes the same way it always has.
 }
 
 ::String crossbyte_alpn_selected(::Dynamic ssl) {

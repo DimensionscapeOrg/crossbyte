@@ -8,6 +8,12 @@
 #include "mbedtls/ssl.h"
 #include "mbedtls/x509_crt.h"
 
+// mbedTLS 3 marks the structures' fields private, and MBEDTLS_PRIVATE(x) is the
+// name each one has there; 2.28 has neither the macro nor the renaming.
+#ifndef MBEDTLS_PRIVATE
+#define MBEDTLS_PRIVATE(member) member
+#endif
+
 namespace {
 
 // hxcpp wraps each mbedTLS context in an hx::Object whose definition lives in
@@ -60,6 +66,26 @@ Array<unsigned char> crossbyte_tls_peer_der(::Dynamic ssl) {
 	// A static string either way: "TLSv1.2", "TLSv1.3", or mbedTLS's word for
 	// a session that has not agreed on one yet.
 	return ::String::create(mbedtls_ssl_get_version(context));
+}
+
+int crossbyte_tls_peer_endpoint(::Dynamic ssl) {
+	if (ssl.mPtr == 0 || !ssl.mPtr->_hx_isInstanceOf(hx::clsIdSsl)) {
+		return -1;
+	}
+
+	mbedtls_ssl_context *context = reinterpret_cast<HxSslCtx *>(ssl.mPtr)->s;
+	if (context == 0) {
+		return -1;
+	}
+
+	// Through the context, as mbedTLS itself goes on every record it reads or
+	// writes: the configuration is not the context's to keep, and has to stay
+	// alive and unchanged for as long as the context does.
+	const mbedtls_ssl_config *config = context->MBEDTLS_PRIVATE(conf);
+	if (config == 0) {
+		return -1;
+	}
+	return (int)config->MBEDTLS_PRIVATE(endpoint);
 }
 
 int crossbyte_tls_mbedtls_version() {
