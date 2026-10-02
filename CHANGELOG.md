@@ -2353,6 +2353,38 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An HTTP/2 server that stops reading no longer holds the client's
+  requests past their timeouts, nor a cancel, nor a close. Every frame a
+  connection sent, a request's head and body, a reset, the answers to
+  the server's PINGs and SETTINGS, its WINDOW_UPDATEs, was written under
+  the connection's lock by whichever thread made it, so once the socket's
+  buffers filled, that thread waited in the write for good holding the
+  lock: no request on the connection could look at its stream and reach
+  its timeout, `cancel()` waited with them on whatever thread called it,
+  the runtime's, for `URLLoader.close()`, and so did a pool closing the
+  connection. A 1.5 s request under a flood of PINGs whose answers the
+  server never read, and a 1.5 s upload to a server that opened every
+  window and read nothing, never ended; a cancel of that upload did not
+  return in five seconds. Nothing is written under the lock now: frames
+  are queued in order and written by whichever thread holds the write,
+  a writer thread each connection has now, the reader writing its own
+  answers, or a request with no body writing its own head while the
+  writer watches it. A request waits on its stream, or for its body's
+  queued frames to go, within its own timeout, the longest a window may
+  keep its body from going out now counts the socket's, and gives the
+  connection up when a write has been held that long; `cancel()` and
+  `close()` return at once, a cancelled request's held head has a second;
+  the reader stops reading while 64 KB of answers wait unwritten, and a
+  body has at most 256 KB queued, so a server that reads nothing holds no
+  more of the client than that; and a closed connection whose last write
+  does not go is ended a second after it closed. Each case now ends at its
+  timeout, and the connection's threads with it. Natively on Windows a TLS
+  write the server is not taking still holds the writer thread until the
+  server reads or goes, as a TLS read there already does; the requests do
+  not wait with it. Sequential small requests over loopback cost about the
+  same (106.6 to 109.1 microseconds, medians of nine native runs);
+  downloads and uploads are as fast or faster, a DATA frame no longer being
+  copied twice.
 - The HTTP/2 client's HPACK encoder holds no more than the protocol's
   default 4 KB table, whatever SETTINGS_HEADER_TABLE_SIZE the server
   sends; an encoder may use less than the peer allows (RFC 7541 4.2), and
