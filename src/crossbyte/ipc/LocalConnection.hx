@@ -10,6 +10,7 @@ import crossbyte.errors.IllegalOperationError;
 import crossbyte.crypto._internal.NativeOnly;
 #end
 
+import crossbyte.events.UncaughtErrorEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.io.ByteArrayInput;
 import crossbyte.net.INetConnection;
@@ -17,6 +18,7 @@ import crossbyte.net.Protocol;
 import crossbyte.net._internal.CloseObservable;
 import crossbyte.net.Reason;
 import crossbyte.net.Transport;
+import crossbyte.utils.Logger;
 import haxe.io.Bytes;
 import haxe.io.BytesData;
 import haxe.io.BytesBuffer;
@@ -67,6 +69,15 @@ private enum LocalConnectionDispatch {
  *
  * `SharedChannel` builds on top of this transport when you want the older
  * method-name plus serialized-arguments message model.
+ *
+ * A callback that throws is reported as a socket handler's failure is:
+ * logged with `Logger.error`, and dispatched as
+ * `UncaughtErrorEvent.UNCAUGHT_ERROR` (source `SOCKET`, origin this
+ * connection) on the runtime the connection was made on, or only logged
+ * where it has none. One the runtime delivers -- `onData`, `onReady`, or
+ * `onClose` and `onError` for a connection that ended -- also ends the
+ * connection, as a socket's would, and `onError` is told why; one that
+ * `close()` calls is reported and nothing more.
  */
 @:access(haxe.io.Bytes)
 #if cpp
@@ -474,7 +485,9 @@ class LocalConnection implements INetConnection implements CloseObservable {
 			__notifyClose(reason);
 			try {
 				__onClose(reason);
-			} catch (_:Dynamic) {}
+			} catch (error:Dynamic) {
+				__callbackThrew(error);
+			}
 		}
 	}
 
@@ -822,6 +835,9 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	}
 
 	@:noCompletion private function __handleCallbackFailure(error:Dynamic):Void {
+		// Reported whatever follows: with no onError set, the connection
+		// ended without a word of why.
+		__callbackThrew(error);
 		if (__dispatchFailed) {
 			return;
 		}
@@ -853,6 +869,25 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		var reason = Reason.Error("Local transport callback failed: " + Std.string(error));
 		try {
 			__onError(reason);
+		} catch (secondError:Dynamic) {
+			__callbackThrew(secondError);
+		}
+	}
+
+	/**
+		Reports what a callback threw as the runtime reports a socket
+		handler's failure -- logged, and dispatched as
+		`UncaughtErrorEvent.UNCAUGHT_ERROR` -- on the runtime of the thread
+		that called it; logged alone on a reader thread, where there is none.
+	**/
+	@:noCompletion private function __callbackThrew(error:Dynamic):Void {
+		var runtime:Null<CrossByte> = CrossByte.__currentOrNull();
+		if (runtime != null) {
+			runtime.__uncaught(error, UncaughtErrorEvent.SOCKET, this);
+			return;
+		}
+		try {
+			Logger.error("A LocalConnection callback threw: " + Std.string(error));
 		} catch (_:Dynamic) {}
 	}
 

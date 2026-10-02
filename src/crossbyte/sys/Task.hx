@@ -3,6 +3,8 @@ package crossbyte.sys;
 import crossbyte.core.CrossByte;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.TaskEvent;
+import crossbyte.events.UncaughtErrorEvent;
+import crossbyte.utils.Logger;
 
 #if target.threaded
 import sys.thread.Lock;
@@ -35,6 +37,13 @@ private enum TaskDispatch<T> {
 	given after is called at once, on the thread that gives it. A listener
 	added with `addEventListener` while the task finishes on another thread
 	can miss the event.
+
+	A listener or handler that throws is reported as a callback the runtime
+	runs is -- logged with `Logger.error`, and dispatched as
+	`UncaughtErrorEvent.UNCAUGHT_ERROR` (source `POSTED`, origin the task) on
+	the runtime delivering it; only logged on a pool thread -- and the other
+	listeners and handlers still hear the outcome. `cancel()` does not throw
+	what a `CANCEL` listener threw.
 
 	On JavaScript, which has no threads, the job runs on the one thread there
 	is, inside `TaskPool.submit`, and the task's `state` is final when
@@ -373,21 +382,55 @@ class Task<T> extends EventDispatcher {
 		#end
 	}
 
+	/**
+		What a listener or a handler throws is reported, and the rest still
+		run and the task is still let go of by its pool. A throw used to end
+		the delivery where it was: the runtime reported it, but nothing after
+		it ran and the pool held the task for good; and on a pool thread,
+		with no runtime, the pool took it for the job's failure, which a
+		finished task ignores, so it went without a word.
+	**/
 	@:noCompletion private function __deliver(event:TaskDispatch<T>, waiting:Array<TaskDispatch<T>->Void>):Void {
+		// Each listener's failure to __listenerThrew, below.
 		switch (event) {
 			case Complete(value):
-				dispatchEvent(new TaskEvent(TaskEvent.COMPLETE, this, value));
+				__dispatchContained(new TaskEvent(TaskEvent.COMPLETE, this, value));
 			case Fail(errorValue):
-				dispatchEvent(new TaskEvent(TaskEvent.ERROR, this, null, errorValue));
+				__dispatchContained(new TaskEvent(TaskEvent.ERROR, this, null, errorValue));
 			case Cancel:
-				dispatchEvent(new TaskEvent(TaskEvent.CANCEL, this));
+				__dispatchContained(new TaskEvent(TaskEvent.CANCEL, this));
 		}
 		if (waiting != null) {
 			for (waiter in waiting) {
-				waiter(event);
+				try {
+					waiter(event);
+				} catch (error:Dynamic) {
+					__handlerThrew(error);
+				}
 			}
 		}
 		__maybeRelease();
+	}
+
+	/**
+		As a posted callback's failure is reported -- logged, and dispatched
+		as `UncaughtErrorEvent.UNCAUGHT_ERROR` -- on the runtime of the thread
+		delivering, which is the task's own when it has one; logged alone on a
+		pool thread.
+	**/
+	@:noCompletion override private function __listenerThrew(error:Dynamic, event:crossbyte.events.Event):Void {
+		__handlerThrew(error);
+	}
+
+	@:noCompletion private function __handlerThrew(error:Dynamic):Void {
+		var runtime:Null<CrossByte> = CrossByte.__currentOrNull();
+		if (runtime != null) {
+			runtime.__uncaught(error, UncaughtErrorEvent.POSTED, this);
+			return;
+		}
+		try {
+			Logger.error("A Task listener or handler threw: " + Std.string(error));
+		} catch (_:Dynamic) {}
 	}
 
 	@:noCompletion private inline function __maybeRelease():Void {
