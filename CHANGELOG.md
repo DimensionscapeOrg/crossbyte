@@ -205,6 +205,8 @@ entry below says how:
 - `affectedRows` and `lastInsertRowID` of `PostgresConnection` and
   `MySQLConnection`, and `PostgresRawResult`'s, are `Float`s, where they
   were `Int`s.
+- `LocalConnection.timeout` and `SharedChannel.timeout` of 0 wait without
+  a deadline, where they made a single try; set 1 for a single try.
 
 ### Added
 - `SharedObject.remove(name)` takes a region away on Linux and macOS,
@@ -1364,6 +1366,13 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A `timeout` of 0 (or less) on `LocalConnection` and `SharedChannel`
+  means no deadline, as it does for every other connect: `connect()`, and
+  a `send` to a channel not yet connected to, wait on the calling thread
+  until something listens on the name. It made a single try, and a
+  connect to a listener a moment late failed at once. A timeout of 50 or
+  less makes the single try now, 50 ms being the pause between tries.
+  `NetConnection`'s `connectTimeout` for `local://` is this `timeout`.
 - `IceAgent.DEFAULT_TIMEOUT`, the time an agent has from `start` to select
   a pair, is 80 seconds, where round three made it 40. A nomination is a
   check, given up on 39.5 seconds after it goes out, and forty was a moment

@@ -39,6 +39,14 @@ namespace
 		return std::chrono::steady_clock::now() + std::chrono::milliseconds(CONNECT_WAIT_SLICE_MS) < deadline;
 	}
 
+	// A connect's deadline is `timeoutMs` from now, or none at all with 0 or
+	// less: then it tries until something listens. 0 made a single try,
+	// where a connect everywhere else in CrossByte waits without a deadline.
+	bool anotherTry(bool forever, std::chrono::steady_clock::time_point deadline)
+	{
+		return forever || sliceLeft(deadline);
+	}
+
 #if defined(_WIN32)
 	bool isInvalid(HANDLE pipe)
 	{
@@ -255,11 +263,8 @@ namespace
 	extern "C" void* native_connectWithTimeout(const char* name, int timeoutMs)
 	{
 		std::string pipeName = makePipeName(name);
-		if (timeoutMs < 0)
-		{
-			timeoutMs = 0;
-		}
-		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+		bool forever = timeoutMs <= 0;
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(forever ? 0 : timeoutMs);
 
 		// It may wait for a listener, on the caller's thread: outside the
 		// collector's reach meanwhile, so a collection another thread starts
@@ -290,7 +295,7 @@ namespace
 				return nullptr;
 			}
 			// No time left for another attempt: one try, without the wait.
-			if (!sliceLeft(deadline))
+			if (!anotherTry(forever, deadline))
 			{
 				return nullptr;
 			}
@@ -807,11 +812,8 @@ namespace
 		std::memcpy(address.sun_path, pipeName.data(), pipeName.size());
 		address.sun_path[pipeName.size()] = '\0';
 
-		if (timeoutMs < 0)
-		{
-			timeoutMs = 0;
-		}
-		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+		bool forever = timeoutMs <= 0;
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(forever ? 0 : timeoutMs);
 		// See the Windows version: it may wait, so it waits outside the
 		// collector's reach, having copied the name.
 		hx::AutoGCFreeZone waiting;
@@ -833,7 +835,7 @@ namespace
 
 			int error = errno;
 			close(fd);
-			if ((error != ENOENT && error != ECONNREFUSED) || !sliceLeft(deadline))
+			if ((error != ENOENT && error != ECONNREFUSED) || !anotherTry(forever, deadline))
 			{
 				delete handle;
 				return nullptr;

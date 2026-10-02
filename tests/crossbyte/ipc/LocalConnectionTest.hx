@@ -796,6 +796,61 @@ class LocalConnectionTest extends utest.Test {
 		#end
 	}
 
+	/**
+		`timeout = 0` means no deadline, as it does on every connect: the
+		connect waits, on the calling thread, until something listens on the
+		name. It made one try and gave up at once.
+	**/
+	@:timeout(30000)
+	public function testATimeoutOfZeroWaitsForTheListenerWithoutADeadline():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var name = uniqueName("nodeadline");
+		var listening = LateListener.start(name, 0.4);
+		var client = new LocalConnection();
+		client.timeout = 0;
+		var started = haxe.Timer.stamp();
+		var raised:Dynamic = null;
+		try {
+			client.connect(name);
+		} catch (e:Dynamic) {
+			raised = e;
+		}
+		var waited = haxe.Timer.stamp() - started;
+		var connected = client.connected;
+		closeQuietly(client);
+		listening.stop();
+
+		Assert.isNull(raised, 'connect() with no deadline gave up after $waited s: $raised');
+		Assert.isTrue(connected, "connect() returned without a connection");
+		Assert.isTrue(waited >= 0.3, 'connect() returned after $waited s, before anything listened');
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/** A deadline still ends the wait: the connect fails once it passes, and not before. **/
+	@:timeout(30000)
+	public function testATimeoutEndsTheWaitForAListener():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var client = new LocalConnection();
+		client.timeout = 300;
+		var started = haxe.Timer.stamp();
+		var raised:Dynamic = null;
+		try {
+			client.connect(uniqueName("nobody"));
+		} catch (e:Dynamic) {
+			raised = e;
+		}
+		var waited = haxe.Timer.stamp() - started;
+		closeQuietly(client);
+
+		Assert.isTrue(Std.isOfType(raised, crossbyte.errors.ArgumentError), "connect() to a name nobody listens on threw " + raised);
+		Assert.isTrue(waited >= 0.2 && waited < 5, 'connect() gave up after $waited s');
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testNetConnectionRoundTripKeepsLocalTransport():Void {
 		var local = new LocalConnection();
 		var wrapped:NetConnection = local;

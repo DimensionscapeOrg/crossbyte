@@ -62,9 +62,15 @@ class SharedChannel extends EventDispatcher {
 	 */
 	public var client:Object;
 	/**
-	 * Connection timeout in milliseconds used when establishing the outbound local IPC link.
+	 * How long, in milliseconds, `send` waits on the calling thread for
+	 * something to listen on a channel name it has no connection to yet;
+	 * past it, the send fails with an error `StatusEvent`. The default is
+	 * 5,000 (five seconds). It is `LocalConnection.timeout` for the
+	 * connection underneath.
 	 *
-	 * `0` performs an immediate probe without waiting.
+	 * 0 (or less) means no deadline: the send waits until something
+	 * listens, however long that is. It used to make a single try. One try
+	 * is what any timeout of 50 or less makes.
 	 */
 	public var timeout:Int = 5000;
 
