@@ -413,9 +413,14 @@ class TlsProtocolTest extends utest.Test {
 			server.stopAccepting();
 			after = __endpointOf(accepted[0]);
 		}
-		client.writeUTFBytes(HELLO);
-		client.flush();
-		NetPump.until(() -> heard.length >= HELLO.length * 2 || failure != null, 15.0, _ -> {});
+		// Only over a configuration still there. Over a freed one mbedTLS
+		// reads whatever the memory holds by then, and a run against an
+		// hxcpp without the fix ended in a crash, not in the assertion.
+		if (after == 1) {
+			client.writeUTFBytes(HELLO);
+			client.flush();
+			NetPump.until(() -> heard.length >= HELLO.length * 2 || failure != null, 15.0, _ -> {});
+		}
 
 		try client.close() catch (_:Dynamic) {}
 		for (peer in accepted) {
@@ -427,7 +432,9 @@ class TlsProtocolTest extends utest.Test {
 		Assert.equals(1, accepted.length, "the server did not accept the one connection");
 		Assert.equals(1, before, "the accepted connection's configuration is not a server's");
 		Assert.equals(1, after, "the accepted connection's configuration went with its listener");
-		Assert.equals(HELLO.toUpperCase() + HELLO.toUpperCase(), heard, "the connection did not carry on after the listener closed");
+		if (after == 1) {
+			Assert.equals(HELLO.toUpperCase() + HELLO.toUpperCase(), heard, "the connection did not carry on after the listener closed");
+		}
 	}
 
 	/**
