@@ -64,6 +64,27 @@ class H2ServerConnection {
 	public static inline var DEFAULT_MAX_HEADER_LIST_SIZE:Int = 64 * 1024;
 
 	/**
+		The most window a stream receiving a body is opened to at once, as
+		far as `requestBodyBudget` allows: enough that an upload over a long
+		path is not held to a window a round trip. The protocol's 64 KB was
+		all any stream had, so one upload over a 50 ms path went at about a
+		megabyte a second.
+	**/
+	public static inline var STREAM_WINDOW_GOAL:Int = 1024 * 1024;
+
+	// The least window worth a WINDOW_UPDATE of its own, short of all a stream
+	// needs: one frame at the default size.
+	private static inline var MIN_WINDOW_GRANT:Int = 16384;
+
+	// Bytes let go are given back to the connection's window this many at a
+	// time, or at once while it has less than this left.
+	private static inline var CONNECTION_REFRESH:Int = 32768;
+
+	// The first window each stream may be given, largest first: see
+	// __fixBudget.
+	private static final PREREAD_WINDOWS:Array<Int> = [H2Settings.DEFAULT_INITIAL_WINDOW_SIZE, 32768, 16384];
+
+	/**
 	 * Streams the peer may abandon before their response within
 	 * `resetWindowSeconds`, after which the connection is closed with
 	 * ENHANCE_YOUR_CALM. Negative disables the check.
@@ -118,7 +139,8 @@ class H2ServerConnection {
 
 	/**
 	 * Bytes one request body may reach before the request is refused.
-	 * Negative disables the check.
+	 * Negative disables the check, leaving the body held only to
+	 * `requestBodyBudget`. Read as the preface ends.
 	 *
 	 * DATA was appended with no limit while window kept being granted, so one
 	 * stream could make the server hold as much as it cared to send: a 3 MB
@@ -130,6 +152,53 @@ class H2ServerConnection {
 	 * the connection's window and dropped.
 	 */
 	public var maxRequestBodySize:Int = -1;
+
+	/**
+		Bytes of request body this connection holds at once, across every
+		stream whose body is still arriving, or `0` and below for no limit.
+		Never less than `maxRequestBodySize` and a byte, so one body of the
+		largest size taken always fits, with room to tell one past it. Read
+		as the preface ends.
+
+		Held to it by flow control, not by refusing what arrives. The
+		connection's window is opened to the budget and given back only for
+		bytes let go -- a body handed over, dropped or reset -- so a client
+		that keeps to its windows never sends more, and one that does not
+		is a FLOW_CONTROL_ERROR. Each stream's first window, which a client
+		may use unasked, is made small enough that every stream's fits with
+		one whole body besides (see `__fixBudget`), and a stream's window is
+		opened past it only from what is left once those first windows and
+		every older stream's remaining body are set aside: the oldest can
+		always finish, and the others wait for window rather than each
+		taking a share and none of them finishing.
+
+		Every stream let its body grow to `maxRequestBodySize` and both
+		windows were opened again as each byte arrived, so a client
+		uploading slowly on all 128 streams made the server hold 128 bodies,
+		and nothing checked that a client kept to its windows at all.
+
+		A stream left waiting for window ends rather than waits for good:
+		once `stallSeconds` pass with no body arriving and none let go on
+		the connection, it is reset with REFUSED_STREAM -- never handed to
+		the application, so safe to send again (`expireWaiting`). And when
+		the oldest stream cannot go on at all, which a client that keeps to
+		the SETTINGS never brings about, the newest gives way the same way
+		(`__unblockOldest`).
+	**/
+	public var requestBodyBudget:Int = 0;
+
+	/**
+		Called when a stream starts waiting for window its connection has no
+		budget to give: the owner then has `expireWaiting` asked a few times
+		a second until `waitingStreams` is back to `0`.
+	**/
+	public var onWaiting:Void->Void = () -> {};
+
+	/** Streams waiting for window the budget has no room for. See `requestBodyBudget`. */
+	public var waitingStreams(get, never):Int;
+
+	/** Request body held by the streams still receiving one. See `requestBodyBudget`. */
+	public var heldRequestBytes(get, never):Int;
 
 	/**
 	 * Streams this connection takes before it says it will take no more, or
@@ -241,8 +310,33 @@ class H2ServerConnection {
 	private var __settingsSent:Bool = false;
 	private var __highestStreamId:Int = 0;
 	private var __connectionSendWindow:Int;
-	private var __connectionUnacknowledged:Int = 0;
 	private var __openStreams:Int = 0;
+
+	// The request-body budget in force and the size a body is refused past,
+	// both fixed as the preface ends: see requestBodyBudget.
+	private var __budget:Int = 0;
+	private var __bodyLimit:Int = 0;
+	// What the client may still send on the connection: the window this side
+	// opened, less what has arrived. Given back only for bytes let go.
+	private var __recvWindow:Int = H2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+	// Across the streams still receiving a body (H2Stream.budgeted): how many,
+	// what they hold, and the windows they have open. Kept as they change.
+	private var __budgeted:Int = 0;
+	private var __bodyHeld:Int = 0;
+	private var __promised:Int = 0;
+	// Set once the client has acknowledged this side's SETTINGS: until then
+	// it may still be using the protocol's first window on every stream.
+	private var __settingsAcked:Bool = false;
+	// Streams marked waiting, and set when a stream let go of what it held,
+	// for __settle.
+	private var __waiting:Int = 0;
+	private var __released:Bool = false;
+	private var __settling:Bool = false;
+	// Counts every byte of body taken in and every stream let go of, and the
+	// stall check's view of it: see expireWaiting.
+	private var __budgetMoves:Int = 0;
+	private var __waitMark:Int = 0;
+	private var __waitDeadline:Float = 0;
 	// Every stream opened, for maxRequests.
 	private var __streamsTaken:Int = 0;
 	// Open streams already delivered: `openStreams - receivingStreams`.
@@ -311,8 +405,17 @@ class H2ServerConnection {
 		return __openStreams - __answering;
 	}
 
+	private inline function get_waitingStreams():Int {
+		return __waiting;
+	}
+
+	private inline function get_heldRequestBytes():Int {
+		return __bodyHeld;
+	}
+
 	/** Marks a stream's request handed over, before the handler can answer it. */
 	private inline function __markDelivered(target:H2Stream):Void {
+		__release(target);
 		if (!target.delivered) {
 			target.delivered = true;
 			__answering++;
@@ -356,6 +459,10 @@ class H2ServerConnection {
 				}
 				frame = __frames.next();
 			}
+
+			// Once per read, not per frame: what the read let go of is given
+			// out again, oldest stream first.
+			__settle();
 		} catch (e:H2ConnectionError) {
 			__fail(e);
 		} catch (e:HpackError) {
@@ -717,6 +824,9 @@ class H2ServerConnection {
 	private function __forget(streamId:Int):Void {
 		var target:Null<H2Stream> = __streams.get(streamId);
 		if (target != null && __streams.remove(streamId)) {
+			// What a stream reset with its body still arriving held goes back
+			// to the budget.
+			__release(target);
 			__openStreams--;
 			if (target.delivered) {
 				__answering--;
@@ -785,10 +895,13 @@ class H2ServerConnection {
 				break;
 			}
 		}
+		// What the late ones held goes to those still arriving.
+		__settle();
 		return true;
 	}
 
 	private function __refuseLate(target:H2Stream):Void {
+		__release(target);
 		target.overflowed = true;
 		target.takeBody();
 
@@ -918,7 +1031,17 @@ class H2ServerConnection {
 			// §3.4 requires our SETTINGS to be the first frame we send, and it
 			// must follow the preface rather than precede it.
 			__settingsSent = true;
+			// The budget decides the first window each stream is given, which
+			// the SETTINGS carries.
+			__fixBudget();
 			__writeFrame(H2FrameType.SETTINGS, 0, 0, localSettings.toPayload());
+			if (__budget > __recvWindow) {
+				// Opened to the budget with the SETTINGS, so the client has the
+				// room before its first DATA: the protocol's 64 KB would hold
+				// every body arriving at once to that.
+				__writeWindowUpdate(0, __budget - __recvWindow);
+				__recvWindow = __budget;
+			}
 		}
 
 		return taken;
@@ -1022,6 +1145,16 @@ class H2ServerConnection {
 			} else {
 				var opened:H2Stream = new H2Stream(frame.streamId, remoteSettings.initialWindowSize, localSettings.initialWindowSize);
 				opened.openedAt = haxe.Timer.stamp();
+				// Until the client has acknowledged the SETTINGS that made it
+				// smaller, it may be using the protocol's first window (6.9.2).
+				if (!__settingsAcked && opened.recvWindow < H2Settings.DEFAULT_INITIAL_WINDOW_SIZE) {
+					opened.recvWindow = H2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+				}
+				// Its first window is the client's to use unasked, so it is
+				// counted against the budget from here.
+				opened.budgeted = true;
+				__budgeted++;
+				__promised += opened.recvWindow;
 				__streams.set(frame.streamId, opened);
 				__openStreams++;
 				__streamsTaken++;
@@ -1152,6 +1285,13 @@ class H2ServerConnection {
 			// Answered, or turned away, before its body. What arrives of it is
 			// counted and dropped.
 			__stopBody(target);
+			return;
+		}
+
+		// Its window opened now to what its body needs, as far as the budget
+		// goes, rather than a round trip into it.
+		if (target.budgeted) {
+			__offerWindow(target);
 		}
 	}
 
@@ -1199,6 +1339,7 @@ class H2ServerConnection {
 	 * NO_ERROR, and what arrives for it is counted and dropped.
 	 */
 	private function __refuseHeaders(target:H2Stream, endStream:Bool):Void {
+		__release(target);
 		target.overflowed = true;
 		if (endStream) {
 			target.endOfStream = true;
@@ -1224,11 +1365,32 @@ class H2ServerConnection {
 		// longer have (§6.9.1). Skipping it on an unknown stream drifts the
 		// connection window down until everything stalls.
 		var counted:Int = frame.payload.length;
-		__connectionUnacknowledged += counted;
+		// An empty DATA may be sent into no window at all (6.9.1): it is how a
+		// stream whose window the SETTINGS shrank below nothing still ends.
+		if (counted > 0 && counted > __recvWindow) {
+			// 6.9.1: a sender keeps to both windows. Nothing checked, so a
+			// client that ignored them sent as much as it liked whatever
+			// the windows said, and the budget they keep meant nothing.
+			throw new H2ConnectionError(H2ErrorCode.FLOW_CONTROL_ERROR, 'DATA of $counted bytes on stream ${frame.streamId} past the $__recvWindow the connection window had left');
+		}
+		__recvWindow -= counted;
+
+		var target:Null<H2Stream> = __streams.get(frame.streamId);
+		if (target != null) {
+			if (counted > 0 && counted > target.recvWindow) {
+				// The stream alone ends; what it held goes back to the budget
+				// with it, and this frame was never held.
+				throw new H2StreamError(frame.streamId, H2ErrorCode.FLOW_CONTROL_ERROR,
+					'DATA of $counted bytes past the ${target.recvWindow} the stream window had left');
+			}
+			target.recvWindow -= counted;
+			if (target.budgeted) {
+				__promised -= counted;
+			}
+		}
 
 		var content:Bytes = frame.has(H2Flags.PADDED) ? H2Frame.stripPadding(frame.payload, frame.streamId) : frame.payload;
 
-		var target:Null<H2Stream> = __streams.get(frame.streamId);
 		if (target != null && target.endOfStream) {
 			// 5.1: the peer ended this stream, so it is half-closed on its
 			// side and DATA on it is a stream error. It was appended, and a
@@ -1237,22 +1399,26 @@ class H2ServerConnection {
 			throw new H2StreamError(frame.streamId, H2ErrorCode.STREAM_CLOSED, "DATA after the end of the stream");
 		}
 		if (target != null && !target.overflowed) {
-			if (maxRequestBodySize >= 0 && target.bodyLength + content.length > maxRequestBodySize) {
+			if (target.bodyLength + content.length > __bodyLimit) {
 				__refuseOversized(target);
 			} else {
-				target.unacknowledged += counted;
 				target.appendBody(content);
+				if (target.budgeted) {
+					__bodyHeld += content.length;
+					__budgetMoves++;
+				}
 
 				if (frame.has(H2Flags.END_STREAM)) {
 					target.endOfStream = true;
 					__deliver(frame.streamId, target);
-				} else {
-					__topUpStreamWindow(target);
+				} else if (target.budgeted) {
+					__offerWindow(target);
 				}
 			}
 		}
 
-		__topUpConnectionWindow();
+		// Padding, and DATA for a stream refused or gone, was never held.
+		__topUpConnection();
 	}
 
 	/**
@@ -1260,6 +1426,7 @@ class H2ServerConnection {
 	 * client to stop sending it. See that field.
 	 */
 	private function __refuseOversized(target:H2Stream):Void {
+		__release(target);
 		target.overflowed = true;
 		// Released now rather than kept for a request that will never use it.
 		target.takeBody();
@@ -1301,6 +1468,7 @@ class H2ServerConnection {
 		request whose serving throws after its body is in.
 	**/
 	private function __stopBody(target:H2Stream):Void {
+		__release(target);
 		if (target.wasReset) {
 			// The answer failed partway, or the client gave up first.
 			return;
@@ -1325,6 +1493,8 @@ class H2ServerConnection {
 	}
 
 	private function __deliver(streamId:Int, target:H2Stream):Void {
+		// Before takeBody: what it held is counted out as it was.
+		__release(target);
 		var request:H2ServerRequest;
 		try {
 			if (target.request != null) {
@@ -1432,10 +1602,46 @@ class H2ServerConnection {
 		}
 	}
 
+	/**
+		The client has applied this side's SETTINGS. A first window smaller
+		than the protocol's holds from here on, and the streams it opened
+		before had their windows shrunk by the difference as it did (6.9.2):
+		they were counted at the protocol's, and what the budget counted for
+		them comes back. Each still receiving a body is offered its window
+		again, oldest first, since the shrinking can leave one with less than
+		nothing, short of a body it was opened enough for: an upload sent
+		before the client had read the SETTINGS stopped a byte short, its
+		window below zero, and nothing opened it again.
+	**/
+	private function __acknowledged():Void {
+		__settingsAcked = true;
+		var delta:Int = localSettings.initialWindowSize - H2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+		if (delta >= 0) {
+			return;
+		}
+		var shrunk:Array<H2Stream> = [for (target in __streams) target];
+		shrunk.sort((a, b) -> a.id - b.id);
+		for (target in shrunk) {
+			target.recvWindow += delta;
+			if (target.budgeted) {
+				__promised += delta;
+			}
+		}
+		for (target in shrunk) {
+			if (target.budgeted) {
+				__offerWindow(target);
+			}
+		}
+		__released = true;
+	}
+
 	private function __onSettings(frame:H2Frame):Void {
 		if (frame.has(H2Flags.ACK)) {
 			if (frame.payload.length != 0) {
 				throw new H2ConnectionError(H2ErrorCode.FRAME_SIZE_ERROR, "SETTINGS ACK must have an empty payload");
+			}
+			if (!__settingsAcked) {
+				__acknowledged();
 			}
 			return;
 		}
@@ -1566,31 +1772,369 @@ class H2ServerConnection {
 
 	// -------------------------------------------------------- flow control
 
-	private function __topUpStreamWindow(target:H2Stream):Void {
-		var initial:Int = localSettings.initialWindowSize;
-		if (target.unacknowledged < (initial >> 1)) {
-			return;
+	/**
+		Fixes the request-body budget, the size a body is refused past, and
+		the first window every stream is given (SETTINGS_INITIAL_WINDOW_SIZE),
+		before the SETTINGS that carries it goes out.
+
+		That first window is the client's to use on every stream it opens,
+		unasked, and nothing can take it back. Left at the protocol's 64 KB,
+		128 streams' worth was 8 MB: a client opening a few more uploads than
+		the budget held spent the connection's window on their first 64 KB
+		each and left the oldest unable to finish. So it is the largest of
+		64, 32 or 16 KB for which every stream's first window, and one whole
+		body besides, fits the budget -- 16 KB at the defaults -- and a budget
+		too small even for that is raised until it fits. A body past it is
+		opened the rest of its way as its HEADERS arrive, so it costs a round
+		trip only between 16 and 64 KB, and a large one far fewer than the
+		64 KB a round trip it was held to.
+	**/
+	private function __fixBudget():Void {
+		var budget:Float = requestBodyBudget > 0 ? requestBodyBudget : H2Settings.MAX_WINDOW_SIZE;
+		if (maxRequestBodySize >= budget) {
+			// One body of the largest size taken always fits, and the byte
+			// past it, which is how a body over the limit is told.
+			budget = maxRequestBodySize + 1.0;
 		}
+		if (budget < H2Settings.DEFAULT_INITIAL_WINDOW_SIZE) {
+			// The client may send this much before it hears anything.
+			budget = H2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+		}
+		if (budget > H2Settings.MAX_WINDOW_SIZE) {
+			budget = H2Settings.MAX_WINDOW_SIZE;
+		}
+		__bodyLimit = maxRequestBodySize >= 0 && maxRequestBodySize < budget ? maxRequestBodySize : Std.int(budget) - 1;
 
-		var increment:Int = target.unacknowledged;
-		target.unacknowledged = 0;
-
-		var payload:Bytes = Bytes.alloc(4);
-		__writeUInt32(payload, 0, increment);
-		__writeFrame(H2FrameType.WINDOW_UPDATE, 0, target.id, payload);
+		var streams:Int = localSettings.maxConcurrentStreams;
+		if (requestBodyBudget > 0 && streams > 0) {
+			// Every first window and the oldest body whole: see above.
+			var whole:Float = __bodyLimit + 1.0;
+			var first:Int = PREREAD_WINDOWS[PREREAD_WINDOWS.length - 1];
+			for (candidate in PREREAD_WINDOWS) {
+				if (whole + streams * (candidate : Float) <= budget) {
+					first = candidate;
+					break;
+				}
+			}
+			if (whole + streams * (first : Float) > budget) {
+				budget = whole + streams * (first : Float);
+				if (budget > H2Settings.MAX_WINDOW_SIZE) {
+					budget = H2Settings.MAX_WINDOW_SIZE;
+				}
+			}
+			if (first < localSettings.initialWindowSize) {
+				localSettings.initialWindowSize = first;
+			}
+		}
+		__budget = Std.int(budget);
 	}
 
-	private function __topUpConnectionWindow():Void {
-		if (__connectionUnacknowledged < (H2Settings.DEFAULT_INITIAL_WINDOW_SIZE >> 1)) {
+	/** Gives the connection's window back what is no longer held, a few kilobytes at a time unless it is running low. */
+	private function __topUpConnection():Void {
+		var returnable:Int = __budget - __bodyHeld - __recvWindow;
+		if (returnable <= 0) {
+			return;
+		}
+		if (returnable < CONNECTION_REFRESH && __recvWindow >= CONNECTION_REFRESH) {
+			return;
+		}
+		__recvWindow += returnable;
+		__writeWindowUpdate(0, returnable);
+	}
+
+	/**
+		What `target` may yet send of its body: up to its `content-length`,
+		or else to the byte past the limit, which is how a body over it is
+		told.
+	**/
+	private function __need(target:H2Stream):Int {
+		var whole:Int = __bodyLimit + 1;
+		var declared:Int = target.request != null ? target.request.declaredLength : -1;
+		if (declared >= 0 && declared < whole) {
+			whole = declared;
+		}
+		var need:Int = whole - target.bodyLength;
+		return need > 0 ? need : 0;
+	}
+
+	/** What `target` may need beyond the window it has open. */
+	private inline function __reserve(target:H2Stream):Int {
+		var reserve:Int = __need(target) - target.recvWindow;
+		return reserve > 0 ? reserve : 0;
+	}
+
+	/**
+		Opens `target`'s window toward what its body needs, up to
+		`STREAM_WINDOW_GOAL`, once half of what it has is spent -- as far as
+		the budget goes after every older stream's remaining body. Marks it
+		waiting when that was not all the way, so what is let go later
+		reaches it.
+	**/
+	private function __offerWindow(target:H2Stream):Void {
+		var want:Int = __wanted(target);
+		if (want <= 0) {
+			__stopWaiting(target);
+			return;
+		}
+		if (!target.waiting && target.recvWindow > ((want + target.recvWindow) >> 1)) {
+			// More than half of what it would be opened to is still open.
+			return;
+		}
+		if (__grant(target, want) == want) {
+			__stopWaiting(target);
+			return;
+		}
+		__startWaiting(target);
+	}
+
+	/**
+		What `target`'s window would be opened by to reach what its body
+		needs, up to `STREAM_WINDOW_GOAL`: `0` when it has that already, and
+		when its body is in, since what is left is END_STREAM, which an empty
+		DATA carries into no window at all (6.9.1).
+	**/
+	private function __wanted(target:H2Stream):Int {
+		var need:Int = __need(target);
+		if (need <= 0) {
+			return 0;
+		}
+		var goal:Int = need < STREAM_WINDOW_GOAL ? need : STREAM_WINDOW_GOAL;
+		var want:Int = goal - target.recvWindow;
+		return want > 0 ? want : 0;
+	}
+
+	private function __startWaiting(target:H2Stream):Void {
+		if (!target.waiting) {
+			target.waiting = true;
+			if (__waiting++ == 0) {
+				// The stall clock starts with the first stream to wait, and is
+				// moved on by whatever moves after: see expireWaiting.
+				__waitMark = __budgetMoves;
+				__waitDeadline = haxe.Timer.stamp() + stallSeconds;
+			}
+			onWaiting();
+		}
+	}
+
+	private inline function __stopWaiting(target:H2Stream):Void {
+		if (target.waiting) {
+			target.waiting = false;
+			if (--__waiting == 0) {
+				__waitDeadline = 0;
+			}
+		}
+	}
+
+	/**
+		Opens up to `want` more of `target`'s window from what the budget has
+		left, and says how much it did. Set aside first: the first window of
+		every stream the client may yet open, which it may use unasked, and
+		every older stream's remaining body, so the oldest can always finish.
+		Less than `want` is opened when that is all there is, and nothing when
+		that is under a frame's worth.
+	**/
+	private function __grant(target:H2Stream, want:Int):Int {
+		var room:Float = (__budget : Float) - __bodyHeld - __promised;
+		var streams:Int = localSettings.maxConcurrentStreams;
+		if (streams > __budgeted) {
+			room -= (streams - __budgeted) * (localSettings.initialWindowSize : Float);
+		}
+		if (room > 0) {
+			for (other in __streams) {
+				if (other.budgeted && other.id < target.id) {
+					room -= __reserve(other);
+					if (room <= 0) {
+						break;
+					}
+				}
+			}
+		}
+		if (room < want && room < MIN_WINDOW_GRANT) {
+			return 0;
+		}
+		var given:Int = room < want ? Std.int(room) : want;
+		target.recvWindow += given;
+		__promised += given;
+		__writeWindowUpdate(target.id, given);
+		return given;
+	}
+
+	/**
+		Counts `target`'s body and window out of the budget, once: it has been
+		handed over, refused, or reset. Before its body is taken, so what it
+		held is counted out as it was.
+	**/
+	private function __release(target:H2Stream):Void {
+		if (!target.budgeted) {
+			return;
+		}
+		target.budgeted = false;
+		__budgeted--;
+		__bodyHeld -= target.bodyLength;
+		__promised -= target.recvWindow;
+		__stopWaiting(target);
+		__released = true;
+		__budgetMoves++;
+	}
+
+	/**
+		After whatever let budget go: the streams waiting for window are
+		offered it, oldest first; the connection's window is given back what
+		is no longer held; and if the oldest stream still receiving can go no
+		further, newer ones give way (`__unblockOldest`).
+	**/
+	private function __settle():Void {
+		if (closed || __settling) {
+			return;
+		}
+		__settling = true;
+		__offerReleased();
+		__topUpConnection();
+		if (__waiting > 0 || __recvWindow <= 0) {
+			__unblockOldest();
+			// What the streams that gave way held.
+			__offerReleased();
+			__topUpConnection();
+		}
+		__settling = false;
+	}
+
+	private inline function __offerReleased():Void {
+		if (__released) {
+			__released = false;
+			if (__waiting > 0) {
+				__offerWaiting();
+			}
+		}
+	}
+
+	/** Offers window to the waiting streams in the order they opened, stopping at the first the budget cannot serve whole. */
+	private function __offerWaiting():Void {
+		var waiting:Array<H2Stream> = [for (target in __streams) if (target.waiting) target];
+		waiting.sort((a, b) -> a.id - b.id);
+		for (target in waiting) {
+			var want:Int = __wanted(target);
+			if (want > 0 && __grant(target, want) < want) {
+				return;
+			}
+			__stopWaiting(target);
+		}
+	}
+
+	/**
+		Lets the oldest stream still receiving a body go on when nothing else
+		will: its own window spent with no budget to open it, or the
+		connection's spent with every byte of the budget held. The newest
+		stream gives way, with REFUSED_STREAM -- its request never reached
+		the application, so the client may send it again -- and the next
+		newest, until the oldest can move.
+
+		A client that keeps to the SETTINGS never comes here: every first
+		window is set aside before anything is opened beyond one, and every
+		older body before a newer one. It is what is left for one that does
+		not -- concurrency without a limit, say -- and is not asked before
+		the client has acknowledged the SETTINGS: until then each stream is
+		counted at the protocol's 64 KB, more than it can have, and the
+		acknowledgement is on its way.
+	**/
+	private function __unblockOldest():Void {
+		// A header block still arriving holds every other frame back (6.10);
+		// once it ends this is asked again.
+		if (__continuationStreamId >= 0 || !__settingsAcked) {
+			return;
+		}
+		while (!closed) {
+			var oldest:Null<H2Stream> = null;
+			for (target in __streams) {
+				if (target.budgeted && (oldest == null || target.id < oldest.id)) {
+					oldest = target;
+				}
+			}
+			if (oldest == null || __need(oldest) <= 0) {
+				// Nothing receiving, or the oldest has its body and only has
+				// END_STREAM to send, which costs no window.
+				return;
+			}
+
+			var connectionSpent:Bool = __recvWindow <= 0;
+			if (!connectionSpent) {
+				if (oldest.recvWindow > 0) {
+					return;
+				}
+				var want:Int = __wanted(oldest);
+				var given:Int = __grant(oldest, want);
+				if (given > 0) {
+					if (given == want) {
+						__stopWaiting(oldest);
+					} else {
+						__startWaiting(oldest);
+					}
+					return;
+				}
+			}
+
+			// The newest other stream gives way: one holding body bytes when it
+			// is the connection's window that is spent, since only those give
+			// it back.
+			var newest:Null<H2Stream> = null;
+			for (target in __streams) {
+				if (target.budgeted && target != oldest && (!connectionSpent || target.bodyLength > 0)
+					&& (newest == null || target.id > newest.id)) {
+					newest = target;
+				}
+			}
+			if (newest == null) {
+				return;
+			}
+			resetStream(newest.id, H2ErrorCode.REFUSED_STREAM);
+			__topUpConnection();
+		}
+	}
+
+	/**
+		Refuses the streams waiting for window, with REFUSED_STREAM, once
+		`stallSeconds` have passed with no body arriving and none let go on
+		this connection: nothing is moving that could give them any, so they
+		would wait for good. A stream that still has window to send into is
+		left be; its client is the one keeping it, and `requestTimeout` is
+		its deadline. The owner asks a few times a second while
+		`waitingStreams` is above `0` (`onWaiting`).
+
+		@param now `haxe.Timer.stamp()`.
+	**/
+	public function expireWaiting(now:Float):Void {
+		if (closed || __waiting <= 0) {
+			return;
+		}
+		if (__budgetMoves != __waitMark || __waitDeadline == 0) {
+			// Something moved: the clock runs from now.
+			__waitMark = __budgetMoves;
+			__waitDeadline = now + stallSeconds;
+			return;
+		}
+		if (now < __waitDeadline) {
 			return;
 		}
 
-		var increment:Int = __connectionUnacknowledged;
-		__connectionUnacknowledged = 0;
+		// Gathered first: a reset removes the stream from the map being walked.
+		var stuck:Array<H2Stream> = [for (target in __streams) if (target.waiting && target.recvWindow <= 0) target];
+		for (target in stuck) {
+			if (__streams.get(target.id) == target) {
+				resetStream(target.id, H2ErrorCode.REFUSED_STREAM);
+			}
+		}
+		// Those still waiting have window to send into; theirs runs anew.
+		if (__waiting > 0) {
+			__waitMark = __budgetMoves;
+			__waitDeadline = now + stallSeconds;
+		}
+		__settle();
+	}
 
+	private function __writeWindowUpdate(streamId:Int, increment:Int):Void {
 		var payload:Bytes = Bytes.alloc(4);
 		__writeUInt32(payload, 0, increment);
-		__writeFrame(H2FrameType.WINDOW_UPDATE, 0, 0, payload);
+		__writeFrame(H2FrameType.WINDOW_UPDATE, 0, streamId, payload);
 	}
 
 	// ---------------------------------------------------------------- write

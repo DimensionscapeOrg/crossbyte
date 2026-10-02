@@ -33,11 +33,14 @@ class H2ServerTest extends utest.Test {
 		server.receive(Bytes.ofString(H2Connection.PREFACE));
 
 		// §3.4: SETTINGS must be the first frame the server sends, and it must
-		// follow the preface rather than race it.
+		// follow the preface rather than race it. The connection's window is
+		// opened to the request-body budget straight after it.
 		var frames = Collector.parse(out.bytes());
-		Assert.equals(1, frames.length);
+		Assert.equals(2, frames.length);
 		Assert.equals(H2FrameType.SETTINGS, frames[0].type);
 		Assert.isFalse(frames[0].has(H2Flags.ACK));
+		Assert.equals(H2FrameType.WINDOW_UPDATE, frames[1].type);
+		Assert.equals(0, frames[1].streamId);
 	}
 
 	public function testPrefaceSplitAcrossReadsIsReassembled():Void {
@@ -51,7 +54,8 @@ class H2ServerTest extends utest.Test {
 			server.receive(preface, i, 1);
 		}
 
-		Assert.equals(1, Collector.parse(out.bytes()).length);
+		// SETTINGS, and the connection's window opened to the budget.
+		Assert.equals(2, Collector.parse(out.bytes()).length);
 	}
 
 	public function testInvalidPrefaceIsAConnectionError():Void {
@@ -413,6 +417,208 @@ class H2ServerTest extends utest.Test {
 		server.receive(frame(H2FrameType.DATA, H2Flags.END_STREAM, 1, Bytes.alloc(8)));
 		Assert.equals(1, delivered.length);
 		Assert.isFalse(server.closed);
+	}
+
+	// ------------------------------------------------- the request-body budget
+
+	public function testTheBudgetSetsTheFirstWindowAndOpensTheConnection():Void {
+		// Every stream's first window is the client's to use unasked, so it is
+		// made small enough for 128 of them and a whole body to fit the budget:
+		// 16 KB at a 4 MB budget and a 1 MB limit. The connection's window is
+		// opened to the budget with it.
+		var out = new Collector();
+		var server = new H2ServerConnection(out.write);
+		server.maxRequestBodySize = 1024 * 1024;
+		server.requestBodyBudget = 4 * 1024 * 1024;
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+
+		var frames = Collector.parse(out.bytes());
+		Assert.equals(H2FrameType.SETTINGS, frames[0].type);
+		var advertised = new H2Settings();
+		advertised.applyPayload(frames[0].payload);
+		Assert.equals(16384, advertised.initialWindowSize, "the first window was not made to fit the budget");
+		Assert.equals(H2FrameType.WINDOW_UPDATE, frames[1].type);
+		Assert.equals(0, frames[1].streamId);
+		Assert.equals(4 * 1024 * 1024 - 65535, Budgeted.increment(frames[1]), "the connection's window was not opened to the budget");
+
+		// Room for 128 of the protocol's own: left as it is, and not said.
+		var roomy = new Collector();
+		var large = new H2ServerConnection(roomy.write);
+		large.maxRequestBodySize = 1024 * 1024;
+		large.requestBodyBudget = 16 * 1024 * 1024;
+		large.receive(Bytes.ofString(H2Connection.PREFACE));
+		var said = new H2Settings();
+		said.applyPayload(Collector.parse(roomy.bytes())[0].payload);
+		Assert.equals(65535, said.initialWindowSize);
+	}
+
+	public function testDataPastAStreamWindowResetsTheStream():Void {
+		// Nothing checked that a client kept to its windows. A content-length
+		// of 100 opens no more than the first window.
+		var server = new Budgeted(4 * 1024 * 1024, 1024 * 1024);
+		server.open(1, 100);
+		server.data(1, 16384, false);
+		Assert.equals(-1, server.resetCode(1), "DATA within the window was refused");
+		server.data(1, 1, false);
+
+		Assert.equals(3, server.resetCode(1), "DATA past the stream's window was taken");
+		Assert.isNull(server.failure);
+		Assert.isFalse(server.connection.closed);
+	}
+
+	public function testDataPastTheConnectionWindowIsAConnectionError():Void {
+		// Before the SETTINGS are acknowledged every stream may still have the
+		// protocol's 64 KB, but the connection's window is the budget's: the
+		// 65th stream's 64 KB goes past it.
+		var server = new Budgeted(4 * 1024 * 1024, 1024 * 1024, null, false);
+		var all = new BytesBuffer();
+		for (i in 0...66) {
+			var id:Int = 1 + i * 2;
+			server.open(id);
+			server.dataInto(all, id, 65535, false);
+		}
+		server.receiveAll(all);
+
+		Require.notNull(server.failure, "DATA past the connection's window was taken");
+		Assert.equals(H2ErrorCode.FLOW_CONTROL_ERROR, server.failure.code);
+		Assert.isTrue(server.connection.closed);
+		Assert.isTrue(server.connection.heldRequestBytes <= 4 * 1024 * 1024);
+	}
+
+	public function testAnEmptyEndOfStreamEndsAStreamWhoseWindowWentBelowNothing():Void {
+		// Acknowledging a smaller first window shrinks the window of a stream
+		// that already used more than it, below nothing (6.9.2); an empty DATA
+		// ending the stream needs no window (6.9.1) and still ends it.
+		var server = new Budgeted(4 * 1024 * 1024, 1024 * 1024, null, false);
+		server.open(1, 30000);
+		server.data(1, 30000, false);
+		server.acknowledge();
+		server.data(1, 0, true);
+
+		Assert.equals(-1, server.resetCode(1), "the stream was reset");
+		Assert.equals(1, server.delivered.length, "the request was not delivered");
+		Assert.equals(30000, server.delivered[0].body.length);
+	}
+
+	public function testAnUploadSentBeforeTheSettingsArrivedIsOpenedAgain():Void {
+		// A client sends what the protocol's 64 KB allows before it reads the
+		// SETTINGS that make the first window 16 KB. Applying them takes its
+		// window below nothing, a byte short of its body, and the server has
+		// to open it again once they are acknowledged or it waits for good.
+		var server = new Budgeted(4 * 1024 * 1024, 1024 * 1024, null, false);
+		server.open(1, 65536);
+		server.data(1, 65535, false);
+		server.acknowledge();
+		var window:Int = 65535 + server.granted(1) - 65535 + (16384 - 65535);
+		Assert.isTrue(window >= 1, 'the window was left at $window, short of the last byte');
+
+		server.data(1, 1, true);
+		Assert.equals(-1, server.resetCode(1), "the last byte was refused");
+		Assert.equals(1, server.delivered.length, "the upload did not arrive");
+	}
+
+	public function testRoomGoesToTheOldestStreamFirst():Void {
+		// Four megabyte uploads at a 4 MB budget, which also holds 128 first
+		// windows of 16 KB: the first two are opened whole, the third gets
+		// what is left and waits for the rest, the fourth has only its first
+		// window and waits. When the first has arrived, what it held goes to
+		// the third before the fourth.
+		var size:Int = 1024 * 1024;
+		var server = new Budgeted(4 * 1024 * 1024, size);
+		for (id in [1, 3, 5, 7]) {
+			server.open(id, size);
+		}
+		Assert.equals(size - 16384, server.granted(1));
+		Assert.equals(size - 16384, server.granted(3));
+		Assert.isTrue(server.granted(5) > 0 && server.granted(5) < size - 16384, 'the third was opened ${server.granted(5)}');
+		Assert.equals(0, server.granted(7), "the fourth was opened past its first window with no room");
+		Assert.equals(2, server.connection.waitingStreams);
+
+		var third:Int = 16384 + server.granted(5);
+		server.data(5, third, false);
+		server.data(7, 16384, false);
+		Assert.equals(2, server.connection.waitingStreams);
+
+		var before:Int = server.updates().length;
+		server.data(1, size, true);
+		Assert.equals(1, server.delivered.length);
+		var after:Array<Int> = [for (update in server.updates().slice(before)) if (update != 0) update];
+		Assert.equals("5,7", after.join(","), "the room did not go to the older stream first");
+		Assert.equals(size, 16384 + server.granted(5), "the third was not opened the rest of its way");
+		Assert.isTrue(server.connection.heldRequestBytes <= 4 * 1024 * 1024);
+	}
+
+	public function testAnOlderBodyIsSetAsideBeforeANewerOneIsOpened():Void {
+		// A 3 MB upload is opened a megabyte at a time, so most of its body is
+		// still to be asked for when a newer upload arrives. The newer one is
+		// opened only from what is left once the older one's whole body is set
+		// aside -- next to nothing -- so the older can always finish; then the
+		// newer gets its turn.
+		var size:Int = 3 * 1024 * 1024;
+		var server = new Budgeted(4 * 1024 * 1024, size);
+		server.open(1, size);
+		server.open(3, 1024 * 1024);
+		Assert.equals(1024 * 1024 - 16384, server.granted(1));
+		Assert.isTrue(server.granted(3) < 32768, 'the newer was opened ${server.granted(3)} past the older body');
+
+		server.data(1, size, true);
+		Assert.equals(-1, server.resetCode(1), "the older upload was refused");
+		Assert.equals(1, server.delivered.length, "the older upload did not finish");
+		Assert.equals(1024 * 1024 - 16384, server.granted(3), "the newer was not opened once the older had arrived");
+	}
+
+	public function testWhenTheOldestCannotGoOnTheNewestGivesWay():Void {
+		// With no limit on concurrent streams the first windows cannot all be
+		// set aside, and four streams' 64 KB fill a 256 KB budget with each a
+		// body short of done. The oldest has to finish: the newest gives way,
+		// REFUSED_STREAM, and what it held opens the oldest's window.
+		var settings = new H2Settings();
+		settings.enablePush = false;
+		settings.maxConcurrentStreams = -1;
+		var server = new Budgeted(4 * 65535, 102400, settings);
+		var all = new BytesBuffer();
+		for (id in [1, 3, 5, 7]) {
+			server.open(id, 102400);
+			server.dataInto(all, id, 65535, false);
+		}
+		server.receiveAll(all);
+
+		Assert.equals(7, server.resetCode(7), "the newest did not give way");
+		Assert.equals(-1, server.resetCode(3));
+		Assert.equals(-1, server.resetCode(5));
+		Assert.equals(102400 - 65535, server.granted(1), "the oldest was not opened the rest of its way");
+
+		server.data(1, 102400 - 65535, true);
+		Assert.equals(1, server.delivered.length, "the oldest did not finish");
+		Assert.isNull(server.failure);
+	}
+
+	public function testAStreamLeftWaitingIsRefusedOnceNothingMoves():Void {
+		// The first two uploads hold their windows and send nothing; the third
+		// and fourth spend theirs and wait. A body arriving moves the clock on;
+		// once nothing has moved for stallSeconds the two waiting are refused,
+		// REFUSED_STREAM, and the two holding window are left be.
+		var size:Int = 1024 * 1024;
+		var server = new Budgeted(4 * 1024 * 1024, size);
+		for (id in [1, 3, 5, 7]) {
+			server.open(id, size);
+		}
+		server.data(5, 16384 + server.granted(5), false);
+		server.data(7, 16384, false);
+		Assert.equals(2, server.connection.waitingStreams);
+
+		var now:Float = haxe.Timer.stamp();
+		server.connection.expireWaiting(now);
+		server.data(1, 1000, false);
+		server.connection.expireWaiting(now + server.connection.stallSeconds + 1);
+		Assert.equals(-1, server.resetCode(5), "refused while a body was still arriving");
+
+		server.connection.expireWaiting(now + 2 * server.connection.stallSeconds + 2);
+		Assert.equals(7, server.resetCode(5), "a stream left waiting was not refused");
+		Assert.equals(7, server.resetCode(7), "a stream left waiting was not refused");
+		Assert.equals(-1, server.resetCode(1));
+		Assert.equals(-1, server.resetCode(3));
+		Assert.equals(0, server.connection.waitingStreams);
 	}
 
 	public function testDataAfterARequestHasEndedIsAStreamError():Void {
@@ -1320,6 +1526,124 @@ private class BlockedServer {
 			}
 		}
 		return false;
+	}
+
+	private function __collect():Void {
+		for (frame in Collector.parse(__collector.bytes())) {
+			__frames.push(frame);
+		}
+	}
+}
+
+/**
+	A server with a request-body budget, driven a frame at a time by a client
+	that has acknowledged its SETTINGS (unless told not to), every frame it
+	sends back kept.
+**/
+private class Budgeted {
+	public final connection:H2ServerConnection;
+	public final delivered:Array<H2ServerRequest> = [];
+	public var failure:Null<H2ConnectionError> = null;
+
+	private final __collector:Collector = new Collector();
+	private final __encoder:HpackEncoder = new HpackEncoder(4096);
+	private final __frames:Array<H2Frame> = [];
+
+	public function new(budget:Int, maxBody:Int, ?settings:H2Settings, acknowledged:Bool = true) {
+		connection = new H2ServerConnection(__collector.write, settings);
+		connection.requestBodyBudget = budget;
+		connection.maxRequestBodySize = maxBody;
+		connection.onRequest = request -> delivered.push(request);
+		connection.onConnectionError = e -> failure = e;
+		connection.receive(Bytes.ofString(H2Connection.PREFACE));
+		if (acknowledged) {
+			acknowledge();
+		}
+		__collect();
+	}
+
+	/** Acknowledges the server's SETTINGS. **/
+	public function acknowledge():Void {
+		var out = new BytesBuffer();
+		H2Frame.writeHeader(out, 0, H2FrameType.SETTINGS, H2Flags.ACK, 0);
+		receiveAll(out);
+	}
+
+	/** Opens `id` with a POST whose body is to follow, declaring `length` unless it is null. **/
+	public function open(id:Int, ?length:Int):Void {
+		var fields = [
+			new HpackHeader(":method", "POST"),
+			new HpackHeader(":scheme", "http"),
+			new HpackHeader(":path", "/upload")
+		];
+		if (length != null) {
+			fields.push(new HpackHeader("content-length", Std.string(length)));
+		}
+		var block = __encoder.encode(fields);
+		var out = new BytesBuffer();
+		H2Frame.writeHeader(out, block.length, H2FrameType.HEADERS, H2Flags.END_HEADERS, id);
+		out.addBytes(block, 0, block.length);
+		receiveAll(out);
+	}
+
+	/** Sends `size` bytes of body on `id` in frames of the default largest size, ending it if `endStream`. **/
+	public function data(id:Int, size:Int, endStream:Bool):Void {
+		var out = new BytesBuffer();
+		dataInto(out, id, size, endStream);
+		receiveAll(out);
+	}
+
+	/** Adds the frames `data` would send to `out`, for one read of many. **/
+	public function dataInto(out:BytesBuffer, id:Int, size:Int, endStream:Bool):Void {
+		var offset:Int = 0;
+		do {
+			var chunk:Int = size - offset > 16384 ? 16384 : size - offset;
+			var last:Bool = offset + chunk >= size;
+			H2Frame.writeHeader(out, chunk, H2FrameType.DATA, (endStream && last) ? H2Flags.END_STREAM : 0, id);
+			if (chunk > 0) {
+				out.addBytes(Bytes.alloc(chunk), 0, chunk);
+			}
+			offset += chunk;
+		} while (offset < size);
+	}
+
+	public function receiveAll(out:BytesBuffer):Void {
+		connection.receive(out.getBytes());
+		__collect();
+	}
+
+	/** What the server has opened `id`'s window by, past its first. **/
+	public function granted(id:Int):Int {
+		__collect();
+		var total:Int = 0;
+		for (frame in __frames) {
+			if (frame.type == H2FrameType.WINDOW_UPDATE && frame.streamId == id) {
+				total += increment(frame);
+			}
+		}
+		return total;
+	}
+
+	/** The stream of every WINDOW_UPDATE sent so far, in order: 0 for the connection's. **/
+	public function updates():Array<Int> {
+		__collect();
+		return [for (frame in __frames) if (frame.type == H2FrameType.WINDOW_UPDATE) frame.streamId];
+	}
+
+	/** The error code of the RST_STREAM sent for `id`, or -1. **/
+	public function resetCode(id:Int):Int {
+		__collect();
+		for (frame in __frames) {
+			if (frame.type == H2FrameType.RST_STREAM && frame.streamId == id) {
+				return frame.payload.get(3);
+			}
+		}
+		return -1;
+	}
+
+	public static function increment(frame:H2Frame):Int {
+		var payload = frame.payload;
+		return ((payload.get(0) & 0x7f) << 24) | (payload.get(1) << 16) | (payload.get(2) << 8) | payload.get(3);
 	}
 
 	private function __collect():Void {

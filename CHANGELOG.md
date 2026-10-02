@@ -207,6 +207,10 @@ entry below says how:
   were `Int`s.
 
 ### Added
+- `HTTPServerConfig.http2MaxRequestBodyBuffer`: what one HTTP/2 connection
+  holds of request bodies at once, across all its streams -- 4 MB
+  (`DEFAULT_HTTP2_REQUEST_BODY_BUFFER`) unless changed, `0` for no limit,
+  never less than `maxRequestBodySize`. See Fixed.
 - `SharedObject.remove(name)` takes a region away on Linux and macOS --
   with, on macOS, its lock file -- where it otherwise outlives every
   handle until the machine restarts, and nothing could remove it. Handles
@@ -2283,6 +2287,36 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- One HTTP/2 connection holds no more than
+  `HTTPServerConfig.http2MaxRequestBodyBuffer` of request bodies at once
+  -- 4 MB by default, never less than one body at `maxRequestBodySize`.
+  Each stream let its body grow to `maxRequestBodySize`, and both
+  flow-control windows were opened again as every byte arrived, so a
+  client uploading slowly on all 128 streams made the server hold 128
+  bodies, 128 MB at the defaults, and with `requestTimeout` at `0` for
+  good: 16, 64 and 128 MB measured for 16, 64 and 128 uploads of a
+  megabyte stopped a byte short (heap +25, +99 and +197 MB, native). The
+  same client now leaves 2.3, 3 and 4 MB (heap +7, +9 and +13 MB), and
+  none of its uploads is refused. It is held with HTTP/2's own flow
+  control. The connection's window is opened to the budget and given back
+  only for bytes let go; every stream's first window, which a client may
+  use unasked, is made small enough for all 128 to fit beside one whole
+  body -- 16 KB at the defaults, the protocol's 64 KB from a budget of
+  about 9 MB -- and a stream's window is opened past it as its HEADERS
+  arrive, up to a megabyte at a time, oldest stream first, from what is
+  left once every older stream's remaining body is set aside. The oldest
+  upload always finishes, and uploads that do not all fit wait for window
+  rather than each taking a share and none finishing. Parallel uploads go
+  faster than before, a stream's window having been held to 64 KB (one
+  connection, native: 8 x 1 MB 292 to 313 MB/s, 1 x 4 MB 246 to 282, 32 x
+  64 KB 269 to 323); a body between 16 and 64 KB waits one round trip for
+  its window. Nothing checked that a client kept to its windows at all,
+  so one that ignored them sent what it liked: DATA past a stream's window
+  now resets the stream, and past the connection's ends the connection,
+  with `FLOW_CONTROL_ERROR`. A stream left waiting for window, with no
+  body arriving and none finishing on its connection for 30 s, is reset
+  with `REFUSED_STREAM` -- never handed to the application, so safe to
+  send again -- whatever the timeouts are.
 - A reliable UDP session asks for its window of socket buffer on Linux
   whatever the system's default reads. Linux reads back twice what was
   asked, counting its own bookkeeping, and a default that read a window's
