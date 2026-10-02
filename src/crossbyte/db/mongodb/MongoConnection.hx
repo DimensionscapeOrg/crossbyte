@@ -104,8 +104,13 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	**/
 	public var inTransaction(get, null):Bool;
 
-	/** Documents the last write inserted, matched or deleted, as the server counted them. **/
-	public var affectedRows(get, null):Int;
+	/**
+		Documents the last write inserted, matched or deleted, as the server
+		counted them: a `Float`, exact to 2^53, as MySQL's and Postgres's
+		counts are. MongoDB counts in 64 bits; this was an `Int`, held at
+		2^31 - 1.
+	**/
+	public var affectedRows(get, null):Float;
 
 	/**
 		The `_id` of the last document this connection inserted, the one it
@@ -145,7 +150,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	@:noCompletion private var __maxBsonObjectSize:Int = 16777216;
 	@:noCompletion private var __maxWriteBatchSize:Int = 100000;
 	@:noCompletion private var __database:String = "test";
-	@:noCompletion private var __lastAffected:Int = 0;
+	@:noCompletion private var __lastAffected:Float = 0.0;
 	@:noCompletion private var __lastInsertId:Dynamic = null;
 	@:noCompletion private var __serverVersion:String = null;
 
@@ -415,7 +420,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 				throw __errorOf("insert", reply, result);
 			}
 
-			result.__add(__int(Reflect.field(reply, "n")), 0, 0, 0);
+			result.__add(__count(Reflect.field(reply, "n")), 0, 0, 0);
 			__collectWriteErrors(reply, batchStart, errors);
 
 			if (concernError == null) {
@@ -656,8 +661,11 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	/**
 		Counts the documents matching `filter`, with the `count` command. Not
 		allowed inside a transaction; there, aggregate with `$count`.
+
+		A `Float`, exact to 2^53: the server counts in 64 bits, and this was
+		an `Int`, held at 2^31 - 1.
 	**/
-	public function count(collection:String, ?filter:Dynamic, ?options:MongoCountOptions):Int {
+	public function count(collection:String, ?filter:Dynamic, ?options:MongoCountOptions):Float {
 		var w:BsonWriter = __begin("count", collection);
 
 		if (filter != null) {
@@ -683,7 +691,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		}
 
 		__endBody(__database, null, true);
-		return __int(Reflect.field(__check("count", __send(true)), "n"));
+		return __count(Reflect.field(__check("count", __send(true)), "n"));
 	}
 
 	/** Creates indexes on a collection, which the server makes if it does not exist. **/
@@ -880,7 +888,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		return __txnState != TXN_NONE;
 	}
 
-	private function get_affectedRows():Int {
+	private function get_affectedRows():Float {
 		return __lastAffected;
 	}
 
@@ -1570,7 +1578,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		}
 
 		__check(operation, reply, true);
-		var n:Int = __int(Reflect.field(reply, "n"));
+		var n:Float = __count(Reflect.field(reply, "n"));
 
 		if (operation == "update") {
 			var upserted:Dynamic = Reflect.field(reply, "upserted");
@@ -1581,7 +1589,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 				}
 			}
 
-			result.__add(0, n - result.upserted.length, __int(Reflect.field(reply, "nModified")), 0);
+			result.__add(0, n - result.upserted.length, __count(Reflect.field(reply, "nModified")), 0);
 
 			if (result.upserted.length > 0) {
 				__lastInsertId = result.upserted[result.upserted.length - 1].id;
@@ -1911,6 +1919,23 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		}
 
 		return 0;
+	}
+
+	/**
+		A count the server gave, whichever BSON number type it came as,
+		int32, or int64 past 2^31, whole to 2^53; 0 for anything else.
+		`__int` holds a number at 2^31 - 1, which a count of MongoDB's, 64
+		bits, can pass.
+	**/
+	@:noCompletion private static function __count(value:Dynamic):Float {
+		if (value == null) {
+			return 0;
+		}
+
+		var number:Float = __number(value);
+		// Plus 0.0: eval keeps an int32 handed in as a Float an Int, whose
+		// sums, a result's counts, batch by batch, wrap past 2^31.
+		return Math.isNaN(number) ? 0.0 : number + 0.0;
 	}
 
 	@:noCompletion private static function __number(value:Dynamic):Float {
