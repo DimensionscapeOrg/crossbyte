@@ -2405,7 +2405,8 @@ entry below says how:
   response, its fields added to the stream's and its status put over the
   last, so a server repeating a block grew the response by a block's
   fields each time, 20 blocks of 1,200 fields kept 24,000 of them, at
-  three bytes a block after the first; and 103s were held to the limit
+  three bytes a block after the first, and 200 grew the heap by 20 MB
+  natively, where the second is refused now; and 103s were held to the limit
   one at a time and dropped, so a server could send them for as long as
   it liked, each keeping the request from its idle timeout. Either is a
   malformed or oversized response now: its stream is reset and the
@@ -2416,7 +2417,10 @@ entry below says how:
   go, and the connection carries on with the requests on it. Nothing held
   it. The stream's window was opened again as each half of it arrived, so
   a server sending a body without end grew it, and the client's memory,
-  for as long as it went on: a 4 MB body completed against a 256 KB limit.
+  for as long as it went on: a 4 MB body completed against a 256 KB limit,
+  and 256 MB sent within the windows the client opened grew the heap by
+  688 MB natively. The same server now costs the 64 MB of the limit, 161
+  MB of heap at its peak, however much it sends.
 - On a synchronous `SQLiteConnection`, a `cancel()` from another thread
   stops a `request()` or a statement that is only starting. SQLite clears
   an interrupt that lands while a statement is prepared, so a cancel made
