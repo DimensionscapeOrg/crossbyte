@@ -6,6 +6,7 @@ package crossbyte.ipc;
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IllegalOperationError;
+import crossbyte.errors.IOError;
 #if !cpp
 import crossbyte.crypto._internal.NativeOnly;
 #end
@@ -69,6 +70,20 @@ private enum LocalConnectionDispatch {
  *
  * `SharedChannel` builds on top of this transport when you want the older
  * method-name plus serialized-arguments message model.
+ *
+ * A name is its user's own: processes of one user meet over it, and those of
+ * two users never do, nor can another user listen on it, or put anything in
+ * its place, to take its clients. On Linux and macOS the name's socket lives
+ * in `/tmp/crossbyte-<uid>`, which is made 0700 and must be a directory the
+ * user owns that nobody else can enter, not a link, and not one another
+ * user made first; a client also refuses anything at the socket's path that
+ * is not a socket of the user's, a link included. On Windows the name's pipe
+ * carries the user's SID, admits the user and SYSTEM alone, and refuses
+ * clients on other machines; a client refuses a pipe under the name that
+ * another user made. What is found not to be the user's own is refused with
+ * an `IOError` saying so, by `listen` and `connect` alike. Names used to be
+ * one namespace for every user of the machine, where whoever listened first,
+ * or put a link at a name's socket path, had its clients.
  *
  * A callback that throws is reported as a socket handler's failure is:
  * logged with `Logger.error`, and dispatched as
@@ -233,6 +248,11 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	 * The connection becomes `connected == true` only after a client attaches.
 	 *
 	 * @param connectionName Named local IPC endpoint to listen on.
+	 * @throws ArgumentError When another listener of this user's has the name,
+	 *         or it cannot be used.
+	 * @throws IOError When what is under the name is not this user's own: on
+	 *         Linux and macOS, the directory the user's names live in (see the
+	 *         class).
 	 */
 	public function listen(connectionName:String):Void {
 		__requireSupported();
@@ -247,10 +267,16 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		#if cpp
 		var session = __session;
 		var handleQueue:Deque<LocalConnectionHandle> = new Deque();
+		// Why the pipe was not made, read on the thread that tried; seen here
+		// once the queue hands back its answer.
+		var notOwned = false;
 		Thread.create(() -> {
 			var handle:LocalConnectionHandle = null;
 			try {
 				handle = __createInboundPipe(connectionName);
+				if (handle == null) {
+					notOwned = __notOwned();
+				}
 				__listeningPipe = handle;
 				handleQueue.add(handle);
 			} catch (_:Dynamic) {
@@ -266,6 +292,9 @@ class LocalConnection implements INetConnection implements CloseObservable {
 			__running = false;
 			__mode = NONE;
 			__discardQueued();
+			if (notOwned) {
+				throw __notOwnedError(connectionName);
+			}
 			// Another listener has the name, on either platform now, or it
 			// cannot be used.
 			throw new ArgumentError("Connection name is already in use or invalid");
@@ -281,6 +310,10 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	 * @param connectionName Named local IPC endpoint to connect to.
 	 * @throws ArgumentError When nothing listened on the name within
 	 *         `timeout`, or the name cannot be used.
+	 * @throws IOError When what is under the name is not this user's own:
+	 *         another user's pipe on Windows; on Linux and macOS the user's
+	 *         directory, or anything at the name's socket path that is not
+	 *         a socket of the user's, a link included (see the class).
 	 */
 	public function connect(connectionName:String):Void {
 		__requireSupported();
@@ -293,9 +326,14 @@ class LocalConnection implements INetConnection implements CloseObservable {
 
 		var handle = __connect(connectionName, timeout);
 		if (handle == null) {
+			// Read at once, on the thread that tried.
+			var notOwned = __notOwned();
 			__mode = NONE;
-			var reason = Reason.Error("Failed to connect to local endpoint.");
+			var reason = Reason.Error(notOwned ? "What is under the local name is not this user's own." : "Failed to connect to local endpoint.");
 			__dispatchLifecycle(Error(reason));
+			if (notOwned) {
+				throw __notOwnedError(connectionName);
+			}
 			throw new ArgumentError("Connection name is unavailable or invalid");
 		}
 
@@ -1254,6 +1292,30 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		return NativeLocalConnection.__createInboundPipe(name);
 		#else
 		return null;
+		#end
+	}
+
+	/** Whether the last listen or connect on this thread failed for something under the name that is not this user's. **/
+	@:noCompletion private static function __notOwned():Bool {
+		#if cpp
+		return NativeLocalConnection.__lastError() == NativeLocalConnection.ERROR_NOT_OWNED;
+		#else
+		return false;
+		#end
+	}
+
+	@:noCompletion private static function __notOwnedError(name:String):IOError {
+		return new IOError('LocalConnection "$name": what is under the name is not this user\'s own, and is not used '
+			+ '-- another user made it, or others can reach it (on Linux and macOS, /tmp/crossbyte-<uid> must be a directory '
+			+ 'of this user\'s with mode 0700)');
+	}
+
+	/** Tests only: whether a listener's pipe admits anyone but this user and SYSTEM, or another owns it. Always false off Windows. **/
+	@:noCompletion private static function __admitsOthersForTest(pipe:LocalConnectionHandle):Bool {
+		#if cpp
+		return NativeLocalConnection.__admitsOthersForTest(pipe);
+		#else
+		return false;
 		#end
 	}
 
