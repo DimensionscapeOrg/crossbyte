@@ -190,15 +190,12 @@ class ServerWebSocketUpgradeLifecycleTest extends utest.Test {
 		try server.close() catch (_:Dynamic) {}
 	}
 
-	#if !eval
 	/**
 		A port already in use is reported, wherever it is found: natively
 		`bind()` throws, and on Node, which claims the port only once
 		`listen()` starts, as `ioError` and then `close`, as a
-		`DatagramSocket` reports it there. Node dispatched `close` alone.
-
-		Not on eval, whose bind raises a port in use as an error no Haxe
-		catch can see, ending the interpreter.
+		`DatagramSocket` reports it there. Node dispatched `close` alone. On
+		eval too, whose bind in use once ended the interpreter.
 	**/
 	@:timeout(15000)
 	public function testAPortInUseIsReported(async:Async):Void {
@@ -239,7 +236,6 @@ class ServerWebSocketUpgradeLifecycleTest extends utest.Test {
 			});
 		});
 	}
-	#end
 
 	#if !nodejs
 	/**

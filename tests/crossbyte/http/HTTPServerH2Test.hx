@@ -2300,6 +2300,127 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	public function testAnHttp2ConnectionHoldsNoMoreRequestBodyThanItsBudget(async:Async):Void {
+		// Each stream let its body grow to maxRequestBodySize, and both windows
+		// were opened again as each byte arrived, so a client uploading slowly
+		// on every stream made the server hold a megabyte apiece, 128 MB on
+		// 128 streams, and with requestTimeout off, for as long as it liked.
+		// Eight uploads of a megabyte, from a client keeping to the windows and
+		// stopping each a byte short: at the defaults the connection holds no
+		// more than its 4 MB budget and refuses none of them, and once the
+		// client goes on, every one arrives whole. They did not all fit at
+		// once, so some waited for window while the others went first.
+		var size:Int = 1024 * 1024;
+		var count:Int = 8;
+		var bodies:Map<Int, Bytes> = new Map();
+		var session = new H2Session(config -> {
+			config.requestTimeout = 0;
+			config.keepAliveTimeout = 0;
+			config.middleware = [(handler, next) -> handler.respond(200, "text/plain", "got " + handler.requestBody.length)];
+		});
+
+		session.start(() -> {
+			for (i in 0...count) {
+				var id:Int = 1 + i * 2;
+				bodies.set(id, Bytes.alloc(size));
+				session.request(id, "POST", "/upload", false, [new HpackHeader("content-length", Std.string(size))]);
+			}
+			session.uploadAll(bodies, 1, () -> {
+				var held:Int = __requestBodyHeldBy(session.server);
+				var refused:Int = Lambda.count([for (id in bodies.keys()) id], id -> session.resetCode(id) >= 0);
+				session.uploadAll(bodies, 0, () -> {
+					var whole:Int = Lambda.count([for (id in bodies.keys()) id], id -> session.status(id) == 200 && session.body(id) == 'got $size');
+					session.close();
+					Assert.isTrue(held >= 2 * size, 'only $held bytes were held, so this shows nothing');
+					Assert.isTrue(held <= 4 * 1024 * 1024, 'one connection held $held bytes of request body');
+					Assert.equals(0, refused, "an upload keeping to its windows was refused");
+					Assert.equals(count, whole, 'only $whole of the $count uploads arrived whole');
+					async.done();
+				}, 30.0);
+			});
+		});
+	}
+
+	public function testDataPastAnHttp2StreamsWindowIsAFlowControlError(async:Async):Void {
+		// Nothing checked that a client kept to the windows the server opened:
+		// one that ignored them sent whatever it liked, and what the windows
+		// were holding the connection to meant nothing. A stream sent past its
+		// window is reset FLOW_CONTROL_ERROR, and the connection carries on.
+		// Its content-length is what its window is opened to.
+		var session = new H2Session(config -> {});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", "100000")]);
+			session.ping();
+			session.until(() -> session.pingAcks > 0 || session.ended, () -> {
+				session.dataBytes(1, Bytes.alloc(100000 + 65536), false);
+				session.until(() -> session.finished(1) || session.ended, () -> {
+					session.request(3, "GET", "/index.html", true);
+					session.until(() -> session.finished(3) || session.ended, () -> {
+						session.close();
+						Assert.equals(3, session.resetCode(1), "DATA past the stream's window was taken");
+						Assert.equals(200, session.status(3), "the connection went with the stream");
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
+	public function testAnHttp2UploadLeftWaitingForWindowIsRefusedAtTheStallDeadline(async:Async):Void {
+		// Room for request bodies goes to the oldest stream first, so a newer
+		// one can be left waiting for window, and when the bodies ahead of it
+		// stop coming it would wait for good: requestTimeout is off. Two
+		// megabyte uploads whose client sends nothing take the budget; two more
+		// spend their first windows and wait. At the stall deadline, nothing
+		// having moved, those two are refused with REFUSED_STREAM, never
+		// handed to the application, so safe to send again, and the two
+		// still holding windows are left be.
+		var size:Int = 1024 * 1024;
+		var session = new H2Session(config -> {
+			config.requestTimeout = 0;
+			config.keepAliveTimeout = 0;
+		});
+
+		session.start(() -> {
+			for (id in [1, 3, 5, 7]) {
+				session.request(id, "POST", "/upload", false, [new HpackHeader("content-length", Std.string(size))]);
+			}
+			var waiting:Map<Int, Bytes> = [5 => Bytes.alloc(size), 7 => Bytes.alloc(size)];
+			session.uploadAll(waiting, 0, () -> {
+				var answeredBefore:Bool = session.finished(5) || session.finished(7);
+				// The sweep, once to set its clock and once past the deadline.
+				var now:Float = haxe.Timer.stamp();
+				@:privateAccess session.server.__sweep(now);
+				@:privateAccess session.server.__sweep(now + 31);
+				session.until(() -> (session.finished(5) && session.finished(7)) || session.ended, () -> {
+					session.request(9, "GET", "/index.html", true);
+					session.until(() -> session.finished(9) || session.ended, () -> {
+						session.close();
+						Assert.isFalse(answeredBefore, "the uploads were not left waiting, so this shows nothing");
+						Assert.equals(7, session.resetCode(5), "an upload left waiting for window was not refused");
+						Assert.equals(7, session.resetCode(7), "an upload left waiting for window was not refused");
+						Assert.equals(-1, session.resetCode(1), "an upload holding its window was refused");
+						Assert.equals(-1, session.resetCode(3), "an upload holding its window was refused");
+						Assert.equals(200, session.status(9), "the connection went with the streams");
+						async.done();
+					});
+				}, 2.0);
+			});
+		});
+	}
+
+	/** Request body the server's HTTP/2 connections hold in streams still receiving one. **/
+	private static function __requestBodyHeldBy(server:HTTPServer):Int {
+		var total:Int = 0;
+		for (handler in @:privateAccess server.__activeHttp2) {
+			for (stream in @:privateAccess handler.__connection.__streams) {
+				total += stream.bodyLength;
+			}
+		}
+		return total;
+	}
+
 	/**
 		Bytes the server's HTTP/2 connections hold for their clients: what each
 		stream has queued behind flow control, and what each socket has not
@@ -2592,9 +2713,20 @@ private class H2Session {
 	private final __neverIndexed:Map<Int, Array<String>> = new Map();
 
 	// What the server lets this side send, for uploads that keep to flow
-	// control. Both start at the RFC 9113 default.
+	// control. Both start at the RFC 9113 default; a new stream's first
+	// window is what the server's SETTINGS says, once this side has seen it.
 	private var __connectionWindow:Int = 65535;
 	private final __streamWindows:Map<Int, Int> = new Map();
+	private var __initialWindow:Int = 65535;
+
+	// SETTINGS acknowledgements owed, sent from the pump rather than from the
+	// socket's data dispatch, for the reason `exchange` gives.
+	private var __acksOwed:Int = 0;
+
+	// Bytes of each stream's body uploadAll has sent, and when the server
+	// last opened a window.
+	private final __uploaded:Map<Int, Int> = new Map();
+	private var __windowOpenedAt:Float = 0;
 
 	public function new(configure:HTTPServerConfig->Void) {
 		__root = File.createTempDirectory();
@@ -2642,7 +2774,7 @@ private class H2Session {
 	public function requestAll(streamIds:Array<Int>, method:String, path:String):Void {
 		var out = new BytesBuffer();
 		for (streamId in streamIds) {
-			__streamWindows.set(streamId, 65535);
+			__streamWindows.set(streamId, __initialWindow);
 			var block:Bytes = __encoder.encode([
 				new HpackHeader(":method", method),
 				new HpackHeader(":scheme", "http"),
@@ -2668,10 +2800,104 @@ private class H2Session {
 			}
 		}
 
-		__streamWindows.set(streamId, 65535);
+		__streamWindows.set(streamId, __initialWindow);
 		var out = new BytesBuffer();
 		__writeFrame(out, H2FrameType.HEADERS, H2Flags.END_HEADERS | (endStream ? H2Flags.END_STREAM : 0), streamId, __encoder.encode(fields));
 		__send(out);
+	}
+
+	/**
+		Sends `bodies`, stream id to body, round robin, a frame at a time,
+		only as fast as the server's windows allow, each stream ended with its
+		last byte; or, with `short` above 0, each stopped that many bytes short
+		of its end and left open, as a client uploading slowly leaves it.
+		Continues once every stream has been answered or reset, or once the
+		server has answered a PING sent after everything that could be sent
+		was, with nothing more allowed since: then it is opening no more.
+	**/
+	public function uploadAll(bodies:Map<Int, Bytes>, short:Int, then:Void->Void, timeout:Float = 20.0):Void {
+		var ids:Array<Int> = [for (id in bodies.keys()) id];
+		ids.sort((a, b) -> a - b);
+		// Carried across calls, so one that stopped short is taken up again.
+		var sent:Map<Int, Int> = __uploaded;
+		for (id in ids) {
+			if (!sent.exists(id)) {
+				sent.set(id, 0);
+			}
+		}
+
+		function pass():Bool {
+			var any:Bool = false;
+			var progress:Bool = true;
+			while (progress && !ended) {
+				progress = false;
+				var out = new BytesBuffer();
+				for (id in ids) {
+					var body:Bytes = bodies.get(id);
+					var done:Int = sent.get(id);
+					if (done >= body.length - short || finished(id)) {
+						continue;
+					}
+					var window:Int = __streamWindows.get(id);
+					var size:Int = body.length - short - done;
+					if (size > 16384) {
+						size = 16384;
+					}
+					if (size > window) {
+						size = window;
+					}
+					if (size > __connectionWindow) {
+						size = __connectionWindow;
+					}
+					if (size <= 0) {
+						continue;
+					}
+					var last:Bool = short == 0 && done + size >= body.length;
+					__writeFrame(out, H2FrameType.DATA, last ? H2Flags.END_STREAM : 0, id, body.sub(done, size));
+					sent.set(id, done + size);
+					__connectionWindow -= size;
+					__streamWindows.set(id, window - size);
+					progress = true;
+					any = true;
+				}
+				if (progress) {
+					__send(out);
+				}
+			}
+			return any;
+		}
+
+		// pingAcks as it stood when the PING asking whether more is coming
+		// went out, or -1 while none is out; and whether anything was sent
+		// since. One is sent only once no window has opened for a while: a
+		// PING each time this caught up with the windows was a PING flood,
+		// which the server ends the connection for.
+		var asked:Int = -1;
+		var movedSinceAsked:Bool = false;
+		until(() -> {
+			if (ended || Lambda.foreach(ids, id -> finished(id))) {
+				return true;
+			}
+			if (pass()) {
+				movedSinceAsked = true;
+				return false;
+			}
+			if (asked >= 0) {
+				if (pingAcks <= asked) {
+					return false;
+				}
+				if (!movedSinceAsked && haxe.Timer.stamp() - __windowOpenedAt > 0.05) {
+					return true;
+				}
+				asked = -1;
+			}
+			if (haxe.Timer.stamp() - __windowOpenedAt > 0.05) {
+				asked = pingAcks;
+				movedSinceAsked = false;
+				ping();
+			}
+			return false;
+		}, then, timeout);
 	}
 
 	/** Sends `body` on `streamId` in frames no larger than the default maximum. */
@@ -2842,7 +3068,20 @@ private class H2Session {
 	 * for the server to enforce a deadline.
 	 */
 	public function until(done:Void->Bool, then:Void->Void, timeout:Float = 5.0):Void {
-		HTTPTestSupport.pumpWallUntilAsync(done, timeout, _ -> then());
+		HTTPTestSupport.pumpWallUntilAsync(() -> {
+			__sendOwed();
+			return done();
+		}, timeout, _ -> then());
+	}
+
+	/** Acknowledges the server's SETTINGS, as a client keeping to the protocol does (6.5.3). */
+	private function __sendOwed():Void {
+		while (__acksOwed > 0 && !ended) {
+			__acksOwed--;
+			var out = new BytesBuffer();
+			__writeFrame(out, H2FrameType.SETTINGS, H2Flags.ACK, 0, Bytes.alloc(0));
+			__send(out);
+		}
 	}
 
 	/**
@@ -2861,7 +3100,10 @@ private class H2Session {
 	 */
 	public function pause(seconds:Float, then:Void->Void):Void {
 		var resumeAt:Float = haxe.Timer.stamp() + seconds;
-		HTTPTestSupport.pumpWallUntilAsync(() -> ended || haxe.Timer.stamp() >= resumeAt, seconds + 5.0, _ -> then());
+		HTTPTestSupport.pumpWallUntilAsync(() -> {
+			__sendOwed();
+			return ended || haxe.Timer.stamp() >= resumeAt;
+		}, seconds + 5.0, _ -> then());
 	}
 
 	/** The server this session talks to. */
@@ -2965,6 +3207,23 @@ private class H2Session {
 		if (frame.type == H2FrameType.SETTINGS) {
 			if (!frame.has(H2Flags.ACK)) {
 				__settingsArrived = true;
+				// INITIAL_WINDOW_SIZE moves every stream's window by the
+				// difference, those already open included (6.9.2).
+				var payload:Bytes = frame.payload;
+				var offset:Int = 0;
+				while (offset + 6 <= payload.length) {
+					if (((payload.get(offset) << 8) | payload.get(offset + 1)) == 4) {
+						var value:Int = (payload.get(offset + 2) << 24) | (payload.get(offset + 3) << 16) | (payload.get(offset + 4) << 8)
+							| payload.get(offset + 5);
+						var delta:Int = value - __initialWindow;
+						__initialWindow = value;
+						for (id in [for (id in __streamWindows.keys()) id]) {
+							__streamWindows.set(id, __streamWindows.get(id) + delta);
+						}
+					}
+					offset += 6;
+				}
+				__acksOwed++;
 			}
 		} else if (frame.type == H2FrameType.HEADERS) {
 			// Every block is decoded, whichever stream it belongs to; see the
@@ -2993,6 +3252,7 @@ private class H2Session {
 		} else if (frame.type == H2FrameType.WINDOW_UPDATE) {
 			var payload:Bytes = frame.payload;
 			var increment:Int = ((payload.get(0) & 0x7f) << 24) | (payload.get(1) << 16) | (payload.get(2) << 8) | payload.get(3);
+			__windowOpenedAt = haxe.Timer.stamp();
 			if (frame.streamId == 0) {
 				__connectionWindow += increment;
 			} else if (__streamWindows.exists(frame.streamId)) {

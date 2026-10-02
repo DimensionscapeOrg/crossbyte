@@ -524,6 +524,35 @@ class MySQLDriverTest extends utest.Test {
 		Assert.equals(-1.0, connection.affectedRows);
 	}
 
+	public function testAStatementsRowsAffectedIsTheServersCountWhole():Void {
+		// A statement's rowsAffected was the length of the driver's result:
+		// for a write, the driver's Int count, which hl's driver wraps past
+		// 2^31, three billion rows updated read -1294967296, and for a
+		// SELECT, its rows. A count that cannot be right is asked for in SQL.
+		var wire:ScriptedConnection = new ScriptedConnection();
+		var statement:MySQLStatement = __statement(wire);
+		wire.writeCount = -1294967296;
+		wire.results.set("SELECT CAST(ROW_COUNT() AS CHAR) AS n", [{n: "3000000000"}]);
+		statement.text = "UPDATE t SET x = 1";
+		statement.execute();
+		Assert.equals(3000000000.0, statement.getResult().rowsAffected);
+
+		// One that can be right is taken as it is, with nothing more asked.
+		wire.writeCount = 7;
+		var asked:Int = wire.sent.length;
+		statement.execute();
+		Assert.equals(asked + 1, wire.sent.length, "a count in range was asked for in SQL");
+		Assert.equals(7.0, statement.getResult().rowsAffected);
+
+		// A statement that returns rows changed none, as AIR's has it.
+		wire.results.set("SELECT x FROM t", [{x: 1}, {x: 2}, {x: 3}]);
+		statement.text = "SELECT x FROM t";
+		statement.execute();
+		var rows = Require.notNull(statement.getResult());
+		Assert.equals(3, rows.data.length);
+		Assert.equals(0.0, rows.rowsAffected);
+	}
+
 	#if (java || jvm)
 	public function testAnInsertWhoseGeneratedKeyPassesThirtyTwoBitsIsNotReportedFailed():Void {
 		// Haxe's JDBC binding reads a single insert's generated key with

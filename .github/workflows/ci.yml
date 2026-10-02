@@ -389,16 +389,41 @@ jobs:
       - name: Build native suite
         # Traced: each case names itself as it starts, so a run that hangs
         # says where. The first hang here (Linux, 2026-10-02) printed nothing
-        # for 44 minutes after its last server's log line.
-        run: haxe ci/posix-native-tests.hxml -D test_trace
+        # for 44 minutes after its last server's log line. Not stripped, so a
+        # stack taken below names its functions: stripped, every frame read
+        # ___lldb_unnamed_symbol.
+        run: haxe ci/posix-native-tests.hxml -D test_trace -D nostrip
 
       - name: Run native suite
         working-directory: export/ci-posix-native
         # A whole run takes about five minutes on Linux, longer on the Intel
-        # macOS runner. Past thirty it has hung, and the last [TEST] line
-        # names the case.
-        timeout-minutes: 30
-        run: ./NativeSmokeMain
+        # macOS runner. Past forty it has hung, and the last [TEST] line
+        # names the case. A crash says only "Segmentation fault", so a run
+        # that ends on a signal is run again under a debugger: a crash that
+        # repeats leaves every thread's stack in the log. The step fails
+        # with the first run's status either way.
+        timeout-minutes: 40
+        run: |
+          rc=0
+          ./NativeSmokeMain || rc=$?
+          if [ "$rc" -ge 128 ]; then
+            echo "The suite ended on signal $((rc - 128)); running it again under a debugger."
+            if command -v lldb > /dev/null; then
+              sudo DevToolsSecurity -enable > /dev/null 2>&1 || true
+              # The signals the suite raises on purpose, SIGHUP, SIGINT,
+              # SIGTERM, and SIGPIPE pass straight to it: lldb stops on any
+              # signal otherwise, and stopped on the hangup test's SIGHUP.
+              lldb --batch \
+                -o "process launch --stop-at-entry" \
+                -o "process handle SIGHUP SIGINT SIGTERM SIGPIPE SIGUSR1 SIGUSR2 SIGCHLD -s false -p true -n false" \
+                -o "continue" \
+                -k "thread backtrace all" -k "quit 1" -- ./NativeSmokeMain || true
+            elif command -v gdb > /dev/null; then
+              gdb -batch -ex "handle SIGHUP SIGINT SIGTERM SIGPIPE SIGUSR1 SIGUSR2 nostop noprint pass" \
+                -ex run -ex "thread apply all bt" ./NativeSmokeMain || true
+            fi
+          fi
+          exit $rc
 
   postgres:
     name: Data | Postgres

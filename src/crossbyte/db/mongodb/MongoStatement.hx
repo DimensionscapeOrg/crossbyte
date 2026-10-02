@@ -64,7 +64,7 @@ class MongoStatement extends EventDispatcher {
 	@:noCompletion private var __cursor:MongoCursor;
 	@:noCompletion private var __prefetch:Int = 0;
 	@:noCompletion private var __executing:Bool = false;
-	@:noCompletion private var __affected:Int = 0;
+	@:noCompletion private var __affected:Float = 0.0;
 
 	// Pages read and not yet taken, oldest first. A statement runs on the
 	// thread that calls it, so a plain Array serves every target, as the SQL
@@ -233,9 +233,10 @@ class MongoStatement extends EventDispatcher {
 		}
 	}
 
-	@:noCompletion private static function __affectedOf(reply:Dynamic):Int {
+	/** The reply's count, whole past 2^31: it was read as an `Int`, held at 2^31 - 1. **/
+	@:noCompletion private static function __affectedOf(reply:Dynamic):Float {
 		var n:Dynamic = Reflect.field(reply, "n");
-		return n == null || Reflect.hasField(reply, "cursor") ? 0 : MongoConnection.__int(n);
+		return n == null || Reflect.hasField(reply, "cursor") ? 0.0 : MongoConnection.__count(n);
 	}
 
 	/**

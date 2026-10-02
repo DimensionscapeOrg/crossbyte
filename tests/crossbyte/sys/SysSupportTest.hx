@@ -149,8 +149,15 @@ class SysSupportTest extends utest.Test {
 		// native, and a TaskPool sized by it threw.
 		Assert.isTrue(System.processorCount >= 1, "processorCount is " + System.processorCount);
 		#if cpp
-		Assert.notNull(System.processAffinity);
-		Assert.isTrue(System.processAffinity.length >= 0);
+		if (System.PLATFORM == "mac") {
+			// macOS has no process affinity, and says so.
+			Assert.raises(() -> {
+				var mask = System.processAffinity;
+			}, crossbyte.errors.IllegalOperationError);
+		} else {
+			Assert.notNull(System.processAffinity);
+			Assert.isTrue(System.processAffinity.length >= 0);
+		}
 		// The collector's 64-bit figure: the 32-bit one wrapped past 2GiB.
 		Assert.isTrue(System.memoryUsage() > 0, "memoryUsage is " + System.memoryUsage());
 		#else

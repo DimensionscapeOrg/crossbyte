@@ -49,6 +49,31 @@ class H2Connection {
 	 */
 	public var maxHeaderBlockSize:Int = 256 * 1024;
 
+	/**
+		The HTTP/1.1 client's limit on a response body, 64 MB: what a stream
+		opened from here holds before it is given up, unless its opener says
+		otherwise (`H2Stream.maxBodyLength`).
+	**/
+	public static inline var DEFAULT_MAX_RESPONSE_BODY_SIZE:Int = 64 * 1024 * 1024;
+
+	/**
+		The most response body each stream opened from here holds, in bytes;
+		`0` or less for no limit. A stream whose body goes past it is reset
+		with CANCEL, its body let go and `failure` saying why, and the
+		connection carries on.
+
+		Flow control did not bound it: the stream's window is opened again as
+		each half of it arrives, so the client can never fall behind, and a
+		server sending without end grew the body without end.
+	**/
+	public var maxResponseBodySize:Int = DEFAULT_MAX_RESPONSE_BODY_SIZE;
+
+	/**
+		The most the HPACK table this side encodes with may hold, whatever
+		the peer's SETTINGS_HEADER_TABLE_SIZE allows: the protocol's default.
+	**/
+	public static inline var MAX_ENCODER_TABLE_SIZE:Int = H2Settings.DEFAULT_HEADER_TABLE_SIZE;
+
 	/** Our settings, sent at startup. */
 	public final localSettings:H2Settings;
 
@@ -73,10 +98,12 @@ class H2Connection {
 
 	/**
 	 * Called when a request body cannot proceed because a flow-control window
-	 * is closed, with the stream it is for and how many seconds this stall
-	 * has lasted. Returns `false` to abandon the write. Called again after
-	 * every return while the window stays closed, and the stall's clock only
-	 * starts over once a byte of the body has gone out.
+	 * is closed, or, with `deferWrites`, because `MAX_QUEUED_DATA` of it
+	 * waits to be written (`windowOpen` tells the two apart), with the
+	 * stream it is for and how many seconds this stall has lasted. Returns
+	 * `false` to abandon the write. Called again after every return while
+	 * the body still cannot proceed, and the stall's clock only starts over
+	 * once a byte of the body has gone out.
 	 *
 	 * The default reads a frame here, which is right when the caller owns the
 	 * connection outright. It is wrong the moment a reader thread owns the
@@ -87,6 +114,37 @@ class H2Connection {
 	 * the write: the body stops as soon as its stream is closed.
 	 */
 	public var onWindowBlocked:(target:H2Stream, stalledSeconds:Float) -> Bool = null;
+
+	/**
+		Whether frames are queued rather than written: set by an owner with a
+		thread of its own for the writes, which takes them with `takeOutbox`.
+		Every write here used to be made where the frame was made, under the
+		owner's lock, by whichever thread held it, so a peer that stopped
+		reading held that thread in the write, and the lock with it.
+
+		While set, a request body waits (`onWindowBlocked`) whenever
+		`MAX_QUEUED_DATA` of it waits to go out, as it waits on a window.
+	**/
+	public var deferWrites:Bool = false;
+
+	/**
+		Body bytes a request may have queued, unwritten, before it waits for
+		them to go out (`deferWrites`): what one upload holds of its body in
+		frames, besides the batch being written.
+	**/
+	public static inline var MAX_QUEUED_DATA:Int = 256 * 1024;
+
+	/** Bytes of frames queued and not yet taken (`deferWrites`). */
+	public var queuedBytes(get, never):Int;
+
+	/**
+		Of `queuedBytes`, what answers the peer obliged: the acknowledgements
+		of its PINGs and SETTINGS, and the WINDOW_UPDATEs its DATA earns. A
+		peer sending those and reading nothing grows them for as long as it
+		goes on, so an owner reading frames stops reading while they are
+		many.
+	**/
+	public var queuedReplyBytes(get, never):Int;
 
 	private final __input:Input;
 	private final __output:Output;
@@ -110,11 +168,21 @@ class H2Connection {
 	private var __continuationBuffer:BytesBuffer = null;
 	private var __continuationLength:Int = 0;
 
+	private var __outbox:Array<Bytes> = [];
+	private var __outboxBytes:Int = 0;
+	private var __outboxReplyBytes:Int = 0;
+
 	public function new(input:Input, output:Output, ?settings:H2Settings) {
 		__input = input;
 		__output = output;
 
 		localSettings = settings != null ? settings : new H2Settings();
+		// Nothing here can take a pushed stream, and a PUSH_PROMISE is a
+		// connection error below, which 8.4 allows only once push has been
+		// refused. H2Settings allows it unless told otherwise, so a client
+		// given settings of its own invited pushes and then failed the
+		// connection over the first.
+		localSettings.enablePush = false;
 		remoteSettings = new H2Settings();
 		__streams = new Map();
 
@@ -155,6 +223,35 @@ class H2Connection {
 	}
 
 	/**
+		The frames queued since the last call, in the order they were made,
+		or null when there are none (`deferWrites`). Whoever takes them writes
+		them, in that order: HPACK state rides on it.
+	**/
+	public function takeOutbox():Null<Array<Bytes>> {
+		if (__outbox.length == 0) {
+			return null;
+		}
+		var taken:Array<Bytes> = __outbox;
+		__outbox = [];
+		__outboxBytes = 0;
+		__outboxReplyBytes = 0;
+		return taken;
+	}
+
+	/** Whether both windows let `target` send a byte of its body. */
+	public inline function windowOpen(target:H2Stream):Bool {
+		return target.sendWindow > 0 && __connectionSendWindow > 0;
+	}
+
+	private inline function get_queuedBytes():Int {
+		return __outboxBytes;
+	}
+
+	private inline function get_queuedReplyBytes():Int {
+		return __outboxReplyBytes;
+	}
+
+	/**
 	 * Opens a stream and sends the request.
 	 *
 	 * Pseudo-header fields go first and in the order §8.3 lists them; a peer
@@ -189,6 +286,7 @@ class H2Connection {
 		__nextStreamId += 2;
 
 		var target:H2Stream = new H2Stream(id, remoteSettings.initialWindowSize, localSettings.initialWindowSize);
+		target.maxBodyLength = maxResponseBodySize;
 		__streams.set(id, target);
 
 		var block:Array<HpackHeader> = [
@@ -535,6 +633,45 @@ class H2Connection {
 			}
 		}
 
+		if (target.headerSectionReceived) {
+			// After the final response's header block, a HEADERS is the
+			// trailer section (RFC 9113 8.1): it ends the stream and carries
+			// no pseudo-header. Any other was taken as more of the response,
+			// its fields added, its status over the last, so a server that
+			// repeated a block grew the stream by a block's fields each time,
+			// for as long as it went on. Each is held to the limit on its own,
+			// as the HTTP/1.1 client holds trailers apart from the header.
+			var problem:Null<String> = !endStream ? "a header block after the response's did not end the stream" : null;
+			for (header in decoded) {
+				if (problem == null && StringTools.startsWith(header.name, ":")) {
+					problem = "a pseudo-header field in the trailers";
+				}
+			}
+			if (problem != null) {
+				target.failure = "Malformed response: " + problem;
+				resetStream(target.id, H2ErrorCode.PROTOCOL_ERROR);
+				return;
+			}
+			for (header in decoded) {
+				target.headers.push(header);
+			}
+			target.endOfStream = true;
+			__closeStream(target);
+			return;
+		}
+
+		// The response's header section is one allowance, its interim
+		// responses included, as the HTTP/1.1 client's is: each 1xx was held
+		// to the limit on its own and dropped, so 103s could come for as long
+		// as a server liked, each a frame of the stream that kept it from its
+		// idle timeout.
+		target.sectionBytes += __decoder.listSize;
+		if (target.sectionBytes > __decoder.maxHeaderListSize) {
+			target.failure = 'Response header section exceeded the ${__decoder.maxHeaderListSize} byte limit';
+			resetStream(target.id, H2ErrorCode.CANCEL);
+			return;
+		}
+
 		// An interim response, 100 Continue, 103 Early Hints, is a header
 		// block of its own ahead of the final one (RFC 9113 8.1). Its fields
 		// are not the response's and its status is not the response's, so the
@@ -565,6 +702,7 @@ class H2Connection {
 				target.headers.push(header);
 			}
 		}
+		target.headerSectionReceived = true;
 
 		if (endStream) {
 			target.endOfStream = true;
@@ -593,6 +731,18 @@ class H2Connection {
 			target.framesIn++;
 			target.recvWindow -= counted;
 			target.unacknowledged += counted;
+
+			if (target.maxBodyLength > 0 && content.length > target.maxBodyLength - target.bodyLength) {
+				// Given up, as the HTTP/1.1 client gives up a body past its
+				// limit, and let go of at once: the caller is told why, and
+				// what the server sends the stream from here is counted for
+				// the connection's window and dropped.
+				target.failure = 'Response body exceeded ${target.maxBodyLength} bytes';
+				target.dropBody();
+				resetStream(target.id, H2ErrorCode.CANCEL);
+				__topUpConnectionWindow();
+				return;
+			}
 			target.appendBody(content);
 
 			if (frame.has(H2Flags.END_STREAM)) {
@@ -645,8 +795,19 @@ class H2Connection {
 			}
 		}
 
-		__encoder.setCapacity(remoteSettings.headerTableSize);
-		__writeFrame(H2FrameType.SETTINGS, H2Flags.ACK, 0, Bytes.alloc(0));
+		// The peer's HEADER_TABLE_SIZE is the most its decoder holds, and an
+		// encoder may use less (RFC 7541 4.2). This one held whatever it was
+		// told, so a server saying a megabyte, or 2^31 - 1, kept every
+		// distinct field this side sent in this side's memory for the
+		// connection's life, each searched for every field after. Held to
+		// the default, as Go's and nghttp2's clients hold theirs.
+		var capacity:Int = remoteSettings.headerTableSize;
+		if (capacity < 0 || capacity > MAX_ENCODER_TABLE_SIZE) {
+			// Past 2^31 - 1 a setting reads negative.
+			capacity = MAX_ENCODER_TABLE_SIZE;
+		}
+		__encoder.setCapacity(capacity);
+		__writeReply(H2FrameType.SETTINGS, H2Flags.ACK, 0, Bytes.alloc(0));
 	}
 
 	private function __onPing(frame:H2Frame):Void {
@@ -657,7 +818,7 @@ class H2Connection {
 			return;
 		}
 		// §6.7: echo the payload exactly.
-		__writeFrame(H2FrameType.PING, H2Flags.ACK, 0, frame.payload);
+		__writeReply(H2FrameType.PING, H2Flags.ACK, 0, frame.payload);
 	}
 
 	private function __onGoAway(frame:H2Frame):Void {
@@ -741,7 +902,7 @@ class H2Connection {
 
 		var payload:Bytes = Bytes.alloc(4);
 		__writeUInt32(payload, 0, increment);
-		__writeFrame(H2FrameType.WINDOW_UPDATE, 0, target.id, payload);
+		__writeReply(H2FrameType.WINDOW_UPDATE, 0, target.id, payload);
 	}
 
 	private function __topUpConnectionWindow():Void {
@@ -755,7 +916,7 @@ class H2Connection {
 
 		var payload:Bytes = Bytes.alloc(4);
 		__writeUInt32(payload, 0, increment);
-		__writeFrame(H2FrameType.WINDOW_UPDATE, 0, 0, payload);
+		__writeReply(H2FrameType.WINDOW_UPDATE, 0, 0, payload);
 	}
 
 	// ---------------------------------------------------------------- write
@@ -795,7 +956,9 @@ class H2Connection {
 	 *
 	 * When a window closes, the only way it reopens is a WINDOW_UPDATE from
 	 * the peer, so this pumps to find one. That is also why a caller must not
-	 * hold a lock across a large body.
+	 * hold a lock across a large body. With `deferWrites`, the body waits the
+	 * same way while `MAX_QUEUED_DATA` of it waits to be written: the socket
+	 * is a window too, and a peer that stops reading keeps it shut.
 	 */
 	private function __writeData(target:H2Stream, body:Bytes):Void {
 		var offset:Int = 0;
@@ -804,7 +967,7 @@ class H2Connection {
 			// When this stall began. Frames that leave the window shut do not
 			// restart it; sending part of the body does.
 			var stalledSince:Float = -1;
-			while (target.sendWindow <= 0 || __connectionSendWindow <= 0) {
+			while (target.sendWindow <= 0 || __connectionSendWindow <= 0 || (deferWrites && __outboxBytes >= MAX_QUEUED_DATA)) {
 				if (stalledSince < 0) {
 					stalledSince = haxe.Timer.stamp();
 				}
@@ -856,7 +1019,9 @@ class H2Connection {
 			}
 
 			var last:Bool = (offset + chunk) >= body.length;
-			__writeFrame(H2FrameType.DATA, last ? H2Flags.END_STREAM : 0, target.id, body.sub(offset, chunk));
+			// Framed straight from the body: a sub() of it first was a second
+			// copy of every byte.
+			__write(H2Frame.encode(H2FrameType.DATA, last ? H2Flags.END_STREAM : 0, target.id, body, offset, chunk));
 
 			target.sendWindow -= chunk;
 			__connectionSendWindow -= chunk;
@@ -868,7 +1033,21 @@ class H2Connection {
 		__write(H2Frame.encode(type, flags, streamId, payload));
 	}
 
+	/** A frame the peer obliged, counted as such while it waits (`queuedReplyBytes`). */
+	private function __writeReply(type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {
+		var frame:Bytes = H2Frame.encode(type, flags, streamId, payload);
+		if (deferWrites) {
+			__outboxReplyBytes += frame.length;
+		}
+		__write(frame);
+	}
+
 	private function __write(bytes:Bytes):Void {
+		if (deferWrites) {
+			__outbox.push(bytes);
+			__outboxBytes += bytes.length;
+			return;
+		}
 		// Full, not writeBytes, which may write only part and says how much.
 		// Over TLS it takes at most one 16 KB record, and a DATA frame of the
 		// default largest size is 16 KB and nine: the frame's last nine bytes

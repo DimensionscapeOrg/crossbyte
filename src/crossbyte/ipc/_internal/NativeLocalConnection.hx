@@ -26,5 +26,23 @@ extern class NativeLocalConnection {
 	@:native('native_connect') private static function __connect(name:String):VoidPointer;
 	@:native('native_connectWithTimeout') private static function __connectWithTimeout(name:String, timeoutMs:Int):VoidPointer;
 	@:native('native_close') private static function __close(pipe:VoidPointer):Void;
+	/** Keeps a listener's lock file from looking unused: see NativeLocalConnection.cpp. **/
+	@:native('native_keepName') private static function __keepName(pipe:VoidPointer):Void;
+
+	/** The last listen or connect on this thread did not fail. **/
+	public static inline var ERROR_NONE:Int = 0;
+
+	/** The name is in use, nothing listens on it, or it cannot be used. **/
+	public static inline var ERROR_FAILED:Int = 1;
+
+	/** What is under the name is not this user's own. **/
+	public static inline var ERROR_NOT_OWNED:Int = 2;
+
+	/** Why the last `__createInboundPipe` or `__connectWithTimeout` on this thread failed: one of the `ERROR_` values. **/
+	@:native('native_localConnectionLastError') private static function __lastError():Int;
+
+	// Tests only: whether a listener's pipe admits anyone but this user and
+	// SYSTEM, or another owns it. Always false off Windows.
+	@:native('native_admitsOthersForTest') private static function __admitsOthersForTest(pipe:VoidPointer):Bool;
 }
 #end

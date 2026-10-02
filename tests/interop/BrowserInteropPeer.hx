@@ -514,9 +514,9 @@ class BrowserInteropPeer {
 	**/
 	static function pumpUntilDone():Void {
 		var runtime = CrossByte.current();
-		var deadline = Sys.time() + 30;
+		var deadline = haxe.Timer.stamp() + 30;
 
-		while (!finished && Sys.time() < deadline) {
+		while (!finished && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
 			crossbyte.sys.System.sleep(0.001);
 
@@ -526,9 +526,9 @@ class BrowserInteropPeer {
 				// fails for the wrong reason. Longer while the lossy channel is
 				// still waiting on the browser to move past what it lost, or on
 				// the browser's own messages after the one lost on the way here.
-				var settle = Sys.time() + 0.5;
+				var settle = haxe.Timer.stamp() + 0.5;
 
-				while (Sys.time() < settle || (lossy != null && Sys.time() < deadline && @:privateAccess connection.__transfer != null
+				while (haxe.Timer.stamp() < settle || (lossy != null && haxe.Timer.stamp() < deadline && @:privateAccess connection.__transfer != null
 					&& (@:privateAccess connection.__transfer.outstandingCount() > 0 || received.length < 5))) {
 					runtime.pump(1 / 60, 0);
 					crossbyte.sys.System.sleep(0.001);

@@ -219,6 +219,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __heldWatch:Bool = false;
 	@:noCompletion private var __heldMark:Float = 0;
 	@:noCompletion private var __heldDeadline:Float = 0;
+
+	// Set once requests pipelined behind the one being answered outgrew what
+	// the connection holds: they are dropped, and so is what arrives after,
+	// and it closes once the answer has gone. See __dropSurplus.
+	@:noCompletion private var __surplusDropped:Bool = false;
+
 	// The response said Connection: close and its bytes are still going:
 	// the connection closes once they have.
 	@:noCompletion private var __closeWhenSent:Bool = false;
@@ -416,9 +422,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 		try {
 			__origin.readBytes(__incomingBuffer, __incomingBuffer.length);
 
-			if (__closeWhenSent) {
+			if (__closeWhenSent || __surplusDropped) {
 				// The last response said Connection: close, and is still going
-				// out: what comes after it is not read.
+				// out, or the one being given will: what comes after it is not
+				// read.
 				__incomingBuffer.clear();
 				return;
 			}
@@ -429,17 +436,25 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// response into the body going out. They are picked up when the
 			// transfer finishes and the connection settles, through the same
 			// surplus path a pipelined request takes after a buffered
-			// response.
+			// response, up to what one request may be (__dropSurplus).
 			if (__streaming || __openStream != null) {
-				if (__incomingBuffer.length > __bufferLimit()) {
-					// No status can be sent to explain this: the status line
-					// left with the head and the body is mid-flight. Dropping
-					// the connection is the only honest end.
-					Logger.error("Request buffer exceeded " + __bufferLimit() + " bytes while a response was streaming; closing.");
-					__stopStream();
-					if (__origin.connected) {
-						__origin.close();
-					}
+				if (__incomingBuffer.length - __incomingBuffer.position > __bufferLimit()) {
+					__dropSurplus();
+				}
+
+				return;
+			}
+
+			// A request read whole and still being answered, an
+			// asynchronous middleware holds it: what arrives behind it is
+			// the next request, held for when the answer has gone, as above.
+			// Held to what one request may be, and counted alone: with the
+			// request being answered counted in, three pipelined 600 KB
+			// uploads under the 1 MB limit had the first answered 413, over
+			// its own answer, which was then lost.
+			if (__requestConsumed && !__responded && !__idle) {
+				if (__incomingBuffer.length - __incomingBuffer.position > __bufferLimit()) {
+					__dropSurplus();
 				}
 
 				return;
@@ -454,28 +469,36 @@ final class HTTPRequestHandler extends EventDispatcher {
 				__requestStartedAt = haxe.Timer.stamp();
 				__receiveDeadline = __config.requestTimeout > 0 ? haxe.Timer.stamp() + __config.requestTimeout : 0;
 				// This edge is a request-slot boundary just like a driver
-				// iteration, and must clear the previous slot's flag
-				// itself: a flood tripping the size check below never
-				// reaches __processBuffer, and a still-set __responded
-				// would swallow the 413, leaving the connection wedged
-				// with an over-limit buffer nothing will ever reclaim.
+				// iteration, and clears the previous slot's flag itself.
 				__responded = false;
-			}
-
-			if (__incomingBuffer.length > __bufferLimit()) {
-				__sendErrorResponse(413, "Payload Too Large");
-				return;
 			}
 
 			if (__awaitingBody) {
 				if (__readRequestBodyFromBuffer()) {
 					__finishRequestBody();
 				}
-
-				return;
+			} else {
+				__processBuffer();
 			}
 
-			__processBuffer();
+			// Parsed first, then held to what one request may be. What is
+			// left behind a request being answered, or a body going out, is
+			// the next request, given up past it (__dropSurplus); a request
+			// still arriving past it, a chunk-size or trailer line that
+			// never ends, say, is answered 413. The whole buffer was held
+			// to this before anything in it was parsed, so a read bringing
+			// the end of one request and the ones pipelined behind it, as
+			// Linux reads do, was answered 413 before the first was handed
+			// over.
+			if (!__surplusDropped && !__closeWhenSent && __origin.connected) {
+				if (__streaming || __openStream != null || (__requestConsumed && !__responded)) {
+					if (__incomingBuffer.length - __incomingBuffer.position > __bufferLimit()) {
+						__dropSurplus();
+					}
+				} else if (!__requestConsumed && __incomingBuffer.length > __bufferLimit()) {
+					__sendErrorResponse(413, "Payload Too Large");
+				}
+			}
 		} catch (error:Dynamic) {
 			Logger.error("Error reading data: " + error);
 			__sendErrorResponse(500, "Internal Server Error");
@@ -645,6 +668,26 @@ final class HTTPRequestHandler extends EventDispatcher {
 			body = 0;
 		}
 		return body > 0x7FFFFFFF - MAX_HEADER_BYTES ? 0x7FFFFFFF : body + MAX_HEADER_BYTES;
+	}
+
+	/**
+		Gives up the requests pipelined behind the one being answered, which
+		have outgrown what the connection holds (`__bufferLimit`): they are
+		dropped, with everything that arrives after them, and the connection
+		closes once the answer has gone, saying `Connection: close` if its
+		head has not gone yet. They go unanswered, which a client that
+		pipelines sends again on a new connection (RFC 9112 9.3.2); one that
+		did not answer would be held to a request it could not be told about.
+
+		The connection was answered `413` instead, on the request being
+		answered, whose own answer was then lost; and with a body streaming
+		out, the stream was cut off and the connection closed.
+	**/
+	@:noCompletion private function __dropSurplus():Void {
+		Logger.info('Requests pipelined behind ${__requestPath} outgrew ${__bufferLimit()} bytes; closing once it is answered.');
+		__surplusDropped = true;
+		__closeAfterResponse = true;
+		__incomingBuffer.clear();
 	}
 
 	@:noCompletion private function __parseRequest():Void {
@@ -2706,7 +2749,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// or a later request's, is not this response's client going away.
 		__unwatchClient();
 
-		if (!__responseKeepAlive && !__writer.ownsConnection) {
+		// Closed too once pipelined requests were given up (__dropSurplus): a
+		// streamed answer's head may already have said the connection stays.
+		if ((!__responseKeepAlive || __surplusDropped) && !__writer.ownsConnection) {
 			// Surplus pipelined bytes are discarded with the close,
 			// identical to the old clear-and-close, whose clients re-send
 			// on a fresh connection. close() dispatches Event.CLOSE even
