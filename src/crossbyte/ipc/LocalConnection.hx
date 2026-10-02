@@ -571,6 +571,10 @@ class LocalConnection implements INetConnection implements CloseObservable {
 				accepted = true;
 				busy = true;
 			}
+			if (__mode == SERVER) {
+				// The name's lock file kept from looking unused, hourly.
+				__keepName(__activePipe != null ? __activePipe : __listeningPipe);
+			}
 
 			// Polled and read under the lock too: both are immediate, and a
 			// handle closed and reused by the OS cannot be read as this one.
@@ -1250,6 +1254,15 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		return NativeLocalConnection.__createInboundPipe(name);
 		#else
 		return null;
+		#end
+	}
+
+	/** Keeps a listener's name from looking unused to a cleaner of old files; nothing for any other handle. **/
+	@:noCompletion private static function __keepName(pipe:LocalConnectionHandle):Void {
+		#if cpp
+		if (pipe != null) {
+			NativeLocalConnection.__keepName(pipe);
+		}
 		#end
 	}
 

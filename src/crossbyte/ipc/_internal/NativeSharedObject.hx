@@ -27,6 +27,12 @@ extern class NativeSharedObject {
 	/** The region could not be made, mapped, locked or read. */
 	public static inline var ERROR_FAILED:Int = 2;
 
+	/**
+		Linux and macOS: what is under the name, the region, or on macOS its
+		lock file, is not this user's own.
+	**/
+	public static inline var ERROR_NOT_OWNED:Int = 3;
+
 	@:native('native_sharedObjectOpen') private static function __open(name:String, maxSize:Int, lockTimeoutMs:Int):VoidPointer;
 	@:native('native_sharedObjectClose') private static function __close(handle:VoidPointer):Void;
 	/** The payload's length, and the payload copied into `buffer` when it fits; -1 when it cannot be read. **/

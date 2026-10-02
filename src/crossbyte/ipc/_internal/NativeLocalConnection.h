@@ -17,6 +17,7 @@ bool native_write(void* pipe, const unsigned char* buffer, int bufferSize);
 void* native_connect(const char* name);
 void* native_connectWithTimeout(const char* name, int timeoutMs);
 void native_close(void* pipe);
+void native_keepName(void* pipe);
 
 #ifdef __cplusplus
 }

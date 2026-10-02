@@ -16,6 +16,7 @@
 #include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <thread>
 #include <unistd.h>
 #endif
@@ -36,6 +37,12 @@ namespace
 	// again without blocking, pausing between asks: briefly at first, since
 	// a live holder keeps the lock for one copy, then up to this long.
 	constexpr long LOCK_POLL_MAX_US = 1000;
+
+	// How often, at most, a lock file in use has its times brought up to
+	// date: often enough that a cleaner of old files in /tmp, macOS's
+	// takes what nobody has touched for three days, systemd's for ten,
+	// never finds one in use old.
+	constexpr long LOCK_FILE_REFRESH_SECONDS = 3600;
 #endif
 
 #if !defined(_WIN32)
@@ -70,10 +77,15 @@ namespace
 #else
 		int fd;
 		// The descriptor the region's lock is taken on: `fd` itself, or on
-		// macOS the lock file's.
+		// macOS the lock file's, -1 when the file there could not be taken
+		// again; see lockFileOfState.
 		int lockFd;
 		void* view;
 		size_t viewSize;
+		// macOS: the lock file's path, and when its times were last brought
+		// up to date.
+		std::string lockPath;
+		std::chrono::steady_clock::time_point lockRefreshed;
 #endif
 		// What the mapping has room for after the header, measured here
 		// rather than taken from the header: the header is written by
@@ -320,12 +332,19 @@ namespace
 		}
 	}
 
+	int takeLockFile(const std::string& path, int timeoutMs);
+	bool lockFileOfState(SharedObjectState* state, int timeoutMs);
+
 	bool lockForHandle(SharedObjectState* state, int timeoutMs)
 	{
 		if (state == nullptr)
 		{
 			lastError = SHARED_OBJECT_ERROR_FAILED;
 			return false;
+		}
+		if (SHORT_NAME_AND_LOCK_FILE)
+		{
+			return lockFileOfState(state, timeoutMs);
 		}
 		return lockDescriptor(state->lockFd, timeoutMs);
 	}
@@ -349,6 +368,80 @@ namespace
 		close(fd);
 	}
 
+	// Whether `fd` is this user's, so another user cannot have put it
+	// under a shared name to be used in its place: owned by this user, and
+	// for a lock file a regular file. One readable or writable by others is
+	// made this user's alone: anyone who could open a lock file could hold
+	// its lock, and anyone who could read a region could read what it holds.
+	// (A region's mode on macOS carries no file type, so a region's is not
+	// asked for.)
+	bool isOwnFile(int fd, bool regular)
+	{
+		struct stat info;
+		if (fstat(fd, &info) != 0 || info.st_uid != geteuid() || (regular && !S_ISREG(info.st_mode)))
+		{
+			return false;
+		}
+		if ((info.st_mode & 077) != 0)
+		{
+			// As far as the system lets it: not every OS takes a mode for a
+			// shared memory object after it is made.
+			fchmod(fd, 0600);
+		}
+		return true;
+	}
+
+	// Whether what failed to open under a shared name failed because
+	// something not this user's is there: a link, a directory, another
+	// user's file.
+	bool isForeign(int error)
+	{
+		return error == ELOOP || error == EACCES || error == EPERM || error == EISDIR || error == ENXIO || error == EMLINK;
+	}
+
+	// Whether `fd` is the file at `path` now. Not following a link there: one
+	// would name something else.
+	bool isAtPath(int fd, const std::string& path)
+	{
+		struct stat held;
+		struct stat named;
+		return fstat(fd, &held) == 0 && lstat(path.c_str(), &named) == 0 && held.st_dev == named.st_dev && held.st_ino == named.st_ino;
+	}
+
+	// macOS: the lock file at `path`, opened, made, if there is none, and
+	// checked to be this user's own regular file.
+	//
+	// It is in /tmp, where any user can put something at a name first. It
+	// was opened following a link, so another user's link there made this
+	// process make or lock a file wherever it pointed; waiting on a FIFO,
+	// which held the open, and this process's collector with it, until
+	// someone wrote to it; and for anyone to read, which is all flock()
+	// needs, so any user could hold every participant's lock. Not a link,
+	// never waiting, and this user's alone, it is refused otherwise.
+	int openLockFile(const std::string& path)
+	{
+		int lockFd = open(path.c_str(), O_RDONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
+		if (lockFd < 0)
+		{
+			lastError = isForeign(errno) ? SHARED_OBJECT_ERROR_NOT_OWNED : SHARED_OBJECT_ERROR_FAILED;
+			return -1;
+		}
+		if (!isOwnFile(lockFd, true))
+		{
+			close(lockFd);
+			lastError = SHARED_OBJECT_ERROR_NOT_OWNED;
+			return -1;
+		}
+		return lockFd;
+	}
+
+	// Brings the lock file's times up to date: see LOCK_FILE_REFRESH_SECONDS.
+	// Its owner may, whatever its mode.
+	void refreshLockFile(int lockFd)
+	{
+		futimes(lockFd, nullptr);
+	}
+
 	// macOS: the lock file's descriptor with its lock held, checked once held
 	// to be the file at `path` still. native_sharedObjectRemove takes the
 	// region and its lock file away under that lock, so a file opened before
@@ -359,12 +452,9 @@ namespace
 	{
 		for (int attempt = 0; attempt < 8; attempt++)
 		{
-			// Opened for reading, which is all flock() needs, so a participant
-			// running as another user opens what the first one made.
-			int lockFd = open(path.c_str(), O_RDONLY | O_CREAT | O_CLOEXEC, 0666);
+			int lockFd = openLockFile(path);
 			if (lockFd < 0)
 			{
-				lastError = SHARED_OBJECT_ERROR_FAILED;
 				return -1;
 			}
 			if (!lockDescriptor(lockFd, timeoutMs))
@@ -372,11 +462,9 @@ namespace
 				close(lockFd);
 				return -1;
 			}
-
-			struct stat held;
-			struct stat named;
-			if (fstat(lockFd, &held) == 0 && stat(path.c_str(), &named) == 0 && held.st_dev == named.st_dev && held.st_ino == named.st_ino)
+			if (isAtPath(lockFd, path))
 			{
+				refreshLockFile(lockFd);
 				return lockFd;
 			}
 			flock(lockFd, LOCK_UN);
@@ -384,6 +472,52 @@ namespace
 		}
 		lastError = SHARED_OBJECT_ERROR_FAILED;
 		return -1;
+	}
+
+	// macOS: the region's lock, taken through the lock file at its path now.
+	//
+	// The file a handle opened was trusted for as long as the handle lived,
+	// and the file can go while it does: macOS's cleaner deletes what in
+	// /tmp nobody has touched for three days, and a lock taken does not
+	// touch it. The next participant to open the name then made a new file
+	// and locked that, while this one went on locking the old: two
+	// participants each holding the region's lock, both writing. So the file
+	// held is checked once locked to be the one at the path still, and if it
+	// is not, let go for the one there, made anew if need be, as the next
+	// participant to open would make it. The times of the file in use are
+	// brought up to date hourly, so the cleaner does not find it old to
+	// begin with.
+	bool lockFileOfState(SharedObjectState* state, int timeoutMs)
+	{
+		if (state->lockFd >= 0)
+		{
+			if (!lockDescriptor(state->lockFd, timeoutMs))
+			{
+				return false;
+			}
+			if (isAtPath(state->lockFd, state->lockPath))
+			{
+				auto now = std::chrono::steady_clock::now();
+				if (now - state->lockRefreshed >= std::chrono::seconds(LOCK_FILE_REFRESH_SECONDS))
+				{
+					refreshLockFile(state->lockFd);
+					state->lockRefreshed = now;
+				}
+				return true;
+			}
+			flock(state->lockFd, LOCK_UN);
+			close(state->lockFd);
+			state->lockFd = -1;
+		}
+
+		int lockFd = takeLockFile(state->lockPath, timeoutMs);
+		if (lockFd < 0)
+		{
+			return false;
+		}
+		state->lockFd = lockFd;
+		state->lockRefreshed = std::chrono::steady_clock::now();
+		return true;
 	}
 #endif
 }
@@ -488,18 +622,33 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize, int lock
 	// two and leave this participant a removed region's lock with a new
 	// region, or a new lock with the removed region.
 	int lockFd = -1;
+	std::string lockPath;
 	if (SHORT_NAME_AND_LOCK_FILE)
 	{
-		lockFd = takeLockFile(makeLockPath(name), lockTimeoutMs);
+		lockPath = makeLockPath(name);
+		lockFd = takeLockFile(lockPath, lockTimeoutMs);
 		if (lockFd < 0)
 		{
 			return nullptr;
 		}
 	}
 
-	int fd = shm_open(sharedName.c_str(), O_RDWR | O_CREAT, 0666);
+	// This user's alone, and one another user made under the name refused.
+	// It was made for anyone to read, 0666 less the umask, so 0644 as a
+	// rule, so every local user could read what every SharedObject held,
+	// and hold its lock on Linux; and one another user had made first, for
+	// anyone to write, was used as if it were this one's.
+	int fd = shm_open(sharedName.c_str(), O_RDWR | O_CREAT, 0600);
+	int openError = errno;
+	if (fd >= 0 && !isOwnFile(fd, false))
+	{
+		close(fd);
+		fd = -1;
+		openError = EPERM;
+	}
 	if (fd < 0)
 	{
+		lastError = isForeign(openError) ? SHARED_OBJECT_ERROR_NOT_OWNED : SHARED_OBJECT_ERROR_FAILED;
 		if (lockFd >= 0)
 		{
 			flock(lockFd, LOCK_UN);
@@ -553,6 +702,8 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize, int lock
 	state->view = viewHandle;
 	state->viewSize = mappedSize;
 	state->payloadRoom = mappedSize - sizeof(SharedObjectHeader);
+	state->lockPath = lockPath;
+	state->lockRefreshed = std::chrono::steady_clock::now();
 
 	auto* header = headerFromHandle(viewHandle);
 	if (!isValidHeader(header) || header->capacity == 0)

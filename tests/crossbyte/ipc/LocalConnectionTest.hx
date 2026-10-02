@@ -902,6 +902,86 @@ class LocalConnectionTest extends utest.Test {
 		#end
 	}
 
+	#if (cpp && (linux || mac || macos))
+	/**
+		A link put where a listener's lock file goes is not followed, and the
+		name is not listened on. On Linux and macOS a listener holds its name
+		by a lock on a file in /tmp, where any user can put something first,
+		and it was opened following a link: another user's link there made
+		this process make, or lock, a file wherever it pointed.
+	**/
+	public function testALinkWhereTheListenersLockFileGoesIsNotFollowed():Void {
+		var name = uniqueName("lnk");
+		var lockPath = '/tmp/crossbyte_local_connection_$name.lock';
+		var target = lockPath + ".target";
+		Assert.equals(0, Sys.command("ln", ["-s", target, lockPath]), "could not make the link");
+		var server = new LocalConnection();
+		var refused = throws(() -> server.listen(name));
+		closeQuietly(server);
+		var followed = sys.FileSystem.exists(target);
+		removeQuietly(lockPath);
+		removeQuietly(target);
+
+		Assert.isFalse(followed, "the link was followed: " + target + " was made");
+		Assert.isTrue(refused, "a name whose lock file is a link was listened on");
+	}
+
+	/**
+		Nor a FIFO, nor anything else that is not a regular file of this
+		user's: a FIFO opened for reading and writing does not wait, and was
+		locked and taken for the name's lock file.
+	**/
+	public function testAFifoWhereTheListenersLockFileGoesIsRefused():Void {
+		var name = uniqueName("fifo");
+		var lockPath = '/tmp/crossbyte_local_connection_$name.lock';
+		Assert.equals(0, Sys.command("mkfifo", [lockPath]), "could not make the FIFO");
+		var server = new LocalConnection();
+		var refused = throws(() -> server.listen(name));
+		closeQuietly(server);
+		removeQuietly(lockPath);
+
+		Assert.isTrue(refused, "a name whose lock file is a FIFO was listened on");
+	}
+
+	/**
+		Listening brings the lock file's times up to date, as each hour of
+		listening does, so a cleaner of old files in /tmp, macOS's takes
+		what nobody has touched for three days, systemd's for ten, does not
+		find a listener's old and delete it, which let a second listener
+		take the name from the first.
+	**/
+	public function testListeningBringsTheLockFilesTimesUpToDate():Void {
+		var name = uniqueName("fresh");
+		var lockPath = '/tmp/crossbyte_local_connection_$name.lock';
+		// Left by an earlier listener of this user's, four days ago.
+		sys.io.File.saveContent(lockPath, "");
+		Sys.command("chmod", ["600", lockPath]);
+		var fourDaysAgo = Date.fromTime(Date.now().getTime() - 4 * 24 * 3600 * 1000.0);
+		Assert.equals(0, Sys.command("touch", ["-t", DateTools.format(fourDaysAgo, "%Y%m%d%H%M"), lockPath]), "could not age the file");
+		var aged:Float = sys.FileSystem.stat(lockPath).mtime.getTime();
+
+		var server = new LocalConnection();
+		var refreshed:Float = 0;
+		try {
+			server.listen(name);
+			refreshed = sys.FileSystem.stat(lockPath).mtime.getTime();
+		} catch (e:Dynamic) {
+			Assert.fail("listen() threw " + e);
+		}
+		closeQuietly(server);
+		removeQuietly(lockPath);
+
+		Assert.isTrue(Date.now().getTime() - aged > 3 * 24 * 3600 * 1000.0, "the file was not aged");
+		Assert.isTrue(Date.now().getTime() - refreshed < 3600 * 1000.0, "the lock file still looks old");
+	}
+
+	private static function removeQuietly(path:String):Void {
+		try {
+			sys.FileSystem.deleteFile(path);
+		} catch (_:Dynamic) {}
+	}
+	#end
+
 	public function testNetConnectionRoundTripKeepsLocalTransport():Void {
 		var local = new LocalConnection();
 		var wrapped:NetConnection = local;
