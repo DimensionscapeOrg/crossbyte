@@ -2388,10 +2388,10 @@ entry below says how:
   body has at most 256 KB queued, so a server that reads nothing holds no
   more of the client than that; and a closed connection whose last write
   does not go is ended a second after it closed. Each case now ends at its
-  timeout, and the connection's threads with it. Natively on Windows a TLS
-  write the server is not taking still holds the writer thread until the
-  server reads or goes, as a TLS read there already does; the requests do
-  not wait with it. Sequential small requests over loopback cost about the
+  timeout, and the connection's threads with it. Natively, and on neko and
+  HashLink, on Windows a TLS write the server is not taking still holds the
+  writer thread until the server reads or goes, as a TLS read there already
+  does; the requests do not wait with it. Sequential small requests over loopback cost about the
   same (106.6 to 109.1 microseconds, medians of nine native runs);
   downloads and uploads are as fast or faster, a DATA frame no longer being
   copied twice.
