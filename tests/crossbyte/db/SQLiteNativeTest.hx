@@ -1235,6 +1235,93 @@ class SQLiteNativeTest extends utest.Test {
 		__pumpUntil(() -> closed);
 	}
 
+	public function testACancelLandingAsARequestStartsOnAnotherThreadStillStopsIt():Void {
+		// On a synchronous connection a statement runs on the thread that asks
+		// for it, and another thread's cancel() interrupts it. SQLite clears
+		// an interrupt that lands as a statement starts, while no other is
+		// running, so a cancel() landing while the request was being prepared
+		// -- up to about 12 microseconds after request() was called, here --
+		// was lost: an aggregate ran its hours, and a SELECT read row by row
+		// gave every row. Each is swept across the start.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		connection.open(null, SQLiteMode.CREATE, false, 4096);
+		connection.request("CREATE TABLE t AS WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200000) SELECT i FROM n");
+		var hours:String = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100000000000) SELECT COUNT(*) AS c FROM n";
+
+		// Stopped within a thousand steps, by the progress handler.
+		var lost:Array<String> = __sweepCancels(connection, function() {
+			connection.request(hours);
+		});
+		Assert.same([], lost.slice(0, 3), '${lost.length} cancels of an aggregate were lost: ' + lost.join(" | "));
+
+		// Its first step over before that: it fails at its next.
+		lost = __sweepCancels(connection, function() {
+			var rows:sys.db.ResultSet = connection.request("SELECT i FROM t");
+
+			while (rows.hasNext()) {
+				rows.next();
+			}
+		});
+		Assert.same([], lost.slice(0, 3), '${lost.length} cancels of a SELECT read row by row were lost: ' + lost.join(" | "));
+
+		Assert.equals(1, __count(connection, "(SELECT 1)"));
+		connection.close();
+	}
+
+	/**
+		Runs `ask` on another thread 150 times, cancelling `connection` a
+		little later each time, from as it asks to about ten microseconds on,
+		and answers the rounds in which it was not interrupted -- the first
+		three.
+	**/
+	private static function __sweepCancels(connection:SQLiteConnection, ask:Void->Void):Array<String> {
+		var lost:Array<String> = [];
+
+		for (round in 0...150) {
+			var asking:sys.thread.Lock = new sys.thread.Lock();
+			var done:sys.thread.Lock = new sys.thread.Lock();
+			var failure:String = null;
+
+			sys.thread.Thread.create(function() {
+				asking.release();
+
+				try {
+					ask();
+				} catch (e:Dynamic) {
+					failure = Std.string(e);
+				}
+
+				done.release();
+			});
+
+			asking.wait();
+			// A few nanoseconds each.
+			var delay:Int = (round % 50) * 100;
+
+			for (i in 0...delay) {
+				cpp.vm.Gc.safePoint();
+			}
+
+			connection.cancel();
+
+			if (!done.wait(5.0)) {
+				// Running now, so this one lands.
+				connection.cancel();
+				done.wait(10.0);
+				lost.push('round $round ran on');
+			} else if (failure == null || failure.indexOf("interrupt") < 0) {
+				lost.push('round $round ended with $failure');
+			}
+
+			if (lost.length >= 3) {
+				// Enough to say so; each costs seconds.
+				break;
+			}
+		}
+
+		return lost;
+	}
+
 	public function testCancellingAStatementRunningOnAnotherThreadInterruptsIt():Void {
 		// On a synchronous connection a statement runs on the thread that
 		// executes it, so another thread is what cancels it.

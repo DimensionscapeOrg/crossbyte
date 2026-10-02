@@ -28,9 +28,10 @@ import sys.db.ResultSet;
  * there when no other statement is running -- and a `cancel()` can land
  * just then, as the worker takes the work up. The interrupt is still made:
  * it stops a single step that runs long, such as counting a whole table,
- * inside which SQLite calls no handler. A synchronous connection has no
- * handler: what cancels its statements is another thread, with
- * `interrupt()`.
+ * inside which SQLite calls no handler. A synchronous connection has the
+ * handler too, over a record of its own: each request is its run, from
+ * before it is prepared until its first step returns, and `interrupt()`,
+ * called from another thread, stops the one starting as well.
  */
 @:noCompletion
 @:buildXml('<include name="${HXCPP}/src/hx/libs/sqlite/Build.xml"/>')
@@ -77,18 +78,22 @@ static void crossbyte_sqlite_interrupt(void *db) {
 }
 
 // What a cancel() and the work it would stop decide between them, one per
-// asynchronous connection, made and freed by the connection on the thread
-// that runs it. runner is the run the worker has under way, 0 for none;
-// stopFor, the run a cancel() has asked the progress handler to stop;
-// stopping, how many cancel()s are between reading the run under way and
-// having interrupted it, while the worker starts no run. Padded onto cache
-// lines of their own: the worker writes runner twice for each piece of
-// work, and nothing else touches them but a cancel().
+// connection: for an asynchronous connection made and freed by the
+// connection on the thread that runs it, for a synchronous one by its
+// native connection. runner is the run under way -- the work of the worker,
+// or a synchronous request -- 0 for none; stopFor, the run a cancel() has
+// asked the progress handler to stop; stopping, how many cancel()s are
+// between reading the run under way and having interrupted it, while the
+// worker starts no run; cancels, on a synchronous connection, how many
+// interrupt()s there have been. Padded onto cache lines of their own: the
+// runner writes runner twice for each piece of work, and nothing else
+// touches them but a cancel().
 struct crossbyte_sqlite_runs {
 	char before[64];
 	std::atomic<int> runner;
 	std::atomic<int> stopFor;
 	std::atomic<int> stopping;
+	std::atomic<int> cancels;
 	char after[64];
 };
 
@@ -97,6 +102,7 @@ static void *crossbyte_sqlite_runs_new() {
 	runs->runner.store(0);
 	runs->stopFor.store(0);
 	runs->stopping.store(0);
+	runs->cancels.store(0);
 	return runs;
 }
 
@@ -192,6 +198,51 @@ static bool crossbyte_sqlite_stopping(void *p) {
 static void crossbyte_sqlite_stop(void *p, int run) {
 	((crossbyte_sqlite_runs *)p)->stopFor.store(run, std::memory_order_seq_cst);
 }
+
+// A synchronous connection runs a request on the thread that asks for it,
+// and a cancel() comes from another: the same record, with the request as
+// the run. The count of interrupt()s, read as the request is asked for.
+static int crossbyte_sqlite_sync_cancels(void *p) {
+	return ((crossbyte_sqlite_runs *)p)->cancels.load(std::memory_order_seq_cst);
+}
+
+// As the request starts, before it is prepared: published, after clearing a
+// stop asked for a run that has ended, and then the count of interrupt()s
+// read again -- in that order, as an interrupt() counts itself and then
+// reads the run under way, so that one of the two always sees the other.
+// True when one has come since `since` was read: the request is not run.
+static bool crossbyte_sqlite_sync_begin(void *p, int run, int since) {
+	crossbyte_sqlite_runs *runs = (crossbyte_sqlite_runs *)p;
+
+	if (runs->stopFor.load(std::memory_order_relaxed) != 0) {
+		runs->stopFor.store(0, std::memory_order_relaxed);
+	}
+
+	runs->runner.store(run, std::memory_order_seq_cst);
+	return runs->cancels.load(std::memory_order_seq_cst) != since;
+}
+
+// Once its first step has returned: no longer starting, and whether an
+// interrupt() asked to stop it meanwhile -- one that read it as under way
+// and asks only after this interrupts it as well, which by then lands.
+static bool crossbyte_sqlite_sync_end(void *p, int run) {
+	crossbyte_sqlite_runs *runs = (crossbyte_sqlite_runs *)p;
+	runs->runner.store(0, std::memory_order_seq_cst);
+	return runs->stopFor.load(std::memory_order_seq_cst) == run;
+}
+
+// An interrupt() of a synchronous connection, before the one of SQLite:
+// counts itself, then has the progress handler stop the request starting
+// now, if one is.
+static void crossbyte_sqlite_sync_stop(void *p) {
+	crossbyte_sqlite_runs *runs = (crossbyte_sqlite_runs *)p;
+	runs->cancels.fetch_add(1, std::memory_order_seq_cst);
+	int now = runs->runner.load(std::memory_order_seq_cst);
+
+	if (now != 0) {
+		runs->stopFor.store(now, std::memory_order_seq_cst);
+	}
+}
 ')
 class NativeSQLiteConnection implements Connection {
 	@:noCompletion private var __handle:Dynamic;
@@ -201,15 +252,23 @@ class NativeSQLiteConnection implements Connection {
 	// connection close() has freed.
 	@:noCompletion private var __db:cpp.Pointer<cpp.Void>;
 	@:noCompletion private var __dbLock:sys.thread.Mutex;
-	// Whether the progress handler is registered: on an asynchronous
-	// connection, from open() to close().
+	// Whether the progress handler is registered: from open() to close().
 	@:noCompletion private var __watched:Bool = false;
+	// A synchronous connection's record of its requests, its own: each
+	// request is published there as it starts, and an interrupt() asks the
+	// progress handler to stop the one starting. Null on an asynchronous
+	// connection, whose worker publishes its runs in the record it was
+	// opened with. Freed by close(), under __dbLock, as interrupt() reads it.
+	@:noCompletion private var __syncRuns:cpp.Pointer<cpp.Void> = null;
+	// Numbers the requests published there; 0 is none.
+	@:noCompletion private var __syncRun:Int = 0;
 
 	/**
 		Opens `path`. `runs`, from `newRuns()`, is an asynchronous
 		connection's: its progress handler reads it, and stops the run a
-		`cancel()` asks to stop there. Null for a synchronous connection, which
-		gets no handler.
+		`cancel()` asks to stop there. Null for a synchronous connection,
+		which makes a record of its own: its requests are its runs, and an
+		`interrupt()` from another thread stops the one starting as well.
 	**/
 	public static function open(path:String, runs:cpp.Pointer<cpp.Void>):NativeSQLiteConnection {
 		__watchOpens();
@@ -218,7 +277,12 @@ class NativeSQLiteConnection implements Connection {
 		var connection:NativeSQLiteConnection = new NativeSQLiteConnection(__connect(path));
 		connection.__db = __takeOpened();
 
-		if (runs != null && connection.__db != null) {
+		if (connection.__db != null) {
+			if (runs == null) {
+				runs = __runsNew();
+				connection.__syncRuns = runs;
+			}
+
 			__watch(connection.__db, runs);
 			connection.__watched = true;
 		}
@@ -295,15 +359,36 @@ class NativeSQLiteConnection implements Connection {
 		it fails with "interrupted" -- from any thread. Does nothing when none
 		is running, or once closed. A write interrupted inside a transaction
 		takes the whole transaction back with it, as SQLite has it.
+
+		On a synchronous connection a request that is only starting is
+		stopped too (see `requestSince`): SQLite clears an interrupt that
+		lands while a statement is prepared.
 	**/
 	public function interrupt():Void {
 		__dbLock.acquire();
 
 		if (__db != null) {
+			var runs:cpp.Pointer<cpp.Void> = __syncRuns;
+
+			if (runs != null) {
+				__syncStop(runs);
+			}
+
 			__interruptDb(__db);
 		}
 
 		__dbLock.release();
+	}
+
+	/**
+		On a synchronous connection, how many `interrupt()`s there have been:
+		read as work is asked for, before anything else, and handed to
+		`requestSince`. 0 on an asynchronous connection, whose worker keeps
+		its own count.
+	**/
+	public function cancels():Int {
+		var runs:cpp.Pointer<cpp.Void> = __syncRuns;
+		return runs != null ? __syncCancels(runs) : 0;
 	}
 
 	/**
@@ -335,8 +420,62 @@ class NativeSQLiteConnection implements Connection {
 		as asked; only a result interleaved that way pays for it.
 	**/
 	public function request(s:String):ResultSet {
+		return requestSince(s, cancels());
+	}
+
+	/**
+		`request(s)`, asked for when `cancels()` read `since`.
+
+		On a synchronous connection an `interrupt()` made since then stops it,
+		however far it has got. One made before it is published here fails it
+		with "interrupted" before it is prepared. From then until its first
+		step returns it is the run under way, which the progress handler stops
+		within a thousand steps -- and one whose first step returned sooner is
+		interrupted again, so its next step fails. SQLite clears an interrupt
+		that lands while a statement is prepared, and on its own such a
+		request ran on, for as long as it took: an aggregate for its hours,
+		a SELECT through every row.
+	**/
+	public function requestSince(s:String, since:Int):ResultSet {
 		settle();
-		var result:NativeSQLiteResultSet = new NativeSQLiteResultSet(__request(__handle, s));
+		var runs:cpp.Pointer<cpp.Void> = __syncRuns;
+		var result:NativeSQLiteResultSet;
+
+		if (runs == null) {
+			result = new NativeSQLiteResultSet(__request(__handle, s));
+		} else {
+			var run:Int = ++__syncRun;
+
+			if (run == 0) {
+				run = __syncRun = 1;
+			}
+
+			if (__syncBegin(runs, run, since)) {
+				__syncEnd(runs, run);
+				// As the glue reports one SQLite stopped.
+				throw "Sqlite error : interrupted";
+			}
+
+			try {
+				result = new NativeSQLiteResultSet(__request(__handle, s));
+			} catch (e:Dynamic) {
+				__syncEnd(runs, run);
+				throw e;
+			}
+
+			if (__syncEnd(runs, run) && !result.__exhausted) {
+				// Asked to stop as it started, and its first step was over
+				// before the handler was called: interrupted now, while it is
+				// running, its next step fails.
+				__dbLock.acquire();
+
+				if (__db != null) {
+					__interruptDb(__db);
+				}
+
+				__dbLock.release();
+			}
+		}
 
 		if (!result.__exhausted) {
 			__live = result;
@@ -390,6 +529,15 @@ class NativeSQLiteConnection implements Connection {
 		if (__watched && db != null) {
 			__watched = false;
 			__unwatch(db);
+		}
+
+		// Read by the handler, gone above, and by an interrupt() under the
+		// lock, which finds no connection now.
+		var runs:cpp.Pointer<cpp.Void> = __syncRuns;
+
+		if (runs != null) {
+			__syncRuns = null;
+			__runsFree(runs);
 		}
 
 		__live = null;
@@ -503,6 +651,18 @@ class NativeSQLiteConnection implements Connection {
 
 	@:native("crossbyte_sqlite_stop")
 	extern private static function __stop(runs:cpp.Pointer<cpp.Void>, run:Int):Void;
+
+	@:native("crossbyte_sqlite_sync_cancels")
+	extern private static function __syncCancels(runs:cpp.Pointer<cpp.Void>):Int;
+
+	@:native("crossbyte_sqlite_sync_begin")
+	extern private static function __syncBegin(runs:cpp.Pointer<cpp.Void>, run:Int, since:Int):Bool;
+
+	@:native("crossbyte_sqlite_sync_end")
+	extern private static function __syncEnd(runs:cpp.Pointer<cpp.Void>, run:Int):Bool;
+
+	@:native("crossbyte_sqlite_sync_stop")
+	extern private static function __syncStop(runs:cpp.Pointer<cpp.Void>):Void;
 }
 
 @:noCompletion

@@ -277,7 +277,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	// openAsync() and freed once the connection has closed, both on the
 	// runtime's thread, which is where cancel() is called, so a cancel()
 	// never reaches one freed. Null on a synchronous connection, which runs
-	// its work on the thread that asks for it and has no handler.
+	// its work on the thread that asks for it: its native connection keeps
+	// a record of its own, with each request as a run.
 	@:noCompletion private var __sqlRuns:cpp.Pointer<cpp.Void> = null;
 	#end
 	// On the worker: the statement whose result was left with rows unread
@@ -862,10 +863,15 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		not dropped.
 
 		On a synchronous connection nothing is queued: a statement running on
-		another thread is interrupted at its next step, and `CANCEL` is
-		dispatched at once. SQLite clears an interrupt that lands as a
-		statement starts, while no other is running, so a statement that is
-		only starting as the call is made runs on.
+		another thread -- a `request()`, or a statement's `execute()` or
+		`next()` -- is interrupted at its next step, and `CANCEL` is
+		dispatched at once. One asked for before the call that has not yet
+		reached SQLite fails as interrupted without running, and one SQLite
+		is still preparing is stopped within a thousand steps of its virtual
+		machine, or at its next step when its first one ends sooner: SQLite
+		clears an interrupt that lands as a statement starts, and such a
+		statement ran on, for as long as it took. What is asked for after the
+		call runs as usual.
 
 		SQLite takes a whole transaction back when a write inside it is
 		interrupted, and leaves one open otherwise: `inTransaction` says which.
@@ -1031,7 +1037,47 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		crashed the process.
 	**/
 	public function request(sql:String):ResultSet {
+		if (!__async) {
+			// Read first, before anything is made: a cancel() from another
+			// thread from now on stops this request, however far it has got.
+			var since:Int = __cancelsNow();
+			return __now("request", () -> __requestSince(sql, since));
+		}
+
 		return __now("request", () -> __rows(__connection.request(sql)));
+	}
+
+	/**
+		On a synchronous connection, the count of `cancel()`s so far, read as
+		work is asked for: a `cancel()` made after it stops that work,
+		however far it has got (see `__requestSince`). 0 off cpp, where
+		nothing is stopped.
+	**/
+	@:noCompletion private inline function __cancelsNow():Int {
+		#if cpp
+		var native:NativeSQLiteConnection = __native;
+		return native != null ? native.cancels() : 0;
+		#else
+		return 0;
+		#end
+	}
+
+	/**
+		On a synchronous connection, `sql` run now, asked for when
+		`__cancelsNow()` read `since`: a `cancel()` made since stops it --
+		before it starts, as it is prepared, or at its next step -- where one
+		landing as SQLite prepared it was lost, and the statement ran on.
+	**/
+	@:noCompletion private function __requestSince(sql:String, since:Int):ResultSet {
+		#if cpp
+		var native:NativeSQLiteConnection = __native;
+
+		if (native != null) {
+			return native.requestSince(sql, since);
+		}
+		#end
+
+		return __live().request(sql);
 	}
 
 	/** `value` with each quote doubled, for inside an SQL string literal. Needs no SQLite. **/
@@ -1889,8 +1935,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	private function __createConnection(path:String):Void {
 		try {
 			#if cpp
-			// An asynchronous connection's has the progress handler, which
-			// its cancel()s stop work with; a synchronous one's has none.
+			// The progress handler its cancel()s stop work with reads the
+			// asynchronous connection's record of its runs, and a
+			// synchronous one's own record of its requests.
 			__native = NativeSQLiteConnection.open(path, __async ? __sqlRuns : null);
 			__connection = __native;
 			#else

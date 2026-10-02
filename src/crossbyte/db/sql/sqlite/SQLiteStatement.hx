@@ -97,10 +97,12 @@ class SQLiteStatement extends EventDispatcher {
 		rows left unread. Called from another thread while the statement
 		runs, it interrupts it at its next step, and its `execute()` or
 		`next()` fails there with "interrupted" -- dispatching its
-		`SQLErrorEvent` and throwing the `SQLError`, as any failure does --
-		but SQLite clears an interrupt that lands as a statement starts, and
-		one only starting then runs on. On targets other than cpp work
-		already running is not interrupted, and finishes first.
+		`SQLErrorEvent` and throwing the `SQLError`, as any failure does. One
+		still being prepared is stopped within a thousand steps of SQLite's
+		virtual machine, or at its next step when its first ends sooner:
+		SQLite clears an interrupt that lands as a statement starts, and it
+		ran on. On targets other than cpp work already running is not
+		interrupted, and finishes first.
 
 		It reset only the statement's own fields: the work queued for it
 		still ran -- an INSERT cancelled before its turn inserted -- a
@@ -196,10 +198,13 @@ class SQLiteStatement extends EventDispatcher {
 		// marked running: an interrupt from its cancel() cannot cut those
 		// rows short.
 		connection.__settle();
+		// Before it is marked running: a cancel() that finds it running
+		// stops it, even as SQLite is only preparing it.
+		var since:Int = connection.__cancelsNow();
 		__running = true;
 
 		try {
-			__resultSet = connection.__connection.request(sql);
+			__resultSet = connection.__requestSince(sql, since);
 			__affected = __affectedOf(__resultSet);
 			var rows:Array<Dynamic> = __readRows(__resultSet, prefetch);
 
