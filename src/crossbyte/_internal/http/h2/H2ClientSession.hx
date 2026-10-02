@@ -112,6 +112,9 @@ class H2ClientSession {
 	// Taken out of service by the pool as idle. Refuses new streams from then
 	// on, which is what lets the pool close it without racing a request.
 	private var __retired:Bool = false;
+	// Set by retire() while streams are still in flight: the last of them to
+	// end closes the session.
+	private var __closeWhenIdle:Bool = false;
 	private var __failure:String = null;
 
 	// The reader and the writer each own one direction of the socket. The
@@ -233,12 +236,49 @@ class H2ClientSession {
 	 * caller is better served by waiting or by a second connection.
 	 */
 	public function hasCapacity():Bool {
-		if (dead || __stopped || __retired) {
+		if (dead || __stopped || __retired || goingAway) {
 			return false;
 		}
 
 		var limit:Int = connection.remoteSettings.maxConcurrentStreams;
 		return limit < 0 || __activeStreams < limit;
+	}
+
+	/**
+		Whether the peer has sent GOAWAY: it takes no new stream here, and
+		answers the ones it has (RFC 9113 6.8). The pool takes such a session
+		out of service with `retire`, so a new request goes to another
+		connection rather than being refused by this one.
+	**/
+	public var goingAway(get, never):Bool;
+
+	private inline function get_goingAway():Bool {
+		return connection.goAwayCode != null;
+	}
+
+	/**
+		Takes this session out of service without cutting short what it
+		carries: it refuses new streams from now on, and closes once the last
+		stream in flight has ended -- at once if none is, or if it is dead.
+
+		What a session the peer has sent GOAWAY needs. Closed as soon as a new
+		request was refused on it, it took every request still in flight on it
+		down too, each failing as "connection closed before the response
+		headers arrived" though the peer was answering it: 42 of 12,001 from
+		eight concurrent clients when CrossByte's own server ended a
+		connection after every thousandth request.
+	**/
+	public function retire():Void {
+		__lock.acquire();
+		__retired = true;
+		var now:Bool = dead || __stopped || __activeStreams <= 0;
+		if (!now) {
+			__closeWhenIdle = true;
+		}
+		__lock.release();
+		if (now) {
+			close();
+		}
 	}
 
 	/**
@@ -1132,13 +1172,20 @@ class H2ClientSession {
 		if (__waiters.remove(streamId)) {
 			__activeStreams--;
 		}
+		var closeNow:Bool = false;
 		if (__activeStreams <= 0) {
 			// Stamped as the last stream leaves, so the idle clock measures
 			// time with nothing in flight rather than time since the
 			// connection opened.
 			__idleSince = haxe.Timer.stamp();
+			// Retired with streams in flight (retire): this was the last.
+			closeNow = __closeWhenIdle;
+			__closeWhenIdle = false;
 		}
 		__lock.release();
+		if (closeNow) {
+			close();
+		}
 	}
 }
 
