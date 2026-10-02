@@ -587,34 +587,38 @@ class H2ClientSession {
 		-- the JDK signals the writing thread only on POSIX, and eval shuts
 		only a socket's writing side there -- and closing under a call is
 		safe on both: the call fails, and nothing native is freed under it,
-		as closing a TLS socket natively would be. Only then: a reader is
-		left its read, as everywhere.
+		as closing a TLS socket natively would be. On neko and HashLink a
+		plain socket is closed so too, as `Http.__interrupt` closes one
+		natively on Windows. Only then: a reader is left its read, as
+		everywhere.
 
-		Natively on Windows a TLS write the peer is not taking is not ended
-		by a shutdown, as a read is not: the thread waits until the peer
-		reads or goes. The requests on the connection do not wait with it.
+		Natively, and on neko and HashLink, on Windows a TLS write the peer
+		is not taking is not ended by a shutdown, as a read is not: the
+		thread waits until the peer reads or goes. The requests on the
+		connection do not wait with it.
 	**/
 	private function __interrupt(endWrite:Bool):Void {
 		__lock.acquire();
 		var shut:Bool = !__interrupted && !__socketClosed;
 		__interrupted = true;
+		var close:Bool = false;
 		#if (java || jvm || eval)
-		var close:Bool = endWrite && __writing && !__socketClosed;
+		close = endWrite && __writing && !__socketClosed;
+		#elseif (neko || hl)
+		close = endWrite && __writing && !__socketClosed && !__socket.isSecure;
+		#end
 		if (close) {
 			__socketClosed = true;
 		}
-		#end
 		__lock.release();
 		if (shut) {
 			Http.__interrupt(__socket);
 		}
-		#if (java || jvm || eval)
 		if (close) {
 			try {
 				__socket.close();
 			} catch (_:Dynamic) {}
 		}
-		#end
 	}
 
 	/** Called by the reader and the writer as each leaves; the last closes the socket. */
