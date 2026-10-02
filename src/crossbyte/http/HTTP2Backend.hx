@@ -72,18 +72,18 @@ import haxe.io.Bytes;
  */
 class HTTP2Backend implements HTTPBackend {
 	/**
-	 * Whether this target can carry an HTTP/2 request at all.
+	 * Whether this target can carry an HTTP/2 request at all: true on every
+	 * target this class is built for, which is every one but JavaScript.
 	 *
-	 * False on eval, and not for want of an implementation: that target raises
-	 * socket errors as native exceptions no Haxe `catch` can see, so a peer
-	 * reset kills the reader thread a pooled connection parks on -- or, on a
-	 * send, the process. Everything would appear to work until the first
-	 * reset, which is the worst way for it not to work.
+	 * eval included, since its socket errors can be caught: they were raised
+	 * as native exceptions no Haxe `catch` could see, so a peer reset killed
+	 * the reader thread a pooled connection parks on, or on a send the
+	 * process, and this was false there.
 	 *
-	 * The framing and HPACK layers are unaffected and run everywhere,
-	 * including the browser. This is about driving a socket with them.
+	 * The framing and HPACK layers run everywhere, the browser included.
+	 * This is about driving a socket with them.
 	 */
-	public static var isSupported(default, null):Bool = #if eval false #else true #end;
+	public static var isSupported(default, null):Bool = true;
 
 	/**
 		Our SETTINGS, sent at the head of every connection. Push is refused
@@ -102,14 +102,6 @@ class HTTP2Backend implements HTTPBackend {
 	}
 
 	public function load(context:HTTPRequestContext):Void {
-		if (!isSupported) {
-			// Refused at the door rather than part way through a request that
-			// would have looked fine until something reset it.
-			context.onError("HTTP/2 is not supported on this target: socket errors cannot be caught here, "
-				+ "so a connection reset would take down the reader thread or the process. Use HTTP/1.1.");
-			return;
-		}
-
 		// What a redirect may change about the request, hop to hop.
 		var url:URL = new URL(context.url);
 		var method:String = context.method;
