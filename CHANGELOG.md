@@ -1344,6 +1344,17 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- CrossByte's native code that calls mbedTLS, RSA and ECDSA signatures,
+  DTLS certificates and sessions, ALPN, a TLS peer's certificate, builds
+  against mbedTLS 3.x as well as 2.28, so it works with the hxcpp fork
+  whichever it bundles, and compiles against the include path and
+  configuration hxcpp builds the library with (its `mbedtls-flags.xml`)
+  instead of a partial copy of that configuration. Against 3.6.7, four of
+  those files did not compile: 3.x takes randomness to parse a private key
+  and a buffer's size to sign into, made the ALPN list and an EC key's
+  group private, and dropped `mbedtls_sha256_ret`. A DTLS certificate's
+  serial is set with `mbedtls_x509write_crt_set_serial_raw` from 3.4 on,
+  still in DER's shortest form.
 - Off native, `DtlsCertificate`'s constructor, `generate`, `fingerprintOf`
   and `matches` throw an `IllegalOperationError` naming the target, and
   each says so in its documentation. The constructor threw "That
