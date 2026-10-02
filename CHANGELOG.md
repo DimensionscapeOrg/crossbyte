@@ -205,6 +205,9 @@ entry below says how:
 - `affectedRows` and `lastInsertRowID` of `PostgresConnection` and
   `MySQLConnection`, and `PostgresRawResult`'s, are `Float`s, where they
   were `Int`s.
+- `MongoConnection.affectedRows` and `count()`, and `MongoWriteResult`'s
+  `inserted`, `matched`, `modified` and `deleted`, are `Float`s, where
+  they were `Int`s: code that keeps one in an `Int` needs `Std.int()`.
 
 ### Added
 - `SharedObject.remove(name)` takes a region away on Linux and macOS --
@@ -2287,6 +2290,42 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On a synchronous `SQLiteConnection`, a `cancel()` from another thread
+  stops a `request()` or a statement that is only starting. SQLite clears
+  an interrupt that lands while a statement is prepared, so a cancel made
+  within the first dozen microseconds or so of a request was lost, and
+  the request ran on: an aggregate for its hours, a SELECT through every
+  row. Each request is now a run the progress handler can stop, as on an
+  asynchronous connection, and one asked for before a cancel but not yet
+  started fails as interrupted. It costs nothing measurable: trivial
+  requests, inserts and a 20,000-row aggregate moved +0.7%, +0.1% and
+  -0.7% (medians of 16 interleaved runs).
+- A `MySQLStatement`'s `SQLResult.rowsAffected` is the server's count,
+  whole past 2^31, as `MySQLConnection.affectedRows` is. It was the length
+  of the driver's result: for a write natively held at 2^31 - 1, though
+  the client had the count whole, and on hl negative past 2^31; for a
+  SELECT read a page at a time, the rows read so far. A statement that
+  returns rows reports 0, as AIR's and `SQLiteStatement`'s do. Natively
+  its `lastInsertRowID` is the statement's own as well, where it was read
+  from the connection as each page was taken: a SELECT run before an
+  INSERT's result was taken made the INSERT's id 0.
+- MongoDB counts are whole past 2^31. The server counts in 64 bits, and
+  an update or delete over a large collection answers past 2^31; every
+  count was read as an `Int`, held at 2^31 - 1, so three billion
+  documents updated read 2147483647. `MongoConnection.affectedRows` and
+  `count()`, `MongoWriteResult`'s `inserted`, `matched`, `modified` and
+  `deleted`, and a `MongoStatement`'s `SQLResult.rowsAffected` are
+  `Float`s, exact to 2^53, as MySQL's and Postgres's counts are.
+- Work asked of an asynchronous `SQLiteConnection` just as its worker
+  stops, after an open that failed, is answered. A statement, a `begin()`
+  or any other operation that found the worker's queue still open, and
+  reached it only after the worker's last look at it, was neither run nor
+  refused, and never answered; a `close()` caught there left the
+  connection refusing every later open, waiting for a `CLOSE` that would
+  not come. Asked across that moment 6,000 times, about one in a hundred
+  was lost. Such work now takes itself back out and is refused, as on a
+  connection that is not open: an `IllegalOperationError`, and a
+  `close()` with nothing to close.
 - A reliable UDP session asks for its window of socket buffer on Linux
   whatever the system's default reads. Linux reads back twice what was
   asked, counting its own bookkeeping, and a default that read a window's
@@ -2595,10 +2634,8 @@ entry below says how:
   interrupt as a statement starts when no other is running, so a cancel
   that landed while the worker prepared the statement was lost, and the
   statement ran on: an `execute()` and `cancel()` in a row lost it within
-  the first few of 150 tries. A progress handler stops it now. A
-  synchronous connection, whose statements a cancel from another thread
-  interrupts, has no handler and pays nothing for one: a cancel that lands
-  as its statement starts is still lost there, as SQLite has it.
+  the first few of 150 tries. A progress handler stops it now, and on a
+  synchronous connection too: see the entry for a synchronous `cancel()`.
 - An asynchronous `SQLiteConnection` no longer crashes the process when
   the calling thread asks it something while its worker runs a statement.
   `request()`, and the properties and methods that ask SQLite --

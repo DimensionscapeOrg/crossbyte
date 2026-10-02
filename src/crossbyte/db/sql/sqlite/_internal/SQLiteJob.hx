@@ -81,12 +81,20 @@ class SQLiteJob {
 	were the connection's, and a worker stopping as the next one started --
 	its CLOSE heard and `openAsync()` called before it had set them -- could
 	mark the next one stopped, or take its work.
+
+	`ended` is set once that last pass is over, under `ending`, which the
+	worker holds through the pass. Work that found the queue gone only after
+	joining it takes `ending` too: before `ended` the last pass is still to
+	come and finds it; after, it may have joined the queue behind that pass,
+	and takes itself back out.
 **/
 @:noCompletion
 class SQLiteQueue {
 	public var jobs(default, null):Deque<SQLiteJob> = new Deque();
 	public var closing:Bool = false;
 	public var gone:Bool = false;
+	public var ended:Bool = false;
+	public var ending(default, null):Mutex = new Mutex();
 
 	public function new() {}
 }
