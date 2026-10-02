@@ -91,6 +91,11 @@ class HTTPServerConfig {
 		  with no body arriving and none finished on its connection for 30
 		  seconds is reset with `REFUSED_STREAM`, which tells the client the
 		  request was not processed and may be sent again;
+		- the header sections of requests whose bodies are still to come are
+		  held to a quarter of this -- a megabyte at the default, by HPACK's
+		  count of them -- since flow control cannot hold a HEADERS back and
+		  HPACK makes a large one cheap to send. A stream whose section would
+		  go past it is reset with `REFUSED_STREAM` the same way;
 		- nothing is answered `413` for it: that is `maxRequestBodySize`'s.
 
 		A body counts from its first byte until it has all arrived and is
