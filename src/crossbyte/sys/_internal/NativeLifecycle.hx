@@ -40,6 +40,12 @@ extern class NativeLifecycle {
 	@:native("crossbyte_lifecycle_raise_for_test")
 	public static function raiseForTest(signal:Int):Bool;
 
+	@:native("crossbyte_lifecycle_default_with_siginfo_for_test")
+	public static function defaultWithSiginfoForTest(signal:Int):Bool;
+
+	@:native("crossbyte_lifecycle_handles_for_test")
+	public static function handlesForTest(signal:Int):Bool;
+
 	@:native("crossbyte_lifecycle_ignore_for_test")
 	public static function ignoreForTest(signal:Int, ignored:Bool):Bool;
 

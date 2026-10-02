@@ -215,10 +215,35 @@ class ProcessLifecycleTest extends utest.Test {
 		ProcessLifecycle.onShutdown(() -> ran = true);
 		Assert.isTrue(ProcessLifecycle.installDefaultHandlers());
 
+		// Asked first, so that a hangup left at its default fails here rather
+		// than ending the suite: it did on macOS, where SIGHUP had been handled
+		// with SA_SIGINFO in the shell that started the run.
+		if (!crossbyte.sys._internal.NativeLifecycle.handlesForTest(HANGUP)) {
+			Assert.fail("SIGHUP was left at its default by installDefaultHandlers()");
+			return;
+		}
 		Assert.isTrue(crossbyte.sys._internal.NativeLifecycle.raiseForTest(HANGUP));
 		Assert.isTrue(ProcessLifecycle.shutdownRequested);
 		Assert.isTrue(ProcessLifecycle.poll());
 		Assert.isTrue(ran);
+	}
+
+	/**
+		A SIGHUP at its default whose SA_SIGINFO flag is still set is handled
+		all the same. macOS keeps the flag across exec for a signal the parent
+		handled with it, and the install read the flag as some other handler
+		and left SIGHUP alone: on the CI runner it ended the whole suite.
+	**/
+	public function testAHangupLeftWithSiginfoIsStillHandled():Void {
+		crossbyte.sys._internal.NativeLifecycle.uninstallForTest();
+		Assert.isTrue(crossbyte.sys._internal.NativeLifecycle.defaultWithSiginfoForTest(HANGUP));
+		Assert.isTrue(ProcessLifecycle.installDefaultHandlers());
+		Assert.isTrue(crossbyte.sys._internal.NativeLifecycle.handlesForTest(HANGUP), "SIGHUP was left at its default");
+
+		// As it was: SIGHUP to its default, and the handlers installed over it.
+		crossbyte.sys._internal.NativeLifecycle.uninstallForTest();
+		crossbyte.sys._internal.NativeLifecycle.ignoreForTest(HANGUP, false);
+		Assert.isTrue(ProcessLifecycle.installDefaultHandlers());
 	}
 
 	/**
