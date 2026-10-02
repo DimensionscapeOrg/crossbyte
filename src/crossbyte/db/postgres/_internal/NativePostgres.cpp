@@ -256,6 +256,12 @@ namespace {
 		return api;
 	}
 
+	// Where libpq is looked for after the paths the caller gave. On macOS it
+	// is libpq.5.dylib, and looked for only as libpq.so it was never found:
+	// by name, where dyld looks by itself, then where Homebrew (Apple
+	// silicon, then Intel) and Postgres.app keep it. PostgresConnection
+	// gives these and more already; they are here for a caller that gives
+	// nothing.
 	std::vector<std::string> defaultCandidates() {
 		std::vector<std::string> out;
 #if defined(_WIN32)
@@ -263,6 +269,14 @@ namespace {
 		out.push_back(".\\php\\libpq.dll");
 		out.push_back("..\\php\\libpq.dll");
 		out.push_back("..\\..\\php\\libpq.dll");
+#elif defined(__APPLE__)
+		out.push_back("libpq.5.dylib");
+		out.push_back("libpq.dylib");
+		out.push_back("/opt/homebrew/opt/libpq/lib/libpq.5.dylib");
+		out.push_back("/opt/homebrew/lib/libpq.5.dylib");
+		out.push_back("/usr/local/opt/libpq/lib/libpq.5.dylib");
+		out.push_back("/usr/local/lib/libpq.5.dylib");
+		out.push_back("/Applications/Postgres.app/Contents/Versions/latest/lib/libpq.5.dylib");
 #else
 		out.push_back("libpq.so.5");
 		out.push_back("libpq.so");
@@ -593,8 +607,21 @@ void* crossbyte_postgres_open(::String conninfo, Array< ::String > libraryPaths)
 		}
 	}
 
+	// Each once: the caller's list holds most of these already, and a failed
+	// open named every one of them twice.
 	std::vector<std::string> defaults = defaultCandidates();
-	candidates.insert(candidates.end(), defaults.begin(), defaults.end());
+
+	for (size_t i = 0; i < defaults.size(); ++i) {
+		bool listed = false;
+
+		for (size_t j = 0; j < candidates.size() && !listed; ++j) {
+			listed = candidates[j] == defaults[i];
+		}
+
+		if (!listed) {
+			candidates.push_back(defaults[i]);
+		}
+	}
 
 	Handle* handle = new Handle();
 
