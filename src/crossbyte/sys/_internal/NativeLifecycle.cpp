@@ -278,13 +278,18 @@ namespace {
 	bool g_hup_installed = false;
 
 	// Whether `signal` takes its default action, not ignored, and not
-	// handled by anything else.
+	// handled by anything else. By the handler alone: sa_handler and
+	// sa_sigaction share their storage, and SIG_DFL is the one value
+	// neither kind of handler can have. SA_SIGINFO is no guide, as macOS
+	// keeps it set across exec for a signal the parent handled with it
+	// while putting the handler itself back to SIG_DFL; read as "handled",
+	// SIGHUP went without a handler and still ended the process.
 	bool takesDefaultAction(int signal) {
 		struct sigaction current;
 		if (sigaction(signal, nullptr, &current) != 0) {
 			return false;
 		}
-		return (current.sa_flags & SA_SIGINFO) == 0 && current.sa_handler == SIG_DFL;
+		return current.sa_handler == SIG_DFL;
 	}
 }
 
@@ -321,6 +326,22 @@ extern "C" bool crossbyte_lifecycle_install() {
 
 extern "C" bool crossbyte_lifecycle_raise_for_test(int signal) {
 	return raise(signal) == 0;
+}
+
+extern "C" bool crossbyte_lifecycle_default_with_siginfo_for_test(int signal) {
+	struct sigaction action;
+	sigemptyset(&action.sa_mask);
+	action.sa_handler = SIG_DFL;
+	action.sa_flags = SA_SIGINFO;
+	return sigaction(signal, &action, nullptr) == 0;
+}
+
+extern "C" bool crossbyte_lifecycle_handles_for_test(int signal) {
+	struct sigaction current;
+	if (sigaction(signal, nullptr, &current) != 0) {
+		return false;
+	}
+	return current.sa_handler == crossbyte_signal_handler;
 }
 
 extern "C" bool crossbyte_lifecycle_ignore_for_test(int signal, bool ignored) {
