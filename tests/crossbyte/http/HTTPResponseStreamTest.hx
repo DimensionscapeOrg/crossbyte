@@ -521,7 +521,9 @@ private class CountingWriter implements crossbyte._internal.http.HTTPResponseWri
 		return __onAbandoned = value;
 	}
 
-	public function sweepWith(check:Null<Float->Void>):Void {}
+	public function sweepWith(check:Null<Float->Void>):Bool {
+		return false;
+	}
 
 	public function writeContinue():Void {
 		__unflushed += 25;

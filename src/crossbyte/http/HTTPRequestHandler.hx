@@ -213,6 +213,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 	// peer has closed can still read as connected.
 	@:noCompletion private var __clientLeft:Bool = false;
 
+	// Set while the sweep holds this connection's unsent bytes to the stall
+	// deadline (see __holdOutput), with the socket's progress as the check
+	// last saw it and when they are given up if it has not moved.
+	@:noCompletion private var __heldWatch:Bool = false;
+	@:noCompletion private var __heldMark:Float = 0;
+	@:noCompletion private var __heldDeadline:Float = 0;
+	// The response said Connection: close and its bytes are still going:
+	// the connection closes once they have.
+	@:noCompletion private var __closeWhenSent:Bool = false;
+
 	/**
 	 * Largest socket output-buffer size observed while pumping a streamed
 	 * response; zero when nothing streamed. Exists for tests: the
@@ -406,6 +416,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 		try {
 			__origin.readBytes(__incomingBuffer, __incomingBuffer.length);
 
+			if (__closeWhenSent) {
+				// The last response said Connection: close, and is still going
+				// out: what comes after it is not read.
+				__incomingBuffer.clear();
+				return;
+			}
+
 			// A response body is streaming out. Bytes arriving now are the
 			// next request on a kept-alive connection, and they are kept
 			// rather than parsed: answering one now would interleave a second
@@ -578,8 +595,18 @@ final class HTTPRequestHandler extends EventDispatcher {
 		//
 		// A response the application is writing as it goes has no deadline
 		// here: how long it takes is the producer's, and a client that stops
-		// reading is caught by write() at the output cap.
-		if (__openStream != null || __streaming) {
+		// reading is caught by the stall deadline on what it has not taken
+		// (__holdOutput), or by write() at the output cap.
+		if (__openStream != null || __streaming || __closeWhenSent) {
+			return;
+		}
+
+		// Nor is a connection idle while what it sent is still going out: its
+		// allowance counts from when that has gone (__checkHeldOutput). It was
+		// counted from when the response was written, and a response larger
+		// than the system takes at once, to a client slower to read it than
+		// keepAliveTimeout, was cut off as though the connection sat idle.
+		if (__idle && __heldWatch) {
 			return;
 		}
 
@@ -1739,6 +1766,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// whatever the timeouts are, and the client giving up on it without
 		// closing the connection: an HTTP/2 reset of its stream, which drops
 		// the drain this pump waits on, so nothing else would ever stop it.
+		// It takes the writer's place with the sweep, and with it the watch
+		// on what was sent before (__holdOutput), which it covers.
+		__heldWatch = false;
 		__writer.sweepWith(__checkStreamStall);
 		__watchClient();
 
@@ -2103,9 +2133,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// the socket closed, and a 12 MB response went out as a 200 with its
 		// full Content-Length, then 65,346 bytes, logged and counted as a
 		// success.
+		//
+		// Not under HTTP/2, whose connection holds a stream's body until its
+		// windows and the socket take it, a socket's worth at a time, and
+		// counts it against the connection's cap: pumped from here it was held
+		// all the same, by this handler, where nothing counted it.
 		var bodyLength:Int = (!headOnly && responseData != null) ? responseData.length : 0;
 		var cap:Int = __writer.maxBufferedBytes;
-		var fromMemory:Bool = bodyLength > 0 && cap > 0 && __writer.bufferedBytes + bodyLength > cap;
+		var fromMemory:Bool = bodyLength > 0 && cap > 0 && !__writer.ownsConnection && __writer.bufferedBytes + bodyLength > cap;
 		if (fromMemory || openBody) {
 			__streamPending = true;
 		}
@@ -2247,9 +2282,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * connection closed, or under HTTP/2 the stream was reset, by the client
 	 * or by the server, and stop producing; each listener hears it once,
 	 * one added after the client had already gone included, in a later turn,
-	 * and the stream refuses writes from then on. A request already answered,
-	 * or whose client has gone, gets a stream that refuses them from the
-	 * start.
+	 * and the stream refuses writes from then on. A client that takes none of
+	 * what was written for 30 seconds is given up on as for any response
+	 * (see `HTTPServerConfig.requestTimeout`), and that is heard the same way.
+	 * A request already answered, or whose client has gone, gets a stream
+	 * that refuses writes from the start.
 	 */
 	public function beginResponse(statusCode:Int, contentType:String, ?headers:Array<URLRequestHeader>, ?statusMessage:String):HTTPResponseStream {
 		if (__responded || __openStream != null) {
@@ -2347,6 +2384,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		} else {
 			__streamFlushHeld = false;
 			__writer.flush();
+			if (!__heldWatch && !__writer.ownsConnection && __writer.bufferedBytes > 0) {
+				__holdOutput();
+			}
 		}
 
 		if (__writer.bufferedBytes >= __openStreamWatermark()) {
@@ -2673,6 +2713,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// when locally initiated, so the server's cleanupSocket
 			// accounting fires exactly as it always has.
 			if (__origin.connected) {
+				// Once what the response sent has gone. Closed here, the rest
+				// of it, whatever the system had not taken yet, was thrown
+				// away: a response larger than that, with Connection: close,
+				// was cut off at the client's end. The stall deadline bounds
+				// the wait.
+				if (__writer.bufferedBytes > 0) {
+					__closeWhenSent = true;
+					if (__holdOutput()) {
+						return;
+					}
+				}
 				__origin.close();
 			}
 			return;
@@ -2697,6 +2748,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		__resetForNextRequest(surplus > 0);
 
+		// What the client has not taken of it is held to the stall deadline,
+		// and keeps the connection from counting as idle until it has gone.
+		if (!__heldWatch && !__writer.ownsConnection && __writer.bufferedBytes > 0) {
+			__holdOutput();
+		}
+
 		if (surplus > 0) {
 			// Pipelined surplus never passes through __onData, so the
 			// request stamp and the re-parse both happen here. Under an
@@ -2705,6 +2762,92 @@ final class HTTPRequestHandler extends EventDispatcher {
 			__requestStartedAt = haxe.Timer.stamp();
 			__processBuffer();
 		}
+	}
+
+	/**
+	 * What the client has taken of what was written to `socket`, since it
+	 * opened: on every target, what the system has accepted, on Node, what
+	 * Node has handed on, less what still waits in its queue. Only compared
+	 * for a change, as a stall check's progress.
+	 */
+	@:noCompletion private static inline function __outputTaken(socket:Socket):Float {
+		return @:privateAccess (socket.__sentTotal() + socket.__unsentOwn()) - socket.outputBufferLength;
+	}
+
+	/**
+	 * Holds what this connection has sent and its client not yet taken to
+	 * the stall deadline, from the server's sweep, whatever the timeouts
+	 * are: a response its client takes none of for `STREAM_STALL_SECONDS`
+	 * is given up and the connection closed. A response written whole and
+	 * held, a body under the output cap, to a client that stopped reading,
+	 * waited in the socket's buffer with no deadline but the idle one,
+	 * and with `keepAliveTimeout` at `0`, for good. A body pumped out has a
+	 * deadline of its own (`__checkStreamStall`), which takes this one's
+	 * place while it runs.
+	 *
+	 * @return Whether a sweep holds it: false with no server behind the
+	 *         writer.
+	 */
+	@:noCompletion private function __holdOutput():Bool {
+		if (__heldWatch) {
+			return true;
+		}
+		// Under HTTP/2 the socket is every stream's, and the connection holds
+		// what its client has not taken (H2ConnectionHandler.__hold).
+		if (__streaming || __writer.ownsConnection) {
+			return false;
+		}
+		__heldMark = __outputTaken(__origin);
+		__heldDeadline = haxe.Timer.stamp() + STREAM_STALL_SECONDS;
+		__heldWatch = __writer.sweepWith(__checkHeldOutput);
+		return __heldWatch;
+	}
+
+	@:noCompletion private function __releaseHeldOutput():Void {
+		if (__heldWatch) {
+			__heldWatch = false;
+			__writer.sweepWith(null);
+		}
+	}
+
+	/**
+	 * The sweep's visit while bytes wait on the client, at `now`
+	 * (`haxe.Timer.stamp()`). Once they have gone, an idle connection's
+	 * allowance starts, and one waiting to close, its response said so,
+	 * or the server is draining, closes. While they have not, any the
+	 * client takes moves the deadline on; at it, the connection is closed.
+	 */
+	@:noCompletion private function __checkHeldOutput(now:Float):Void {
+		if (!__origin.connected) {
+			__releaseHeldOutput();
+			return;
+		}
+
+		if (__writer.bufferedBytes <= 0) {
+			__releaseHeldOutput();
+			if (__closeWhenSent || (__idle && __closeAfterResponse)) {
+				__origin.close();
+				return;
+			}
+			if (__idle) {
+				__receiveDeadline = (__config.keepAlive && __config.keepAliveTimeout > 0) ? now + __config.keepAliveTimeout : 0;
+			}
+			return;
+		}
+
+		var taken:Float = __outputTaken(__origin);
+		if (taken != __heldMark) {
+			__heldMark = taken;
+			__heldDeadline = now + STREAM_STALL_SECONDS;
+			return;
+		}
+		if (now < __heldDeadline) {
+			return;
+		}
+
+		Logger.info('Response to ${__requestPath} not taken for ${STREAM_STALL_SECONDS}s; closing.');
+		__releaseHeldOutput();
+		__origin.close();
 	}
 
 	/**
@@ -2760,8 +2903,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 	}
 
+	/**
+	 * Between requests, with nothing of the last response still waiting on
+	 * the client. What `HTTPServer.drain` closes at once; one whose response
+	 * is still going out closes when it has gone (`__checkHeldOutput`). It
+	 * was closed at once too, and what the client had not taken was lost.
+	 */
 	@:noCompletion private inline function __isIdle():Bool {
-		return __idle;
+		return __idle && !__heldWatch;
 	}
 
 	@:noCompletion private function __sendErrorResponse(statusCode:Int, message:String):Void {

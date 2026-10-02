@@ -184,6 +184,36 @@ class H2ServerConnection {
 	/** Called when the connection fails fatally; the caller closes the socket. */
 	public var onConnectionError:H2ConnectionError->Void = _ -> {};
 
+	/**
+		How many more bytes the transport should be handed now, or `null` for
+		no limit: asked once each time a stream's queue is written out, and a
+		DATA frame goes only while there is room, the rest waiting in the
+		queue for `notifyWritable`.
+
+		The owner's socket buffer, held to a watermark. Without one, whatever
+		the client's window allowed went straight into the socket's buffer: a
+		client granting large windows over a slow network piled responses up
+		there past the socket's output cap, which closes the connection, and
+		what was queued could not be told from what had been sent.
+	**/
+	public var outputRoom:Null<Void->Int> = null;
+
+	/**
+		Called when a stream is left with bytes its windows will not let go
+		yet and nothing was held before: the owner then holds the connection
+		to `expireHeld` until `queuedBytes` is back to `0`.
+	**/
+	public var onHolding:Void->Void = () -> {};
+
+	/**
+		Seconds a response may wait on its client's window with none of it
+		taken before `expireHeld` gives it up.
+	**/
+	public var stallSeconds:Float = 30;
+
+	/** Response bytes this connection's streams hold that their windows have not let go. */
+	public var queuedBytes(get, never):Int;
+
 	public final localSettings:H2Settings;
 	public final remoteSettings:H2Settings;
 
@@ -236,6 +266,16 @@ class H2ServerConnection {
 	private var __goingAway:Bool = false;
 	private var __goAwayLastStreamId:Int = 0;
 
+	// Every stream's queued bytes, kept as they change: see queuedBytes.
+	private var __queuedTotal:Int = 0;
+	// Set while something is queued, from when onHolding was called.
+	private var __holding:Bool = false;
+	// DATA bytes sent on the connection, and the stall check's view of them:
+	// see expireHeld.
+	private var __dataOut:Int = 0;
+	private var __stallMark:Int = 0;
+	private var __stallDeadline:Float = 0;
+
 	/**
 	 * @param write Sink for outbound bytes. A function rather than an
 	 *        `Output` so a caller can hand over a non-blocking socket's
@@ -261,6 +301,10 @@ class H2ServerConnection {
 
 	private inline function get_openStreams():Int {
 		return __openStreams;
+	}
+
+	private inline function get_queuedBytes():Int {
+		return __queuedTotal;
 	}
 
 	private inline function get_receivingStreams():Int {
@@ -325,7 +369,8 @@ class H2ServerConnection {
 	 * Sends a complete response and closes the stream.
 	 *
 	 * `status` becomes the `:status` pseudo-header, which §8.3.2 requires to
-	 * come first and to be the only pseudo-header on a response.
+	 * come first and to be the only pseudo-header on a response. `body` is
+	 * kept as it is until sent, as `sendData` keeps it.
 	 */
 	public function respond(streamId:Int, status:Int, headers:Array<HpackHeader>, ?body:Bytes):Void {
 		if (closed) {
@@ -393,6 +438,9 @@ class H2ServerConnection {
 	 * WINDOW_UPDATE. So this returning does not mean the bytes were sent, only
 	 * that they were accepted, `queuedFor` is how a caller applying
 	 * backpressure finds out the difference.
+	 *
+	 * `body` is kept as it is until it has been sent, not copied, so it must
+	 * not be changed after this.
 	 */
 	public function sendData(streamId:Int, body:Null<Bytes>, endStream:Bool):Void {
 		if (closed) {
@@ -404,12 +452,116 @@ class H2ServerConnection {
 			return;
 		}
 
-		target.queue(body);
+		if (body != null && body.length > 0) {
+			// Kept as it is until sent, not copied: the caller hands it over.
+			target.queue(body);
+			__queuedTotal += body.length;
+		}
 		if (endStream) {
 			target.pendingEndStream = true;
 		}
 
 		__flushStream(target);
+
+		if (target.queued > 0) {
+			__nowHolding(target);
+		}
+	}
+
+	/**
+		`target` is left with bytes waiting: its stall clock starts if it had
+		none running, and if the connection held nothing before, the owner
+		hears so (`onHolding`) and the connection's clock starts too. A clock
+		read only here, never on a response its windows let go at once.
+	**/
+	private function __nowHolding(target:H2Stream):Void {
+		if (target.stallDeadline == 0) {
+			target.stallMark = target.dataOut;
+			target.stallDeadline = haxe.Timer.stamp() + stallSeconds;
+		}
+		if (!__holding) {
+			__holding = true;
+			__stallMark = __dataOut;
+			__stallDeadline = haxe.Timer.stamp() + stallSeconds;
+			onHolding();
+		}
+	}
+
+	/**
+		Gives up what the client is taking none of, as the server's sweep
+		asks a few times a second while `queuedBytes` is above `0`.
+
+		A stream whose own window has kept its response from moving for
+		`stallSeconds` is reset, INTERNAL_ERROR, and what it held let go; the
+		connection carries on. A response written whole waited on its client's
+		WINDOW_UPDATE with no deadline at all, so a client that paused a stream,
+		or opened one and never meant to read it, held its response here
+		for as long as the connection lasted. When it is the connection's
+		window that has been spent, with nothing sent on the connection for
+		`stallSeconds`, nothing on it can move until the client gives more,
+		and every stream waiting is reset the same way. A stream waiting only
+		on the transport is not held to this: its client takes what the socket
+		gives it, and a socket nobody reads is the owner's to time.
+
+		@param now `haxe.Timer.stamp()`.
+		@return Whether the connection's window was what stalled: the owner
+		        then has no reason to hand the application more requests for
+		        this client.
+	**/
+	public function expireHeld(now:Float):Bool {
+		if (closed) {
+			return false;
+		}
+		if (__queuedTotal <= 0) {
+			__holding = false;
+			return false;
+		}
+
+		var connectionStalled:Bool = false;
+		if (__dataOut != __stallMark || __stallDeadline == 0) {
+			__stallMark = __dataOut;
+			__stallDeadline = now + stallSeconds;
+		} else if (now >= __stallDeadline && __connectionSendWindow <= 0) {
+			connectionStalled = true;
+		}
+
+		// Gathered first: a reset removes the stream from the map being walked.
+		var stalled:Null<Array<H2Stream>> = null;
+		for (target in __streams) {
+			if (target.queued <= 0) {
+				target.stallDeadline = 0;
+				continue;
+			}
+			if (connectionStalled) {
+				if (stalled == null) {
+					stalled = [];
+				}
+				stalled.push(target);
+				continue;
+			}
+			if (target.sendWindow > 0 || target.dataOut != target.stallMark || target.stallDeadline == 0) {
+				// Moving, or waiting on something other than its own window:
+				// its clock runs from now.
+				target.stallMark = target.dataOut;
+				target.stallDeadline = now + stallSeconds;
+				continue;
+			}
+			if (now >= target.stallDeadline) {
+				if (stalled == null) {
+					stalled = [];
+				}
+				stalled.push(target);
+			}
+		}
+
+		if (stalled != null) {
+			for (target in stalled) {
+				if (__streams.get(target.id) == target) {
+					resetStream(target.id, H2ErrorCode.INTERNAL_ERROR);
+				}
+			}
+		}
+		return connectionStalled;
 	}
 
 	/** Bytes accepted for this stream that flow control has not yet released. */
@@ -476,7 +628,8 @@ class H2ServerConnection {
 	}
 
 	/**
-	 * Writes as much of a stream's queue as both windows allow.
+	 * Writes as much of a stream's queue as both windows allow, and the
+	 * transport has room for (`outputRoom`).
 	 *
 	 * Bounded by three things at once: the peer's frame size, the stream
 	 * window and the connection window. Missing any one of them is a
@@ -488,12 +641,22 @@ class H2ServerConnection {
 		}
 
 		var limit:Int = remoteSettings.maxFrameSize;
+		// Asked once, not per frame.
+		var room:Int = outputRoom == null ? 0x7FFFFFFF : outputRoom();
 
 		while (target.queued > 0) {
 			var allowed:Int = target.sendWindow < __connectionSendWindow ? target.sendWindow : __connectionSendWindow;
 			if (allowed <= 0) {
 				// Blocked. The remainder stays queued until a WINDOW_UPDATE
 				// brings us back through notifyWritable.
+				return;
+			}
+
+			// The frame's header goes with it.
+			var fits:Int = room - H2Frame.HEADER_SIZE;
+			if (fits <= 0) {
+				// The transport has its fill. The remainder stays queued until
+				// it drains, which brings us back through notifyWritable.
 				return;
 			}
 
@@ -504,12 +667,19 @@ class H2ServerConnection {
 			if (chunk > allowed) {
 				chunk = allowed;
 			}
+			if (chunk > fits) {
+				chunk = fits;
+			}
 
 			var last:Bool = target.queued == chunk && target.pendingEndStream;
 
 			__write(target.takeFrame(chunk, last ? H2Flags.END_STREAM : 0));
 			target.sendWindow -= chunk;
 			__connectionSendWindow -= chunk;
+			__queuedTotal -= chunk;
+			target.dataOut += chunk;
+			__dataOut += chunk;
+			room = fits - chunk;
 
 			if (last) {
 				__finishStream(target);
@@ -552,6 +722,9 @@ class H2ServerConnection {
 				__answering--;
 			}
 			__abandoned.remove(streamId);
+			// What a reset stream still held goes with it, and out of the count.
+			__queuedTotal -= target.queued;
+			target.dropQueue();
 
 			if (__openStreams == 0) {
 				// Between requests from here, which is what the idle
