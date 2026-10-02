@@ -129,7 +129,6 @@ class SysSocketContractTest extends utest.Test {
 	}
 	#end
 
-	#if !eval
 	/**
 		A reset partway through is a failure, and the end of the stream is
 		`Eof`: a reader has to be able to tell a peer that finished from one
@@ -142,9 +141,8 @@ class SysSocketContractTest extends utest.Test {
 
 		The cpp branch of this module reported every failure a byte read met as
 		`Eof`, as the standard library it came from does; it reads through
-		`readBytes` now, as the others do.
-
-		Not on eval, whose reset is a native error no Haxe catch intercepts.
+		`readBytes` now, as the others do. On eval too, since its resets are
+		caught rather than ending the interpreter.
 	**/
 	public function testAResetIsAFailureRatherThanAnEnd():Void {
 		for (byByte in [false, true]) {
@@ -186,7 +184,6 @@ class SysSocketContractTest extends utest.Test {
 			pair.close();
 		}
 	}
-	#end
 
 	#if (cpp || hxcpp || java || jvm || hl || neko)
 	/**
