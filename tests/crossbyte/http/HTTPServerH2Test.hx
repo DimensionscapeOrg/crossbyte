@@ -1134,6 +1134,10 @@ class HTTPServerH2Test extends utest.Test {
 					}
 					return session.finished(1) || session.ended;
 				}, () -> {
+					// Room on the connection for the next answer, whose body
+					// would otherwise wait on the window the download spent,
+					// a response held, and so swept.
+					session.windowUpdate(0, 1 << 20);
 					session.request(3, "GET", "/index.html", true);
 					session.until(() -> session.finished(3) || session.ended, () -> {
 						// A few sweeps' worth, for it to find nothing left to do.
@@ -1149,6 +1153,207 @@ class HTTPServerH2Test extends utest.Test {
 						});
 					});
 				}, 3.0);
+			});
+		});
+	}
+
+	public function testAnHttp2ResponseItsClientTakesNoneOfIsGivenUp(async:Async):Void {
+		// A response written whole, respond() with a body under the output
+		// cap, that its stream's window held back waited on its client's
+		// WINDOW_UPDATE with no deadline at all: a client that paused the
+		// stream, or never meant to read it, held a megabyte here for as long
+		// as the connection lasted. It is given up at the stall deadline, as a
+		// file the client takes nothing of is: the stream reset, its bytes let
+		// go, and the connection carrying on. Both timeouts are off, so nothing
+		// else could have ended it.
+		var size:Int = 1024 * 1024;
+		var body = new ByteArray();
+		body.length = size;
+		var session = new H2Session(config -> {
+			config.requestTimeout = 0;
+			config.keepAliveTimeout = 0;
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/big") {
+						handler.respondBytes(200, "application/octet-stream", body);
+						return;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			// Room on the connection, and none on the stream past its first
+			// window: the client has paused this one stream.
+			session.windowUpdate(0, 16 << 20);
+			session.request(1, "GET", "/big", true);
+			session.until(() -> session.received(1) >= 65535 || session.ended, () -> {
+				var held:Int = __heldBy(session.server);
+				// The sweep, as it would run once the deadline has passed.
+				@:privateAccess session.server.__sweep(haxe.Timer.stamp() + 31);
+				session.until(() -> session.finished(1) || session.ended, () -> {
+					session.request(3, "GET", "/index.html", true);
+					session.until(() -> session.finished(3) || session.ended, () -> {
+						var after:Int = __heldBy(session.server);
+						session.close();
+						Assert.isTrue(held >= size - 65535, 'only $held bytes were held back, so this shows nothing');
+						Assert.equals(2, session.resetCode(1), "a response its client took none of was not given up");
+						Assert.equals(0, after, '$after bytes of it were kept');
+						Assert.equals(200, session.status(3), "the connection went with the stream");
+						async.done();
+					});
+				}, 2.0);
+			});
+		});
+	}
+
+	public function testAnHttp2ConnectionWhoseWindowStaysShutLetsGoOfWhatItHolds(async:Async):Void {
+		// The same with no window opened at all: the first 64 KB spend the
+		// connection's window, and nothing on the connection can be sent
+		// again until the client gives more. At the stall deadline every
+		// response waiting on it is reset, and the requests waiting for room,
+		// the connection holds its cap, are refused, REFUSED_STREAM:
+		// never handed to the application, so safe to send again, rather
+		// than answered into a window that is not opening. The connection
+		// itself carries on, for a client that comes back to it.
+		var size:Int = 1024 * 1024;
+		var body = new ByteArray();
+		body.length = size;
+		var served:Int = 0;
+		var session = new H2Session(config -> {
+			config.requestTimeout = 0;
+			config.keepAliveTimeout = 0;
+			config.maxOutputBufferSize = 1536 * 1024;
+			config.middleware = [
+				(handler, next) -> {
+					served++;
+					handler.respondBytes(200, "application/octet-stream", body);
+				}
+			];
+		});
+
+		var streams:Array<Int> = [1, 3, 5, 7];
+		session.start(() -> {
+			session.requestAll(streams, "GET", "/big");
+			session.ping();
+			session.until(() -> session.pingAcks > 0 || session.ended, () -> {
+				var servedWhileHeld:Int = served;
+				var held:Int = __heldBy(session.server);
+				// The sweep, as it would run once the deadline has passed.
+				@:privateAccess session.server.__sweep(haxe.Timer.stamp() + 31);
+				session.until(() -> Lambda.foreach(streams, id -> session.finished(id)) || session.ended, () -> {
+					var after:Int = __heldBy(session.server);
+					// Still answering.
+					session.ping();
+					session.until(() -> session.pingAcks > 1 || session.ended, () -> {
+						session.close();
+						Assert.equals(2, servedWhileHeld, '$servedWhileHeld requests were handed over with nothing taken');
+						Assert.isTrue(held >= 2 * size - 65535, 'only $held bytes were held back, so this shows nothing');
+						Assert.equals(2, session.resetCode(1), "a response waiting on a shut window was not given up");
+						Assert.equals(2, session.resetCode(3), "a response waiting on a shut window was not given up");
+						Assert.equals(7, session.resetCode(5), "a request waiting for room was not refused");
+						Assert.equals(7, session.resetCode(7), "a request waiting for room was not refused");
+						Assert.equals(0, after, '$after bytes were kept');
+						Assert.equals(2, served, "a refused request reached the application");
+						Assert.isFalse(session.ended, "the connection went with its streams");
+						async.done();
+					});
+				}, 2.0);
+			});
+		});
+	}
+
+	public function testTheOutputGaugesCountWhatAnHttp2StreamHolds(async:Async):Void {
+		// The output-buffer gauges counted each connection's socket, and an
+		// HTTP/2 connection holds most of what its client has not taken in its
+		// streams' queues, behind flow control: a megabyte waiting on a
+		// stream's window read as nothing.
+		var size:Int = 1024 * 1024;
+		var body = new ByteArray();
+		body.length = size;
+		var metrics = new crossbyte.metrics.Metrics();
+		var session = new H2Session(config -> {
+			config.metrics = metrics;
+			config.middleware = [(handler, next) -> handler.respondBytes(200, "application/octet-stream", body)];
+		});
+
+		session.start(() -> {
+			session.windowUpdate(0, 16 << 20);
+			session.request(1, "GET", "/big", true);
+			session.until(() -> session.received(1) >= 65535 || session.ended, () -> {
+				var text:String = metrics.toPrometheus();
+				session.close();
+				var total:Float = __gauge(text, "http_output_buffer_bytes_total");
+				var max:Float = __gauge(text, "http_output_buffer_bytes_max");
+				Assert.isTrue(total >= size - 65535, 'the total gauge read $total with ${size - 65535} bytes held');
+				Assert.isTrue(max >= size - 65535, 'the max gauge read $max with ${size - 65535} bytes held');
+				async.done();
+			});
+		});
+	}
+
+	/** The value `name` has in Prometheus text, or -1. */
+	private static function __gauge(text:String, name:String):Float {
+		for (line in text.split("\n")) {
+			if (StringTools.startsWith(line, name + " ")) {
+				return Std.parseFloat(line.substr(name.length + 1));
+			}
+		}
+		return -1;
+	}
+
+	public function testAnHttp2ConnectionHoldsNoMoreThanItsOutputCap(async:Async):Void {
+		// maxOutputBufferSize is per connection, and over HTTP/2 nothing held
+		// a connection to it: each stream's response waited whole on its
+		// client's window, up to the cap apiece, so a client that opened 128
+		// streams and no window held 128 times the cap, a gigabyte at the
+		// default. Past the cap a connection's next requests wait to be
+		// handed to the application, as an HTTP/1.1 connection's next request
+		// waits behind the response going out, and go on as the client takes
+		// what is held.
+		var size:Int = 100 * 1024;
+		var cap:Int = 256 * 1024;
+		var body = new ByteArray();
+		body.length = size;
+		var served:Int = 0;
+		var session = new H2Session(config -> {
+			config.maxOutputBufferSize = cap;
+			config.middleware = [
+				(handler, next) -> {
+					served++;
+					handler.respondBytes(200, "application/octet-stream", body);
+				}
+			];
+		});
+
+		var streams:Array<Int> = [for (i in 0...20) 1 + i * 2];
+		session.start(() -> {
+			session.requestAll(streams, "GET", "/big");
+			// Answered once everything before it has been read.
+			session.ping();
+			session.until(() -> session.pingAcks > 0 || session.ended, () -> {
+				var servedWhileHeld:Int = served;
+				var held:Int = __heldBy(session.server);
+				// Now the client takes all of it.
+				session.windowUpdate(0, 16 << 20);
+				for (id in streams) {
+					session.windowUpdate(id, 16 << 20);
+				}
+				session.until(() -> Lambda.foreach(streams, id -> session.finished(id)) || session.ended, () -> {
+					session.close();
+					Assert.isTrue(servedWhileHeld <= Math.ceil(cap / size) + 1, '$servedWhileHeld requests were handed over with nothing taken');
+					Assert.isTrue(held <= cap + size, 'the connection held $held bytes, past its cap of $cap and one response');
+					var whole:Int = 0;
+					for (id in streams) {
+						if (session.status(id) == 200 && session.received(id) == size) {
+							whole++;
+						}
+					}
+					Assert.equals(streams.length, whole, "not every request was answered once the client read");
+					Assert.equals(streams.length, served);
+					async.done();
+				}, 10.0);
 			});
 		});
 	}
@@ -1615,7 +1820,8 @@ class HTTPServerH2Test extends utest.Test {
 				session.until(() -> !held.connected || session.ended, () -> {
 					var late:Int = 0;
 					held.addEventListener(crossbyte.events.Event.CLOSE, _ -> late++);
-					session.until(() -> late > 0 || session.ended, () -> {
+					// And the reset itself here, which on Node comes a turn later.
+					session.until(() -> (late > 0 && session.resetCode(1) >= 0) || session.ended, () -> {
 						var lateBeforeTheClose:Int = late;
 						session.close();
 						HTTPTestSupport.pumpMoreAsync(5, () -> {
@@ -1959,6 +2165,22 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	/**
+		Bytes the server's HTTP/2 connections hold for their clients: what each
+		stream has queued behind flow control, and what each socket has not
+		sent.
+	**/
+	private static function __heldBy(server:HTTPServer):Int {
+		var total:Int = 0;
+		for (handler in @:privateAccess server.__activeHttp2) {
+			for (stream in @:privateAccess handler.__connection.__streams) {
+				total += stream.queued;
+			}
+			total += @:privateAccess handler.__socket.outputBufferLength;
+		}
+		return total;
+	}
+
 	/** Writes `size` patterned bytes to big.bin under the configuration's root, and answers its path. */
 	private static function __bigFile(config:HTTPServerConfig, size:Int):String {
 		var bytes:Bytes = Bytes.alloc(size);
@@ -2188,6 +2410,13 @@ private class H2Session {
 
 	/** The last stream that GOAWAY said the server would process, or -1. */
 	public var goAwayLastStream(default, null):Int = -1;
+
+	/**
+		PINGs the server has acknowledged. It answers one once it has read
+		everything sent before it, so this is how a case knows the server has
+		taken in a run of frames, whatever it made of them.
+	**/
+	public var pingAcks(default, null):Int = 0;
 
 	/**
 	 * When the far end closed the socket, or -1. Never set by `close()`: the
@@ -2639,6 +2868,8 @@ private class H2Session {
 			var payload:Bytes = frame.payload;
 			__resets.set(frame.streamId, (payload.get(0) << 24) | (payload.get(1) << 16) | (payload.get(2) << 8) | payload.get(3));
 			__finish(frame.streamId);
+		} else if (frame.type == H2FrameType.PING && frame.has(H2Flags.ACK)) {
+			pingAcks++;
 		} else if (frame.type == H2FrameType.GOAWAY && goAwayAt < 0) {
 			goAwayAt = haxe.Timer.stamp();
 			var payload:Bytes = frame.payload;
