@@ -12,6 +12,8 @@ import crossbyte.crypto._internal.NativeOnly;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.StatusEvent;
 import crossbyte.events.TickEvent;
+import crossbyte.events.UncaughtErrorEvent;
+import crossbyte.utils.Logger;
 import crossbyte.io.ByteArray;
 import crossbyte.Object;
 import haxe.Timer;
@@ -49,6 +51,14 @@ class SharedChannel extends EventDispatcher {
 	 * A message naming no method of it, or whose arguments cannot be read,
 	 * not Haxe serialization, naming a class this build does not have, or
 	 * nested more than 256 deep, is dropped.
+	 *
+	 * A method that throws is reported as a callback the runtime runs is:
+	 * logged with `Logger.error`, and dispatched as
+	 * `UncaughtErrorEvent.UNCAUGHT_ERROR` (source `POSTED`, origin this
+	 * channel) on the runtime the channel was connected on. The channel
+	 * goes on listening, and the next message is delivered as usual. A
+	 * channel connected on a thread no runtime belongs to calls its client
+	 * on its reader thread, and only logs what a method throws.
 	 */
 	public var client:Object;
 	/**
@@ -279,42 +289,84 @@ class SharedChannel extends EventDispatcher {
 		__serializer.scount = 0;
 	}
 
-	@:noCompletion private #if !debug inline #end function __onData(received:Bytes):Void {
-		if (client == null) {
+	@:noCompletion private function __onData(received:Bytes):Void {
+		var target:Object = client;
+		if (target == null) {
 			return;
 		}
 
-		var offset = 0;
+		var call:Null<ChannelCall> = null;
+		var method:Dynamic = null;
 		try {
-			if (received == null || received.length < 8 || received.length > MAX_MESSAGE_SIZE) {
-				return;
+			call = __readCall(received);
+			if (call != null) {
+				method = Reflect.field(target, call.method);
 			}
+		} catch (_:Dynamic) {
+			// What cannot be read is dropped, as the doc says.
+			method = null;
+		}
+		if (!Reflect.isFunction(method)) {
+			return;
+		}
 
-			var methodLength = received.getInt32(0);
-			if (methodLength <= 0 || methodLength > MAX_METHOD_LENGTH || methodLength > received.length - 8) {
-				return;
-			}
-			offset += 4;
+		// Kept apart from the reading above: what the method throws is the
+		// application's failure, not the message's, and was dropped with the
+		// unreadable ones, without a word.
+		try {
+			Reflect.callMethod(target, method, call.args);
+		} catch (error:Dynamic) {
+			__clientThrew(error);
+		}
+	}
 
-			var method = received.getString(offset, methodLength);
-			offset += methodLength;
+	/**
+		The call `received` frames, or null when it is not one this channel
+		takes. Throws for arguments that cannot be read.
+	**/
+	@:noCompletion private function __readCall(received:Bytes):Null<ChannelCall> {
+		if (received == null || received.length < 8 || received.length > MAX_MESSAGE_SIZE) {
+			return null;
+		}
 
-			var serializationLength = received.getInt32(offset);
-			if (serializationLength < 0 || serializationLength > MAX_MESSAGE_SIZE || offset + 4 + serializationLength > received.length) {
-				return;
-			}
-			offset += 4;
+		var offset = 0;
+		var methodLength = received.getInt32(0);
+		if (methodLength <= 0 || methodLength > MAX_METHOD_LENGTH || methodLength > received.length - 8) {
+			return null;
+		}
+		offset += 4;
 
-			var serialization = received.getString(offset, serializationLength);
-			// Bounded: natively a peer's arguments nested 6,000 deep overflowed
-			// the stack and ended this process. See BoundedUnserializer.
-			var args:Array<Dynamic> = BoundedUnserializer.run(serialization);
-			var field:Dynamic = Reflect.field(client, method);
-			if (!Reflect.isFunction(field)) {
-				return;
-			}
+		var method = received.getString(offset, methodLength);
+		offset += methodLength;
 
-			Reflect.callMethod(client, field, args);
+		var serializationLength = received.getInt32(offset);
+		if (serializationLength < 0 || serializationLength > MAX_MESSAGE_SIZE || offset + 4 + serializationLength > received.length) {
+			return null;
+		}
+		offset += 4;
+
+		var serialization = received.getString(offset, serializationLength);
+		// Bounded: natively a peer's arguments nested 6,000 deep overflowed
+		// the stack and ended this process. See BoundedUnserializer.
+		var args:Array<Dynamic> = BoundedUnserializer.run(serialization);
+		return {method: method, args: args};
+	}
+
+	/**
+		Reports what a client method threw as the runtime reports a posted
+		callback's failure, logged, and dispatched as
+		`UncaughtErrorEvent.UNCAUGHT_ERROR`: on the runtime of the thread
+		that called it, which is the channel's; logged alone where there is
+		none.
+	**/
+	@:noCompletion private function __clientThrew(error:Dynamic):Void {
+		var runtime:Null<CrossByte> = CrossByte.__currentOrNull();
+		if (runtime != null) {
+			runtime.__uncaught(error, UncaughtErrorEvent.POSTED, this);
+			return;
+		}
+		try {
+			Logger.error("A SharedChannel client method threw: " + Std.string(error));
 		} catch (_:Dynamic) {}
 	}
 
@@ -424,6 +476,12 @@ class SharedChannel extends EventDispatcher {
 	@:noCompletion private static inline function __close(pipe:Dynamic):Void {
 		LocalConnection.__close(pipe);
 	}
+}
+
+/** A method call read from a message: the method's name and its arguments. **/
+private typedef ChannelCall = {
+	method:String,
+	args:Array<Dynamic>
 }
 
 /** A channel's connection to one destination, and when it last sent there. **/
