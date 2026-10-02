@@ -35,8 +35,31 @@ class H2Stream {
 	/** How much the peer will still accept from us (§6.9). */
 	public var sendWindow:Int;
 
-	/** How much we will still accept, before topping it up. */
+	/**
+		How much we will still accept, before topping it up. On the server,
+		what the client may still send on this stream, held to it.
+	**/
 	public var recvWindow:Int;
+
+	/**
+		On the server, set while this stream's request body counts against
+		its connection's budget: from its HEADERS until the request is handed
+		over, refused or reset. See `H2ServerConnection.requestBodyBudget`.
+	**/
+	public var budgeted:Bool = false;
+
+	/**
+		On the server, set while this stream waits for window its connection
+		has no budget to give.
+	**/
+	public var waiting:Bool = false;
+
+	/**
+		On the server, what this stream's header section counts against its
+		connection's allowance while its body is still to come, by HPACK's
+		accounting; `0` once it is not counted.
+	**/
+	public var heldHeaders:Int = 0;
 
 	/** Received but not yet acknowledged with WINDOW_UPDATE. */
 	public var unacknowledged:Int = 0;

@@ -35,6 +35,12 @@ class HpackDecoder {
 	public var truncated(default, null):Bool = false;
 
 	/**
+	 * What the block `decode` last read decoded to, by the §4.1 accounting:
+	 * what an owner holding the list for a while has to count it as.
+	 */
+	public var listSize(default, null):Int = 0;
+
+	/**
 	 * The largest table capacity the peer is allowed to select, from our
 	 * SETTINGS_HEADER_TABLE_SIZE. A dynamic table size update above this is a
 	 * decoding error, not a request to be honoured.
@@ -137,6 +143,7 @@ class HpackDecoder {
 			out.push(field);
 		}
 
+		this.listSize = listSize;
 		return out;
 	}
 
