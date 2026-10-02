@@ -15,7 +15,9 @@ import sys.thread.Mutex;
 /**
 	One piece of work queued for an asynchronous `SQLiteConnection`'s worker.
 
-	`run` does the work on the worker's thread and reports how it went.
+	`run` does the work on the worker's thread and reports how it went -- or,
+	for a statement's work, the statement does, with `sql` for its
+	`execute()` and `prefetch`: no function is made for each statement run.
 	`operation` -- the `SQLEvent` type it reports -- and `statement`, the
 	statement it reports to or `null` for the connection's own work, say whom
 	to tell when it never runs: queued behind a `close()`, behind an open
@@ -26,25 +28,42 @@ import sys.thread.Mutex;
 	queued: one queued before the latest is dropped. A job that `keep`s --
 	an open, a close, a cancel's own report -- is never dropped.
 	`statementEpoch` is the statement's own count, which its `cancel()`
-	moves on: what was asked of it before is dropped, and unheard.
+	moves on: what was asked of it before is dropped, and unheard. `gen` is
+	the connection's count of every `cancel()`, its own and its statements':
+	while it is unchanged as the job starts, nothing can have cancelled the
+	job, and the worker asks nothing more. `fresh` marks a statement's
+	`execute()`, before which the worker lets go of what the statement's
+	last run left unread.
 **/
 @:noCompletion
 class SQLiteJob {
-	public var run(default, null):Void->Void;
+	// Declared references first, then numbers, then flags: hxcpp lays the
+	// fields out in this order, and mixed they were padded -- a job is made
+	// for every statement run.
+	public var run(default, null):Null<Void->Void>;
 	public var operation(default, null):String;
 	public var statement(default, null):Null<SQLiteStatement>;
-	public var epoch(default, null):Int;
-	public var keep(default, null):Bool;
 	public var call(default, null):Null<SQLiteCall>;
+	public var sql(default, null):Null<String>;
+	public var epoch(default, null):Int;
 	public var statementEpoch(default, null):Int;
+	public var gen(default, null):Int;
+	public var prefetch(default, null):Int;
+	public var keep(default, null):Bool;
+	public var fresh(default, null):Bool;
 
-	public function new(run:Void->Void, operation:String, statement:Null<SQLiteStatement>, epoch:Int, keep:Bool, ?call:SQLiteCall) {
+	public function new(run:Null<Void->Void>, operation:String, statement:Null<SQLiteStatement>, epoch:Int, keep:Bool, call:Null<SQLiteCall>,
+			gen:Int, fresh:Bool, sql:Null<String>, prefetch:Int) {
 		this.run = run;
 		this.operation = operation;
 		this.statement = statement;
 		this.epoch = epoch;
 		this.keep = keep;
 		this.call = call;
+		this.gen = gen;
+		this.fresh = fresh;
+		this.sql = sql;
+		this.prefetch = prefetch;
 		// Read on the thread that queued it, which is the one cancel() is
 		// called on.
 		statementEpoch = statement != null ? @:privateAccess statement.__cancels : 0;
@@ -304,16 +323,18 @@ class SQLiteStatementMessage {
 	/** Whether this answers `execute()`, which sets the rows affected; `next()` leaves them. **/
 	public var executed:Bool;
 
+	/**
+		The statement's count of `cancel()` calls when the work this answers
+		was asked for: one its `cancel()` has stopped since is not dispatched.
+		Beside the flags, in what was padding: a message is made for every
+		statement run.
+	**/
+	public var epoch(default, null):Int;
+
 	public var affected:Float = 0;
 
 	/** The statement's rowid, read once its rows were all read; meaningful when `done`. **/
 	public var rowId:Float = 0;
-
-	/**
-		The statement's count of `cancel()` calls when the work this answers
-		was asked for: one its `cancel()` has stopped since is not dispatched.
-	**/
-	public var epoch(default, null):Int;
 
 	public function new(statement:SQLiteStatement, executed:Bool, epoch:Int) {
 		this.statement = statement;
