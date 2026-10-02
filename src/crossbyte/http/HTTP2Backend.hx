@@ -265,7 +265,10 @@ class HTTP2Backend implements HTTPBackend {
 			while (stream == null) {
 				session = H2ConnectionPool.acquire(origin, () -> __open(origin, url.host, port, secure, context, tls), timeout, context.cancelToken, tls);
 				try {
-					stream = session.execute(method, scheme, authority, __target(url, query), fields, body, timeout, context.cancelToken);
+					// The HTTP/1.1 client's limit on a body, read per request
+					// as that client reads it.
+					stream = session.execute(method, scheme, authority, __target(url, query), fields, body, timeout, context.cancelToken,
+						Http.MAX_BODY_SIZE);
 				} catch (e:H2ConnectionError) {
 					if (e.code == H2ErrorCode.CANCEL && __cancelled(context)) {
 						// Cancelled as it was about to start: refused before

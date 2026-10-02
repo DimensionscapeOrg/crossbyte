@@ -2353,6 +2353,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The HTTP/2 client holds a response body to `Http.MAX_BODY_SIZE`, 64 MB,
+  as the HTTP/1.1 client does: past it the request fails with "Response
+  body exceeded N bytes", its stream is reset and what had arrived is let
+  go, and the connection carries on with the requests on it. Nothing held
+  it. The stream's window was opened again as each half of it arrived, so
+  a server sending a body without end grew it, and the client's memory,
+  for as long as it went on: a 4 MB body completed against a 256 KB limit.
 - On a synchronous `SQLiteConnection`, a `cancel()` from another thread
   stops a `request()` or a statement that is only starting. SQLite clears
   an interrupt that lands while a statement is prepared, so a cancel made

@@ -282,6 +282,51 @@ class H2Test extends utest.Test {
 		Assert.equals("fine", second.takeBody().toString());
 	}
 
+	public function testABodyPastItsLimitGivesUpOnlyItsStream():Void {
+		// 40 KB against a 20 KB limit: the stream is reset and its body let
+		// go, the rest of its DATA is counted for the connection's window and
+		// dropped, and the next stream is answered whole.
+		var chunk:String = StringTools.rpad("", "x", 8192);
+		var server = new ServerScript();
+		server.settings();
+		server.rawHeaders(1, [new HpackHeader(":status", "200")], true);
+		for (_ in 0...5) {
+			server.data(1, chunk, false);
+		}
+		server.data(1, "", true);
+		server.response(3, [new HpackHeader(":status", "200")], "fine", true);
+
+		var connection = server.connect();
+		connection.maxResponseBodySize = 20000;
+		var first = connection.request("GET", "http", "example.com", "/big", []);
+		connection.pumpUntilClosed(first);
+
+		Assert.isTrue(first.isClosed());
+		Assert.isFalse(first.endOfStream, "a body past the limit ended as a response");
+		Assert.equals("Response body exceeded 20000 bytes", first.failure);
+		Assert.equals(0, first.bodyLength, first.bodyLength + " bytes of it were kept");
+
+		var second = connection.request("GET", "http", "example.com", "/next", []);
+		connection.pumpUntilClosed(second);
+		Assert.equals(200, second.status);
+		Assert.equals("fine", second.takeBody().toString());
+
+		var reset:Null<H2Frame> = null;
+		var connectionCredit:Int = 0;
+		for (frame in ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length)) {
+			if (frame.type == H2FrameType.RST_STREAM && frame.streamId == 1) {
+				reset = frame;
+			}
+			if (frame.type == H2FrameType.WINDOW_UPDATE && frame.streamId == 0) {
+				connectionCredit += (frame.payload.get(0) << 24) | (frame.payload.get(1) << 16) | (frame.payload.get(2) << 8) | frame.payload.get(3);
+			}
+		}
+		Require.notNull(reset, "the stream past its limit was not reset");
+		Assert.equals((H2ErrorCode.CANCEL : Int), reset.payload.get(3));
+		// The dropped DATA still gave the connection's window back.
+		Assert.isTrue(connectionCredit >= 32768, 'the connection was credited $connectionCredit bytes');
+	}
+
 	public function testAControlCharacterInAResponseFieldIsRefused():Void {
 		// RFC 9113 8.2.1 applies to a response too: a CR, LF or NUL in a value
 		// is malformed. It reached the caller's headers, and a program passing
