@@ -1381,6 +1381,11 @@ entry below says how:
   that uploaded at 361 MB/s (2.7 ms per MB) now uploads at 324 (3.1), about
   10% slower. AES-128-GCM, which BoringSSL-based clients put first on AES
   hardware, gives 384 MB/s (2.6).
+- A full TLS handshake costs a native server about a quarter of the CPU it
+  did on mbedTLS 2.28.2, measured the same way with an ECDSA P-256
+  certificate and Node opening a connection per request: 252 handshakes a
+  second at 3.9 ms of CPU each before, 936 at 1.0 ms over TLS 1.3 now
+  (1,049 at 0.94 ms held to TLS 1.2), on one thread.
 - CrossByte's native code that calls mbedTLS, RSA and ECDSA signatures,
   DTLS certificates and sessions, ALPN, a TLS peer's certificate, builds
   against mbedTLS 3.x as well as 2.28, so it works with the hxcpp fork
