@@ -181,9 +181,9 @@ class DBSupportTest extends utest.Test {
 		connection.close();
 
 		var runtime = CrossByte.current();
-		var deadline:Float = Sys.time() + 10.0;
+		var deadline:Float = haxe.Timer.stamp() + 10.0;
 
-		while (Sys.time() < deadline && seen.indexOf(SQLEvent.CLOSE) < 0) {
+		while (haxe.Timer.stamp() < deadline && seen.indexOf(SQLEvent.CLOSE) < 0) {
 			runtime.pump(1 / 120, 0);
 		}
 
