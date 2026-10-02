@@ -2433,6 +2433,15 @@ entry below says how:
   host with a route out on each of two networks, or macOS on loopback,
   which sends to an alias from that alias -- the native suite failed on
   the macOS runner that way.
+- `PostgresConnection` loads libpq on macOS. It looked there for
+  `libpq.so.5` and `libpq.so`, names macOS does not use, so a Mac could
+  load libpq only from a path given in full. It looks for `libpq.5.dylib`
+  and `libpq.dylib` where dyld looks, beside the program, and in
+  Homebrew's, Postgres.app's, the PostgreSQL installer's and MacPorts'
+  directories; `PostgresConfig.libraryPath` lists every place, on each
+  system. A directory given there stands for `libpq.so.5` as well as
+  `libpq.so` on Linux -- it stood for the development package's
+  `libpq.so` alone -- and a failed open names each path it tried once.
 - A connected `DatagramSocket` sends on macOS and the BSDs. Every send
   named the peer, as the socket names it whether or not it is connected,
   and those systems refuse an address on a connected datagram socket's
@@ -2565,7 +2574,9 @@ entry below says how:
   asynchronous connection, and one asked for before a cancel but not yet
   started fails as interrupted. It costs nothing measurable: trivial
   requests, inserts and a 20,000-row aggregate moved +0.7%, +0.1% and
-  -0.7% (medians of 16 interleaved runs).
+  -0.7% (medians of 16 interleaved runs). On an ARM processor the cancel's
+  stop is fenced ahead of SQLite's interrupt, which there could otherwise
+  be seen first, cleared as the statement started, and lost.
 - A `MySQLStatement`'s `SQLResult.rowsAffected` is the server's count,
   whole past 2^31, as `MySQLConnection.affectedRows` is. It was the length
   of the driver's result: for a write natively held at 2^31 - 1, though

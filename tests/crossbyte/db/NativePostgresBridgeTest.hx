@@ -75,6 +75,59 @@ class NativePostgresBridgeTest extends utest.Test {
 		Assert.equals(0, failures.length, failures.length == 0 ? "" : '${failures.length} of 8 workers threw, the first with: ${failures[0]}');
 	}
 
+	public function testLibpqIsLookedForWhereEachSystemKeepsIt():Void {
+		// macOS names it libpq.5.dylib, and the driver looked there for
+		// libpq.so.5 and libpq.so: a Mac could load libpq from nowhere but a
+		// path given in full -- "Could not load libpq (tried ..., libpq.so.5,
+		// libpq.so, libpq.so.5, libpq.so)", every name twice.
+		var connection = new PostgresConnection();
+		var mac:Array<String> = @:privateAccess connection.__libraryCandidates({}, "mac");
+
+		for (expected in [
+			"libpq.5.dylib",
+			"libpq.dylib",
+			"/opt/homebrew/opt/libpq/lib/libpq.5.dylib",
+			"/usr/local/opt/libpq/lib/libpq.5.dylib",
+			"/Applications/Postgres.app/Contents/Versions/latest/lib/libpq.5.dylib"
+		]) {
+			Assert.isTrue(mac.indexOf(expected) >= 0, '$expected is not looked for on macOS: $mac');
+		}
+
+		Assert.same([], [for (path in mac) if (path.indexOf(".so") >= 0 || path.indexOf(".dll") >= 0) path]);
+		Assert.same(["libpq.so.5", "libpq.so"], @:privateAccess connection.__libraryCandidates({}, "linux"));
+		Assert.equals("libpq.dll", @:privateAccess connection.__libraryCandidates({}, "windows").pop());
+
+		// A directory stands for the names libpq has in it there. It stood
+		// for libpq.so alone, which only a development package installs, so
+		// a directory holding the runtime's libpq.so.5 was looked in and not
+		// found.
+		var directory:String = Path.join([Sys.getCwd(), "export", "pq-lib-" + Std.random(0x7FFFFFFF)]);
+		sys.FileSystem.createDirectory(directory);
+		var given:PostgresConfig = {libraryPath: directory};
+		var linux:Array<String> = @:privateAccess connection.__libraryCandidates(given, "linux");
+		var macos:Array<String> = @:privateAccess connection.__libraryCandidates(given, "mac");
+		var windows:Array<String> = @:privateAccess connection.__libraryCandidates(given, "windows");
+
+		// The installers' directories, the newest PostgreSQL first.
+		for (version in ["9.6", "16", "notes", "13"]) {
+			sys.FileSystem.createDirectory(Path.join([directory, version, "lib"]));
+		}
+
+		var installs:Array<String> = [];
+		@:privateAccess connection.__pushInstalls(installs, directory, "", "/lib/libpq.5.dylib", "mac");
+
+		for (version in ["9.6", "16", "notes", "13"]) {
+			sys.FileSystem.deleteDirectory(Path.join([directory, version, "lib"]));
+			sys.FileSystem.deleteDirectory(Path.join([directory, version]));
+		}
+
+		sys.FileSystem.deleteDirectory(directory);
+		Assert.same([Path.join([directory, "libpq.so.5"]), Path.join([directory, "libpq.so"])], linux.slice(0, 2));
+		Assert.same([Path.join([directory, "libpq.5.dylib"]), Path.join([directory, "libpq.dylib"])], macos.slice(0, 2));
+		Assert.equals(Path.join([directory, "libpq.dll"]), windows[0]);
+		Assert.same([for (version in ["16", "13", "9.6"]) directory + "/" + version + "/lib/libpq.5.dylib"], installs);
+	}
+
 	public function testConcurrentFailedOpensEachReportTheirOwnError():Void {
 		// The reason an open failed was one process-wide string too, read back
 		// after the call returned, so a pool opening connections from several
@@ -693,8 +746,17 @@ class NativePostgresBridgeTest extends utest.Test {
 		};
 	}
 
+	/**
+		The stand-in, as hxcpp's linker names a shared library on each
+		system: `.dll`, `.dylib` on macOS, `.dso` elsewhere. It was `.dso`
+		everywhere but Windows, so on macOS no case here loaded it.
+	**/
 	@:noCompletion private static function __libraryPath():String {
-		var name:String = crossbyte.sys.System.isWindows ? "crossbyte_fakepq.dll" : "crossbyte_fakepq.dso";
+		var name:String = switch (crossbyte.sys.System.PLATFORM) {
+			case "windows": "crossbyte_fakepq.dll";
+			case "mac": "crossbyte_fakepq.dylib";
+			default: "crossbyte_fakepq.dso";
+		};
 		return Path.join([Path.directory(Sys.programPath()), name]);
 	}
 }

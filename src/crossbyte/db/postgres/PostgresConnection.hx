@@ -28,7 +28,8 @@ import php.Syntax;
 /**
 	A connection to PostgreSQL. Natively (cpp) it drives libpq, loaded when
 	the connection opens -- from `PostgresConfig.libraryPath` or
-	`libraryPaths`, or where the system keeps it -- with bound parameters
+	`libraryPaths`, or where the system keeps it, as `libraryPath` lists
+	for Windows, macOS and Linux -- with bound parameters
 	(`requestParams`), `cancel()` and the timeouts `PostgresConfig` sets. On
 	php it runs on PDO. No other target has a driver: `isSupported` is
 	`false` there, and `open()` throws.
@@ -868,12 +869,34 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	}
 
 	#if cpp
-	@:noCompletion private function __libraryCandidates(cfg:PostgresConfig):Array<String> {
+	/**
+		Where Homebrew (Apple silicon, then Intel) and Postgres.app keep
+		libpq on macOS. Homebrew's own `libpq` is keg-only, so nothing links
+		it where dyld looks by itself.
+	**/
+	@:noCompletion private static final MAC_LIBPQ_DIRECTORIES:Array<String> = [
+		"/opt/homebrew/opt/libpq/lib",
+		"/opt/homebrew/lib",
+		"/usr/local/opt/libpq/lib",
+		"/usr/local/lib",
+		"/Applications/Postgres.app/Contents/Versions/latest/lib"
+	];
+
+	/**
+		Where libpq is looked for, in order: `libraryPath`, each of
+		`libraryPaths`, then where `platform` -- `System.PLATFORM` unless
+		given -- keeps it; see `PostgresConfig.libraryPath`.
+	**/
+	@:noCompletion private function __libraryCandidates(cfg:PostgresConfig, ?platform:String):Array<String> {
+		if (platform == null) {
+			platform = crossbyte.sys.System.PLATFORM;
+		}
+
 		var candidates:Array<String> = [];
-		__pushCandidate(candidates, cfg.libraryPath);
+		__pushCandidate(candidates, cfg.libraryPath, platform);
 		if (cfg.libraryPaths != null) {
 			for (path in cfg.libraryPaths) {
-				__pushCandidate(candidates, path);
+				__pushCandidate(candidates, path, platform);
 			}
 		}
 
@@ -883,20 +906,80 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		// Node -- and `#if windows` is unset on all three, so a Windows host
 		// would have gone looking for libpq.so. Unreachable while the driver
 		// itself is cpp-only, and wrong the moment that stops being true.
-		if (crossbyte.sys.System.isWindows) {
-			__pushCandidate(candidates, Path.join([cwd, "php", "libpq.dll"]));
-			__pushCandidate(candidates, Path.join([cwd, "..", "php", "libpq.dll"]));
-			__pushCandidate(candidates, Path.join([exeDir, "libpq.dll"]));
-			__pushCandidate(candidates, Path.join([exeDir, "..", "..", "..", "..", "php", "libpq.dll"]));
-			__pushCandidate(candidates, "libpq.dll");
-		} else {
-			__pushCandidate(candidates, "libpq.so.5");
-			__pushCandidate(candidates, "libpq.so");
+		switch (platform) {
+			case "windows":
+				__pushCandidate(candidates, Path.join([cwd, "php", "libpq.dll"]), platform);
+				__pushCandidate(candidates, Path.join([cwd, "..", "php", "libpq.dll"]), platform);
+				__pushCandidate(candidates, Path.join([exeDir, "libpq.dll"]), platform);
+				__pushCandidate(candidates, Path.join([exeDir, "..", "..", "..", "..", "php", "libpq.dll"]), platform);
+				__pushCandidate(candidates, "libpq.dll", platform);
+			case "mac":
+				// macOS names it libpq.5.dylib, and looked for as libpq.so it
+				// was never found: a Mac could not load libpq at all. By name
+				// first, where dyld looks by itself, then beside the program,
+				// then where Homebrew, Postgres.app, the PostgreSQL installer
+				// and MacPorts put it, the newest PostgreSQL first.
+				__pushCandidate(candidates, "libpq.5.dylib", platform);
+				__pushCandidate(candidates, "libpq.dylib", platform);
+				__pushCandidate(candidates, Path.join([exeDir, "libpq.5.dylib"]), platform);
+
+				for (directory in MAC_LIBPQ_DIRECTORIES) {
+					__pushCandidate(candidates, directory + "/libpq.5.dylib", platform);
+				}
+
+				__pushInstalls(candidates, "/Library/PostgreSQL", "", "/lib/libpq.5.dylib", platform);
+				__pushInstalls(candidates, "/opt/local/lib", "postgresql", "/libpq.5.dylib", platform);
+			default:
+				__pushCandidate(candidates, "libpq.so.5", platform);
+				__pushCandidate(candidates, "libpq.so", platform);
 		}
 		return candidates;
 	}
 
-	@:noCompletion private function __pushCandidate(candidates:Array<String>, raw:String):Void {
+	/**
+		`<root>/<directory><rest>` for each directory in `root` named `prefix`
+		and a version -- `16`, `postgresql16` -- the newest first. Nothing
+		when `root` cannot be read.
+	**/
+	@:noCompletion private function __pushInstalls(candidates:Array<String>, root:String, prefix:String, rest:String, platform:String):Void {
+		var versions:Array<{name:String, version:Float}> = [];
+
+		try {
+			if (!FileSystem.exists(root) || !FileSystem.isDirectory(root)) {
+				return;
+			}
+
+			for (name in FileSystem.readDirectory(root)) {
+				if (!StringTools.startsWith(name, prefix)) {
+					continue;
+				}
+
+				var version:Float = Std.parseFloat(name.substr(prefix.length));
+
+				if (!Math.isNaN(version)) {
+					versions.push({name: name, version: version});
+				}
+			}
+		} catch (_:Dynamic) {
+			return;
+		}
+
+		versions.sort((a, b) -> a.version < b.version ? 1 : (a.version > b.version ? -1 : 0));
+
+		for (entry in versions) {
+			__pushCandidate(candidates, root + "/" + entry.name + rest, platform);
+		}
+	}
+
+	/**
+		`raw`, trimmed, unless it is empty or listed already. A directory
+		stands for the names libpq has in it on `platform`: `libpq.dll` on
+		Windows, `libpq.5.dylib` and `libpq.dylib` on macOS, and elsewhere
+		`libpq.so.5` and `libpq.so`. It stood for `libpq.so` alone, which only
+		a development package installs: a directory holding the runtime's
+		`libpq.so.5` was looked in and not found.
+	**/
+	@:noCompletion private function __pushCandidate(candidates:Array<String>, raw:String, platform:String):Void {
 		if (raw == null) {
 			return;
 		}
@@ -907,7 +990,21 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		}
 
 		if (FileSystem.exists(trimmed) && FileSystem.isDirectory(trimmed)) {
-			trimmed = Path.join([trimmed, crossbyte.sys.System.isWindows ? "libpq.dll" : "libpq.so"]);
+			var names:Array<String> = switch (platform) {
+				case "windows": ["libpq.dll"];
+				case "mac": ["libpq.5.dylib", "libpq.dylib"];
+				default: ["libpq.so.5", "libpq.so"];
+			};
+
+			for (name in names) {
+				var path:String = Path.join([trimmed, name]);
+
+				if (candidates.indexOf(path) == -1) {
+					candidates.push(path);
+				}
+			}
+
+			return;
 		}
 
 		if (candidates.indexOf(trimmed) == -1) {
