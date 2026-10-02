@@ -2287,6 +2287,16 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An HTTP/2 connection holds the header sections of requests whose bodies
+  are still to come to a quarter of `http2MaxRequestBodyBuffer`, a
+  megabyte at the default, by HPACK's count, and refuses a stream whose
+  section would go past it with `REFUSED_STREAM`, never having reached the
+  application. Each was held until its body had arrived, flow control
+  cannot hold a HEADERS back, and HPACK makes a large one cheap to send:
+  128 streams each carrying a 4 KB cookie fifteen times grew the heap by
+  9.3 MB from 318 KB on the wire, for good with `requestTimeout` at `0`.
+  The same client now has 17 streams taken and 2 MB held (native).
+  Bodiless requests are handed over at once and are not counted.
 - An HTTP/1.1 request still being answered keeps its answer when the
   requests pipelined behind it outgrow what one connection holds,
   `maxRequestBodySize` and the header allowance. They were counted with

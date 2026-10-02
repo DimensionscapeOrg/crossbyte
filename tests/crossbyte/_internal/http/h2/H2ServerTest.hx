@@ -593,6 +593,30 @@ class H2ServerTest extends utest.Test {
 		Assert.isNull(server.failure);
 	}
 
+	public function testHeaderSectionsWaitingOnTheirBodiesAreHeldToAnAllowance():Void {
+		// A header section whose body is still to come is held until the body
+		// has arrived, and flow control cannot hold a HEADERS back. At a 4 MB
+		// budget a megabyte of them is held, by HPACK's count: the 17 sections
+		// of 60 KB that fit are taken, the 18th is refused, REFUSED_STREAM, and
+		// once one of them has its body another is taken in its place.
+		// Bodiless requests are handed over at once, and not counted.
+		var server = new Budgeted(4 * 1024 * 1024, 1024 * 1024);
+		var big = [new HpackHeader("x-big", StringTools.lpad("", "y", 60000))];
+		for (i in 0...18) {
+			server.open(1 + i * 2, 10, big);
+		}
+		for (i in 0...17) {
+			Assert.equals(-1, server.resetCode(1 + i * 2), 'section ${i + 1} of 17 that fit was refused');
+		}
+		Assert.equals(7, server.resetCode(35), "a section past the allowance was taken");
+
+		server.data(1, 10, true);
+		Assert.equals(1, server.delivered.length);
+		server.open(37, 10, big);
+		Assert.equals(-1, server.resetCode(37), "the room the delivered one held was not given back");
+		Assert.isNull(server.failure);
+	}
+
 	public function testAStreamLeftWaitingIsRefusedOnceNothingMoves():Void {
 		// The first two uploads hold their windows and send nothing; the third
 		// and fourth spend theirs and wait. A body arriving moves the clock on;
@@ -1569,8 +1593,12 @@ private class Budgeted {
 		receiveAll(out);
 	}
 
-	/** Opens `id` with a POST whose body is to follow, declaring `length` unless it is null. **/
-	public function open(id:Int, ?length:Int):Void {
+	/**
+		Opens `id` with a POST whose body is to follow, declaring `length`
+		unless it is null, with `extra` fields after the rest: its block split
+		into CONTINUATION frames as the frame size needs.
+	**/
+	public function open(id:Int, ?length:Int, ?extra:Array<HpackHeader>):Void {
 		var fields = [
 			new HpackHeader(":method", "POST"),
 			new HpackHeader(":scheme", "http"),
@@ -1579,10 +1607,21 @@ private class Budgeted {
 		if (length != null) {
 			fields.push(new HpackHeader("content-length", Std.string(length)));
 		}
+		if (extra != null) {
+			for (field in extra) {
+				fields.push(field);
+			}
+		}
 		var block = __encoder.encode(fields);
 		var out = new BytesBuffer();
-		H2Frame.writeHeader(out, block.length, H2FrameType.HEADERS, H2Flags.END_HEADERS, id);
-		out.addBytes(block, 0, block.length);
+		var offset:Int = 0;
+		do {
+			var chunk:Int = block.length - offset > 16384 ? 16384 : block.length - offset;
+			var last:Bool = offset + chunk >= block.length;
+			H2Frame.writeHeader(out, chunk, offset == 0 ? H2FrameType.HEADERS : H2FrameType.CONTINUATION, last ? H2Flags.END_HEADERS : 0, id);
+			out.addBytes(block, offset, chunk);
+			offset += chunk;
+		} while (offset < block.length);
 		receiveAll(out);
 	}
 

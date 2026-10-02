@@ -54,6 +54,13 @@ class H2Stream {
 	**/
 	public var waiting:Bool = false;
 
+	/**
+		On the server, what this stream's header section counts against its
+		connection's allowance while its body is still to come, by HPACK's
+		accounting; `0` once it is not counted.
+	**/
+	public var heldHeaders:Int = 0;
+
 	/** Received but not yet acknowledged with WINDOW_UPDATE. */
 	public var unacknowledged:Int = 0;
 
