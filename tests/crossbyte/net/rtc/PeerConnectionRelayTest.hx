@@ -22,6 +22,8 @@ import utest.Assert;
 	the relay refuses to forward anything from an address no permission covers,
 	which is what RFC 8656 requires and what turns "the answer went out the
 	wrong way" from an invisible detail into a connection that does not come up.
+	(macOS has only 127.0.0.1 on loopback until given the other two, as
+	`ReliableDatagramRelayTest` says.)
 
 	Without all three, a peer answering a check straight back at the relayed
 	address it appears to come from would reach the relay's own socket, be
