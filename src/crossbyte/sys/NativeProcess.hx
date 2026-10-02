@@ -215,8 +215,12 @@ class NativeProcess extends EventDispatcher {
 			} catch (_:Dynamic) {}
 		} catch (e:Dynamic) {
 			__exitCode = -1;
-			if (__running) {
-				__worker.sendError(Std.string(e));
+			// Whether or not exit() asked for the end, it has come, and EXIT is
+			// owed: this sent nothing once exit() had cleared __running, and a
+			// child stopped that way was never reported as gone.
+			var worker:Worker = __worker;
+			if (worker != null) {
+				worker.sendError(Std.string(e));
 			}
 		}
 		__running = false;
@@ -324,6 +328,14 @@ class NativeProcess extends EventDispatcher {
 		var code:Int = __hlExit(handle, null);
 		hl.Gc.blocking(false);
 		return code;
+		#elseif (jvm && !macro)
+		// The JDK's wait, not Haxe's exitCode(), which first reads whatever
+		// output is left into a buffer of its own: the readers have read it
+		// all by now, and on Linux the JDK's destroy() closes the streams, so
+		// after exit() that read threw "Stream closed" and EXIT never came.
+		var process:java.lang.Process = @:privateAccess __process.proc;
+		process.waitFor();
+		return process.exitValue();
 		#else
 		return __process.exitCode();
 		#end

@@ -2283,6 +2283,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On the jvm on Linux, a `NativeProcess` stopped with `exit()` reports
+  `EXIT`. The JDK's `destroy()` closes the child's streams there, and the
+  wait for its exit code first read what was left of them, which threw;
+  with the process already stopping, nothing was reported, and `EXIT`
+  never came. The wait asks the JDK's process directly now, and an end
+  that fails to read its code is still reported, as `EXIT` with -1, on
+  every threaded target.
 - A native server on macOS shuts down gracefully on SIGHUP when its shell
   had handled SIGHUP itself. macOS keeps a signal's SA_SIGINFO flag across
   exec while putting its handler back to the default, and
