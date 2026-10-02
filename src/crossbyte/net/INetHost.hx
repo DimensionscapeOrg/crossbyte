@@ -60,11 +60,12 @@ interface INetHost {
 	 * Opens an outgoing session from this host's listening endpoint.
 	 *
 	 * `timeoutMs` bounds the connect: 20 seconds unless given, 0 for no
-	 * deadline.
+	 * deadline. (`ReliableDatagramSocket.DEFAULT_TIMEOUT`, written out here:
+	 * that class is not built for the browser, and this interface is.)
 	 *
 	 * @throws crossbyte.errors.IllegalOperationError when `canDial` is false.
 	 */
-	public function dial(address:String, port:Int, timeoutMs:Int = ReliableDatagramSocket.DEFAULT_TIMEOUT):INetConnection;
+	public function dial(address:String, port:Int, timeoutMs:Int = 20000):INetConnection;
 
 	/**
 	 * Asks a STUN server how this host's listening endpoint appears from
@@ -138,7 +139,7 @@ interface INetHost {
 	 *
 	 * @throws crossbyte.errors.IllegalOperationError when `canDial` is false.
 	 */
-	public function dialRelayed(address:String, port:Int, timeoutMs:Int = ReliableDatagramSocket.DEFAULT_TIMEOUT):INetConnection;
+	public function dialRelayed(address:String, port:Int, timeoutMs:Int = 20000):INetConnection;
 
 	/**
 	 * Lets a peer reach this host through the relay before this host has sent
