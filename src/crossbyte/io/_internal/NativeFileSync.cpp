@@ -20,6 +20,11 @@
 #include <sys/types.h>
 #include <unistd.h>
 #endif
+#if defined(__APPLE__)
+#include <stdint.h>
+#include <mach/mach.h>
+#include <sys/sysctl.h>
+#endif
 
 // The file operations Haxe's standard library has no call for: replacing a
 // file atomically, flushing one to stable storage, measuring one past 2 GB,
@@ -476,8 +481,35 @@ double crossbyte_system_memory(bool available) {
 	}
 
 	return static_cast<double>(available ? status.ullAvailPhys : status.ullTotalPhys);
+#elif defined(__APPLE__)
+	// Asked of the kernel: System ran sysctl and vm_stat for these, two
+	// processes and about 0.1 s on the CI runner.
+	if (!available) {
+		uint64_t total = 0;
+		size_t size = sizeof(total);
+		if (sysctlbyname("hw.memsize", &total, &size, nullptr, 0) != 0) {
+			return -1.0;
+		}
+		return static_cast<double>(total);
+	}
+
+	// vm_stat's free, inactive and speculative pages: what a program can be
+	// given without anything being paged out. The host port is asked for
+	// once; each mach_host_self() is a send right of its own.
+	static mach_port_t host = mach_host_self();
+	vm_statistics64_data_t stats;
+	mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+	if (host_statistics64(host, HOST_VM_INFO64, reinterpret_cast<host_info64_t>(&stats), &count) != KERN_SUCCESS) {
+		return -1.0;
+	}
+	vm_size_t page = 0;
+	if (host_page_size(host, &page) != KERN_SUCCESS) {
+		return -1.0;
+	}
+	uint64_t pages = static_cast<uint64_t>(stats.free_count) + stats.inactive_count + stats.speculative_count;
+	return static_cast<double>(pages * static_cast<uint64_t>(page));
 #else
-	// System reads /proc/meminfo, or asks sysctl, there.
+	// System reads /proc/meminfo there.
 	return -1.0;
 #endif
 }

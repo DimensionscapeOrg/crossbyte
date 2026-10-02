@@ -1364,6 +1364,10 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `System.totalSystemMemory()` and `freeSystemMemory()` ask macOS's kernel
+  directly in a native build, as Windows and Linux are asked. Each ran a
+  process, `sysctl` and `vm_stat`: the two took 0.11 s on the CI runner.
+  The jvm on macOS still runs them.
 - `IceAgent.DEFAULT_TIMEOUT`, the time an agent has from `start` to select
   a pair, is 80 seconds, where round three made it 40. A nomination is a
   check, given up on 39.5 seconds after it goes out, and forty was a moment
