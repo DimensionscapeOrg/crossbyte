@@ -4,6 +4,7 @@
 
 #include <string.h>
 
+#include "mbedtls/version.h"
 #include "mbedtls/ssl.h"
 #include "mbedtls/x509_crt.h"
 
@@ -44,4 +45,23 @@ Array<unsigned char> crossbyte_tls_peer_der(::Dynamic ssl) {
 	Array<unsigned char> der = Array_obj<unsigned char>::__new(length, length);
 	memcpy(der->GetBase(), peer->raw.p, peer->raw.len);
 	return der;
+}
+
+::String crossbyte_tls_peer_protocol(::Dynamic ssl) {
+	if (ssl.mPtr == 0 || !ssl.mPtr->_hx_isInstanceOf(hx::clsIdSsl)) {
+		return null();
+	}
+
+	mbedtls_ssl_context *context = reinterpret_cast<HxSslCtx *>(ssl.mPtr)->s;
+	if (context == 0) {
+		return null();
+	}
+
+	// A static string either way: "TLSv1.2", "TLSv1.3", or mbedTLS's word for
+	// a session that has not agreed on one yet.
+	return ::String::create(mbedtls_ssl_get_version(context));
+}
+
+int crossbyte_tls_mbedtls_version() {
+	return (int)MBEDTLS_VERSION_NUMBER;
 }

@@ -22,5 +22,19 @@ extern class NativeTlsPeer {
 	**/
 	@:native("crossbyte_tls_peer_der")
 	static function der(ssl:Dynamic):Null<Array<cpp.UInt8>>;
+
+	/**
+		The protocol the context runs, as mbedTLS names it: `"TLSv1.2"`,
+		`"TLSv1.3"`. Null for anything that is not an hxcpp TLS context.
+	**/
+	@:native("crossbyte_tls_peer_protocol")
+	static function protocol(ssl:Dynamic):Null<String>;
+
+	/**
+		`MBEDTLS_VERSION_NUMBER` of the mbedTLS hxcpp built this program with,
+		`0x03060700` for 3.6.7: 2.28 tops out at TLS 1.2, 3.x speaks TLS 1.3.
+	**/
+	@:native("crossbyte_tls_mbedtls_version")
+	static function mbedtlsVersion():Int;
 }
 #end
