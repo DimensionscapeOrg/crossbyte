@@ -205,6 +205,18 @@ entry below says how:
 - `affectedRows` and `lastInsertRowID` of `PostgresConnection` and
   `MySQLConnection`, and `PostgresRawResult`'s, are `Float`s, where they
   were `Int`s.
+- With the hxcpp fork on mbedTLS 3.6.7, a MySQL server that offers TLS
+  only at 1.0 or 1.1, or a WebRTC peer that speaks only DTLS 1.0, no
+  longer connects; and native code of your own that calls mbedTLS through
+  hxcpp's headers meets its 3.x API, as CrossByte's own was ported to.
+- A static Lime build -- iOS and tvOS always, `-static` elsewhere --
+  compiles Lime's curl against hxcpp's mbedTLS, so with the fork on 3.6.7
+  rebuild Lime against it (`lime rebuild <target> -static`; a library
+  built against 2.28 does not fit). Lime 8.4.0's curl 7.87 then fails
+  every HTTPS request with "ssl_init failed" until it sets its RNG before
+  `mbedtls_ssl_setup`, which mbedTLS 3 requires: a two-line move in
+  `project/lib/curl/lib/vtls/mbedtls.c`. A dynamic build, whose ndll
+  carries its own mbedTLS, is unaffected.
 
 ### Added
 - `SharedObject.remove(name)` takes a region away on Linux and macOS --
@@ -1374,6 +1386,47 @@ entry below says how:
   schedules -- one for a pair to be answered however late, one for its
   nomination to go unanswered -- and still ends every wait nothing else
   does. `PeerConnection` keeps its own `readyTimeout`.
+- With the hxcpp fork on mbedTLS 3.6.7 (its `production` now; 2.28.2
+  before it), native TLS negotiates TLS 1.3 with every peer that offers
+  it: CrossByte's own sockets, WebSocket, HTTPS and HTTP/2 with each
+  other, and Node's OpenSSL as client and as server. TLS
+  1.2 remains for peers without 1.3. A returning client resumes over TLS
+  1.3 too, presenting its ticket back as a pre-shared key, from the same
+  per-server ticket keys. TLS 1.0 and 1.1 stay refused, as hxcpp's sockets
+  already refused them, and now are by the MySQL client as well, as DTLS
+  1.0 is by WebRTC's data channels -- 2.28's defaults let both through.
+  `TlsProtocolTest` pins the version at both ends of a native connection,
+  against OpenSSL in either role, the resumption and the refusal,
+  expecting TLS 1.2 where the build still has 2.28.
+- On mbedTLS 3.6.7, AES-GCM runs on AES-NI in MSVC builds too, where 2.28
+  did every byte of AES in plain C. Measured on Windows (Ryzen 9 9950X) as
+  Node uploading into one native TLS socket, medians of three interleaved
+  runs: AES-256-GCM over TLS 1.2 went from 129 to 328 MB/s, and from 7.7
+  to 3.0 ms of server CPU per MB. mbedTLS's ChaCha20-Poly1305 is still its
+  faster cipher here (415 to 440 MB/s over TLS 1.2, 473 over TLS 1.3, 2.1
+  ms per MB), and it is what CrossByte's own client offers first, so
+  CrossByte talking to itself got faster. But where 2.28's TLS 1.2 server
+  chose ChaCha20 for every client by its own order, a TLS 1.3 server takes
+  the client's, and OpenSSL's comes with AES-256-GCM first: a Node client
+  that uploaded at 361 MB/s (2.7 ms per MB) now uploads at 324 (3.1), about
+  10% slower. AES-128-GCM, which BoringSSL-based clients put first on AES
+  hardware, gives 384 MB/s (2.6).
+- A full TLS handshake costs a native server about a quarter of the CPU it
+  did on mbedTLS 2.28.2, measured the same way with an ECDSA P-256
+  certificate and Node opening a connection per request: 252 handshakes a
+  second at 3.9 ms of CPU each before, 936 at 1.0 ms over TLS 1.3 now
+  (1,049 at 0.94 ms held to TLS 1.2), on one thread.
+- CrossByte's native code that calls mbedTLS -- RSA and ECDSA signatures,
+  DTLS certificates and sessions, ALPN, a TLS peer's certificate -- builds
+  against mbedTLS 3.x as well as 2.28, so it works with the hxcpp fork
+  whichever it bundles, and compiles against the include path and
+  configuration hxcpp builds the library with (its `mbedtls-flags.xml`)
+  instead of a partial copy of that configuration. Against 3.6.7, four of
+  those files did not compile: 3.x takes randomness to parse a private key
+  and a buffer's size to sign into, made the ALPN list and an EC key's
+  group private, and dropped `mbedtls_sha256_ret`. A DTLS certificate's
+  serial is set with `mbedtls_x509write_crt_set_serial_raw` from 3.4 on,
+  still in DER's shortest form.
 - Off native, `DtlsCertificate`'s constructor, `generate`, `fingerprintOf`
   and `matches` throw an `IllegalOperationError` naming the target, and
   each says so in its documentation. The constructor threw "That
@@ -2295,6 +2348,23 @@ entry below says how:
   instead (`ECONNABORTED`), which a native server counted in
   `acceptFailures` and reported as an `ioError` of its own; it takes the
   next connection now, as libuv and Go do.
+- A connection a native TLS server accepted no longer reads freed memory
+  once the server has closed its listener: after `stopAccepting()` or
+  `HTTPServer.drain()`, or under a server closed with connections still
+  open. hxcpp sets every accepted connection up on its listener's TLS
+  configuration, and freed that configuration with the listener. With the
+  fork's mbedTLS 3.6.7 on Linux the next read on such a connection
+  crashed the process -- the posix native suite did, in
+  `HTTPServerTLSTest`, on every run -- where 2.28 read zeros unnoticed.
+  The fork now keeps a configuration until the last connection on it has
+  gone; `TlsProtocolTest` reads the configuration through an accepted
+  connection after `stopAccepting()`, and sends over it.
+- `Socket.alpnProtocol` on such a connection still names the protocol it
+  agreed. The connection points into its listener's ALPN list, which
+  CrossByte freed when the listener closed, and the next allocations of
+  that size took the memory over. Each distinct list is now kept for the
+  life of the process, one copy however many sockets install it, so the
+  HTTP/2 client no longer allocates one for every connection either.
 - `FileStream.readObject` refuses an object nested past the same depth
   `ByteArray.readObject` now does, with an `IOError`, in both open modes:
   a file holding an object nested a few thousand deep ran the reader out

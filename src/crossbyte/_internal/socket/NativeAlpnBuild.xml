@@ -10,7 +10,10 @@
 	<files id="crossbyte-alpn-native">
 		<depend files="hxcpp-depends"/>
 		<compilerflag value="-I${this_dir}"/>
-		<compilerflag value="-I${MBEDTLS_DIR}/include"/>
+		<!-- The include path and configuration hxcpp builds its mbedTLS with,
+		     2.28 or 3.6: this file reads a field of mbedtls_ssl_config, whose
+		     layout is the configuration's. -->
+		<include name="${HXCPP}/project/thirdparty/mbedtls-flags.xml"/>
 		<file name="${this_dir}/NativeAlpn.cpp">
 			<depend name="${this_dir}/NativeAlpn.h"/>
 		</file>

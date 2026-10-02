@@ -1,16 +1,6 @@
 #include "NativeDtls.h"
 
-// Not a preference: hxcpp compiles mbedtls with MBEDTLS_THREADING_C, which adds
-// a mutex member to mbedtls_ctr_drbg_context and mbedtls_entropy_context among
-// others. A translation unit that disagrees with the library about the size of
-// those structs declares a smaller one than the library then writes into, and
-// the overrun reports success and kills the process somewhere else entirely --
-// which is exactly how this file behaved before NativeDtlsBuild.xml set the
-// flags. Failing the build is the cheaper outcome by a wide margin.
-#ifndef MBEDTLS_THREADING_C
-#error "NativeDtlsBuild.xml must define MBEDTLS_THREADING_C to match how hxcpp builds mbedtls, or every struct shared with it is the wrong size."
-#endif
-
+#include <mbedtls/version.h>
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/ecp.h>
 #include <mbedtls/entropy.h>
@@ -18,6 +8,19 @@
 #include <mbedtls/platform_util.h>
 #include <mbedtls/sha256.h>
 #include <mbedtls/x509_crt.h>
+
+// Not a preference: hxcpp compiles mbedtls with MBEDTLS_THREADING_C, which adds
+// a mutex member to mbedtls_ctr_drbg_context and mbedtls_entropy_context among
+// others. A translation unit that disagrees with the library about the size of
+// those structs declares a smaller one than the library then writes into, and
+// the overrun reports success and kills the process somewhere else entirely --
+// which is exactly how this file behaved before it was built against hxcpp's
+// mbedTLS configuration. Failing the build is the cheaper outcome by a wide
+// margin. Checked after the includes, which are what bring the configuration
+// in.
+#ifndef MBEDTLS_THREADING_C
+#error "NativeDtlsBuild.xml must compile this against hxcpp's mbedtls-flags.xml, which sets MBEDTLS_THREADING_C as hxcpp builds mbedtls, or every struct shared with it is the wrong size."
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -142,10 +145,12 @@ int crossbyte_dtls_last_error()
       // make the DER integer negative.
       serialBytes[0] &= 0x7F;
 
+#if MBEDTLS_VERSION_NUMBER < 0x03040000
       ret = mbedtls_mpi_read_binary(&serial, serialBytes, sizeof(serialBytes));
 
       if (ret != 0)
          break;
+#endif
 
       char subject[256];
       int written = snprintf(subject, sizeof(subject), "CN=%s", name);
@@ -174,7 +179,21 @@ int crossbyte_dtls_last_error()
       if (ret != 0)
          break;
 
+#if MBEDTLS_VERSION_NUMBER >= 0x03040000
+      // The bytes as they are, with leading zeros skipped: mbedTLS writes a
+      // raw serial verbatim, and DER wants an integer's shortest form, which
+      // is what the bignum below gives 2.28.
+      {
+         size_t skip = 0;
+
+         while (skip < sizeof(serialBytes) - 1 && serialBytes[skip] == 0)
+            skip++;
+
+         ret = mbedtls_x509write_crt_set_serial_raw(&crt, serialBytes + skip, sizeof(serialBytes) - skip);
+      }
+#else
       ret = mbedtls_x509write_crt_set_serial(&crt, &serial);
+#endif
 
       if (ret != 0)
          break;
@@ -266,7 +285,11 @@ int crossbyte_dtls_last_error()
       // Over cert.raw, which is the DER the PEM decoded to. Hashing the PEM
       // text instead would give two different answers for one certificate and
       // agree with no peer on the other end.
+#if MBEDTLS_VERSION_NUMBER >= 0x03000000
+      if (mbedtls_sha256(cert.raw.p, cert.raw.len, hash, 0) == 0)
+#else
       if (mbedtls_sha256_ret(cert.raw.p, cert.raw.len, hash, 0) == 0)
+#endif
       {
          char formatted[32 * 3];
          static const char *digits = "0123456789ABCDEF";
