@@ -119,20 +119,32 @@ class MySQLNativeWireTest extends utest.Test {
 		// connect() itself had no limit: to a host that drops the SYN it
 		// waited for as long as the system resent it, 21 seconds on Windows
 		// and over two minutes on Linux. Here, a listener that never accepts,
-		// with room in its queue for one connection: once that is taken the
-		// next SYN goes unanswered, on Linux for good, on Windows until it
-		// refuses the connection a couple of seconds later.
+		// its queue filled: the next SYN goes unanswered, on Linux and macOS
+		// for good, on Windows until it refuses the connection a couple of
+		// seconds later. The queue is filled until a connect is not answered,
+		// not by a count assumed: one connection filled a listen(0) on Linux
+		// and Windows, and macOS made the next connection all the same, so
+		// the server's greeting timed out instead (2013).
 		var listener:sys.net.Socket = new sys.net.Socket();
 		listener.bind(new sys.net.Host("127.0.0.1"), 0);
-		listener.listen(0);
+		listener.listen(1);
 		var port:Int = listener.host().port;
-		var filler:sys.net.Socket = new sys.net.Socket();
-		// Bounds the filler on Linux, should its connect go unanswered too.
-		filler.setTimeout(2.0);
+		var fillers:Array<sys.net.Socket> = [];
+		var unanswered:Bool = false;
 
-		try {
-			filler.connect(new sys.net.Host("127.0.0.1"), port);
-		} catch (_:Dynamic) {}
+		while (!unanswered && fillers.length < 64) {
+			var filler:sys.net.Socket = new sys.net.Socket();
+			fillers.push(filler);
+			filler.setBlocking(false);
+
+			try {
+				filler.connect(new sys.net.Host("127.0.0.1"), port);
+			} catch (_:Dynamic) {}
+
+			// Writable, or failed, once answered either way.
+			var ready = sys.net.Socket.select([], [filler], [filler], 0.25);
+			unanswered = ready.write.length == 0 && ready.others.length == 0;
+		}
 
 		var config:MySQLConfig = {
 			host: "127.0.0.1",
@@ -152,13 +164,52 @@ class MySQLNativeWireTest extends utest.Test {
 		}
 
 		var elapsed:Float = haxe.Timer.stamp() - started;
-		filler.close();
+
+		for (filler in fillers) {
+			filler.close();
+		}
+
 		listener.close();
 
 		Assert.isTrue(elapsed < 3.0, "the connect was not bounded: " + elapsed + " s");
 		Require.notNull(error);
+		Assert.isTrue(unanswered, 'every one of ${fillers.length} connects to a listener that takes nobody was answered');
 		Assert.equals(2003, error.code);
 		Assert.isTrue(error.message.indexOf("Timed out after 0.3 seconds connecting") >= 0, error.message);
+	}
+
+	public function testAConnectionTheServerNeverGreetsIsNotACannotConnect():Void {
+		// The other side of connectTimeout's contract: a listener whose queue
+		// has room completes the connection before the server takes it, so a
+		// server too busy to accept is one that said nothing, 2013, and
+		// what ran out was the greeting, not one that could not be reached.
+		var listener:sys.net.Socket = new sys.net.Socket();
+		listener.bind(new sys.net.Host("127.0.0.1"), 0);
+		listener.listen(16);
+		var config:MySQLConfig = {
+			host: "127.0.0.1",
+			port: listener.host().port,
+			user: "app",
+			password: "secret",
+			database: "app",
+			connectTimeout: 0.3
+		};
+		var started:Float = haxe.Timer.stamp();
+		var error:MySQLConnectionError = null;
+
+		try {
+			new MySQLConnection().open(config);
+		} catch (e:MySQLConnectionError) {
+			error = e;
+		}
+
+		var elapsed:Float = haxe.Timer.stamp() - started;
+		listener.close();
+
+		Assert.isTrue(elapsed < 3.0, "the connect was not bounded: " + elapsed + " s");
+		Require.notNull(error);
+		Assert.equals(2013, error.code);
+		Assert.isTrue(error.message.indexOf("Timed out after 0.3 seconds waiting for the server's greeting") >= 0, error.message);
 	}
 
 	public function testAReadTimeoutFailsTheStatementAndClosesTheConnection():Void {
