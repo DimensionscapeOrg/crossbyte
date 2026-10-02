@@ -99,6 +99,9 @@ class H2ConnectionHandler implements PassFlush {
 		// The limit an HTTP/1.1 body is held to. Without it DATA piled up for
 		// as long as a client sent it.
 		__connection.maxRequestBodySize = config.maxRequestBodySize;
+		// And what all of them hold at once, across the streams: HTTP/1.1
+		// holds one body, and this held up to 128.
+		__connection.requestBodyBudget = config.http2MaxRequestBodyBuffer;
 		// What HTTP/1.1 closes after: keepAliveMaxRequests responses, or one
 		// with keepAlive off. A GOAWAY says so here.
 		__connection.maxRequests = config.keepAlive ? config.keepAliveMaxRequests : 1;
@@ -108,6 +111,9 @@ class H2ConnectionHandler implements PassFlush {
 		__connection.onConnectionError = __onConnectionError;
 		__connection.outputRoom = __outputRoom;
 		__connection.onHolding = __hold;
+		// A stream waiting for window is held to the same sweep, whatever the
+		// timeouts are: see __checkHeld.
+		__connection.onWaiting = __hold;
 		__connection.stallSeconds = HTTPRequestHandler.STREAM_STALL_SECONDS;
 
 		__socket.addEventListener(ProgressEvent.SOCKET_DATA, __onData);
@@ -234,12 +240,13 @@ class H2ConnectionHandler implements PassFlush {
 
 	/**
 	 * Holds this connection to the stall deadline while it holds anything for
-	 * its client: the server's sweep runs `__checkHeld` until it holds
-	 * nothing. Called when a stream is left with bytes waiting, and when a
-	 * flush leaves bytes in the socket. Whatever the timeouts are, as for a
-	 * body being pumped out: a response written whole and held -- by flow
-	 * control, or by a socket its client stopped reading -- had no deadline
-	 * at all, and with `keepAliveTimeout` at `0` was held for good.
+	 * its client, or has a stream waiting for window: the server's sweep runs
+	 * `__checkHeld` until neither is so. Called when a stream is left with
+	 * bytes waiting, when a flush leaves bytes in the socket, and when a
+	 * stream starts waiting for request-body budget. Whatever the timeouts
+	 * are, as for a body being pumped out: a response written whole and held
+	 * -- by flow control, or by a socket its client stopped reading -- had no
+	 * deadline at all, and with `keepAliveTimeout` at `0` was held for good.
 	 */
 	private function __hold():Void {
 		if (__holding || __sweepWith == null || !__socket.connected) {
@@ -319,12 +326,20 @@ class H2ConnectionHandler implements PassFlush {
 			__serveParked();
 		}
 
+		// A stream waiting for request-body budget that nothing on the
+		// connection is moving toward is refused, its client told to send it
+		// again (H2ServerConnection.expireWaiting).
+		if (__connection.waitingStreams > 0) {
+			__connection.expireWaiting(now);
+			__flushOut();
+		}
+
 		if (drained) {
 			close();
 			return;
 		}
 
-		if (__connection.queuedBytes <= 0 && __socket.outputBufferLength <= 0) {
+		if (__connection.queuedBytes <= 0 && __socket.outputBufferLength <= 0 && __connection.waitingStreams <= 0) {
 			__release();
 		}
 	}

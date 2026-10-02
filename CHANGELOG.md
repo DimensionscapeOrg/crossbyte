@@ -228,6 +228,10 @@ entry below says how:
   and a dial throws for a negative timeout.
 
 ### Added
+- `HTTPServerConfig.http2MaxRequestBodyBuffer`: what one HTTP/2 connection
+  holds of request bodies at once, across all its streams -- 4 MB
+  (`DEFAULT_HTTP2_REQUEST_BODY_BUFFER`) unless changed, `0` for no limit,
+  never less than `maxRequestBodySize`. See Fixed.
 - `SharedObject.remove(name)` takes a region away on Linux and macOS --
   with, on macOS, its lock file -- where it otherwise outlives every
   handle until the machine restarts, and nothing could remove it. Handles
@@ -2470,6 +2474,63 @@ entry below says how:
   and `ReliableDatagramServerSocket`'s `detachIceAgent()` and
   `releaseRelay()`, which failed an `allocateRelay` still waiting on the
   calling thread.
+- An HTTP/2 connection holds the header sections of requests whose bodies
+  are still to come to a quarter of `http2MaxRequestBodyBuffer` -- a
+  megabyte at the default, by HPACK's count -- and refuses a stream whose
+  section would go past it with `REFUSED_STREAM`, never having reached the
+  application. Each was held until its body had arrived, flow control
+  cannot hold a HEADERS back, and HPACK makes a large one cheap to send:
+  128 streams each carrying a 4 KB cookie fifteen times grew the heap by
+  9.3 MB from 318 KB on the wire, for good with `requestTimeout` at `0`.
+  The same client now has 17 streams taken and 2 MB held (native).
+  Bodiless requests are handed over at once and are not counted.
+- An HTTP/1.1 request still being answered keeps its answer when the
+  requests pipelined behind it outgrow what one connection holds --
+  `maxRequestBodySize` and the header allowance. They were counted with
+  it, and past that the request being answered was answered `413` over its
+  own answer, which was lost: three pipelined 600 KB uploads, each under
+  the 1 MB limit, behind a route answering a moment later came back as one
+  `413`. The whole buffer was held to the limit before any of it was
+  parsed, too, so a read bringing the end of one request and the ones
+  behind it at once -- as reads on Linux do -- was answered `413` before
+  the first was handed over. Behind a file being sent, the file was cut
+  off where it was and the connection closed. A read is parsed first now,
+  and what is left behind the request being answered is held to the
+  limit: what does not fit is dropped, with whatever arrives after it,
+  and the connection closes once the answer has gone, saying
+  `Connection: close` when its head has not gone yet; the requests it
+  held go unanswered, which a client that pipelines sends again (RFC 9112
+  9.3.2). A request still arriving is held to the limit as before.
+- One HTTP/2 connection holds no more than
+  `HTTPServerConfig.http2MaxRequestBodyBuffer` of request bodies at once
+  -- 4 MB by default, never less than one body at `maxRequestBodySize`.
+  Each stream let its body grow to `maxRequestBodySize`, and both
+  flow-control windows were opened again as every byte arrived, so a
+  client uploading slowly on all 128 streams made the server hold 128
+  bodies, 128 MB at the defaults, and with `requestTimeout` at `0` for
+  good: 16, 64 and 128 MB measured for 16, 64 and 128 uploads of a
+  megabyte stopped a byte short (heap +25, +99 and +197 MB, native). The
+  same client now leaves 2.3, 3 and 4 MB (heap +7, +9 and +13 MB), and
+  none of its uploads is refused. It is held with HTTP/2's own flow
+  control. The connection's window is opened to the budget and given back
+  only for bytes let go; every stream's first window, which a client may
+  use unasked, is made small enough for all 128 to fit beside one whole
+  body -- 16 KB at the defaults, the protocol's 64 KB from a budget of
+  about 9 MB -- and a stream's window is opened past it as its HEADERS
+  arrive, up to a megabyte at a time, oldest stream first, from what is
+  left once every older stream's remaining body is set aside. The oldest
+  upload always finishes, and uploads that do not all fit wait for window
+  rather than each taking a share and none finishing. Parallel uploads go
+  faster than before, a stream's window having been held to 64 KB (one
+  connection, native: 8 x 1 MB 292 to 313 MB/s, 1 x 4 MB 246 to 282, 32 x
+  64 KB 269 to 323); a body between 16 and 64 KB waits one round trip for
+  its window. Nothing checked that a client kept to its windows at all,
+  so one that ignored them sent what it liked: DATA past a stream's window
+  now resets the stream, and past the connection's ends the connection,
+  with `FLOW_CONTROL_ERROR`. A stream left waiting for window, with no
+  body arriving and none finishing on its connection for 30 s, is reset
+  with `REFUSED_STREAM` -- never handed to the application, so safe to
+  send again -- whatever the timeouts are.
 - A reliable UDP session asks for its window of socket buffer on Linux
   whatever the system's default reads. Linux reads back twice what was
   asked, counting its own bookkeeping, and a default that read a window's
