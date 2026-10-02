@@ -2481,14 +2481,19 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * fires because control never comes back to check it.
 	 *
 	 * The obvious mitigation does not work, and was measured rather than
-	 * assumed: setting a socket timeout does reach the recv — SO_RCVTIMEO
-	 * expires on schedule — but eval raises the expiry as an OCaml
-	 * `Unix.Unix_error(ETIMEDOUT, "recv")` that no Haxe catch intercepts.
-	 * Neither `catch (e:haxe.Exception)` nor `catch (e:Dynamic)` sees it, not
-	 * even the shim's own catch around the read, and the interpreter aborts.
-	 * That trades a stalled connection for an uncatchable process death, so
-	 * the timeout is deliberately not set here. Run wss on cpp/hxcpp or jvm,
-	 * where the descriptor really is non-blocking and this path is bounded.
+	 * assumed -- again once the vendored sys.net.Socket learned to survive
+	 * eval's socket errors, so that a plain socket's read that times out
+	 * now throws `Blocked`. A TLS handshake's reads are not that socket's:
+	 * eval makes them inside its own mbedTLS binding, which the shim does
+	 * not reach. A socket timeout does reach that recv -- SO_RCVTIMEO
+	 * expires on schedule -- but eval raises the expiry as an OCaml
+	 * `Unix.Unix_error` (`ETIMEDOUT` on Windows, `EAGAIN` on Linux) that no
+	 * Haxe catch intercepts, and the interpreter ends: a client handshake
+	 * against a server that never answers, with a one-second timeout, did
+	 * on both. That trades a stalled connection for an uncatchable process
+	 * death, so the timeout is deliberately not set here. Run wss on
+	 * cpp/hxcpp or jvm, where the descriptor really is non-blocking and
+	 * this path is bounded.
 	 */
 	#if !nodejs
 	private function __initSSLHandshake():Void {
