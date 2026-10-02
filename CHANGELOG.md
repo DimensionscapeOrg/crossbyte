@@ -195,6 +195,10 @@ entry below says how:
   target first. `System.getDeviceId()` answers `null`, not `""`, where
   there is no identifier, and `totalSystemMemory()` and
   `freeSystemMemory()` throw where nothing answers, where they answered 0.
+- With the hxcpp fork on mbedTLS 3.6.7, a MySQL server that offers TLS
+  only at 1.0 or 1.1, or a WebRTC peer that speaks only DTLS 1.0, no
+  longer connects; and native code of your own that calls mbedTLS through
+  hxcpp's headers meets its 3.x API, as CrossByte's own was ported to.
 
 ### Added
 - `SharedObject.remove(name)` takes a region away on Linux and macOS,
@@ -1344,6 +1348,18 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- With the hxcpp fork on mbedTLS 3.6.7 (its branch `feature/mbedtls-3.6.7`,
+  for `production`; 2.28.2 before it), native TLS negotiates TLS 1.3 with
+  every peer that offers it: CrossByte's own sockets, WebSocket, HTTPS and
+  HTTP/2 with each other, and Node's OpenSSL as client and as server. TLS
+  1.2 remains for peers without 1.3. A returning client resumes over TLS
+  1.3 too, presenting its ticket back as a pre-shared key, from the same
+  per-server ticket keys. TLS 1.0 and 1.1 stay refused, as hxcpp's sockets
+  already refused them, and now are by the MySQL client as well, as DTLS
+  1.0 is by WebRTC's data channels, 2.28's defaults let both through.
+  `TlsProtocolTest` pins the version at both ends of a native connection,
+  against OpenSSL in either role, the resumption and the refusal,
+  expecting TLS 1.2 where the build still has 2.28.
 - CrossByte's native code that calls mbedTLS, RSA and ECDSA signatures,
   DTLS certificates and sessions, ALPN, a TLS peer's certificate, builds
   against mbedTLS 3.x as well as 2.28, so it works with the hxcpp fork
