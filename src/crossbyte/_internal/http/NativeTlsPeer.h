@@ -17,5 +17,10 @@ Array<unsigned char> crossbyte_tls_peer_der(::Dynamic ssl);
 // null for anything that is not one.
 ::String crossbyte_tls_peer_protocol(::Dynamic ssl);
 
+// The end of the handshake the configuration under an hxcpp TLS context says
+// it is, MBEDTLS_SSL_IS_SERVER (1) or MBEDTLS_SSL_IS_CLIENT (0), or -1 for
+// anything that is not one.
+int crossbyte_tls_peer_endpoint(::Dynamic ssl);
+
 // MBEDTLS_VERSION_NUMBER of the mbedTLS hxcpp built this program with.
 int crossbyte_tls_mbedtls_version();
