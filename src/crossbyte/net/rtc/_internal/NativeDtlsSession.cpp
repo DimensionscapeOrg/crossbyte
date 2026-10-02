@@ -1,12 +1,6 @@
 #include "NativeDtlsSession.h"
 
-// See NativeDtls.cpp: hxcpp builds mbedtls with MBEDTLS_THREADING_C, and a file
-// that disagrees about that declares every mutex-bearing struct at the wrong
-// size. The failure is silent until it is fatal somewhere unrelated.
-#ifndef MBEDTLS_THREADING_C
-#error "NativeDtlsBuild.xml must define MBEDTLS_THREADING_C to match how hxcpp builds mbedtls, or every struct shared with it is the wrong size."
-#endif
-
+#include <mbedtls/version.h>
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/debug.h>
 #include <mbedtls/entropy.h>
@@ -15,6 +9,14 @@
 #include <mbedtls/pk.h>
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509_crt.h>
+
+// See NativeDtls.cpp: hxcpp builds mbedtls with MBEDTLS_THREADING_C, and a file
+// that disagrees about that declares every mutex-bearing struct at the wrong
+// size. The failure is silent until it is fatal somewhere unrelated. Checked
+// after the includes, which bring the configuration in.
+#ifndef MBEDTLS_THREADING_C
+#error "NativeDtlsBuild.xml must compile this against hxcpp's mbedtls-flags.xml, which sets MBEDTLS_THREADING_C as hxcpp builds mbedtls, or every struct shared with it is the wrong size."
+#endif
 
 #include <deque>
 #include <map>
@@ -300,9 +302,14 @@ int crossbyte_dtls_open(bool isServer, ::String certificatePem, ::String private
          break;
       }
 
-      // Five arguments, not seven: the RNG parameters are a 3.x addition and
-      // hxcpp ships 2.28.
+      // 3.x takes randomness here, to check an EC private key against its
+      // public half; 2.28 does not. g_drbg is seeded by now.
+#if MBEDTLS_VERSION_NUMBER >= 0x03000000
+      ret = mbedtls_pk_parse_key(&session->key, (const unsigned char *)keyPem, strlen(keyPem) + 1, 0, 0,
+         mbedtls_ctr_drbg_random, &g_drbg);
+#else
       ret = mbedtls_pk_parse_key(&session->key, (const unsigned char *)keyPem, strlen(keyPem) + 1, 0, 0);
+#endif
 
       if (ret != 0)
       {

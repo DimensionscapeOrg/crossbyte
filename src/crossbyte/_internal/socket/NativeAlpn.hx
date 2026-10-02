@@ -37,10 +37,12 @@ extern class NativeAlpn {
 	static function set(conf:Dynamic, protocols:Null<Array<String>>):Int;
 
 	/**
-	 * Releases the list installed for `conf`.
+	 * Called when the socket that installed a list on `conf` is done with it.
 	 *
-	 * mbedTLS stores the list by reference and never owns it, so this has to
-	 * be called when the socket is done or the allocation outlives it.
+	 * Does nothing. mbedTLS stores the list by reference, and each connection
+	 * points at the name its handshake agreed on, with no copy, and the
+	 * connections a listener accepted outlive it. So each distinct list is
+	 * kept for the life of the process, one copy however many configs use it.
 	 */
 	@:native("crossbyte_alpn_release")
 	static function release(conf:Dynamic):Void;
