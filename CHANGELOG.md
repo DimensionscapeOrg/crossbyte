@@ -2283,6 +2283,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On the jvm a refused connect is reported as refused by `WebSocket`,
+  `Socket` and so `NetConnection`, whichever select finds it first. NIO
+  closes a channel whose connect failed, so a select after the one that
+  found the refusal finds nothing: when the runtime's poll found it before
+  a WebSocket's own check, about one connect in 150, the connect waited
+  out its ten-second deadline and ended as a timeout. `Socket` read the
+  reason only from its own select as well.
 - A `Worker` on neko whose work ends it at once, `cancel()` from inside
   `doWork`: reaches `CANCELLED`. About one run in 600 it stayed `RUNNING`
   for good, and `run()` then refused it: a neko object gains a field when
