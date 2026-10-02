@@ -2353,6 +2353,19 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The HTTP/2 client holds a response's header section to one 64 KB
+  allowance, its interim (1xx) responses included, as the HTTP/1.1 client
+  does, and takes a header block after the response's own only as its
+  trailer section, which ends the stream and carries no pseudo-header
+  (RFC 9113 8.1). Every block after the first was taken as more of the
+  response, its fields added to the stream's and its status put over the
+  last, so a server repeating a block grew the response by a block's
+  fields each time, 20 blocks of 1,200 fields kept 24,000 of them, at
+  three bytes a block after the first; and 103s were held to the limit
+  one at a time and dropped, so a server could send them for as long as
+  it liked, each keeping the request from its idle timeout. Either is a
+  malformed or oversized response now: its stream is reset and the
+  request fails, and the connection carries on.
 - The HTTP/2 client holds a response body to `Http.MAX_BODY_SIZE`, 64 MB,
   as the HTTP/1.1 client does: past it the request fails with "Response
   body exceeded N bytes", its stream is reset and what had arrived is let

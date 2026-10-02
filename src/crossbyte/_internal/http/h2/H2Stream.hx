@@ -68,10 +68,19 @@ class H2Stream {
 	public var endOfStream:Bool = false;
 
 	/**
-		True once the request's header section has arrived, on the server: a
-		header block after it is the trailer section (RFC 9113 8.1).
+		True once the request's header section has arrived, on the server, or
+		the response's final one, on the client: a header block after it is
+		the trailer section (RFC 9113 8.1).
 	**/
 	public var headerSectionReceived:Bool = false;
+
+	/**
+		On the client, what the response's header blocks have decoded to so
+		far, by HPACK's accounting, interim (1xx) responses included: held to
+		the connection's header list limit as one section, as the HTTP/1.1
+		client holds a status line, its fields and any 1xx ahead of them.
+	**/
+	public var sectionBytes:Int = 0;
 
 	/**
 		On the client, the most response body this stream holds, in bytes;

@@ -555,6 +555,45 @@ class H2Connection {
 			}
 		}
 
+		if (target.headerSectionReceived) {
+			// After the final response's header block, a HEADERS is the
+			// trailer section (RFC 9113 8.1): it ends the stream and carries
+			// no pseudo-header. Any other was taken as more of the response,
+			// its fields added, its status over the last, so a server that
+			// repeated a block grew the stream by a block's fields each time,
+			// for as long as it went on. Each is held to the limit on its own,
+			// as the HTTP/1.1 client holds trailers apart from the header.
+			var problem:Null<String> = !endStream ? "a header block after the response's did not end the stream" : null;
+			for (header in decoded) {
+				if (problem == null && StringTools.startsWith(header.name, ":")) {
+					problem = "a pseudo-header field in the trailers";
+				}
+			}
+			if (problem != null) {
+				target.failure = "Malformed response: " + problem;
+				resetStream(target.id, H2ErrorCode.PROTOCOL_ERROR);
+				return;
+			}
+			for (header in decoded) {
+				target.headers.push(header);
+			}
+			target.endOfStream = true;
+			__closeStream(target);
+			return;
+		}
+
+		// The response's header section is one allowance, its interim
+		// responses included, as the HTTP/1.1 client's is: each 1xx was held
+		// to the limit on its own and dropped, so 103s could come for as long
+		// as a server liked, each a frame of the stream that kept it from its
+		// idle timeout.
+		target.sectionBytes += __decoder.listSize;
+		if (target.sectionBytes > __decoder.maxHeaderListSize) {
+			target.failure = 'Response header section exceeded the ${__decoder.maxHeaderListSize} byte limit';
+			resetStream(target.id, H2ErrorCode.CANCEL);
+			return;
+		}
+
 		// An interim response, 100 Continue, 103 Early Hints, is a header
 		// block of its own ahead of the final one (RFC 9113 8.1). Its fields
 		// are not the response's and its status is not the response's, so the
@@ -585,6 +624,7 @@ class H2Connection {
 				target.headers.push(header);
 			}
 		}
+		target.headerSectionReceived = true;
 
 		if (endStream) {
 			target.endOfStream = true;
