@@ -161,7 +161,7 @@ class SysSocketResetTest extends utest.Test {
 	/**
 		A select that names a closed socket comes back, with an error, or
 		without the socket, rather than ending the process, as it did on
-		eval.
+		eval. eval and hxcpp throw; hl leaves a closed socket out.
 	**/
 	public function testASelectOnAClosedSocketComesBack():Void {
 		var socket = new sys.net.Socket();
