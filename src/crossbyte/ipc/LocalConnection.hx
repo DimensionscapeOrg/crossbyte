@@ -121,7 +121,8 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	// How long the reader waits between looks at an idle connection, from
 	// the first after something happened to the longest, in seconds. It
 	// looked every millisecond, busy or not: a thousand wakes a second for
-	// each connection doing nothing.
+	// each connection doing nothing. On Linux and macOS the wait ends early
+	// when the socket has something to read or room to write.
 	@:noCompletion private static inline var POLL_MIN:Float = 0.001;
 	@:noCompletion private static inline var POLL_MAX:Float = 0.010;
 
@@ -581,6 +582,8 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		// one with another, and close() never clears one being written to.
 		var framing = new ByteArray();
 		var idle:Float = POLL_MIN;
+		// Whether the last wait ended because the socket was ready.
+		var wokeForWork = false;
 
 		while (__running && __session == session) {
 			// Whether this pass read, wrote or took a client: the next look
@@ -655,6 +658,19 @@ class LocalConnection implements INetConnection implements CloseObservable {
 					}
 				}
 			}
+			// What to wait for until the next pass, read while the handle is
+			// this session's: something to read, or a client to take, unless
+			// enough waits to be delivered; room to write, if anything waits
+			// to be written.
+			var waitOn:Int = -1;
+			var waitToRead = false;
+			var waitToWrite = false;
+			var held = __activePipe != null ? __activePipe : __listeningPipe;
+			if (failure == null && held != null) {
+				waitOn = __descriptorOf(held);
+				waitToRead = !__inboundFull();
+				waitToWrite = __activePipe != null && __outQueued > 0;
+			}
 			#if (cpp || neko || hl)
 			__handleLock.release();
 			#end
@@ -672,7 +688,13 @@ class LocalConnection implements INetConnection implements CloseObservable {
 			}
 
 			idle = busy ? POLL_MIN : (idle * 2 > POLL_MAX ? POLL_MAX : idle * 2);
-			crossbyte._internal.system.Sleep.sleep(idle);
+			// Ready, and yet nothing came of it: once, and then a plain wait,
+			// so a socket that says it is ready and lets nothing through
+			// cannot spin this thread.
+			if (wokeForWork && !busy) {
+				waitOn = -1;
+			}
+			wokeForWork = __waitForWork(waitOn, waitToRead, waitToWrite, idle);
 		}
 
 		// Its own session's handles, if close() has not already had them.
@@ -703,9 +725,11 @@ class LocalConnection implements INetConnection implements CloseObservable {
 			return true;
 		}
 
+		// After what is held, framed from where the last pass stopped.
+		final unreadFrom:Int = framing.position;
 		framing.position = framing.length;
 		framing.writeBytes(received, 0, received.length);
-		framing.position = 0;
+		framing.position = unreadFrom;
 
 		while (framing.bytesAvailable >= 4) {
 			var frameStart = framing.position;
@@ -736,19 +760,33 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		return true;
 	}
 
+	/**
+		Lets go of what has been framed, leaving `framing.position` at what
+		has not: all of it once all is framed, and otherwise only once it is
+		at least as much as what is left, which is then moved to the front.
+
+		What was left was copied out to a new array and back every pass, so a
+		frame arriving a little at a time was copied whole once per arrival:
+		8 KB at a time, as macOS's local sockets give it, a 3 MB frame 384
+		times over -- 1.2 GB copied and as much allocated -- and three of them
+		took longer than ten seconds. Moved only when what went before it is
+		as large, each byte is moved a bounded number of times.
+	**/
 	@:noCompletion private function __compactReceiveBuffer(framing:ByteArray):Void {
-		var remaining = framing.bytesAvailable;
+		final framed:Int = framing.position;
+		final remaining:Int = framing.bytesAvailable;
 		if (remaining <= 0) {
 			framing.clear();
-			framing.position = 0;
+			return;
+		}
+		if (framed < remaining) {
 			return;
 		}
 
-		var unread = new ByteArray();
-		framing.readBytes(unread, 0, remaining);
-		unread.position = 0;
-		framing.clear();
-		framing.writeBytes(unread, 0, unread.length);
+		// Source and destination do not overlap: what moves is no longer
+		// than what it moves over.
+		(cast framing : Bytes).blit(0, cast framing, framed, remaining);
+		framing.length = remaining;
 		framing.position = 0;
 	}
 
@@ -1308,6 +1346,36 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		return new IOError('LocalConnection "$name": what is under the name is not this user\'s own, and is not used '
 			+ '-- another user made it, or others can reach it (on Linux and macOS, /tmp/crossbyte-<uid> must be a directory '
 			+ 'of this user\'s with mode 0700)');
+	}
+
+	/** The descriptor the reader waits on for `pipe`: on Linux and macOS its socket's; -1 elsewhere. Under __handleLock. **/
+	@:noCompletion private static function __descriptorOf(pipe:LocalConnectionHandle):Int {
+		#if (cpp && !windows)
+		return NativeLocalConnection.__descriptorOf(pipe);
+		#else
+		return -1;
+		#end
+	}
+
+	/**
+		Waits up to `seconds` for `fd` to be readable (`read`) or writable
+		(`write`), on Linux and macOS: whether it woke for that. Elsewhere,
+		and for `fd` -1, a plain wait: a Windows pipe has nothing to wait on.
+	**/
+	@:noCompletion private static function __waitForWork(fd:Int, read:Bool, write:Bool, seconds:Float):Bool {
+		#if (cpp && !windows)
+		return NativeLocalConnection.__waitForWork(fd, read, write, Math.ceil(seconds * 1000));
+		#else
+		crossbyte._internal.system.Sleep.sleep(seconds);
+		return false;
+		#end
+	}
+
+	/** Tests only: the buffer size asked of each socket connected or taken from now on; 0 leaves the system's. Nothing on Windows. **/
+	@:noCompletion private static function __setSocketBufferForTest(bytes:Int):Void {
+		#if cpp
+		NativeLocalConnection.__setSocketBufferForTest(bytes);
+		#end
 	}
 
 	/** Tests only: whether a listener's pipe admits anyone but this user and SYSTEM, or another owns it. Always false off Windows. **/

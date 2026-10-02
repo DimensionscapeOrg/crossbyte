@@ -33,6 +33,14 @@ int native_localConnectionLastError();
 // Tests only: whether a listener's pipe admits anyone but this user and
 // SYSTEM, or is owned by anyone else. Always false off Windows.
 bool native_admitsOthersForTest(void* pipe);
+// The descriptor a reader waits on for `pipe`, or -1; and the wait, up to
+// `timeoutMs`, for it to be readable (`read`) or writable (`write`): whether
+// it woke for that. On Windows -1, and a plain wait.
+int native_descriptorOf(void* pipe);
+bool native_waitForWork(int fd, bool read, bool write, int timeoutMs);
+// Tests only: the buffer size asked of each socket connected or taken from
+// now on, in each direction; 0 leaves the system's. Nothing on Windows.
+void native_setSocketBufferForTest(int bytes);
 
 #ifdef __cplusplus
 }
