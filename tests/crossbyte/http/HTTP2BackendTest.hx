@@ -934,6 +934,49 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.same(["/first", "/second"], server.paths);
 	}
 
+	/**
+		A request still in flight on a connection whose server has said
+		GOAWAY is answered there, while a request made meanwhile goes out on a
+		connection of its own.
+
+		The pool handed the next request that connection, its stream was
+		refused before anything went out, and the backend discarded the
+		session to send it again, closing it, and every request still on it
+		with it: they failed as "connection closed before the response headers
+		arrived" though the server was answering them. Under eight concurrent
+		clients and CrossByte's own server ending a connection every thousand
+		requests, that lost 42 of 12,001.
+	**/
+	public function testARequestInFlightOnAConnectionGoingAwayIsStillAnswered():Void {
+		var server = new H2ShutdownServer();
+		server.start();
+
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var first:String = null;
+		var firstError:String = null;
+		var firstDone = new Lock();
+		Thread.create(() -> {
+			try {
+				first = get(server.port, "/first");
+			} catch (e:Dynamic) {
+				firstError = Std.string(e);
+			}
+			firstDone.release();
+		});
+
+		Assert.isTrue(server.waitGoneAway(), "the client never read the GOAWAY");
+		var second = try get(server.port, "/second") catch (e:Dynamic) "ERR " + Std.string(e);
+		var finished = firstDone.wait(10.0);
+		server.waitServed();
+		H2ConnectionPool.closeAll();
+
+		Assert.equals("/second", second, "the request made after the GOAWAY did not go out on its own connection");
+		Assert.isTrue(finished, "the request in flight never finished");
+		Assert.equals("/first", first, 'the request in flight on the connection going away failed: $firstError');
+		Assert.equals(2, server.connections);
+	}
+
 	/** One request through the registered backend, returning the body. */
 	private function get(port:Int, path:String):String {
 		var body:String = null;
@@ -3265,6 +3308,157 @@ private class H2GoAwayServer {
 			__writeFrame(peer, H2FrameType.DATA, H2Flags.END_STREAM, id, Bytes.ofString(path));
 			return path;
 		}
+	}
+
+	private function __writeFrame(peer:SysSocket, type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {
+		var out = new BytesBuffer();
+		H2Frame.writeHeader(out, payload.length, type, flags, streamId);
+		if (payload.length > 0) {
+			out.addBytes(payload, 0, payload.length);
+		}
+		var bytes = out.getBytes();
+		peer.output.writeBytes(bytes, 0, bytes.length);
+		peer.output.flush();
+	}
+}
+
+/**
+	A server ending a connection gracefully with a request in flight on it:
+	the first request's HEADERS are answered with a GOAWAY naming no stream,
+	and a PING, whose answer says the client has read the GOAWAY. Then a
+	second connection is accepted and its request answered, and only then the
+	first request, on the first connection, before its final GOAWAY.
+**/
+private class H2ShutdownServer {
+	public var port:Int = 0;
+	public var connections:Int = 0;
+
+	private var __ready:Lock = new Lock();
+	private var __goneAway:Lock = new Lock();
+	private var __served:Lock = new Lock();
+	private var __count:Mutex = new Mutex();
+
+	public function new() {}
+
+	public function start():Void {
+		Thread.create(() -> {
+			var listener = new SysSocket();
+			var first:SysSocket = null;
+			var second:SysSocket = null;
+			try {
+				listener.bind(new Host("127.0.0.1"), 0);
+				listener.listen(4);
+				port = listener.host().port;
+				__ready.release();
+
+				first = listener.accept();
+				first.setTimeout(10.0);
+				__counted();
+				__handshake(first);
+				var firstId = __readRequest(first);
+				__writeFrame(first, H2FrameType.GOAWAY, 0, 0, __goAway(0x7fffffff));
+				__writeFrame(first, H2FrameType.PING, 0, 0, Bytes.ofString("shutdown"));
+				__awaitPingAck(first);
+				__goneAway.release();
+
+				second = listener.accept();
+				second.setTimeout(10.0);
+				__counted();
+				__handshake(second);
+				__answer(second, __readRequest(second), "/second");
+
+				__answer(first, firstId, "/first");
+				__writeFrame(first, H2FrameType.GOAWAY, 0, 0, __goAway(firstId));
+			} catch (e:Dynamic) {
+				__ready.release();
+				__goneAway.release();
+			}
+			__served.release();
+
+			// Held until the client hangs up, as a pooled client keeps a
+			// connection by design.
+			for (peer in [first, second]) {
+				try {
+					if (peer != null) {
+						while (true) {
+							peer.input.readByte();
+						}
+					}
+				} catch (_:Dynamic) {}
+			}
+			try if (first != null) first.close() catch (_:Dynamic) {}
+			try if (second != null) second.close() catch (_:Dynamic) {}
+			try listener.close() catch (_:Dynamic) {}
+		});
+
+		if (!__ready.wait(5.0)) {
+			Assert.fail("Timed out starting the shutdown fixture");
+		}
+	}
+
+	public function waitGoneAway():Bool {
+		return __goneAway.wait(10.0);
+	}
+
+	public function waitServed():Void {
+		__served.wait(10.0);
+	}
+
+	private function __counted():Void {
+		__count.acquire();
+		connections++;
+		__count.release();
+	}
+
+	private function __handshake(peer:SysSocket):Void {
+		var preface = Bytes.alloc(H2Connection.PREFACE.length);
+		peer.input.readFullBytes(preface, 0, preface.length);
+		__writeFrame(peer, H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0));
+	}
+
+	/** Reads frames until a request's HEADERS, and answers its stream id. */
+	private function __readRequest(peer:SysSocket):Int {
+		while (true) {
+			var header = __readFrameHeader(peer);
+			if (header.get(3) == (H2FrameType.HEADERS : Int)) {
+				return ((header.get(5) & 0x7f) << 24) | (header.get(6) << 16) | (header.get(7) << 8) | header.get(8);
+			}
+		}
+	}
+
+	private function __awaitPingAck(peer:SysSocket):Void {
+		while (true) {
+			var header = __readFrameHeader(peer);
+			if (header.get(3) == (H2FrameType.PING : Int) && (header.get(4) & H2Flags.ACK) != 0) {
+				return;
+			}
+		}
+	}
+
+	/** Reads one frame, keeping its header and dropping its payload. */
+	private function __readFrameHeader(peer:SysSocket):Bytes {
+		var header = Bytes.alloc(H2Frame.HEADER_SIZE);
+		peer.input.readFullBytes(header, 0, H2Frame.HEADER_SIZE);
+		var length = H2Frame.lengthOf(header);
+		if (length > 0) {
+			peer.input.readFullBytes(Bytes.alloc(length), 0, length);
+		}
+		return header;
+	}
+
+	private function __answer(peer:SysSocket, id:Int, body:String):Void {
+		var block = new HpackEncoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE).encode([new HpackHeader(":status", "200")]);
+		__writeFrame(peer, H2FrameType.HEADERS, H2Flags.END_HEADERS, id, block);
+		__writeFrame(peer, H2FrameType.DATA, H2Flags.END_STREAM, id, Bytes.ofString(body));
+	}
+
+	private static function __goAway(lastStreamId:Int):Bytes {
+		var payload = Bytes.alloc(8);
+		payload.set(0, (lastStreamId >>> 24) & 0x7f);
+		payload.set(1, (lastStreamId >>> 16) & 0xff);
+		payload.set(2, (lastStreamId >>> 8) & 0xff);
+		payload.set(3, lastStreamId & 0xff);
+		return payload;
 	}
 
 	private function __writeFrame(peer:SysSocket, type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {

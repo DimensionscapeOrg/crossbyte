@@ -338,6 +338,21 @@ class HpackTest extends utest.Test {
 		Assert.equals("ccc", table.get(0).name);
 	}
 
+	public function testResizeBelowNothingEmptiesTheTableAndEnds():Void {
+		// A SETTINGS_HEADER_TABLE_SIZE of 2^31 or more reads negative as an
+		// Int, and resizing to it evicted forever: an empty table's size is 0,
+		// still more than -1. Below nothing is nothing.
+		var table = new HpackDynamicTable(4096);
+		table.add(new HpackHeader("aaa", "bbb"));
+		table.resize(-1);
+		Assert.equals(0, table.length);
+		Assert.equals(0, table.size);
+		Assert.equals(0, table.capacity);
+
+		table.add(new HpackHeader("ccc", "ddd"));
+		Assert.equals(0, table.length, "an entry went into a table of no size");
+	}
+
 	public function testTableSizeCountsOctetsNotStringLength():Void {
 		// A two-character value that is four octets in UTF-8. Counting code
 		// units here would desynchronize eviction from a peer counting bytes.

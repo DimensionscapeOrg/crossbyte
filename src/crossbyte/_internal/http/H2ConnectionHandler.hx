@@ -112,8 +112,10 @@ class H2ConnectionHandler implements PassFlush {
 		__connection.outputRoom = __outputRoom;
 		__connection.onHolding = __hold;
 		// A stream waiting for window is held to the same sweep, whatever the
-		// timeouts are: see __checkHeld.
+		// timeouts are: see __checkHeld. So is a connection between the two
+		// GOAWAYs of a graceful end, whose client may never answer its PING.
 		__connection.onWaiting = __hold;
+		__connection.onRetiring = __hold;
 		__connection.stallSeconds = HTTPRequestHandler.STREAM_STALL_SECONDS;
 
 		__socket.addEventListener(ProgressEvent.SOCKET_DATA, __onData);
@@ -235,7 +237,7 @@ class H2ConnectionHandler implements PassFlush {
 	public var drained(get, never):Bool;
 
 	private inline function get_drained():Bool {
-		return __connection.goingAway && __connection.openStreams == 0 && __socket.connected && __socket.outputBufferLength == 0;
+		return __connection.retired && __connection.openStreams == 0 && __socket.connected && __socket.outputBufferLength == 0;
 	}
 
 	/**
@@ -334,12 +336,19 @@ class H2ConnectionHandler implements PassFlush {
 			__flushOut();
 		}
 
+		// The final GOAWAY of a graceful end, for a client that never
+		// answered the PING after the first.
+		if (__connection.retiring) {
+			__connection.expireRetiring(now);
+			__flushOut();
+		}
+
 		if (drained) {
 			close();
 			return;
 		}
 
-		if (__connection.queuedBytes <= 0 && __socket.outputBufferLength <= 0 && __connection.waitingStreams <= 0) {
+		if (__connection.queuedBytes <= 0 && __socket.outputBufferLength <= 0 && __connection.waitingStreams <= 0 && !__connection.retiring) {
 			__release();
 		}
 	}
@@ -461,10 +470,11 @@ class H2ConnectionHandler implements PassFlush {
 
 	/**
 	 * Starts a graceful shutdown: a GOAWAY now, so the peer opens no more
-	 * streams here, while the ones it has run to their end. The connection
-	 * closes at once when none are open, and otherwise when the last one
-	 * finishes, which the server's sweep checks, once what they sent has
-	 * gone: closed with it still in the socket, it was cut off.
+	 * streams here, while the ones it has, and the ones it sent before it
+	 * read the GOAWAY (`H2ServerConnection.goAwayGracefully`), run to their
+	 * end. The connection closes once the client has said it read the GOAWAY
+	 * and none is open, which the server's sweep checks, once what they
+	 * sent has gone: closed with it still in the socket, it was cut off.
 	 */
 	public function beginDrain():Void {
 		__connection.goAwayGracefully();
