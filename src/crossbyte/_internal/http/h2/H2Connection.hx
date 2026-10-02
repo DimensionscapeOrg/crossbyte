@@ -68,6 +68,12 @@ class H2Connection {
 	**/
 	public var maxResponseBodySize:Int = DEFAULT_MAX_RESPONSE_BODY_SIZE;
 
+	/**
+		The most the HPACK table this side encodes with may hold, whatever
+		the peer's SETTINGS_HEADER_TABLE_SIZE allows: the protocol's default.
+	**/
+	public static inline var MAX_ENCODER_TABLE_SIZE:Int = H2Settings.DEFAULT_HEADER_TABLE_SIZE;
+
 	/** Our settings, sent at startup. */
 	public final localSettings:H2Settings;
 
@@ -134,6 +140,12 @@ class H2Connection {
 		__output = output;
 
 		localSettings = settings != null ? settings : new H2Settings();
+		// Nothing here can take a pushed stream, and a PUSH_PROMISE is a
+		// connection error below, which 8.4 allows only once push has been
+		// refused. H2Settings allows it unless told otherwise, so a client
+		// given settings of its own invited pushes and then failed the
+		// connection over the first.
+		localSettings.enablePush = false;
 		remoteSettings = new H2Settings();
 		__streams = new Map();
 
@@ -717,7 +729,18 @@ class H2Connection {
 			}
 		}
 
-		__encoder.setCapacity(remoteSettings.headerTableSize);
+		// The peer's HEADER_TABLE_SIZE is the most its decoder holds, and an
+		// encoder may use less (RFC 7541 4.2). This one held whatever it was
+		// told, so a server saying a megabyte, or 2^31 - 1, kept every
+		// distinct field this side sent in this side's memory for the
+		// connection's life, each searched for every field after. Held to
+		// the default, as Go's and nghttp2's clients hold theirs.
+		var capacity:Int = remoteSettings.headerTableSize;
+		if (capacity < 0 || capacity > MAX_ENCODER_TABLE_SIZE) {
+			// Past 2^31 - 1 a setting reads negative.
+			capacity = MAX_ENCODER_TABLE_SIZE;
+		}
+		__encoder.setCapacity(capacity);
 		__writeFrame(H2FrameType.SETTINGS, H2Flags.ACK, 0, Bytes.alloc(0));
 	}
 
