@@ -139,7 +139,11 @@ class Http {
 	// Set once a redirect has left the origin the request was made to.
 	private var __leftOrigin:Bool = false;
 
-	private var __socket:FlexSocket;
+	// This and __responseHeaders are null from the start, for neko, where an
+	// object gains a field when it is first set and can move its field
+	// table: the load thread set __responseHeaders first as a cancel set
+	// __aborted, and the cancel was lost.
+	private var __socket:FlexSocket = null;
 	private var __url:URL;
 	private var __headers:Array<String>;
 	private var __status:Int = 0;
@@ -151,7 +155,7 @@ class Http {
 	private var __method:String;
 	private var __contentType:String;
 	private var __userAgent:String;
-	private var __responseHeaders:StringMap<String>;
+	private var __responseHeaders:StringMap<String> = null;
 	private var __followRedirects:Bool;
 	private var __cookies:Null<CookieJar>;
 	private var __redirect:Bool = false;

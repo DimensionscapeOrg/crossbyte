@@ -41,7 +41,11 @@ class Task<T> extends EventDispatcher {
 	public var isCancelled(get, never):Bool;
 	public var isFailed(get, never):Bool;
 
-	@:noCompletion private var __cancelHook:Void->Void;
+	// Null from the start: a neko object gains a field when it is first set,
+	// which can move its field table, and the pool thread set this one
+	// first as the submitting thread added its listener, which was lost,
+	// and its caller waited for good.
+	@:noCompletion private var __cancelHook:Void->Void = null;
 	@:noCompletion private var __releaseHook:Void->Void;
 	@:noCompletion private var __released:Bool;
 
