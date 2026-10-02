@@ -2287,6 +2287,18 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An HTTP/1.1 request still being answered keeps its answer when the
+  requests pipelined behind it outgrow what one connection holds,
+  `maxRequestBodySize` and the header allowance. They were counted with
+  it, and past that the request being answered was answered `413` over its
+  own answer, which was lost: three pipelined 600 KB uploads, each under
+  the 1 MB limit, behind a route answering a moment later came back as one
+  `413`. Behind a file being sent, the file was cut off where it was and
+  the connection closed. What does not fit is dropped now, with whatever
+  arrives after it, and the connection closes once the answer has gone,
+  saying `Connection: close` when its head has not gone yet; the requests
+  it held go unanswered, which a client that pipelines sends again (RFC
+  9112 9.3.2).
 - One HTTP/2 connection holds no more than
   `HTTPServerConfig.http2MaxRequestBodyBuffer` of request bodies at once,
   4 MB by default, never less than one body at `maxRequestBodySize`.
