@@ -147,6 +147,98 @@ class HTTPRequestFramingTest extends utest.Test {
 	}
 
 	/**
+		Pipelined requests that outgrow what a connection holds, behind a
+		request still being answered, do not replace its answer.
+
+		What arrives behind a request being answered is the next request, kept
+		until the answer has gone. Past what one connection holds, the body
+		limit and the header allowance, it was answered `413`, on the request
+		being answered: three pipelined 600 KB uploads, each under the 1 MB
+		limit, behind a route answering a moment later came back as one `413`,
+		and the route's answer was lost. What does not fit is dropped now, with
+		everything after it, and the connection closes once the answer has
+		gone, saying so; the requests it held go unanswered, which a client
+		that pipelines sends again (RFC 9112 9.3.2).
+	**/
+	public function testPipelinedBodiesPastWhatIsHeldLeaveTheAnswerBeingGiven(async:Async):Void {
+		var seen:Array<String> = [];
+		var size:Int = 600 * 1024;
+		// Answers a second on, by when everything sent has long arrived.
+		var server:HTTPServer = __serve(seen, config -> config.middleware.push((handler, next) -> {
+			haxe.Timer.delay(() -> next(), 1000);
+		}));
+		var body:String = __repeat("x".code, size);
+		var request:String = "";
+		for (i in 0...3) {
+			request += 'POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: $size\r\n\r\n' + body;
+		}
+
+		HTTPTestSupport.exchangeEach(server, [request], function(responses:Array<HTTPTestResponse>):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			var response:HTTPTestResponse = responses[0];
+			Assert.equals(200, response.status, "the answer being given was replaced");
+			Assert.equals('got $size', response.body);
+			Assert.equals("close", response.headers.get("connection"), "the answer did not say the connection was closing");
+			Assert.equals(1, HTTPTestSupport.countResponses(response.raw), "requests past what was held were answered");
+			Assert.equals("POST /upload", seen.join(", "));
+			async.done();
+		}, true, 10.0);
+	}
+
+	/**
+		The same behind a file being sent: it was cut off where it was, and
+		the connection closed with it. It goes out whole now, and the
+		connection closes after it.
+	**/
+	public function testPipelinedBodiesPastWhatIsHeldLeaveAFileBeingSentWhole(async:Async):Void {
+		var root:crossbyte.io.File = crossbyte.io.File.createTempDirectory();
+		var size:Int = 2 * 1024 * 1024;
+		var file = new crossbyte.io.ByteArray();
+		file.length = size;
+		root.resolvePath("big.bin").save(file);
+		var server:HTTPServer = new HTTPServer(new HTTPServerConfig("127.0.0.1", 0, root));
+
+		var request = new crossbyte.io.ByteArray();
+		request.writeUTFBytes("GET /big.bin HTTP/1.1\r\nHost: x\r\n\r\n");
+		var body:String = __repeat("x".code, 600 * 1024);
+		for (i in 0...3) {
+			request.writeUTFBytes('POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: ${body.length}\r\n\r\n' + body);
+		}
+
+		var client = new crossbyte.net.Socket();
+		var received = new crossbyte.io.ByteArray();
+		var closed:Bool = false;
+		client.addEventListener(crossbyte.events.Event.CONNECT, _ -> {
+			client.writeBytes(request, 0, request.length);
+			client.flush();
+		});
+		client.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, _ -> {
+			if (client.bytesAvailable > 0) {
+				client.readBytes(received, received.length, client.bytesAvailable);
+			}
+		});
+		client.addEventListener(crossbyte.events.Event.CLOSE, _ -> closed = true);
+
+		HTTPTestSupport.connectThen(client, server, function():Void {
+			HTTPTestSupport.pumpWallUntilAsync(() -> closed, 20.0, function(_):Void {
+				try client.close() catch (_:Dynamic) {}
+				try server.close() catch (_:Dynamic) {}
+				try root.deleteDirectory(true) catch (_:Dynamic) {}
+
+				// The head, then the file: zeros, which no status line is.
+				received.position = 0;
+				var head:String = received.readUTFBytes(received.length < 512 ? received.length : 512);
+				var headEnd:Int = head.indexOf("\r\n\r\n");
+				Assert.isTrue(closed, "the connection was not closed after the file");
+				Assert.isTrue(StringTools.startsWith(head, "HTTP/1.1 200 "), "the file was not answered: " + head.substr(0, 40));
+				Assert.equals(size, headEnd < 0 ? -1 : received.length - (headEnd + 4), "the file was cut off, or more than it was answered");
+				async.done();
+			});
+		});
+	}
+
+	/**
 		`Expect: 100-continue` waits for the application.
 
 		The server told every such client to send before any middleware had
