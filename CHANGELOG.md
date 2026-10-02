@@ -208,6 +208,11 @@ entry below says how:
 - `MongoConnection.affectedRows` and `count()`, and `MongoWriteResult`'s
   `inserted`, `matched`, `modified` and `deleted`, are `Float`s, where
   they were `Int`s: code that keeps one in an `Int` needs `Std.int()`.
+- `LocalConnection.timeout` and `SharedChannel.timeout` of 0 wait without
+  a deadline, where they made a single try; set 1 for a single try.
+- On Linux and macOS a `SharedObject` region is not shared between users:
+  one another user made under the name throws an `IOError`, where it was
+  shared when the first user's umask let others write it.
 
 ### Added
 - `SharedObject.remove(name)` takes a region away on Linux and macOS --
@@ -1371,6 +1376,13 @@ entry below says how:
   directly in a native build, as Windows and Linux are asked. Each ran a
   process, `sysctl` and `vm_stat`: the two took 0.11 s on the CI runner.
   The jvm on macOS still runs them.
+- A `timeout` of 0 (or less) on `LocalConnection` and `SharedChannel`
+  means no deadline, as it does for every other connect: `connect()`, and
+  a `send` to a channel not yet connected to, wait on the calling thread
+  until something listens on the name. It made a single try, and a
+  connect to a listener a moment late failed at once. A timeout of 50 or
+  less makes the single try now, 50 ms being the pause between tries.
+  `NetConnection`'s `connectTimeout` for `local://` is this `timeout`.
 - `IceAgent.DEFAULT_TIMEOUT`, the time an agent has from `start` to select
   a pair, is 80 seconds, where round three made it 40. A nomination is a
   check, given up on 39.5 seconds after it goes out, and forty was a moment
@@ -2326,6 +2338,60 @@ entry below says how:
   was lost. Such work now takes itself back out and is refused, as on a
   connection that is not open: an `IllegalOperationError`, and a
   `close()` with nothing to close.
+- On Linux and macOS a `SharedObject` is its user's alone. A region was
+  made readable by every local user (0666 less the umask: 0644 as a rule),
+  so any of them could read what any `SharedObject` held, and on Linux
+  hold its lock and stop every participant; and one another user had made
+  first under the name, writable by all, was used as if it were this
+  user's, where the system allowed it, as macOS does. Regions and macOS's
+  lock files are made 0600 now, an older one of this user's is made so as
+  it is opened, and one that is not this user's is refused with an
+  `IOError` saying so.
+- macOS's `SharedObject` lock file, `/tmp/cbso_<hash>.lock`, is not opened
+  through a link -- another user's link there made the process make, or
+  lock, a file wherever it pointed -- nor waited on as a FIFO, which held
+  the constructor, and the process's collections, until someone wrote to
+  it. And one deleted while its region is open -- macOS's cleaner deletes
+  what in /tmp nobody has touched for three days, and a lock touches
+  nothing -- no longer parts the participants: the next to open made a
+  new file and locked that while those open locked the old, so two wrote
+  at once. A participant checks, each time it locks, that the file it
+  holds is the one at the path still, and takes that one if not; a lock
+  file in use has its times brought up to date hourly; and only
+  `SharedObject.remove` deletes one. A `LocalConnection` listener's lock
+  file on Linux and macOS is opened the same way and kept up to date while
+  it listens: a cleaner that deleted a long-lived listener's let a second
+  `listen()` take the name.
+- On macOS a `LocalConnection` send to a peer that has stopped reading no
+  longer waits for good. The socket was left blocking and each write asked
+  not to wait with `MSG_DONTWAIT`, which Linux honours for a send and macOS
+  does not: once the 8 KB macOS gives a local socket was full, the send
+  waited on the runtime's thread, holding the lock the reader thread and
+  `close()` need -- the native suite hung there on the macOS runner. Every
+  connected socket is non-blocking now. So is a connect, which on Linux
+  waited in the kernel, past any `timeout`, for a listener whose backlog
+  was full to take someone; it is tried again until the deadline instead.
+- A `SharedChannel` client method that throws is reported instead of
+  dropped without a word: logged, and dispatched as
+  `UncaughtErrorEvent.UNCAUGHT_ERROR` on the channel's runtime, as a
+  posted callback's failure is, and the channel goes on listening. So is
+  what a `LocalConnection` callback throws -- which still ends the
+  connection, as a socket handler's does, but went unreported when no
+  `onError` was set, and entirely when `close()` called `onClose` -- and
+  what a `Task`'s listeners and handlers throw: one of them stopped the
+  rest from hearing the outcome and kept the task in its pool for good,
+  and on a pool thread, for a task with no runtime, nothing at all was
+  reported. `cancel()` no longer throws what a `CANCEL` listener threw.
+- A `Task` made on a thread no runtime belongs to always calls the
+  handlers given to `onComplete`, `onError` and `onCancel`. Each looked at
+  the task's state and then added a listener, in two steps, and such a task
+  finishes on the pool thread: one finishing between the two was never
+  heard, and whatever waited on the handler -- a password hash's `Future`
+  among them -- waited for good. About one handler in two hundred was lost
+  natively, one in two thousand on the jvm, and more for `onCancel`. A
+  handler given before the task is done is now kept by the task and taken
+  by the step that makes it done, under the same lock; one given after is
+  called at once.
 - A reliable UDP session asks for its window of socket buffer on Linux
   whatever the system's default reads. Linux reads back twice what was
   asked, counting its own bookkeeping, and a default that read a window's

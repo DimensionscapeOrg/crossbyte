@@ -10,6 +10,7 @@ import crossbyte.errors.IllegalOperationError;
 import crossbyte.crypto._internal.NativeOnly;
 #end
 
+import crossbyte.events.UncaughtErrorEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.io.ByteArrayInput;
 import crossbyte.net.INetConnection;
@@ -17,6 +18,7 @@ import crossbyte.net.Protocol;
 import crossbyte.net._internal.CloseObservable;
 import crossbyte.net.Reason;
 import crossbyte.net.Transport;
+import crossbyte.utils.Logger;
 import haxe.io.Bytes;
 import haxe.io.BytesData;
 import haxe.io.BytesBuffer;
@@ -67,6 +69,15 @@ private enum LocalConnectionDispatch {
  *
  * `SharedChannel` builds on top of this transport when you want the older
  * method-name plus serialized-arguments message model.
+ *
+ * A callback that throws is reported as a socket handler's failure is:
+ * logged with `Logger.error`, and dispatched as
+ * `UncaughtErrorEvent.UNCAUGHT_ERROR` (source `SOCKET`, origin this
+ * connection) on the runtime the connection was made on, or only logged
+ * where it has none. One the runtime delivers -- `onData`, `onReady`, or
+ * `onClose` and `onError` for a connection that ended -- also ends the
+ * connection, as a socket's would, and `onError` is told why; one that
+ * `close()` calls is reported and nothing more.
  */
 @:access(haxe.io.Bytes)
 #if cpp
@@ -140,9 +151,14 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	public var onError(get, set):Reason->Void;
 	public var onReady(get, set):Void->Void;
 	/**
-	 * Connection timeout in milliseconds used by `connect()`.
+	 * How long, in milliseconds, `connect()` waits on the calling thread for
+	 * something to listen on the name; past it, `connect()` throws an
+	 * `ArgumentError`. The default is 5,000 (five seconds).
 	 *
-	 * `0` performs an immediate probe without waiting.
+	 * 0 (or less) means no deadline: `connect()` waits until something
+	 * listens, however long that is, as a connect with `timeout = 0` does
+	 * everywhere in CrossByte. It used to make a single try. One try is what
+	 * any timeout of 50 or less makes, 50 ms being the pause between tries.
 	 */
 	public var timeout:Int = 5000;
 	public var inTimestamp(default, null):Float = 0;
@@ -258,9 +274,13 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	}
 
 	/**
-	 * Connects to a listening local endpoint.
+	 * Connects to a listening local endpoint, waiting on the calling thread
+	 * for something to listen on the name for up to `timeout`, or without a
+	 * deadline when that is 0.
 	 *
 	 * @param connectionName Named local IPC endpoint to connect to.
+	 * @throws ArgumentError When nothing listened on the name within
+	 *         `timeout`, or the name cannot be used.
 	 */
 	public function connect(connectionName:String):Void {
 		__requireSupported();
@@ -474,7 +494,9 @@ class LocalConnection implements INetConnection implements CloseObservable {
 			__notifyClose(reason);
 			try {
 				__onClose(reason);
-			} catch (_:Dynamic) {}
+			} catch (error:Dynamic) {
+				__callbackThrew(error);
+			}
 		}
 	}
 
@@ -548,6 +570,10 @@ class LocalConnection implements INetConnection implements CloseObservable {
 				__connected = true;
 				accepted = true;
 				busy = true;
+			}
+			if (__mode == SERVER) {
+				// The name's lock file kept from looking unused, hourly.
+				__keepName(__activePipe != null ? __activePipe : __listeningPipe);
 			}
 
 			// Polled and read under the lock too: both are immediate, and a
@@ -822,6 +848,9 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	}
 
 	@:noCompletion private function __handleCallbackFailure(error:Dynamic):Void {
+		// Reported whatever follows: with no onError set, the connection
+		// ended without a word of why.
+		__callbackThrew(error);
 		if (__dispatchFailed) {
 			return;
 		}
@@ -853,6 +882,25 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		var reason = Reason.Error("Local transport callback failed: " + Std.string(error));
 		try {
 			__onError(reason);
+		} catch (secondError:Dynamic) {
+			__callbackThrew(secondError);
+		}
+	}
+
+	/**
+		Reports what a callback threw as the runtime reports a socket
+		handler's failure -- logged, and dispatched as
+		`UncaughtErrorEvent.UNCAUGHT_ERROR` -- on the runtime of the thread
+		that called it; logged alone on a reader thread, where there is none.
+	**/
+	@:noCompletion private function __callbackThrew(error:Dynamic):Void {
+		var runtime:Null<CrossByte> = CrossByte.__currentOrNull();
+		if (runtime != null) {
+			runtime.__uncaught(error, UncaughtErrorEvent.SOCKET, this);
+			return;
+		}
+		try {
+			Logger.error("A LocalConnection callback threw: " + Std.string(error));
 		} catch (_:Dynamic) {}
 	}
 
@@ -1206,6 +1254,15 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		return NativeLocalConnection.__createInboundPipe(name);
 		#else
 		return null;
+		#end
+	}
+
+	/** Keeps a listener's name from looking unused to a cleaner of old files; nothing for any other handle. **/
+	@:noCompletion private static function __keepName(pipe:LocalConnectionHandle):Void {
+		#if cpp
+		if (pipe != null) {
+			NativeLocalConnection.__keepName(pipe);
+		}
 		#end
 	}
 
