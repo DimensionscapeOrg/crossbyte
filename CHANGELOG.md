@@ -199,6 +199,14 @@ entry below says how:
   only at 1.0 or 1.1, or a WebRTC peer that speaks only DTLS 1.0, no
   longer connects; and native code of your own that calls mbedTLS through
   hxcpp's headers meets its 3.x API, as CrossByte's own was ported to.
+- A static Lime build -- iOS and tvOS always, `-static` elsewhere --
+  compiles Lime's curl against hxcpp's mbedTLS, so with the fork on 3.6.7
+  rebuild Lime against it (`lime rebuild <target> -static`; a library
+  built against 2.28 does not fit). Lime 8.4.0's curl 7.87 then fails
+  every HTTPS request with "ssl_init failed" until it sets its RNG before
+  `mbedtls_ssl_setup`, which mbedTLS 3 requires: a two-line move in
+  `project/lib/curl/lib/vtls/mbedtls.c`. A dynamic build, whose ndll
+  carries its own mbedTLS, is unaffected.
 
 ### Added
 - `SharedObject.remove(name)` takes a region away on Linux and macOS --
