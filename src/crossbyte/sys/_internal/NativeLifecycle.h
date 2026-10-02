@@ -48,6 +48,13 @@ int crossbyte_lifecycle_deliver_session_end(int closeWaitMs);
 // Tests only: raises `signal` in this process.
 bool crossbyte_lifecycle_raise_for_test(int signal);
 
+// Tests only: `signal` to its default action with SA_SIGINFO still set, as
+// macOS leaves a signal the parent handled with it after exec.
+bool crossbyte_lifecycle_default_with_siginfo_for_test(int signal);
+
+// Tests only: whether `signal` is handled by install()'s handler now.
+bool crossbyte_lifecycle_handles_for_test(int signal);
+
 // Tests only: sets `signal` to be ignored, or to its default action.
 bool crossbyte_lifecycle_ignore_for_test(int signal, bool ignored);
 
