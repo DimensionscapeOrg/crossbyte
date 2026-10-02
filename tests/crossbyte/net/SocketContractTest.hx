@@ -196,6 +196,55 @@ class SocketContractTest extends utest.Test {
 	}
 	#end
 
+	#if (cpp || java || jvm || neko || hl)
+	/**
+		A connection whose connect and whose peer's hangup arrive in one
+		tick, closed by its own CONNECT listener. The tick went on to the
+		close it had already decided on and cleaned the socket up a second
+		time, calling `close()` on a socket the listener's close had let go:
+		natively a null dereference that ended the process, which the macOS
+		CI runner, where a server's hangup lands in the connect's tick, did
+		every run. Its own close is announced once, as an application's
+		close is, and nothing after it.
+	**/
+	public function testAConnectionItsConnectListenerClosesAsThePeerHangsUpEndsQuietly():Void {
+		var runtime = crossbyte.core.CrossByte.current();
+		var listener = new sys.net.Socket();
+		listener.bind(new sys.net.Host("127.0.0.1"), 0);
+		listener.listen(1);
+		var port:Int = listener.host().port;
+
+		var client = new Socket();
+		var events:Array<String> = [];
+		client.addEventListener(Event.CONNECT, function(_) {
+			events.push("connect");
+			client.close();
+		});
+		client.addEventListener(Event.CLOSE, function(_) events.push("close"));
+		client.addEventListener(IOErrorEvent.IO_ERROR, function(_) events.push("ioError"));
+		client.connect("127.0.0.1", port);
+
+		// Taken and hung up on before the client's first look at it: its
+		// connect and the peer's FIN are both waiting when it does.
+		var accepted = listener.accept();
+		accepted.close();
+		crossbyte.sys.System.sleep(0.1);
+
+		var deadline:Float = haxe.Timer.stamp() + 5;
+		while (events.length == 0 && haxe.Timer.stamp() < deadline) {
+			runtime.pump(1 / 60, 0);
+			crossbyte.sys.System.sleep(0.001);
+		}
+		// Some turns more, for anything announced after the close.
+		for (_ in 0...10) {
+			runtime.pump(1 / 60, 0);
+		}
+		listener.close();
+
+		Assert.same(["connect", "close"], events);
+	}
+	#end
+
 	#if (cpp || java || jvm || eval || nodejs)
 	/** A client connected to a server that keeps what it hears, and `then` once it is. **/
 	private function __connected(then:(Socket, Heard, Void->Void)->Void, async:Async, ?timeout:Int):Void {

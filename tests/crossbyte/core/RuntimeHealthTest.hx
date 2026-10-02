@@ -98,7 +98,18 @@ class RuntimeHealthTest extends utest.Test {
 
 		var runtime = new CrossByte(false, POLL, true);
 		runtime.tps = 1000;
-		ready.onRead = () -> if (ready.calls < 3) runtime.__noteMoreToRead();
+		// Whether the frame still had time once the first read was done. It
+		// is read again for as long as the frame lasts, and no longer: on neko
+		// under load the first read alone outlasted the millisecond.
+		var timeLeft:Null<Bool> = null;
+		ready.onRead = () -> {
+			if (timeLeft == null) {
+				timeLeft = Timer.stamp() < runtime.__frameDeadline;
+			}
+			if (ready.calls < 3) {
+				runtime.__noteMoreToRead();
+			}
+		};
 		runtime.registerSocket(ready.reader);
 		ready.poke();
 		crossbyte.sys.System.sleep(0.01);
@@ -108,7 +119,10 @@ class RuntimeHealthTest extends utest.Test {
 		runtime.exit();
 		ready.close();
 
-		Assert.isTrue(ready.calls >= 2, "a socket with more to read was read " + ready.calls + " time(s) in a frame at 1,000 ticks a second");
+		Assert.isTrue(ready.calls >= 1, "the socket was never read");
+		if (timeLeft == true) {
+			Assert.isTrue(ready.calls >= 2, "a socket with more to read was read " + ready.calls + " time(s) in a frame at 1,000 ticks a second");
+		}
 	}
 
 	/**

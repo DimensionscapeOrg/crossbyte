@@ -256,7 +256,9 @@ class HTTP2Backend implements HTTPBackend {
 			// when the first refuses the stream before anything goes out: it
 			// was retired as idle a moment after being handed over, or its
 			// peer has said GOAWAY. REFUSED_STREAM promises the request was
-			// not processed (RFC 9113, 8.7), so sending it again is safe.
+			// not processed (RFC 9113, 8.7), so sending it again is safe. The
+			// session is retired, not discarded: closing it failed every other
+			// request still in flight on it.
 			var stream:H2Stream = null;
 			var refused:Int = 0;
 			while (stream == null) {
@@ -277,7 +279,7 @@ class HTTP2Backend implements HTTPBackend {
 						throw e;
 					}
 					refused++;
-					H2ConnectionPool.discard(session);
+					H2ConnectionPool.retire(session);
 					session = null;
 				}
 			}
