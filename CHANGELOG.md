@@ -213,6 +213,13 @@ entry below says how:
 - On Linux and macOS a `SharedObject` region is not shared between users:
   one another user made under the name throws an `IOError`, where it was
   shared when the first user's umask let others write it.
+- Two users can no longer meet over a `LocalConnection`, `SharedChannel` or
+  `local://` name: each user's names are their own. A name's socket is
+  `/tmp/crossbyte-<uid>/<name>` on Linux and macOS, where it was
+  `/tmp/crossbyte_local_connection_<name>`, and its pipe
+  `\.\pipe\crossbyte-<SID>-<name>` on Windows, where it was
+  `\.\pipe\<name>`: a program of your own that opened those directly
+  must follow.
 
 ### Added
 - `SharedObject.remove(name)` takes a region away on Linux and macOS,
@@ -1372,6 +1379,23 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A `LocalConnection` name is its user's own, and with it a `SharedChannel`
+  name and a `local://` address. Names were one namespace for every user of
+  the machine: on Linux and macOS a name's socket was in /tmp, where another
+  user could listen on it first and take its clients, or put a link there
+  that `connect()` followed to their own listener; on Windows a pipe was made
+  with the default security, which lets everyone, the anonymous user
+  included, open it to read, and a client went to whichever pipe had the
+  name, another user's put there first included. On Linux and macOS a
+  name's socket and lock file now live in `/tmp/crossbyte-<uid>`, made 0700,
+  which `listen` and `connect` refuse with an `IOError` unless it is a
+  directory the user owns that nobody else can enter, not a link, and not
+  one another user made first, and `connect` refuses anything at the
+  socket's path but a socket of the user's. On Windows the pipe's name
+  carries the user's SID, its security admits the user and SYSTEM alone,
+  it refuses clients on other machines, and a client refuses, with an
+  `IOError`, a pipe under the name that another user made, and connects
+  for identification only, so the listener cannot act as it.
 - `System.totalSystemMemory()` and `freeSystemMemory()` ask macOS's kernel
   directly in a native build, as Windows and Linux are asked. Each ran a
   process, `sysctl` and `vm_stat`: the two took 0.11 s on the CI runner.
