@@ -2283,6 +2283,18 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A client that connects and resets before a server takes it is passed
+  over, by `ServerSocket` and `ServerWebSocket`. Linux hands such a
+  connection over with no address for its peer, and the server read
+  through the missing address, asking `admit` and again naming the
+  connection: natively that ended the process, so any client could stop a
+  server on Linux by connecting and resetting at once. A TLS connection
+  whose client leaves the moment its handshake is done is announced from
+  the address it was accepted with, and its first read finds it gone, as
+  on Windows. macOS and the BSDs fail the accept for such a connection
+  instead (`ECONNABORTED`), which a native server counted in
+  `acceptFailures` and reported as an `ioError` of its own; it takes the
+  next connection now, as libuv and Go do.
 - `FileStream.readObject` refuses an object nested past the same depth
   `ByteArray.readObject` now does, with an `IOError`, in both open modes:
   a file holding an object nested a few thousand deep ran the reader out

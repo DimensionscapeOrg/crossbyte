@@ -84,6 +84,40 @@ class ServerWebSocketAdmissionTest extends utest.Test {
 		});
 	}
 
+	#if cpp
+	/**
+		A client that connects and resets before the server takes it, as in
+		ServerSocketAdmissionTest: on Linux it has no address, and asking
+		`admit` about it read through the null `peer()` and ended the process;
+		on macOS its accept fails, which the server counted as its own failure.
+	**/
+	@:timeout(5000)
+	public function testAPeerGoneBeforeItIsTakenIsPassedOver(async:Async):Void {
+		var server = new ServerWebSocket();
+		var asked:Array<Int> = [];
+		server.admit = (_, port) -> {
+			asked.push(port);
+			return true;
+		};
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		var client = new Socket();
+		HTTPTestSupport.pumpUntilAsync(() -> server.localPort != 0, 2.0, _ -> {
+			Assert.equals(0, ResetProbe.connectAndReset(server.localPort), "the probe could not reset a connection");
+			client.connect("127.0.0.1", server.localPort);
+			HTTPTestSupport.pumpUntilAsync(() -> client.localPort != 0 && asked.indexOf(client.localPort) >= 0, 3.0, taken -> {
+				Assert.isTrue(taken, "the client after the reset one was never taken");
+				Assert.isTrue(pending(server) > 0, "the client after the reset one never became a session");
+				Assert.equals(0, server.acceptFailures, "a client that reset was counted as the server failing to accept");
+				closeQuietly(client);
+				server.close();
+				async.done();
+			});
+		});
+	}
+	#end
+
 	#if !nodejs
 	/**
 		A hundred connections queued before the first tick, as in
