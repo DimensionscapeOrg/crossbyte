@@ -151,9 +151,14 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	public var onError(get, set):Reason->Void;
 	public var onReady(get, set):Void->Void;
 	/**
-	 * Connection timeout in milliseconds used by `connect()`.
+	 * How long, in milliseconds, `connect()` waits on the calling thread for
+	 * something to listen on the name; past it, `connect()` throws an
+	 * `ArgumentError`. The default is 5,000 (five seconds).
 	 *
-	 * `0` performs an immediate probe without waiting.
+	 * 0 (or less) means no deadline: `connect()` waits until something
+	 * listens, however long that is, as a connect with `timeout = 0` does
+	 * everywhere in CrossByte. It used to make a single try. One try is what
+	 * any timeout of 50 or less makes, 50 ms being the pause between tries.
 	 */
 	public var timeout:Int = 5000;
 	public var inTimestamp(default, null):Float = 0;
@@ -269,9 +274,13 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	}
 
 	/**
-	 * Connects to a listening local endpoint.
+	 * Connects to a listening local endpoint, waiting on the calling thread
+	 * for something to listen on the name for up to `timeout`, or without a
+	 * deadline when that is 0.
 	 *
 	 * @param connectionName Named local IPC endpoint to connect to.
+	 * @throws ArgumentError When nothing listened on the name within
+	 *         `timeout`, or the name cannot be used.
 	 */
 	public function connect(connectionName:String):Void {
 		__requireSupported();

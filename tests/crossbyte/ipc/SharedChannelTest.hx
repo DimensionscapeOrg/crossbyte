@@ -252,6 +252,37 @@ class SharedChannelTest extends utest.Test {
 		#end
 	}
 
+	/**
+		`timeout = 0` means no deadline: a send to a channel nothing listens on
+		yet waits, on the calling thread, until something does. It made one
+		try and reported an error at once.
+	**/
+	@:timeout(30000)
+	public function testATimeoutOfZeroWaitsForTheListenerWithoutADeadline():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var name = '__crossbyte_channel_nodeadline_${Std.int(Sys.time() * 1000)}_${Std.random(1000000)}';
+		var listening = LateListener.start(name, 0.4);
+		var sender = new SharedChannel();
+		sender.timeout = 0;
+		var levels:Array<String> = [];
+		sender.addEventListener(crossbyte.events.StatusEvent.STATUS, (event:crossbyte.events.StatusEvent) -> levels.push(event.level));
+		var started = haxe.Timer.stamp();
+		try {
+			sender.send(name, "receive", ("waited" : Dynamic), (1 : Dynamic));
+		} catch (e:Dynamic) {
+			levels.push("threw " + e);
+		}
+		var waited = haxe.Timer.stamp() - started;
+		sender.close();
+		listening.stop();
+
+		Assert.same(["status"], levels, 'the send gave up after $waited s');
+		Assert.isTrue(waited >= 0.3, 'the send returned after $waited s, before anything listened');
+		#else
+		Assert.pass();
+		#end
+	}
+
 	private static function frame(method:String, args:Array<Dynamic>):Bytes {
 		var methodBytes = Bytes.ofString(method);
 		var serialized = Serializer.run(args);
