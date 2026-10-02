@@ -26,5 +26,7 @@ extern class NativeLocalConnection {
 	@:native('native_connect') private static function __connect(name:String):VoidPointer;
 	@:native('native_connectWithTimeout') private static function __connectWithTimeout(name:String, timeoutMs:Int):VoidPointer;
 	@:native('native_close') private static function __close(pipe:VoidPointer):Void;
+	/** Keeps a listener's lock file from looking unused: see NativeLocalConnection.cpp. **/
+	@:native('native_keepName') private static function __keepName(pipe:VoidPointer):Void;
 }
 #end
