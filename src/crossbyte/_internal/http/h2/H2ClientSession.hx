@@ -8,7 +8,6 @@ import crossbyte._internal.http.h2.hpack.HpackHeader;
 import crossbyte.http.HTTPCancelToken;
 import crossbyte._internal.socket.FlexSocket;
 import haxe.io.Bytes;
-import sys.thread.Lock;
 import sys.thread.Mutex;
 import sys.thread.Thread;
 
@@ -47,9 +46,10 @@ import sys.thread.Thread;
  *   closed connection whose last write does not go out is given up
  *   `CLOSE_GRACE` after it closed.
  *
- * Waiting is on `Lock`, never `Condition`: parking a thread on a condition
- * variable stalls the hxcpp collector, and a GC pause that only reproduces
- * under concurrent requests is not a thing anyone wants to debug twice.
+ * Waiting is on `H2Wake`, a `Lock`, or on eval a `Semaphore`, never
+ * `Condition`: parking a thread on a condition variable stalls the hxcpp
+ * collector, and a GC pause that only reproduces under concurrent requests
+ * is not a thing anyone wants to debug twice.
  */
 class H2ClientSession {
 	/**
@@ -70,6 +70,12 @@ class H2ClientSession {
 	/** Frames smaller than this are gathered into one write. */
 	private static inline var GATHER_LIMIT:Int = 16 * 1024;
 
+	// Whether a request with no body writes its own head. Not on eval, where
+	// the writer's watch would be a timed wait, which there looks for a
+	// release once a millisecond (H2Wake), and where the hand-off it saves is
+	// the least of what a request costs.
+	private static inline var DIRECT_HEADS:Bool = #if eval false #else true #end;
+
 	/** Origin this session serves, as `scheme://host:port`. */
 	public final origin:String;
 
@@ -89,7 +95,7 @@ class H2ClientSession {
 
 	private final __socket:FlexSocket;
 	private final __lock:Mutex = new Mutex();
-	private final __waiters:Map<Int, Lock> = new Map();
+	private final __waiters:Map<Int, H2Wake> = new Map();
 
 	// Request bodies being written, by stream. Each has its own wake-up, so a
 	// cancel can wake the one it is for, and a processed frame wakes every
@@ -119,7 +125,7 @@ class H2ClientSession {
 	private var __interrupted:Bool = false;
 
 	// Released for every batch queued; the writer waits on it.
-	private final __writerWake:Lock = new Lock();
+	private final __writerWake:H2Wake = new H2Wake();
 	// Held, under the lock, by whichever thread is writing the socket, the
 	// writer, the reader writing its own answers, or a request writing its
 	// own head, so one writes at a time, in the order frames were queued.
@@ -139,7 +145,7 @@ class H2ClientSession {
 	private var __writingSince:Float = -1;
 	// Released by the writer as it takes a batch, for a reader waiting on its
 	// answers to go (MAX_QUEUED_REPLIES).
-	private final __drained:Lock = new Lock();
+	private final __drained:H2Wake = new H2Wake();
 	private var __readerWaiting:Bool = false;
 	private var __closedAt:Float = -1;
 
@@ -253,7 +259,7 @@ class H2ClientSession {
 	public function execute(method:String, scheme:String, authority:String, path:String, headers:Array<HpackHeader>, body:Null<Bytes>,
 			timeoutSeconds:Float, ?cancelToken:HTTPCancelToken, ?maxBodyLength:Int):H2Stream {
 		var target:H2Stream;
-		var waiter:Lock = new Lock();
+		var waiter:H2Wake = new H2Wake();
 		var hasBody:Bool = body != null && body.length > 0;
 
 		if (cancelToken != null && cancelToken.cancelled) {
@@ -341,7 +347,7 @@ class H2ClientSession {
 		// instead, so a peer that does not take it holds this thread no
 		// longer than the request's timeout, or a cancel's grace.
 		var direct:Null<Array<Bytes>> = null;
-		if (!hasBody && !__writing && !dead) {
+		if (DIRECT_HEADS && !hasBody && !__writing && !dead) {
 			direct = connection.takeOutbox();
 			if (direct != null) {
 				__writing = true;
@@ -421,7 +427,7 @@ class H2ClientSession {
 	 * moved starts the quiet period over from then. So the limit is never
 	 * reached early, and at most a quarter of it late.
 	 */
-	private function __awaitEnd(target:H2Stream, waiter:Lock, timeoutSeconds:Float):Bool {
+	private function __awaitEnd(target:H2Stream, waiter:H2Wake, timeoutSeconds:Float):Bool {
 		if (timeoutSeconds <= 0) {
 			// No limit. Each thing that wakes the waiter, the stream ending,
 			// a cancel, the connection going, ends this wait. A limit of
@@ -504,7 +510,7 @@ class H2ClientSession {
 			} catch (_:Dynamic) {}
 		}
 
-		var waiter:Null<Lock> = __waiters.get(streamId);
+		var waiter:Null<H2Wake> = __waiters.get(streamId);
 		var upload:Null<H2Upload> = __uploads.get(streamId);
 		if (__writing && __directStream == streamId) {
 			// Its own thread is writing its head, which a peer not reading
@@ -576,12 +582,13 @@ class H2ClientSession {
 		what ends the reader's read, and, with `endWrite`, for a write the
 		peer is not taking, the writer's.
 
-		On the jvm a write still under way is ended by closing the socket.
-		A shutdown does not end one already waiting on Windows there, the
-		JDK signals the writing thread only on POSIX, and closing a channel
-		under a call on it is what NIO is made for: the call throws, and
-		nothing native is freed under it, as closing a TLS socket natively
-		would be. Only then: a reader is left its read, as everywhere.
+		On the jvm and eval a write still under way is ended by closing the
+		socket. A shutdown does not end one already waiting on Windows there,
+		the JDK signals the writing thread only on POSIX, and eval shuts
+		only a socket's writing side there, and closing under a call is
+		safe on both: the call fails, and nothing native is freed under it,
+		as closing a TLS socket natively would be. Only then: a reader is
+		left its read, as everywhere.
 
 		Natively on Windows a TLS write the peer is not taking is not ended
 		by a shutdown, as a read is not: the thread waits until the peer
@@ -591,7 +598,7 @@ class H2ClientSession {
 		__lock.acquire();
 		var shut:Bool = !__interrupted && !__socketClosed;
 		__interrupted = true;
-		#if (java || jvm)
+		#if (java || jvm || eval)
 		var close:Bool = endWrite && __writing && !__socketClosed;
 		if (close) {
 			__socketClosed = true;
@@ -601,7 +608,7 @@ class H2ClientSession {
 		if (shut) {
 			Http.__interrupt(__socket);
 		}
-		#if (java || jvm)
+		#if (java || jvm || eval)
 		if (close) {
 			try {
 				__socket.close();
@@ -711,7 +718,7 @@ class H2ClientSession {
 	}
 
 	private function __onStreamClosed(target:H2Stream):Void {
-		var waiter:Null<Lock> = __waiters.get(target.id);
+		var waiter:Null<H2Wake> = __waiters.get(target.id);
 		if (waiter != null) {
 			waiter.release();
 		}
@@ -831,7 +838,7 @@ class H2ClientSession {
 	 */
 	private function __wakeEveryone():Void {
 		__lock.acquire();
-		var waiting:Array<Lock> = [];
+		var waiting:Array<H2Wake> = [];
 		for (waiter in __waiters) {
 			waiting.push(waiter);
 		}
@@ -1064,10 +1071,8 @@ class H2ClientSession {
 	}
 
 	private static function __watchLoop():Void {
-		var tick:Lock = new Lock();
 		while (true) {
-			// Whole milliseconds: a fraction spins on Windows natively.
-			tick.wait(0.25);
+			crossbyte._internal.system.Sleep.sleep(0.25);
 			var now:Float = haxe.Timer.stamp();
 			var expired:Array<H2ClientSession> = [];
 			__closingLock.acquire();
@@ -1136,7 +1141,7 @@ class H2ClientSession {
 /** A request body being written, and what it needs to wait on a window. */
 private class H2Upload {
 	/** Released for every frame processed while `blocked`, and by a cancel. */
-	public final wake:Lock = new Lock();
+	public final wake:H2Wake = new H2Wake();
 
 	/** The longest the window may stay shut, in seconds. */
 	public final timeout:Float;

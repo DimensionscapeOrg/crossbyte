@@ -1389,6 +1389,16 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- On eval HTTP/2 works, and the HTTP/1.1 client keeps connections for the
+  next request to their origin, as on every other target with threads.
+  Both were off there because eval raised a reset connection's error past
+  every `catch`, ending a pooled connection's reader thread or the
+  interpreter; it is an error a catch sees now. `HTTP2Backend.isSupported`
+  is true there, where a request for HTTP/2 was refused, and a request
+  that may be sent twice goes out on a kept connection with
+  `Connection: keep-alive`. An HTTP/2 connection's threads wait on a
+  `Semaphore` there, where a `Lock`'s wait polls and holds the interpreter
+  from the threads it waits for.
 - A `LocalConnection` name is its user's own, and with it a `SharedChannel`
   name and a `local://` address. Names were one namespace for every user of
   the machine: on Linux and macOS a name's socket was in /tmp, where another
