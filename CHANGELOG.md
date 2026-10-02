@@ -2176,9 +2176,9 @@ entry below says how:
   streams of 1 MB answers, where it held 16, 64 and 128 MB). Requests an
   application was handed before the connection filled, and answers later,
   are still held whole -- the cap cannot refuse work already done -- and
-  are bounded by the deadline below. And a response held for
-  its client has a deadline: one whose own window keeps it from moving for
-  30 s is reset, and when the connection's window is what holds them, every
+  are bounded by the deadline below. And a response held for its client
+  has a deadline: one whose own window keeps it from moving for 30 s is
+  reset, and when the connection's window is what holds them, every
   response waiting is reset and the requests waiting for room are refused
   with `REFUSED_STREAM`, never having reached the application. A response
   written whole had none, and waited for as long as the connection lasted.

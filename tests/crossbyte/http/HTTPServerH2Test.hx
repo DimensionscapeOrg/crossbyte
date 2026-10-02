@@ -1157,6 +1157,141 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	#if (cpp || neko || hl || jvm)
+	public function testAnHttp2ResponseStillGoingOutIsNotReapedAsIdle(async:Async):Void {
+		// An HTTP/2 connection was idle from when its last stream ended, and a
+		// stream ended once its last DATA was handed to the socket: for a
+		// client with a large window, at once, the whole response with it.
+		// One slower to read it than keepAliveTimeout had it cut off by the
+		// idle close. A connection is idle from when what it sent has gone.
+		// The client is a plain socket the runtime does not read, reading
+		// nothing until twice the idle allowance has passed. (Not on Node,
+		// which has no such socket.)
+		var size:Int = 24 * 1024 * 1024;
+		var body = new ByteArray();
+		body.length = size;
+		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.http2Enabled = true;
+		config.keepAliveTimeout = 0.5;
+		// Past the body, which is otherwise more than one connection may hold.
+		config.maxOutputBufferSize = 32 * 1024 * 1024;
+		config.middleware.push((handler, next) -> handler.respondBytes(200, "application/octet-stream", body));
+		var server = new HTTPServer(config);
+
+		var client = new sys.net.Socket();
+		client.connect(new sys.net.Host("127.0.0.1"), server.localPort);
+		var out = new BytesBuffer();
+		out.addString(H2Connection.PREFACE);
+		// INITIAL_WINDOW_SIZE as large as it goes, and the connection's window
+		// opened as far: nothing but the socket holds the response back.
+		var settings = Bytes.alloc(6);
+		settings.set(1, 0x4);
+		settings.set(2, 0x7F);
+		settings.set(3, 0xFF);
+		settings.set(4, 0xFF);
+		settings.set(5, 0xFF);
+		writeFrame(out, H2FrameType.SETTINGS, 0, 0, settings);
+		var increment:Int = 0x7FFFFFFF - 65535;
+		var credit = Bytes.alloc(4);
+		credit.set(0, (increment >> 24) & 0x7F);
+		credit.set(1, (increment >> 16) & 0xFF);
+		credit.set(2, (increment >> 8) & 0xFF);
+		credit.set(3, increment & 0xFF);
+		writeFrame(out, H2FrameType.WINDOW_UPDATE, 0, 0, credit);
+		writeFrame(out, H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, 1, new HpackEncoder(4096).encode([
+			new HpackHeader(":method", "GET"),
+			new HpackHeader(":scheme", "http"),
+			new HpackHeader(":authority", "127.0.0.1"),
+			new HpackHeader(":path", "/big")
+		]));
+		client.output.write(out.getBytes());
+		client.output.flush();
+
+		// Parked: bytes in the server's socket it cannot send, the same count
+		// for fifty passes.
+		var pending:Int = -1;
+		var still:Int = 0;
+		HTTPTestSupport.pumpWallUntilAsync(function():Bool {
+			var held:Int = -1;
+			for (handler in @:privateAccess server.__activeHttp2) {
+				held = @:privateAccess handler.__socket.outputBufferLength;
+			}
+			if (held > 0 && held == pending) {
+				still++;
+			} else {
+				still = 0;
+				pending = held;
+			}
+			return still >= 50;
+		}, 10.0, function(parked:Bool):Void {
+			var resumeAt:Float = haxe.Timer.stamp() + 1.0;
+			HTTPTestSupport.pumpWallUntilAsync(() -> haxe.Timer.stamp() >= resumeAt, 3.0, function(_):Void {
+				__readRawData(client, function(received:Int, ended:Bool):Void {
+					try client.close() catch (_:Dynamic) {}
+					try server.close() catch (_:Dynamic) {}
+					Assert.isTrue(parked, "the response never waited on its client, so this shows nothing");
+					Assert.equals(size, received, "the response was cut off");
+					Assert.isTrue(ended, "the response did not end");
+					async.done();
+				});
+			});
+		});
+	}
+
+	/**
+		Reads HTTP/2 frames off `client`, pumping between reads, until stream
+		1's DATA ends or the server closes, then continues with the bytes of
+		DATA stream 1 got and whether it ended.
+	**/
+	private static function __readRawData(client:sys.net.Socket, then:(Int, Bool) -> Void):Void {
+		var inbound = new BytesBuffer();
+		var parsedUpTo:Int = 0;
+		var received:Int = 0;
+		var ended:Bool = false;
+		var closed:Bool = false;
+		var chunk = Bytes.alloc(64 * 1024);
+		HTTPTestSupport.pumpWallUntilAsync(function():Bool {
+			var grew:Bool = false;
+			while (!closed && sys.net.Socket.select([client], null, null, 0).read.length > 0) {
+				var read:Int = 0;
+				try {
+					read = client.input.readBytes(chunk, 0, chunk.length);
+				} catch (_:Dynamic) {
+					closed = true;
+				}
+				if (read > 0) {
+					inbound.addBytes(chunk, 0, read);
+					grew = true;
+				}
+			}
+			if (grew) {
+				var all:Bytes = inbound.getBytes();
+				var position:Int = parsedUpTo;
+				while (position + H2Frame.HEADER_SIZE <= all.length) {
+					var length:Int = H2Frame.lengthOf(all, position);
+					if (position + H2Frame.HEADER_SIZE + length > all.length) {
+						break;
+					}
+					var streamId:Int = ((all.get(position + 5) & 0x7F) << 24) | (all.get(position + 6) << 16) | (all.get(position + 7) << 8)
+						| all.get(position + 8);
+					if (all.get(position + 3) == (H2FrameType.DATA : Int) && streamId == 1) {
+						received += length;
+						if ((all.get(position + 4) & H2Flags.END_STREAM) != 0) {
+							ended = true;
+						}
+					}
+					position += H2Frame.HEADER_SIZE + length;
+				}
+				// Only what is still to be read on is kept.
+				inbound = new BytesBuffer();
+				inbound.addBytes(all, position, all.length - position);
+				parsedUpTo = 0;
+			}
+			return ended || closed;
+		}, 15.0, _ -> then(received, ended));
+	}
+	#end
+
 	public function testAnHttp2ResponseItsClientTakesNoneOfIsGivenUp(async:Async):Void {
 		// A response written whole -- respond() with a body under the output
 		// cap -- that its stream's window held back waited on its client's
