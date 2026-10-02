@@ -2389,6 +2389,19 @@ entry below says how:
   connection that has heard GOAWAY out of service and leaves it to close
   once its last request ends; so does the pool's idle sweep, for a
   connection still carrying requests when it is swept.
+- An HTTP/2 client can no longer stall the server, nor grow the server's
+  HPACK table, with its SETTINGS_HEADER_TABLE_SIZE. The server's encoder
+  followed whatever size a client advertised: a megabyte kept every
+  distinct response field in the server's memory for the connection's
+  life (28,745 bytes after 300 responses, where 4,096 is the default),
+  each searched for every field after; and a size of 2^31 or more, which
+  reads negative, sent the thread reading the connection round the
+  table's eviction loop forever on the one SETTINGS frame, and with it
+  every connection that thread serves. The server's encoder now keeps to 4 KB
+  (`H2Connection.MAX_ENCODER_TABLE_SIZE`) whatever the client says, as
+  the client's does, and still uses less when told less; and the HPACK
+  table takes a capacity below zero as zero rather than evicting toward
+  it.
 - An HTTP/2 server that stops reading no longer holds the client's
   requests past their timeouts, nor a cancel, nor a close. Every frame a
   connection sent, a request's head and body, a reset, the answers to
