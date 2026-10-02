@@ -630,10 +630,13 @@ class StunClientTest extends utest.Test {
 
 		The server models a NAT by what it reports, since loopback has none:
 		one mapping for every destination, one per destination address, and
-		one per address and port. And with no model at all it reports what it
-		sees, which is loopback's truth -- no NAT, endpoint-independent --
-		through a socket of the classification's own, the path whose separate
-		sockets used to make every NAT look symmetric.
+		one per address and port. With no model at all it reports what it
+		sees, which is loopback's truth: no NAT, endpoint-independent.
+
+		And a NAT that keeps the socket's port, asked through a socket of the
+		classification's own: endpoint-independent only if all three questions
+		go through that one socket -- separate sockets, as there used to be,
+		made every NAT look symmetric.
 	**/
 	public function testMappingIsClassified():Void {
 		if (unsupported()) return;
@@ -642,6 +645,31 @@ class StunClientTest extends utest.Test {
 		Assert.equals("ENDPOINT_INDEPENDENT", classify(true, ENDPOINT_INDEPENDENT, ENDPOINT_INDEPENDENT, true));
 		Assert.equals("ADDRESS_DEPENDENT", classify(true, ADDRESS_DEPENDENT, ENDPOINT_INDEPENDENT, true));
 		Assert.equals("ADDRESS_AND_PORT_DEPENDENT", classify(true, ADDRESS_AND_PORT_DEPENDENT, ENDPOINT_INDEPENDENT, true));
+		Assert.equals("ENDPOINT_INDEPENDENT", classify(true, null, ENDPOINT_INDEPENDENT, false, server -> server.keepPortAt = REPORTED_ADDRESS),
+			"a NAT that keeps the port, own socket");
+	}
+
+	/**
+		A host with no NAT whose source address follows the destination is
+		not behind one. RFC 5780 stops after the first question when the
+		server saw the socket as it is -- the address it sent from, and its
+		port -- and so does `classifyMapping` now. It went on, and reported
+		such a host address-dependent: its own two addresses taken for a NAT's
+		mappings.
+
+		macOS is such a host on loopback, with an alias added: a datagram to
+		127.0.0.2 leaves from 127.0.0.2. Everywhere else loopback sends from
+		127.0.0.1 whatever the destination, so the server says what macOS's
+		would have seen -- the address it was asked on -- and this is the same
+		on every system.
+	**/
+	public function testAHostWithASourceAddressPerDestinationIsNotBehindANat():Void {
+		if (unsupported()) return;
+
+		Assert.equals("ENDPOINT_INDEPENDENT", classify(true, null, ENDPOINT_INDEPENDENT, false, server -> server.sourcePerAddress = true),
+			"own socket, bound to every address");
+		Assert.equals("ENDPOINT_INDEPENDENT", classify(true, null, ENDPOINT_INDEPENDENT, true, server -> server.sourcePerAddress = true),
+			"the caller's socket, bound to 127.0.0.1");
 	}
 
 	/**
@@ -726,7 +754,8 @@ class StunClientTest extends utest.Test {
 		Runs a classification against a server modelling `mapping` and
 		`filtering`, and names what it found or why it failed.
 	**/
-	private static function classify(mappingTest:Bool, mapping:Null<NatBehavior>, filtering:NatBehavior, callersSocket:Bool):String {
+	private static function classify(mappingTest:Bool, mapping:Null<NatBehavior>, filtering:NatBehavior, callersSocket:Bool,
+			?configure:FakeRfc5780Server->Void):String {
 		var server = new FakeRfc5780Server();
 		var socket:Null<DatagramSocket> = null;
 		var result:Null<NatBehavior> = null;
@@ -735,6 +764,9 @@ class StunClientTest extends utest.Test {
 		try {
 			server.mapping = mapping;
 			server.filtering = filtering;
+			if (configure != null) {
+				configure(server);
+			}
 			server.start();
 
 			if (callersSocket) {
@@ -985,6 +1017,19 @@ private class FakeRfc5780Server {
 	/** Leave OTHER-ADDRESS out, as a server with one address does. **/
 	public var omitOtherAddress:Bool = false;
 
+	/**
+		With no `mapping`, report the port seen at the address asked on: what
+		a server sees of a host whose source address follows the destination,
+		as macOS sends to a loopback alias from that alias.
+	**/
+	public var sourcePerAddress:Bool = false;
+
+	/**
+		Report the port seen at this address: a NAT that keeps the socket's
+		port, one mapping for every destination. Overrides `mapping`.
+	**/
+	public var keepPortAt:Null<String> = null;
+
 	/** One socket per address and port: index = address * 2 + port. **/
 	private var __sockets:Array<DatagramSocket> = [];
 
@@ -1106,8 +1151,8 @@ private class FakeRfc5780Server {
 			return;
 		}
 
-		var mapped:StunAttribute = switch (mapping) {
-			case null: StunMessage.xorMappedAddress(e.srcAddress, e.srcPort);
+		var mapped:StunAttribute = keepPortAt != null ? StunMessage.xorMappedAddress(keepPortAt, e.srcPort) : switch (mapping) {
+			case null: StunMessage.xorMappedAddress(sourcePerAddress ? __address(index) : e.srcAddress, e.srcPort);
 			case ENDPOINT_INDEPENDENT: StunMessage.xorMappedAddress(StunClientTest.REPORTED_ADDRESS, 40000);
 			case ADDRESS_DEPENDENT: StunMessage.xorMappedAddress(StunClientTest.REPORTED_ADDRESS, 40000 + (index >> 1));
 			case ADDRESS_AND_PORT_DEPENDENT: StunMessage.xorMappedAddress(StunClientTest.REPORTED_ADDRESS, 40000 + index);

@@ -164,6 +164,15 @@ class StunClient {
 		addresses; one that cannot leaves `OTHER-ADDRESS` out and this fails
 		saying so.
 
+		When the server sees the socket as it is -- the address it sent from
+		and its own port -- there is no NAT, and this answers
+		`ENDPOINT_INDEPENDENT` after that first question, as RFC 5780 does:
+		with no NAT the mapping is the socket itself. It went on asking, and a
+		host whose source address follows the destination -- one with a route
+		out on each of two networks, or macOS sending to a loopback alias from
+		that alias -- was reported `ADDRESS_DEPENDENT`, its own addresses taken
+		for a NAT's mappings.
+
 		@param timeoutMs For each question, as for `discover`: 0 or less is
 		no deadline.
 		@param socket As for `discover`. Without one, a socket of its own is
@@ -204,31 +213,73 @@ class StunClient {
 				return;
 			}
 
-			// Test II: the other address, the same port.
-			__ask(other.address, port, timeoutMs, socket, null, function(second:Null<StunAnswer>, failure:Null<String>, _:Bool):Void {
-				if (second == null) {
-					settle(null, "RFC 5780's second question, to " + other.address + ":" + port + ", went unanswered: " + failure);
-					return;
-				}
-
-				if (__same(first.mapped, second.mapped)) {
+			// No NAT, when the server saw the socket as it is; see the doc.
+			// Asked after OTHER-ADDRESS, as RFC 5780 orders it: a server that
+			// cannot run the tests says so whatever is in front of the client.
+			__localTransport(socket, first.from.address, function(local:Null<ReflexiveAddress>):Void {
+				if (local != null && __same(local, first.mapped)) {
 					settle(ENDPOINT_INDEPENDENT, null);
 					return;
 				}
-
-				// Test III: the other address and the other port.
-				__ask(other.address, other.port, timeoutMs, socket, null, function(third:Null<StunAnswer>, failure:Null<String>, _:Bool):Void {
-					if (third == null) {
-						settle(null, "RFC 5780's third question, to " + other + ", went unanswered: " + failure);
-						return;
-					}
-
-					settle(__same(second.mapped, third.mapped) ? ADDRESS_DEPENDENT : ADDRESS_AND_PORT_DEPENDENT, null);
-				});
+				__askTheOtherAddress(server, port, timeoutMs, socket, first, other, settle);
 			});
 		});
 
 		return future;
+	}
+
+	/** `classifyMapping`'s second and third questions, through `socket`. **/
+	@:noCompletion private static function __askTheOtherAddress(server:String, port:Int, timeoutMs:Int, socket:Null<DatagramSocket>,
+			first:StunAnswer, other:ReflexiveAddress, settle:(Null<NatBehavior>, Null<String>) -> Void):Void {
+		// Test II: the other address, the same port.
+		__ask(other.address, port, timeoutMs, socket, null, function(second:Null<StunAnswer>, failure:Null<String>, _:Bool):Void {
+			if (second == null) {
+				settle(null, "RFC 5780's second question, to " + other.address + ":" + port + ", went unanswered: " + failure);
+				return;
+			}
+
+			if (__same(first.mapped, second.mapped)) {
+				settle(ENDPOINT_INDEPENDENT, null);
+				return;
+			}
+
+			// Test III: the other address and the other port.
+			__ask(other.address, other.port, timeoutMs, socket, null, function(third:Null<StunAnswer>, failure:Null<String>, _:Bool):Void {
+				if (third == null) {
+					settle(null, "RFC 5780's third question, to " + other + ", went unanswered: " + failure);
+					return;
+				}
+
+				settle(__same(second.mapped, third.mapped) ? ADDRESS_DEPENDENT : ADDRESS_AND_PORT_DEPENDENT, null);
+			});
+		});
+	}
+
+	/**
+		The address and port `socket` sent from toward `toward`, or null where
+		that cannot be told: its own address when it is bound to one, and for
+		one bound to every interface, the address the routing table picks for
+		`toward` (see `LocalAddress`), which is what a datagram to it left
+		from.
+	**/
+	@:noCompletion private static function __localTransport(socket:Null<DatagramSocket>, toward:String, then:Null<ReflexiveAddress>->Void):Void {
+		var port:Int = socket != null ? socket.localPort : 0;
+		if (port == 0) {
+			then(null);
+			return;
+		}
+
+		var bound:String = IPv6.compress(socket.localAddress);
+		if (bound != "" && bound != "0.0.0.0" && bound != "::") {
+			then(({address: bound, port: port} : ReflexiveAddress));
+			return;
+		}
+
+		LocalAddress.forDestination(toward).then(function(address:String):Void {
+			then(({address: address, port: port} : ReflexiveAddress));
+		}, function(_:String):Void {
+			then(null);
+		});
 	}
 
 	/**
