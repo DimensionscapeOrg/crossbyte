@@ -2416,6 +2416,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A connected `DatagramSocket` sends on macOS and the BSDs. Every send
+  named the peer, as the socket names it whether or not it is connected,
+  and those systems refuse an address on a connected datagram socket's
+  sends (`EISCONN`), where Linux and Windows take the one it is connected
+  to: each failed with "Socket operation failed", a connect to a name too.
+  Such a send goes without the address now.
 - A `Socket` whose `CONNECT` listener closes it, in the tick the peer
   also hangs up, no longer ends a native process. The tick went on to the
   close it had already decided on and cleaned the socket up a second time,

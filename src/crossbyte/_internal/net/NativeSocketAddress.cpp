@@ -288,6 +288,14 @@ int crossbyte_socket_send_to(Dynamic socket, Array<unsigned char> buffer, int po
 			reinterpret_cast<sockaddr*>(&nativeAddress),
 			nativeAddressLength
 		);
+		// A connected datagram socket: macOS and the BSDs refuse an address
+		// on its sends (EISCONN), where Linux takes the one it is connected
+		// to. DatagramSocket names its peer whether or not it is connected,
+		// and every send failed there; the peer it is connected to is the
+		// only one it may send to, so it goes without one.
+		if (sent == SOCKET_ERROR && errno == EISCONN) {
+			sent = send(nativeSocket, data + position, length, MSG_NOSIGNAL);
+		}
 	} while (sent == SOCKET_ERROR && errno == EINTR);
 #endif
 	if (sent == SOCKET_ERROR) {
@@ -560,6 +568,10 @@ int crossbyte_socket_send_batch(Dynamic socket, Array<unsigned char> buffer, Arr
 #else
 		do {
 			result = sendto(nativeSocket, data + spans[2 * i], spans[2 * i + 1], MSG_NOSIGNAL, reinterpret_cast<sockaddr*>(&name), nameLength);
+			// Connected: no address, as crossbyte_socket_send_to says.
+			if (result == SOCKET_ERROR && errno == EISCONN) {
+				result = send(nativeSocket, data + spans[2 * i], spans[2 * i + 1], MSG_NOSIGNAL);
+			}
 		} while (result == SOCKET_ERROR && errno == EINTR);
 #endif
 		hx::ExitGCFreeZone();
