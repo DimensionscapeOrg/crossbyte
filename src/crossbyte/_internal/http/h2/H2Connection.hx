@@ -98,10 +98,12 @@ class H2Connection {
 
 	/**
 	 * Called when a request body cannot proceed because a flow-control window
-	 * is closed, with the stream it is for and how many seconds this stall
-	 * has lasted. Returns `false` to abandon the write. Called again after
-	 * every return while the window stays closed, and the stall's clock only
-	 * starts over once a byte of the body has gone out.
+	 * is closed -- or, with `deferWrites`, because `MAX_QUEUED_DATA` of it
+	 * waits to be written (`windowOpen` tells the two apart) -- with the
+	 * stream it is for and how many seconds this stall has lasted. Returns
+	 * `false` to abandon the write. Called again after every return while
+	 * the body still cannot proceed, and the stall's clock only starts over
+	 * once a byte of the body has gone out.
 	 *
 	 * The default reads a frame here, which is right when the caller owns the
 	 * connection outright. It is wrong the moment a reader thread owns the
@@ -112,6 +114,37 @@ class H2Connection {
 	 * the write: the body stops as soon as its stream is closed.
 	 */
 	public var onWindowBlocked:(target:H2Stream, stalledSeconds:Float) -> Bool = null;
+
+	/**
+		Whether frames are queued rather than written: set by an owner with a
+		thread of its own for the writes, which takes them with `takeOutbox`.
+		Every write here used to be made where the frame was made -- under the
+		owner's lock, by whichever thread held it -- so a peer that stopped
+		reading held that thread in the write, and the lock with it.
+
+		While set, a request body waits (`onWindowBlocked`) whenever
+		`MAX_QUEUED_DATA` of it waits to go out, as it waits on a window.
+	**/
+	public var deferWrites:Bool = false;
+
+	/**
+		Body bytes a request may have queued, unwritten, before it waits for
+		them to go out (`deferWrites`): what one upload holds of its body in
+		frames, besides the batch being written.
+	**/
+	public static inline var MAX_QUEUED_DATA:Int = 256 * 1024;
+
+	/** Bytes of frames queued and not yet taken (`deferWrites`). */
+	public var queuedBytes(get, never):Int;
+
+	/**
+		Of `queuedBytes`, what answers the peer obliged: the acknowledgements
+		of its PINGs and SETTINGS, and the WINDOW_UPDATEs its DATA earns. A
+		peer sending those and reading nothing grows them for as long as it
+		goes on, so an owner reading frames stops reading while they are
+		many.
+	**/
+	public var queuedReplyBytes(get, never):Int;
 
 	private final __input:Input;
 	private final __output:Output;
@@ -134,6 +167,10 @@ class H2Connection {
 	private var __continuationEndsStream:Bool = false;
 	private var __continuationBuffer:BytesBuffer = null;
 	private var __continuationLength:Int = 0;
+
+	private var __outbox:Array<Bytes> = [];
+	private var __outboxBytes:Int = 0;
+	private var __outboxReplyBytes:Int = 0;
 
 	public function new(input:Input, output:Output, ?settings:H2Settings) {
 		__input = input;
@@ -183,6 +220,35 @@ class H2Connection {
 	/** A stream still open, or `null`: a stream is forgotten as it closes. */
 	public function stream(id:Int):Null<H2Stream> {
 		return __streams.get(id);
+	}
+
+	/**
+		The frames queued since the last call, in the order they were made,
+		or null when there are none (`deferWrites`). Whoever takes them writes
+		them, in that order: HPACK state rides on it.
+	**/
+	public function takeOutbox():Null<Array<Bytes>> {
+		if (__outbox.length == 0) {
+			return null;
+		}
+		var taken:Array<Bytes> = __outbox;
+		__outbox = [];
+		__outboxBytes = 0;
+		__outboxReplyBytes = 0;
+		return taken;
+	}
+
+	/** Whether both windows let `target` send a byte of its body. */
+	public inline function windowOpen(target:H2Stream):Bool {
+		return target.sendWindow > 0 && __connectionSendWindow > 0;
+	}
+
+	private inline function get_queuedBytes():Int {
+		return __outboxBytes;
+	}
+
+	private inline function get_queuedReplyBytes():Int {
+		return __outboxReplyBytes;
 	}
 
 	/**
@@ -741,7 +807,7 @@ class H2Connection {
 			capacity = MAX_ENCODER_TABLE_SIZE;
 		}
 		__encoder.setCapacity(capacity);
-		__writeFrame(H2FrameType.SETTINGS, H2Flags.ACK, 0, Bytes.alloc(0));
+		__writeReply(H2FrameType.SETTINGS, H2Flags.ACK, 0, Bytes.alloc(0));
 	}
 
 	private function __onPing(frame:H2Frame):Void {
@@ -752,7 +818,7 @@ class H2Connection {
 			return;
 		}
 		// §6.7: echo the payload exactly.
-		__writeFrame(H2FrameType.PING, H2Flags.ACK, 0, frame.payload);
+		__writeReply(H2FrameType.PING, H2Flags.ACK, 0, frame.payload);
 	}
 
 	private function __onGoAway(frame:H2Frame):Void {
@@ -836,7 +902,7 @@ class H2Connection {
 
 		var payload:Bytes = Bytes.alloc(4);
 		__writeUInt32(payload, 0, increment);
-		__writeFrame(H2FrameType.WINDOW_UPDATE, 0, target.id, payload);
+		__writeReply(H2FrameType.WINDOW_UPDATE, 0, target.id, payload);
 	}
 
 	private function __topUpConnectionWindow():Void {
@@ -850,7 +916,7 @@ class H2Connection {
 
 		var payload:Bytes = Bytes.alloc(4);
 		__writeUInt32(payload, 0, increment);
-		__writeFrame(H2FrameType.WINDOW_UPDATE, 0, 0, payload);
+		__writeReply(H2FrameType.WINDOW_UPDATE, 0, 0, payload);
 	}
 
 	// ---------------------------------------------------------------- write
@@ -890,7 +956,9 @@ class H2Connection {
 	 *
 	 * When a window closes, the only way it reopens is a WINDOW_UPDATE from
 	 * the peer, so this pumps to find one. That is also why a caller must not
-	 * hold a lock across a large body.
+	 * hold a lock across a large body. With `deferWrites`, the body waits the
+	 * same way while `MAX_QUEUED_DATA` of it waits to be written: the socket
+	 * is a window too, and a peer that stops reading keeps it shut.
 	 */
 	private function __writeData(target:H2Stream, body:Bytes):Void {
 		var offset:Int = 0;
@@ -899,7 +967,7 @@ class H2Connection {
 			// When this stall began. Frames that leave the window shut do not
 			// restart it; sending part of the body does.
 			var stalledSince:Float = -1;
-			while (target.sendWindow <= 0 || __connectionSendWindow <= 0) {
+			while (target.sendWindow <= 0 || __connectionSendWindow <= 0 || (deferWrites && __outboxBytes >= MAX_QUEUED_DATA)) {
 				if (stalledSince < 0) {
 					stalledSince = haxe.Timer.stamp();
 				}
@@ -951,7 +1019,9 @@ class H2Connection {
 			}
 
 			var last:Bool = (offset + chunk) >= body.length;
-			__writeFrame(H2FrameType.DATA, last ? H2Flags.END_STREAM : 0, target.id, body.sub(offset, chunk));
+			// Framed straight from the body: a sub() of it first was a second
+			// copy of every byte.
+			__write(H2Frame.encode(H2FrameType.DATA, last ? H2Flags.END_STREAM : 0, target.id, body, offset, chunk));
 
 			target.sendWindow -= chunk;
 			__connectionSendWindow -= chunk;
@@ -963,7 +1033,21 @@ class H2Connection {
 		__write(H2Frame.encode(type, flags, streamId, payload));
 	}
 
+	/** A frame the peer obliged, counted as such while it waits (`queuedReplyBytes`). */
+	private function __writeReply(type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {
+		var frame:Bytes = H2Frame.encode(type, flags, streamId, payload);
+		if (deferWrites) {
+			__outboxReplyBytes += frame.length;
+		}
+		__write(frame);
+	}
+
 	private function __write(bytes:Bytes):Void {
+		if (deferWrites) {
+			__outbox.push(bytes);
+			__outboxBytes += bytes.length;
+			return;
+		}
 		// Full, not writeBytes, which may write only part and says how much.
 		// Over TLS it takes at most one 16 KB record, and a DATA frame of the
 		// default largest size is 16 KB and nine: the frame's last nine bytes
