@@ -364,8 +364,11 @@ class MetricsTest extends utest.Test {
 		// are not monotonic, or do not add up to the count, gets nonsense.
 		var latency = metrics.histogram("scraped_seconds", [0.1, 1.0]);
 		var writers:Int = 3;
-		var stop = new sys.thread.Deque<Bool>();
-		var finished = new sys.thread.Deque<Bool>();
+		// Null<Bool>, not Bool: an empty Deque<Bool> pops false on the jvm,
+		// not null, which each writer took for the stop and left after its
+		// first 1,024 observations, the scrapes below raced nothing there.
+		var stop = new sys.thread.Deque<Null<Bool>>();
+		var finished = new sys.thread.Deque<Null<Bool>>();
 
 		for (_ in 0...writers) {
 			sys.thread.Thread.create(function():Void {
@@ -396,10 +399,12 @@ class MetricsTest extends utest.Test {
 			}
 		}
 
+		var early:Null<Bool> = finished.pop(false);
+		Assert.isNull(early, "a writer stopped before it was told to");
 		for (_ in 0...writers) {
 			stop.add(true);
 		}
-		for (_ in 0...writers) {
+		for (_ in 0...(early == null ? writers : writers - 1)) {
 			finished.pop(true);
 		}
 
