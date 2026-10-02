@@ -66,7 +66,10 @@ class HpackDynamicTable {
 	 * caller checks that bound, because only it knows the setting.
 	 */
 	public function resize(newCapacity:Int):Void {
-		capacity = newCapacity;
+		// Below nothing is nothing. A negative capacity -- a setting of 2^31
+		// or more, read as an Int -- left the loop below evicting forever: an
+		// empty table's size is 0, and 0 is still more than -1.
+		capacity = newCapacity < 0 ? 0 : newCapacity;
 		while (size > capacity) {
 			__evictOldest();
 		}
