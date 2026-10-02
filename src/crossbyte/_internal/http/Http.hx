@@ -40,9 +40,10 @@ class Http {
 
 	/**
 	 * Maximum number of bytes a response body framed by `Content-Length`, or by
-	 * the connection closing, may declare or deliver. Defaults to 64 MB; set to
-	 * `<= 0` to disable. `MAX_CHUNKED_BODY_SIZE` is the same bound for a
-	 * chunked body.
+	 * the connection closing, may declare or deliver -- and, over HTTP/2, what
+	 * a response's DATA frames may deliver. Defaults to 64 MB; set to `<= 0`
+	 * to disable. `MAX_CHUNKED_BODY_SIZE` is the same bound for a chunked
+	 * body.
 	 *
 	 * A declared length is checked before anything is allocated for it. The
 	 * body used to be allocated whole from the header, so one response saying
@@ -1006,7 +1007,7 @@ class Http {
 		// then the request goes again on a new connection. A POST is never
 		// sent on one, since whether the server acted on it cannot be known.
 		var kept:Null<FlexSocket> = null;
-		#if (sys && !eval)
+		#if sys
 		if (__pooling() && __repeatable()) {
 			// Only a connection opened under the same TLS: one that did not
 			// check its server must not carry a request that does.
@@ -1160,9 +1161,9 @@ class Http {
 		return Std.string(error);
 	}
 
-	/** Whether connections are kept for reuse: everywhere with threads but eval. */
+	/** Whether connections are kept for reuse: everywhere with threads. */
 	private static inline function __pooling():Bool {
-		#if (sys && !eval)
+		#if sys
 		return poolConnections;
 		#else
 		return false;
@@ -1180,7 +1181,7 @@ class Http {
 	 * closed otherwise.
 	 */
 	private function __release(framed:Bool):Void {
-		#if (sys && !eval)
+		#if sys
 		var connection:Null<String> = __responseHeaders.get("connection");
 		var closing:Bool = connection != null && connection.toLowerCase().indexOf("close") >= 0;
 		if (framed && __pooling() && __responseHttp11 && !closing && __socket != null && __version == HttpVersion.HTTP_1_1) {

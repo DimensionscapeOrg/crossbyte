@@ -56,9 +56,9 @@ class SocketDeferredFlushStress implements StressCase {
 
 		var writes:Int = 0;
 		var policyClosed:Bool = false;
-		var deadline:Float = Sys.time() + 20;
+		var deadline:Float = haxe.Timer.stamp() + 20;
 
-		while (!policyClosed && writes < CHUNKS && Sys.time() < deadline) {
+		while (!policyClosed && writes < CHUNKS && haxe.Timer.stamp() < deadline) {
 			@:privateAccess runtime.pump(0.016);
 
 			if (served != null) {

@@ -77,11 +77,10 @@ class URLRequest {
 		HTTP/2 or fails rather than falling back to HTTP/1.1. HTTP/3 needs an
 		`HTTPBackend` registered with `HTTPBackendRegistry`: none ships.
 
-		On eval HTTP/2 is refused; see `HTTP2Backend.isSupported`. On Node a
-		request for anything but HTTP/1.1 is refused with an `IO_ERROR`, since
-		Node's http client speaks no other. In a browser the browser
-		negotiates the version itself -- HTTP/2 or HTTP/3 over `https`, where
-		the server offers it -- and this is not consulted.
+		On Node a request for anything but HTTP/1.1 is refused with an
+		`IO_ERROR`, since Node's http client speaks no other. In a browser the
+		browser negotiates the version itself -- HTTP/2 or HTTP/3 over
+		`https`, where the server offers it -- and this is not consulted.
 	**/
 	public var httpVersion:HTTPVersion;
 

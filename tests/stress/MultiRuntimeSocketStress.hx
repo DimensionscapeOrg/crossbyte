@@ -79,7 +79,7 @@ class MultiRuntimeSocketStress implements StressCase {
 		server.listen(WORKERS * 2);
 
 		var port:Int = server.localPort;
-		var started:Float = Sys.time();
+		var started:Float = haxe.Timer.stamp();
 
 		for (i in 0...WORKERS) {
 			var index:Int = i;
@@ -89,9 +89,9 @@ class MultiRuntimeSocketStress implements StressCase {
 		}
 
 		var primordial:CrossByte = CrossByte.current();
-		var deadline:Float = Sys.time() + TIMEOUT;
+		var deadline:Float = haxe.Timer.stamp() + TIMEOUT;
 
-		while (Sys.time() < deadline) {
+		while (haxe.Timer.stamp() < deadline) {
 			primordial.pump(1 / 120, 0);
 
 			lock.acquire();
@@ -103,7 +103,7 @@ class MultiRuntimeSocketStress implements StressCase {
 			}
 		}
 
-		var elapsed:Float = Sys.time() - started;
+		var elapsed:Float = haxe.Timer.stamp() - started;
 
 		for (peer in peers) {
 			try {
@@ -185,8 +185,8 @@ class MultiRuntimeSocketStress implements StressCase {
 
 			client.connect("127.0.0.1", port);
 
-			var deadline:Float = Sys.time() + TIMEOUT;
-			while (received.length < PAYLOAD && !closed && Sys.time() < deadline) {
+			var deadline:Float = haxe.Timer.stamp() + TIMEOUT;
+			while (received.length < PAYLOAD && !closed && haxe.Timer.stamp() < deadline) {
 				runtime.pump(1 / 120, 0);
 			}
 
@@ -215,8 +215,8 @@ class MultiRuntimeSocketStress implements StressCase {
 
 			// Let the close reach the registry before asking whether it is
 			// empty; the deregistration is queued and drained on a pump.
-			var settle:Float = Sys.time() + 1.0;
-			while (Sys.time() < settle) {
+			var settle:Float = haxe.Timer.stamp() + 1.0;
+			while (haxe.Timer.stamp() < settle) {
 				runtime.pump(1 / 120, 0);
 			}
 
