@@ -382,6 +382,14 @@ class SystemTest extends utest.Test {
 			return;
 		}
 		#end
+		#if neko
+		// neko's put_env throws for null on Windows, where setting a variable
+		// to nothing is how it is removed.
+		if (value == null && System.isWindows) {
+			Sys.putEnv(name, "");
+			return;
+		}
+		#end
 		Sys.putEnv(name, value);
 	}
 	#end

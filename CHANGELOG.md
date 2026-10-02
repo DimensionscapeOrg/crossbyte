@@ -2283,6 +2283,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A native server on macOS shuts down gracefully on SIGHUP when its shell
+  had handled SIGHUP itself. macOS keeps a signal's SA_SIGINFO flag across
+  exec while putting its handler back to the default, and
+  `installDefaultHandlers()` read the flag as another handler and left
+  SIGHUP alone, so a hangup still ended the process at once: the native
+  suites on the macOS CI runner died that way. A signal is judged by its
+  handler now.
 - On neko, what another thread posts to a runtime, a `Task`'s first
   listener and an HTTP request's cancel are no longer lost. A neko object
   gains a field when it is first set, which can move its field table, and
