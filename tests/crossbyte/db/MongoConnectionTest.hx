@@ -107,6 +107,14 @@ class MongoConnectionTest extends utest.Test {
 		// one slot taken: the next SYN goes unanswered, on Linux for good and on
 		// Windows until it refuses a couple of seconds later. The interpreter
 		// connects with no limit at all (see MongoConfig.connectTimeout).
+		#if hl
+		if (crossbyte.sys.System.isWindows) {
+			// Nor does HashLink on Windows, which applies no send timeout to
+			// a connect, as connectTimeout says.
+			Assert.pass();
+			return;
+		}
+		#end
 		var listener:sys.net.Socket = new sys.net.Socket();
 		listener.bind(new sys.net.Host("127.0.0.1"), 0);
 		listener.listen(0);

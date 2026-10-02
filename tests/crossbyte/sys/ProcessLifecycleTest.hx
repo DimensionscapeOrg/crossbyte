@@ -201,8 +201,9 @@ class ProcessLifecycleTest extends utest.Test {
 	#end
 
 	#if (cpp && !windows)
-	// The same number on Linux and macOS.
-	static inline var SIGHUP:Int = 1;
+	// SIGHUP: the same number on Linux and macOS. Not named SIGHUP, which
+	// macOS's headers define as a macro over the C++ member it becomes.
+	static inline var HANGUP:Int = 1;
 
 	/**
 		A SIGHUP -- the terminal a server was started from going away -- runs
@@ -214,7 +215,7 @@ class ProcessLifecycleTest extends utest.Test {
 		ProcessLifecycle.onShutdown(() -> ran = true);
 		Assert.isTrue(ProcessLifecycle.installDefaultHandlers());
 
-		Assert.isTrue(crossbyte.sys._internal.NativeLifecycle.raiseForTest(SIGHUP));
+		Assert.isTrue(crossbyte.sys._internal.NativeLifecycle.raiseForTest(HANGUP));
 		Assert.isTrue(ProcessLifecycle.shutdownRequested);
 		Assert.isTrue(ProcessLifecycle.poll());
 		Assert.isTrue(ran);
@@ -226,15 +227,15 @@ class ProcessLifecycleTest extends utest.Test {
 	**/
 	public function testAHangupIgnoredByNohupStaysIgnored():Void {
 		crossbyte.sys._internal.NativeLifecycle.uninstallForTest();
-		Assert.isTrue(crossbyte.sys._internal.NativeLifecycle.ignoreForTest(SIGHUP, true));
+		Assert.isTrue(crossbyte.sys._internal.NativeLifecycle.ignoreForTest(HANGUP, true));
 		Assert.isTrue(ProcessLifecycle.installDefaultHandlers());
 
-		Assert.isTrue(crossbyte.sys._internal.NativeLifecycle.raiseForTest(SIGHUP));
+		Assert.isTrue(crossbyte.sys._internal.NativeLifecycle.raiseForTest(HANGUP));
 		Assert.isFalse(ProcessLifecycle.shutdownRequested);
 
 		// As it was: SIGHUP to its default, and the handlers installed over it.
 		crossbyte.sys._internal.NativeLifecycle.uninstallForTest();
-		crossbyte.sys._internal.NativeLifecycle.ignoreForTest(SIGHUP, false);
+		crossbyte.sys._internal.NativeLifecycle.ignoreForTest(HANGUP, false);
 		Assert.isTrue(ProcessLifecycle.installDefaultHandlers());
 	}
 	#end

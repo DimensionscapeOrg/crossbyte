@@ -2283,6 +2283,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `Worker` on neko whose work ends it at once -- `cancel()` from inside
+  `doWork` -- reaches `CANCELLED`. About one run in 600 it stayed `RUNNING`
+  for good, and `run()` then refused it: a neko object gains a field when
+  it is first set, which can move its field table, and `run()` first set
+  one just after starting the thread, so the worker's `CANCELLED` was
+  written into the table being left.
 - A client that connects and resets before a server takes it is passed
   over, by `ServerSocket` and `ServerWebSocket`. Linux hands such a
   connection over with no address for its peer, and the server read
@@ -3552,7 +3558,9 @@ entry below says how:
   made -- natively from `statx` on Linux and `st_birthtime` on macOS, on
   Node its `birthtime`, on the jvm its `creationTime` -- where it was
   POSIX's `ctime`, which a chmod or a write moves on; `null` where the
-  file system keeps none, and an `IllegalOperationError` on the
+  file system keeps none, and on the jvm on Linux before Java 22, whose
+  `creationTime` is the modification time standing in for a birth time
+  it cannot read; and an `IllegalOperationError` on the
   interpreter, neko and HashLink under Linux and macOS, whose `stat` has
   no such time.
 - `FileStream` keeps the contract `IDataInput` and `IDataOutput` describe,
