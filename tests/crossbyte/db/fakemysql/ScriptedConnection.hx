@@ -24,6 +24,13 @@ class ScriptedConnection implements Connection {
 	/** What `lastInsertId()` answers, an Int, as `sys.db.Connection` has it, wrapped past 2^31 where a driver wraps. **/
 	public var insertId:Int = 0;
 
+	/**
+		The `length` of what a statement with no rows answers, as a driver
+		gives a write's count, an Int, wrapped past 2^31 where a driver
+		wraps, or null for 0.
+	**/
+	public var writeCount:Null<Int> = null;
+
 	public function new() {}
 
 	public function request(s:String):ResultSet {
@@ -34,7 +41,7 @@ class ScriptedConnection implements Connection {
 		}
 
 		var rows:Array<Dynamic> = results.get(s);
-		return new ScriptedResultSet(rows == null ? [] : rows);
+		return new ScriptedResultSet(rows == null ? [] : rows, rows == null ? writeCount : null);
 	}
 
 	public function close():Void {
@@ -104,13 +111,15 @@ class ScriptedResultSet implements ResultSet {
 
 	private var __rows:Array<Dynamic>;
 	private var __index:Int = 0;
+	private var __count:Null<Int>;
 
-	public function new(rows:Array<Dynamic>) {
+	public function new(rows:Array<Dynamic>, ?count:Int) {
 		__rows = rows;
+		__count = count;
 	}
 
 	private function get_length():Int {
-		return __rows.length;
+		return __count != null ? __count : __rows.length;
 	}
 
 	private function get_nfields():Int {
