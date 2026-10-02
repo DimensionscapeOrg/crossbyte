@@ -282,6 +282,244 @@ class H2Test extends utest.Test {
 		Assert.equals("fine", second.takeBody().toString());
 	}
 
+	public function testAHeaderBlockAfterTheResponsesMustEndTheStream():Void {
+		// RFC 9113 8.1: after the final response's header block, a HEADERS
+		// is the trailer section, and ends the stream. Each one that did not
+		// was taken as more of the response -- its fields added to the
+		// stream's, its status over the last -- so a server repeating a
+		// block of 50 KB of fields, three bytes each after the first by
+		// HPACK, grew the stream by 50 KB a block for as long as it went on.
+		var crumbs:Array<HpackHeader> = [new HpackHeader(":status", "200")];
+		for (_ in 0...1200) {
+			crumbs.push(new HpackHeader("x-crumb", "a"));
+		}
+		var server = new ServerScript();
+		server.settings();
+		for (_ in 0...20) {
+			server.rawHeaders(1, crumbs, true);
+		}
+		server.data(1, "body", true);
+		server.response(3, [new HpackHeader(":status", "200")], "fine", true);
+
+		var connection = server.connect();
+		var first = connection.request("GET", "http", "example.com", "/", []);
+		connection.pumpUntilClosed(first);
+
+		Assert.isTrue(first.isClosed());
+		Assert.isFalse(first.endOfStream, "a response repeating its header block completed");
+		Assert.equals("Malformed response: a header block after the response's did not end the stream", first.failure);
+		Assert.isTrue(first.headers.length <= 1200, first.headers.length + " fields were kept from 20 blocks of 1200");
+
+		// A stream error, not a connection error: the next is answered.
+		var second = connection.request("GET", "http", "example.com", "/next", []);
+		connection.pumpUntilClosed(second);
+		Assert.equals("fine", second.takeBody().toString());
+		// Last: on the jvm what was written cannot be written to after.
+		Assert.isTrue(__sawReset(server, 1, H2ErrorCode.PROTOCOL_ERROR), "the malformed response's stream was not reset");
+	}
+
+	public function testTrailersEndTheResponseAndCarryNoPseudoHeader():Void {
+		var server = new ServerScript();
+		server.settings();
+		server.rawHeaders(1, [new HpackHeader(":status", "200")], true);
+		server.data(1, "body", false);
+		server.frame(H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, 1, server.encode([new HpackHeader("x-checksum", "abc")]));
+		server.rawHeaders(3, [new HpackHeader(":status", "200")], true);
+		server.frame(H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, 3, server.encode([new HpackHeader(":status", "204")]));
+
+		var connection = server.connect();
+		var first = connection.request("GET", "http", "example.com", "/a", []);
+		var second = connection.request("GET", "http", "example.com", "/b", []);
+		connection.pumpUntilClosed(second);
+
+		// Trailers, as they were taken: the response ends with them.
+		Assert.isTrue(first.endOfStream);
+		Assert.equals(200, first.status);
+		Assert.equals("body", first.takeBody().toString());
+		Assert.equals("abc", [for (field in first.headers) if (field.name == "x-checksum") field.value][0]);
+
+		// A status in the trailers is malformed (8.1), and its status did
+		// not replace the response's.
+		Assert.isFalse(second.endOfStream, "trailers carrying :status completed the response");
+		Assert.equals("Malformed response: a pseudo-header field in the trailers", second.failure);
+		Assert.equals(200, second.status);
+	}
+
+	public function testInterimResponsesCountAgainstTheHeaderSectionLimit():Void {
+		// The HTTP/1.1 client holds a status line, its fields and every 1xx
+		// ahead of them to one 64 KB allowance. Over HTTP/2 each 1xx block
+		// was held to the limit on its own and then dropped, so a server
+		// sent 103s for as long as it liked -- each a frame of the stream,
+		// keeping it from its idle timeout -- and the request never ended.
+		// 100 of them at a kilobyte each, a byte apiece after the first.
+		var hint:Array<HpackHeader> = [new HpackHeader(":status", "103"), new HpackHeader("link", StringTools.rpad("<", "x", 1000) + ">")];
+		var server = new ServerScript();
+		server.settings();
+		for (_ in 0...100) {
+			server.rawHeaders(1, hint, true);
+		}
+		server.response(1, [new HpackHeader(":status", "200")], "late", true);
+
+		var connection = server.connect();
+		var stream = connection.request("GET", "http", "example.com", "/", []);
+		connection.pumpUntilClosed(stream);
+
+		Assert.isFalse(stream.endOfStream, "a response behind 100 KB of interim responses completed");
+		Assert.equals('Response header section exceeded the ${H2Connection.DEFAULT_MAX_HEADER_LIST_SIZE} byte limit', stream.failure);
+		Assert.isTrue(__sawReset(server, 1, H2ErrorCode.CANCEL), "the stream was not reset");
+	}
+
+	public function testTheServersTableSizeDoesNotGrowTheClientsTable():Void {
+		// SETTINGS_HEADER_TABLE_SIZE is the most the server's decoder will
+		// hold, and the client's encoder followed it all the way: a server
+		// saying a megabyte -- or 2^31 - 1 -- let every distinct field the
+		// client sent stay in the client's table for the connection's life,
+		// each one searched for every field after. An encoder may use less
+		// (RFC 7541 4.2), and this one keeps to the default 4 KB.
+		var server = new ServerScript();
+		server.frame(H2FrameType.SETTINGS, 0, 0, Bytes.ofHex("000100100000"));
+		var connection = server.connect();
+		connection.request("GET", "http", "example.com", "/", []);
+		connection.pump();
+
+		for (i in 0...300) {
+			connection.request("GET", "http", "example.com", "/", [new HpackHeader("x-request-id", 'request-$i-' + StringTools.rpad("", "x", 40))]);
+		}
+		var held:Int = @:privateAccess connection.__encoder.tableSize;
+		Assert.isTrue(held <= H2Settings.DEFAULT_HEADER_TABLE_SIZE, 'the client\'s table held $held bytes for a server that would take a megabyte');
+	}
+
+	public function testTheClientRefusesPushWhateverItsSettingsSay():Void {
+		// Nothing in the client can take a pushed stream, and a PUSH_PROMISE
+		// is a connection error here. H2Settings allows push unless told
+		// otherwise, so a client given settings of its own said it took
+		// pushes, and then failed the connection over the first one.
+		var server = new ServerScript();
+		server.settings();
+		var connection = new H2Connection(new haxe.io.BytesInput(Bytes.alloc(0)), server.sink(), new H2Settings());
+		connection.start();
+
+		var frames:Array<H2Frame> = ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length);
+		Require.notNull(frames[0]);
+		Assert.equals(H2FrameType.SETTINGS, frames[0].type);
+		var push:Int = -1;
+		var payload:Bytes = frames[0].payload;
+		var offset:Int = 0;
+		while (offset + 6 <= payload.length) {
+			if (((payload.get(offset) << 8) | payload.get(offset + 1)) == 0x2) {
+				push = payload.get(offset + 5);
+			}
+			offset += 6;
+		}
+		Assert.equals(0, push, "SETTINGS_ENABLE_PUSH 0 was not sent");
+	}
+
+	public function testAStormOfResetsAndGoAwaysCostsOnlyTheReading():Void {
+		// Already bounded, and kept so: neither frame is answered, a reset
+		// for a stream the client does not have is dropped, and a GOAWAY
+		// keeps nothing but its last id and code. 5,000 of each, then the
+		// response, which arrives whole.
+		var server = new ServerScript();
+		server.settings();
+		for (i in 0...5000) {
+			server.rstStream(1001 + i * 2, H2ErrorCode.CANCEL);
+			server.goAway(1, H2ErrorCode.NO_ERROR);
+		}
+		server.response(1, [new HpackHeader(":status", "200")], "fine", true);
+
+		var connection = server.connect();
+		var stream = connection.request("GET", "http", "example.com", "/", []);
+		connection.pumpUntilClosed(stream);
+
+		Assert.equals("fine", stream.takeBody().toString());
+		Assert.isNull(connection.stream(1));
+		var answers:Int = 0;
+		for (frame in ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length)) {
+			if (frame.type != H2FrameType.SETTINGS && frame.type != H2FrameType.HEADERS) {
+				answers++;
+			}
+		}
+		Assert.equals(0, answers, '$answers frames were sent in answer to resets and GOAWAYs');
+	}
+
+	public function testAStreamTheServerOpensIsDropped():Void {
+		// Already bounded: a server opens streams only by pushing, which the
+		// client refuses; HEADERS on a stream it never opened are decoded,
+		// for HPACK's sake, and dropped, and DATA for one is counted for the
+		// connection's window and dropped. Nothing is kept for either.
+		var big:String = StringTools.rpad("", "x", 16000);
+		var server = new ServerScript();
+		server.settings();
+		for (id in 0...50) {
+			server.response(2 + id * 2, [new HpackHeader(":status", "200")], big, true);
+		}
+		server.response(1, [new HpackHeader(":status", "200")], "mine", true);
+
+		var connection = server.connect();
+		var stream = connection.request("GET", "http", "example.com", "/", []);
+		connection.pumpUntilClosed(stream);
+
+		Assert.equals("mine", stream.takeBody().toString());
+		for (id in 0...50) {
+			Assert.isNull(connection.stream(2 + id * 2));
+		}
+	}
+
+	/** Whether the client reset `id` with `code`. */
+	private static function __sawReset(server:ServerScript, id:Int, code:H2ErrorCode):Bool {
+		for (frame in ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length)) {
+			if (frame.type == H2FrameType.RST_STREAM && frame.streamId == id && frame.payload.get(3) == (code : Int)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	public function testABodyPastItsLimitGivesUpOnlyItsStream():Void {
+		// 40 KB against a 20 KB limit: the stream is reset and its body let
+		// go, the rest of its DATA is counted for the connection's window and
+		// dropped, and the next stream is answered whole.
+		var chunk:String = StringTools.rpad("", "x", 8192);
+		var server = new ServerScript();
+		server.settings();
+		server.rawHeaders(1, [new HpackHeader(":status", "200")], true);
+		for (_ in 0...5) {
+			server.data(1, chunk, false);
+		}
+		server.data(1, "", true);
+		server.response(3, [new HpackHeader(":status", "200")], "fine", true);
+
+		var connection = server.connect();
+		connection.maxResponseBodySize = 20000;
+		var first = connection.request("GET", "http", "example.com", "/big", []);
+		connection.pumpUntilClosed(first);
+
+		Assert.isTrue(first.isClosed());
+		Assert.isFalse(first.endOfStream, "a body past the limit ended as a response");
+		Assert.equals("Response body exceeded 20000 bytes", first.failure);
+		Assert.equals(0, first.bodyLength, first.bodyLength + " bytes of it were kept");
+
+		var second = connection.request("GET", "http", "example.com", "/next", []);
+		connection.pumpUntilClosed(second);
+		Assert.equals(200, second.status);
+		Assert.equals("fine", second.takeBody().toString());
+
+		var reset:Null<H2Frame> = null;
+		var connectionCredit:Int = 0;
+		for (frame in ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length)) {
+			if (frame.type == H2FrameType.RST_STREAM && frame.streamId == 1) {
+				reset = frame;
+			}
+			if (frame.type == H2FrameType.WINDOW_UPDATE && frame.streamId == 0) {
+				connectionCredit += (frame.payload.get(0) << 24) | (frame.payload.get(1) << 16) | (frame.payload.get(2) << 8) | frame.payload.get(3);
+			}
+		}
+		Require.notNull(reset, "the stream past its limit was not reset");
+		Assert.equals((H2ErrorCode.CANCEL : Int), reset.payload.get(3));
+		// The dropped DATA still gave the connection's window back.
+		Assert.isTrue(connectionCredit >= 32768, 'the connection was credited $connectionCredit bytes');
+	}
+
 	public function testAControlCharacterInAResponseFieldIsRefused():Void {
 		// RFC 9113 8.2.1 applies to a response too: a CR, LF or NUL in a value
 		// is malformed. It reached the caller's headers, and a program passing
@@ -789,6 +1027,12 @@ private class ServerScript {
 		return __sink.getBytes();
 	}
 
+	/** A sink for a connection made by hand, read back with `written`. */
+	public function sink():BytesOutput {
+		__sink = new BytesOutput();
+		return __sink;
+	}
+
 	public function raw(bytes:Bytes):Void {
 		__out.addBytes(bytes, 0, bytes.length);
 	}
@@ -819,6 +1063,11 @@ private class ServerScript {
 		payload.set(3, lastStreamId);
 		payload.set(7, cast code);
 		frame(H2FrameType.GOAWAY, 0, 0, payload);
+	}
+
+	/** A header block from this side's encoder, for a frame put together by hand. */
+	public function encode(headers:Array<HpackHeader>):Bytes {
+		return __encoder.encode(headers);
 	}
 
 	public function rawHeaders(streamId:Int, headers:Array<HpackHeader>, endHeaders:Bool):Void {

@@ -1030,8 +1030,8 @@ class FileStreamTest extends utest.Test {
 
 	private static function pumpUntil(done:Void->Bool, timeoutSeconds:Float):Void {
 		var runtime = CrossByte.current();
-		var deadline = Sys.time() + timeoutSeconds;
-		while (!done() && Sys.time() < deadline) {
+		var deadline = haxe.Timer.stamp() + timeoutSeconds;
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
 			crossbyte.sys.System.sleep(0.001);
 		}

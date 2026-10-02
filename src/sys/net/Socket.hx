@@ -959,17 +959,252 @@ class Socket {
 
 import haxe.io.Error;
 import eval.vm.NativeSocket;
+import eval.vm.NativeThread;
+import sys.thread.Mutex;
+import sys.thread.Semaphore;
+import sys.thread.Tls;
+
+/**
+	Makes the socket calls eval lets fail past every Haxe `catch`
+	survivable.
+
+	eval raises a failed `send`, `recv`, `shutdown`, `bind` or `listen` as
+	an OCaml `Unix_error` that no Haxe `catch` intercepts -- not `Dynamic`,
+	not `haxe.Exception` -- and on the interpreter's main thread that ends
+	the process. A peer that resets its connection is enough: the reset
+	makes the socket readable, the next read fails, and a development
+	server ended over one client. (`connect`, `accept`, `peer`, `host` and
+	`close` are caught by eval itself, and arrive as strings.)
+
+	On any other thread the same error ends only that thread. So a call that
+	may fail that way -- `Socket` decides which, and makes the rest at once
+	-- is made on a helper thread while its caller waits: a call that fails
+	ends the helper, a watcher that joined the helper tells the caller,
+	which throws an error it can catch, and the next call takes another
+	helper. A call takes an idle helper, or starts one, so a call that
+	blocks -- a send to a peer that is not reading -- holds up its own
+	thread only, as it did when made there; a helper goes back to wait for
+	the next only while fewer than `MAX_IDLE` wait, and otherwise ends,
+	with its watcher. eval prints the system's error for a helper that
+	fails, as `Thread N killed on uncaught exception Unix.Unix_error(...)`,
+	on its standard error: the one place it says why.
+
+	Every wait here is a `Semaphore`'s. On eval a `Lock` or a `Deque` waits
+	by polling -- measured on Linux, half a core while waiting with no
+	timeout, and a whole one with -- and a helper that idled in one held
+	the interpreter from every other thread: the read it served came back
+	minutes late.
+
+	Linux and macOS also end a process that writes to a connection the
+	peer has closed, with SIGPIPE, which no thread survives. A libuv signal
+	handle takes SIGPIPE as the first socket is made, so such a write
+	fails as any other does.
+**/
+@:noCompletion
+private class NativeGuard {
+	/** The most helpers that wait for a call; one more ends once its call is done. **/
+	public static inline var MAX_IDLE:Int = 4;
+
+	// SIGPIPE's number on Linux and macOS alike.
+	static inline var SIGPIPE:Int = 13;
+
+	// One call at a time per thread, so one record per thread, reused.
+	static final __calls:Tls<GuardedCall> = new Tls();
+	static final __poolLock:Mutex = new Mutex();
+	static final __idle:Array<GuardHelper> = [];
+	static final __signalLock:Mutex = new Mutex();
+	static var __signalAsked:Bool = false;
+	// Kept so the handle lives as long as the process.
+	static var __sigpipe:Dynamic = null;
+
+	/**
+		Makes `native` on a helper and answers how it went: `failed` when it
+		ended the helper, `result` otherwise. What it throws that Haxe can
+		catch is thrown here, on the caller's thread.
+	**/
+	public static function run(native:Void->Int):GuardedCall {
+		var call:GuardedCall = __calls.value;
+		if (call == null) {
+			takeSigpipe();
+			call = new GuardedCall();
+			__calls.value = call;
+		}
+		call.native = native;
+		call.result = 0;
+		call.failed = false;
+		call.thrown = null;
+		call.threw = false;
+
+		__poolLock.acquire();
+		var helper:Null<GuardHelper> = __idle.pop();
+		__poolLock.release();
+		if (helper == null) {
+			helper = GuardHelper.start();
+		}
+		helper.hand(call);
+
+		call.done.acquire();
+		call.native = null;
+		if (call.threw) {
+			var thrown:Dynamic = call.thrown;
+			call.thrown = null;
+			throw thrown;
+		}
+		return call;
+	}
+
+	/**
+		A helper done with its call waits for the next, or ends if enough
+		wait already: whether it waits.
+	**/
+	public static function rejoin(helper:GuardHelper):Bool {
+		__poolLock.acquire();
+		var waits:Bool = __idle.length < MAX_IDLE;
+		if (waits) {
+			__idle.push(helper);
+		}
+		__poolLock.release();
+		return waits;
+	}
+
+	/**
+		Takes SIGPIPE, once; see `__takeSigpipe`. Called as each socket is
+		made, since most writes are made at once rather than here.
+	**/
+	public static inline function takeSigpipe():Void {
+		if (!__signalAsked) {
+			__takeSigpipe();
+		}
+	}
+
+	/**
+		Takes SIGPIPE from the process's default, which ends it, with a libuv
+		signal handle on the default loop -- never run, and unreferenced, so it
+		holds nothing open. Once, as the first socket is made. Windows has no
+		SIGPIPE.
+	**/
+	static function __takeSigpipe():Void {
+		// Held while the handle is made, so no thread's first call can go
+		// ahead of it.
+		__signalLock.acquire();
+		if (!__signalAsked) {
+			__signalAsked = true;
+			if (Sys.systemName() != "Windows") {
+				try {
+					switch (eval.luv.Signal.init(eval.luv.Loop.defaultLoop())) {
+						case Ok(signal):
+							switch (signal.start(SIGPIPE, () -> {})) {
+								case Ok(_):
+									eval.luv.Handle.unref(signal);
+									__sigpipe = signal;
+								case Error(_):
+							}
+						case Error(_):
+					}
+				} catch (_:Dynamic) {}
+			}
+		}
+		__signalLock.release();
+	}
+}
+
+/**
+	One helper: a thread that makes the calls handed to it, and a watcher
+	that joins it and, if it ends inside a call, fails that call.
+**/
+@:noCompletion
+private class GuardHelper {
+	final __doorbell:Semaphore = new Semaphore(0);
+	// The call handed over, from the hand-over until it is done.
+	var __call:Null<GuardedCall> = null;
+	// Whether it ended because enough helpers wait, rather than in a call.
+	var __retired:Bool = false;
+
+	function new() {}
+
+	public static function start():GuardHelper {
+		var helper:GuardHelper = new GuardHelper();
+		new NativeThread(helper.__watch);
+		return helper;
+	}
+
+	public function hand(call:GuardedCall):Void {
+		__call = call;
+		__doorbell.release();
+	}
+
+	function __watch():Void {
+		NativeThread.join(new NativeThread(__serve));
+		if (__retired) {
+			return;
+		}
+		var call:Null<GuardedCall> = __call;
+		__call = null;
+		if (call != null) {
+			call.failed = true;
+			call.done.release();
+		}
+	}
+
+	function __serve():Void {
+		while (true) {
+			__doorbell.acquire();
+			var call:GuardedCall = __call;
+			try {
+				call.result = call.native();
+			} catch (e:Dynamic) {
+				call.threw = true;
+				call.thrown = e;
+			}
+			__call = null;
+			// Back among those waiting before the caller hears, so its next
+			// call can take this one rather than start another.
+			var waits:Bool = NativeGuard.rejoin(this);
+			if (!waits) {
+				__retired = true;
+			}
+			call.done.release();
+			if (!waits) {
+				return;
+			}
+		}
+	}
+}
+
+/** One guarded call, and how it came out. **/
+@:noCompletion
+private class GuardedCall {
+	public var native:Null<Void->Int> = null;
+	public var result:Int = 0;
+	public var failed:Bool = false;
+	public var threw:Bool = false;
+	public var thrown:Dynamic = null;
+	public final done:Semaphore = new Semaphore(0);
+
+	public function new() {}
+}
 
 private class SocketOutput extends haxe.io.Output {
 	var socket:NativeSocket;
+	var owner:Socket;
 
-	public function new(socket:NativeSocket) {
+	public function new(socket:NativeSocket, owner:Socket) {
 		this.socket = socket;
+		this.owner = owner;
 	}
 
 	public override function writeByte(c:Int) {
+		var plan:Int = @:privateAccess owner.__planWrite(1);
+		var call:GuardedCall = null;
 		try {
-			socket.sendChar(c);
+			if (plan == Socket.DIRECT) {
+				socket.sendChar(c);
+			} else {
+				call = NativeGuard.run(() -> {
+					socket.sendChar(c);
+					return 1;
+				});
+			}
 		} catch (e:Dynamic) {
 			if (e == "Blocking")
 				throw Blocked;
@@ -978,31 +1213,51 @@ private class SocketOutput extends haxe.io.Output {
 			else
 				throw Custom(e);
 		}
+		if (call != null && call.failed) {
+			throw Custom(Socket.SEND_FAILED);
+		}
 	}
 
 	public override function writeBytes(buf:haxe.io.Bytes, pos:Int, len:Int) {
-		return try {
-			socket.send(buf, pos, len);
+		var plan:Int = @:privateAccess owner.__planWrite(len);
+		var sent:Int = 0;
+		var call:GuardedCall = null;
+		try {
+			if (plan == Socket.DIRECT) {
+				sent = socket.send(buf, pos, len);
+			} else {
+				call = NativeGuard.run(() -> socket.send(buf, pos, len));
+			}
 		} catch (e:Dynamic) {
 			if (e == "Blocking")
 				throw Blocked;
 			else
 				throw Custom(e);
 		}
+		if (call != null) {
+			if (call.failed) {
+				throw Custom(Socket.SEND_FAILED);
+			}
+			sent = call.result;
+		}
+		return sent;
 	}
 
+	/** The whole socket, as it always was: through it, so it knows. **/
 	public override function close() {
 		super.close();
-		socket.close();
+		owner.close();
 	}
 }
 
 private class SocketInput extends haxe.io.Input {
 	var socket:NativeSocket;
+	var owner:Socket;
 	var one:haxe.io.Bytes = haxe.io.Bytes.alloc(1);
 
-	public function new(socket:NativeSocket) {
+	public function new(socket:NativeSocket, owner:Socket) {
 		this.socket = socket;
+		this.owner = owner;
 	}
 
 	/**
@@ -1016,27 +1271,107 @@ private class SocketInput extends haxe.io.Input {
 	}
 
 	public override function readBytes(buf:haxe.io.Bytes, pos:Int, len:Int) {
-		var r;
+		var plan:Int = @:privateAccess owner.__planRead();
+		var r:Int = 0;
+		var call:GuardedCall = null;
 		try {
-			r = socket.receive(buf, pos, len);
+			if (plan == Socket.DIRECT) {
+				r = socket.receive(buf, pos, len);
+			} else {
+				call = NativeGuard.run(() -> socket.receive(buf, pos, len));
+			}
 		} catch (e:Dynamic) {
 			if (e == "Blocking")
 				throw Blocked;
 			else
 				throw Custom(e);
 		}
+		if (call != null) {
+			if (call.failed) {
+				// A read that timed out -- `setTimeout` -- leaves nothing to
+				// read, and is Blocked, as hxcpp reports it; one the peer reset
+				// leaves the socket readable, with the error or the end.
+				throw @:privateAccess owner.__readable() ? Custom(Socket.RECEIVE_FAILED) : Blocked;
+			}
+			r = call.result;
+		}
 		if (r == 0)
 			throw new haxe.io.Eof();
 		return r;
 	}
 
+	/** The whole socket, as it always was: through it, so it knows. **/
 	public override function close() {
 		super.close();
-		socket.close();
+		owner.close();
 	}
 }
 
+/**
+	On eval a read or a write on a connection the peer reset, a `shutdown`, a
+	`bind` or a `listen` that fails throws an error Haxe can catch, as on
+	every other target. eval raised each as an error that passed every
+	`catch` and ended the interpreter -- for a read or a write, whenever the
+	peer had reset the connection, so a development server ended over one
+	client.
+
+	A call that could fail that way is made on a helper thread, where the
+	error ends only the helper (see `NativeGuard`); a call that cannot is
+	made at once, since the hand-over costs a thread waking twice -- tens of
+	microseconds on Linux, and more while another eval thread is busy, so
+	that the interpreter suite ran a quarter slower on Linux when every
+	call took it. `peer()` decides which, and for a read whether there is
+	anything to read, which the runtime's own `select` has usually just
+	said; a `select` here costs as much, since it hands the interpreter to
+	every other thread and takes it back.
+
+	- A read of a socket with something to read, whose peer still answers,
+	  is made at once: on Linux the connection has not been reset then, and
+	  Linux returns the data, or the end, that made it readable before any
+	  error, however late a reset comes. One whose peer no longer answers
+	  was reset -- or ended in the order that leaves this side's socket
+	  closed with the last of the data still unread -- and only a read
+	  tells which, so it is made on the helper. One with nothing to read
+	  would wait, and waits on the helper.
+	- A write of no more than `DIRECT_SEND_MAX` bytes whose peer still
+	  answers is made at once. A larger one could wait for the peer to read,
+	  and waits on the helper, so a peer that resets during a long send does
+	  not end the interpreter; so does one whose peer no longer answers.
+	- On Windows `peer()` still answers after a reset, and nothing short of
+	  reading tells a reset from data waiting, so every read is made on the
+	  helper, and so is a write to a socket that a `select` finds readable,
+	  or not writable.
+	- `shutdown`, `bind` and `listen` are made on the helper: they are rare.
+
+	What is left: a reset that lands in the microseconds between the check
+	and a write made at once, or while a small write made at once waits for
+	room the peer has stopped making, or -- on macOS, which reports an error
+	before the end -- between the check and a read, still ends the
+	interpreter.
+**/
 class Socket {
+	/** What a read that failed past eval's catch throws, as `Custom`. **/
+	@:noCompletion public static inline var RECEIVE_FAILED:String = "Connection reset by peer, or failed, in recv";
+
+	/** What a write that failed past eval's catch throws, as `Custom`. **/
+	@:noCompletion public static inline var SEND_FAILED:String = "Connection reset or closed by peer, or failed, in send";
+
+	/**
+		The most a write sends at once rather than on the helper: Linux's
+		smallest send buffer. A larger write is the kind that waits for the
+		peer to make room, and a reset that comes while it waits ended the
+		interpreter.
+	**/
+	@:noCompletion public static inline var DIRECT_SEND_MAX:Int = 16384;
+
+	// How a read or a write is made: at once, or on the helper.
+	@:noCompletion public static inline var DIRECT:Int = 0;
+	@:noCompletion public static inline var GUARDED:Int = 1;
+
+	// Windows, where `peer()` answers after a reset, and the system counts a
+	// timeout in milliseconds.
+	@:noCompletion private static final __windows:Bool = Sys.systemName() == "Windows";
+
 	public var input(default, null):haxe.io.Input;
 	public var output(default, null):haxe.io.Output;
 	public var custom:Dynamic;
@@ -1044,6 +1379,8 @@ class Socket {
 	public var socket:NativeSocket;
 
 	public function new() {
+		// Here rather than in init(), which eval's TLS socket replaces.
+		NativeGuard.takeSigpipe();
 		init(new NativeSocket());
 	}
 
@@ -1051,11 +1388,15 @@ class Socket {
 	// createEmptyInstance, which runs no initialisers.
 	@:noCompletion private var __closed:Bool;
 
+	// Whether the last select reported this socket readable, since its last
+	// read. Null, as false, until one has.
+	@:noCompletion private var __seenReadable:Null<Bool>;
+
 	private function init(socket:NativeSocket):Void {
 		this.socket = socket;
 		__closed = false;
-		input = new SocketInput(socket);
-		output = new SocketOutput(socket);
+		input = new SocketInput(socket, this);
+		output = new SocketOutput(socket, this);
 	}
 
 	/**
@@ -1085,19 +1426,47 @@ class Socket {
 		socket.connect(host.ip, port);
 	}
 
+	/** @throws String "Listen failed", where eval's own error passed every catch. **/
 	public function listen(connections:Int):Void {
-		socket.listen(connections);
+		var native:NativeSocket = socket;
+		if (NativeGuard.run(() -> {
+			native.listen(connections);
+			return 0;
+		}).failed) {
+			throw "Listen failed";
+		}
 	}
 
+	/**
+		@throws String "Shutdown failed", where eval's own error passed every
+		catch: a socket never connected, or on Linux one its peer reset.
+	**/
 	public function shutdown(read:Bool, write:Bool):Void {
-		socket.shutdown(read, write);
+		var native:NativeSocket = socket;
+		if (NativeGuard.run(() -> {
+			native.shutdown(read, write);
+			return 0;
+		}).failed) {
+			throw "Shutdown failed";
+		}
 	}
 
+	/**
+		@throws String "Bind failed", as hxcpp says it, where eval's own error
+		passed every catch: a port in use, or an address that is not local.
+	**/
 	public function bind(host:Host, port:Int):Void {
 		if (host.ip == 0 && host.host != "0.0.0.0") {
 			throw "Unresolved host";
 		}
-		socket.bind(host.ip, port);
+		var native:NativeSocket = socket;
+		var ip:Int = host.ip;
+		if (NativeGuard.run(() -> {
+			native.bind(ip, port);
+			return 0;
+		}).failed) {
+			throw "Bind failed";
+		}
 	}
 
 	public function accept():Socket {
@@ -1130,8 +1499,14 @@ class Socket {
 		return host;
 	}
 
+	/**
+		In seconds, as everywhere. eval gives the system a thousand times the
+		value it is handed everywhere but Windows, where the system counts in
+		milliseconds -- measured on Linux, 0.3 waited five minutes and 0.005
+		five seconds -- so it is handed a thousandth of it there.
+	**/
 	public function setTimeout(timeout:Float):Void {
-		socket.setTimeout(timeout);
+		socket.setTimeout(__windows ? timeout : timeout / 1000);
 	}
 
 	public function waitForRead():Void {
@@ -1149,15 +1524,14 @@ class Socket {
 		crossbyte.net.Socket calls `setBlocking(false)` before every connect,
 		so a throw here would break every interp connection.
 
-		`setTimeout` is not a substitute, and this was measured rather than
-		assumed: the timeout does reach the recv and SO_RCVTIMEO expires on
-		schedule, but eval raises the expiry as an OCaml
-		`Unix.Unix_error(ETIMEDOUT, "recv")` that no Haxe catch intercepts —
-		not `haxe.Exception`, not `Dynamic`, not the catch inside SocketInput
-		below — and the interpreter aborts outright. Bounding a read that way
-		converts a stall into an uncatchable process death.
+		`setTimeout` is not a substitute either. The timeout does reach the
+		recv, and SO_RCVTIMEO expires on schedule; eval raised the expiry as
+		an OCaml `Unix.Unix_error` that no Haxe catch intercepted, which ended
+		the interpreter, and a read now makes it on a helper thread and throws
+		`Blocked` for it (see `NativeGuard`). But the read still holds its
+		thread for the whole timeout, which a runtime cannot afford.
 
-		What the no-op costs the eval/interp target — and what interp test
+		What the no-op costs the eval/interp target â€” and what interp test
 		results therefore do NOT cover: `connect()` blocks the whole runtime
 		thread for the duration of the TCP handshake; reads block instead of
 		raising `Blocked`, so read loops must gate on a zero-timeout `select`
@@ -1171,9 +1545,102 @@ class Socket {
 		socket.setFastSend(b);
 	}
 
+	/**
+		@throws String "Select error", as on hxcpp, for a socket already
+		closed: eval's own error for one passed every catch.
+	**/
 	public static function select(read:Array<Socket>, write:Array<Socket>, others:Array<Socket>,
 			?timeout:Float):{read:Array<Socket>, write:Array<Socket>, others:Array<Socket>} {
-		return NativeSocket.select(read, write, others, timeout);
+		if (__anyClosed(read) || __anyClosed(write) || __anyClosed(others)) {
+			throw "Select error";
+		}
+		var ready = NativeSocket.select(read, write, others, timeout);
+		// Remembered for the read that follows, which then need not ask
+		// again: only a read takes readability away.
+		for (socket in ready.read) {
+			socket.__seenReadable = true;
+		}
+		return ready;
+	}
+
+	/** How a read is made; see the class's doc. **/
+	private function __planRead():Int {
+		var seen:Bool = __seenReadable == true;
+		__seenReadable = false;
+		if (__windows || __closed == true) {
+			return GUARDED;
+		}
+		if (!seen) {
+			// A select releases the interpreter to every other thread and
+			// takes it back: not free while another is busy, so made only
+			// when the runtime's own has not just answered.
+			try {
+				if (NativeSocket.select([this], [], [], 0).read.length == 0) {
+					return GUARDED;
+				}
+			} catch (_:Dynamic) {
+				return GUARDED;
+			}
+		}
+		return __peerAnswers() ? DIRECT : GUARDED;
+	}
+
+	/** How a write of `length` bytes is made; see the class's doc. **/
+	private function __planWrite(length:Int):Int {
+		if (__closed == true) {
+			return GUARDED;
+		}
+		if (!__windows) {
+			// A reset leaves the socket closed, which peer() says: nothing
+			// more to ask.
+			return length <= DIRECT_SEND_MAX && __peerAnswers() ? DIRECT : GUARDED;
+		}
+		var readable:Bool;
+		var writable:Bool;
+		try {
+			var ready = NativeSocket.select([this], [this], [], 0);
+			readable = ready.read.length > 0;
+			writable = ready.write.length > 0;
+		} catch (_:Dynamic) {
+			return GUARDED;
+		}
+		// On Windows a reset is told from data waiting only by reading.
+		return !readable && writable && length <= DIRECT_SEND_MAX ? DIRECT : GUARDED;
+	}
+
+	/**
+		Whether the peer still answers: not, on Linux and macOS, once it reset
+		the connection, nor once the connection has ended and this side's
+		socket closed.
+	**/
+	private function __peerAnswers():Bool {
+		try {
+			socket.peer();
+			return true;
+		} catch (_:Dynamic) {
+			return false;
+		}
+	}
+
+	/** Whether this socket has something to read, an end or an error; true if it cannot tell. **/
+	private function __readable():Bool {
+		try {
+			return __closed == true || NativeSocket.select([this], [], [], 0).read.length > 0;
+		} catch (_:Dynamic) {
+			return true;
+		}
+	}
+
+	/** Whether any of `sockets` is closed. A TLS socket leaves the flag unset. **/
+	private static function __anyClosed(sockets:Null<Array<Socket>>):Bool {
+		if (sockets != null) {
+			for (socket in sockets) {
+				if (socket.__closed == true) {
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 }
 

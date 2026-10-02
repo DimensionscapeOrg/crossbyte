@@ -1235,6 +1235,116 @@ class SQLiteNativeTest extends utest.Test {
 		__pumpUntil(() -> closed);
 	}
 
+	public function testACancelLandingAsARequestStartsOnAnotherThreadStillStopsIt():Void {
+		// On a synchronous connection a statement runs on the thread that asks
+		// for it, and another thread's cancel() interrupts it. SQLite clears
+		// an interrupt that lands as a statement starts, while no other is
+		// running, so a cancel() landing while the request was being prepared
+		// -- up to about 12 microseconds after request() was called, here --
+		// was lost: an aggregate ran its hours, a SELECT read row by row gave
+		// every row, and a statement's own cancel() was lost the same way.
+		// Each is swept across the start.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		connection.open(null, SQLiteMode.CREATE, false, 4096);
+		connection.request("CREATE TABLE t AS WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200000) SELECT i FROM n");
+		var hours:String = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100000000000) SELECT COUNT(*) AS c FROM n";
+
+		// Stopped within a thousand steps, by the progress handler.
+		var lost:Array<String> = __sweepCancels(connection, () -> connection.request(hours), null, connection.cancel);
+		Assert.same([], lost.slice(0, 3), '${lost.length} cancels of an aggregate were lost: ' + lost.join(" | "));
+
+		// Its first step over before that: it fails at its next.
+		lost = __sweepCancels(connection, function() {
+			var rows:sys.db.ResultSet = connection.request("SELECT i FROM t");
+
+			while (rows.hasNext()) {
+				rows.next();
+			}
+		}, null, connection.cancel);
+		Assert.same([], lost.slice(0, 3), '${lost.length} cancels of a SELECT read row by row were lost: ' + lost.join(" | "));
+
+		// A statement's own cancel(), once the statement says it is running.
+		var statement:SQLiteStatement = new SQLiteStatement();
+		statement.sqlConnection = connection;
+		statement.text = hours;
+		lost = __sweepCancels(connection, () -> statement.execute(), () -> @:privateAccess statement.__running, statement.cancel);
+		Assert.same([], lost.slice(0, 3), '${lost.length} cancels of a running statement were lost: ' + lost.join(" | "));
+
+		Assert.equals(1, __count(connection, "(SELECT 1)"));
+		connection.close();
+	}
+
+	/**
+		Runs `ask` on another thread 150 times and calls `cancel` a little
+		later each time -- up to about ten microseconds after the other thread
+		says, through `started`, that its work has started, or, without it,
+		after it stamps the time and asks -- and answers the rounds in which
+		the work was not interrupted: the first three.
+	**/
+	private static function __sweepCancels(connection:SQLiteConnection, ask:Void->Void, started:Null<Void->Bool>, cancel:Void->Void):Array<String> {
+		var lost:Array<String> = [];
+
+		for (round in 0...150) {
+			var done:sys.thread.Lock = new sys.thread.Lock();
+			var failure:String = null;
+			var asked:Float = 0.0;
+
+			sys.thread.Thread.create(function() {
+				asked = haxe.Timer.stamp();
+
+				try {
+					ask();
+				} catch (e:Dynamic) {
+					failure = Std.string(e);
+				}
+
+				done.release();
+			});
+
+			// Spun for, not waited on: a thread woken from a wait can be run at
+			// once in place of the one that woke it, and cancel before that
+			// one has asked for anything.
+			var limit:Float = haxe.Timer.stamp() + 5;
+
+			while ((started != null ? !started() : asked == 0) && haxe.Timer.stamp() < limit) {
+				cpp.vm.Gc.safePoint();
+			}
+
+			// A few nanoseconds each.
+			var delay:Int = (round % 50) * 100;
+
+			for (i in 0...delay) {
+				cpp.vm.Gc.safePoint();
+			}
+
+			var cancelled:Float = haxe.Timer.stamp();
+			cancel();
+			// Without a word from the work, a cancel made within two
+			// microseconds of the stamp may have come before the call it was
+			// meant for: not that call's to stop.
+			var counts:Bool = started != null || cancelled - asked > 0.000002;
+
+			if (!done.wait(5.0)) {
+				// Running now, so this one lands.
+				connection.cancel();
+				done.wait(10.0);
+
+				if (counts) {
+					lost.push('round $round ran on');
+				}
+			} else if ((failure == null || failure.indexOf("interrupt") < 0) && counts) {
+				lost.push('round $round ended with $failure');
+			}
+
+			if (lost.length >= 3) {
+				// Enough to say so; each costs seconds.
+				break;
+			}
+		}
+
+		return lost;
+	}
+
 	public function testCancellingAStatementRunningOnAnotherThreadInterruptsIt():Void {
 		// On a synchronous connection a statement runs on the thread that
 		// executes it, so another thread is what cancels it.
@@ -1343,6 +1453,122 @@ class SQLiteNativeTest extends utest.Test {
 		Assert.isTrue(opened);
 		connection.close();
 		__pumpUntil(() -> false, 0.2);
+	}
+
+	public function testWorkAskedAsTheWorkerStopsIsAnswered():Void {
+		// Work asked for was refused at once once the worker had marked its
+		// queue gone, and otherwise queued -- but work that found the queue
+		// not yet gone, and reached it only after the worker's last pass had
+		// found it empty, sat there with nothing left to run it: a statement
+		// or a begin() was neither refused nor answered, ever, and a close()
+		// left the connection refusing every open after it. Each round opens
+		// a missing file, waits for the open to fail, and asks a moment
+		// later, swept across the worker's last pass. Everything the worker
+		// sends comes before its Complete, so once it has completed, work it
+		// took has been answered.
+		var missing:String = Path.join([Sys.getCwd(), "export", "sqlite-native-absent-" + Std.random(0x7FFFFFFF) + ".db"]);
+		var runtime = crossbyte.core.CrossByte.current();
+		var lost:Array<String> = [];
+		var queuedCount:Int = 0;
+		var refusedCount:Int = 0;
+		var started:Float = haxe.Timer.stamp();
+		var round:Int = 0;
+
+		while (round < 6000 && haxe.Timer.stamp() - started < 10) {
+			var connection:SQLiteConnection = new SQLiteConnection();
+			var answered:Bool = false;
+			var kind:Int = round % 3;
+			connection.addEventListener(SQLErrorEvent.ERROR, function(e:SQLErrorEvent) {
+				if (e.error.operation == SQLEvent.BEGIN) {
+					answered = true;
+				}
+			});
+			connection.addEventListener(SQLEvent.BEGIN, _ -> answered = true);
+			// READ of a file that does not exist fails at once, on the worker.
+			connection.openAsync(missing, SQLiteMode.READ, false, 4096);
+			var queue:crossbyte.db.sql.sqlite._internal.SQLiteJob.SQLiteQueue = @:privateAccess connection.__sqlQueue;
+			var worker:crossbyte.sys.Worker = @:privateAccess connection.__sqlWorker;
+			var statement:SQLiteStatement = new SQLiteStatement();
+			statement.sqlConnection = connection;
+			statement.text = "SELECT 1";
+			statement.addEventListener(SQLEvent.RESULT, _ -> answered = true);
+			statement.addEventListener(SQLErrorEvent.ERROR, _ -> answered = true);
+
+			// The open has failed and its error is on its way: the worker's
+			// last pass follows, and the work is asked for a little later
+			// each round.
+			var limit:Float = haxe.Timer.stamp() + 2;
+
+			// Letting the collector stop this thread as it spins: a
+			// collection the worker starts waits for every thread.
+			while (!queue.closing && haxe.Timer.stamp() < limit) {
+				cpp.vm.Gc.safePoint();
+			}
+
+			// A few nanoseconds each.
+			var delay:Int = (Std.int(round / 3) % 100) * 20;
+
+			for (i in 0...delay) {
+				cpp.vm.Gc.safePoint();
+			}
+
+			var queued:Bool = true;
+
+			try {
+				switch (kind) {
+					case 0:
+						statement.execute();
+					case 1:
+						connection.begin();
+					default:
+						connection.close();
+				}
+			} catch (e:crossbyte.errors.IllegalOperationError) {
+				queued = false;
+			}
+
+			if (kind != 2) {
+				if (queued) {
+					queuedCount++;
+				} else {
+					refusedCount++;
+				}
+			}
+
+			limit = haxe.Timer.stamp() + 5;
+
+			while (worker.running && haxe.Timer.stamp() < limit) {
+				runtime.pump(0, 0);
+			}
+
+			var what:String = ["a statement", "a begin()", "a close()"][kind] + ' asked $delay spins after the open failed';
+
+			if (kind != 2 && queued && !answered) {
+				lost.push(what + " was never answered");
+			}
+
+			if (kind == 2) {
+				// Closed one way or the other: it opens again.
+				try {
+					connection.openAsync(null, SQLiteMode.CREATE, false, 4096);
+					var again:crossbyte.sys.Worker = @:privateAccess connection.__sqlWorker;
+					connection.close();
+					limit = haxe.Timer.stamp() + 5;
+
+					while (again.running && haxe.Timer.stamp() < limit) {
+						runtime.pump(0, 0);
+					}
+				} catch (e:crossbyte.errors.IllegalOperationError) {
+					lost.push(what + " left the connection refusing to open: " + e.message);
+				}
+			}
+
+			round++;
+		}
+
+		Assert.same([], lost.slice(0, 3), '${lost.length} of $round rounds lost what they asked for; $queuedCount statements and begin()s queued, $refusedCount refused');
+		// Both sides of the worker's last pass were reached.
+		Assert.isTrue(queuedCount > 0 && refusedCount > 0, '$queuedCount queued, $refusedCount refused');
 	}
 
 	public function testCodeTheWorkerRunsCanAskTheConnection():Void {

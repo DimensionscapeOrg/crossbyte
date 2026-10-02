@@ -13,6 +13,7 @@ import crossbyte.net.ice.IceCandidate;
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
+import crossbyte.errors.RangeError;
 import crossbyte.events.DatagramSocketDataEvent;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
@@ -481,18 +482,25 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		it always was.
 
 		@param address The peer's address, or a name.
-		@param timeoutMs Session timeout in milliseconds, or `0` for the default.
+		@param timeoutMs The session's `timeout`, in milliseconds: how long
+		       the handshake may take. 20 seconds unless given; 0 sets no
+		       deadline, as it does for the session's own `timeout`, and the
+		       attempt goes on until the peer answers or the session is
+		       closed. 0 meant the default.
 		@param payload Sent with every CONNECT, as `ReliableDatagramSocket.connect`
 		       sends it: copied now, and at most one frame.
 		@throws IOError if this server is closed, unbound, or not listening.
 		@throws ArgumentError if the address is malformed, or -- on Node -- a
 		name, or if a session to this endpoint already exists.
-		@throws RangeError if `payload` is larger than one frame.
+		@throws RangeError if `payload` is larger than one frame, or
+		`timeoutMs` is negative.
 	**/
-	public function connect(address:String, port:Int, timeoutMs:Int = 0, ?payload:ByteArray):ReliableDatagramSocket {
+	public function connect(address:String, port:Int, timeoutMs:Int = ReliableDatagramSocket.DEFAULT_TIMEOUT, ?payload:ByteArray):ReliableDatagramSocket {
 		if (__closed) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
+
+		__checkTimeout(timeoutMs);
 
 		if (!bound) {
 			throw new IOError("Cannot dial from a server socket that is not bound.");
@@ -545,6 +553,16 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			congestionControlFor(resolved, port));
 		__connections.set(key, socket);
 		return socket;
+	}
+
+	/**
+		Refuses a negative timeout for a dialled session, as its `timeout`
+		does, before anything is made for it.
+	**/
+	@:noCompletion private static inline function __checkTimeout(timeoutMs:Int):Void {
+		if (timeoutMs < 0) {
+			throw new RangeError("Invalid socket timeout specified.");
+		}
 	}
 
 	#if !nodejs
@@ -641,10 +659,10 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		looks the name up for each request itself, and one that does not
 		resolve leaves the question to its deadline.
 
-		`timeoutMs` is how long to keep asking. 0 or less asks for the
-		default, three seconds: not for no deadline, as 0 is for a
-		connection's `timeout`, since nothing else ends a question over UDP
-		that nobody answers.
+		`timeoutMs` is how long to keep asking. 0 or less sets no deadline, as
+		it does for a connection's `timeout`: the question is asked until it
+		is answered or this server closes, since nothing else ends a question
+		over UDP that nobody answers. It meant three seconds.
 
 		@return The address and port this socket appears as, or a failure. A
 		       question that cannot be asked is not thrown but returned
@@ -718,8 +736,8 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			if (query.expired(now)) {
 				// UDP reports nothing when it is dropped, so a silent network
 				// and a wrong server address look identical from here; the
-				// deadline is the only thing that ends this. The time the
-				// question had: a timeout of 0 is the default's.
+				// deadline is the only thing that ends this, short of a close.
+				// Only a question with a deadline gets here.
 				var damage:Null<String> = query.damage();
 				__settleStun(null, (damage != null ? "No usable reply" : "No reply") + " from the STUN server at " + server + ":" + port + " within "
 					+ query.timeoutMs + "ms" + (damage != null ? ": " + damage + "." : "."));
@@ -903,8 +921,17 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		The agent itself is not closed: a caller may want to inspect what it
 		found. Detaching only stops this server driving it.
+
+		It may be called from any thread, as `close()` may, and is handed to
+		the runtime the same way. Made elsewhere, it took the agent's tick
+		off the runtime from the wrong thread.
 	**/
 	public function detachIceAgent():Void {
+		var runtime:Null<CrossByte> = @:privateAccess __socket.__cbInstance;
+		if (__iceTick != null && RuntimeHandOff.offThread(runtime) && runtime.post(detachIceAgent)) {
+			return;
+		}
+
 		if (__iceTick != null) {
 			__untick(__iceTick);
 
@@ -1110,16 +1137,22 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		relay is to send -- the peer's own relayed address, or whatever address
 		of its a pair ICE chose through the relay names.
 
+		@param timeoutMs As for `connect`: 20 seconds unless given, and 0 for
+		       no deadline.
 		@throws IOError If this server is closed or not listening, or there is
 		no relay holding an address.
 		@throws ArgumentError If `address` is not an IPv4 address, or a session
 		to this endpoint already exists.
-		@throws RangeError if `payload` is larger than one frame.
+		@throws RangeError if `payload` is larger than one frame, or
+		`timeoutMs` is negative.
 	**/
-	public function connectRelayed(address:String, port:Int, timeoutMs:Int = 0, ?payload:ByteArray):ReliableDatagramSocket {
+	public function connectRelayed(address:String, port:Int, timeoutMs:Int = ReliableDatagramSocket.DEFAULT_TIMEOUT,
+			?payload:ByteArray):ReliableDatagramSocket {
 		if (__closed || !bound || !listening) {
 			throw new IOError("Cannot dial from a server socket that is not bound and listening.");
 		}
+
+		__checkTimeout(timeoutMs);
 
 		if (relay == null || !relay.active) {
 			throw new IOError("There is no relay to connect through: allocateRelay first, and wait for it.");
@@ -1149,11 +1182,26 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		Frees the relay's allocation, ending first each session that reached
 		its peer through it, at once, as `ReliableDatagramSocket.abort()` does
 		-- each with a FIN, while the relay can still carry one.
+
+		It may be called from any thread, as `close()` may, and is handed to
+		the runtime the same way. Made elsewhere, it took the relay's tick off
+		the runtime from the wrong thread, and failed an `allocateRelay` still
+		waiting there, running its handlers on that thread.
 	**/
 	public function releaseRelay():Void {
 		var released = relay;
 
 		if (released == null) {
+			return;
+		}
+
+		var runtime:Null<CrossByte> = @:privateAccess __socket.__cbInstance;
+		if (RuntimeHandOff.offThread(runtime) && runtime.post(function():Void {
+			// Not one allocated since.
+			if (relay == released) {
+				releaseRelay();
+			}
+		})) {
 			return;
 		}
 

@@ -81,16 +81,16 @@ class WebSocketRetentionStress implements StressCase {
 		while (__readLine(runtime, client) != "") {}
 
 		// Stall: let the server fill the socket and block on the rest.
-		var stallUntil:Float = Sys.time() + 10;
-		while (queued < FRAMES && Sys.time() < stallUntil) {
+		var stallUntil:Float = haxe.Timer.stamp() + 10;
+		while (queued < FRAMES && haxe.Timer.stamp() < stallUntil) {
 			@:privateAccess runtime.pump(0.016);
 		}
 
 		var received:Int = 0;
 		var corrupt:Int = 0;
-		var deadline:Float = Sys.time() + 40;
+		var deadline:Float = haxe.Timer.stamp() + 40;
 
-		while (received < FRAMES && Sys.time() < deadline) {
+		while (received < FRAMES && haxe.Timer.stamp() < deadline) {
 			var header:Bytes = __readExactly(runtime, client, 2, deadline);
 			if (header == null) {
 				break;
@@ -159,7 +159,7 @@ class WebSocketRetentionStress implements StressCase {
 		var out:Bytes = Bytes.alloc(n);
 		var got:Int = 0;
 
-		while (got < n && Sys.time() < deadline) {
+		while (got < n && haxe.Timer.stamp() < deadline) {
 			try {
 				var read:Int = sock.input.readBytes(out, got, n - got);
 				if (read <= 0) {
@@ -184,9 +184,9 @@ class WebSocketRetentionStress implements StressCase {
 
 	private function __readLine(runtime:CrossByte, sock:sys.net.Socket):String {
 		var buf:StringBuf = new StringBuf();
-		var deadline:Float = Sys.time() + 15;
+		var deadline:Float = haxe.Timer.stamp() + 15;
 
-		while (Sys.time() < deadline) {
+		while (haxe.Timer.stamp() < deadline) {
 			try {
 				var c:Int = sock.input.readByte();
 				if (c == 10) {

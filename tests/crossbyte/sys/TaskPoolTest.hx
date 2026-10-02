@@ -1,7 +1,10 @@
 ﻿package crossbyte.sys;
 
 import crossbyte.core.CrossByte;
+import crossbyte.events.TaskEvent;
+import crossbyte.events.UncaughtErrorEvent;
 import crossbyte.sys.TaskState;
+import crossbyte.utils.Logger;
 import utest.Assert;
 #if target.threaded
 import sys.thread.Mutex;
@@ -183,6 +186,188 @@ class TaskPoolTest extends utest.Test {
 		child.exit();
 		#else
 		Assert.pass();
+		#end
+	}
+
+	/**
+		A task made on a thread no runtime belongs to finishes on the pool
+		thread, and `onComplete` and `onError` looked at its state and added
+		their listener in two steps: a task finishing between them was never
+		heard, and whatever waited on the handler waited for good. Thousands
+		of tasks, each given its handler as soon as it is submitted; the jvm
+		lost about one in two thousand.
+	**/
+	@:timeout(60000)
+	public function testHandlersGivenOffAnyRuntimeAreAlwaysCalled():Void {
+		#if target.threaded
+		var pool = makePool(4);
+		var count:Int = 20000;
+		var heard = new Tally();
+		var submitted = new sys.thread.Lock();
+		sys.thread.Thread.create(() -> {
+			for (i in 0...count) {
+				if (i % 2 == 0) {
+					pool.submitResult(() -> i).onComplete(value -> heard.add(value));
+				} else {
+					pool.submitResult(() -> {
+						throw i;
+						return 0;
+					}).onError(error -> heard.add(error));
+				}
+			}
+			submitted.release();
+		});
+		submitted.wait();
+		heard.waitFor(count, 20);
+
+		Assert.equals(count, heard.count, '${count - heard.count} of $count handlers were never called');
+		if (heard.count == count) {
+			Assert.equals((count - 1.0) * count / 2, heard.sum, "a handler was given another task's outcome");
+		}
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		`onCancel` read the state without the lock and added its listener
+		after, so a task cancelled on another thread between the two was
+		never heard. A thread cancels each task as soon as it is made, while
+		the thread that made it gives it its handler.
+	**/
+	@:timeout(60000)
+	public function testCancelHandlersGivenOffAnyRuntimeAreAlwaysCalled():Void {
+		#if target.threaded
+		var pool = makePool(1);
+		var gate = new sys.thread.Lock();
+		// Holds the one worker, so every task after it stays queued until
+		// it is cancelled.
+		var blocker = pool.submit(() -> gate.wait());
+		var count:Int = 20000;
+		var made = new sys.thread.Deque<Task<Dynamic>>();
+		var heard = new Tally();
+		var refused = new Tally();
+		sys.thread.Thread.create(() -> {
+			for (_ in 0...count) {
+				if (!made.pop(true).cancel()) {
+					refused.add(1);
+				}
+			}
+		});
+		sys.thread.Thread.create(() -> {
+			for (_ in 0...count) {
+				var task = pool.submit(() -> {});
+				made.add(task);
+				task.onCancel(() -> heard.add(1));
+			}
+		});
+
+		heard.waitFor(count, 20);
+		gate.release();
+		blocker.await();
+
+		Assert.equals(0, refused.sum, "a queued task refused to be cancelled");
+		Assert.equals(count, heard.count, '${count - heard.count} of $count cancel handlers were never called');
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		A listener or handler that throws is reported, and the task's other
+		listeners and handlers still hear it, and its pool still lets it go.
+		The throw left the delivery where it was: the posted callback around
+		it reported it, but nothing after it ran, and the pool held the task
+		for the rest of its life.
+	**/
+	public function testAHandlerThatThrowsStopsNeitherTheOthersNorTheRelease():Void {
+		#if target.threaded
+		var runtime = CrossByte.current();
+		var reports:Array<String> = [];
+		var watch = (event:UncaughtErrorEvent) -> reports.push(event.source + ": " + Std.string(event.error));
+		runtime.addEventListener(UncaughtErrorEvent.UNCAUGHT_ERROR, watch);
+		Logger.sink = _ -> {};
+		var pool = makePool(1);
+		var gate = new sys.thread.Lock();
+		var task = pool.submitResult(() -> {
+			gate.wait();
+			return 1;
+		});
+		var heard:Int = 0;
+		task.addEventListener(TaskEvent.COMPLETE, (_:TaskEvent<Int>) -> throw "listener bug");
+		task.addEventListener(TaskEvent.COMPLETE, (_:TaskEvent<Int>) -> heard++);
+		task.onComplete(_ -> throw "handler bug");
+		task.onComplete(_ -> heard++);
+		gate.release();
+		task.await();
+		pumpUntil(() -> heard == 2 && reports.length == 2 && __retained(pool) == 0);
+
+		Logger.sink = null;
+		runtime.removeEventListener(UncaughtErrorEvent.UNCAUGHT_ERROR, watch);
+		Assert.equals(2, heard, "a listener or handler after the one that threw was not called");
+		Assert.same([UncaughtErrorEvent.POSTED + ": listener bug", UncaughtErrorEvent.POSTED + ": handler bug"], reports);
+		Assert.equals(0, __retained(pool), "the pool still holds the task");
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		A task with no runtime delivers on the pool thread, which caught what
+		a handler threw and handed it to the task as the job's failure -- too
+		late, the task being complete -- so it went without a word, and the
+		pool held the task for good. It is logged now.
+	**/
+	public function testAHandlerThatThrowsOffAnyRuntimeIsLogged():Void {
+		#if target.threaded
+		var logged = new sys.thread.Deque<String>();
+		Logger.sink = line -> logged.add(line);
+		var pool = makePool(1);
+		var heard = new Tally();
+		var made = new sys.thread.Lock();
+		sys.thread.Thread.create(() -> {
+			var gate = new sys.thread.Lock();
+			var task = pool.submitResult(() -> {
+				gate.wait();
+				return 1;
+			});
+			task.onComplete(_ -> throw "handler bug off the runtime");
+			task.onComplete(value -> heard.add(value));
+			gate.release();
+			made.release();
+		});
+		made.wait();
+		heard.waitFor(1, 5);
+		var deadline:Float = haxe.Timer.stamp() + 5;
+		while (__retained(pool) > 0 && haxe.Timer.stamp() < deadline) {
+			crossbyte.sys.System.sleep(0.001);
+		}
+
+		Logger.sink = null;
+		var lines:Array<String> = [];
+		while (true) {
+			var line:Null<String> = logged.pop(false);
+			if (line == null) {
+				break;
+			}
+			lines.push(line);
+		}
+		Assert.equals(1, heard.count, "the handler after the one that threw was not called");
+		Assert.equals(1, lines.filter(line -> line.indexOf("handler bug off the runtime") >= 0).length, "the failure was not logged: " + lines);
+		Assert.equals(0, __retained(pool), "the pool still holds the task");
+		#else
+		Assert.pass();
+		#end
+	}
+
+	private static function __retained(pool:TaskPool):Int {
+		#if target.threaded
+		@:privateAccess pool.__stateLock.acquire();
+		var count:Int = @:privateAccess pool.__retainedTasks.length;
+		@:privateAccess pool.__stateLock.release();
+		return count;
+		#else
+		return 0;
 		#end
 	}
 
@@ -393,3 +578,49 @@ class TaskPoolTest extends utest.Test {
 		#end
 	}
 }
+
+#if target.threaded
+/**
+	A count and a sum that any thread adds to. Not a `Deque<Int>`: on the jvm
+	its `pop(false)` answers 0, not null, once it is empty.
+**/
+private class Tally {
+	public var count(get, never):Int;
+	public var sum(get, never):Float;
+
+	private var __count:Int = 0;
+	private var __sum:Float = 0.0;
+	private final __lock:sys.thread.Mutex = new sys.thread.Mutex();
+
+	public function new() {}
+
+	public function add(value:Int):Void {
+		__lock.acquire();
+		__count++;
+		__sum += value;
+		__lock.release();
+	}
+
+	/** Until `expected` have been added, or for `seconds`. **/
+	public function waitFor(expected:Int, seconds:Float):Void {
+		var deadline:Float = haxe.Timer.stamp() + seconds;
+		while (count < expected && haxe.Timer.stamp() < deadline) {
+			crossbyte.sys.System.sleep(0.001);
+		}
+	}
+
+	private function get_count():Int {
+		__lock.acquire();
+		var value:Int = __count;
+		__lock.release();
+		return value;
+	}
+
+	private function get_sum():Float {
+		__lock.acquire();
+		var value:Float = __sum;
+		__lock.release();
+		return value;
+	}
+}
+#end

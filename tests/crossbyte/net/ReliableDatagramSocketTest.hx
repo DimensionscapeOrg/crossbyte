@@ -243,10 +243,11 @@ class ReliableDatagramSocketTest extends utest.Test {
 	}
 
 	/**
-		A timeout of 0 asks for the default, three seconds, as `StunClient`'s
-		does, and the failure says how long that was rather than "0ms".
+		A discovery timeout of 0 sets no deadline, as it does for a
+		connection: the question is still being asked past the three seconds
+		0 used to mean, and the server closing ends it.
 	**/
-	public function testADiscoveryTimeoutOfZeroAsksForTheDefaultAndSaysSo():Void {
+	public function testADiscoveryTimeoutOfZeroAsksUntilTheServerCloses():Void {
 		if (!requireDatagramSupport()) return;
 		// No question is asked without a secure source for its transaction
 		// id: on neko and hl it is refused at once, before any timeout.
@@ -257,26 +258,64 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 		// A socket that takes the question and never answers it.
 		var silent = new DatagramSocket();
+		var asked:Int = 0;
 		var server = new ReliableDatagramServerSocket();
 		var failure:String = null;
 
 		try {
 			silent.bind(0, "127.0.0.1");
+			silent.addEventListener(crossbyte.events.DatagramSocketDataEvent.DATA, _ -> asked++);
 			silent.receive();
 
 			server.bind(0, "127.0.0.1");
 			server.listen();
 
-			var started:Float = haxe.Timer.stamp();
 			server.discoverPublicAddress("127.0.0.1", silent.localPort, 0).then(_ -> {}, error -> failure = error);
-			pumpUntil(() -> failure != null, 8.0);
-			var took:Float = haxe.Timer.stamp() - started;
+			// Past the three seconds 0 meant, and the fourth ask, at 3.5 s.
+			pumpUntil(() -> failure != null, 4.0);
 
-			Assert.notNull(failure, "a question with a timeout of 0 never ended");
-			Assert.isTrue(took >= 2.5, "a timeout of 0 gave the question up after " + took + " s, short of the default three");
-			if (failure != null) {
-				Assert.isTrue(failure.indexOf("3000ms") >= 0, "the failure does not say how long it waited: " + failure);
-			}
+			Assert.isNull(failure, "a question with no deadline was given up: " + failure);
+			Assert.isTrue(asked >= 4, "the question stopped being asked, after " + asked);
+
+			server.close();
+			pumpUntil(() -> failure != null, 2.0);
+			Assert.notNull(failure, "closing the server did not end a question with no deadline");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try server.close() catch (_:Dynamic) {}
+		try silent.close() catch (_:Dynamic) {}
+	}
+
+	/**
+		A session a server dials with a timeout of 0 has no deadline, as a
+		session's own `timeout` of 0 has none: it is still trying a silent
+		peer well past the default. 0 was taken for the default, twenty
+		seconds, so no dialled session could wait longer. A negative timeout
+		is refused, as the session's `timeout` refuses it, and the default is
+		twenty seconds still.
+	**/
+	public function testADialTimeoutOfZeroSetsNoDeadline():Void {
+		if (!requireDatagramSupport()) return;
+
+		var silent = new DatagramSocket();
+		var server = new ReliableDatagramServerSocket();
+
+		try {
+			silent.bind(0, "127.0.0.1");
+			silent.receive();
+			server.bind(0, "127.0.0.1");
+			server.listen();
+
+			var unbounded = server.connect("127.0.0.1", silent.localPort, 0);
+			Assert.equals(0, unbounded.timeout, "a dial with a timeout of 0 was given a deadline of " + unbounded.timeout + " ms");
+
+			var plain = server.connect("127.0.0.1", 9);
+			Assert.equals(ReliableDatagramSocket.DEFAULT_TIMEOUT, plain.timeout, "a dial with no timeout given lost the default");
+			Assert.equals(20000, ReliableDatagramSocket.DEFAULT_TIMEOUT);
+
+			Assert.raises(() -> server.connect("127.0.0.1", 10, -1), crossbyte.errors.RangeError);
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
@@ -1430,11 +1469,11 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 			server.bind(0, "127.0.0.1");
 			server.listen();
-			Assert.raises(() -> server.connect("127.0.0.1", 9, 0, tooBig), crossbyte.errors.RangeError);
+			Assert.raises(() -> server.connect("127.0.0.1", 9, ReliableDatagramSocket.DEFAULT_TIMEOUT, tooBig), crossbyte.errors.RangeError);
 			Assert.equals(0, __countConnections(server), "the refused dial was registered");
 
 			// A frame's worth exactly is not too big.
-			Assert.notNull(server.connect("127.0.0.1", 9, 0, zeros(ReliableDatagramProtocol.MAX_PAYLOAD_SIZE)));
+			Assert.notNull(server.connect("127.0.0.1", 9, ReliableDatagramSocket.DEFAULT_TIMEOUT, zeros(ReliableDatagramProtocol.MAX_PAYLOAD_SIZE)));
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
@@ -1503,8 +1542,8 @@ class ReliableDatagramSocketTest extends utest.Test {
 			bob.bind(0, "127.0.0.1");
 			bob.listen();
 
-			var toBob = alice.connect("127.0.0.1", bob.localPort, 0, bytesOf("from alice"));
-			var toAlice = bob.connect("127.0.0.1", alice.localPort, 0, bytesOf("from bob"));
+			var toBob = alice.connect("127.0.0.1", bob.localPort, ReliableDatagramSocket.DEFAULT_TIMEOUT, bytesOf("from alice"));
+			var toAlice = bob.connect("127.0.0.1", alice.localPort, ReliableDatagramSocket.DEFAULT_TIMEOUT, bytesOf("from bob"));
 
 			pumpUntil(() -> toBob.connected && toAlice.connected, 5.0);
 

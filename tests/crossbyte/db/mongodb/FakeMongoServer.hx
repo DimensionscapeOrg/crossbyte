@@ -198,13 +198,11 @@ class FakeMongoServer {
 		// Shut down, not closed, and under the lock: a serve thread removes its
 		// connection under the same lock before closing it, so none can close a
 		// socket -- and let its handle be reused by another -- while this uses
-		// it. Not on eval, which raises a read shut down under it as a native
-		// error no catch sees; the tests there close what they open.
-		#if !eval
+		// it. On eval too, where a read shut down under it once raised an
+		// error no catch saw.
 		for (client in __clients) {
 			try client.shutdown(true, true) catch (_:Dynamic) {}
 		}
-		#end
 
 		__lock.release();
 

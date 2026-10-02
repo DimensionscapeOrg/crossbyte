@@ -459,6 +459,236 @@ class SharedObjectTest extends utest.Test {
 	}
 	#end
 
+	#if (cpp && !windows)
+	/**
+		On Linux and macOS a region, and macOS's lock file, are their user's
+		alone. Both were made 0666 less the umask -- 0644 as a rule -- so any
+		local user could read what any SharedObject held, and open the lock
+		file and hold every participant's lock.
+	**/
+	public function testARegionAndItsLockFileAreTheirUsersAlone():Void {
+		var name:String = uniqueName("private");
+		var shared = new SharedObject(name, 8192);
+		shared.data = {secret: "kept"};
+		shared.flush();
+		var checked:Int = 0;
+		for (path in leftBehind(name)) {
+			if (sys.FileSystem.exists(path)) {
+				var mode:Int = sys.FileSystem.stat(path).mode;
+				Assert.equals(0, mode & 63, path + " can be read or written by others: mode " + StringTools.hex(mode & 511));
+				checked++;
+			}
+		}
+		shared.close();
+		Assert.isTrue(checked > 0, "found nothing of the region's to look at");
+	}
+
+	/**
+		A link put where macOS's lock file goes is not followed, and the
+		region is not opened. It was followed: another user's link made this
+		process make, or lock, a file wherever it pointed.
+	**/
+	public function testALinkWhereTheLockFileGoesIsNotFollowed():Void {
+		var name:String = uniqueName("link");
+		var lockPath:String = lockFileOf(name);
+		var target:String = lockPath + ".target";
+		Assert.equals(0, Sys.command("ln", ["-s", target, lockPath]), "could not make the link");
+		var raised:Dynamic = null;
+		try {
+			new SharedObject(name, 8192).close();
+		} catch (e:Dynamic) {
+			raised = e;
+		}
+		var followed:Bool = sys.FileSystem.exists(target);
+		__removeQuietly(lockPath);
+		__removeQuietly(target);
+
+		Assert.isFalse(followed, "the link was followed: " + target + " was made");
+		if (__usesLockFile()) {
+			Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), "the region was opened through a link: " + raised);
+			Assert.isTrue(Std.string(raised).indexOf("not this user's own") >= 0, Std.string(raised));
+		}
+	}
+
+	/**
+		A FIFO put where macOS's lock file goes does not hold the open. Opened
+		for reading, a FIFO waits for a writer: the constructor waited for
+		good, outside the collector's reach, and stopped this process's
+		collections with it. The open runs on a thread of its own here, and a
+		write to the FIFO lets it go if it waits.
+	**/
+	@:timeout(30000)
+	public function testAFifoWhereTheLockFileGoesDoesNotHoldTheOpen():Void {
+		if (!__usesLockFile()) {
+			Assert.pass();
+			return;
+		}
+		var name:String = uniqueName("fifo");
+		var lockPath:String = lockFileOf(name);
+		Assert.equals(0, Sys.command("mkfifo", [lockPath]), "could not make the FIFO");
+		var outcome = new sys.thread.Deque<String>();
+		sys.thread.Thread.create(() -> {
+			try {
+				new SharedObject(name, 8192).close();
+				outcome.add("opened");
+			} catch (e:Dynamic) {
+				outcome.add("threw " + e);
+			}
+		});
+		var deadline:Float = Timer.stamp() + 5;
+		var result:Null<String> = null;
+		while (result == null && Timer.stamp() < deadline) {
+			result = outcome.pop(false);
+			crossbyte.sys.System.sleep(0.005);
+		}
+		if (result == null) {
+			// Lets the open go: a writer arrives.
+			sys.io.File.write(lockPath).close();
+			outcome.pop(true);
+		}
+		__removeQuietly(lockPath);
+
+		Assert.notNull(result, "the open waited on a FIFO where the lock file goes");
+		if (result != null) {
+			Assert.isTrue(result.indexOf("not this user's own") >= 0, result);
+		}
+	}
+
+	/**
+		A lock file deleted while the region is open -- as macOS's cleaner
+		deletes what in /tmp nobody has touched for three days -- does not
+		part the participants. The next one to open made a new file and
+		locked that, while those open went on locking the old: two
+		participants each holding the region's lock. A handle open before
+		now finds the file gone and takes the new one, and waits for whoever
+		holds it.
+	**/
+	@:timeout(60000)
+	public function testALockFileDeletedWhileOpenStillLocksEveryone():Void {
+		if (!__usesLockFile()) {
+			Assert.pass();
+			return;
+		}
+		var name:String = uniqueName("swept");
+		var early = new SharedObject(name, 8192);
+		early.data = {n: 1};
+		early.flush();
+		sys.FileSystem.deleteFile(lockFileOf(name));
+		// Opened since: it makes the lock file anew, and holds its lock.
+		var holder = new HeldLock(new SharedObject(name, 8192));
+
+		var raised:Dynamic = null;
+		try {
+			early.lockTimeout = 200;
+			early.data = {n: 2};
+			early.flush();
+		} catch (e:Dynamic) {
+			raised = e;
+		}
+		holder.release();
+		early.lockTimeout = 5000;
+		early.sync();
+		var after:Dynamic = early.data.n;
+		early.close();
+
+		Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), "a flush went ahead while another participant held the lock: " + raised);
+		Assert.equals(1, after, "the flush made while another held the lock was written");
+	}
+
+	/**
+		Opening a region brings its lock file's times up to date, as each
+		hour of use does, so a cleaner of old files in /tmp does not find
+		one in use old. A lock took nothing of the file, and left its times
+		as they were made.
+	**/
+	public function testOpeningBringsTheLockFilesTimesUpToDate():Void {
+		if (!__usesLockFile()) {
+			Assert.pass();
+			return;
+		}
+		var name:String = uniqueName("fresh");
+		var lockPath:String = lockFileOf(name);
+		// Made by this user, as an earlier participant would have, four days
+		// ago.
+		sys.io.File.saveContent(lockPath, "");
+		Sys.command("chmod", ["600", lockPath]);
+		var fourDaysAgo = Date.fromTime(Date.now().getTime() - 4 * 24 * 3600 * 1000.0);
+		Assert.equals(0, Sys.command("touch", ["-t", DateTools.format(fourDaysAgo, "%Y%m%d%H%M"), lockPath]), "could not age the file");
+		var aged:Float = sys.FileSystem.stat(lockPath).mtime.getTime();
+
+		var shared = new SharedObject(name, 8192);
+		var refreshed:Float = sys.FileSystem.stat(lockPath).mtime.getTime();
+		shared.close();
+
+		Assert.isTrue(Date.now().getTime() - aged > 3 * 24 * 3600 * 1000.0, "the file was not aged");
+		Assert.isTrue(Date.now().getTime() - refreshed < 3600 * 1000.0, "the lock file still looks " + Math.round((Date.now().getTime() - refreshed) / 3600000) + " hours old");
+	}
+
+	/**
+		A region or lock file another user made under the name is not used,
+		and the error says why. One made first by another user, writable by
+		all, was opened and shared with them where the system allowed it --
+		macOS does -- so they read what this process wrote and wrote what it
+		read. Needs root, to make a file another user owns; elsewhere it
+		passes having checked nothing.
+	**/
+	public function testWhatAnotherUserMadeUnderTheNameIsNotUsed():Void {
+		var name:String = uniqueName("theirs");
+		var region:String = __usesLockFile() ? "/dev/shm/cbso_" + nameHash(name) : #if linux posixRegionPath(name) #else null #end;
+		var paths:Array<String> = region != null && sys.FileSystem.exists("/dev/shm") ? [region] : [];
+		if (__usesLockFile()) {
+			paths.push(lockFileOf(name));
+		}
+		for (path in paths) {
+			sys.io.File.saveBytes(path, haxe.io.Bytes.alloc(0));
+			Sys.command("chmod", ["666", path]);
+			if (Sys.command("chown", ["nobody", path]) != 0) {
+				// Not root: nothing can be made another user's.
+				for (made in paths) {
+					__removeQuietly(made);
+				}
+				Assert.pass();
+				return;
+			}
+			var raised:Dynamic = null;
+			try {
+				new SharedObject(name, 8192).close();
+			} catch (e:Dynamic) {
+				raised = e;
+			}
+			__removeQuietly(path);
+			// Linux refuses some of these itself (fs.protected_regular), with
+			// an error that said nothing of why; macOS has no such guard.
+			Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), path + ", another user's, was not refused as theirs: " + raised);
+			Assert.isTrue(Std.string(raised).indexOf("not this user's own") >= 0, Std.string(raised));
+		}
+	}
+
+	/** macOS's lock file for `name`. **/
+	private static function lockFileOf(name:String):String {
+		return "/tmp/cbso_" + nameHash(name) + ".lock";
+	}
+
+	private static var __lockFileMode:Null<Bool> = null;
+
+	/** Whether the native side uses macOS's lock file: on macOS, or a Linux build switched to it. **/
+	private static function __usesLockFile():Bool {
+		if (__lockFileMode == null) {
+			var probe:String = "crossbyte_sharedobject_mode_" + Std.int(Timer.stamp() * 1000) + "_" + Std.random(1000000);
+			new SharedObject(probe, 64).close();
+			__lockFileMode = sys.FileSystem.exists(lockFileOf(probe));
+			SharedObject.remove(probe);
+		}
+		return __lockFileMode;
+	}
+
+	private static function __removeQuietly(path:String):Void {
+		try {
+			sys.FileSystem.deleteFile(path);
+		} catch (_:Dynamic) {}
+	}
+	#end
+
 	/**
 		How long a region lives, which differs by OS and is documented on the
 		class: on Windows it goes with the last handle to it in any process,

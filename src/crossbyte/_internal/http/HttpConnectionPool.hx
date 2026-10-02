@@ -1,6 +1,6 @@
 package crossbyte._internal.http;
 
-#if (sys && !eval)
+#if sys
 import crossbyte._internal.socket.FlexSocket;
 import sys.thread.Mutex;
 
@@ -26,8 +26,8 @@ import sys.thread.Mutex;
  * twice, and sends it again on a new connection if the reused one turns out
  * to be gone before any of the response arrives.
  *
- * Not on eval, where a write or read on a connection the peer has reset
- * raises a native error no Haxe catch can see.
+ * On eval too, since a write or read on a connection the peer has reset
+ * raises an error a catch can see there, where it ended the interpreter.
  */
 class HttpConnectionPool {
 	/** Idle connections kept for one origin. */

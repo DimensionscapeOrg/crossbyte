@@ -459,10 +459,10 @@ class System {
 
 		Asked of the system directly natively, on the jvm and on Node:
 		`GlobalMemoryStatusEx` on Windows, `/proc/meminfo`'s `MemTotal` on
-		Linux. On macOS `sysctl hw.memsize` is run. The interpreter, neko and
-		HashLink under Windows have no call for it and run `wmic` -- or
-		PowerShell, where Windows no longer has wmic -- which takes half a
-		second or more.
+		Linux and `hw.memsize` on macOS -- where off native `sysctl
+		hw.memsize` is run instead. The interpreter, neko and HashLink under
+		Windows have no call for it and run `wmic` -- or PowerShell, where
+		Windows no longer has wmic -- which takes half a second or more.
 
 		@throws IllegalOperationError In a browser, which reports no such
 		thing, and on a system none of these answer on. It answered 0 on
@@ -490,7 +490,8 @@ class System {
 		bytes: Windows' available physical memory, Linux's `MemAvailable`,
 		macOS's free, inactive and speculative pages, and on Node
 		`os.freemem()`. Asked where `totalSystemMemory()` is, at the same
-		cost: on macOS `vm_stat` is run.
+		cost: on macOS natively from the kernel's page counts, and elsewhere
+		on macOS `vm_stat` is run.
 
 		@throws IllegalOperationError As `totalSystemMemory()` does. It
 		answered 0 on macOS, and on a Windows without wmic.
@@ -538,6 +539,12 @@ class System {
 				case "linux":
 					return __parseMeminfo(__readProcFile("/proc/meminfo"), available ? "MemAvailable" : "MemTotal");
 				case "mac":
+					#if cpp
+					var asked:Float = crossbyte.io._internal.NativeFileSync.systemMemory(available);
+					if (asked >= 0) {
+						return asked;
+					}
+					#end
 					if (available) {
 						return __parseVmStat(__programOutput("vm_stat", []));
 					}

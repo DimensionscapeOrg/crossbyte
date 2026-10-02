@@ -2,6 +2,7 @@ package crossbyte.http;
 
 import crossbyte._internal.http.Http;
 import crossbyte._internal.http.HttpVersion;
+import crossbyte._internal.http.h2.H2ClientSession;
 import crossbyte._internal.http.h2.H2Connection;
 import crossbyte._internal.http.h2.H2ConnectionError;
 import crossbyte._internal.http.h2.H2ConnectionPool;
@@ -620,8 +621,8 @@ class HTTP2BackendTest extends utest.Test {
 		// three this used to allow: the loop leaves the moment the reset is seen,
 		// so the budget only matters on a machine slow enough to need it, and a
 		// busy one was enough to spend three seconds and fail a working reset.
-		var deadline:Float = Sys.time() + 10;
-		while (!server.sawReset(doomedId) && Sys.time() < deadline) {
+		var deadline:Float = haxe.Timer.stamp() + 10;
+		while (!server.sawReset(doomedId) && haxe.Timer.stamp() < deadline) {
 			System.sleep(0.01);
 		}
 		Assert.isTrue(server.sawReset(doomedId),
@@ -867,6 +868,14 @@ class HTTP2BackendTest extends utest.Test {
 					break;
 				}
 				total += H2ConnectionPool.reapIdle();
+				#if eval
+				// eval runs one thread at a time and hands over between them
+				// only now and then: a sweep with no pause held the requests
+				// it races behind it, and the first of them timed out. A
+				// millisecond's pause still sweeps about a thousand times a
+				// second, and all thousand requests pass.
+				System.sleep(0.001);
+				#end
 			}
 			control.acquire();
 			reaped = total;
@@ -1420,6 +1429,668 @@ class HTTP2BackendTest extends utest.Test {
 		// counted from the start ended it at half a second.
 		Assert.isTrue(took >= 1.0, 'timed out after ${took}s, before the stream had been idle 0.5s');
 		Assert.isTrue(took < 5.0, 'a stalled stream took ${took}s to time out');
+	}
+
+	// ------------------------------------------------------ a hostile server
+
+	public function testAResponseBodyPastTheLimitIsAnError():Void {
+		// The HTTP/1.1 client holds a body to Http.MAX_BODY_SIZE; over HTTP/2
+		// nothing held it, and the stream's window was opened again as every
+		// half of it arrived, so a server sending without end grew the body
+		// for as long as it liked. 4 MB here against a 256 KB limit.
+		var saved:Int = Http.MAX_BODY_SIZE;
+		Http.MAX_BODY_SIZE = 256 * 1024;
+		var server = new H2ScriptServer(peer -> {
+			peer.open();
+			var id:Int = peer.readRequest();
+			peer.headers(id, [new HpackHeader(":status", "200")], 0);
+			// Within the windows the client gives, as a server sending an
+			// endless body by the rules does: the client opened them again
+			// as each half was used.
+			var sent:Int = peer.sendBody(id, 4 * 1024 * 1024);
+			peer.server.note(sent < 0 ? "reset after " + (-sent) : "no reset, sent " + sent);
+			peer.drain();
+		});
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var completed:Null<Bytes> = null;
+		var error:Null<String> = null;
+		try {
+			var http = new Http('http://127.0.0.1:${server.port}/endless', "GET", null, null, null, null, HttpVersion.HTTP_2, 10000);
+			http.onComplete = data -> completed = data;
+			http.onError = (message, ?data) -> error = message;
+			http.load();
+		} catch (e:Dynamic) {
+			error = "threw " + Std.string(e);
+		}
+		Http.MAX_BODY_SIZE = saved;
+		// What the server saw, before the pool hangs up: a close with its
+		// frames unread would be a reset, which throws them away.
+		var outcome:String = server.waitNote(10);
+		H2ConnectionPool.closeAll();
+		server.waitDone(10);
+
+		Assert.isNull(completed, completed == null ? "" : 'a ${completed.length}-byte body past the 256 KB limit completed');
+		Require.notNull(error);
+		Assert.equals("Response body exceeded 262144 bytes", error);
+		// The stream was reset, so the server stopped within a window of the
+		// limit, and the connection was left to the requests after it.
+		Require.notNull(outcome, "the server never finished");
+		Assert.isTrue(StringTools.startsWith(outcome, "reset after "), outcome);
+		var sentBeforeReset:Null<Int> = Std.parseInt(outcome.substr("reset after ".length));
+		Assert.isTrue(sentBeforeReset != null && sentBeforeReset < 512 * 1024, outcome);
+	}
+
+	public function testAPingFloodTheServerNeverReadsTheAnswersToEndsAtTheTimeout():Void {
+		// PING after PING, and the acknowledgements never read. The client
+		// answered each from its reader with the connection's lock held, so
+		// once the socket's buffers filled, the reader waited in that write
+		// for good, holding the lock -- and the request, which needs the lock
+		// to look at its stream, never reached its 1.5 s timeout.
+		var threads:Int = H2ClientSession.liveThreads();
+		var server = new H2ScriptServer(peer -> {
+			peer.open();
+			peer.readRequest();
+			var ping = Bytes.ofHex("0102030405060708");
+			var sent:Int = 0;
+			try {
+				while (sent < 4000000 && !peer.server.hungUp) {
+					peer.write(H2FrameType.PING, 0, 0, ping);
+					sent++;
+				}
+			} catch (_:Dynamic) {}
+			peer.server.note("pinged " + sent);
+		});
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var outcome:Null<String> = null;
+		var took:Float = __loadWithin('http://127.0.0.1:${server.port}/flood', null, 1500, 10, value -> outcome = value);
+		// Its threads are let go by the client alone: the server still has
+		// not read a byte.
+		H2ConnectionPool.closeAll();
+		var settled:Bool = __threadsSettle(threads, 5);
+		server.hangUp();
+		server.waitDone(10);
+
+		Require.notNull(outcome, "the request never ended");
+		Assert.isFalse(StringTools.startsWith(outcome, "COMPLETED"), outcome);
+		Assert.isTrue(took < 6, 'a 1.5 s request took ${took}s to end');
+		Assert.isTrue(settled, 'the connection\'s threads were still running: ${H2ClientSession.liveThreads()} against $threads before');
+	}
+
+	public function testAnUploadAServerStopsReadingEndsAtTheTimeout():Void {
+		// Every window opened as wide as it goes, and then nothing read: the
+		// body went out in a write that waited on the socket for good, with
+		// the connection's lock held, so the request's 1.5 s timeout -- the
+		// longest its body may be kept from going out -- never came.
+		var threads:Int = H2ClientSession.liveThreads();
+		var server = __stopsReading();
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var outcome:Null<String> = null;
+		var took:Float = __loadWithin('http://127.0.0.1:${server.port}/upload', Bytes.alloc(64 * 1024 * 1024), 1500, 10, value -> outcome = value);
+		// The connection was given up with the request: its writer, held in
+		// a write the server is not taking, is ended without the server's
+		// help.
+		var settled:Bool = __threadsSettle(threads, 5);
+		server.hangUp();
+		server.waitDone(10);
+
+		Require.notNull(outcome, "the upload never ended");
+		Assert.equals('Request to http://127.0.0.1:${server.port} timed out after 1.5s', outcome);
+		Assert.isTrue(took < 6, 'a 1.5 s upload took ${took}s to end');
+		Assert.isTrue(settled, 'the connection\'s threads were still running: ${H2ClientSession.liveThreads()} against $threads before');
+	}
+
+	public function testCancellingAnUploadAServerStopsReadingReturnsAtOnce():Void {
+		// No timeout, so only a cancel ends it. The cancel needed the
+		// connection's lock, which the upload held in its write: the
+		// cancelling thread -- a runtime's, for URLLoader.close() -- waited
+		// with it.
+		var threads:Int = H2ClientSession.liveThreads();
+		var server = __stopsReading();
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var outcome:Null<String> = null;
+		var done = new Lock();
+		var http = new Http('http://127.0.0.1:${server.port}/upload', "POST", null, null, "application/octet-stream", Bytes.alloc(64 * 1024 * 1024),
+			HttpVersion.HTTP_2, 0);
+		http.onComplete = data -> outcome = "COMPLETED";
+		http.onError = (message, ?data) -> outcome = message;
+		Thread.create(() -> {
+			http.load();
+			done.release();
+		});
+
+		// Obtained rather than assumed: the request is out, and a second on
+		// lets the body fill what the socket holds.
+		Assert.notNull(server.waitNote(10), "the request never arrived");
+		System.sleep(1.0);
+		var cancelled = new Lock();
+		var cancelStarted:Float = haxe.Timer.stamp();
+		Thread.create(() -> {
+			http.cancelToken.cancel();
+			cancelled.release();
+		});
+		var cancelReturned:Bool = cancelled.wait(5);
+		var cancelTook:Float = haxe.Timer.stamp() - cancelStarted;
+		var ended:Bool = done.wait(5);
+		var took:Float = haxe.Timer.stamp() - cancelStarted;
+		// And closing the connection, its writer still held, ends it.
+		var closeStarted:Float = haxe.Timer.stamp();
+		H2ConnectionPool.closeAll();
+		var closeTook:Float = haxe.Timer.stamp() - closeStarted;
+		var settled:Bool = __threadsSettle(threads, 5);
+		server.hangUp();
+		done.wait(10);
+		server.waitDone(10);
+
+		Assert.isTrue(cancelReturned, "cancel() did not return");
+		Assert.isTrue(cancelTook < 1, 'cancel() took ${cancelTook}s to return');
+		Assert.isTrue(ended, "the cancelled upload never ended");
+		Assert.equals("Request cancelled", outcome);
+		Assert.isTrue(took < 2, 'the cancelled upload took ${took}s to end');
+		Assert.isTrue(closeTook < 1, 'closing the connection took ${closeTook}s');
+		Assert.isTrue(settled, 'the connection\'s threads were still running: ${H2ClientSession.liveThreads()} against $threads before');
+	}
+
+	/** Waits up to `seconds` for the HTTP/2 client's threads to be no more than `count`. */
+	private static function __threadsSettle(count:Int, seconds:Float):Bool {
+		var until:Float = haxe.Timer.stamp() + seconds;
+		while (H2ClientSession.liveThreads() > count) {
+			if (haxe.Timer.stamp() >= until) {
+				return false;
+			}
+			System.sleep(0.02);
+		}
+		return true;
+	}
+
+	public function testARequestWhoseHeadIsNotTakenEndsAtItsTimeout():Void {
+		// A request with no body writes its own head when nothing else is
+		// being written, and the session's writer watches that write. Here
+		// the write is held -- as a peer that has stopped reading holds it --
+		// and has to end at the request's 1 s timeout.
+		var server = new H2RouteServer(_ -> {status: 200, chunks: ["ok"]});
+		var held = __holdingSession(server.port);
+		var outcome:Null<String> = null;
+		var took:Float = __executeWithin(held.session, '127.0.0.1:${server.port}', 1.0, null, held.socket, 10, value -> outcome = value);
+		var released:Bool = held.socket.released;
+		held.session.close();
+		server.stop();
+
+		Require.notNull(outcome, "the request never ended");
+		Assert.equals('Request to http://127.0.0.1:${server.port} timed out after 1s', outcome);
+		Assert.isTrue(took < 4, 'a 1 s request whose head was held took ${took}s to end');
+		Assert.isTrue(released, "the held write was never ended");
+		Assert.isTrue(held.session.dead, "a connection that took nothing for the whole timeout was kept");
+	}
+
+	#if !eval
+	// Not on eval, where a request's head is always the writer's to write
+	// (H2ClientSession.DIRECT_HEADS): there a cancel returns at once whatever
+	// the writer is held in, as testCancellingAnUploadAServerStopsReadingReturnsAtOnce
+	// shows, and the writer is the close's to end.
+	public function testCancellingARequestWhoseHeadIsNotTakenReturnsAtOnce():Void {
+		// No timeout: the cancel is what ends it, and the write it is held
+		// in has the close's grace, a second, from the cancel.
+		var server = new H2RouteServer(_ -> {status: 200, chunks: ["ok"]});
+		var held = __holdingSession(server.port);
+		var token = new HTTPCancelToken();
+		var outcome:Null<String> = null;
+		var cancelTook:Float = -1;
+		var took:Float = __executeWithin(held.session, '127.0.0.1:${server.port}', 0, token, held.socket, 10, value -> outcome = value, () -> {
+			var started:Float = haxe.Timer.stamp();
+			token.cancel();
+			cancelTook = haxe.Timer.stamp() - started;
+		});
+		held.session.close();
+		server.stop();
+
+		Require.notNull(outcome, "the cancelled request never ended");
+		Assert.equals("Request was cancelled", outcome);
+		Assert.isTrue(cancelTook >= 0 && cancelTook < 0.5, 'cancel() took ${cancelTook}s to return');
+		Assert.isTrue(took < 4, 'the cancelled request took ${took}s to end');
+		Assert.isTrue(held.socket.released, "the held write was never ended");
+	}
+	#end
+
+	/** A session over a `HoldingSocket` to `port`, its first request answered. */
+	private static function __holdingSession(port:Int):{session:H2ClientSession, socket:HoldingSocket} {
+		var socket = new HoldingSocket();
+		socket.connect(new Host("127.0.0.1"), port);
+		var session = new H2ClientSession('http://127.0.0.1:$port', socket, new H2Connection(socket.input, socket.output, new H2Settings()));
+		// Answered, so the preface and everything else queued has gone.
+		var warm = session.execute("GET", "http", '127.0.0.1:$port', "/warm", [], null, 5);
+		Assert.isTrue(warm.endOfStream, "the first request was not answered");
+		return {session: session, socket: socket};
+	}
+
+	/**
+		Executes a GET on `session` on a thread of its own with its next
+		write held, calling `whileHeld` once the write is being held, and
+		waits `seconds` at most. Answers how long it took; `report` is given
+		what it threw or returned, if it ended.
+	**/
+	private static function __executeWithin(session:H2ClientSession, authority:String, timeout:Float, token:Null<HTTPCancelToken>, socket:HoldingSocket,
+			seconds:Float, report:String->Void, ?whileHeld:Void->Void):Float {
+		var outcome:Null<String> = null;
+		var done = new Lock();
+		socket.hold();
+		var started:Float = haxe.Timer.stamp();
+		Thread.create(() -> {
+			try {
+				var stream = session.execute("GET", "http", authority, "/held", [], null, timeout, token);
+				outcome = "returned " + (stream.endOfStream ? "the response" : "an unfinished stream");
+			} catch (e:crossbyte.errors.Error) {
+				outcome = e.message;
+			} catch (e:Dynamic) {
+				outcome = Std.string(e);
+			}
+			done.release();
+		});
+		if (whileHeld != null) {
+			Assert.isTrue(socket.waitHeld(5), "the request's head was never written");
+			whileHeld();
+		}
+		var ended:Bool = done.wait(seconds);
+		var took:Float = haxe.Timer.stamp() - started;
+		if (ended) {
+			report(outcome);
+		}
+		return took;
+	}
+
+	/** A server that opens every window as wide as it goes, takes a request's head and then reads nothing more. */
+	private static function __stopsReading():H2ScriptServer {
+		return new H2ScriptServer(peer -> {
+			// SETTINGS_INITIAL_WINDOW_SIZE 2^31 - 1, and the connection's
+			// window opened to match.
+			peer.open(Bytes.ofHex("00047fffffff"));
+			peer.write(H2FrameType.WINDOW_UPDATE, 0, 0, Bytes.ofHex("7fff0000"));
+			peer.server.note("request " + peer.readRequest());
+			peer.hold(30);
+		});
+	}
+
+	/**
+		Loads `url` on a thread of its own -- a POST of `body` when given --
+		waiting `seconds` at most for it, and answers how long it took.
+		`report` is given the outcome, or nothing if there was none in time.
+	**/
+	private static function __loadWithin(url:String, body:Null<Bytes>, timeout:Int, seconds:Float, report:String->Void):Float {
+		var outcome:Null<String> = null;
+		var done = new Lock();
+		var http = new Http(url, body != null ? "POST" : "GET", null, null, body != null ? "application/octet-stream" : null, body, HttpVersion.HTTP_2,
+			timeout);
+		http.onComplete = data -> outcome = "COMPLETED " + data.length;
+		http.onError = (message, ?data) -> outcome = message;
+		var started:Float = haxe.Timer.stamp();
+		Thread.create(() -> {
+			http.load();
+			done.release();
+		});
+		var ended:Bool = done.wait(seconds);
+		var took:Float = haxe.Timer.stamp() - started;
+		if (ended) {
+			report(outcome);
+		}
+		return took;
+	}
+}
+
+/**
+	A plain socket whose next write, once `hold()` is called, waits until the
+	socket is shut down or closed -- a peer that has stopped reading, met as
+	that write goes out -- and then fails, as such a write does once ended.
+**/
+private class HoldingSocket extends SysSocket {
+	/** Set once a held write has been let go by a shutdown or a close. */
+	public var released(get, never):Bool;
+
+	private final __lock:Mutex = new Mutex();
+	private final __let:Lock = new Lock();
+	private var __armed:Bool = false;
+	private var __holding:Bool = false;
+	private var __released:Bool = false;
+	private var __output:Null<haxe.io.Output> = null;
+
+	public function new() {
+		super();
+	}
+
+	override public function connect(host:Host, port:Int):Void {
+		super.connect(host, port);
+		__output = output;
+		output = new HoldingOutput(output, this);
+	}
+
+	/** Holds the next write. */
+	public function hold():Void {
+		__lock.acquire();
+		__armed = true;
+		__lock.release();
+	}
+
+	/** Waits up to `seconds` for a write to be held. */
+	public function waitHeld(seconds:Float):Bool {
+		var until:Float = haxe.Timer.stamp() + seconds;
+		while (haxe.Timer.stamp() < until) {
+			__lock.acquire();
+			var holding:Bool = __holding;
+			__lock.release();
+			if (holding) {
+				return true;
+			}
+			System.sleep(0.01);
+		}
+		return false;
+	}
+
+	/** Called by the output before each write: false once a held write was let go. */
+	public function beforeWrite():Bool {
+		__lock.acquire();
+		var hold:Bool = __armed;
+		__armed = false;
+		if (hold) {
+			__holding = true;
+		}
+		__lock.release();
+		if (!hold) {
+			return true;
+		}
+		__let.wait();
+		return false;
+	}
+
+	override public function shutdown(read:Bool, write:Bool):Void {
+		__letGo();
+		try super.shutdown(read, write) catch (_:Dynamic) {}
+	}
+
+	override public function close():Void {
+		__letGo();
+		// Its own output back first: natively the close casts the output to
+		// the socket's own class and clears a field of it.
+		if (__output != null) {
+			output = __output;
+		}
+		super.close();
+	}
+
+	private function __letGo():Void {
+		__lock.acquire();
+		var holding:Bool = __holding && !__released;
+		if (holding) {
+			__released = true;
+		}
+		__lock.release();
+		if (holding) {
+			__let.release();
+		}
+	}
+
+	private function get_released():Bool {
+		__lock.acquire();
+		var value:Bool = __released;
+		__lock.release();
+		return value;
+	}
+}
+
+/** `HoldingSocket`'s output. */
+private class HoldingOutput extends haxe.io.Output {
+	private final __inner:haxe.io.Output;
+	private final __socket:HoldingSocket;
+
+	public function new(inner:haxe.io.Output, socket:HoldingSocket) {
+		__inner = inner;
+		__socket = socket;
+	}
+
+	override public function writeByte(c:Int):Void {
+		if (!__socket.beforeWrite()) {
+			throw haxe.io.Error.Custom("the write was ended under it");
+		}
+		__inner.writeByte(c);
+	}
+
+	override public function writeBytes(buffer:Bytes, position:Int, length:Int):Int {
+		if (!__socket.beforeWrite()) {
+			throw haxe.io.Error.Custom("the write was ended under it");
+		}
+		return __inner.writeBytes(buffer, position, length);
+	}
+
+	override public function flush():Void {
+		__inner.flush();
+	}
+}
+
+/** A frame as `H2ScriptPeer` read it. */
+private typedef H2ScriptFrame = {
+	var type:Int;
+	var flags:Int;
+	var id:Int;
+	var payload:Bytes;
+}
+
+/**
+ * Plays a server written as a script against one connection: what a hostile
+ * server does, step by step, where the fixtures above each play one shape.
+ * The script runs on a thread of its own once the client connects; whatever
+ * it throws ends it, and the connection is closed after.
+ */
+private class H2ScriptServer {
+	public var port(default, null):Int = 0;
+
+	private final __listener:SysSocket = new SysSocket();
+	private final __done:Lock = new Lock();
+	private final __noted:Lock = new Lock();
+	private final __lock:Mutex = new Mutex();
+	private var __notes:Array<String> = [];
+	private var __taken:Int = 0;
+
+	public function new(script:H2ScriptPeer->Void) {
+		__listener.bind(new Host("127.0.0.1"), 0);
+		__listener.listen(1);
+		port = __listener.host().port;
+		Thread.create(() -> {
+			var peer:SysSocket = null;
+			try {
+				peer = __listener.accept();
+				peer.setTimeout(20.0);
+				script(new H2ScriptPeer(peer, this));
+			} catch (e:Dynamic) {
+				note("ended: " + Std.string(e));
+			}
+			try if (peer != null) peer.close() catch (_:Dynamic) {}
+			try __listener.close() catch (_:Dynamic) {}
+			__done.release();
+		});
+	}
+
+	/** Records something the script saw, for the test to look at. */
+	public function note(text:String):Void {
+		__lock.acquire();
+		__notes.push(text);
+		__lock.release();
+		__noted.release();
+	}
+
+	/** The next note not yet taken, waiting up to `seconds` for it; null if none came. */
+	public function waitNote(seconds:Float):Null<String> {
+		if (!__noted.wait(seconds)) {
+			return null;
+		}
+		__lock.acquire();
+		var text:String = __notes[__taken++];
+		__lock.release();
+		return text;
+	}
+
+	public function notes():Array<String> {
+		__lock.acquire();
+		var copy:Array<String> = __notes.copy();
+		__lock.release();
+		return copy;
+	}
+
+	/** Waits for the script to end, which it does once the client hangs up. */
+	public function waitDone(seconds:Float):Bool {
+		return __done.wait(seconds);
+	}
+
+	/**
+		Hangs up on the client now, whatever the script is doing -- a write
+		the client is not reading included -- and ends a `hold`: the end of
+		a case that, failing, would leave both ends waiting on each other.
+	**/
+	public function hangUp():Void {
+		__lock.acquire();
+		hungUp = true;
+		var peer:Null<SysSocket> = peerSocket;
+		__lock.release();
+		if (peer != null) {
+			try peer.shutdown(true, true) catch (_:Dynamic) {}
+			try peer.close() catch (_:Dynamic) {}
+		}
+	}
+
+	/** Set by `hangUp`. */
+	public var hungUp(default, null):Bool = false;
+
+	/** The connection the script was given, once there is one. */
+	public var peerSocket:Null<SysSocket> = null;
+}
+
+/** The server's end of an `H2ScriptServer` connection. */
+private class H2ScriptPeer {
+	public final socket:SysSocket;
+	public final server:H2ScriptServer;
+	public final encoder:HpackEncoder = new HpackEncoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
+	public final decoder:HpackDecoder = new HpackDecoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
+
+	public function new(socket:SysSocket, server:H2ScriptServer) {
+		this.socket = socket;
+		this.server = server;
+		server.peerSocket = socket;
+	}
+
+	/** Reads the client's preface, and answers with SETTINGS carrying `settings`. */
+	public function open(?settings:Bytes):Void {
+		var preface = Bytes.alloc(H2Connection.PREFACE.length);
+		socket.input.readFullBytes(preface, 0, preface.length);
+		write(H2FrameType.SETTINGS, 0, 0, settings != null ? settings : Bytes.alloc(0));
+	}
+
+	public function read():H2ScriptFrame {
+		var header = Bytes.alloc(H2Frame.HEADER_SIZE);
+		socket.input.readFullBytes(header, 0, H2Frame.HEADER_SIZE);
+		var length:Int = H2Frame.lengthOf(header);
+		var payload = Bytes.alloc(length);
+		if (length > 0) {
+			socket.input.readFullBytes(payload, 0, length);
+		}
+		return {
+			type: header.get(3),
+			flags: header.get(4),
+			id: ((header.get(5) & 0x7f) << 24) | (header.get(6) << 16) | (header.get(7) << 8) | header.get(8),
+			payload: payload
+		};
+	}
+
+	/** Reads until a request's HEADERS, and answers its stream id. */
+	public function readRequest():Int {
+		while (true) {
+			var frame = read();
+			if (frame.type == (H2FrameType.HEADERS : Int)) {
+				decoder.decode(frame.payload);
+				return frame.id;
+			}
+		}
+	}
+
+	/** Reads until the client resets `id` or hangs up; true for the reset. */
+	public function readUntilReset(id:Int):Bool {
+		try {
+			while (true) {
+				var frame = read();
+				if (frame.type == (H2FrameType.RST_STREAM : Int) && frame.id == id) {
+					return true;
+				}
+			}
+		} catch (_:Dynamic) {}
+		return false;
+	}
+
+	/**
+		Sends `length` bytes of body on `id` in 16 KB frames, each within the
+		windows the client has opened, then ends the stream. Answers what it
+		sent, or that negated if the client reset the stream first.
+	**/
+	public function sendBody(id:Int, length:Int):Int {
+		var streamWindow:Int = H2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+		var connectionWindow:Int = H2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+		var chunk = Bytes.alloc(16384);
+		var sent:Int = 0;
+		while (sent < length) {
+			while (streamWindow < chunk.length || connectionWindow < chunk.length) {
+				var frame = read();
+				if (frame.type == (H2FrameType.RST_STREAM : Int) && frame.id == id) {
+					return -sent;
+				}
+				if (frame.type == (H2FrameType.WINDOW_UPDATE : Int)) {
+					var increment:Int = ((frame.payload.get(0) & 0x7f) << 24) | (frame.payload.get(1) << 16) | (frame.payload.get(2) << 8)
+						| frame.payload.get(3);
+					if (frame.id == 0) {
+						connectionWindow += increment;
+					} else if (frame.id == id) {
+						streamWindow += increment;
+					}
+				}
+			}
+			write(H2FrameType.DATA, 0, id, chunk);
+			sent += chunk.length;
+			streamWindow -= chunk.length;
+			connectionWindow -= chunk.length;
+		}
+		write(H2FrameType.DATA, H2Flags.END_STREAM, id, Bytes.alloc(0));
+		return sent;
+	}
+
+	/**
+		Keeps the connection, reading nothing, until the test hangs up or
+		`seconds` pass: a server that has stopped reading.
+	**/
+	public function hold(seconds:Float):Void {
+		var until:Float = haxe.Timer.stamp() + seconds;
+		while (!server.hungUp && haxe.Timer.stamp() < until) {
+			System.sleep(0.05);
+		}
+	}
+
+	/** Reads and drops everything until the client hangs up. */
+	public function drain():Void {
+		try {
+			var scratch = Bytes.alloc(4096);
+			while (socket.input.readBytes(scratch, 0, scratch.length) > 0) {}
+		} catch (_:Dynamic) {}
+	}
+
+	public function headers(id:Int, fields:Array<HpackHeader>, flags:Int):Void {
+		write(H2FrameType.HEADERS, H2Flags.END_HEADERS | flags, id, encoder.encode(fields));
+	}
+
+	public function write(type:H2FrameType, flags:Int, id:Int, payload:Bytes):Void {
+		var out = new BytesBuffer();
+		H2Frame.writeHeader(out, payload.length, type, flags, id);
+		if (payload.length > 0) {
+			out.addBytes(payload, 0, payload.length);
+		}
+		var bytes = out.getBytes();
+		socket.output.writeFullBytes(bytes, 0, bytes.length);
+		socket.output.flush();
 	}
 }
 

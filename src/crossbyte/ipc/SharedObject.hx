@@ -44,6 +44,22 @@ private typedef SharedObjectHandle = Dynamic;
  * rather than a new one made for each run, or remove each when done with it. On
  * macOS each name also has a small lock file, `/tmp/cbso_<hash>.lock`, which
  * stays with the region and goes with it: macOS cannot lock a region itself.
+ * `remove(name)` is the only thing that takes it away; `close()` leaves it,
+ * since other participants may hold it. If something else does -- macOS
+ * deletes files in /tmp that nobody has touched for three days -- the next
+ * participant to lock the region makes it again, and those already open
+ * move to the new one before they read or write; a lock file in use has its
+ * times brought up to date hourly, so that it is not found old.
+ *
+ * On Linux and macOS a region belongs to the user that made it: it is made
+ * readable and writable by that user alone, as is its lock file, and one
+ * under the name that another user made -- or a link, a FIFO or a
+ * directory where a lock file should be -- is not used: the constructor,
+ * or whichever call finds it, throws an `IOError` saying so. A region used
+ * to be made readable by every local user, and one another user had made
+ * first, writable by all, was shared with them. On Windows a region is in
+ * the session's own namespace, and opened with the user's own default
+ * permissions.
  */
 #if cpp
 @:access(crossbyte.ipc._internal.NativeSharedObject)
@@ -97,7 +113,9 @@ class SharedObject {
 	 *                    nested more than 256 deep. A flush then replaces what the
 	 *                    region held.
 	 * @throws IOError When another participant holds the region's lock for longer
-	 *         than `lockTimeout`'s default, five seconds.
+	 *         than `lockTimeout`'s default, five seconds; or, on Linux and macOS,
+	 *         when the region under the name, or its lock file, is not this
+	 *         user's own.
 	 */
 	public function new(name:String, maxSize:Int = 65536, ?defaultData:Dynamic) {
 		__requireSupported();
@@ -116,6 +134,9 @@ class SharedObject {
 		if (__handle == null) {
 			if (__lockTimedOut()) {
 				throw __lockNotReleased();
+			}
+			if (__notOwned()) {
+				throw __notOwnedError(name);
 			}
 			throw new ArgumentError("Failed to create or open shared object");
 		}
@@ -179,6 +200,9 @@ class SharedObject {
 			if (__lockTimedOut()) {
 				throw __lockNotReleased();
 			}
+			if (__notOwned()) {
+				throw __notOwnedError(name);
+			}
 			throw new ArgumentError("Failed to write SharedObject payload");
 		}
 	}
@@ -228,7 +252,7 @@ class SharedObject {
 	public function clear():Void {
 		__requireConnected();
 		if (!__clear(__handle, lockTimeout)) {
-			throw __lockTimedOut() ? __lockNotReleased() : new IOError('SharedObject "$name" could not be cleared.');
+			throw __lockTimedOut() ? __lockNotReleased() : __notOwned() ? __notOwnedError(name) : new IOError('SharedObject "$name" could not be cleared.');
 		}
 		data = {};
 	}
@@ -268,7 +292,7 @@ class SharedObject {
 		#if cpp
 		var removed:Int = NativeSharedObject.__remove(name, DEFAULT_LOCK_TIMEOUT);
 		if (removed < 0) {
-			throw __lockTimedOut() ? __lockError(name, DEFAULT_LOCK_TIMEOUT) : new IOError('SharedObject "$name" could not be removed.');
+			throw __lockTimedOut() ? __lockError(name, DEFAULT_LOCK_TIMEOUT) : __notOwned() ? __notOwnedError(name) : new IOError('SharedObject "$name" could not be removed.');
 		}
 		return removed > 0;
 		#else
@@ -303,6 +327,9 @@ class SharedObject {
 				if (__lockTimedOut()) {
 					throw __lockNotReleased();
 				}
+				if (__notOwned()) {
+					throw __notOwnedError(name);
+				}
 				return null;
 			}
 			if (length <= buffer.length) {
@@ -335,6 +362,20 @@ class SharedObject {
 		#else
 		return false;
 		#end
+	}
+
+	/** Whether the last native call on this thread failed for something under the name that is not this user's. */
+	@:noCompletion private static function __notOwned():Bool {
+		#if cpp
+		return NativeSharedObject.__lastError() == NativeSharedObject.ERROR_NOT_OWNED;
+		#else
+		return false;
+		#end
+	}
+
+	@:noCompletion private static function __notOwnedError(name:String):IOError {
+		return new IOError('SharedObject "$name": what is under the name -- the region, or on macOS its lock file -- '
+			+ 'is not this user\'s own, and is not used: another user made it, or it is not a file of ours');
 	}
 
 	@:noCompletion private static function __open(name:String, maxSize:Int, lockTimeout:Int):SharedObjectHandle {
