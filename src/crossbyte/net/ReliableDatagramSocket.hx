@@ -405,22 +405,53 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		Asks for `WINDOW_BUFFER_SIZE` in each direction where the socket has
-		less. Best effort: a target that cannot size buffers, or a system that
-		refuses, leaves the socket as it was.
+		Asks for `WINDOW_BUFFER_SIZE` in each direction, unless the socket
+		already has more than asking could grant, and never leaves it with
+		less than it had. Best effort: a target that cannot size buffers, or
+		a system that refuses, leaves the socket as it was.
 	**/
 	@:noCompletion private static function __reserveWindow(socket:DatagramSocket):Void {
 		if (!DatagramSocket.bufferSizeSupported) {
 			return;
 		}
 		try {
-			if (socket.receiveBufferSize < WINDOW_BUFFER_SIZE) {
-				socket.receiveBufferSize = WINDOW_BUFFER_SIZE;
-			}
-			if (socket.sendBufferSize < WINDOW_BUFFER_SIZE) {
-				socket.sendBufferSize = WINDOW_BUFFER_SIZE;
-			}
+			__reserve(socket, true);
 		} catch (_:Dynamic) {}
+		try {
+			__reserve(socket, false);
+		} catch (_:Dynamic) {}
+	}
+
+	/**
+		One direction of `__reserveWindow`. Asked for unless the buffer reads
+		past twice the window: Linux reads back twice what was asked, counting
+		its own bookkeeping, so a buffer that read a window's size by default
+		-- the GitHub runner's -- had half what asking grants, and was left
+		so, since it read as enough.
+	**/
+	@:noCompletion private static function __reserve(socket:DatagramSocket, receive:Bool):Void {
+		var before:Int = receive ? socket.receiveBufferSize : socket.sendBufferSize;
+		if (before >= WINDOW_BUFFER_SIZE * 2) {
+			return;
+		}
+		__setBuffer(socket, receive, WINDOW_BUFFER_SIZE);
+		if ((receive ? socket.receiveBufferSize : socket.sendBufferSize) < before) {
+			// Asking lowered it: the default was more than the system grants
+			// on request. Back to it, asked for as read where that reads back
+			// as asked, and as half of it where the system doubles.
+			__setBuffer(socket, receive, before);
+			if ((receive ? socket.receiveBufferSize : socket.sendBufferSize) > before) {
+				__setBuffer(socket, receive, before >> 1);
+			}
+		}
+	}
+
+	@:noCompletion private static inline function __setBuffer(socket:DatagramSocket, receive:Bool, size:Int):Void {
+		if (receive) {
+			socket.receiveBufferSize = size;
+		} else {
+			socket.sendBufferSize = size;
+		}
 	}
 
 	@:noCompletion private static inline var CONNECTION_ATTEMPT_INTERVAL:Float = 3.0;

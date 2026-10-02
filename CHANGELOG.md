@@ -2336,6 +2336,26 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A reliable UDP session asks for its window of socket buffer on Linux
+  whatever the system's default reads. Linux reads back twice what was
+  asked, counting its own bookkeeping, and a default that read a window's
+  size -- the GitHub runner's -- was taken for enough and kept: half the
+  buffer asking grants. It asks unless the buffer reads past twice the
+  window, and puts back a default larger than asking grants.
+- On the jvm on Linux, a `NativeProcess` stopped with `exit()` reports
+  `EXIT`. The JDK's `destroy()` closes the child's streams there, and the
+  wait for its exit code first read what was left of them, which threw;
+  with the process already stopping, nothing was reported, and `EXIT`
+  never came. The wait asks the JDK's process directly now, and an end
+  that fails to read its code is still reported, as `EXIT` with -1, on
+  every threaded target.
+- A native server on macOS shuts down gracefully on SIGHUP when its shell
+  had handled SIGHUP itself. macOS keeps a signal's SA_SIGINFO flag across
+  exec while putting its handler back to the default, and
+  `installDefaultHandlers()` read the flag as another handler and left
+  SIGHUP alone, so a hangup still ended the process at once: the native
+  suites on the macOS CI runner died that way. A signal is judged by its
+  handler now.
 - On neko, what another thread posts to a runtime, a `Task`'s first
   listener and an HTTP request's cancel are no longer lost. A neko object
   gains a field when it is first set, which can move its field table, and
