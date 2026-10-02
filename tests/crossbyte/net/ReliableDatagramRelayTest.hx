@@ -28,6 +28,10 @@ import utest.Assert;
 	source. Each is told only the other's relayed address. And the relay,
 	`FakeTurnRelay` on real sockets, forwards nothing from an address no
 	permission covers, as RFC 8656 requires.
+
+	Linux answers on all of 127/8. macOS has only 127.0.0.1 until told:
+	`sudo ifconfig lo0 alias 127.0.0.2 up` and the same for 127.0.0.3, as
+	the CI job does, or these fail to bind.
 **/
 @:access(crossbyte.net.ReliableDatagramServerSocket)
 @:access(crossbyte.net.ReliableDatagramSocket)
