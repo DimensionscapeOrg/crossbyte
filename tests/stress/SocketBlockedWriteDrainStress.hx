@@ -54,8 +54,8 @@ class SocketBlockedWriteDrainStress implements StressCase {
 
 		// Hand the whole payload over up front, so everything past the
 		// first blocked write depends on the retry path.
-		var deadline:Float = Sys.time() + 30;
-		while (served == null && Sys.time() < deadline) {
+		var deadline:Float = haxe.Timer.stamp() + 30;
+		while (served == null && haxe.Timer.stamp() < deadline) {
 			@:privateAccess runtime.pump(0.008);
 		}
 
@@ -74,9 +74,9 @@ class SocketBlockedWriteDrainStress implements StressCase {
 		// come from the writable queue rather than one lucky flush.
 		var received:Int = 0;
 		var scratch:haxe.io.Bytes = haxe.io.Bytes.alloc(CHUNK);
-		var readDeadline:Float = Sys.time() + 60;
+		var readDeadline:Float = haxe.Timer.stamp() + 60;
 
-		while (received < TOTAL && Sys.time() < readDeadline) {
+		while (received < TOTAL && haxe.Timer.stamp() < readDeadline) {
 			@:privateAccess runtime.pump(0.004);
 
 			try {

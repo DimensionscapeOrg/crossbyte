@@ -621,8 +621,8 @@ class HTTP2BackendTest extends utest.Test {
 		// three this used to allow: the loop leaves the moment the reset is seen,
 		// so the budget only matters on a machine slow enough to need it, and a
 		// busy one was enough to spend three seconds and fail a working reset.
-		var deadline:Float = Sys.time() + 10;
-		while (!server.sawReset(doomedId) && Sys.time() < deadline) {
+		var deadline:Float = haxe.Timer.stamp() + 10;
+		while (!server.sawReset(doomedId) && haxe.Timer.stamp() < deadline) {
 			System.sleep(0.01);
 		}
 		Assert.isTrue(server.sawReset(doomedId),
