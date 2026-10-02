@@ -59,9 +59,12 @@ interface INetHost {
 	/**
 	 * Opens an outgoing session from this host's listening endpoint.
 	 *
+	 * `timeoutMs` bounds the connect: 20 seconds unless given, 0 for no
+	 * deadline.
+	 *
 	 * @throws crossbyte.errors.IllegalOperationError when `canDial` is false.
 	 */
-	public function dial(address:String, port:Int, timeoutMs:Int = 0):INetConnection;
+	public function dial(address:String, port:Int, timeoutMs:Int = ReliableDatagramSocket.DEFAULT_TIMEOUT):INetConnection;
 
 	/**
 	 * Asks a STUN server how this host's listening endpoint appears from
@@ -77,9 +80,8 @@ interface INetHost {
 	 * socket, so an address discovered anywhere else says nothing about where
 	 * this host can be reached -- which is the only thing worth publishing.
 	 *
-	 * `timeoutMs` is how long to keep asking; 0 or less asks for the default,
-	 * three seconds, since nothing but a deadline ends a question over UDP
-	 * that nobody answers.
+	 * `timeoutMs` is how long to keep asking; 0 or less sets no deadline: the
+	 * question is asked until it is answered or the host closes.
 	 *
 	 * Fails, with an `IllegalOperationError` as its cause, when `canDial` is
 	 * false.
@@ -131,11 +133,12 @@ interface INetHost {
 	/**
 	 * Opens an outgoing session to a peer through the relay `allocateRelay`
 	 * was granted. Like one from `dial`, it does not surface through
-	 * `onAccept`: the caller already holds it.
+	 * `onAccept`: the caller already holds it. `timeoutMs` bounds the
+	 * connect as `dial`'s does.
 	 *
 	 * @throws crossbyte.errors.IllegalOperationError when `canDial` is false.
 	 */
-	public function dialRelayed(address:String, port:Int, timeoutMs:Int = 0):INetConnection;
+	public function dialRelayed(address:String, port:Int, timeoutMs:Int = ReliableDatagramSocket.DEFAULT_TIMEOUT):INetConnection;
 
 	/**
 	 * Lets a peer reach this host through the relay before this host has sent

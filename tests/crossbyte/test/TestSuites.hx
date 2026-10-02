@@ -224,6 +224,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.StunClientTest());
 		runner.addCase(new crossbyte.net.SysSocketTimeoutTest());
 		runner.addCase(new crossbyte.net.SysSocketEofTest());
+		// Every sys target: eval ended the process for a reset connection.
+		runner.addCase(new crossbyte.net.SysSocketResetTest());
 		runner.addCase(new crossbyte.cluster.SnowflakeIdTest());
 		runner.addCase(new crossbyte.cluster.RendezvousTest());
 		runner.addCase(new crossbyte.cluster.MembershipTest());
