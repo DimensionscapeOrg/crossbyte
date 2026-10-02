@@ -18,6 +18,13 @@ class HTTPStreamingTest extends utest.Test {
 	// end of the transfer cannot hide behind a size that divides evenly.
 	private static inline var LARGE_SIZE:Int = 2 * 1024 * 1024 + 137;
 
+	// What the held-response cases below send: HELD_PIECES pipelined answers
+	// of HELD_PIECE bytes each, written whole, see __serveHeld, under an
+	// output cap raised past their total.
+	private static inline var HELD_PIECE:Int = 512 * 1024;
+	private static inline var HELD_PIECES:Int = 48;
+	private static inline var HELD_CAP:Int = 32 * 1024 * 1024;
+
 	public function testLargeFileStreamsWithBoundedBuffer(async:Async):Void {
 		__serveFixture(async, LARGE_SIZE, "GET /large.bin HTTP/1.1\r\nHost: localhost\r\n\r\n", function(result):Void {
 			Assert.equals(200, result.status);
@@ -311,6 +318,207 @@ class HTTPStreamingTest extends utest.Test {
 			}, 3.0, _ -> finish(true));
 		});
 	}
+	public function testABufferedResponseItsClientTakesNoneOfIsGivenUp(async:Async):Void {
+		// A response written whole, respond() with a body under the output
+		// cap, whose client stopped reading waited in the socket's buffer
+		// for as long as the connection lasted: once written it was the idle
+		// deadline's to end, and with keepAliveTimeout at 0 there is none. It
+		// is given up at the stall deadline, as a file the client takes
+		// nothing of is: the connection closed, and its bytes let go.
+		__serveHeld(config -> {
+			config.requestTimeout = 0;
+			config.keepAliveTimeout = 0;
+		}, "", function(server:HTTPServer, client:sys.net.Socket, parked:Bool):Void {
+			if (parked) {
+				// The sweep, once now, seeing where the parked responses stand,
+				// Linux's buffers go on taking a little after they are
+				// written, which moves the deadline on, as progress should,
+				// and then as it would run once the deadline has passed.
+				server.__sweep(haxe.Timer.stamp());
+				server.__sweep(haxe.Timer.stamp() + 31);
+			}
+			HTTPTestSupport.pumpWallUntilAsync(() -> server.activeConnections == 0, parked ? 3.0 : 0.0, function(_):Void {
+				var open:Int = server.activeConnections;
+				try client.close() catch (_:Dynamic) {}
+				try server.close() catch (_:Dynamic) {}
+				Assert.isTrue(parked, "the responses never stalled, so this shows nothing");
+				Assert.equals(0, open, "responses their client took none of were held with both timeouts off");
+				async.done();
+			});
+		});
+	}
+
+	public function testAResponseStillGoingOutIsNotReapedAsIdle(async:Async):Void {
+		// The idle deadline was counted from when a response was written, not
+		// from when its client had it: responses more than the system takes at
+		// once, to a client slower to read them than keepAliveTimeout, were
+		// cut off at that deadline as though the connection sat idle, the
+		// client got Content-Lengths promised and part of the bodies. A
+		// connection is idle from when what it sent has gone.
+		__serveHeld(config -> config.keepAliveTimeout = 0.5, "", function(server:HTTPServer, client:sys.net.Socket, parked:Bool):Void {
+			// Twice the idle allowance, reading nothing.
+			var resumeAt:Float = haxe.Timer.stamp() + 1.0;
+			HTTPTestSupport.pumpWallUntilAsync(() -> haxe.Timer.stamp() >= resumeAt, 3.0, function(_):Void {
+				__readRaw(client, false, function(whole:Int, closed:Bool):Void {
+					try client.close() catch (_:Dynamic) {}
+					try server.close() catch (_:Dynamic) {}
+					Assert.isTrue(parked, "the responses never waited on their client, so this shows nothing");
+					Assert.equals(HELD_PIECES, whole, "the responses were cut off");
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testAResponseThatClosesItsConnectionIsSentWhole(async:Async):Void {
+		// A response with Connection: close, the client asked for it here,
+		// on the last of its requests, closed its connection as soon as it
+		// was written, and closing throws away whatever the system had not
+		// taken yet: the responses still waiting reached the client cut off.
+		// It closes once all of them have gone.
+		__serveHeld(_ -> {}, "Connection: close\r\n", function(server:HTTPServer, client:sys.net.Socket, parked:Bool):Void {
+			__readRaw(client, true, function(whole:Int, closed:Bool):Void {
+				try client.close() catch (_:Dynamic) {}
+				try server.close() catch (_:Dynamic) {}
+				Assert.isTrue(parked, "the responses never waited on their client, so this shows nothing");
+				Assert.equals(HELD_PIECES, whole, "the responses were cut off by the close");
+				Assert.isTrue(closed, "the connection was not closed after the response");
+				async.done();
+			});
+		});
+	}
+
+	public function testAConnectionDrainClosesIsSentWhole(async:Async):Void {
+		// drain() closed a kept-alive connection between requests at once,
+		// with nothing in flight, except the responses still going out to a
+		// client reading them slowly, cut off by the close. It closes once
+		// they have gone.
+		__serveHeld(_ -> {}, "", function(server:HTTPServer, client:sys.net.Socket, parked:Bool):Void {
+			var drained:Bool = false;
+			server.drain(10.0, () -> drained = true);
+			__readRaw(client, true, function(whole:Int, closed:Bool):Void {
+				HTTPTestSupport.pumpWallUntilAsync(() -> drained, 3.0, function(_):Void {
+					try client.close() catch (_:Dynamic) {}
+					try server.close() catch (_:Dynamic) {}
+					Assert.isTrue(parked, "the responses never waited on their client, so this shows nothing");
+					Assert.equals(HELD_PIECES, whole, "the responses were cut off by the drain");
+					Assert.isTrue(closed, "the drain did not close the connection");
+					Assert.isTrue(drained, "the drain did not finish once the responses had gone");
+					async.done();
+				});
+			});
+		});
+	}
+
+	/**
+		Serves `HELD_PIECES` pipelined requests, each answered with a body of
+		`HELD_PIECE` bytes written whole, to a plain socket the runtime does
+		not read, which reads nothing. `lastFields` goes on the last request.
+		Continues once the server's socket is parked, bytes waiting it
+		cannot send, the same count for fifty passes, or after ten seconds
+		without, saying which.
+
+		Many answers, not one large one: Windows takes a single send whole,
+		however large, while what it holds is under its limit, so on neko and
+		native there it took 24 MB in one send and held none of it back, where
+		Linux's buffers stop at about 10 MB and the jvm's writes at its own.
+		Sends of this size it stops taking, as it stops taking a file pumped
+		out in bursts.
+	**/
+	private static function __serveHeld(configure:HTTPServerConfig->Void, lastFields:String,
+			then:(HTTPServer, sys.net.Socket, Bool) -> Void):Void {
+		var body = new ByteArray();
+		body.length = HELD_PIECE;
+		var handler:HTTPRequestHandler = null;
+		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.maxOutputBufferSize = HELD_CAP;
+		configure(config);
+		config.middleware.push(function(h:HTTPRequestHandler, next:?Dynamic->Void):Void {
+			handler = h;
+			h.respondBytes(200, "application/octet-stream", body);
+		});
+		var server = new HTTPServer(config);
+
+		var client = new sys.net.Socket();
+		client.connect(new sys.net.Host("127.0.0.1"), server.localPort);
+		var requests = new StringBuf();
+		for (i in 0...HELD_PIECES) {
+			requests.add("GET /piece HTTP/1.1\r\nHost: localhost\r\n" + (i == HELD_PIECES - 1 ? lastFields : "") + "\r\n");
+		}
+		client.output.writeString(requests.toString());
+		client.output.flush();
+
+		var pending:Int = -1;
+		var still:Int = 0;
+		HTTPTestSupport.pumpWallUntilAsync(function():Bool {
+			if (handler == null) {
+				return false;
+			}
+			var now:Int = handler.__origin.outputBufferLength;
+			if (now > 0 && now == pending) {
+				still++;
+			} else {
+				still = 0;
+				pending = now;
+			}
+			return still >= 50;
+		}, 10.0, parked -> then(server, client, parked));
+	}
+
+	/**
+		Reads `client`, pumping between reads, until `HELD_PIECES` responses
+		of `HELD_PIECE` bytes have all come, and with `untilClosed`, until
+		the server has closed the connection too, then continues with how
+		many came whole and whether the server closed it.
+	**/
+	private static function __readRaw(client:sys.net.Socket, untilClosed:Bool, then:(Int, Bool) -> Void):Void {
+		var received = new ByteArray();
+		var closed:Bool = false;
+		var chunk = haxe.io.Bytes.alloc(64 * 1024);
+		// Where the next response starts, and how many have come whole.
+		var at:Int = 0;
+		var whole:Int = 0;
+		function count():Void {
+			while (true) {
+				var head:Int = -1;
+				var i:Int = at;
+				while (i + 3 < received.length) {
+					if (received[i] == 13 && received[i + 1] == 10 && received[i + 2] == 13 && received[i + 3] == 10) {
+						head = i;
+						break;
+					}
+					i++;
+				}
+				if (head < 0 || received.length - (head + 4) < HELD_PIECE) {
+					return;
+				}
+				whole++;
+				at = head + 4 + HELD_PIECE;
+			}
+		}
+		HTTPTestSupport.pumpWallUntilAsync(function():Bool {
+			var grew:Bool = false;
+			while (!closed && sys.net.Socket.select([client], null, null, 0).read.length > 0) {
+				var read:Int = 0;
+				try {
+					read = client.input.readBytes(chunk, 0, chunk.length);
+				} catch (_:haxe.io.Eof) {
+					closed = true;
+				} catch (_:Dynamic) {
+					closed = true;
+				}
+				if (read > 0) {
+					received.writeBytes(ByteArray.fromBytes(chunk), 0, read);
+					grew = true;
+				}
+			}
+			if (grew) {
+				count();
+			}
+			return closed || (!untilClosed && whole >= HELD_PIECES);
+		}, 15.0, _ -> then(whole, closed));
+	}
+
 	#end
 
 	/** Printable, with a long period: a misplaced slice cannot alias back. */

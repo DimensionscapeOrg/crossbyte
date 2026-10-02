@@ -190,6 +190,37 @@ class HTTPResponseStreamTest extends utest.Test {
 		});
 	}
 
+	public function testAListenerAddedAfterItsClientLeftHearsIt(async:Async):Void {
+		// A CLOSE listener added once the client had already gone, by a
+		// route that looked something up first, say, was registered on a
+		// connection already closed, and heard nothing, ever. It is told,
+		// once, in a later turn rather than from inside addEventListener.
+		var held:HTTPRequestHandler = null;
+		var server = __serve(handler -> held = handler);
+		var client = new RawClient(server);
+
+		client.request("GET /poll HTTP/1.1\r\nHost: x\r\n\r\n", () -> {
+			client.until(() -> held != null, () -> {
+				client.close();
+				client.until(() -> !held.connected, () -> {
+					var heard:Int = 0;
+					var events = held.beginResponse(200, "text/event-stream");
+					held.addEventListener(Event.CLOSE, _ -> heard++);
+					var heardInsideTheCall:Int = heard;
+					client.until(() -> heard > 0, () -> {
+						HTTPTestSupport.pumpMoreAsync(5, () -> {
+							server.close();
+							Assert.isFalse(events.connected);
+							Assert.equals(0, heardInsideTheCall, "CLOSE was dispatched from inside addEventListener");
+							Assert.equals(1, heard, "a listener added after its client left heard CLOSE " + heard + " times");
+							async.done();
+						});
+					}, 2.0);
+				});
+			});
+		});
+	}
+
 	public function testWritingPastTheOutputCapEndsTheResponse(async:Async):Void {
 		// A producer that ignores write()'s answer is stopped at the cap,
 		// with an error, rather than holding whatever it writes.
@@ -490,7 +521,9 @@ private class CountingWriter implements crossbyte._internal.http.HTTPResponseWri
 		return __onAbandoned = value;
 	}
 
-	public function sweepWith(check:Null<Float->Void>):Void {}
+	public function sweepWith(check:Null<Float->Void>):Bool {
+		return false;
+	}
 
 	public function writeContinue():Void {
 		__unflushed += 25;

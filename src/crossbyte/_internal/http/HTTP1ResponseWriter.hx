@@ -26,9 +26,9 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 	private var __chunked:Bool = false;
 
 	// Where sweepWith registers: the server's sweep, when a server made this.
-	private final __sweepWith:Null<(HTTPResponseWriter, Null<Float->Void>) -> Void>;
+	private final __sweepWith:Null<({}, Null<Float->Void>) -> Void>;
 
-	public function new(socket:Socket, ?sweepWith:(HTTPResponseWriter, Null<Float->Void>) -> Void) {
+	public function new(socket:Socket, ?sweepWith:({}, Null<Float->Void>) -> Void) {
 		__socket = socket;
 		__sweepWith = sweepWith;
 	}
@@ -68,10 +68,12 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 		return __onAbandoned = value;
 	}
 
-	public function sweepWith(check:Null<Float->Void>):Void {
-		if (__sweepWith != null) {
-			__sweepWith(this, check);
+	public function sweepWith(check:Null<Float->Void>):Bool {
+		if (__sweepWith == null) {
+			return false;
 		}
+		__sweepWith(this, check);
+		return true;
 	}
 
 	public function writeContinue():Void {
