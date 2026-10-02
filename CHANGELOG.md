@@ -2306,6 +2306,26 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On eval a read or a write on a connection its peer reset, a write to
+  one the peer had closed, a `shutdown`, a `bind` to a port in use, a
+  `listen`, and a `select` naming a closed socket throw an error that can
+  be caught, as on every other target. eval raised each as an OCaml
+  `Unix_error` that passed every Haxe `catch` and ended the interpreter
+  -- on Linux a second write to a closed connection ended it with SIGPIPE
+  -- so a development server ended over one client's reset, and a
+  `ServerSocket.bind` to a port in use ended the program it should have
+  told with an `IOError`. A call that could fail that way is made on a
+  helper thread, where the error ends only the helper, and SIGPIPE is
+  taken by a libuv signal handle; a read or a write that a zero-time
+  `select` and `peer()` show cannot fail is made at once, as before. A
+  reset landing in the microseconds between that check and a write made
+  at once can still end the interpreter. eval's `setTimeout` waits as
+  long as it is told on Linux and macOS, where it handed the system a
+  thousand times the timeout, and a read that times out throws
+  `Blocked`, as natively. The interpreter suite runs 5% longer on
+  Windows, where every read is made on a helper, and 8% on Linux, most of
+  it in four HTTP client tests that read an endless header a byte at a
+  time.
 - A `ServerSocket`, `ServerWebSocket` or `DatagramSocket` closed from
   another thread closes on its runtime, as a `Socket` does: `close()`
   hands the close over and returns. Made on the calling thread, it took
