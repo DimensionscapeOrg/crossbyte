@@ -146,9 +146,9 @@ final class Key {
 	#if !(nodejs || java || jvm)
 	/**
 		An encrypted PKCS#8 key the way OpenSSL encrypts one -- PBES2 with
-		AES -- decrypted, since the mbedTLS these targets carry decrypts
-		PBES2 with DES alone; null for any other key, which mbedTLS reads
-		itself. See `EncryptedKey`.
+		AES -- decrypted, since mbedTLS 2, which upstream hxcpp, hl, neko and
+		eval carry, decrypts PBES2 with DES alone; null for any other key,
+		which mbedTLS reads itself. See `EncryptedKey`.
 	**/
 	private static function __decryptForMbedtls(pem:String, password:String):Null<String> {
 		return crossbyte._internal.socket.EncryptedKey.decryptPem(pem, password);

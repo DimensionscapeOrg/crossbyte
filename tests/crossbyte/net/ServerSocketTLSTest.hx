@@ -779,14 +779,15 @@ class ServerSocketTLSTest extends utest.Test {
 
 	public function testAlpnListsAreReplacedAndReleasedWithoutLeaking():Void {
 		// mbedTLS stores the list by reference and never frees it, so the
-		// bridge owns every allocation. This churns install, replace and
-		// release across many configs: a double free or a stale entry keyed by
-		// a reused address shows up here as a crash rather than as drift.
+		// bridge keeps each distinct list for the life of the process, found
+		// again by its names. This churns install, replace, clear and release
+		// across many configs, each collected in turn: a list freed while a
+		// config still points at it shows up here as a crash.
 		for (i in 0...500) {
 			var conf = cpp.NativeSsl.conf_new(false);
 
 			Assert.equals(0, NativeAlpn.set(conf, ["h2", "http/1.1"]));
-			// Replaced, which must free the first list rather than orphan it.
+			// Replaced: the config points at the other list from here on.
 			Assert.equals(0, NativeAlpn.set(conf, ["h2"]));
 			// Cleared through the empty-list path, which must not hand NULL to
 			// mbedtls_ssl_conf_alpn_protocols -- that walks the list before
@@ -794,8 +795,8 @@ class ServerSocketTLSTest extends utest.Test {
 			Assert.equals(0, NativeAlpn.set(conf, []));
 			Assert.equals(0, NativeAlpn.set(conf, ["h2"]));
 
+			// Frees nothing, however often it is called.
 			NativeAlpn.release(conf);
-			// Idempotent: a socket closed twice must not free twice.
 			NativeAlpn.release(conf);
 
 			if (i % 100 == 0) {
