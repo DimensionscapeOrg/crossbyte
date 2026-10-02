@@ -39,13 +39,13 @@ class Bench {
 		var reps = 1;
 
 		while (true) {
-			var t0 = Sys.time();
+			var t0 = haxe.Timer.stamp();
 
 			for (_ in 0...reps) {
 				fn();
 			}
 
-			var elapsed = Sys.time() - t0;
+			var elapsed = haxe.Timer.stamp() - t0;
 
 			if (elapsed >= 0.01) {
 				reps = Std.int(Math.max(1, reps * TARGET_SAMPLE / elapsed));
@@ -58,13 +58,13 @@ class Bench {
 		var best = Math.POSITIVE_INFINITY;
 
 		for (_ in 0...SAMPLES) {
-			var t0 = Sys.time();
+			var t0 = haxe.Timer.stamp();
 
 			for (_ in 0...reps) {
 				fn();
 			}
 
-			var elapsed = Sys.time() - t0;
+			var elapsed = haxe.Timer.stamp() - t0;
 
 			if (elapsed < best) {
 				best = elapsed;

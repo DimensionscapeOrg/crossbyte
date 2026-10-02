@@ -1375,7 +1375,7 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	private static function uniqueName(label:String):String {
-		return '__crossbyte_local_${label}_${Std.int(Sys.time() * 1000)}_${Std.random(1000000)}';
+		return '__crossbyte_local_${label}_${Std.int(Sys.time() * 1000)}_${Std.random(1000000)}'; // time of day: a name no other run has used
 	}
 
 	private static function throws(fn:Void->Void):Bool {

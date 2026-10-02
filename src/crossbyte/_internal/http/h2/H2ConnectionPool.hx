@@ -98,9 +98,9 @@ class H2ConnectionPool {
 				}
 				list.push(pending);
 			}
-			var wake:Null<sys.thread.Lock> = null;
+			var wake:Null<H2Wake> = null;
 			if (usable == null && !mine) {
-				wake = new sys.thread.Lock();
+				wake = new H2Wake();
 				pending.waiters.push(wake);
 			}
 			__lock.release();
@@ -156,7 +156,7 @@ class H2ConnectionPool {
 				__connecting.remove(origin);
 			}
 		}
-		var waiters:Array<sys.thread.Lock> = pending.waiters;
+		var waiters:Array<H2Wake> = pending.waiters;
 		pending.waiters = [];
 		__lock.release();
 
@@ -170,7 +170,7 @@ class H2ConnectionPool {
 	 * deadline passes or the token cancels, and throws for the last two and
 	 * for a failure the connect passed on.
 	 */
-	private static function __awaitConnect(origin:String, pending:PendingConnect, wake:sys.thread.Lock, deadline:Float,
+	private static function __awaitConnect(origin:String, pending:PendingConnect, wake:H2Wake, deadline:Float,
 			cancelToken:Null<crossbyte.http.HTTPCancelToken>):Void {
 		var onCancel:Void->Void = () -> wake.release();
 		if (cancelToken != null) {
@@ -387,7 +387,7 @@ class H2ConnectionPool {
  */
 private class PendingConnect {
 	/** One wake-up per waiter, so each can also be woken on its own. */
-	public var waiters:Array<sys.thread.Lock> = [];
+	public var waiters:Array<H2Wake> = [];
 
 	/** Set once the connect has ended, well or badly. */
 	public var finished:Bool = false;

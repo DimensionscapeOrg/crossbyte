@@ -95,17 +95,9 @@ class TestSuites {
 		// The threads URLLoader's loads run on.
 		runner.addCase(new crossbyte._internal.http.LoadPoolTest());
 		// The backend end to end, which needs a listening socket and a thread,
-		// so it sits with the client rather than in PortableSuite.
-		//
-		// Not on eval. A pooled HTTP/2 connection keeps a reader thread parked
-		// on a socket between requests, and eval raises a peer reset as a
-		// native Unix_error that no Haxe catch can see, it kills the thread,
-		// and a send on a reset socket kills the process outright. That is a
-		// property of the target's socket layer, not of the pool: the same
-		// reset is an ordinary catchable error everywhere else.
-		#if (cpp || hl || neko || java || jvm)
+		// so it sits with the client rather than in PortableSuite. On eval
+		// too, since a reset there is an error a catch can see.
 		runner.addCase(new crossbyte.http.HTTP2BackendTest());
-		#end
 		#end
 
 		#if cpp

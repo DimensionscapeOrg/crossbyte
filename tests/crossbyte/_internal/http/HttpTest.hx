@@ -109,36 +109,12 @@ class HttpTest extends utest.Test {
 		HTTPBackendRegistry.clear();
 	}
 
-	public function testHttp2RefusesLoudlyWhereItCannotWork():Void {
-		HTTPBackendRegistry.clear();
-
-		var error:String = null;
-		var completed:Bool = false;
-
-		// example.com is never contacted: on a target that cannot support
-		// HTTP/2 the backend refuses before opening a socket, and on one that
-		// can this asserts nothing about the refusal at all.
-		var http = new Http("http://example.com/", "GET", null, null, null, null, HttpVersion.HTTP_2, 1000);
-		http.onError = (message, ?data) -> error = message;
-		http.onComplete = _ -> completed = true;
-
-		#if eval
-		http.load();
-
-		// The failure mode this exists to prevent: eval raises socket errors
-		// as native exceptions no catch can see, so a pooled connection would
-		// look healthy right up until a peer reset killed its reader thread or
-		// the process. Refused at the door instead, saying so.
-		Require.notNull(error);
-		Assert.isFalse(completed);
-		Assert.isTrue(error.indexOf("not supported on this target") >= 0, "the message should say why: " + error);
-		#else
-		// Everywhere else the capability is simply claimed, and the rest of
-		// this suite exercises it for real.
+	public function testHttp2IsSupportedWhereverTheClientIsBuilt():Void {
+		// It was refused on eval, which raised socket errors as native
+		// exceptions no catch could see: a peer reset killed the reader
+		// thread a pooled connection parks on, or on a send the process.
+		// They can be caught there now, and HTTP2BackendTest runs there too.
 		Assert.isTrue(crossbyte.http.HTTP2Backend.isSupported);
-		#end
-
-		HTTPBackendRegistry.clear();
 	}
 
 	public function testHttp2WorksWithoutRegisteringAnything():Void {
@@ -559,8 +535,8 @@ class HttpTest extends utest.Test {
 		Assert.equals(5, progress[progress.length - 1].total);
 		Assert.isTrue(fixture.request.indexOf("GET /fixed?existing=1 HTTP/1.1") == 0);
 		Assert.isTrue(fixture.request.indexOf("Host: 127.0.0.1:" + fixture.port) >= 0);
-		// Kept for the next request, except on eval, which keeps none.
-		Assert.isTrue(fixture.request.indexOf(#if eval "Connection: close" #else "Connection: keep-alive" #end) >= 0);
+		// Kept for the next request.
+		Assert.isTrue(fixture.request.indexOf("Connection: keep-alive") >= 0);
 		Assert.isTrue(fixture.request.indexOf("Accept-Encoding: identity") >= 0);
 	}
 
@@ -1270,9 +1246,6 @@ class HttpTest extends utest.Test {
 		Http.MAX_BODY_SIZE = saved;
 	}
 
-	#if !eval
-	// Not on eval, where a peer reset is a native Unix_error that no Haxe catch
-	// can see: it ends the process, before or after this fix alike.
 	public function testAResetInACloseDelimitedBodyIsAnError():Void {
 		// Only the connection closing ends such a body, so every read error
 		// used to be taken for that ending, and a reset partway through was
@@ -1328,7 +1301,6 @@ class HttpTest extends utest.Test {
 		Assert.isNull(completed, "a body cut off by a reset was reported complete: " + (completed == null ? "" : completed.toString()));
 		Assert.notNull(failure);
 	}
-	#end
 
 	#if (cpp || java || jvm)
 	/**
@@ -1373,10 +1345,8 @@ class HttpTest extends utest.Test {
 	}
 	#end
 
-	#if !eval
-	// Not on eval, where a read that times out raises a native Unix_error no
-	// Haxe catch can see, and so ends the process. On the jvm since
-	// sys.net.Socket.setTimeout reaches a blocking read there.
+	// On the jvm since sys.net.Socket.setTimeout reaches a blocking read
+	// there, and on eval since a read that times out there throws.
 	public function testTheIdleTimeoutIsInMilliseconds():Void {
 		// The socket was handed the milliseconds as seconds, so this waited
 		// until the server gave up, three seconds on, rather than 300 ms.
@@ -1395,7 +1365,6 @@ class HttpTest extends utest.Test {
 		Require.notNull(failure);
 		Assert.isTrue(took < 2.0, 'a 300 ms idle timeout took ${took} s');
 	}
-	#end
 
 	public function testAServerClosingWithoutAnAnswerIsAnError():Void {
 		// On eval the end of the stream read as endless NUL bytes, so the
@@ -1515,8 +1484,6 @@ class HttpTest extends utest.Test {
 		Assert.equals("the client went", fixture.ended);
 	}
 
-	#if !eval
-	// Kept connections are not used on eval, where a reset is uncatchable.
 	public function testAConnectionIsKeptForTheNextRequest():Void {
 		// Every request asked for Connection: close, so each was a new
 		// connection, and over https a new handshake.
@@ -1579,7 +1546,6 @@ class HttpTest extends utest.Test {
 		http.load();
 		return result;
 	}
-	#end
 
 	/**
 	 * Takes one request and answers nothing: closes at once, or holds the
@@ -1869,7 +1835,6 @@ class HttpTest extends utest.Test {
 	}
 }
 
-#if !eval
 /**
  * A server that keeps connections: each on a thread of its own, answering
  * every request on it as `respond(connection, request)` says, the indexes
@@ -1981,7 +1946,6 @@ private class KeptAliveServer {
 		return lines.join("\n");
 	}
 }
-#end
 
 private class TwoShotHttpServer {
 	public var port:Int = 0;

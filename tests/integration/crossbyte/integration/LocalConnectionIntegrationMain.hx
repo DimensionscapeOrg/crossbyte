@@ -14,7 +14,7 @@ class LocalConnectionIntegrationMain {
 		#if (cpp && (windows || linux || mac || macos))
 		new CrossByte(true, DEFAULT, true);
 
-		var name:String = "__crossbyte_lc_integration_" + Std.int(Sys.time() * 1000) + "_" + Std.random(1000000);
+		var name:String = "__crossbyte_lc_integration_" + Std.int(Sys.time() * 1000) + "_" + Std.random(1000000); // time of day: a name no other run has used
 		var receiver = new LocalConnection();
 		var state = new ReceiverState();
 		receiver.onData = input -> {
