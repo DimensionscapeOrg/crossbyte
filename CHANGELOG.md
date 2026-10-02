@@ -2537,9 +2537,9 @@ entry below says how:
   timeout, and the connection's threads with it. Natively, and on neko and
   HashLink, on Windows a TLS write the server is not taking still holds the
   writer thread until the server reads or goes, as a TLS read there already
-  does; the requests do not wait with it. On HashLink under Linux the
-  request under a PING flood still did not end in CI, for a reason not
-  yet found (HashLink is not run locally). Sequential small requests over
+  does; the requests do not wait with it. On HashLink the request under a
+  PING flood still did not end in CI, under Linux and Windows, for a
+  reason not yet found (HashLink is not run locally). Sequential small requests over
   loopback cost about the same (106.6 to 109.1 microseconds, medians of nine native runs);
   downloads and uploads are as fast or faster, a DATA frame no longer being
   copied twice.

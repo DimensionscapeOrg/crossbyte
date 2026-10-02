@@ -314,15 +314,20 @@ jobs:
       # macOS runner on 2026-10-02 and ran into the job's bound; the compiler
       # cache the native suite's job keeps makes the second run of each warm.
       - name: Point hxcpp at a compiler cache
-        run: echo "HXCPP_COMPILE_CACHE=$RUNNER_TEMP/hxcpp-cache" >> "$GITHUB_ENV"
+        run: |
+          echo "HXCPP_COMPILE_CACHE=$RUNNER_TEMP/hxcpp-cache" >> "$GITHUB_ENV"
+          # Keyed on the fork's commit, not its branch: a cache from another
+          # hxcpp holds a precompiled hxcpp.h that clang refuses, "modified
+          # since the precompiled header was built" (macOS, 2026-10-02).
+          echo "HXCPP_SHA=$(git -C "$(haxelib path hxcpp | head -n 1)" rev-parse --short HEAD)" >> "$GITHUB_ENV"
 
       - name: Restore the compiler cache
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/hxcpp-cache
-          key: hxcpp-posix-cryptosys-${{ matrix.os }}-${{ env.HXCPP_REF }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: hxcpp-posix-cryptosys-${{ matrix.os }}-${{ env.HXCPP_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            hxcpp-posix-cryptosys-${{ matrix.os }}-${{ env.HXCPP_REF }}-
+            hxcpp-posix-cryptosys-${{ matrix.os }}-${{ env.HXCPP_SHA }}-
 
       - name: Build crypto suite
         run: haxe ci/posix-crypto-tests.hxml
@@ -387,15 +392,20 @@ jobs:
 
       # As Native Smoke keeps one: a run compiles what changed.
       - name: Point hxcpp at a compiler cache
-        run: echo "HXCPP_COMPILE_CACHE=$RUNNER_TEMP/hxcpp-cache" >> "$GITHUB_ENV"
+        run: |
+          echo "HXCPP_COMPILE_CACHE=$RUNNER_TEMP/hxcpp-cache" >> "$GITHUB_ENV"
+          # Keyed on the fork's commit, not its branch: a cache from another
+          # hxcpp holds a precompiled hxcpp.h that clang refuses, "modified
+          # since the precompiled header was built" (macOS, 2026-10-02).
+          echo "HXCPP_SHA=$(git -C "$(haxelib path hxcpp | head -n 1)" rev-parse --short HEAD)" >> "$GITHUB_ENV"
 
       - name: Restore the compiler cache
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/hxcpp-cache
-          key: hxcpp-posix-native-${{ matrix.os }}-${{ env.HXCPP_REF }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: hxcpp-posix-native-${{ matrix.os }}-${{ env.HXCPP_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            hxcpp-posix-native-${{ matrix.os }}-${{ env.HXCPP_REF }}-
+            hxcpp-posix-native-${{ matrix.os }}-${{ env.HXCPP_SHA }}-
 
       - name: Type-check a final build
         run: haxe ci/posix-native-tests.hxml -D final --no-output
@@ -416,6 +426,20 @@ jobs:
         run: |
           sudo ifconfig lo0 alias 127.0.0.2 up
           sudo ifconfig lo0 alias 127.0.0.3 up
+
+      # macOS's openssl is LibreSSL, which did not make the client
+      # certificate chain two TLS cases need: they warned that they did not
+      # run, and a warning fails the run. Homebrew's OpenSSL 3 makes it.
+      - name: Put OpenSSL 3 before macOS's LibreSSL
+        if: runner.os == 'macOS'
+        run: |
+          prefix="$(brew --prefix openssl@3 2>/dev/null || true)"
+          if [ ! -x "$prefix/bin/openssl" ]; then
+            brew install openssl@3
+            prefix="$(brew --prefix openssl@3)"
+          fi
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+          "$prefix/bin/openssl" version
 
       - name: Run native suite
         working-directory: export/ci-posix-native
