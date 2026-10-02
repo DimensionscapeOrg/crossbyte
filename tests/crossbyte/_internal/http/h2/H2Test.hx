@@ -414,6 +414,57 @@ class H2Test extends utest.Test {
 		Assert.equals(0, push, "SETTINGS_ENABLE_PUSH 0 was not sent");
 	}
 
+	public function testAStormOfResetsAndGoAwaysCostsOnlyTheReading():Void {
+		// Already bounded, and kept so: neither frame is answered, a reset
+		// for a stream the client does not have is dropped, and a GOAWAY
+		// keeps nothing but its last id and code. 5,000 of each, then the
+		// response, which arrives whole.
+		var server = new ServerScript();
+		server.settings();
+		for (i in 0...5000) {
+			server.rstStream(1001 + i * 2, H2ErrorCode.CANCEL);
+			server.goAway(1, H2ErrorCode.NO_ERROR);
+		}
+		server.response(1, [new HpackHeader(":status", "200")], "fine", true);
+
+		var connection = server.connect();
+		var stream = connection.request("GET", "http", "example.com", "/", []);
+		connection.pumpUntilClosed(stream);
+
+		Assert.equals("fine", stream.takeBody().toString());
+		Assert.isNull(connection.stream(1));
+		var answers:Int = 0;
+		for (frame in ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length)) {
+			if (frame.type != H2FrameType.SETTINGS && frame.type != H2FrameType.HEADERS) {
+				answers++;
+			}
+		}
+		Assert.equals(0, answers, '$answers frames were sent in answer to resets and GOAWAYs');
+	}
+
+	public function testAStreamTheServerOpensIsDropped():Void {
+		// Already bounded: a server opens streams only by pushing, which the
+		// client refuses; HEADERS on a stream it never opened are decoded,
+		// for HPACK's sake, and dropped, and DATA for one is counted for the
+		// connection's window and dropped. Nothing is kept for either.
+		var big:String = StringTools.rpad("", "x", 16000);
+		var server = new ServerScript();
+		server.settings();
+		for (id in 0...50) {
+			server.response(2 + id * 2, [new HpackHeader(":status", "200")], big, true);
+		}
+		server.response(1, [new HpackHeader(":status", "200")], "mine", true);
+
+		var connection = server.connect();
+		var stream = connection.request("GET", "http", "example.com", "/", []);
+		connection.pumpUntilClosed(stream);
+
+		Assert.equals("mine", stream.takeBody().toString());
+		for (id in 0...50) {
+			Assert.isNull(connection.stream(2 + id * 2));
+		}
+	}
+
 	/** Whether the client reset `id` with `code`. */
 	private static function __sawReset(server:ServerScript, id:Int, code:H2ErrorCode):Bool {
 		for (frame in ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length)) {
