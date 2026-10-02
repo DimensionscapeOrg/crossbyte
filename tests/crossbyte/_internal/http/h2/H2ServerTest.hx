@@ -745,6 +745,56 @@ class H2ServerTest extends utest.Test {
 		Assert.equals(5, (goAway.payload.get(0) << 24) | (goAway.payload.get(1) << 16) | (goAway.payload.get(2) << 8) | goAway.payload.get(3));
 	}
 
+	public function testAGracefulEndTakesTheStreamsAlreadySent():Void {
+		// At the last request the connection takes, a GOAWAY naming no stream
+		// and a PING go out; streams the client sent before it read them are
+		// taken and answered, not refused. Its answer to the PING brings the
+		// final GOAWAY, naming the last stream taken, and only one opened after
+		// that is refused. The one GOAWAY named the limit's stream at once, so
+		// a busy client's streams in flight were refused.
+		var server = new Retiring(2);
+		for (id in [1, 3, 5]) {
+			server.get(id);
+		}
+		Assert.equals("1,3,5", server.delivered.join(","), "a stream already sent was not taken");
+		Assert.equals("2147483647", server.goAways().join(","), "the first GOAWAY named a stream");
+		Assert.equals(-1, server.resetCode(5));
+		Assert.isFalse(server.drained, "drained before the client had read the GOAWAY");
+
+		server.answerPing();
+		Assert.equals("2147483647,5", server.goAways().join(","), "the final GOAWAY did not name the last stream taken");
+		Assert.isTrue(server.drained, "not drained once the last stream had ended");
+
+		server.get(7);
+		Assert.equals(7, server.resetCode(7), "a stream opened after the final GOAWAY was taken");
+		Assert.equals("1,3,5", server.delivered.join(","));
+	}
+
+	public function testAGracefulEndThatHearsNothingStillEnds():Void {
+		// A client that never answers the PING gets the final GOAWAY after
+		// RETIRE_GRACE_SECONDS: the connection then drains as usual.
+		var server = new Retiring(1);
+		server.get(1);
+		var now:Float = haxe.Timer.stamp();
+		server.connection.expireRetiring(now);
+		Assert.equals("2147483647", server.goAways().join(","), "the final GOAWAY went before the grace was up");
+		server.connection.expireRetiring(now + H2ServerConnection.RETIRE_GRACE_SECONDS + 1);
+		Assert.equals("2147483647,1", server.goAways().join(","));
+		Assert.isTrue(server.drained);
+		Assert.isFalse(server.connection.retiring);
+	}
+
+	public function testAClientsGoAwayEndsTheWaitForItsPing():Void {
+		// A client that sends GOAWAY of its own opens nothing more, so there is
+		// nothing in flight to wait for: the final GOAWAY goes at once.
+		var server = new Retiring(1);
+		server.get(1);
+		var goAway = Bytes.alloc(8);
+		server.connection.receive(frame(H2FrameType.GOAWAY, 0, 0, goAway));
+		Assert.equals("2147483647,1", server.goAways().join(","));
+		Assert.isTrue(server.drained);
+	}
+
 	// ------------------------------------------------------- flow control
 
 	public function testBodyLargerThanTheWindowStopsAtTheWindow():Void {
@@ -1556,6 +1606,75 @@ private class BlockedServer {
 		for (frame in Collector.parse(__collector.bytes())) {
 			__frames.push(frame);
 		}
+	}
+}
+
+/**
+	A server taking `maxRequests` streams, answering each GET as it arrives,
+	driven by a client that has acknowledged its SETTINGS; what it sends back
+	kept.
+**/
+private class Retiring {
+	public final connection:H2ServerConnection;
+	public final delivered:Array<Int> = [];
+	public var drained(default, null):Bool = false;
+
+	private final __collector:Collector = new Collector();
+	private final __encoder:HpackEncoder = new HpackEncoder(4096);
+	private final __frames:Array<H2Frame> = [];
+
+	public function new(maxRequests:Int) {
+		connection = new H2ServerConnection(__collector.write);
+		connection.maxRequests = maxRequests;
+		connection.onRequest = request -> {
+			delivered.push(request.streamId);
+			connection.respond(request.streamId, 200, []);
+		};
+		connection.onDrained = () -> drained = true;
+		connection.receive(Bytes.ofString(H2Connection.PREFACE));
+		__send(H2FrameType.SETTINGS, H2Flags.ACK, 0, Bytes.alloc(0));
+	}
+
+	public function get(id:Int):Void {
+		var block = __encoder.encode([new HpackHeader(":method", "GET"), new HpackHeader(":scheme", "http"), new HpackHeader(":path", "/")]);
+		__send(H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, id, block);
+	}
+
+	/** Answers the server's PINGs so far, as a client does once it has read them. */
+	public function answerPing():Void {
+		for (frame in __collect()) {
+			if (frame.type == H2FrameType.PING && !frame.has(H2Flags.ACK)) {
+				__send(H2FrameType.PING, H2Flags.ACK, 0, frame.payload);
+			}
+		}
+	}
+
+	/** The last stream each GOAWAY so far named. */
+	public function goAways():Array<Int> {
+		return [for (frame in __collect()) if (frame.type == H2FrameType.GOAWAY) Budgeted.increment(frame)];
+	}
+
+	public function resetCode(id:Int):Int {
+		for (frame in __collect()) {
+			if (frame.type == H2FrameType.RST_STREAM && frame.streamId == id) {
+				return frame.payload.get(3);
+			}
+		}
+		return -1;
+	}
+
+	private function __send(type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {
+		var out = new BytesBuffer();
+		H2Frame.writeHeader(out, payload.length, type, flags, streamId);
+		out.addBytes(payload, 0, payload.length);
+		connection.receive(out.getBytes());
+	}
+
+	private function __collect():Array<H2Frame> {
+		for (frame in Collector.parse(__collector.bytes())) {
+			__frames.push(frame);
+		}
+		return __frames;
 	}
 }
 

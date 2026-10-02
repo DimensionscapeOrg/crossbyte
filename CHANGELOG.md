@@ -2363,6 +2363,20 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An HTTP/2 connection that reaches `keepAliveMaxRequests`, has
+  `keepAlive` off, or is drained, no longer refuses the requests its
+  client already had in flight. Its one GOAWAY named the last stream at
+  once, so every stream the client had sent before reading it was reset
+  `REFUSED_STREAM`: 42 of 12,001 small requests from eight concurrent
+  CrossByte clients, a connection ending every thousand requests, as on
+  the base before the request-body budget. The server now ends a
+  connection in the two steps RFC 9113 6.8 describes: a GOAWAY naming no
+  stream and a PING, the streams that arrive meanwhile taken and
+  answered, and once the client has answered the PING, two seconds on
+  for one that never does, a final GOAWAY naming the last stream taken.
+  Only a stream opened after that is refused. A connection may carry a
+  few requests past `keepAliveMaxRequests` for it. Closing it no longer
+  repeats the final GOAWAY.
 - An HTTP/2 server that stops reading no longer holds the client's
   requests past their timeouts, nor a cancel, nor a close. Every frame a
   connection sent, a request's head and body, a reset, the answers to
