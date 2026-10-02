@@ -205,6 +205,9 @@ entry below says how:
 - `affectedRows` and `lastInsertRowID` of `PostgresConnection` and
   `MySQLConnection`, and `PostgresRawResult`'s, are `Float`s, where they
   were `Int`s.
+- `MongoConnection.affectedRows` and `count()`, and `MongoWriteResult`'s
+  `inserted`, `matched`, `modified` and `deleted`, are `Float`s, where
+  they were `Int`s: code that keeps one in an `Int` needs `Std.int()`.
 
 ### Added
 - `SharedObject.remove(name)` takes a region away on Linux and macOS,
@@ -2283,6 +2286,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- MongoDB counts are whole past 2^31. The server counts in 64 bits, and
+  an update or delete over a large collection answers past 2^31; every
+  count was read as an `Int`, held at 2^31 - 1, so three billion
+  documents updated read 2147483647. `MongoConnection.affectedRows` and
+  `count()`, `MongoWriteResult`'s `inserted`, `matched`, `modified` and
+  `deleted`, and a `MongoStatement`'s `SQLResult.rowsAffected` are
+  `Float`s, exact to 2^53, as MySQL's and Postgres's counts are.
 - Work asked of an asynchronous `SQLiteConnection` just as its worker
   stops, after an open that failed, is answered. A statement, a `begin()`
   or any other operation that found the worker's queue still open, and
