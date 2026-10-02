@@ -71,10 +71,10 @@ class IdleTaskPoolGcStress implements StressCase {
 			});
 		}
 
-		var deadline:Float = Sys.time() + TIMEOUT_SECONDS;
+		var deadline:Float = haxe.Timer.stamp() + TIMEOUT_SECONDS;
 		var completed:Int = 0;
 
-		while (Sys.time() < deadline) {
+		while (haxe.Timer.stamp() < deadline) {
 			lock.acquire();
 			completed = finished;
 			lock.release();
@@ -85,7 +85,7 @@ class IdleTaskPoolGcStress implements StressCase {
 			crossbyte.sys.System.sleep(0.02);
 		}
 
-		var elapsed:Float = TIMEOUT_SECONDS - (deadline - Sys.time());
+		var elapsed:Float = TIMEOUT_SECONDS - (deadline - haxe.Timer.stamp());
 		var passed:Bool = completed == ALLOCATOR_THREADS;
 
 		for (pool in pools) {

@@ -77,14 +77,14 @@ class WebSocketFinalMessageStress implements StressCase {
 		client.output.flush();
 		client.close();
 
-		var deadline:Float = Sys.time() + 10;
-		while (!sessionClosed && Sys.time() < deadline) {
+		var deadline:Float = haxe.Timer.stamp() + 10;
+		while (!sessionClosed && haxe.Timer.stamp() < deadline) {
 			@:privateAccess runtime.pump(0.008);
 		}
 
 		// Let any delivery that trails the close land.
-		var settle:Float = Sys.time() + 1;
-		while (Sys.time() < settle) {
+		var settle:Float = haxe.Timer.stamp() + 1;
+		while (haxe.Timer.stamp() < settle) {
 			@:privateAccess runtime.pump(0.008);
 		}
 
@@ -129,9 +129,9 @@ class WebSocketFinalMessageStress implements StressCase {
 
 	private function __readLine(runtime:CrossByte, sock:sys.net.Socket):String {
 		var buf:StringBuf = new StringBuf();
-		var deadline:Float = Sys.time() + 15;
+		var deadline:Float = haxe.Timer.stamp() + 15;
 
-		while (Sys.time() < deadline) {
+		while (haxe.Timer.stamp() < deadline) {
 			try {
 				var c:Int = sock.input.readByte();
 				if (c == 10) {

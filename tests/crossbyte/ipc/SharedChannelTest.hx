@@ -219,7 +219,7 @@ class SharedChannelTest extends utest.Test {
 		var toB = new SharedChannelReceiver();
 		a.client = toA;
 		b.client = toB;
-		var suffix = '${Std.int(Sys.time() * 1000)}_${Std.random(1000000)}';
+		var suffix = '${Std.int(Sys.time() * 1000)}_${Std.random(1000000)}'; // time of day: a name no other run has used
 		var clientsOfA = 0;
 		var clientsOfB = 0;
 
@@ -260,7 +260,7 @@ class SharedChannelTest extends utest.Test {
 	@:timeout(30000)
 	public function testATimeoutOfZeroWaitsForTheListenerWithoutADeadline():Void {
 		#if (cpp && (windows || linux || mac || macos))
-		var name = '__crossbyte_channel_nodeadline_${Std.int(Sys.time() * 1000)}_${Std.random(1000000)}';
+		var name = '__crossbyte_channel_nodeadline_${Std.int(Sys.time() * 1000)}_${Std.random(1000000)}'; // time of day: a name no other run has used
 		var listening = LateListener.start(name, 0.4);
 		var sender = new SharedChannel();
 		sender.timeout = 0;

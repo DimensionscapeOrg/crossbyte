@@ -123,8 +123,8 @@ class HTTPServerTLSTest extends utest.Test {
 				handoff.release();
 			});
 
-			var deadline = Sys.time() + 20;
-			while (Sys.time() < deadline && !finished) {
+			var deadline = haxe.Timer.stamp() + 20;
+			while (haxe.Timer.stamp() < deadline && !finished) {
 				crossbyte.core.CrossByte.current().pump(1 / 60, 0);
 				finished = handoff.wait(0.002);
 			}

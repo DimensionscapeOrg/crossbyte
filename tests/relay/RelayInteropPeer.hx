@@ -162,9 +162,9 @@ class RelayInteropPeer {
 
 	static function pump(done:Void->Bool, seconds:Float):Void {
 		var runtime = CrossByte.current();
-		var deadline = Sys.time() + seconds;
+		var deadline = haxe.Timer.stamp() + seconds;
 
-		while (!done() && Sys.time() < deadline) {
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
 			crossbyte.sys.System.sleep(0.001);
 		}

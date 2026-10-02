@@ -1389,6 +1389,16 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- On eval HTTP/2 works, and the HTTP/1.1 client keeps connections for the
+  next request to their origin, as on every other target with threads.
+  Both were off there because eval raised a reset connection's error past
+  every `catch`, ending a pooled connection's reader thread or the
+  interpreter; it is an error a catch sees now. `HTTP2Backend.isSupported`
+  is true there, where a request for HTTP/2 was refused, and a request
+  that may be sent twice goes out on a kept connection with
+  `Connection: keep-alive`. An HTTP/2 connection's threads wait on a
+  `Semaphore` there, where a `Lock`'s wait polls and holds the interpreter
+  from the threads it waits for.
 - A `LocalConnection` name is its user's own, and with it a `SharedChannel`
   name and a `local://` address. Names were one namespace for every user of
   the machine: on Linux and macOS a name's socket was in /tmp, where another
@@ -2353,6 +2363,74 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An HTTP/2 server that stops reading no longer holds the client's
+  requests past their timeouts, nor a cancel, nor a close. Every frame a
+  connection sent, a request's head and body, a reset, the answers to
+  the server's PINGs and SETTINGS, its WINDOW_UPDATEs, was written under
+  the connection's lock by whichever thread made it, so once the socket's
+  buffers filled, that thread waited in the write for good holding the
+  lock: no request on the connection could look at its stream and reach
+  its timeout, `cancel()` waited with them on whatever thread called it,
+  the runtime's, for `URLLoader.close()`, and so did a pool closing the
+  connection. A 1.5 s request under a flood of PINGs whose answers the
+  server never read, and a 1.5 s upload to a server that opened every
+  window and read nothing, never ended; a cancel of that upload did not
+  return in five seconds. Nothing is written under the lock now: frames
+  are queued in order and written by whichever thread holds the write,
+  a writer thread each connection has now, the reader writing its own
+  answers, or a request with no body writing its own head while the
+  writer watches it. A request waits on its stream, or for its body's
+  queued frames to go, within its own timeout, the longest a window may
+  keep its body from going out now counts the socket's, and gives the
+  connection up when a write has been held that long; `cancel()` and
+  `close()` return at once, a cancelled request's held head has a second;
+  the reader stops reading while 64 KB of answers wait unwritten, and a
+  body has at most 256 KB queued, so a server that reads nothing holds no
+  more of the client than that; and a closed connection whose last write
+  does not go is ended a second after it closed. Each case now ends at its
+  timeout, and the connection's threads with it. Natively, and on neko and
+  HashLink, on Windows a TLS write the server is not taking still holds the
+  writer thread until the server reads or goes, as a TLS read there already
+  does; the requests do not wait with it. Sequential small requests over loopback cost about the
+  same (106.6 to 109.1 microseconds, medians of nine native runs);
+  downloads and uploads are as fast or faster, a DATA frame no longer being
+  copied twice.
+- The HTTP/2 client's HPACK encoder holds no more than the protocol's
+  default 4 KB table, whatever SETTINGS_HEADER_TABLE_SIZE the server
+  sends; an encoder may use less than the peer allows (RFC 7541 4.2), and
+  Go's and nghttp2's clients keep to the same. It held what it was told,
+  so a server saying a megabyte, or 2^31 - 1, kept every distinct field
+  the client sent in the client's memory for the connection's life, each
+  searched for every field after: 300 requests with an id of their own
+  left 28,743 bytes in the table, and the next 300 would have left twice
+  that. And the client says SETTINGS_ENABLE_PUSH 0 whatever settings it is
+  given: `H2Settings` allows push unless told otherwise, so an
+  `HTTP2Backend` given settings of its own invited pushes and then failed
+  the connection over the first.
+- The HTTP/2 client holds a response's header section to one 64 KB
+  allowance, its interim (1xx) responses included, as the HTTP/1.1 client
+  does, and takes a header block after the response's own only as its
+  trailer section, which ends the stream and carries no pseudo-header
+  (RFC 9113 8.1). Every block after the first was taken as more of the
+  response, its fields added to the stream's and its status put over the
+  last, so a server repeating a block grew the response by a block's
+  fields each time, 20 blocks of 1,200 fields kept 24,000 of them, at
+  three bytes a block after the first, and 200 grew the heap by 20 MB
+  natively, where the second is refused now; and 103s were held to the limit
+  one at a time and dropped, so a server could send them for as long as
+  it liked, each keeping the request from its idle timeout. Either is a
+  malformed or oversized response now: its stream is reset and the
+  request fails, and the connection carries on.
+- The HTTP/2 client holds a response body to `Http.MAX_BODY_SIZE`, 64 MB,
+  as the HTTP/1.1 client does: past it the request fails with "Response
+  body exceeded N bytes", its stream is reset and what had arrived is let
+  go, and the connection carries on with the requests on it. Nothing held
+  it. The stream's window was opened again as each half of it arrived, so
+  a server sending a body without end grew it, and the client's memory,
+  for as long as it went on: a 4 MB body completed against a 256 KB limit,
+  and 256 MB sent within the windows the client opened grew the heap by
+  688 MB natively. The same server now costs the 64 MB of the limit, 161
+  MB of heap at its peak, however much it sends.
 - On a synchronous `SQLiteConnection`, a `cancel()` from another thread
   stops a `request()` or a statement that is only starting. SQLite clears
   an interrupt that lands while a statement is prepared, so a cancel made

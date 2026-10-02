@@ -252,16 +252,16 @@ class NativeProcessTest extends utest.Test {
 	}
 
 	@:noCompletion private static function pumpRuntimeUntil(runtime:CrossByte, predicate:Void->Bool, timeoutSeconds:Float):Void {
-		var deadline = Sys.time() + timeoutSeconds;
-		while (!predicate() && Sys.time() < deadline) {
+		var deadline = haxe.Timer.stamp() + timeoutSeconds;
+		while (!predicate() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0.0);
 			crossbyte.sys.System.sleep(0.001);
 		}
 	}
 
 	@:noCompletion private static function waitUntil(predicate:Void->Bool, timeoutSeconds:Float):Void {
-		var deadline = Sys.time() + timeoutSeconds;
-		while (!predicate() && Sys.time() < deadline) {
+		var deadline = haxe.Timer.stamp() + timeoutSeconds;
+		while (!predicate() && haxe.Timer.stamp() < deadline) {
 			crossbyte.sys.System.sleep(0.001);
 		}
 	}
