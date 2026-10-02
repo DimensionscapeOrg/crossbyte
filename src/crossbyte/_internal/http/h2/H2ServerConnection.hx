@@ -1795,7 +1795,19 @@ class H2ServerConnection {
 			}
 		}
 
-		__encoder.setCapacity(remoteSettings.headerTableSize);
+		// The client's HEADER_TABLE_SIZE is the most its decoder holds, and an
+		// encoder may use less (RFC 7541 4.2). This one held whatever it was
+		// told: a client saying a megabyte kept every distinct response field
+		// in the server's memory for the connection's life, each searched for
+		// every field after, and one saying 2^31 or more -- which reads
+		// negative -- spun the thread reading it forever, shrinking the table
+		// toward a size below nothing. Held to the default, as the client
+		// holds its own (H2Connection).
+		var capacity:Int = remoteSettings.headerTableSize;
+		if (capacity < 0 || capacity > H2Connection.MAX_ENCODER_TABLE_SIZE) {
+			capacity = H2Connection.MAX_ENCODER_TABLE_SIZE;
+		}
+		__encoder.setCapacity(capacity);
 		__noteControlReply();
 		__writeFrame(H2FrameType.SETTINGS, H2Flags.ACK, 0, Bytes.alloc(0));
 

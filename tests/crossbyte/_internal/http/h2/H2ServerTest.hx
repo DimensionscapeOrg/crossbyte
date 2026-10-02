@@ -795,6 +795,55 @@ class H2ServerTest extends utest.Test {
 		Assert.isTrue(server.drained);
 	}
 
+	public function testTheClientsTableSizeDoesNotGrowTheServersTable():Void {
+		// SETTINGS_HEADER_TABLE_SIZE is the most the client's decoder will
+		// hold, and the server's encoder followed it with no ceiling: a client
+		// saying a megabyte kept every distinct response field the server sent
+		// in the server's memory for the connection's life, each one searched
+		// for every field after. An encoder may use less (RFC 7541 4.2), and
+		// the server's keeps to the default 4 KB, as the client's does.
+		var server = __tableServer("000100100000");
+		var encoder = new HpackEncoder(4096);
+		var id:Int = 1;
+		for (i in 0...300) {
+			server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, id, encoder.encode(requestFields([]))));
+			id += 2;
+		}
+
+		Assert.isFalse(server.closed, "the connection did not take 300 requests");
+		var held:Int = @:privateAccess server.__encoder.tableSize;
+		Assert.isTrue(held > 0, "nothing was indexed, so the table's size proves nothing");
+		Assert.isTrue(held <= H2Connection.MAX_ENCODER_TABLE_SIZE, 'the server\'s table held $held bytes for a client that would take a megabyte');
+	}
+
+	public function testATableSizeThatReadsNegativeIsHeldToTheCeiling():Void {
+		// Past 2^31 - 1 the setting reads negative, which is over the ceiling,
+		// not under it: followed, it left the server's table empty and its
+		// size never announced. A size under the ceiling is still followed.
+		var server = __tableServer("0001ffffffff");
+		Assert.equals(H2Connection.MAX_ENCODER_TABLE_SIZE, @:privateAccess server.__encoder.capacity);
+		server.receive(frame(H2FrameType.SETTINGS, 0, 0, Bytes.ofHex("000100000100")));
+		Assert.equals(256, @:privateAccess server.__encoder.capacity);
+		server.receive(frame(H2FrameType.SETTINGS, 0, 0, Bytes.ofHex("000180000000")));
+		Assert.equals(H2Connection.MAX_ENCODER_TABLE_SIZE, @:privateAccess server.__encoder.capacity);
+		Assert.isFalse(server.closed);
+	}
+
+	/**
+		A server whose client has sent a SETTINGS of `settingsHex` and
+		acknowledged the server's, answering every request with a field of
+		its own that the encoder indexes.
+	**/
+	private static function __tableServer(settingsHex:String):H2ServerConnection {
+		var out = new Collector();
+		var server = new H2ServerConnection(out.write);
+		server.onRequest = request -> server.respond(request.streamId, 200, [new HpackHeader("x-request-id", 'request-${request.streamId}-' + StringTools.rpad("", "x", 40))]);
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+		server.receive(frame(H2FrameType.SETTINGS, 0, 0, Bytes.ofHex(settingsHex)));
+		server.receive(frame(H2FrameType.SETTINGS, H2Flags.ACK, 0, Bytes.alloc(0)));
+		return server;
+	}
+
 	// ------------------------------------------------------- flow control
 
 	public function testBodyLargerThanTheWindowStopsAtTheWindow():Void {
