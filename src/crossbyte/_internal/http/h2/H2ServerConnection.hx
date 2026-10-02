@@ -184,6 +184,10 @@ class H2ServerConnection {
 		the oldest stream cannot go on at all, which a client that keeps to
 		the SETTINGS never brings about, the newest gives way the same way
 		(`__unblockOldest`).
+
+		The header sections of those streams are held to a quarter of it as
+		well, by HPACK's accounting, and one past that is refused the same
+		way as it arrives (see `__headerAllowance`).
 	**/
 	public var requestBodyBudget:Int = 0;
 
@@ -327,6 +331,19 @@ class H2ServerConnection {
 	// Set once the client has acknowledged this side's SETTINGS: until then
 	// it may still be using the protocol's first window on every stream.
 	private var __settingsAcked:Bool = false;
+	// The header sections of streams still receiving a body, by HPACK's
+	// accounting, and what they are held to. A quarter of the budget, and
+	// never less than one section at the list limit, fixed with it.
+	//
+	// A section with a body to come is held until the body has arrived, and
+	// HPACK makes one cheap to send: 128 streams, each a 4 KB cookie fifteen
+	// times over, grew the heap by 9.3 MB from 318 KB on the wire, and with
+	// requestTimeout off for good. Flow control cannot hold back a HEADERS,
+	// so one past this is refused, REFUSED_STREAM, never having reached the
+	// application. Answered and bodiless requests are not counted: they are
+	// handed over at once.
+	private var __headersHeld:Int = 0;
+	private var __headerAllowance:Int = 0x7FFFFFFF;
 	// Streams marked waiting, and set when a stream let go of what it held,
 	// for __settle.
 	private var __waiting:Int = 0;
@@ -1262,6 +1279,16 @@ class H2ServerConnection {
 			return;
 		}
 
+		// Held until its body has arrived, and held to an allowance across
+		// the connection: see __headerAllowance.
+		var size:Int = __decoder.listSize;
+		if (__headersHeld + size > __headerAllowance) {
+			resetStream(streamId, H2ErrorCode.REFUSED_STREAM);
+			return;
+		}
+		target.heldHeaders = size;
+		__headersHeld += size;
+
 		__admit(target);
 	}
 
@@ -1827,6 +1854,10 @@ class H2ServerConnection {
 			}
 		}
 		__budget = Std.int(budget);
+
+		// What a header section may decode to, as the decoder holds it.
+		var section:Int = localSettings.maxHeaderListSize >= 0 ? localSettings.maxHeaderListSize : 8 * 1024 * 1024;
+		__headerAllowance = (__budget >> 2) > section ? (__budget >> 2) : section;
 	}
 
 	/** Gives the connection's window back what is no longer held, a few kilobytes at a time unless it is running low. */
@@ -1972,6 +2003,8 @@ class H2ServerConnection {
 		__budgeted--;
 		__bodyHeld -= target.bodyLength;
 		__promised -= target.recvWindow;
+		__headersHeld -= target.heldHeaders;
+		target.heldHeaders = 0;
 		__stopWaiting(target);
 		__released = true;
 		__budgetMoves++;
