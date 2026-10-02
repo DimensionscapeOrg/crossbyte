@@ -87,6 +87,23 @@ class H2Stream {
 	public var request:Null<H2ServerRequest> = null;
 
 	/**
+		On the server, set once a final response's head has been written on
+		this stream: an interim `100` does not count. What a refusal is told
+		apart by -- answered, or failed before anything went out.
+	**/
+	public var answered:Bool = false;
+
+	/** Set once the stream has been reset, by either end. */
+	public var wasReset:Bool = false;
+
+	/**
+		On the server, set for a stream whose request was refused while the
+		refusal was still going out, held by flow control: once that has
+		ended, the stream is reset NO_ERROR to stop the rest of the body.
+	**/
+	public var stopBodyAtEnd:Bool = false;
+
+	/**
 	 * Response bytes accepted from the application but not yet permitted onto
 	 * the wire by flow control.
 	 *
@@ -143,21 +160,67 @@ class H2Stream {
 		return __queueLength - __queueOffset;
 	}
 
+	/**
+		DATA bytes sent on this stream so far: what a server's stall check
+		reads to tell a response its client is taking from one it has stopped
+		taking. Counted, not timed, as `framesIn` is; only ever compared for
+		a change, so wrapping is harmless.
+	**/
+	public var dataOut:Int = 0;
+
+	/**
+		On the server, `dataOut` as the stall check last saw it, and when the
+		response is given up if it is still the same (`0` while the stream is
+		not being held to one). See `H2ServerConnection.expireHeld`.
+	**/
+	public var stallMark:Int = 0;
+
+	public var stallDeadline:Float = 0;
+
+	/**
+		Adds `chunk` to what waits on the windows, taking it as it is, not a
+		copy, when nothing is waiting: whoever hands a chunk over is done with
+		it. The whole queue was copied into a new one for every chunk, so a
+		response written as it goes, in small pieces, into a window its
+		client keeps shut cost a copy of everything queued per piece --
+		quadratic in what it held. It grows to twice what it needs now.
+	**/
 	public function queue(chunk:Bytes):Void {
 		if (chunk == null || chunk.length == 0) {
 			return;
 		}
 
 		var remaining:Int = queued;
-		var grown:Bytes = Bytes.alloc(remaining + chunk.length);
-		if (remaining > 0) {
-			grown.blit(0, __queue, __queueOffset, remaining);
+		if (remaining == 0) {
+			__queue = chunk;
+			__queueOffset = 0;
+			__queueLength = chunk.length;
+			return;
 		}
+
+		if (__queueLength + chunk.length <= __queue.length) {
+			// Room after what waits, in a queue of its own making (one taken
+			// as it was handed over has none).
+			__queue.blit(__queueLength, chunk, 0, chunk.length);
+			__queueLength += chunk.length;
+			return;
+		}
+
+		var needed:Int = remaining + chunk.length;
+		var grown:Bytes = Bytes.alloc(needed > 0x3FFFFFFF ? needed : needed * 2);
+		grown.blit(0, __queue, __queueOffset, remaining);
 		grown.blit(remaining, chunk, 0, chunk.length);
 
 		__queue = grown;
 		__queueOffset = 0;
-		__queueLength = grown.length;
+		__queueLength = needed;
+	}
+
+	/** Drops whatever waits, for a stream that will send no more. */
+	public function dropQueue():Void {
+		__queue = null;
+		__queueOffset = 0;
+		__queueLength = 0;
 	}
 
 	/** Removes and returns up to `count` queued bytes. */

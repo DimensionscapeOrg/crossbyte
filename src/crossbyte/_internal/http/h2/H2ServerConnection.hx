@@ -124,10 +124,10 @@ class H2ServerConnection {
 	 * stream could make the server hold as much as it cared to send: a 3 MB
 	 * upload reached a route the HTTP/1.1 path would have refused. Past this,
 	 * the request is delivered at once with `tooLarge` set and no body, so it
-	 * can be answered `413`; the stream is then reset with NO_ERROR, which is
-	 * §8.1's way of asking a client to stop sending, its window is never
-	 * topped up again, and what still arrives is counted for the connection's
-	 * window and dropped.
+	 * can be answered `413`; once that has gone out the stream is reset with
+	 * NO_ERROR, which is §8.1's way of asking a client to stop sending, its
+	 * window is never topped up again, and what still arrives is counted for
+	 * the connection's window and dropped.
 	 */
 	public var maxRequestBodySize:Int = -1;
 
@@ -150,10 +150,11 @@ class H2ServerConnection {
 	/**
 	 * Called when a request's header section has arrived and its body has
 	 * not, so it can be refused before the body is sent: answered, and
-	 * `false` returned. The stream is then reset with NO_ERROR, which asks the
-	 * client to stop sending it, as for a body past `maxRequestBodySize`.
-	 * `true` lets the body come, and the request reaches `onRequest` once it
-	 * has, carrying whatever this put in its `context`.
+	 * `false` returned. Once the answer has gone out the stream is reset with
+	 * NO_ERROR, which asks the client to stop sending the body, as for a body
+	 * past `maxRequestBodySize`; with no answer written at all it is reset
+	 * INTERNAL_ERROR. `true` lets the body come, and the request reaches
+	 * `onRequest` once it has, carrying whatever this put in its `context`.
 	 *
 	 * HTTP/1.1 refuses a request on its headers -- too large by its
 	 * `Content-Length`, or turned away by `Expect: 100-continue` -- before a
@@ -182,6 +183,36 @@ class H2ServerConnection {
 
 	/** Called when the connection fails fatally; the caller closes the socket. */
 	public var onConnectionError:H2ConnectionError->Void = _ -> {};
+
+	/**
+		How many more bytes the transport should be handed now, or `null` for
+		no limit: asked once each time a stream's queue is written out, and a
+		DATA frame goes only while there is room, the rest waiting in the
+		queue for `notifyWritable`.
+
+		The owner's socket buffer, held to a watermark. Without one, whatever
+		the client's window allowed went straight into the socket's buffer: a
+		client granting large windows over a slow network piled responses up
+		there past the socket's output cap, which closes the connection, and
+		what was queued could not be told from what had been sent.
+	**/
+	public var outputRoom:Null<Void->Int> = null;
+
+	/**
+		Called when a stream is left with bytes its windows will not let go
+		yet and nothing was held before: the owner then holds the connection
+		to `expireHeld` until `queuedBytes` is back to `0`.
+	**/
+	public var onHolding:Void->Void = () -> {};
+
+	/**
+		Seconds a response may wait on its client's window with none of it
+		taken before `expireHeld` gives it up.
+	**/
+	public var stallSeconds:Float = 30;
+
+	/** Response bytes this connection's streams hold that their windows have not let go. */
+	public var queuedBytes(get, never):Int;
 
 	public final localSettings:H2Settings;
 	public final remoteSettings:H2Settings;
@@ -235,6 +266,16 @@ class H2ServerConnection {
 	private var __goingAway:Bool = false;
 	private var __goAwayLastStreamId:Int = 0;
 
+	// Every stream's queued bytes, kept as they change: see queuedBytes.
+	private var __queuedTotal:Int = 0;
+	// Set while something is queued, from when onHolding was called.
+	private var __holding:Bool = false;
+	// DATA bytes sent on the connection, and the stall check's view of them:
+	// see expireHeld.
+	private var __dataOut:Int = 0;
+	private var __stallMark:Int = 0;
+	private var __stallDeadline:Float = 0;
+
 	/**
 	 * @param write Sink for outbound bytes. A function rather than an
 	 *        `Output` so a caller can hand over a non-blocking socket's
@@ -260,6 +301,10 @@ class H2ServerConnection {
 
 	private inline function get_openStreams():Int {
 		return __openStreams;
+	}
+
+	private inline function get_queuedBytes():Int {
+		return __queuedTotal;
 	}
 
 	private inline function get_receivingStreams():Int {
@@ -324,7 +369,8 @@ class H2ServerConnection {
 	 * Sends a complete response and closes the stream.
 	 *
 	 * `status` becomes the `:status` pseudo-header, which §8.3.2 requires to
-	 * come first and to be the only pseudo-header on a response.
+	 * come first and to be the only pseudo-header on a response. `body` is
+	 * kept as it is until sent, as `sendData` keeps it.
 	 */
 	public function respond(streamId:Int, status:Int, headers:Array<HpackHeader>, ?body:Bytes):Void {
 		if (closed) {
@@ -370,6 +416,9 @@ class H2ServerConnection {
 			block.push(header);
 		}
 
+		if (status >= 200) {
+			target.answered = true;
+		}
 		__writeHeaderBlock(streamId, __encoder.encode(block), endStream);
 
 		if (endStream) {
@@ -389,6 +438,9 @@ class H2ServerConnection {
 	 * WINDOW_UPDATE. So this returning does not mean the bytes were sent, only
 	 * that they were accepted -- `queuedFor` is how a caller applying
 	 * backpressure finds out the difference.
+	 *
+	 * `body` is kept as it is until it has been sent, not copied, so it must
+	 * not be changed after this.
 	 */
 	public function sendData(streamId:Int, body:Null<Bytes>, endStream:Bool):Void {
 		if (closed) {
@@ -400,12 +452,116 @@ class H2ServerConnection {
 			return;
 		}
 
-		target.queue(body);
+		if (body != null && body.length > 0) {
+			// Kept as it is until sent, not copied: the caller hands it over.
+			target.queue(body);
+			__queuedTotal += body.length;
+		}
 		if (endStream) {
 			target.pendingEndStream = true;
 		}
 
 		__flushStream(target);
+
+		if (target.queued > 0) {
+			__nowHolding(target);
+		}
+	}
+
+	/**
+		`target` is left with bytes waiting: its stall clock starts if it had
+		none running, and if the connection held nothing before, the owner
+		hears so (`onHolding`) and the connection's clock starts too. A clock
+		read only here, never on a response its windows let go at once.
+	**/
+	private function __nowHolding(target:H2Stream):Void {
+		if (target.stallDeadline == 0) {
+			target.stallMark = target.dataOut;
+			target.stallDeadline = haxe.Timer.stamp() + stallSeconds;
+		}
+		if (!__holding) {
+			__holding = true;
+			__stallMark = __dataOut;
+			__stallDeadline = haxe.Timer.stamp() + stallSeconds;
+			onHolding();
+		}
+	}
+
+	/**
+		Gives up what the client is taking none of, as the server's sweep
+		asks a few times a second while `queuedBytes` is above `0`.
+
+		A stream whose own window has kept its response from moving for
+		`stallSeconds` is reset, INTERNAL_ERROR, and what it held let go; the
+		connection carries on. A response written whole waited on its client's
+		WINDOW_UPDATE with no deadline at all, so a client that paused a stream
+		-- or opened one and never meant to read it -- held its response here
+		for as long as the connection lasted. When it is the connection's
+		window that has been spent, with nothing sent on the connection for
+		`stallSeconds`, nothing on it can move until the client gives more,
+		and every stream waiting is reset the same way. A stream waiting only
+		on the transport is not held to this: its client takes what the socket
+		gives it, and a socket nobody reads is the owner's to time.
+
+		@param now `haxe.Timer.stamp()`.
+		@return Whether the connection's window was what stalled: the owner
+		        then has no reason to hand the application more requests for
+		        this client.
+	**/
+	public function expireHeld(now:Float):Bool {
+		if (closed) {
+			return false;
+		}
+		if (__queuedTotal <= 0) {
+			__holding = false;
+			return false;
+		}
+
+		var connectionStalled:Bool = false;
+		if (__dataOut != __stallMark || __stallDeadline == 0) {
+			__stallMark = __dataOut;
+			__stallDeadline = now + stallSeconds;
+		} else if (now >= __stallDeadline && __connectionSendWindow <= 0) {
+			connectionStalled = true;
+		}
+
+		// Gathered first: a reset removes the stream from the map being walked.
+		var stalled:Null<Array<H2Stream>> = null;
+		for (target in __streams) {
+			if (target.queued <= 0) {
+				target.stallDeadline = 0;
+				continue;
+			}
+			if (connectionStalled) {
+				if (stalled == null) {
+					stalled = [];
+				}
+				stalled.push(target);
+				continue;
+			}
+			if (target.sendWindow > 0 || target.dataOut != target.stallMark || target.stallDeadline == 0) {
+				// Moving, or waiting on something other than its own window:
+				// its clock runs from now.
+				target.stallMark = target.dataOut;
+				target.stallDeadline = now + stallSeconds;
+				continue;
+			}
+			if (now >= target.stallDeadline) {
+				if (stalled == null) {
+					stalled = [];
+				}
+				stalled.push(target);
+			}
+		}
+
+		if (stalled != null) {
+			for (target in stalled) {
+				if (__streams.get(target.id) == target) {
+					resetStream(target.id, H2ErrorCode.INTERNAL_ERROR);
+				}
+			}
+		}
+		return connectionStalled;
 	}
 
 	/** Bytes accepted for this stream that flow control has not yet released. */
@@ -472,7 +628,8 @@ class H2ServerConnection {
 	}
 
 	/**
-	 * Writes as much of a stream's queue as both windows allow.
+	 * Writes as much of a stream's queue as both windows allow, and the
+	 * transport has room for (`outputRoom`).
 	 *
 	 * Bounded by three things at once: the peer's frame size, the stream
 	 * window and the connection window. Missing any one of them is a
@@ -484,12 +641,22 @@ class H2ServerConnection {
 		}
 
 		var limit:Int = remoteSettings.maxFrameSize;
+		// Asked once, not per frame.
+		var room:Int = outputRoom == null ? 0x7FFFFFFF : outputRoom();
 
 		while (target.queued > 0) {
 			var allowed:Int = target.sendWindow < __connectionSendWindow ? target.sendWindow : __connectionSendWindow;
 			if (allowed <= 0) {
 				// Blocked. The remainder stays queued until a WINDOW_UPDATE
 				// brings us back through notifyWritable.
+				return;
+			}
+
+			// The frame's header goes with it.
+			var fits:Int = room - H2Frame.HEADER_SIZE;
+			if (fits <= 0) {
+				// The transport has its fill. The remainder stays queued until
+				// it drains, which brings us back through notifyWritable.
 				return;
 			}
 
@@ -500,12 +667,19 @@ class H2ServerConnection {
 			if (chunk > allowed) {
 				chunk = allowed;
 			}
+			if (chunk > fits) {
+				chunk = fits;
+			}
 
 			var last:Bool = target.queued == chunk && target.pendingEndStream;
 
 			__write(target.takeFrame(chunk, last ? H2Flags.END_STREAM : 0));
 			target.sendWindow -= chunk;
 			__connectionSendWindow -= chunk;
+			__queuedTotal -= chunk;
+			target.dataOut += chunk;
+			__dataOut += chunk;
+			room = fits - chunk;
 
 			if (last) {
 				__finishStream(target);
@@ -525,6 +699,11 @@ class H2ServerConnection {
 		target.close();
 		__forget(target.id);
 		__writable.remove(target.id);
+
+		if (target.stopBodyAtEnd) {
+			// A refusal, now all gone: see __stopBody.
+			resetStream(target.id, H2ErrorCode.NO_ERROR);
+		}
 	}
 
 	/**
@@ -543,6 +722,9 @@ class H2ServerConnection {
 				__answering--;
 			}
 			__abandoned.remove(streamId);
+			// What a reset stream still held goes with it, and out of the count.
+			__queuedTotal -= target.queued;
+			target.dropQueue();
 
 			if (__openStreams == 0) {
 				// Between requests from here, which is what the idle
@@ -626,9 +808,9 @@ class H2ServerConnection {
 		__markDelivered(target);
 		onRequest(request);
 
-		// As for a body past the limit: the answer has ended the stream on
-		// this side, and this asks the client to stop sending the rest.
-		resetStream(target.id, H2ErrorCode.NO_ERROR);
+		// As for a body past the limit: the client is asked to stop sending
+		// the rest.
+		__stopBody(target);
 	}
 
 	/**
@@ -650,6 +832,7 @@ class H2ServerConnection {
 		if (target != null) {
 			// Taken before __forget drops it.
 			var abandoned:Null<Void->Void> = __abandoned.get(streamId);
+			target.wasReset = true;
 			target.close();
 			__forget(streamId);
 			__writable.remove(streamId);
@@ -685,7 +868,7 @@ class H2ServerConnection {
 		} catch (_:Dynamic) {}
 	}
 
-	/** Whether `goAwayGracefully` has been called. */
+	/** Whether `goAwayGracefully` has been called, or the client has sent a GOAWAY of its own. */
 	public var goingAway(get, never):Bool;
 
 	private inline function get_goingAway():Bool {
@@ -768,7 +951,7 @@ class H2ServerConnection {
 				case WINDOW_UPDATE:
 					__onWindowUpdate(frame);
 				case GOAWAY:
-					closed = true;
+					__onGoAway(frame);
 				case PRIORITY:
 					// Deprecated by §5.3.2; still legal, still meaningless.
 				case PUSH_PROMISE:
@@ -967,8 +1150,8 @@ class H2ServerConnection {
 
 		if (!onRequestHead(request)) {
 			// Answered, or turned away, before its body. What arrives of it is
-			// counted and dropped once the stream is gone.
-			resetStream(target.id, H2ErrorCode.NO_ERROR);
+			// counted and dropped.
+			__stopBody(target);
 		}
 	}
 
@@ -1028,7 +1211,7 @@ class H2ServerConnection {
 		onRequest(request);
 
 		if (!endStream) {
-			resetStream(target.id, H2ErrorCode.NO_ERROR);
+			__stopBody(target);
 		}
 	}
 
@@ -1097,8 +1280,47 @@ class H2ServerConnection {
 		__markDelivered(target);
 		onRequest(request);
 
-		// The answer has ended the stream on this side; this tells the client
-		// the rest of its body is not wanted, without calling it an error.
+		// This tells the client the rest of its body is not wanted, without
+		// calling it an error.
+		__stopBody(target);
+	}
+
+	/**
+		Asks the client to stop sending the body of a request refused before
+		it all arrived, once the refusal has been answered: a reset, NO_ERROR,
+		which §8.1 allows after a complete response. What arrives for the
+		stream meanwhile is counted for the connection's window and dropped.
+
+		Sent the moment the refusal was handed over, the reset ended the
+		stream there, and with it whatever of the answer flow control was
+		still holding: an error page past the client's window was cut off
+		after its first 64 KB. It now waits for the answer to end. And a
+		refusal whose answer threw before anything went out -- its `500`
+		too -- was reset NO_ERROR all the same, telling the client a response
+		was complete that never began: that is INTERNAL_ERROR, as for a
+		request whose serving throws after its body is in.
+	**/
+	private function __stopBody(target:H2Stream):Void {
+		if (target.wasReset) {
+			// The answer failed partway, or the client gave up first.
+			return;
+		}
+
+		if (!target.answered) {
+			resetStream(target.id, H2ErrorCode.INTERNAL_ERROR);
+			return;
+		}
+
+		if (__streams.get(target.id) == target) {
+			// Still going out. Its end resets the stream (__finishStream), and
+			// until then it waits on its answer, not on the client's request.
+			target.overflowed = true;
+			target.takeBody();
+			__markDelivered(target);
+			target.stopBodyAtEnd = true;
+			return;
+		}
+
 		resetStream(target.id, H2ErrorCode.NO_ERROR);
 	}
 
@@ -1137,6 +1359,7 @@ class H2ServerConnection {
 
 		var abandoned:Null<Void->Void> = __abandoned.get(frame.streamId);
 
+		target.wasReset = true;
 		target.close();
 		__forget(frame.streamId);
 		__writable.remove(frame.streamId);
@@ -1241,6 +1464,49 @@ class H2ServerConnection {
 			// WINDOW_UPDATE, and a stream sitting on a queue will not move
 			// again on its own.
 			notifyWritable();
+		}
+	}
+
+	/**
+		The client's GOAWAY (§6.8). Its last stream id names the last stream
+		*this* side opened that the client will process -- a push, which this
+		never sends -- so it says nothing about the streams the client opened:
+		those are still answered, and what the client sends on them still
+		read. It opens no more, one it opens anyway is refused as after a
+		GOAWAY of this side's, and once the last open one has ended
+		`onDrained` is called for the owner to close the connection. A GOAWAY
+		carrying an error says the client is closing the connection now
+		(§5.4.1), and it fails at once.
+
+		It was read as the end of the connection: `closed` was set, so nothing
+		the client sent after it was read and no response went out after it
+		-- not one being worked on, nor one whose body was still arriving --
+		while the socket itself was kept, for as long as a stream stayed open.
+	**/
+	private function __onGoAway(frame:H2Frame):Void {
+		if (frame.streamId != 0) {
+			throw new H2ConnectionError(H2ErrorCode.PROTOCOL_ERROR, 'GOAWAY on stream ${frame.streamId}');
+		}
+		if (frame.payload.length < 8) {
+			throw new H2ConnectionError(H2ErrorCode.FRAME_SIZE_ERROR, 'GOAWAY payload is ${frame.payload.length} bytes, under 8');
+		}
+
+		var code:H2ErrorCode = __readUInt32(frame.payload, 4);
+		if (code != H2ErrorCode.NO_ERROR) {
+			// Answered with a GOAWAY of this side's own, which has no error to
+			// report, and the connection ends.
+			goAway(H2ErrorCode.NO_ERROR);
+			onConnectionError(new H2ConnectionError(code, 'The client ended the connection: ${code.toString()}'));
+			return;
+		}
+
+		// As after goAwayGracefully, without sending one: the client knows.
+		if (!__goingAway) {
+			__goingAway = true;
+			__goAwayLastStreamId = __highestStreamId;
+		}
+		if (__openStreams == 0) {
+			onDrained();
 		}
 	}
 

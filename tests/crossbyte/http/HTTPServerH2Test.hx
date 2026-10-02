@@ -1134,6 +1134,10 @@ class HTTPServerH2Test extends utest.Test {
 					}
 					return session.finished(1) || session.ended;
 				}, () -> {
+					// Room on the connection for the next answer, whose body
+					// would otherwise wait on the window the download spent --
+					// a response held, and so swept.
+					session.windowUpdate(0, 1 << 20);
 					session.request(3, "GET", "/index.html", true);
 					session.until(() -> session.finished(3) || session.ended, () -> {
 						// A few sweeps' worth, for it to find nothing left to do.
@@ -1149,6 +1153,342 @@ class HTTPServerH2Test extends utest.Test {
 						});
 					});
 				}, 3.0);
+			});
+		});
+	}
+
+	#if (cpp || neko || hl || jvm)
+	public function testAnHttp2ResponseStillGoingOutIsNotReapedAsIdle(async:Async):Void {
+		// An HTTP/2 connection was idle from when its last stream ended, and a
+		// stream ended once its last DATA was handed to the socket: for a
+		// client with a large window, at once, the whole response with it.
+		// One slower to read it than keepAliveTimeout had it cut off by the
+		// idle close. A connection is idle from when what it sent has gone.
+		// The client is a plain socket the runtime does not read, reading
+		// nothing until twice the idle allowance has passed. (Not on Node,
+		// which has no such socket.)
+		var size:Int = 24 * 1024 * 1024;
+		var body = new ByteArray();
+		body.length = size;
+		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.http2Enabled = true;
+		config.keepAliveTimeout = 0.5;
+		// Past the body, which is otherwise more than one connection may hold.
+		config.maxOutputBufferSize = 32 * 1024 * 1024;
+		config.middleware.push((handler, next) -> handler.respondBytes(200, "application/octet-stream", body));
+		var server = new HTTPServer(config);
+
+		var client = new sys.net.Socket();
+		client.connect(new sys.net.Host("127.0.0.1"), server.localPort);
+		var out = new BytesBuffer();
+		out.addString(H2Connection.PREFACE);
+		// INITIAL_WINDOW_SIZE as large as it goes, and the connection's window
+		// opened as far: nothing but the socket holds the response back.
+		var settings = Bytes.alloc(6);
+		settings.set(1, 0x4);
+		settings.set(2, 0x7F);
+		settings.set(3, 0xFF);
+		settings.set(4, 0xFF);
+		settings.set(5, 0xFF);
+		writeFrame(out, H2FrameType.SETTINGS, 0, 0, settings);
+		var increment:Int = 0x7FFFFFFF - 65535;
+		var credit = Bytes.alloc(4);
+		credit.set(0, (increment >> 24) & 0x7F);
+		credit.set(1, (increment >> 16) & 0xFF);
+		credit.set(2, (increment >> 8) & 0xFF);
+		credit.set(3, increment & 0xFF);
+		writeFrame(out, H2FrameType.WINDOW_UPDATE, 0, 0, credit);
+		writeFrame(out, H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, 1, new HpackEncoder(4096).encode([
+			new HpackHeader(":method", "GET"),
+			new HpackHeader(":scheme", "http"),
+			new HpackHeader(":authority", "127.0.0.1"),
+			new HpackHeader(":path", "/big")
+		]));
+		client.output.write(out.getBytes());
+		client.output.flush();
+
+		// Parked: bytes in the server's socket it cannot send, the same count
+		// for fifty passes.
+		var pending:Int = -1;
+		var still:Int = 0;
+		HTTPTestSupport.pumpWallUntilAsync(function():Bool {
+			var held:Int = -1;
+			for (handler in @:privateAccess server.__activeHttp2) {
+				held = @:privateAccess handler.__socket.outputBufferLength;
+			}
+			if (held > 0 && held == pending) {
+				still++;
+			} else {
+				still = 0;
+				pending = held;
+			}
+			return still >= 50;
+		}, 10.0, function(parked:Bool):Void {
+			var resumeAt:Float = haxe.Timer.stamp() + 1.0;
+			HTTPTestSupport.pumpWallUntilAsync(() -> haxe.Timer.stamp() >= resumeAt, 3.0, function(_):Void {
+				__readRawData(client, function(received:Int, ended:Bool):Void {
+					try client.close() catch (_:Dynamic) {}
+					try server.close() catch (_:Dynamic) {}
+					Assert.isTrue(parked, "the response never waited on its client, so this shows nothing");
+					Assert.equals(size, received, "the response was cut off");
+					Assert.isTrue(ended, "the response did not end");
+					async.done();
+				});
+			});
+		});
+	}
+
+	/**
+		Reads HTTP/2 frames off `client`, pumping between reads, until stream
+		1's DATA ends or the server closes, then continues with the bytes of
+		DATA stream 1 got and whether it ended.
+	**/
+	private static function __readRawData(client:sys.net.Socket, then:(Int, Bool) -> Void):Void {
+		var inbound = new BytesBuffer();
+		var parsedUpTo:Int = 0;
+		var received:Int = 0;
+		var ended:Bool = false;
+		var closed:Bool = false;
+		var chunk = Bytes.alloc(64 * 1024);
+		HTTPTestSupport.pumpWallUntilAsync(function():Bool {
+			var grew:Bool = false;
+			while (!closed && sys.net.Socket.select([client], null, null, 0).read.length > 0) {
+				var read:Int = 0;
+				try {
+					read = client.input.readBytes(chunk, 0, chunk.length);
+				} catch (_:Dynamic) {
+					closed = true;
+				}
+				if (read > 0) {
+					inbound.addBytes(chunk, 0, read);
+					grew = true;
+				}
+			}
+			if (grew) {
+				var all:Bytes = inbound.getBytes();
+				var position:Int = parsedUpTo;
+				while (position + H2Frame.HEADER_SIZE <= all.length) {
+					var length:Int = H2Frame.lengthOf(all, position);
+					if (position + H2Frame.HEADER_SIZE + length > all.length) {
+						break;
+					}
+					var streamId:Int = ((all.get(position + 5) & 0x7F) << 24) | (all.get(position + 6) << 16) | (all.get(position + 7) << 8)
+						| all.get(position + 8);
+					if (all.get(position + 3) == (H2FrameType.DATA : Int) && streamId == 1) {
+						received += length;
+						if ((all.get(position + 4) & H2Flags.END_STREAM) != 0) {
+							ended = true;
+						}
+					}
+					position += H2Frame.HEADER_SIZE + length;
+				}
+				// Only what is still to be read on is kept.
+				inbound = new BytesBuffer();
+				inbound.addBytes(all, position, all.length - position);
+				parsedUpTo = 0;
+			}
+			return ended || closed;
+		}, 15.0, _ -> then(received, ended));
+	}
+	#end
+
+	public function testAnHttp2ResponseItsClientTakesNoneOfIsGivenUp(async:Async):Void {
+		// A response written whole -- respond() with a body under the output
+		// cap -- that its stream's window held back waited on its client's
+		// WINDOW_UPDATE with no deadline at all: a client that paused the
+		// stream, or never meant to read it, held a megabyte here for as long
+		// as the connection lasted. It is given up at the stall deadline, as a
+		// file the client takes nothing of is: the stream reset, its bytes let
+		// go, and the connection carrying on. Both timeouts are off, so nothing
+		// else could have ended it.
+		var size:Int = 1024 * 1024;
+		var body = new ByteArray();
+		body.length = size;
+		var session = new H2Session(config -> {
+			config.requestTimeout = 0;
+			config.keepAliveTimeout = 0;
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/big") {
+						handler.respondBytes(200, "application/octet-stream", body);
+						return;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			// Room on the connection, and none on the stream past its first
+			// window: the client has paused this one stream.
+			session.windowUpdate(0, 16 << 20);
+			session.request(1, "GET", "/big", true);
+			session.until(() -> session.received(1) >= 65535 || session.ended, () -> {
+				var held:Int = __heldBy(session.server);
+				// The sweep, as it would run once the deadline has passed.
+				@:privateAccess session.server.__sweep(haxe.Timer.stamp() + 31);
+				session.until(() -> session.finished(1) || session.ended, () -> {
+					session.request(3, "GET", "/index.html", true);
+					session.until(() -> session.finished(3) || session.ended, () -> {
+						var after:Int = __heldBy(session.server);
+						session.close();
+						Assert.isTrue(held >= size - 65535, 'only $held bytes were held back, so this shows nothing');
+						Assert.equals(2, session.resetCode(1), "a response its client took none of was not given up");
+						Assert.equals(0, after, '$after bytes of it were kept');
+						Assert.equals(200, session.status(3), "the connection went with the stream");
+						async.done();
+					});
+				}, 2.0);
+			});
+		});
+	}
+
+	public function testAnHttp2ConnectionWhoseWindowStaysShutLetsGoOfWhatItHolds(async:Async):Void {
+		// The same with no window opened at all: the first 64 KB spend the
+		// connection's window, and nothing on the connection can be sent
+		// again until the client gives more. At the stall deadline every
+		// response waiting on it is reset, and the requests waiting for room
+		// -- the connection holds its cap -- are refused, REFUSED_STREAM:
+		// never handed to the application, so safe to send again, rather
+		// than answered into a window that is not opening. The connection
+		// itself carries on, for a client that comes back to it.
+		var size:Int = 1024 * 1024;
+		var body = new ByteArray();
+		body.length = size;
+		var served:Int = 0;
+		var session = new H2Session(config -> {
+			config.requestTimeout = 0;
+			config.keepAliveTimeout = 0;
+			config.maxOutputBufferSize = 1536 * 1024;
+			config.middleware = [
+				(handler, next) -> {
+					served++;
+					handler.respondBytes(200, "application/octet-stream", body);
+				}
+			];
+		});
+
+		var streams:Array<Int> = [1, 3, 5, 7];
+		session.start(() -> {
+			session.requestAll(streams, "GET", "/big");
+			session.ping();
+			session.until(() -> session.pingAcks > 0 || session.ended, () -> {
+				var servedWhileHeld:Int = served;
+				var held:Int = __heldBy(session.server);
+				// The sweep, as it would run once the deadline has passed.
+				@:privateAccess session.server.__sweep(haxe.Timer.stamp() + 31);
+				session.until(() -> Lambda.foreach(streams, id -> session.finished(id)) || session.ended, () -> {
+					var after:Int = __heldBy(session.server);
+					// Still answering.
+					session.ping();
+					session.until(() -> session.pingAcks > 1 || session.ended, () -> {
+						session.close();
+						Assert.equals(2, servedWhileHeld, '$servedWhileHeld requests were handed over with nothing taken');
+						Assert.isTrue(held >= 2 * size - 65535, 'only $held bytes were held back, so this shows nothing');
+						Assert.equals(2, session.resetCode(1), "a response waiting on a shut window was not given up");
+						Assert.equals(2, session.resetCode(3), "a response waiting on a shut window was not given up");
+						Assert.equals(7, session.resetCode(5), "a request waiting for room was not refused");
+						Assert.equals(7, session.resetCode(7), "a request waiting for room was not refused");
+						Assert.equals(0, after, '$after bytes were kept');
+						Assert.equals(2, served, "a refused request reached the application");
+						Assert.isFalse(session.ended, "the connection went with its streams");
+						async.done();
+					});
+				}, 2.0);
+			});
+		});
+	}
+
+	public function testTheOutputGaugesCountWhatAnHttp2StreamHolds(async:Async):Void {
+		// The output-buffer gauges counted each connection's socket, and an
+		// HTTP/2 connection holds most of what its client has not taken in its
+		// streams' queues, behind flow control: a megabyte waiting on a
+		// stream's window read as nothing.
+		var size:Int = 1024 * 1024;
+		var body = new ByteArray();
+		body.length = size;
+		var metrics = new crossbyte.metrics.Metrics();
+		var session = new H2Session(config -> {
+			config.metrics = metrics;
+			config.middleware = [(handler, next) -> handler.respondBytes(200, "application/octet-stream", body)];
+		});
+
+		session.start(() -> {
+			session.windowUpdate(0, 16 << 20);
+			session.request(1, "GET", "/big", true);
+			session.until(() -> session.received(1) >= 65535 || session.ended, () -> {
+				var text:String = metrics.toPrometheus();
+				session.close();
+				var total:Float = __gauge(text, "http_output_buffer_bytes_total");
+				var max:Float = __gauge(text, "http_output_buffer_bytes_max");
+				Assert.isTrue(total >= size - 65535, 'the total gauge read $total with ${size - 65535} bytes held');
+				Assert.isTrue(max >= size - 65535, 'the max gauge read $max with ${size - 65535} bytes held');
+				async.done();
+			});
+		});
+	}
+
+	/** The value `name` has in Prometheus text, or -1. */
+	private static function __gauge(text:String, name:String):Float {
+		for (line in text.split("\n")) {
+			if (StringTools.startsWith(line, name + " ")) {
+				return Std.parseFloat(line.substr(name.length + 1));
+			}
+		}
+		return -1;
+	}
+
+	public function testAnHttp2ConnectionHoldsNoMoreThanItsOutputCap(async:Async):Void {
+		// maxOutputBufferSize is per connection, and over HTTP/2 nothing held
+		// a connection to it: each stream's response waited whole on its
+		// client's window, up to the cap apiece, so a client that opened 128
+		// streams and no window held 128 times the cap -- a gigabyte at the
+		// default. Past the cap a connection's next requests wait to be
+		// handed to the application, as an HTTP/1.1 connection's next request
+		// waits behind the response going out, and go on as the client takes
+		// what is held.
+		var size:Int = 100 * 1024;
+		var cap:Int = 256 * 1024;
+		var body = new ByteArray();
+		body.length = size;
+		var served:Int = 0;
+		var session = new H2Session(config -> {
+			config.maxOutputBufferSize = cap;
+			config.middleware = [
+				(handler, next) -> {
+					served++;
+					handler.respondBytes(200, "application/octet-stream", body);
+				}
+			];
+		});
+
+		var streams:Array<Int> = [for (i in 0...20) 1 + i * 2];
+		session.start(() -> {
+			session.requestAll(streams, "GET", "/big");
+			// Answered once everything before it has been read.
+			session.ping();
+			session.until(() -> session.pingAcks > 0 || session.ended, () -> {
+				var servedWhileHeld:Int = served;
+				var held:Int = __heldBy(session.server);
+				// Now the client takes all of it.
+				session.windowUpdate(0, 16 << 20);
+				for (id in streams) {
+					session.windowUpdate(id, 16 << 20);
+				}
+				session.until(() -> Lambda.foreach(streams, id -> session.finished(id)) || session.ended, () -> {
+					session.close();
+					Assert.isTrue(servedWhileHeld <= Math.ceil(cap / size) + 1, '$servedWhileHeld requests were handed over with nothing taken');
+					Assert.isTrue(held <= cap + size, 'the connection held $held bytes, past its cap of $cap and one response');
+					var whole:Int = 0;
+					for (id in streams) {
+						if (session.status(id) == 200 && session.received(id) == size) {
+							whole++;
+						}
+					}
+					Assert.equals(streams.length, whole, "not every request was answered once the client read");
+					Assert.equals(streams.length, served);
+					async.done();
+				}, 10.0);
 			});
 		});
 	}
@@ -1442,6 +1782,303 @@ class HTTPServerH2Test extends utest.Test {
 		}
 	}
 
+	public function testAClientsGoAwayStillGetsTheResponsesItIsOwed(async:Async):Void {
+		// A client's GOAWAY was read as the end of the connection: nothing it
+		// sent after it was read, and no response went out after it, so a
+		// request still being answered got nothing, and one whose body was
+		// still arriving was never served. RFC 9113 6.8: the streams it opened
+		// still complete; it opens no more, and once they have, the connection
+		// closes.
+		var working:HTTPRequestHandler = null;
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/work") {
+						working = handler;
+						return;
+					}
+					handler.respond(200, "text/plain", "got " + handler.requestText);
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/work", true);
+			session.request(3, "POST", "/upload", false);
+			session.until(() -> working != null || session.ended, () -> {
+				// NO_ERROR, and no stream of the server's to process: a
+				// client is never pushed one.
+				session.goAway(0, 0);
+				// The rest of stream 3's request, sent after the GOAWAY.
+				session.data(3, "the body");
+				// A stream it opens after its own GOAWAY is refused.
+				session.request(5, "GET", "/index.html", true);
+				session.until(() -> (session.finished(3) && session.finished(5)) || session.dropped, () -> {
+					var droppedEarly:Bool = session.dropped;
+					if (working != null) {
+						working.respond(200, "text/plain", "done");
+					}
+					session.until(() -> session.dropped, () -> {
+						session.close();
+						Assert.isFalse(droppedEarly, "the connection closed with a response still owed");
+						Assert.equals(200, session.status(1), "the response being worked on was dropped");
+						Assert.equals("done", session.body(1));
+						Assert.equals(200, session.status(3), "a body sent after the GOAWAY was not read");
+						Assert.equals("got the body", session.body(3));
+						Assert.equals(7, session.resetCode(5), "a stream opened after the GOAWAY was not refused");
+						Assert.isTrue(session.dropped, "the connection outlived its last stream");
+						async.done();
+					}, 3.0);
+				});
+			});
+		});
+	}
+
+	public function testAClientsGoAwayForAnErrorEndsTheConnection(async:Async):Void {
+		// A GOAWAY carrying an error says the client is closing: §5.4.1 has it
+		// close the connection once it has sent one. The server stopped
+		// reading, and kept the socket -- with a stream open, for good.
+		var working:HTTPRequestHandler = null;
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> {
+					working = handler;
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/work", true);
+			session.until(() -> working != null || session.ended, () -> {
+				var started:Float = haxe.Timer.stamp();
+				session.goAway(1, 0);
+				session.until(() -> session.dropped, () -> {
+					var took:Float = haxe.Timer.stamp() - started;
+					session.close();
+					Assert.isTrue(session.dropped, "a client's GOAWAY for an error left the connection open");
+					Assert.isTrue(took < 1.0, 'closed ${took}s after the GOAWAY');
+					async.done();
+				}, 3.0);
+			});
+		});
+	}
+
+	public function testAMalformedGoAwayIsAConnectionError(async:Async):Void {
+		// §6.8: a GOAWAY belongs to the connection, stream 0, and carries at
+		// least eight bytes. One on a stream was taken as any other, the end
+		// of the connection, which the server then kept open, saying
+		// nothing; it is a PROTOCOL_ERROR, and the connection is closed.
+		var session = new H2Session(config -> {});
+
+		session.start(() -> {
+			session.frame(H2FrameType.GOAWAY, 0, 1, Bytes.alloc(8));
+			session.until(() -> session.dropped, () -> {
+				session.close();
+				Assert.equals(H2ErrorCode.PROTOCOL_ERROR, session.goAwayCode, "the server's GOAWAY said " + session.goAwayCode);
+				Assert.isTrue(session.dropped, "a malformed GOAWAY left the connection open");
+				async.done();
+			}, 3.0);
+		});
+	}
+
+	public function testACloseListenerAddedAfterItsStreamWasResetHearsIt(async:Async):Void {
+		// A stream reset while nothing listened -- by its client here -- said
+		// nothing to a CLOSE listener added after it: the listener was
+		// registered for a stream already gone, and heard only the connection
+		// closing, whenever that came. The listener the HTTPResponseStream doc
+		// adds after beginResponse is one such, and its producer ran on. It
+		// is told now, once, in a later turn rather than from inside
+		// addEventListener.
+		var held:HTTPRequestHandler = null;
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/poll") {
+						held = handler;
+						return;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/poll", true);
+			session.until(() -> held != null || session.ended, () -> {
+				session.reset(1);
+				session.until(() -> (held != null && !held.connected) || session.ended, () -> {
+					var heard:Int = 0;
+					var events = held.beginResponse(200, "text/event-stream");
+					held.addEventListener(crossbyte.events.Event.CLOSE, _ -> heard++);
+					var heardInsideTheCall:Int = heard;
+					session.until(() -> heard > 0 || session.ended, () -> {
+						var heardBeforeTheClose:Int = heard;
+						session.request(3, "GET", "/index.html", true);
+						session.until(() -> session.finished(3) || session.ended, () -> {
+							session.close();
+							// The connection closing as well, which must not tell it again.
+							HTTPTestSupport.pumpMoreAsync(5, () -> {
+								Assert.isFalse(events.connected);
+								Assert.equals(0, heardInsideTheCall, "CLOSE was dispatched from inside addEventListener");
+								Assert.equals(1, heardBeforeTheClose, "a listener added after the reset did not hear CLOSE");
+								Assert.equals(1, heard, "CLOSE was dispatched " + heard + " times");
+								Assert.equals(200, session.status(3));
+								async.done();
+							});
+						});
+					}, 2.0);
+				});
+			});
+		});
+	}
+
+	public function testACloseListenerAddedAfterTheServerResetItsStreamHearsIt(async:Async):Void {
+		// The same for a stream the server reset -- for DATA after the client
+		// had ended it, STREAM_CLOSED -- before anything listened.
+		var held:HTTPRequestHandler = null;
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/poll") {
+						held = handler;
+						return;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/poll", true);
+			session.until(() -> held != null || session.ended, () -> {
+				session.trickle(1, "after the end");
+				session.until(() -> !held.connected || session.ended, () -> {
+					var late:Int = 0;
+					held.addEventListener(crossbyte.events.Event.CLOSE, _ -> late++);
+					// And the reset itself here, which on Node comes a turn later.
+					session.until(() -> (late > 0 && session.resetCode(1) >= 0) || session.ended, () -> {
+						var lateBeforeTheClose:Int = late;
+						session.close();
+						HTTPTestSupport.pumpMoreAsync(5, () -> {
+							Assert.equals(5, session.resetCode(1), "the server did not reset the stream, so this shows nothing");
+							Assert.equals(1, lateBeforeTheClose, "a listener added after the server's reset did not hear CLOSE");
+							Assert.equals(1, late, "CLOSE was dispatched " + late + " times");
+							async.done();
+						});
+					}, 2.0);
+				});
+			});
+		});
+	}
+
+	public function testAListenerAddedAfterCloseWentOutHearsItOnce(async:Async):Void {
+		// One listener hears the reset as it happens; a second, added after,
+		// is told in a later turn, alone. The connection closing then tells
+		// neither again: the second's watch had the first hear CLOSE twice.
+		var held:HTTPRequestHandler = null;
+		var first:Int = 0;
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/poll") {
+						held = handler;
+						handler.addEventListener(crossbyte.events.Event.CLOSE, _ -> first++);
+						return;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/poll", true);
+			session.until(() -> held != null || session.ended, () -> {
+				session.reset(1);
+				session.until(() -> first > 0 || session.ended, () -> {
+					var second:Int = 0;
+					held.addEventListener(crossbyte.events.Event.CLOSE, _ -> second++);
+					session.until(() -> second > 0 || session.ended, () -> {
+						var secondBeforeTheClose:Int = second;
+						session.close();
+						HTTPTestSupport.pumpMoreAsync(5, () -> {
+							Assert.equals(1, secondBeforeTheClose, "a listener added after CLOSE went out did not hear it");
+							Assert.equals(1, first, "the first listener heard CLOSE " + first + " times");
+							Assert.equals(1, second, "the second listener heard CLOSE " + second + " times");
+							async.done();
+						});
+					}, 2.0);
+				});
+			});
+		});
+	}
+
+	public function testARefusalWhoseAnswerThrowsIsResetAsAnError(async:Async):Void {
+		// A request refused at its headers -- a Content-Length past the limit
+		// -- whose 413 threw, and whose 500 then threw as well, had no answer
+		// at all, and its stream was reset NO_ERROR: §8.1's way of saying a
+		// response is complete and the rest of the body is not wanted. It is
+		// reset INTERNAL_ERROR, as one whose serving throws after its body is.
+		var session = new H2Session(config -> {
+			config.maxRequestBodySize = 10;
+			config.rateLimitKey = handler -> {
+				if (handler.requestPath == "/upload") {
+					handler.addEventListener(crossbyte.events.HTTPStatusEvent.HTTP_RESPONSE_STATUS, _ -> throw "the listener broke");
+				}
+				return null;
+			};
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", "100")]);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.request(3, "GET", "/index.html", true);
+				session.until(() -> session.finished(3) || session.ended, () -> {
+					session.close();
+					Assert.equals(-1, session.status(1), "an answer went out after all, so this shows nothing");
+					Assert.equals(2, session.resetCode(1), "a stream refused with no answer was reset " + session.resetCode(1));
+					Assert.equals(200, session.status(3), "the connection did not carry on");
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testARefusalIsCompleteBeforeItsStreamIsReset(async:Async):Void {
+		// A refusal at the headers asks the client to stop sending its body
+		// with a reset, NO_ERROR, which §8.1 allows after a complete response.
+		// It went out straight after the answer was handed over, so an answer
+		// the client's window could not take whole -- an errorDocument of 100
+		// KB -- was cut off by the reset that followed its first 64 KB. The
+		// reset now waits for the answer to end.
+		var page = new ByteArray();
+		for (i in 0...100 * 1024) {
+			page.writeByte(0x61 + (i % 26));
+		}
+		var session = new H2Session(config -> {
+			config.maxRequestBodySize = 10;
+			var document = config.rootDirectory.resolvePath("error.html");
+			document.save(page);
+			config.errorDocument = document;
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", "100")]);
+			session.until(() -> session.received(1) >= 65535 || session.finished(1) || session.ended, () -> {
+				var resetEarly:Int = session.resetCode(1);
+				session.windowUpdate(0, 1 << 20);
+				session.windowUpdate(1, 1 << 20);
+				session.until(() -> session.resetCode(1) >= 0 || session.ended, () -> {
+					session.close();
+					Assert.equals(413, session.status(1));
+					Assert.equals(-1, resetEarly, "the stream was reset before its answer had all gone out");
+					Assert.equals(page.length, session.received(1), "the answer was cut short");
+					Assert.equals(0, session.resetCode(1), "the stream was not reset NO_ERROR once answered");
+					async.done();
+				});
+			});
+		});
+	}
+
 	/**
 		The frames written for stream 1 of one GET for `/index.html` through an
 		`H2ConnectionHandler`, on a socket that throws when the response's
@@ -1661,6 +2298,22 @@ class HTTPServerH2Test extends utest.Test {
 				}
 			});
 		});
+	}
+
+	/**
+		Bytes the server's HTTP/2 connections hold for their clients: what each
+		stream has queued behind flow control, and what each socket has not
+		sent.
+	**/
+	private static function __heldBy(server:HTTPServer):Int {
+		var total:Int = 0;
+		for (handler in @:privateAccess server.__activeHttp2) {
+			for (stream in @:privateAccess handler.__connection.__streams) {
+				total += stream.queued;
+			}
+			total += @:privateAccess handler.__socket.outputBufferLength;
+		}
+		return total;
 	}
 
 	/** Writes `size` patterned bytes to big.bin under the configuration's root, and answers its path. */
@@ -1892,6 +2545,13 @@ private class H2Session {
 
 	/** The last stream that GOAWAY said the server would process, or -1. */
 	public var goAwayLastStream(default, null):Int = -1;
+
+	/**
+		PINGs the server has acknowledged. It answers one once it has read
+		everything sent before it, so this is how a case knows the server has
+		taken in a run of frames, whatever it made of them.
+	**/
+	public var pingAcks(default, null):Int = 0;
 
 	/**
 	 * When the far end closed the socket, or -1. Never set by `close()`: the
@@ -2139,6 +2799,33 @@ private class H2Session {
 		__send(out);
 	}
 
+	/**
+		Sends a GOAWAY: `code`, NO_ERROR by default, and `lastStreamId`, the
+		last stream the server opened that this side will process -- 0 for a
+		client, which is never pushed one.
+	**/
+	public function goAway(code:Int = 0, lastStreamId:Int = 0):Void {
+		var payload:Bytes = Bytes.alloc(8);
+		payload.set(0, (lastStreamId >> 24) & 0x7F);
+		payload.set(1, (lastStreamId >> 16) & 0xFF);
+		payload.set(2, (lastStreamId >> 8) & 0xFF);
+		payload.set(3, lastStreamId & 0xFF);
+		payload.set(4, (code >> 24) & 0xFF);
+		payload.set(5, (code >> 16) & 0xFF);
+		payload.set(6, (code >> 8) & 0xFF);
+		payload.set(7, code & 0xFF);
+		var out = new BytesBuffer();
+		__writeFrame(out, H2FrameType.GOAWAY, 0, 0, payload);
+		__send(out);
+	}
+
+	/** Sends one frame as given, well formed or not. */
+	public function frame(type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {
+		var out = new BytesBuffer();
+		__writeFrame(out, type, flags, streamId, payload);
+		__send(out);
+	}
+
 	/** Every `:status` the server sent on `streamId`, interim ones first. */
 	public function statuses(streamId:Int):Array<Int> {
 		return __statuses.exists(streamId) ? __statuses.get(streamId).copy() : [];
@@ -2316,6 +3003,8 @@ private class H2Session {
 			var payload:Bytes = frame.payload;
 			__resets.set(frame.streamId, (payload.get(0) << 24) | (payload.get(1) << 16) | (payload.get(2) << 8) | payload.get(3));
 			__finish(frame.streamId);
+		} else if (frame.type == H2FrameType.PING && frame.has(H2Flags.ACK)) {
+			pingAcks++;
 		} else if (frame.type == H2FrameType.GOAWAY && goAwayAt < 0) {
 			goAwayAt = haxe.Timer.stamp();
 			var payload:Bytes = frame.payload;
