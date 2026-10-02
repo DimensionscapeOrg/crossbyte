@@ -2336,6 +2336,18 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On neko, what another thread posts to a runtime, a `Task`'s first
+  listener and an HTTP request's cancel are no longer lost. A neko object
+  gains a field when it is first set, which can move its field table, and
+  a write another thread made meanwhile went with the old table. A
+  runtime first set two of its own fields after other threads could post
+  to it: about one child runtime in 400 lost a post, and as many posts
+  threw while holding the post lock, which hung the runtime for good. A
+  `Task` lost its first listener about once in 15,000, so an asynchronous
+  BCrypt or Argon2id call or `db.submit(...).onComplete` waited for good;
+  and a cancel landing as a load started was lost about once in 800, the
+  request going out as though never cancelled. Found by auditing every
+  thread `Worker`'s fix above suggested.
 - On the jvm a refused connect is reported as refused by `WebSocket`,
   `Socket` and so `NetConnection`, whichever select finds it first. NIO
   closes a channel whose connect failed, so a select after the one that
