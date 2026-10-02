@@ -311,6 +311,220 @@ class HTTPStreamingTest extends utest.Test {
 			}, 3.0, _ -> finish(true));
 		});
 	}
+	public function testABufferedResponseItsClientTakesNoneOfIsGivenUp(async:Async):Void {
+		// A response written whole -- respond() with a body under the output
+		// cap -- whose client stopped reading waited in the socket's buffer
+		// for as long as the connection lasted: once written it was the idle
+		// deadline's to end, and with keepAliveTimeout at 0 there is none. It
+		// is given up at the stall deadline, as a file the client takes
+		// nothing of is: the connection closed, and its bytes let go.
+		var size:Int = 7 * 1024 * 1024;
+		var body = new ByteArray();
+		body.length = size;
+		var handler:HTTPRequestHandler = null;
+		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.requestTimeout = 0;
+		config.keepAliveTimeout = 0;
+		config.middleware.push(function(h:HTTPRequestHandler, next:?Dynamic->Void):Void {
+			handler = h;
+			h.respondBytes(200, "application/octet-stream", body);
+		});
+		var server = new HTTPServer(config);
+
+		var client = new sys.net.Socket();
+		client.connect(new sys.net.Host("127.0.0.1"), server.localPort);
+		client.output.writeString("GET /big HTTP/1.1\r\nHost: localhost\r\n\r\n");
+		client.output.flush();
+
+		__whenParked(() -> handler, function(parked:Bool):Void {
+			if (parked) {
+				// The sweep, as it would run once the deadline has passed.
+				server.__sweep(haxe.Timer.stamp() + 31);
+			}
+			HTTPTestSupport.pumpWallUntilAsync(() -> server.activeConnections == 0, parked ? 3.0 : 0.0, function(_):Void {
+				var open:Int = server.activeConnections;
+				try client.close() catch (_:Dynamic) {}
+				try server.close() catch (_:Dynamic) {}
+				Assert.isTrue(parked, "the response never stalled, so this shows nothing");
+				Assert.equals(0, open, "a response its client took none of was held with both timeouts off");
+				async.done();
+			});
+		});
+	}
+
+	public function testAResponseStillGoingOutIsNotReapedAsIdle(async:Async):Void {
+		// The idle deadline was counted from when a response was written, not
+		// from when its client had it: a response larger than the system takes
+		// at once, to a client slower to read it than keepAliveTimeout, was
+		// cut off at that deadline as though the connection sat idle -- the
+		// client got its whole Content-Length promised and part of the body.
+		// A connection is idle from when what it sent has gone.
+		var size:Int = 7 * 1024 * 1024;
+		var body = new ByteArray();
+		for (i in 0...size) {
+			body.writeByte(__patternAt(i));
+		}
+		var handler:HTTPRequestHandler = null;
+		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.keepAliveTimeout = 0.5;
+		config.middleware.push(function(h:HTTPRequestHandler, next:?Dynamic->Void):Void {
+			handler = h;
+			h.respondBytes(200, "application/octet-stream", body);
+		});
+		var server = new HTTPServer(config);
+
+		var client = new sys.net.Socket();
+		client.connect(new sys.net.Host("127.0.0.1"), server.localPort);
+		client.output.writeString("GET /big HTTP/1.1\r\nHost: localhost\r\n\r\n");
+		client.output.flush();
+
+		__whenParked(() -> handler, function(parked:Bool):Void {
+			// Twice the idle allowance, reading nothing.
+			var resumeAt:Float = haxe.Timer.stamp() + 1.0;
+			HTTPTestSupport.pumpWallUntilAsync(() -> haxe.Timer.stamp() >= resumeAt, 3.0, function(_):Void {
+				__readRaw(client, size, false, function(got:Int, closed:Bool):Void {
+					try client.close() catch (_:Dynamic) {}
+					try server.close() catch (_:Dynamic) {}
+					Assert.isTrue(parked, "the response never waited on its client, so this shows nothing");
+					Assert.equals(size, got, "the response was cut off");
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testAResponseThatClosesItsConnectionIsSentWhole(async:Async):Void {
+		// A response with Connection: close -- the client asked for it here --
+		// closed its connection as soon as it was written, and closing throws
+		// away whatever the system had not taken yet: a response larger than
+		// that reached its client cut off. It closes once all of it has gone.
+		var size:Int = 7 * 1024 * 1024;
+		var body = new ByteArray();
+		for (i in 0...size) {
+			body.writeByte(__patternAt(i));
+		}
+		var handler:HTTPRequestHandler = null;
+		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.middleware.push(function(h:HTTPRequestHandler, next:?Dynamic->Void):Void {
+			handler = h;
+			h.respondBytes(200, "application/octet-stream", body);
+		});
+		var server = new HTTPServer(config);
+
+		var client = new sys.net.Socket();
+		client.connect(new sys.net.Host("127.0.0.1"), server.localPort);
+		client.output.writeString("GET /big HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+		client.output.flush();
+
+		__whenParked(() -> handler, function(parked:Bool):Void {
+			__readRaw(client, size, true, function(got:Int, closed:Bool):Void {
+				try client.close() catch (_:Dynamic) {}
+				try server.close() catch (_:Dynamic) {}
+				Assert.isTrue(parked, "the response never waited on its client, so this shows nothing");
+				Assert.equals(size, got, "the response was cut off by its close");
+				Assert.isTrue(closed, "the connection was not closed after the response");
+				async.done();
+			});
+		});
+	}
+
+	public function testAConnectionDrainClosesIsSentWhole(async:Async):Void {
+		// drain() closed a kept-alive connection between requests at once,
+		// with nothing in flight -- except the last response, still going out
+		// to a client reading it slowly, cut off by the close. It closes once
+		// that has gone.
+		var size:Int = 7 * 1024 * 1024;
+		var body = new ByteArray();
+		for (i in 0...size) {
+			body.writeByte(__patternAt(i));
+		}
+		var handler:HTTPRequestHandler = null;
+		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.middleware.push(function(h:HTTPRequestHandler, next:?Dynamic->Void):Void {
+			handler = h;
+			h.respondBytes(200, "application/octet-stream", body);
+		});
+		var server = new HTTPServer(config);
+
+		var client = new sys.net.Socket();
+		client.connect(new sys.net.Host("127.0.0.1"), server.localPort);
+		client.output.writeString("GET /big HTTP/1.1\r\nHost: localhost\r\n\r\n");
+		client.output.flush();
+
+		__whenParked(() -> handler, function(parked:Bool):Void {
+			var drained:Bool = false;
+			server.drain(10.0, () -> drained = true);
+			__readRaw(client, size, true, function(got:Int, closed:Bool):Void {
+				HTTPTestSupport.pumpWallUntilAsync(() -> drained, 3.0, function(_):Void {
+					try client.close() catch (_:Dynamic) {}
+					try server.close() catch (_:Dynamic) {}
+					Assert.isTrue(parked, "the response never waited on its client, so this shows nothing");
+					Assert.equals(size, got, "the response was cut off by the drain");
+					Assert.isTrue(closed, "the drain did not close the connection");
+					Assert.isTrue(drained, "the drain did not finish once the response had gone");
+					async.done();
+				});
+			});
+		});
+	}
+
+	/**
+		Reads `client`, pumping between reads, until the body of a response of
+		`bodySize` bytes has all come -- and with `untilClosed`, until the
+		server has closed the connection too -- then continues with the body
+		bytes received and whether the server closed it.
+	**/
+	private static function __readRaw(client:sys.net.Socket, bodySize:Int, untilClosed:Bool, then:(Int, Bool) -> Void):Void {
+		var received = new ByteArray();
+		var closed:Bool = false;
+		var chunk = haxe.io.Bytes.alloc(64 * 1024);
+		function body():Int {
+			var head:Int = __headerEnd(received);
+			return head >= 0 ? received.length - (head + 4) : -1;
+		}
+		HTTPTestSupport.pumpWallUntilAsync(function():Bool {
+			while (!closed && sys.net.Socket.select([client], null, null, 0).read.length > 0) {
+				var read:Int = 0;
+				try {
+					read = client.input.readBytes(chunk, 0, chunk.length);
+				} catch (_:haxe.io.Eof) {
+					closed = true;
+				} catch (_:Dynamic) {
+					closed = true;
+				}
+				if (read > 0) {
+					received.writeBytes(ByteArray.fromBytes(chunk), 0, read);
+				}
+			}
+			return closed || (!untilClosed && body() >= bodySize);
+		}, 15.0, _ -> then(body(), closed));
+	}
+
+	/**
+		Pumps until the response `handler()` is sending has bytes waiting in
+		its socket that its client has not taken, the same count for fifty
+		passes in a row -- the system's buffers full -- then continues with
+		whether it got there.
+	**/
+	private static function __whenParked(handler:Void->HTTPRequestHandler, then:Bool->Void):Void {
+		var pending:Int = -1;
+		var still:Int = 0;
+		HTTPTestSupport.pumpWallUntilAsync(function():Bool {
+			var current:Null<HTTPRequestHandler> = handler();
+			if (current == null) {
+				return false;
+			}
+			var now:Int = current.__origin.outputBufferLength;
+			if (now > 0 && now == pending) {
+				still++;
+			} else {
+				still = 0;
+				pending = now;
+			}
+			return still >= 50;
+		}, 10.0, then);
+	}
+
 	#end
 
 	/** Printable, with a long period: a misplaced slice cannot alias back. */

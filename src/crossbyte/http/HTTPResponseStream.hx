@@ -21,7 +21,9 @@ import crossbyte.io.ByteArray;
  * producer with more to send stops there and carries on from `onDrain`. One
  * that writes regardless is stopped at `HTTPServerConfig.maxOutputBufferSize`:
  * the response ends, cut short, with an error logged, rather than the server
- * holding without bound what a client is not reading.
+ * holding without bound what a client is not reading. And what a client
+ * takes none of for 30 seconds is given up, as any response's is, ending the
+ * response the same way.
  *
  * A stream belongs to the one response it was begun for. Once that has ended
  * -- by `end`, by the client leaving, or at the cap -- it refuses every write,

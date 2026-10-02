@@ -2163,6 +2163,44 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `HTTPServerConfig.maxOutputBufferSize` holds an HTTP/2 connection, as it
+  says, across its streams: what flow control holds back on each stream
+  counts with what the socket holds. Each stream's response waited whole on
+  its client's window, up to the cap apiece, so a client that opened 128
+  streams and no window held 128 times it -- 896 MB measured for 7 MB
+  answers, a gigabyte at the default cap. Past the cap a connection's next
+  requests now wait to be handed to the application, as an HTTP/1.1
+  connection's next request waits behind the response going out, and go on
+  in order as the client takes what is held; the same client holds the cap
+  and one answer, however many streams it opens (9 MB at 16, 64 and 128
+  streams of 1 MB answers, where it held 16, 64 and 128 MB). Requests an
+  application was handed before the connection filled, and answers later,
+  are still held whole -- the cap cannot refuse work already done -- and
+  are bounded by the deadline below. And a response held for
+  its client has a deadline: one whose own window keeps it from moving for
+  30 s is reset, and when the connection's window is what holds them, every
+  response waiting is reset and the requests waiting for room are refused
+  with `REFUSED_STREAM`, never having reached the application. A response
+  written whole had none, and waited for as long as the connection lasted.
+  The socket's buffer is held to the 256 KB the file pump uses, the rest
+  waiting in the stream's queue, so a client granting large windows over a
+  slow network no longer piles responses up past the socket's cap, which
+  closed the connection. A stream's queue no longer copies all it holds
+  for each piece written into it.
+- A response its client stops reading is given up at the 30 s stall
+  deadline over HTTP/1.1 too, whatever `requestTimeout` and
+  `keepAliveTimeout` are, as a file being sent already was: a body written
+  whole -- under the output cap -- or what a `beginResponse` stream wrote,
+  waited in the socket's buffer with no deadline but the idle one, so with
+  `keepAliveTimeout` at `0` for good. And a connection is idle from when
+  its last response has gone, not from when it was written: a response
+  larger than the system takes at once, to a client slower to read it than
+  `keepAliveTimeout`, was cut off by the idle close. A response with
+  `Connection: close`, and a connection `drain()` closes, likewise close
+  once what they sent has gone; closing at once threw it away.
+- The server's `output_buffer_bytes_max` and `output_buffer_bytes_total`
+  gauges count what an HTTP/2 connection holds behind flow control, which
+  they left out.
 - An HTTP/2 client's `GOAWAY` ends its connection as RFC 9113 6.8 says:
   the streams it opened are still answered, and what it sends on them
   still read, and the connection closes once they have ended; a stream it
