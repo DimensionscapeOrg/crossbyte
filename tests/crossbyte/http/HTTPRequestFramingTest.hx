@@ -252,20 +252,28 @@ class HTTPRequestFramingTest extends utest.Test {
 	}
 
 	/**
-		The same behind a file being sent: it was cut off where it was, and
-		the connection closed with it. It goes out whole now, and the
+		The same behind a response still going out: it was cut off where it
+		was, and the connection closed with it. It goes out whole now, and the
 		connection closes after it.
 	**/
-	public function testPipelinedBodiesPastWhatIsHeldLeaveAFileBeingSentWhole(async:Async):Void {
-		var root:crossbyte.io.File = crossbyte.io.File.createTempDirectory();
-		var size:Int = 2 * 1024 * 1024;
-		var file = new crossbyte.io.ByteArray();
-		file.length = size;
-		root.resolvePath("big.bin").save(file);
-		var server:HTTPServer = new HTTPServer(new HTTPServerConfig("127.0.0.1", 0, root));
+	public function testPipelinedBodiesPastWhatIsHeldLeaveAResponseGoingOutWhole(async:Async):Void {
+		// Written as it goes, its end a second after its start (on the wall's
+		// clock), so the uploads behind it have all arrived while it is still
+		// going out. A file sent in bursts tests the same branch, but on Linux
+		// a 2 MB file is gone before them.
+		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.middleware.push((handler, next) -> {
+			var response:HTTPResponseStream = handler.beginResponse(200, "text/plain");
+			response.writeText("first;");
+			haxe.Timer.delay(() -> {
+				response.writeText("last");
+				response.end();
+			}, 1000);
+		});
+		var server:HTTPServer = new HTTPServer(config);
 
 		var request = new crossbyte.io.ByteArray();
-		request.writeUTFBytes("GET /big.bin HTTP/1.1\r\nHost: x\r\n\r\n");
+		request.writeUTFBytes("GET /stream HTTP/1.1\r\nHost: x\r\n\r\n");
 		var body:String = __repeat("x".code, 600 * 1024);
 		for (i in 0...3) {
 			request.writeUTFBytes('POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: ${body.length}\r\n\r\n' + body);
@@ -273,15 +281,13 @@ class HTTPRequestFramingTest extends utest.Test {
 
 		__pipeline(server, request, function(received:crossbyte.io.ByteArray, closed:Bool):Void {
 			try server.close() catch (_:Dynamic) {}
-			try root.deleteDirectory(true) catch (_:Dynamic) {}
 
-			// The head, then the file: zeros, which no status line is.
 			received.position = 0;
-			var head:String = received.readUTFBytes(received.length < 512 ? received.length : 512);
-			var headEnd:Int = head.indexOf("\r\n\r\n");
-			Assert.isTrue(closed, "the connection was not closed after the file");
-			Assert.isTrue(StringTools.startsWith(head, "HTTP/1.1 200 "), "the file was not answered: " + head.substr(0, 40));
-			Assert.equals(size, headEnd < 0 ? -1 : received.length - (headEnd + 4), "the file was cut off, or more than it was answered");
+			var raw:String = received.readUTFBytes(received.length);
+			Assert.isTrue(StringTools.startsWith(raw, "HTTP/1.1 200 "), "the response was not given: " + raw.substr(0, 40));
+			Assert.isTrue(raw.indexOf("first;") > 0 && raw.indexOf("last") > 0, "the response going out was cut off: " + raw.substr(raw.length - 60));
+			Assert.equals(-1, raw.indexOf("HTTP/1.1 ", 1), "requests past what was held were answered");
+			Assert.isTrue(closed, "the connection was not closed after the response");
 			async.done();
 		});
 	}
