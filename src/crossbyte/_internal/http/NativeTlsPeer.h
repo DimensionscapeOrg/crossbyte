@@ -12,3 +12,10 @@
 // The DER of the certificate the peer presented on an hxcpp TLS context, or
 // null when there is none. See NativeTlsPeer.hx.
 Array<unsigned char> crossbyte_tls_peer_der(::Dynamic ssl);
+
+// The protocol an hxcpp TLS context runs, as mbedTLS names it ("TLSv1.3"), or
+// null for anything that is not one.
+::String crossbyte_tls_peer_protocol(::Dynamic ssl);
+
+// MBEDTLS_VERSION_NUMBER of the mbedTLS hxcpp built this program with.
+int crossbyte_tls_mbedtls_version();

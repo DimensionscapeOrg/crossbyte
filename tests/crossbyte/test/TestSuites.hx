@@ -316,6 +316,11 @@ class TestSuites {
 		// jvm and ran on nothing. A case that executes nowhere reads as
 		// protection while providing none.
 		runner.addCase(new crossbyte.net.ServerSocketTLSTest());
+		// Which TLS version hxcpp's mbedTLS negotiates, against itself and
+		// against Node's OpenSSL, and TLS 1.3 resumption. The class is cpp only.
+		#if cpp
+		runner.addCase(new crossbyte.net.TlsProtocolTest());
+		#end
 		// The jvm's own TLS backend and socket shim, against the JDK's TLS
 		// stack and raw NIO: chains, failures and what connections cost.
 		#if (java || jvm)
