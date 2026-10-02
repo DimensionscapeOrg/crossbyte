@@ -53,6 +53,14 @@ typedef MySQLConfig = {
 	 * unset. A connect to a host that drops the packets otherwise waits for
 	 * the operating system, 21 seconds on Windows, over two minutes on
 	 * Linux, and a server that accepts and never greets waited 50.
+	 *
+	 * The `MySQLConnectionError` says which ran out: 2003, "Timed out after
+	 * ... connecting", when no connection was made in time, the host
+	 * dropped the packets, or its listener's queue was full, and 2013,
+	 * "Timed out after ... waiting for the server's greeting", when one was
+	 * made and the server said nothing. The system makes a connection for a
+	 * listener whose queue has room before the server takes it, so a server
+	 * too busy to accept reads as the second, on every system.
 	 */
 	@:optional var connectTimeout:Float;
 

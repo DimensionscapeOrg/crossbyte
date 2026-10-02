@@ -233,7 +233,11 @@ static bool crossbyte_sqlite_sync_end(void *p, int run) {
 
 // An interrupt() of a synchronous connection, before the one of SQLite:
 // counts itself, then has the progress handler stop the request starting
-// now, if one is.
+// now, if one is. Fenced after: the interrupt SQLite then makes is a plain
+// store, which on an ARM processor may be seen before a store-release made
+// ahead of it. Seen first, and cleared by the request as its statement
+// starts, it would leave that request reading no stop when its first step
+// returns, and running on.
 static void crossbyte_sqlite_sync_stop(void *p) {
 	crossbyte_sqlite_runs *runs = (crossbyte_sqlite_runs *)p;
 	runs->cancels.fetch_add(1, std::memory_order_seq_cst);
@@ -242,6 +246,8 @@ static void crossbyte_sqlite_sync_stop(void *p) {
 	if (now != 0) {
 		runs->stopFor.store(now, std::memory_order_seq_cst);
 	}
+
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 }
 ')
 class NativeSQLiteConnection implements Connection {
