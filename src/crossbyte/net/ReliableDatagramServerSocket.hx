@@ -903,8 +903,17 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		The agent itself is not closed: a caller may want to inspect what it
 		found. Detaching only stops this server driving it.
+
+		It may be called from any thread, as `close()` may, and is handed to
+		the runtime the same way. Made elsewhere, it took the agent's tick
+		off the runtime from the wrong thread.
 	**/
 	public function detachIceAgent():Void {
+		var runtime:Null<CrossByte> = @:privateAccess __socket.__cbInstance;
+		if (__iceTick != null && RuntimeHandOff.offThread(runtime) && runtime.post(detachIceAgent)) {
+			return;
+		}
+
 		if (__iceTick != null) {
 			__untick(__iceTick);
 
@@ -1149,11 +1158,26 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		Frees the relay's allocation, ending first each session that reached
 		its peer through it, at once, as `ReliableDatagramSocket.abort()` does,
 		each with a FIN, while the relay can still carry one.
+
+		It may be called from any thread, as `close()` may, and is handed to
+		the runtime the same way. Made elsewhere, it took the relay's tick off
+		the runtime from the wrong thread, and failed an `allocateRelay` still
+		waiting there, running its handlers on that thread.
 	**/
 	public function releaseRelay():Void {
 		var released = relay;
 
 		if (released == null) {
+			return;
+		}
+
+		var runtime:Null<CrossByte> = @:privateAccess __socket.__cbInstance;
+		if (RuntimeHandOff.offThread(runtime) && runtime.post(function():Void {
+			// Not one allocated since.
+			if (relay == released) {
+				releaseRelay();
+			}
+		})) {
 			return;
 		}
 
