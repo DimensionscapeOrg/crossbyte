@@ -868,6 +868,14 @@ class HTTP2BackendTest extends utest.Test {
 					break;
 				}
 				total += H2ConnectionPool.reapIdle();
+				#if eval
+				// eval runs one thread at a time and hands over between them
+				// only now and then: a sweep with no pause held the requests
+				// it races behind it, and the first of them timed out. A
+				// millisecond's pause still sweeps about a thousand times a
+				// second, and all thousand requests pass.
+				System.sleep(0.001);
+				#end
 			}
 			control.acquire();
 			reaped = total;
@@ -1618,6 +1626,11 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.isTrue(held.session.dead, "a connection that took nothing for the whole timeout was kept");
 	}
 
+	#if !eval
+	// Not on eval, where a request's head is always the writer's to write
+	// (H2ClientSession.DIRECT_HEADS): there a cancel returns at once whatever
+	// the writer is held in, as testCancellingAnUploadAServerStopsReadingReturnsAtOnce
+	// shows, and the writer is the close's to end.
 	public function testCancellingARequestWhoseHeadIsNotTakenReturnsAtOnce():Void {
 		// No timeout: the cancel is what ends it, and the write it is held
 		// in has the close's grace, a second, from the cancel.
@@ -1640,6 +1653,7 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.isTrue(took < 4, 'the cancelled request took ${took}s to end');
 		Assert.isTrue(held.socket.released, "the held write was never ended");
 	}
+	#end
 
 	/** A session over a `HoldingSocket` to `port`, its first request answered. */
 	private static function __holdingSession(port:Int):{session:H2ClientSession, socket:HoldingSocket} {
