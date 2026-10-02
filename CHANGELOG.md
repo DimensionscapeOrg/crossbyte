@@ -2465,12 +2465,15 @@ entry below says how:
   work behind it, and a statement read a page at a time kept its read open
   -- a writer elsewhere was told "database is locked" -- until the next
   statement on the connection read all its rows.
-- `SQLiteConnection.cancel()`, and a statement's own, stop a statement
-  whose work is just starting. SQLite clears an interrupt as a statement
-  starts when no other is running, so a cancel that landed while the
-  worker prepared the statement was lost, and the statement ran on: an
-  `execute()` and `cancel()` in a row lost it within the first few of 150
-  tries. A progress handler stops it now, until its work is over.
+- On an asynchronous `SQLiteConnection`, its `cancel()` and a statement's
+  own stop a statement whose work is just starting. SQLite clears an
+  interrupt as a statement starts when no other is running, so a cancel
+  that landed while the worker prepared the statement was lost, and the
+  statement ran on: an `execute()` and `cancel()` in a row lost it within
+  the first few of 150 tries. A progress handler stops it now. A
+  synchronous connection, whose statements a cancel from another thread
+  interrupts, has no handler and pays nothing for one: a cancel that lands
+  as its statement starts is still lost there, as SQLite has it.
 - An asynchronous `SQLiteConnection` no longer crashes the process when
   the calling thread asks it something while its worker runs a statement.
   `request()`, and the properties and methods that ask SQLite --

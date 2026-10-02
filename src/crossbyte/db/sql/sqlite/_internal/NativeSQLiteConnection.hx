@@ -20,12 +20,17 @@ import sys.db.ResultSet;
  * here notes it, and `open` takes it straight after the glue's own open
  * returns, on the same thread -- no change to hxcpp needed.
  *
- * Through the same pointer it registers a progress handler, which SQLite
- * calls every thousand steps of its virtual machine: it stops the statement
- * running when `stopRunning(true)` asks. `sqlite3_interrupt` alone is lost
- * when it lands as a statement starts -- SQLite clears it there when no
- * other statement is running -- and a statement's `cancel()` can land just
- * then, as its work is taken up.
+ * Through the same pointer, on an asynchronous connection, it registers a
+ * progress handler, which SQLite calls every thousand steps of its virtual
+ * machine: it stops the run a `cancel()` has asked to stop while that run is
+ * the one under way (`publish`, `beginStop`, `stop`). `sqlite3_interrupt`
+ * alone is lost when it lands as a statement starts -- SQLite clears it
+ * there when no other statement is running -- and a `cancel()` can land
+ * just then, as the worker takes the work up. The interrupt is still made:
+ * it stops a single step that runs long, such as counting a whole table,
+ * inside which SQLite calls no handler. A synchronous connection has no
+ * handler: what cancels its statements is another thread, with
+ * `interrupt()`.
  */
 @:noCompletion
 @:buildXml('<include name="${HXCPP}/src/hx/libs/sqlite/Build.xml"/>')
@@ -71,41 +76,121 @@ static void crossbyte_sqlite_interrupt(void *db) {
 	sqlite3_interrupt((struct sqlite3 *)db);
 }
 
-// Whether the statement running on a connection is to stop: what its
-// progress handler answers SQLite, which then fails the statement with
-// SQLITE_INTERRUPT, as sqlite3_interrupt does.
-struct crossbyte_sqlite_stop {
-	std::atomic<int> requested;
+// What a cancel() and the work it would stop decide between them, one per
+// asynchronous connection, made and freed by the connection on the thread
+// that runs it. runner is the run the worker has under way, 0 for none;
+// stopFor, the run a cancel() has asked the progress handler to stop;
+// stopping, how many cancel()s are between reading the run under way and
+// having interrupted it, while the worker starts no run. Padded onto cache
+// lines of their own: the worker writes runner twice for each piece of
+// work, and nothing else touches them but a cancel().
+struct crossbyte_sqlite_runs {
+	char before[64];
+	std::atomic<int> runner;
+	std::atomic<int> stopFor;
+	std::atomic<int> stopping;
+	char after[64];
 };
 
-static int crossbyte_sqlite_progress(void *stop) {
-	return ((crossbyte_sqlite_stop *)stop)->requested.load(std::memory_order_relaxed);
+static void *crossbyte_sqlite_runs_new() {
+	crossbyte_sqlite_runs *runs = new crossbyte_sqlite_runs();
+	runs->runner.store(0);
+	runs->stopFor.store(0);
+	runs->stopping.store(0);
+	return runs;
+}
+
+static void crossbyte_sqlite_runs_free(void *runs) {
+	delete (crossbyte_sqlite_runs *)runs;
+}
+
+// Called by SQLite every thousand steps of a statement, on the thread
+// stepping it: stops it when a cancel() has asked for the run under way,
+// failing it with SQLITE_INTERRUPT as sqlite3_interrupt does.
+static int crossbyte_sqlite_progress(void *p) {
+	crossbyte_sqlite_runs *runs = (crossbyte_sqlite_runs *)p;
+	int stop = runs->stopFor.load(std::memory_order_relaxed);
+	return stop != 0 && stop == runs->runner.load(std::memory_order_relaxed);
 }
 
 // Registering and removing the handler takes the mutex of the connection,
 // which a statement stepping on another thread holds: in a GC-free zone, as
 // the blocking calls of the glue are, touching nothing of the GC inside.
-static void *crossbyte_sqlite_watch_progress(void *db) {
-	crossbyte_sqlite_stop *stop = new crossbyte_sqlite_stop();
-	stop->requested.store(0);
-	// Every thousand steps: an atomic read each time, against the tens of
-	// steps a row takes.
+static void crossbyte_sqlite_watch(void *db, void *runs) {
 	hx::EnterGCFreeZone();
-	sqlite3_progress_handler((struct sqlite3 *)db, 1000, crossbyte_sqlite_progress, stop);
+	sqlite3_progress_handler((struct sqlite3 *)db, 1000, crossbyte_sqlite_progress, runs);
 	hx::ExitGCFreeZone();
-	return stop;
-}
-
-static void crossbyte_sqlite_set_stop(void *stop, bool on) {
-	((crossbyte_sqlite_stop *)stop)->requested.store(on ? 1 : 0);
 }
 
 // Before the connection closes: nothing calls the handler after this.
-static void crossbyte_sqlite_unwatch_progress(void *db, void *stop) {
+static void crossbyte_sqlite_unwatch(void *db) {
 	hx::EnterGCFreeZone();
 	sqlite3_progress_handler((struct sqlite3 *)db, 0, 0, 0);
 	hx::ExitGCFreeZone();
-	delete (crossbyte_sqlite_stop *)stop;
+}
+
+// The worker, as a run starts: publishes it, then reads the count of
+// cancel()s -- in that order, as a cancel() counts itself and then reads
+// the run under way, so that one of the two always sees the other. -1
+// instead while a cancel() is stopping a run: the worker waits for it to
+// finish before it starts this one. A stop asked for before this run was
+// published is for a run that has ended: it is cleared, so that a run
+// number met again is not stopped by it.
+static int crossbyte_sqlite_publish(void *p, int run, int *cancels) {
+	crossbyte_sqlite_runs *runs = (crossbyte_sqlite_runs *)p;
+
+	if (runs->stopFor.load(std::memory_order_relaxed) != 0) {
+		runs->stopFor.store(0, std::memory_order_relaxed);
+	}
+
+	runs->runner.store(run, std::memory_order_seq_cst);
+	int count;
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+	// The store above is an xchg here, a full barrier: a plain read after it
+	// is ordered after it.
+	count = *(volatile int *)cancels;
+#elif defined(_MSC_VER)
+	std::atomic_thread_fence(std::memory_order_seq_cst);
+	count = *(volatile int *)cancels;
+#else
+	count = __atomic_load_n(cancels, __ATOMIC_SEQ_CST);
+#endif
+
+	if (runs->stopping.load(std::memory_order_seq_cst) != 0) {
+		return -1;
+	}
+
+	return count;
+}
+
+static void crossbyte_sqlite_unpublish(void *p) {
+	((crossbyte_sqlite_runs *)p)->runner.store(0, std::memory_order_release);
+}
+
+// A cancel(), after counting itself: holds the worker back from starting a
+// run until crossbyte_sqlite_end_stop, then reads the run under way, 0 for
+// none -- in that order, as the worker publishes its run and then reads
+// whether a cancel() is stopping one, so that one of the two always sees
+// the other. An interrupt made in between lands in the run it was read
+// for, or before the next one starts: never inside the next one.
+static int crossbyte_sqlite_begin_stop(void *p) {
+	crossbyte_sqlite_runs *runs = (crossbyte_sqlite_runs *)p;
+	runs->stopping.fetch_add(1, std::memory_order_seq_cst);
+	return runs->runner.load(std::memory_order_seq_cst);
+}
+
+static void crossbyte_sqlite_end_stop(void *p) {
+	((crossbyte_sqlite_runs *)p)->stopping.fetch_sub(1, std::memory_order_seq_cst);
+}
+
+// The worker, waiting to start a run: whether a cancel() is still stopping
+// one.
+static bool crossbyte_sqlite_stopping(void *p) {
+	return ((crossbyte_sqlite_runs *)p)->stopping.load(std::memory_order_acquire) != 0;
+}
+
+static void crossbyte_sqlite_stop(void *p, int run) {
+	((crossbyte_sqlite_runs *)p)->stopFor.store(run, std::memory_order_seq_cst);
 }
 ')
 class NativeSQLiteConnection implements Connection {
@@ -116,22 +201,88 @@ class NativeSQLiteConnection implements Connection {
 	// connection close() has freed.
 	@:noCompletion private var __db:cpp.Pointer<cpp.Void>;
 	@:noCompletion private var __dbLock:sys.thread.Mutex;
-	// What the progress handler reads, for stopRunning(); null once closed,
-	// and guarded by __dbLock as __db is.
-	@:noCompletion private var __stop:cpp.Pointer<cpp.Void>;
+	// Whether the progress handler is registered: on an asynchronous
+	// connection, from open() to close().
+	@:noCompletion private var __watched:Bool = false;
 
-	public static function open(path:String):NativeSQLiteConnection {
+	/**
+		Opens `path`. `runs`, from `newRuns()`, is an asynchronous
+		connection's: its progress handler reads it, and stops the run a
+		`cancel()` asks to stop there. Null for a synchronous connection, which
+		gets no handler.
+	**/
+	public static function open(path:String, runs:cpp.Pointer<cpp.Void>):NativeSQLiteConnection {
 		__watchOpens();
 		// Cleared first, so what is taken below can only be this open's.
 		__takeOpened();
 		var connection:NativeSQLiteConnection = new NativeSQLiteConnection(__connect(path));
 		connection.__db = __takeOpened();
 
-		if (connection.__db != null) {
-			connection.__stop = __watchProgress(connection.__db);
+		if (runs != null && connection.__db != null) {
+			__watch(connection.__db, runs);
+			connection.__watched = true;
 		}
 
 		return connection;
+	}
+
+	/**
+		A new record of an asynchronous connection's runs, for `open`, the
+		worker (`publish`, `unpublish`) and a `cancel()` (`running`, `stop`).
+		Freed with `freeRuns`, once nothing can use it.
+	**/
+	public static function newRuns():cpp.Pointer<cpp.Void> {
+		return __runsNew();
+	}
+
+	public static function freeRuns(runs:cpp.Pointer<cpp.Void>):Void {
+		__runsFree(runs);
+	}
+
+	/**
+		The worker, as a run starts: publishes `run` as the one under way,
+		then reads `cancels`, the connection's count of `cancel()`s, and
+		answers it -- in that order, as a `cancel()` counts itself and then
+		reads the run under way, so that one of the two always sees the other.
+		Answers -1 instead while a `cancel()` is stopping a run, between
+		`beginStop` and `endStop`: the worker waits for `stopping` to clear
+		before it starts this one.
+	**/
+	public static function publish(runs:cpp.Pointer<cpp.Void>, run:Int, cancels:cpp.Pointer<Int>):Int {
+		return __publish(runs, run, cancels);
+	}
+
+	/** The worker, as a run ends: nothing is under way. **/
+	public static function unpublish(runs:cpp.Pointer<cpp.Void>):Void {
+		__unpublish(runs);
+	}
+
+	/**
+		A `cancel()`, after counting itself: holds the worker back from
+		starting a run until `endStop`, and answers the run under way, 0 for
+		none. What it interrupts in between is that run, or nothing: the
+		interrupt lands before the next run starts, never inside it.
+	**/
+	public static function beginStop(runs:cpp.Pointer<cpp.Void>):Int {
+		return __beginStop(runs);
+	}
+
+	public static function endStop(runs:cpp.Pointer<cpp.Void>):Void {
+		__endStop(runs);
+	}
+
+	/** The worker, waiting to start a run: whether a `cancel()` is still between `beginStop` and `endStop`. **/
+	public static function stopping(runs:cpp.Pointer<cpp.Void>):Bool {
+		return __stopping(runs);
+	}
+
+	/**
+		A `cancel()`: has the progress handler stop `run` while it is the one
+		under way -- within a thousand steps, failing it with "interrupted" --
+		and never another.
+	**/
+	public static function stop(runs:cpp.Pointer<cpp.Void>, run:Int):Void {
+		__stop(runs, run);
 	}
 
 	public function new(handle:Dynamic) {
@@ -150,22 +301,6 @@ class NativeSQLiteConnection implements Connection {
 
 		if (__db != null) {
 			__interruptDb(__db);
-		}
-
-		__dbLock.release();
-	}
-
-	/**
-		Has SQLite stop the statement running on this connection, and any
-		started on it, while `on` -- it fails with "interrupted" -- until
-		called again with `false`. From any thread. Unlike `interrupt()` it is
-		not lost when it lands as a statement starts.
-	**/
-	public function stopRunning(on:Bool):Void {
-		__dbLock.acquire();
-
-		if (__stop != null) {
-			__setStop(__stop, on);
 		}
 
 		__dbLock.release();
@@ -247,16 +382,14 @@ class NativeSQLiteConnection implements Connection {
 		// later finds nothing.
 		__dbLock.acquire();
 		var db:cpp.Pointer<cpp.Void> = __db;
-		var stop:cpp.Pointer<cpp.Void> = __stop;
 		__db = null;
-		__stop = null;
 		__dbLock.release();
 
-		// Outside the lock, which interrupt() and stopRunning() wait on: this
-		// can wait for a statement another thread is stepping. Neither can
-		// reach either pointer now.
-		if (stop != null) {
-			__unwatchProgress(db, stop);
+		// Outside the lock, which interrupt() waits on: this can wait for a
+		// statement another thread is stepping.
+		if (__watched && db != null) {
+			__watched = false;
+			__unwatch(db);
 		}
 
 		__live = null;
@@ -341,14 +474,35 @@ class NativeSQLiteConnection implements Connection {
 	@:native("crossbyte_sqlite_interrupt")
 	extern private static function __interruptDb(db:cpp.Pointer<cpp.Void>):Void;
 
-	@:native("crossbyte_sqlite_watch_progress")
-	extern private static function __watchProgress(db:cpp.Pointer<cpp.Void>):cpp.Pointer<cpp.Void>;
+	@:native("crossbyte_sqlite_runs_new")
+	extern private static function __runsNew():cpp.Pointer<cpp.Void>;
 
-	@:native("crossbyte_sqlite_set_stop")
-	extern private static function __setStop(stop:cpp.Pointer<cpp.Void>, on:Bool):Void;
+	@:native("crossbyte_sqlite_runs_free")
+	extern private static function __runsFree(runs:cpp.Pointer<cpp.Void>):Void;
 
-	@:native("crossbyte_sqlite_unwatch_progress")
-	extern private static function __unwatchProgress(db:cpp.Pointer<cpp.Void>, stop:cpp.Pointer<cpp.Void>):Void;
+	@:native("crossbyte_sqlite_watch")
+	extern private static function __watch(db:cpp.Pointer<cpp.Void>, runs:cpp.Pointer<cpp.Void>):Void;
+
+	@:native("crossbyte_sqlite_unwatch")
+	extern private static function __unwatch(db:cpp.Pointer<cpp.Void>):Void;
+
+	@:native("crossbyte_sqlite_publish")
+	extern private static function __publish(runs:cpp.Pointer<cpp.Void>, run:Int, cancels:cpp.Pointer<Int>):Int;
+
+	@:native("crossbyte_sqlite_unpublish")
+	extern private static function __unpublish(runs:cpp.Pointer<cpp.Void>):Void;
+
+	@:native("crossbyte_sqlite_begin_stop")
+	extern private static function __beginStop(runs:cpp.Pointer<cpp.Void>):Int;
+
+	@:native("crossbyte_sqlite_end_stop")
+	extern private static function __endStop(runs:cpp.Pointer<cpp.Void>):Void;
+
+	@:native("crossbyte_sqlite_stopping")
+	extern private static function __stopping(runs:cpp.Pointer<cpp.Void>):Bool;
+
+	@:native("crossbyte_sqlite_stop")
+	extern private static function __stop(runs:cpp.Pointer<cpp.Void>, run:Int):Void;
 }
 
 @:noCompletion
