@@ -531,11 +531,12 @@ class HTTPServerConfig {
 		`true`; `false` restores the one-shot close-per-request behavior
 		exactly.
 
-		Off, an HTTP/2 connection takes one stream: a GOAWAY naming it goes
-		out as it opens, a stream opened after it is refused with
-		`REFUSED_STREAM`: safe for the client to send again elsewhere,
-		and the connection closes once that one has been answered. It used to
-		make no difference to HTTP/2 at all.
+		Off, an HTTP/2 connection ends at its first stream, as
+		`keepAliveMaxRequests` describes with a limit of one: streams the
+		client sent with it are answered too, one opened after it has said it
+		read the GOAWAY is refused with `REFUSED_STREAM`, safe to send again
+		elsewhere, and the connection closes once they have been answered.
+		It used to make no difference to HTTP/2 at all.
 	**/
 	public var keepAlive:Bool;
 
@@ -576,10 +577,17 @@ class HTTPServerConfig {
 		yields exactly 1,000 responses, the 1,000th carrying
 		`Connection: close`.
 
-		Over HTTP/2, the streams one connection takes: the GOAWAY goes out as
-		the last of them opens and names it, a stream opened after it is
-		refused with `REFUSED_STREAM`, and the connection closes once the
-		ones it took have been answered. HTTP/2 used to take no notice of it.
+		Over HTTP/2, the streams one connection asks for. As the last of them
+		opens a GOAWAY goes out, naming no stream, and a PING after it. The
+		streams the client had already sent by then are taken and answered
+		as well, so a busy connection carries a few past the limit; once the
+		client has answered the PING, a final GOAWAY names the last stream
+		taken, one opened after that is refused with `REFUSED_STREAM`, and
+		the connection closes once the streams it took have been answered.
+		A client that never answers the PING has the final GOAWAY two seconds
+		on. HTTP/2 used to take no notice of the limit, and then named the
+		last stream in its only GOAWAY, so the streams a busy client had in
+		flight were refused: 42 of 12,001 from eight concurrent clients.
 
 		Each close costs the client a new connection, and over HTTPS a new
 		handshake. It defaulted to 100, and a native HTTPS server with 64
