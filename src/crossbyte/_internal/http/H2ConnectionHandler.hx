@@ -49,22 +49,49 @@ class H2ConnectionHandler implements PassFlush {
 	private var __closeQueued:Bool = false;
 
 	// The server's sweep, which each stream's writer registers a body it is
-	// pumping out with: see HTTPResponseWriter.sweepWith.
-	private final __sweepWith:Null<(HTTPResponseWriter, Null<Float->Void>) -> Void>;
+	// pumping out with (see HTTPResponseWriter.sweepWith), and this its check
+	// of what it holds for the client (see __hold).
+	private final __sweepWith:Null<({}, Null<Float->Void>) -> Void>;
+
+	// maxOutputBufferSize: the bytes this connection may hold for its client,
+	// across its streams, before its next requests wait. 0 for no limit.
+	private final __budget:Int;
+
+	// What the socket's buffer is held to: see __outputRoom.
+	private final __watermark:Int;
+
+	// Requests waiting for the connection to hold less than __budget, in the
+	// order they arrived, or null: see __serve.
+	private var __parked:Null<Array<H2ServerRequest>> = null;
+
+	// Set while __checkHeld is registered with the sweep.
+	private var __holding:Bool = false;
+
+	// The socket's progress as __checkHeld last saw it -- bytes the system has
+	// taken -- and when what it holds is given up if that has not moved.
+	private var __socketMark:Float = 0;
+	private var __socketDeadline:Float = 0;
+
+	// When the socket last finished sending what it held: an idle connection is
+	// idle from then, not from when its last stream ended. 0 for never.
+	private var __outputDrainedAt:Float = 0;
 
 	/**
 	 * @param buffered Bytes already read off the socket, if this connection was
 	 *        identified by looking at them. Fed to the frame layer before
 	 *        anything else, since they are the start of the preface.
-	 * @param sweepWith The server's sweep, for its streams' writers.
+	 * @param sweepWith The server's sweep, for its streams' writers and for
+	 *        this.
 	 */
 	public function new(socket:Socket, config:HTTPServerConfig, ?php:PHPBridge, ?buffered:ByteArray,
-			?onResponse:(HTTPStatusEvent, HTTPRequestHandler) -> Void, ?sweepWith:(HTTPResponseWriter, Null<Float->Void>) -> Void) {
+			?onResponse:(HTTPStatusEvent, HTTPRequestHandler) -> Void, ?sweepWith:({}, Null<Float->Void>) -> Void) {
 		__socket = socket;
 		__config = config;
 		__php = php;
 		__onResponse = onResponse;
 		__sweepWith = sweepWith;
+		__budget = config.maxOutputBufferSize > 0 ? config.maxOutputBufferSize : 0;
+		__watermark = (__budget > 0 && __budget < HTTPRequestHandler.STREAM_WATERMARK) ? __budget : HTTPRequestHandler.STREAM_WATERMARK;
 
 		__connection = new H2ServerConnection(__send);
 		__connection.maxResetStreams = config.http2MaxResetStreams;
@@ -79,6 +106,9 @@ class H2ConnectionHandler implements PassFlush {
 		__connection.onRequestHead = __admit;
 		__connection.onDrained = __onDrained;
 		__connection.onConnectionError = __onConnectionError;
+		__connection.outputRoom = __outputRoom;
+		__connection.onHolding = __hold;
+		__connection.stallSeconds = HTTPRequestHandler.STREAM_STALL_SECONDS;
 
 		__socket.addEventListener(ProgressEvent.SOCKET_DATA, __onData);
 		__socket.addEventListener(Event.CLOSE, __onClosed);
@@ -86,7 +116,7 @@ class H2ConnectionHandler implements PassFlush {
 		// One drain slot on the socket, many streams behind it. The connection
 		// owns the fan-out, so a streaming response on one stream cannot
 		// silence another's resume.
-		__socket.__onWritableDrain = __connection.notifyWritable;
+		__socket.__onWritableDrain = __onWritable;
 
 		if (buffered != null && buffered.length > 0) {
 			__receive(buffered);
@@ -107,7 +137,7 @@ class H2ConnectionHandler implements PassFlush {
 		// pays one. A frame sent at any other time, an answer that came later,
 		// still goes at once.
 		if (!__receiving) {
-			__socket.flush();
+			__flushOut();
 		}
 	}
 
@@ -129,6 +159,11 @@ class H2ConnectionHandler implements PassFlush {
 		__receiving = true;
 		try {
 			__connection.receive(inbound, 0, inbound.length);
+			// What it gave room for -- a WINDOW_UPDATE, a reset -- goes with
+			// the rest of its answers.
+			if (__parked != null) {
+				__serveParked();
+			}
 		} catch (error:Dynamic) {
 			__receiving = false;
 			__flushOut();
@@ -141,21 +176,157 @@ class H2ConnectionHandler implements PassFlush {
 	private function __flushOut():Void {
 		if (__socket.connected) {
 			__socket.flush();
+			// What the system would not take yet is held to a deadline.
+			if (!__holding && __socket.outputBufferLength > 0) {
+				__hold();
+			}
 		}
 	}
 
 	/** A writer's flush: at once, unless a read is being answered, which flushes when it is done. **/
 	private function __flushUnlessReceiving():Void {
-		if (!__receiving && __socket.connected) {
-			__socket.flush();
+		if (!__receiving) {
+			__flushOut();
 		}
 	}
 
-	/** Whether a drain has started here and every stream it let finish has. */
+	/**
+	 * The socket's drain, which this connection's streams share: they are
+	 * offered the room it has made, then waiting requests theirs.
+	 */
+	private function __onWritable():Void {
+		__connection.notifyWritable();
+		if (__parked != null) {
+			__serveParked();
+		}
+	}
+
+	/**
+	 * Bytes the socket's buffer may still be given before the rest waits in
+	 * the streams' queues (`H2ServerConnection.outputRoom`): what keeps the
+	 * queue, not the socket, holding what the network has not taken, and the
+	 * socket under its output cap.
+	 */
+	private function __outputRoom():Int {
+		return __watermark - __socket.outputBufferLength;
+	}
+
+	/**
+	 * What this connection holds for its client: what its streams have
+	 * queued behind flow control, and what its socket has not sent.
+	 */
+	public var heldBytes(get, never):Int;
+
+	private inline function get_heldBytes():Int {
+		return __held();
+	}
+
+	private inline function __held():Int {
+		return __connection.queuedBytes + __socket.outputBufferLength;
+	}
+
+	/** Whether a drain has started here, every stream it let finish has, and all they sent has gone. */
 	public var drained(get, never):Bool;
 
 	private inline function get_drained():Bool {
-		return __connection.goingAway && __connection.openStreams == 0 && __socket.connected;
+		return __connection.goingAway && __connection.openStreams == 0 && __socket.connected && __socket.outputBufferLength == 0;
+	}
+
+	/**
+	 * Holds this connection to the stall deadline while it holds anything for
+	 * its client: the server's sweep runs `__checkHeld` until it holds
+	 * nothing. Called when a stream is left with bytes waiting, and when a
+	 * flush leaves bytes in the socket. Whatever the timeouts are, as for a
+	 * body being pumped out: a response written whole and held -- by flow
+	 * control, or by a socket its client stopped reading -- had no deadline
+	 * at all, and with `keepAliveTimeout` at `0` was held for good.
+	 */
+	private function __hold():Void {
+		if (__holding || __sweepWith == null || !__socket.connected) {
+			return;
+		}
+		__holding = true;
+		if (__socket.outputBufferLength > 0) {
+			__socketMark = HTTPRequestHandler.__outputTaken(__socket);
+			__socketDeadline = haxe.Timer.stamp() + HTTPRequestHandler.STREAM_STALL_SECONDS;
+		} else {
+			__socketDeadline = 0;
+		}
+		__sweepWith(this, __checkHeld);
+	}
+
+	private function __release():Void {
+		if (!__holding) {
+			return;
+		}
+		__holding = false;
+		if (__sweepWith != null) {
+			__sweepWith(this, null);
+		}
+	}
+
+	/**
+	 * The sweep's visit while this connection holds anything, at `now`
+	 * (`haxe.Timer.stamp()`). A socket whose buffer its client has taken
+	 * nothing of for the stall period is closed, as an HTTP/1.1 one is: it
+	 * is not reading the connection at all. Otherwise the streams are held
+	 * to it (`H2ServerConnection.expireHeld`): a stream whose window held
+	 * its response that long is reset. When it was the connection's window,
+	 * the requests waiting for room are refused as well, with
+	 * REFUSED_STREAM -- never handed to the application, so safe for the
+	 * client to send again -- rather than answered into a window it is not
+	 * opening. Otherwise they go on as room is made.
+	 */
+	private function __checkHeld(now:Float):Void {
+		if (!__socket.connected) {
+			__release();
+			return;
+		}
+
+		if (__socket.outputBufferLength > 0) {
+			var taken:Float = HTTPRequestHandler.__outputTaken(__socket);
+			if (__socketDeadline == 0 || taken != __socketMark) {
+				__socketMark = taken;
+				__socketDeadline = now + HTTPRequestHandler.STREAM_STALL_SECONDS;
+			} else if (now >= __socketDeadline) {
+				Logger.info('HTTP/2 client took nothing it was sent for ${HTTPRequestHandler.STREAM_STALL_SECONDS}s; closing.');
+				close();
+				return;
+			}
+		} else {
+			if (__socketDeadline > 0) {
+				// Gone, all of it: what an idle connection counts from.
+				__outputDrainedAt = now;
+			}
+			__socketDeadline = 0;
+		}
+
+		if (__connection.expireHeld(now)) {
+			Logger.info('HTTP/2 client opened no window for ${HTTPRequestHandler.STREAM_STALL_SECONDS}s with responses waiting; they are given up.');
+			var refused:Null<Array<H2ServerRequest>> = __parked;
+			__parked = null;
+			if (refused != null) {
+				for (request in refused) {
+					if (__connection.hasStream(request.streamId)) {
+						__connection.resetStream(request.streamId, H2ErrorCode.REFUSED_STREAM);
+					}
+				}
+			}
+			__flushOut();
+		}
+
+		if (__parked != null) {
+			__serveParked();
+		}
+
+		if (drained) {
+			close();
+			return;
+		}
+
+		if (__connection.queuedBytes <= 0 && __socket.outputBufferLength <= 0) {
+			__release();
+		}
 	}
 
 	/**
@@ -168,7 +339,8 @@ class H2ConnectionHandler implements PassFlush {
 	 * answer, for as long as that takes -- a long poll, a slow upstream -- as
 	 * an HTTP/1.1 request stops its clock once read. And a connection with no
 	 * stream open is between requests, which HTTP/2 is designed for, so it
-	 * has the keep-alive allowance, counted from when its last stream ended.
+	 * has the keep-alive allowance, counted from when its last stream ended
+	 * and what it sent has gone.
 	 *
 	 * Neither is moved by what does not advance a request. Every frame read
 	 * or written set one clock back, so a client trickling a byte of body
@@ -221,8 +393,17 @@ class H2ConnectionHandler implements PassFlush {
 			return;
 		}
 
+		// Nor while what the last of them sent is still going out, which has
+		// the stall deadline of its own (__checkHeld). Counted from when its
+		// last stream ended, a slow client still taking the end of a response
+		// had it cut off as idle.
+		if (__socket.outputBufferLength > 0) {
+			return;
+		}
+
 		var limit:Float = __config.keepAliveTimeout;
-		var idle:Float = now - __connection.idleSince;
+		var since:Float = __connection.idleSince > __outputDrainedAt ? __connection.idleSince : __outputDrainedAt;
+		var idle:Float = now - since;
 		if (limit <= 0 || idle < limit) {
 			return;
 		}
@@ -267,11 +448,12 @@ class H2ConnectionHandler implements PassFlush {
 	 * Starts a graceful shutdown: a GOAWAY now, so the peer opens no more
 	 * streams here, while the ones it has run to their end. The connection
 	 * closes at once when none are open, and otherwise when the last one
-	 * finishes, which the server's sweep checks.
+	 * finishes, which the server's sweep checks -- once what they sent has
+	 * gone: closed with it still in the socket, it was cut off.
 	 */
 	public function beginDrain():Void {
 		__connection.goAwayGracefully();
-		if (__connection.openStreams == 0) {
+		if (drained) {
 			close();
 		}
 	}
@@ -321,7 +503,54 @@ class H2ConnectionHandler implements PassFlush {
 		return admitted;
 	}
 
+	/**
+	 * Hands a request whose body has arrived to the application -- or, while
+	 * this connection holds `maxOutputBufferSize` for its client, keeps it
+	 * until the client has taken enough of that (`__serveParked`), in the
+	 * order requests came.
+	 *
+	 * Each stream's response waited whole on its client's window, so a
+	 * client that opened 128 streams and no window held 128 responses here,
+	 * up to the cap apiece: a gigabyte at the default. Its requests now wait
+	 * instead, as an HTTP/1.1 connection's next request waits behind the
+	 * response going out, so what one connection holds stays near its cap,
+	 * however many streams it opens. They wait rather than being refused:
+	 * REFUSED_STREAM would turn a slow reader's page into errors or retries,
+	 * and resetting a stream already answered would throw the answer away.
+	 * A refusal of the server's own -- a `413`, `408` or `431` -- is a few
+	 * bytes, answered at once.
+	 */
 	private function __serve(request:H2ServerRequest):Void {
+		if (!request.tooLarge && !request.timedOut && !request.headersTooLarge && (__parked != null || __overBudget())) {
+			if (__parked == null) {
+				__parked = [];
+			}
+			__parked.push(request);
+			return;
+		}
+		__serveNow(request);
+	}
+
+	private inline function __overBudget():Bool {
+		return __budget > 0 && __held() >= __budget;
+	}
+
+	/** Serves the requests `__serve` kept, in order, while there is room. */
+	private function __serveParked():Void {
+		while (__parked != null && !__overBudget()) {
+			var request:H2ServerRequest = __parked.shift();
+			if (__parked.length == 0) {
+				__parked = null;
+			}
+			// Its client may have reset it while it waited: there is no one
+			// to answer.
+			if (__connection.hasStream(request.streamId)) {
+				__serveNow(request);
+			}
+		}
+	}
+
+	private function __serveNow(request:H2ServerRequest):Void {
 		var body:ByteArray = new ByteArray();
 		if (request.body.length > 0) {
 			body.writeBytes(request.body, 0, request.body.length);
@@ -454,6 +683,9 @@ class H2ConnectionHandler implements PassFlush {
 	private function __onClosed(_:Event):Void {
 		__socket.removeEventListener(ProgressEvent.SOCKET_DATA, __onData);
 		__socket.removeEventListener(Event.CLOSE, __onClosed);
+		// No one is left to answer what waited.
+		__parked = null;
+		__release();
 	}
 }
 #end

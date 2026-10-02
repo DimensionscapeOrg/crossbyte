@@ -277,6 +277,92 @@ class JvmSocketTest extends utest.Test {
 		unanswered until there is room: the shape of a server too busy to
 		accept, made without depending on a host that does not answer.
 	**/
+	/**
+		A refused connect that a select other than the client's own settled
+		first, as the runtime's poll does as often as not. NIO closes a
+		channel whose connect failed, so a select after the one that found it
+		has nothing to say about it: a WebSocket's refusal waited out its ten
+		second connect deadline about one connect in 150, and failed
+		NetConnectionLifecycleTest on the jvm.
+	**/
+	public function testARefusalAnotherSelectSettledEndsAPlainConnect():Void {
+		var socket = new crossbyte.net.Socket();
+		var ended:String = null;
+		socket.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) ended = __outcome(e));
+		socket.addEventListener(Event.CLOSE, function(_) ended = "close");
+		socket.addEventListener(Event.CONNECT, function(_) ended = "connect");
+		socket.connect("127.0.0.1", __vacantPort());
+
+		Assert.isTrue(__settleElsewhere(@:privateAccess socket.__socket), "the connect was never refused");
+		Assert.isTrue(__pumpUntil(() -> ended != null, 3.0), "a refusal another select settled was not reported");
+		Assert.isTrue(ended != null && StringTools.startsWith(ended, "refused"), "it ended as " + ended);
+		try socket.close() catch (_:Dynamic) {}
+	}
+
+	public function testARefusalAnotherSelectSettledEndsAWebSocketConnect():Void {
+		var socket = new crossbyte.net.WebSocket();
+		var ended:String = null;
+		socket.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) {
+			if (ended == null) {
+				ended = __outcome(e);
+			}
+		});
+		socket.addEventListener(Event.CLOSE, function(_) {
+			if (ended == null) {
+				ended = "close";
+			}
+		});
+		socket.addEventListener(Event.CONNECT, function(_) ended = "connect");
+		socket.connect("127.0.0.1", __vacantPort());
+
+		var inner:Dynamic = @:privateAccess socket.__webSocket.__socket;
+		Assert.isTrue(__settleElsewhere(cast inner), "the connect was never refused");
+		Assert.isTrue(__pumpUntil(() -> ended != null, 3.0), "a refusal another select settled was not reported");
+		Assert.isTrue(ended != null && StringTools.startsWith(ended, "refused"), "it ended as " + ended);
+		try socket.close() catch (_:Dynamic) {}
+	}
+
+	/**
+		How an ioError ended a connect: refused, or its deadline -- which the
+		harness reaches early, since a pump moves the runtime's timers on by a
+		frame whatever the wall clock did.
+	**/
+	private static function __outcome(e:IOErrorEvent):String {
+		return (e.errorID == IOErrorEvent.TIMEOUT_ERROR_ID ? "timeout: " : "refused: ") + e.text;
+	}
+
+	/** A port nothing listens on, found by listening on one and stopping. **/
+	private static function __vacantPort():Int {
+		var listener = ServerSocketChannel.open();
+		listener.bind(new InetSocketAddress("127.0.0.1", 0));
+		var port:Int = (cast listener.getLocalAddress() : InetSocketAddress).getPort();
+		listener.close();
+		return port;
+	}
+
+	/**
+		Selects `socket` for writability alone, as the runtime's poll does,
+		until a connect in progress has been refused. Windows takes about
+		two seconds to give up on a refused loopback connect.
+	**/
+	private static function __settleElsewhere(socket:sys.net.Socket):Bool {
+		var deadline:Float = haxe.Timer.stamp() + 8;
+		while (socket.__connectFailure == null && haxe.Timer.stamp() < deadline) {
+			sys.net.Socket.select([], [socket], [], 0.05);
+		}
+		return socket.__connectFailure != null;
+	}
+
+	private static function __pumpUntil(done:Void->Bool, seconds:Float):Bool {
+		var runtime = crossbyte.core.CrossByte.current();
+		var deadline:Float = haxe.Timer.stamp() + seconds;
+		while (!done() && haxe.Timer.stamp() < deadline) {
+			runtime.pump(1 / 60, 0);
+			crossbyte.sys.System.sleep(0.001);
+		}
+		return done();
+	}
+
 	private static function __busyListener():{port:Int, drain:Void->Void, close:Void->Void} {
 		var listener = ServerSocketChannel.open();
 		listener.bind(new InetSocketAddress("127.0.0.1", 0), 1);

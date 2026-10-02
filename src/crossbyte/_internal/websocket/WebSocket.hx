@@ -762,6 +762,20 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 
 		if (!__connected && !__handshaking) {
+			#if (java || jvm)
+			// Settled by whichever select reached it first -- the runtime's
+			// poll as often as the one below -- and that one filed the reason
+			// on the socket. NIO closes a channel whose connect failed, so a
+			// select after it finds nothing, and the refusal sat here until
+			// the deadline: one connect in about 150.
+			var settled:Null<String> = (cast __socket : sys.net.Socket).__connectFailure;
+			if (settled != null) {
+				__onError("Failed to connect to server: " + settled);
+				__close(1006);
+				return;
+			}
+			#end
+
 			// Asked about the exception set too: a refused connect is
 			// reported there on Windows and never becomes writable, so it sat
 			// here until the deadline -- ten seconds by default for a refusal

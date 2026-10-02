@@ -55,14 +55,15 @@ class HTTPServer extends ServerSocket {
 	@:noCompletion private var __sweepArmed:Bool = false;
 
 	// Each body being pumped out, by its writer, with the stall check its
-	// pump keeps: what the sweep runs whatever the timeouts are (see
-	// HTTPResponseWriter.sweepWith). Counted, since a map has no size, so the
-	// sweep can tell when it has nothing left to do.
-	@:noCompletion private var __pumps:ObjectMap<HTTPResponseWriter, Float->Void>;
+	// pump keeps, and each connection holding bytes its client has not
+	// taken, with its check of them: what the sweep runs whatever the
+	// timeouts are (see HTTPResponseWriter.sweepWith). Counted, since a map
+	// has no size, so the sweep can tell when it has nothing left to do.
+	@:noCompletion private var __pumps:ObjectMap<{}, Float->Void>;
 	@:noCompletion private var __pumpCount:Int = 0;
 
-	// __sweepWith, made once and handed to every writer.
-	@:noCompletion private final __sweepHook:(HTTPResponseWriter, Null<Float->Void>) -> Void;
+	// __sweepWith, made once and handed to every writer and HTTP/2 connection.
+	@:noCompletion private final __sweepHook:({}, Null<Float->Void>) -> Void;
 
 	public function new(config:HTTPServerConfig) {
 		config.validate();
@@ -481,21 +482,23 @@ class HTTPServer extends ServerSocket {
 	}
 
 	/**
-	 * Registers, or with `null` drops, the stall check of a body `writer` is
-	 * pumping out: what `HTTPResponseWriter.sweepWith` reaches here.
+	 * Registers, or with `null` drops, `owner`'s stall check: a writer's, for
+	 * a body it is pumping out or bytes its client has not taken -- what
+	 * `HTTPResponseWriter.sweepWith` reaches here -- or an HTTP/2
+	 * connection's, for what it holds for its client.
 	 */
-	@:noCompletion private function __sweepWith(writer:HTTPResponseWriter, check:Null<Float->Void>):Void {
+	@:noCompletion private function __sweepWith(owner:{}, check:Null<Float->Void>):Void {
 		if (check == null) {
-			if (__pumps.remove(writer)) {
+			if (__pumps.remove(owner)) {
 				__pumpCount--;
 			}
 			return;
 		}
 
-		if (!__pumps.exists(writer)) {
+		if (!__pumps.exists(owner)) {
 			__pumpCount++;
 		}
-		__pumps.set(writer, check);
+		__pumps.set(owner, check);
 		__armReceiveSweep();
 	}
 
@@ -677,9 +680,11 @@ class HTTPServer extends ServerSocket {
 				peak = pending;
 			}
 		}
-		// HTTP/2 connections hold output too, and were left out of both gauges.
-		for (socket in __activeHttp2.keys()) {
-			var pending:Int = (cast socket : crossbyte.net.Socket).outputBufferLength;
+		// HTTP/2 connections hold output too, and were left out of both gauges:
+		// in the socket, and in what flow control holds back on each stream,
+		// which counted nowhere.
+		for (handler in __activeHttp2) {
+			var pending:Int = handler.heldBytes;
 			if (pending > peak) {
 				peak = pending;
 			}
@@ -692,8 +697,8 @@ class HTTPServer extends ServerSocket {
 		for (socket in __active.keys()) {
 			total += (cast socket : crossbyte.net.Socket).outputBufferLength;
 		}
-		for (socket in __activeHttp2.keys()) {
-			total += (cast socket : crossbyte.net.Socket).outputBufferLength;
+		for (handler in __activeHttp2) {
+			total += handler.heldBytes;
 		}
 		return total;
 	}
