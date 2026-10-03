@@ -92,8 +92,8 @@ class ServerWebSocketTLSTest extends utest.Test {
 				TlsProbe.run(server.localPort, {upgrade: true, present: {certificate: chain.client, key: chain.clientKey}}, function(with) {
 					NetPump.until(() -> sessions.length > 0, 2.0, function(_) {
 						Assert.isFalse(__upgraded(without), "a client presenting no certificate was let in: " + without.status);
-						Assert.isNull(with.error, "a client presenting a certificate the authority issued was refused: " + with.error);
-						Assert.isTrue(__upgraded(with), "a client presenting a certificate the authority issued was not upgraded: " + with.status);
+						Assert.isNull(with.error, "a client presenting a certificate the authority issued was refused: " + __account(with, server));
+						Assert.isTrue(__upgraded(with), "a client presenting a certificate the authority issued was not upgraded: " + __account(with, server));
 						Assert.equals(1, sessions.length, "the sessions opened were not exactly the one with a certificate");
 						finish();
 					});
@@ -399,7 +399,7 @@ class ServerWebSocketTLSTest extends utest.Test {
 				TlsProbe.run(server.localPort, {upgrade: true, present: {certificate: chain.client, key: chain.clientKey}}, function(with) {
 					NetPump.until(() -> sessions.length > 0, 2.0, function(_) {
 						Assert.isFalse(__upgraded(without), "a client presenting no certificate was let in: " + without.status);
-						Assert.isTrue(__upgraded(with), "a client presenting a certificate the authority issued was not upgraded: " + with.status);
+						Assert.isTrue(__upgraded(with), "a client presenting a certificate the authority issued was not upgraded: " + __account(with, server));
 						finish();
 					});
 				});
@@ -410,6 +410,17 @@ class ServerWebSocketTLSTest extends utest.Test {
 	/** Whether the server answered a probe's upgrade with 101. **/
 	private static function __upgraded(outcome:TlsProbe.TlsProbeOutcome):Bool {
 		return outcome.status != null && outcome.status.indexOf(" 101 ") >= 0;
+	}
+
+	/**
+		What a probe met, for a failure to say. These cases failed now and
+		then on Linux with only the status line printed, `null`, which
+		does not tell a refused handshake from a reset, a timeout or a server
+		that never answered.
+	**/
+	private static function __account(outcome:TlsProbe.TlsProbeOutcome, server:ServerWebSocket):String {
+		return "status " + outcome.status + ", error " + outcome.error + (outcome.during != null ? " in " + outcome.during : "") + " after "
+			+ Std.int(outcome.seconds * 1000) + " ms; the server counted " + server.handshakeFailures + " failed handshakes";
 	}
 
 	/**
