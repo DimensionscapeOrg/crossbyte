@@ -79,6 +79,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private static inline var MAX_REQUEST_CODINGS:Int = 2;
 	@:noCompletion private static final ALLOWED_METHODS:Array<String> = ["GET", "HEAD", "OPTIONS", "POST"];
 
+	/** A request with no content codings: shared, and only ever read. */
+	@:noCompletion private static final NO_CODINGS:Array<CompressionAlgorithm> = [];
+
 	/**
 	 * Files at or below this size keep the buffered single-write path: the
 	 * per-tick pump only pays for itself once a body is large enough that
@@ -141,7 +144,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __bodyComplete:Void->Void = null;
 	@:noCompletion private var __bodyIsChunked:Bool = false;
 	@:noCompletion private var __chunkBytesRemaining:Int = -1;
-	@:noCompletion private var __requestBody:ByteArray;
+	@:noCompletion private var __requestBody:ByteArray = null;
+	// __dispatchParsedRequest as a value, made once: what a request's body
+	// read finishes into. A closure was made for it per request.
+	@:noCompletion private var __dispatchHook:Void->Void;
+	// The server's per-response hook (its metrics), told the status of each
+	// response as it goes out. It listened for HTTP_RESPONSE_STATUS, which
+	// made and dispatched an event for every response whether or not anyone
+	// else listened, and under HTTP/2 a listener and its closure per stream.
+	@:noCompletion private var __onResponded:Null<(HTTPRequestHandler, Int) -> Void> = null;
 	@:noCompletion private var __scanA:Int = -1;
 	@:noCompletion private var __scanB:Int = -1;
 	@:noCompletion private var __scanC:Int = -1;
@@ -280,9 +291,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__origin = socket;
 		__writer = writer != null ? writer : new HTTP1ResponseWriter(socket);
 		__config = config;
-		__incomingBuffer = new ByteArray();
-		__headers = new Map<String, String>();
-		__requestBody = new ByteArray();
+		__dispatchHook = __dispatchParsedRequest;
 
 		__php = php;
 
@@ -293,7 +302,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// and its deadline is the stream's, which the frame layer keeps.
 		// Asked of the writer, not of whether one was given: the server gives
 		// an HTTP/1.1 handler its writer too, to hear from its sweep.
+		//
+		// The read buffer and the header map are the parser's, so an HTTP/2
+		// handler -- one a stream, its fields given to it as a map -- makes
+		// neither. Both were made for every stream and never used.
 		if (!__writer.ownsConnection) {
+			__incomingBuffer = new ByteArray();
+			__headers = new Map<String, String>();
 			__setup();
 			__requestStartedAt = haxe.Timer.stamp();
 			__receiveDeadline = config.requestTimeout > 0 ? __requestStartedAt + config.requestTimeout : 0;
@@ -328,8 +343,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return null;
 		}
 
-		var key:String = StringTools.trim(name.toLowerCase());
-		return __headers.exists(key) ? __headers.get(key) : null;
+		if (__headers == null) {
+			return null;
+		}
+		var key:String = HttpSyntax.lowerAscii(name);
+		if (key.length > 0 && (StringTools.isSpace(key, 0) || StringTools.isSpace(key, key.length - 1))) {
+			key = StringTools.trim(key);
+		}
+		return __headers.get(key);
 	}
 
 	/** Returns `true` when a request header exists. */
@@ -354,6 +375,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	public function get_requestBody():ByteArray {
+		// Made when asked for, for a request that brought none: one was made
+		// for every request, and again for every stream under HTTP/2.
+		if (__requestBody == null) {
+			__requestBody = new ByteArray();
+		}
 		return __requestBody;
 	}
 
@@ -385,7 +411,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function __getCookieHeader():String {
-		return __headers.exists("cookie") ? __headers.get("cookie") : null;
+		return __headers != null ? __headers.get("cookie") : null;
 	}
 
 	@:noCompletion private function __onData(e:ProgressEvent):Void {
@@ -867,15 +893,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		var continueDispatch = function():Void {
-			__dispatchParsedRequest();
-		}
-
-		if (__beginRequestBodyRead(continueDispatch)) {
+		if (__beginRequestBodyRead(__dispatchHook)) {
 			return;
 		}
 
-		continueDispatch();
+		__dispatchParsedRequest();
 	}
 
 	/**
@@ -1008,8 +1030,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	/** The rest of a request `__admitDecodedRequest` let through: its body, decoded, then dispatch. */
-	@:noCompletion private function __continueDecodedRequest(body:ByteArray, tooLarge:Bool, timedOut:Bool):Void {
-		__requestBody = body != null ? body : new ByteArray();
+	@:noCompletion private function __continueDecodedRequest(body:Null<ByteArray>, tooLarge:Bool, timedOut:Bool):Void {
+		// Null for none: requestBody makes an empty one if it is asked for.
+		__requestBody = body;
 
 		// The body did not arrive within requestTimeout of the headers. The
 		// HTTP/1.1 answer, on this stream alone.
@@ -1243,7 +1266,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// script with the request's query and lost the route.
 			__queryString = decision.query;
 			if (decision.toPHP) {
-				__servePhp(target, __method == "HEAD", __method == "POST" ? __requestBody : null, served);
+				__servePhp(target, __method == "HEAD", __method == "POST" ? requestBody : null, served);
 			} else if (__method == "POST") {
 				// Where the rules sent it. This was the path the request named,
 				// so a POST to a rewritten path was a 404 while its GET was
@@ -2180,10 +2203,18 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// only the fields a caller had added -- for a static file, no
 		// Content-Type, Date or Server. The client's address is
 		// remoteAddress. Both cost nothing for a request with no query.
-		var statusEvent:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, statusCode, false);
-		statusEvent.responseURL = (__queryString == null || __queryString == "") ? __requestPath : __requestPath + "?" + __queryString;
-		statusEvent.responseHeaders = fields;
-		dispatchEvent(statusEvent);
+		//
+		// The server's own hook first, as its listener was first; the event
+		// only for someone listening.
+		if (__onResponded != null) {
+			__onResponded(this, statusCode);
+		}
+		if (hasEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS)) {
+			var statusEvent:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, statusCode, false);
+			statusEvent.responseURL = (__queryString == null || __queryString == "") ? __requestPath : __requestPath + "?" + __queryString;
+			statusEvent.responseHeaders = fields;
+			dispatchEvent(statusEvent);
+		}
 
 		// A body the output buffer cannot hold goes out as a file does, in
 		// bounded bursts on the socket's drain. Written whole, whatever the
@@ -2793,7 +2824,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// byte past the request's framing, so everything beyond it is the
 		// next pipelined request and must survive the reset -- clearing
 		// it here is the hang this exists to avoid.
-		var surplus:Int = __incomingBuffer.length - __incomingBuffer.position;
+		// None under HTTP/2, whose handler reads no socket of its own.
+		var surplus:Int = __incomingBuffer == null ? 0 : __incomingBuffer.length - __incomingBuffer.position;
 		if (surplus > 0) {
 			// Allocate-and-swap rather than compacting in place: a
 			// ByteArray blit from a buffer into itself has no defined
@@ -2802,7 +2834,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			carried.writeBytes(__incomingBuffer, __incomingBuffer.position, surplus);
 			carried.position = 0;
 			__incomingBuffer = carried;
-		} else {
+		} else if (__incomingBuffer != null) {
 			__incomingBuffer.clear();
 		}
 
@@ -2926,7 +2958,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 */
 	@:noCompletion private function __resetForNextRequest(nextRequestPending:Bool):Void {
 		__requestGeneration++;
-		__headers.clear();
+		if (__headers != null) {
+			__headers.clear();
+		}
 		__method = null;
 		__filePath = null;
 		__httpVersion = null;
@@ -2940,10 +2974,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__bodyComplete = null;
 		__bodyIsChunked = false;
 		__chunkBytesRemaining = -1;
-		// A fresh ByteArray rather than clear(): the old body must become
+		// Let go of rather than clear()ed: the old body must become
 		// collectable now, not stay referenced through a five-second idle
-		// window per megabyte a client happened to POST.
-		__requestBody = new ByteArray();
+		// window per megabyte a client happened to POST. The next one is made
+		// when a body arrives, or when requestBody is asked for.
+		__requestBody = null;
 		__requestConsumed = false;
 		__headOut = false;
 		// Unconditionally, same invariant as everywhere else: scan
@@ -3065,9 +3100,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __parseContentEncodingHeader():Array<CompressionAlgorithm> {
-		var header:String = __headers.exists("content-encoding") ? __headers.get("content-encoding") : null;
+		var header:String = __headers.get("content-encoding");
 		if (header == null) {
-			return [];
+			return NO_CODINGS;
 		}
 
 		var encodings:Array<CompressionAlgorithm> = [];
@@ -4167,13 +4202,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __beginRequestBodyRead(onComplete:Void->Void):Bool {
-		// The fresh one the last response left (see __resetForNextRequest),
-		// while nothing has been written to it: another was made here for
-		// every request, a body or not.
-		if (__requestBody == null || __requestBody.length > 0) {
-			__requestBody = new ByteArray();
-		}
-		__requestBody.endian = __incomingBuffer.endian;
 
 		var transferEncoding:String = __headers.exists("transfer-encoding") ? __headers.get("transfer-encoding") : null;
 
@@ -4221,6 +4249,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return false;
 		}
 
+		// Made here, for a body that is coming; a request without one makes
+		// none (see requestBody).
+		__requestBody = new ByteArray();
+		__requestBody.endian = __incomingBuffer.endian;
 		__bodyBuf = __requestBody;
 		__bodyComplete = onComplete;
 		__bodyIsChunked = chunked;
@@ -4498,7 +4530,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		__servePhp(file.nativePath, false, __requestBody);
+		__servePhp(file.nativePath, false, requestBody);
 	}
 
 	/**
