@@ -16,25 +16,29 @@ import crossbyte.url.URLRequestHeader;
  * renders them as `Connection` and `Content-Length`, and HTTP/2 does neither,
  * because §8.2.2 makes `Connection` malformed and DATA framing carries the
  * length implicitly.
+ *
+ * A class, built from the same literal: an anonymous structure here was read
+ * field by field through a lookup by name natively, seven times a response.
  */
-typedef HTTPResponseHead = {
-	var statusCode:Int;
-	var statusMessage:String;
-	var headers:Array<URLRequestHeader>;
+@:structInit
+final class HTTPResponseHead {
+	public var statusCode:Int;
+	public var statusMessage:String;
+	public var headers:Array<URLRequestHeader>;
 
 	/**
 	 * Body length, or `null` when the status omits a body entirely -- or,
 	 * with `chunked`, when the body's length is not known yet.
 	 */
-	var contentLength:Null<Int>;
+	public var contentLength:Null<Int>;
 
 	/** Whether the connection should survive this response. */
-	var keepAlive:Bool;
+	public var keepAlive:Bool;
 
 	/**
 	 * A body of unknown length follows, written as it becomes available and
 	 * ended by `endResponse`: chunked transfer coding under HTTP/1.1, DATA
 	 * frames on a stream left open under HTTP/2.
 	 */
-	@:optional var chunked:Bool;
+	public var chunked:Bool = false;
 }

@@ -80,27 +80,41 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 		__socket.writeUTFBytes("HTTP/1.1 100 Continue\r\n\r\n");
 	}
 
+	private static final KEEP_ALIVE_LINE:String = "\r\nConnection: " + Connection.KEEP_ALIVE + "\r\n";
+	private static final CLOSE_LINE:String = "\r\nConnection: " + Connection.CLOSE + "\r\n";
+
 	public function writeHead(head:HTTPResponseHead):Void {
-		var response:String = "HTTP/1.1 " + head.statusCode + " " + head.statusMessage + "\r\n";
-		response += "Connection: " + (head.keepAlive ? Connection.KEEP_ALIVE : Connection.CLOSE) + "\r\n";
+		// One buffer, one string: `+=` made a new string of everything so far
+		// for every piece, some thirty a response.
+		var response:StringBuf = new StringBuf();
+		response.add("HTTP/1.1 ");
+		response.add(head.statusCode);
+		response.add(" ");
+		response.add(head.statusMessage);
+		response.add(head.keepAlive ? KEEP_ALIVE_LINE : CLOSE_LINE);
 
 		for (header in head.headers) {
 			var safeName:String = HttpSyntax.sanitizeHeaderName(header.name);
 			if (safeName.length == 0) {
 				continue;
 			}
-			response += safeName + ": " + HttpSyntax.sanitizeHeaderValue(header.value) + "\r\n";
+			response.add(safeName);
+			response.add(": ");
+			response.add(HttpSyntax.sanitizeHeaderValue(header.value));
+			response.add("\r\n");
 		}
 
-		__chunked = head.chunked == true;
+		__chunked = head.chunked;
 		if (__chunked) {
-			response += "Transfer-Encoding: chunked\r\n";
+			response.add("Transfer-Encoding: chunked\r\n");
 		} else if (head.contentLength != null) {
-			response += "Content-Length: " + head.contentLength + "\r\n";
+			response.add("Content-Length: ");
+			response.add(head.contentLength);
+			response.add("\r\n");
 		}
 
-		response += "\r\n";
-		__socket.writeUTFBytes(response);
+		response.add("\r\n");
+		__socket.writeUTFBytes(response.toString());
 	}
 
 	public function writeBody(data:ByteArray, offset:Int, length:Int):Void {
