@@ -99,6 +99,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.ServerSocketAcceptTest());
 		// A listen that fails, and a TLS listener's handshakes, on Node.
 		runner.addCase(new crossbyte.net.ServerSocketListenTest());
+		// On Node, a server spread over runtimes refused.
+		runner.addCase(new crossbyte.net.ServerSpreadTest());
 		// What printing a key shows, which on Node was all of it.
 		runner.addCase(new crossbyte.net.KeyTest());
 		// A NetConnection dialled over TCP, and an RPC call over one.

@@ -242,8 +242,10 @@ class ServerSocket extends EventDispatcher {
 		are the caller's.
 
 		`admit`, `maxAcceptsPerTick` and `maxPendingHandshakes` hold for the
-		server as a whole: `admit` is asked on the listener's runtime, and
-		the handshakes under way are counted across every runtime.
+		server as a whole: `admit` is asked, and `maxAcceptsPerTick` counted,
+		on the listener's runtime, with `reusePort`, on each runtime as it
+		accepts, and the handshakes under way are counted across every
+		runtime.
 		`handshakeFailures`, `pendingHandshakeCount()` and the counts of the
 		servers built on this one are the sums across them.
 
