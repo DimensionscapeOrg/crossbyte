@@ -321,14 +321,22 @@ jobs:
           # hxcpp holds a precompiled hxcpp.h that clang refuses -- "modified
           # since the precompiled header was built" (macOS, 2026-10-02).
           echo "HXCPP_SHA=$(git -C "$(haxelib path hxcpp | head -n 1)" rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          # The commit is not enough: a fresh clone stamps every file with
+          # the time of the clone, and clang checks those times too, so a
+          # cache from an earlier run on the same commit was refused the
+          # same way (macOS, 2026-10-03). Stamp the headers with the
+          # commit's own time, which every clone of it shares.
+          HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
+          STAMP="$(TZ=UTC git -C "$HXCPP_DIR" log -1 --format=%cd --date=format-local:%Y%m%d%H%M.%S)"
+          find "$HXCPP_DIR/include" -type f -exec env TZ=UTC touch -t "$STAMP" {} +
 
       - name: Restore the compiler cache
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/hxcpp-cache
-          key: hxcpp-posix-cryptosys-${{ matrix.os }}-${{ env.HXCPP_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: hxcpp-posix-cryptosys-stamped-${{ matrix.os }}-${{ env.HXCPP_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            hxcpp-posix-cryptosys-${{ matrix.os }}-${{ env.HXCPP_SHA }}-
+            hxcpp-posix-cryptosys-stamped-${{ matrix.os }}-${{ env.HXCPP_SHA }}-
 
       - name: Build crypto suite
         run: haxe ci/posix-crypto-tests.hxml
@@ -399,14 +407,22 @@ jobs:
           # hxcpp holds a precompiled hxcpp.h that clang refuses -- "modified
           # since the precompiled header was built" (macOS, 2026-10-02).
           echo "HXCPP_SHA=$(git -C "$(haxelib path hxcpp | head -n 1)" rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          # The commit is not enough: a fresh clone stamps every file with
+          # the time of the clone, and clang checks those times too, so a
+          # cache from an earlier run on the same commit was refused the
+          # same way (macOS, 2026-10-03). Stamp the headers with the
+          # commit's own time, which every clone of it shares.
+          HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
+          STAMP="$(TZ=UTC git -C "$HXCPP_DIR" log -1 --format=%cd --date=format-local:%Y%m%d%H%M.%S)"
+          find "$HXCPP_DIR/include" -type f -exec env TZ=UTC touch -t "$STAMP" {} +
 
       - name: Restore the compiler cache
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/hxcpp-cache
-          key: hxcpp-posix-native-${{ matrix.os }}-${{ env.HXCPP_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: hxcpp-posix-native-stamped-${{ matrix.os }}-${{ env.HXCPP_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            hxcpp-posix-native-${{ matrix.os }}-${{ env.HXCPP_SHA }}-
+            hxcpp-posix-native-stamped-${{ matrix.os }}-${{ env.HXCPP_SHA }}-
 
       - name: Type-check a final build
         run: haxe ci/posix-native-tests.hxml -D final --no-output
