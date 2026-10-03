@@ -400,6 +400,56 @@ class HTTPServerSpreadTest extends utest.Test {
 		SpreadSupport.stop([runtime]);
 	}
 
+	/**
+		On Linux, `reusePort` through the configuration: each runtime listens
+		on the port for itself, and the kernel's choice of runtime is where a
+		connection's requests are answered.
+	**/
+	@:timeout(60000)
+	public function testReusePortServesOnEachRuntime():Void {
+		if (!SpreadSupport.reusePortExpected()) {
+			Assert.pass();
+			return;
+		}
+
+		var acceptor:CrossByte = SpreadSupport.runtime();
+		var first:CrossByte = SpreadSupport.runtime();
+		var second:CrossByte = SpreadSupport.runtime();
+		var seen:Deque<Arrival> = new Deque();
+
+		var server:HTTPServer = SpreadSupport.on(acceptor, () -> {
+			var config = __config(seen);
+			config.runtimes = [first, second];
+			config.reusePort = true;
+			return new HTTPServer(config);
+		});
+
+		var clients:Array<sys.net.Socket> = [];
+		var statuses:Array<Int> = [];
+		for (i in 0...20) {
+			var client = SpreadSupport.connect(server.localPort);
+			clients.push(client);
+			statuses.push(HttpWire.get(client, '/p$i').status);
+		}
+		Assert.equals(20, statuses.filter(s -> s == 200).length, "requests were not all answered: " + statuses);
+
+		var served:Array<Int> = [0, 0];
+		var arrival:Null<Arrival> = seen.pop(false);
+		while (arrival != null) {
+			var index:Int = [first, second].indexOf(arrival.runtime);
+			if (index >= 0 && arrival.thread == arrival.runtime.__ownerThread) {
+				served[index]++;
+			}
+			arrival = seen.pop(false);
+		}
+		Assert.equals(20, served[0] + served[1], "a request ran off its connection's runtime");
+		Assert.isTrue(served[0] > 0 && served[1] > 0, 'the kernel gave one runtime every connection: $served');
+
+		SpreadSupport.closeAll(clients);
+		SpreadSupport.on(acceptor, () -> server.close());
+		SpreadSupport.stop([acceptor, first, second]);
+	}
+
 	/** The server's metrics count every runtime's requests and connections. **/
 	@:timeout(30000)
 	public function testMetricsCountEveryRuntime():Void {

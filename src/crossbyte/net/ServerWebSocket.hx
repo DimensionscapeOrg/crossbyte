@@ -1086,6 +1086,13 @@ class ServerWebSocket extends ServerSocket {
 		if (__closed || !listening) {
 			return;
 		}
+		#if (target.threaded && !js)
+		if (__front != null) {
+			// A replica listening for itself, with reusePort: its sessions take
+			// the front's settings as they stand now, as handed-off ones do.
+			__takeSettings(cast __front);
+		}
+		#end
 
 		// As many as maxAcceptsPerTick, not one: this loop used to take one
 		// connection a tick and never asked `admit`, which the class inherits
