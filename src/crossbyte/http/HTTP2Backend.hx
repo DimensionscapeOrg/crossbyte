@@ -290,7 +290,7 @@ class HTTP2Backend implements HTTPBackend {
 			if (session.dead) {
 				H2ConnectionPool.discard(session);
 			}
-			return {stream: stream, connection: session.connection};
+			return new H2Exchange(stream, session.connection);
 		} catch (e:H2StreamError) {
 			// One stream failed -- a timeout -- and has been reset. The
 			// connection is left pooled for the requests still on it and the
@@ -654,8 +654,13 @@ class HTTP2Backend implements HTTPBackend {
 }
 
 /** One request's stream, answered, and the connection it came on. */
-private typedef H2Exchange = {
-	var stream:H2Stream;
-	var connection:H2Connection;
+private final class H2Exchange {
+	public final stream:H2Stream;
+	public final connection:H2Connection;
+
+	public function new(stream:H2Stream, connection:H2Connection) {
+		this.stream = stream;
+		this.connection = connection;
+	}
 }
 #end

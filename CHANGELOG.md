@@ -1917,6 +1917,12 @@ entry below says how:
 - A statement's text is split at its placeholders once and kept, where it
   was copied a character at a time on every run, placeholder or none:
   a SELECT with no placeholder costs 32-42 ns there instead of 240-410.
+- Internal records of the HTTP server and clients are classes rather than
+  anonymous structures or `Dynamic`: the server's connection maps are keyed
+  by `Socket`, and a byte range, a cookie the client keeps, a DER element of
+  a pinned certificate, an HTTP/2 client exchange, a directory listing and a
+  PHP request and response are each a class of their own. Nothing public
+  changes; their fields are read directly natively.
 - `RouteContext`, `RewriteRule` and `RewriteCondition` are `@:structInit`
   final classes rather than anonymous structures, built from the same object
   literals; a `RewriteCondition` may now leave out `key` (null) and `negate`

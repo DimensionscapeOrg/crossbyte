@@ -215,8 +215,9 @@ class CookieJar {
 	}
 }
 
-private typedef StoredCookie = {
-	var name:String;
-	var value:String;
-	var secure:Bool;
+@:structInit
+private final class StoredCookie {
+	public final name:String;
+	public final value:String;
+	public final secure:Bool;
 }
