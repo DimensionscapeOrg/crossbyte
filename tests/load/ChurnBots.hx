@@ -54,6 +54,8 @@ class ChurnBots {
 	var tlsShare:Float;
 	var kinds:Array<String>;
 	var reportEvery:Float;
+	var opsMin:Int;
+	var opsMax:Int;
 
 	public var open:Int = 0;
 
@@ -77,6 +79,12 @@ class ChurnBots {
 		tlsShare = args.float("tls-share", 0.5);
 		kinds = args.string("kinds", "h1,h2,ws").split(",");
 		reportEvery = args.float("report", 10);
+		var ops = args.string("ops", "5:50").split(":");
+		opsMin = Std.parseInt(ops[0]);
+		opsMax = ops.length > 1 ? Std.parseInt(ops[1]) : opsMin;
+		if (opsMax < opsMin) {
+			opsMax = opsMin;
+		}
 		for (part in args.string("plan", "50:60").split(",")) {
 			var pair = part.split(":");
 			plan.push({concurrency: Std.parseInt(pair[0]), seconds: Std.parseFloat(pair[1])});
@@ -119,7 +127,7 @@ class ChurnBots {
 			open++;
 			var kind:String = kinds[Std.random(kinds.length)];
 			var secure:Bool = kind != "h2" && Math.random() < tlsShare;
-			var ops:Int = 5 + Std.random(46);
+			var ops:Int = opsMin + Std.random(opsMax - opsMin + 1);
 			switch (kind) {
 				case "h1":
 					new H1Session(this, secure, ops);
