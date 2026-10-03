@@ -19,13 +19,19 @@ import haxe.io.Bytes;
  * follows one, steps 1 to 3 repeat for each hop, so a caller watching
  * `onStatus` sees the redirect chain; only the final response reaches
  * `onComplete`.
+ *
+ * A class built from an object literal (`@:structInit`), as the anonymous
+ * structure it was is built: the fields marked optional below may be left
+ * out of one. Its fields are read directly natively, where a structure's
+ * were looked up by name.
  */
-typedef HTTPRequestContext = {
+@:structInit
+final class HTTPRequestContext {
 	/** Absolute request URL, including any query string already on it. */
-	var url:String;
+	public var url:String;
 
 	/** Uppercase HTTP method, such as `"GET"` or `"POST"`. */
-	var method:String;
+	public var method:String;
 
 	/**
 	 * Additional request headers, each already formatted as `"Name: value"`.
@@ -33,7 +39,7 @@ typedef HTTPRequestContext = {
 	 * A backend supplies its own `Host`, `User-Agent` and framing headers;
 	 * these are sent on top of that set.
 	 */
-	var headers:Array<String>;
+	public var headers:Array<String>;
 
 	/**
 	 * Structured request parameters, or `null`.
@@ -44,58 +50,59 @@ typedef HTTPRequestContext = {
 	 * It is ignored when `data` is set, and dropped when a redirect rewrites
 	 * the request to `GET`.
 	 */
-	var requestData:Dynamic;
+	public var requestData:Dynamic;
 
 	/** `Content-Type` for the request body, or `null` when there is no body. */
-	var contentType:Null<String>;
+	public var contentType:Null<String>;
 
 	/**
-	 * A request body to send as-is -- a `String` or `haxe.io.Bytes` -- or
-	 * `null`. Takes precedence over `requestData`.
+	 * A request body to send as-is -- text, sent as UTF-8, or bytes -- or
+	 * `null`. Takes precedence over `requestData`. Assigned from a `String`
+	 * or `haxe.io.Bytes` as before; see `HTTPRequestBody`.
 	 */
-	var data:Dynamic;
+	public var data:Null<HTTPRequestBody>;
 
 	/** The version this backend was resolved for. */
-	var version:HTTPVersion;
+	public var version:HTTPVersion;
 
 	/**
 	 * Idle timeout in milliseconds: the longest the request may go with
 	 * nothing arriving for it. `0` or less is none; see
 	 * `URLRequest.idleTimeout`.
 	 */
-	var timeout:Int;
+	public var timeout:Int;
 
 	/** Value to send as the `User-Agent` request header. */
-	var userAgent:String;
+	public var userAgent:String;
 
 	/** Whether the backend should follow `3xx` responses itself. */
-	var followRedirects:Bool;
+	public var followRedirects:Bool;
 
 	/**
 	 * Whether a redirect from `https` to plain `http` may be followed. Absent
 	 * means it may not; see `URLRequest.followInsecureRedirects`.
 	 */
-	@:optional var followInsecureRedirects:Bool;
+	public var followInsecureRedirects:Bool = false;
 
 	/**
 	 * Whether a cookie a redirect sets goes back on the hops after it, within
 	 * this one request. Absent means it does not; see
 	 * `URLRequest.manageCookies`.
 	 */
-	@:optional var manageCookies:Bool;
+	public var manageCookies:Bool = false;
 
 	/**
 	 * Told the absolute URL of each redirect the backend follows, before it
 	 * asks for it, so the caller can say where the response came from.
 	 */
-	@:optional var onRedirect:(url:String) -> Void;
+	public var onRedirect:Null<(url:String) -> Void> = null;
 
 	/**
 	 * The most bytes a compressed response may decode to before the request
 	 * fails; `<= 0` removes the limit. Absent means the built-in client's own
 	 * default, 64 MB. See `URLRequest.maxDecompressedSize`.
 	 */
-	@:optional var maxDecompressedSize:Int;
+	public var maxDecompressedSize:Int = 64 * 1024 * 1024;
 
 	#if !(js && !nodejs)
 	/**
@@ -105,7 +112,7 @@ typedef HTTPRequestContext = {
 	 * for a request whose options are `HTTPTLSOptions.same` as the ones it was
 	 * opened under.
 	 */
-	@:optional var tls:HTTPTLSOptions;
+	public var tls:Null<HTTPTLSOptions> = null;
 	#end
 
 	/**
@@ -119,25 +126,25 @@ typedef HTTPRequestContext = {
 	 *
 	 * Cancellation arrives from another thread, since `load()` is blocking.
 	 */
-	var cancelToken:HTTPCancelToken;
+	public var cancelToken:HTTPCancelToken;
 
 	/**
 	 * Body bytes received so far, and the total when the response declares
 	 * one. `bytesTotal` is `0` for a response of unknown length.
 	 */
-	var onProgress:(bytesLoaded:Int, bytesTotal:Int) -> Void;
+	public var onProgress:(bytesLoaded:Int, bytesTotal:Int) -> Void;
 
 	/**
 	 * Ends the request unsuccessfully. `data` optionally carries whatever body
 	 * had been received before the failure.
 	 */
-	var onError:(message:String, ?data:Bytes) -> Void;
+	public var onError:(message:String, ?data:Bytes) -> Void;
 
 	/** Ends the request with the complete response body. */
-	var onComplete:(data:Bytes) -> Void;
+	public var onComplete:(data:Bytes) -> Void;
 
 	/** Reports the response status code. */
-	var onStatus:(status:Int) -> Void;
+	public var onStatus:(status:Int) -> Void;
 
 	/**
 	 * Reports the complete response header block.
@@ -148,5 +155,5 @@ typedef HTTPRequestContext = {
 	 * joined with `"\n"`: its values may contain commas of their own, so
 	 * comma-joining them cannot be undone by the caller.
 	 */
-	var onHeaders:(headers:Map<String, String>) -> Void;
+	public var onHeaders:(headers:Map<String, String>) -> Void;
 }

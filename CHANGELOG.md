@@ -316,6 +316,11 @@ entry below says how:
   `KeyExchangeKeyPair` and `SessionKeys` are classes: a value typed as an
   anonymous structure no longer passes for one, and `Json.stringify` writes a
   `JWTHeaderData`'s unset members as `null`.
+- A custom `HTTPBackend` that reads `context.data` gets an `HTTPRequestBody`,
+  not a `String` or `Bytes`: send `context.data.toBytes()`, and read
+  `context.data.text` (or `isText`) where it matters which it was. Code that
+  builds an `HTTPRequestContext` from an object literal still compiles; code
+  that passes some other structure as one does not.
 
 ### Added
 - `GlobalTimer.setTimeout` and `setInterval` take a `Void->Void` function by
@@ -331,6 +336,9 @@ entry below says how:
   each row, with no object made for a row. On SQLite, natively, the same
   SELECT of 20,000 rows of 8 columns reads at 320-480 ns a row this way;
   on Postgres at 260-340 ns a row, from the block the bridge sends.
+- `HTTPRequestBody`, a request body for an `HTTPBackend`: text, sent as
+  UTF-8, or bytes. `toBytes()` is what goes on the wire; `text` and
+  `isText` say whether it was given as text.
 - `HTTPServerConfig.fileCacheSize` (default 16 MB, `0` for none): static
   files of 256 KB or less are kept in memory once read, and served from
   there while the size and modification time read on each request are as
@@ -1900,6 +1908,14 @@ entry below says how:
 - A statement's text is split at its placeholders once and kept, where it
   was copied a character at a time on every run, placeholder or none:
   a SELECT with no placeholder costs 32-42 ns there instead of 240-410.
+- `HTTPRequestContext`, what an `HTTPBackend` is handed, is a `@:structInit`
+  final class rather than an anonymous structure, built from the same object
+  literal (the fields that were optional may still be left out), and its
+  `data` is an `HTTPRequestBody`: text or bytes, assigned from a `String` or
+  `haxe.io.Bytes` as before. It was `Dynamic`, which each backend told apart
+  with `Std.isOfType` -- the built-in client did so twice, once in
+  `URLLoader` and again before writing. `requestData`, the caller's form
+  object, stays `Dynamic`.
 - The HTTP/1.1 client (`URLLoader` and `Http` on every target but the
   browser and Node) reads a response a buffer at a time and takes its
   status line, header lines and body out of that, where it read the head a
