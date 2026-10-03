@@ -74,6 +74,16 @@ class LoadMain extends ServerApplication {
 			// And at the latest a few minutes past their own deadline, whatever
 			// they are stuck in.
 			var hardStop:Float = args.float("seconds", 60) + 180;
+			if (args.role == "churn-bots") {
+				// Their run is the plan's phases, not --seconds.
+				hardStop = 180;
+				for (part in args.string("plan", "").split(",")) {
+					var seconds:Float = Std.parseFloat(part.substr(part.indexOf(":") + 1));
+					if (!Math.isNaN(seconds)) {
+						hardStop += seconds;
+					}
+				}
+			}
 			crossbyte.Timer.setTimeout(hardStop, () -> Sys.exit(5));
 		}
 		try {
