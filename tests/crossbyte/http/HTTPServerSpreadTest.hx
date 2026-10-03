@@ -652,7 +652,10 @@ class HttpWire {
 			}
 		} catch (_:Dynamic) {}
 		var status:Int = 0;
-		if (head.startsWith("HTTP/1.1 ")) {
+		// A head cut short is no response: a refusal closed under the request
+		// it never read can reset the connection mid-head, leaving "HTTP/1.1 5",
+		// which once parsed as status 5.
+		if (head.endsWith("\r\n\r\n") && head.startsWith("HTTP/1.1 ")) {
 			var parsed:Null<Int> = Std.parseInt(head.substr(9, 3));
 			status = parsed == null ? 0 : parsed;
 		}
