@@ -252,6 +252,69 @@ class NativeProcessTest extends utest.Test {
 		#end
 	}
 
+	/**
+		A child writing faster than the runtime dispatches is held to at most
+		`MAX_OUTPUT_AHEAD` bytes ahead of it; past that the child waits on its
+		pipe. Its output was read as fast as it came and queued without limit:
+		here a 2 MB file, every byte of it waiting in this process while the
+		runtime did not pump. All of it still arrives once the runtime does.
+	**/
+	public function testAChattyChildIsHeldToABoundedBacklog():Void {
+		#if (sys && target.threaded && !eval)
+		var path:String = haxe.io.Path.join([Sys.getCwd(), "nativeprocess-backlog-" + Std.random(1000000) + ".txt"]);
+		var line:String = "0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopq\n";
+		var buffer = new StringBuf();
+		for (_ in 0...32768) {
+			buffer.add(line);
+		}
+		var content:String = buffer.toString();
+		sys.io.File.saveContent(path, content);
+
+		var proc = new NativeProcess();
+		var received:Int = 0;
+		var exited:Bool = false;
+		proc.addEventListener(NativeProcessEvent.STANDARD_OUTPUT_DATA, event -> received += event.text.length);
+		var errors:String = "";
+		proc.addEventListener(NativeProcessEvent.STANDARD_ERROR_DATA, event -> errors += event.text);
+		proc.addEventListener(NativeProcessEvent.EXIT, _ -> exited = true);
+
+		try {
+			// The file written out exactly, by a program rather than a shell
+			// builtin: hxcpp quotes each argument, and cmd.exe takes a quoted
+			// "type" for a program it cannot find.
+			proc.start(System.isWindows ? new NativeProcessStartupInfo("powershell.exe", [
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				"[Console]::Out.Write([IO.File]::ReadAllText('" + path + "'))"
+			]) : new NativeProcessStartupInfo("cat", [path]));
+			// Not pumped: nothing is dispatched, so the readers can only queue.
+			// Until the queue stops growing, as it does once the readers wait
+			// or the child has written everything.
+			var queued:Int = -1;
+			var steady:Int = 0;
+			var deadline:Float = haxe.Timer.stamp() + TIMEOUT;
+			while (steady < 10 && haxe.Timer.stamp() < deadline) {
+				crossbyte.sys.System.sleep(0.05);
+				var now:Int = @:privateAccess proc.__worker.__outbox.length;
+				steady = now == queued && now > 0 ? steady + 1 : 0;
+				queued = now;
+			}
+			Assert.isTrue(queued > 0 && queued <= 72, queued + " pieces of output were queued ahead of the runtime");
+
+			pumpUntil(() -> exited, TIMEOUT * 2);
+			Assert.isTrue(exited, "the child never exited");
+			Assert.equals(content.length, received, "not all of the output arrived: " + received + " of " + content.length + " bytes, exit code " + proc.exitCode + ", stderr " + errors);
+		} catch (error:Dynamic) {
+			try sys.FileSystem.deleteFile(path) catch (_:Dynamic) {}
+			throw error;
+		}
+		try sys.FileSystem.deleteFile(path) catch (_:Dynamic) {}
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testExitEventDispatchesOnOwningRuntimeTick():Void {
 		#if (sys && target.threaded && !eval)
 		var primordial = CrossByte.current();

@@ -1454,6 +1454,13 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A child process's output is held at most `NativeProcess.MAX_OUTPUT_AHEAD`
+  (256 KB) ahead of the runtime: past that the readers stop reading, and a
+  child that goes on writing waits on its pipe until the runtime has
+  dispatched what it holds. It was read as fast as the child wrote and
+  queued without limit, so a chatty child of a busy server held its whole
+  output in the server. Its messages to the runtime are typed, where they
+  were anonymous objects read back by reflection.
 - A `Worker` delivers a backlog without moving it: each turn's share of
   queued messages was spliced off the front of the queue, moving everything
   behind it. A million queued messages are delivered in 0.05 to 0.08 s
