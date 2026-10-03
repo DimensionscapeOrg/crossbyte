@@ -62,6 +62,7 @@ extern "C" {
 	int sqlite3_changes(struct sqlite3 *);
 	const char *sqlite3_errmsg(struct sqlite3 *);
 	int sqlite3_stmt_status(struct sqlite3_stmt *, int, int);
+	int sqlite3_close(struct sqlite3 *);
 }
 
 // SQLITE_STMTSTATUS_REPREPARE: how many times SQLite has prepared the
@@ -99,7 +100,44 @@ struct crossbyte_sqlite_stmt {
 	// and its columns may then be others, a SELECT * after ALTER TABLE.
 	int reprepares;
 	int started;
+	// The connection\'s list of the statements prepared on it and not yet
+	// freed (see crossbyte_sqlite_owner).
+	struct crossbyte_sqlite_owner *owner;
+	struct crossbyte_sqlite_stmt *prev;
+	struct crossbyte_sqlite_stmt *next;
 };
+
+// One per connection: every statement prepared on it and not yet freed, so
+// that a connection the collector takes unclosed can finalize them and then
+// close (crossbyte_sqlite_owner_let_go). Used by the connection\'s thread only.
+struct crossbyte_sqlite_owner {
+	struct crossbyte_sqlite_stmt *head;
+};
+
+static void *crossbyte_sqlite_owner_new() {
+	return calloc(1, sizeof(crossbyte_sqlite_owner));
+}
+
+static void crossbyte_sqlite_owner_free(void *p) {
+	crossbyte_sqlite_owner *owner = (crossbyte_sqlite_owner *)p;
+
+	for (crossbyte_sqlite_stmt *s = owner->head; s; s = s->next) s->owner = 0;
+
+	free(owner);
+}
+
+static void crossbyte_sqlite_unlink(crossbyte_sqlite_stmt *s) {
+	if (!s->owner) return;
+
+	if (s->prev) s->prev->next = s->next;
+	else s->owner->head = s->next;
+
+	if (s->next) s->next->prev = s->prev;
+
+	s->owner = 0;
+	s->prev = 0;
+	s->next = 0;
+}
 
 struct crossbyte_sqlite_by_hash {
 	String *names;
@@ -111,11 +149,19 @@ struct crossbyte_sqlite_by_hash {
 	}
 };
 
-static void crossbyte_sqlite_stmt_release(crossbyte_sqlite_stmt *s) {
+// Finalizes it and lets go of what reading it needed: it then has no
+// columns, and every read of it finds none. In a GC-free zone unless
+// `collecting`, called from a finalizer inside a collection.
+static void crossbyte_sqlite_stmt_release(crossbyte_sqlite_stmt *s, bool collecting = false) {
 	if (s->st) {
-		__hxcpp_enter_gc_free_zone();
-		sqlite3_finalize(s->st);
-		__hxcpp_exit_gc_free_zone();
+		if (collecting) {
+			sqlite3_finalize(s->st);
+		} else {
+			__hxcpp_enter_gc_free_zone();
+			sqlite3_finalize(s->st);
+			__hxcpp_exit_gc_free_zone();
+		}
+
 		s->st = 0;
 	}
 
@@ -125,6 +171,33 @@ static void crossbyte_sqlite_stmt_release(crossbyte_sqlite_stmt *s) {
 	s->names = 0;
 	s->slots = 0;
 	s->bools = 0;
+	s->ncols = 0;
+}
+
+// A connection the collector has taken without its close(): every statement
+// still prepared on it finalized, then the connection closed, which SQLite
+// refuses while one is left. Called from the connection\'s finalizer, inside
+// a collection: it touches nothing of the GC. A statement\'s record stays
+// allocated, empty, for the object that holds it.
+static void crossbyte_sqlite_owner_let_go(void *p, void *db) {
+	crossbyte_sqlite_owner *owner = (crossbyte_sqlite_owner *)p;
+
+	if (owner) {
+		crossbyte_sqlite_stmt *s = owner->head;
+
+		while (s) {
+			crossbyte_sqlite_stmt *next = s->next;
+			crossbyte_sqlite_stmt_release(s, true);
+			s->owner = 0;
+			s->prev = 0;
+			s->next = 0;
+			s = next;
+		}
+
+		free(owner);
+	}
+
+	if (db) sqlite3_close((struct sqlite3 *)db);
 }
 
 // Reads the statement\'s columns: their names, made permanent, whether each
@@ -182,7 +255,8 @@ static bool crossbyte_sqlite_stmt_describe(crossbyte_sqlite_stmt *s) {
 	return distinct;
 }
 
-static void *crossbyte_sqlite_stmt_prepare(void *db, String sql) {	int byteLength = 0;
+static void *crossbyte_sqlite_stmt_prepare(void *db, void *owner, String sql) {
+	int byteLength = 0;
 	const char *sqlStr = sql.utf8_str(0, true, &byteLength);
 	struct sqlite3_stmt *st = 0;
 	const char *tail = 0;
@@ -212,11 +286,22 @@ static void *crossbyte_sqlite_stmt_prepare(void *db, String sql) {	int byteLengt
 		hx::Throw(HX_CSTRING("Error, same field is two times in the request ") + sql);
 	}
 
+	if (owner) {
+		crossbyte_sqlite_owner *o = (crossbyte_sqlite_owner *)owner;
+		s->owner = o;
+		s->next = o->head;
+
+		if (o->head) o->head->prev = s;
+
+		o->head = s;
+	}
+
 	return s;
 }
 
 static void crossbyte_sqlite_stmt_free(void *p) {
 	crossbyte_sqlite_stmt *s = (crossbyte_sqlite_stmt *)p;
+	crossbyte_sqlite_unlink(s);
 	crossbyte_sqlite_stmt_release(s);
 	free(s);
 }
@@ -516,14 +601,37 @@ class NativeSQLiteStatement {
 	@:noCompletion private var __params:Array<String>;
 
 	/**
-		Prepares `text` on the connection `db` (`sqlite3*`).
+		Prepares `text` on the connection `db` (`sqlite3*`), listed with
+		`owner`, the connection's record from `newOwner()`.
 
 		@throws String As the glue throws for text SQLite refuses, holds
 		more than one statement, or names a column twice.
 	**/
-	public static function prepare(db:cpp.Pointer<cpp.Void>, text:String):NativeSQLiteStatement {
-		var record:cpp.Pointer<cpp.Void> = __prepare(db, text);
+	public static function prepare(db:cpp.Pointer<cpp.Void>, owner:cpp.Pointer<cpp.Void>, text:String):NativeSQLiteStatement {
+		var record:cpp.Pointer<cpp.Void> = __prepare(db, owner, text);
 		return new NativeSQLiteStatement(record, text);
+	}
+
+	/**
+		A connection's record of the statements prepared on it and not yet
+		freed. Freed with `freeOwner` once the connection has freed them
+		itself and closed, or by `letGo`.
+	**/
+	public static function newOwner():cpp.Pointer<cpp.Void> {
+		return __ownerNew();
+	}
+
+	public static function freeOwner(owner:cpp.Pointer<cpp.Void>):Void {
+		__ownerFree(owner);
+	}
+
+	/**
+		For a connection the collector has taken without its `close()`, from
+		its finalizer: finalizes every statement `owner` lists, frees `owner`,
+		and closes `db`. Allocates nothing.
+	**/
+	public static function letGo(owner:cpp.Pointer<cpp.Void>, db:cpp.Pointer<cpp.Void>):Void {
+		__ownerLetGo(owner, db);
 	}
 
 	@:noCompletion private function new(record:cpp.Pointer<cpp.Void>, text:String) {
@@ -647,7 +755,16 @@ class NativeSQLiteStatement {
 	}
 
 	@:native("crossbyte_sqlite_stmt_prepare")
-	extern private static function __prepare(db:cpp.Pointer<cpp.Void>, sql:String):cpp.Pointer<cpp.Void>;
+	extern private static function __prepare(db:cpp.Pointer<cpp.Void>, owner:cpp.Pointer<cpp.Void>, sql:String):cpp.Pointer<cpp.Void>;
+
+	@:native("crossbyte_sqlite_owner_new")
+	extern private static function __ownerNew():cpp.Pointer<cpp.Void>;
+
+	@:native("crossbyte_sqlite_owner_free")
+	extern private static function __ownerFree(owner:cpp.Pointer<cpp.Void>):Void;
+
+	@:native("crossbyte_sqlite_owner_let_go")
+	extern private static function __ownerLetGo(owner:cpp.Pointer<cpp.Void>, db:cpp.Pointer<cpp.Void>):Void;
 
 	@:native("crossbyte_sqlite_stmt_free")
 	extern private static function __free(record:cpp.Pointer<cpp.Void>):Void;
