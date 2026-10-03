@@ -148,13 +148,13 @@ class IdleServer {
 		var now:Float = Timer.stamp();
 		var sample = ProcessStats.sample();
 		var wall:Float = now - windowFrom;
-		var cpu:Float = (sample.user - windowSample.user) + (sample.kernel - windowSample.kernel);
+		var cpu:Float = (sample.cpu - windowSample.cpu);
 		Report.emit({
 			kind: "idle-window",
 			t: round(now - runFrom),
 			open: server.clientCount,
 			corePercent: round(cpu / wall * 100),
-			kernelShare: round((sample.kernel - windowSample.kernel) / Math.max(1e-9, cpu)),
+			kernelShare: round((sample.kernel - windowSample.kernel) / Math.max(1e-9, (sample.user - windowSample.user) + (sample.kernel - windowSample.kernel))),
 			heapLiveMB: ProcessStats.mb(sample.heapLive),
 			heapNowMB: ProcessStats.mb(sample.heapNow),
 			heapReservedMB: ProcessStats.mb(sample.heapReserved),
@@ -172,7 +172,7 @@ class IdleServer {
 		measuring = false;
 		var end = ProcessStats.sample();
 		var wall:Float = Timer.stamp() - runFrom;
-		var cpu:Float = (end.user - runSample.user) + (end.kernel - runSample.kernel);
+		var cpu:Float = (end.cpu - runSample.cpu);
 		var n:Int = steady == null ? 1 : Std.int(Math.max(1, server.clientCount));
 		Report.emit({
 			kind: "idle-summary",

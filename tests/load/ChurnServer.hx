@@ -259,14 +259,14 @@ class ChurnServer {
 		__report();
 		var sample:ProcessStats = ProcessStats.sample();
 		var wall:Float = now - phaseStart;
-		var cpu:Float = (sample.user - phaseSample.user) + (sample.kernel - phaseSample.kernel);
+		var cpu:Float = (sample.cpu - phaseSample.cpu);
 		var record:Dynamic = {
 			kind: "churn-phase",
 			phase: phaseIndex,
 			concurrency: plan[phaseIndex].concurrency,
 			seconds: round(wall),
 			cpuCores: round(cpu / wall),
-			kernelShare: round((sample.kernel - phaseSample.kernel) / Math.max(1e-9, cpu)),
+			kernelShare: round((sample.kernel - phaseSample.kernel) / Math.max(1e-9, (sample.user - phaseSample.user) + (sample.kernel - phaseSample.kernel))),
 			serverRequestsPerSecond: Math.round(phaseServer.requests / wall),
 			serverWsMessagesPerSecond: Math.round(phaseServer.wsMessages / wall),
 			acceptedPerSecond: round(phaseServer.accepted / wall),
@@ -296,7 +296,7 @@ class ChurnServer {
 			return;
 		}
 		var sample:ProcessStats = ProcessStats.sample();
-		var cpu:Float = (sample.user - windowSample.user) + (sample.kernel - windowSample.kernel);
+		var cpu:Float = (sample.cpu - windowSample.cpu);
 		var clients:Dynamic = window.toRecord(wall);
 		errorsSeen += window.errorCount();
 		Report.emit({
@@ -305,7 +305,7 @@ class ChurnServer {
 			phase: phaseIndex,
 			concurrency: phaseIndex < plan.length ? plan[phaseIndex].concurrency : 0,
 			cpuCores: round(cpu / wall),
-			kernelShare: round((sample.kernel - windowSample.kernel) / Math.max(1e-9, cpu)),
+			kernelShare: round((sample.kernel - windowSample.kernel) / Math.max(1e-9, (sample.user - windowSample.user) + (sample.kernel - windowSample.kernel))),
 			serverRequestsPerSecond: Math.round(requests / wall),
 			serverWsMessagesPerSecond: Math.round(wsMessages / wall),
 			acceptedPerSecond: round(accepted / wall),
