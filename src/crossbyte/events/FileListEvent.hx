@@ -5,7 +5,7 @@ import crossbyte.io.File;
 
 /** Event carrying a resolved file listing from an asynchronous directory query. */
 class FileListEvent extends Event {
-	public static inline var DIRECTORY_LISTING:String = "directoryListing";
+	public static inline var DIRECTORY_LISTING:EventType<FileListEvent> = "directoryListing";
 
 	public var files(default, null):Array<File>;
 

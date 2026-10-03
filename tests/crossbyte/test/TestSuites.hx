@@ -52,6 +52,9 @@ class TestSuites {
 	public static function addEvents(runner:Runner):Void {
 		runner.addCase(new crossbyte.events.EventDispatcherTest());
 		runner.addCase(new crossbyte.events.EventsSupportTest());
+		// Also in PortableSuite: typed event-type constants refuse a listener
+		// of the wrong event at compile time.
+		runner.addCase(new crossbyte.events.EventTypesTest());
 	}
 
 	public static function addDataStructures(runner:Runner):Void {
@@ -414,6 +417,8 @@ class TestSuites {
 		// of the reliable datagram cases it is not portable.
 		runner.addCase(new crossbyte.net.ReliableDatagramRelayTest());
 		runner.addCase(new crossbyte.net.CongestionControlTest());
+		// Real sockets: a raw Bytes write, and a burst taken within one pass.
+		runner.addCase(new crossbyte.net.SocketPassTest());
 	}
 
 	/**
