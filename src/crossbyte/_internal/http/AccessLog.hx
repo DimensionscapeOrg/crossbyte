@@ -139,7 +139,7 @@ class AccessLog {
 			}
 		}
 		if (__writer == null) {
-			__writer = Thread.create(__run);
+			__writer = Thread.create(__writerLoop);
 			start = true;
 		}
 		__lock.release();
@@ -176,7 +176,9 @@ class AccessLog {
 		}
 	}
 
-	private static function __run():Void {
+	// Not __run: hxcpp's Object has a virtual __run, and GCC refuses a static
+	// of that name (MSVC let it pass).
+	private static function __writerLoop():Void {
 		while (true) {
 			var interval:Float = __intervalOverride > 0 ? __intervalOverride : INTERVAL_SECONDS;
 			__wake.wait(interval);
