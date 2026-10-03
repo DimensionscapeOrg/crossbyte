@@ -424,6 +424,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.SocketSelectThreadsTest());
 		// hl's TLS client, whose waits its collector can see past.
 		runner.addCase(new crossbyte._internal.socket.HlTlsSocketTest());
+		// The transfers that answer -1 for "would block" instead of throwing.
+		runner.addCase(new crossbyte.net.SysSocketTransferTest());
 	}
 
 	public static function addRPC(runner:Runner):Void {

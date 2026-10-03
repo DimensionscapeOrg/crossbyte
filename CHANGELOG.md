@@ -1450,6 +1450,25 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `FlexSocket` is an abstract over `sys.net.Socket`, which every TLS socket
+  it holds extends, rather than over `EitherType`, which converted it from
+  `Dynamic` on every call. On the jvm an accepted socket is constructed
+  directly rather than through reflection, a received datagram's address
+  is read without a checked cast per byte, and the std socket overrides set
+  a `Host`'s fields through checked access rather than `untyped`.
+- A socket that would block says so without an exception. The native
+  transfer threw for it, the standard `sys.net` socket caught that and
+  threw `Blocked`, and `Socket.flush` caught that in turn: three exceptions
+  each time a slow peer's full window refused a flush, on every pass until
+  it read, and two to end every pass that read a UDP socket dry. Natively a
+  flush refused by a peer that stopped reading costs 0.38 us a socket a
+  pass, where it cost 5.5 to 5.8 (64 such peers, three interleaved runs); a
+  datagram received one a pass 9.7 to 9.9 us, where it cost 11.2 to 11.5.
+  `sys.net.Socket` and `UdpSocket` keep their standard behaviour, throwing
+  `Blocked` once rather than twice natively; CrossByte's own read and write
+  loops use internal transfers that answer -1. Every spelling of "would
+  block" a TLS layer uses is recognised in a flush, where a bare string
+  closed the connection.
 - `CompressionAlgorithm` is an `Int` underneath, where it was a boxed
   `Null<Int>`. `fromString` answers `Null<CompressionAlgorithm>`, and a
   token nobody knows, converted where an algorithm is asked for, throws an

@@ -3,7 +3,6 @@ package crossbyte._internal.socket;
 // Not built for the browser. This is a raw TCP socket with its own TLS, and a browser grants neither: it can open a WebSocket and nothing lower. Browser code reaches a ws:// or wss:// endpoint through crossbyte.net.Socket, which speaks WebSocket natively there.
 #if !js
 
-import haxe.extern.EitherType;
 import haxe.io.Input;
 import haxe.io.Output;
 import sys.net.Host;
@@ -28,7 +27,11 @@ typedef HostInfo = {port:Int, host:Host};
 typedef Sockets = {write:Array<Socket>, read:Array<Socket>, others:Array<Socket>};
 
 @:forward
-abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SSLSocket to SSLSocket {
+// Over sys.net.Socket, which every TLS socket here extends, AlpnSocket,
+// hl's and the jvm's, rather than EitherType<Socket, SSLSocket>, which is
+// Dynamic underneath: every forwarded call converted it back to a Socket,
+// natively a type check per call.
+abstract FlexSocket(Socket) from Socket to Socket from SSLSocket {
 	public static var DEFAULT_CA(get, set):Null<Certificate>;
 
 	public static var DEFAULT_VERIFY_CERT(get, set):Null<Bool>;
@@ -63,13 +66,18 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 	}
 
 	public static function select(read:Array<FlexSocket>, write:Array<FlexSocket>, others:Array<FlexSocket>, ?timeout:Float):Sockets {
-		return Socket.select(read, write, others, timeout);
+		return Socket.select(cast read, cast write, cast others, timeout);
 	}
 
 	private static inline function __requireSSL(field:String, instance:FlexSocket):Void {
 		if (!instance.isSecure) {
 			throw '$field::Field only available when using a secure socket';
 		}
+	}
+
+	/** The TLS socket this is; for a plain one, see `isSecure`. **/
+	@:to private inline function toSSLSocket():SSLSocket {
+		return cast this;
 	}
 
 	public var custom(get, set):Dynamic;
@@ -136,15 +144,15 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 	}
 
 	private inline function get_custom():Dynamic {
-		return (this : Socket).custom;
+		return this.custom;
 	}
 
 	private inline function set_custom(value:Dynamic):Dynamic {
-		return (this : Socket).custom = value;
+		return this.custom = value;
 	}
 
 	private inline function get_input():Input {
-		return (this : Socket).input;
+		return this.input;
 	}
 
 	private inline function get_isSecure():Bool {
@@ -156,37 +164,37 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 	}
 
 	private inline function get_output():Output {
-		return (this : Socket).output;
+		return this.output;
 	}
 
 	private inline function get_verifyCert():Null<Bool> {
 		__requireSSL("verifyCert", this);
 
-		return (this : SSLSocket).verifyCert;
+		return (cast this : SSLSocket).verifyCert;
 	}
 
 	private inline function set_verifyCert(value:Null<Bool>):Null<Bool> {
 		__requireSSL("verifyCert", this);
 
-		return (this : SSLSocket).verifyCert = value;
+		return (cast this : SSLSocket).verifyCert = value;
 	}
 
 	public inline function accept():Socket {
-		return (this : Socket).accept();
+		return this.accept();
 	}
 
 	public inline function addSNICertificate(cbServernameMatch:String->Bool, cert:Certificate, key:Key):Void {
 		__requireSSL("addSNICertificate", this);
 
-		(this : SSLSocket).addSNICertificate(cbServernameMatch, cert, key);
+		(cast this : SSLSocket).addSNICertificate(cbServernameMatch, cert, key);
 	}
 
 	public inline function bind(host:String, port:Int):Void {
-		(this : Socket).bind(new Host(host), port);
+		this.bind(new Host(host), port);
 	}
 
 	public inline function close():Void {
-		(this : Socket).close();
+		this.close();
 	}
 
 	/**
@@ -196,22 +204,22 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 		`connectHost` with the answer instead.
 	**/
 	public inline function connect(host:String, port:Int):Void {
-		(this : Socket).connect(new Host(host), port);
+		this.connect(new Host(host), port);
 	}
 
 	/** Connects to an address already resolved. **/
 	public inline function connectHost(host:Host, port:Int):Void {
-		(this : Socket).connect(host, port);
+		this.connect(host, port);
 	}
 
 	public inline function handshake():Void {
 		__requireSSL("handshake", this);
 
-		(this : SSLSocket).handshake();
+		(cast this : SSLSocket).handshake();
 	}
 
 	public inline function host():HostInfo {
-		return (this : Socket).host();
+		return this.host();
 	}
 
 	public inline function listen(connections:Int = 0):Void {
@@ -219,63 +227,63 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 		// neko's 31-bit Int, which the largest Int is not.
 		if (connections == 0)
 			connections = 0x7FFFFFF;
-		(this : Socket).listen(connections);
+		this.listen(connections);
 	}
 
 	public inline function peer():HostInfo {
-		return (this : Socket).peer();
+		return this.peer();
 	}
 
 	public inline function peerCertificate():Certificate {
 		__requireSSL("peerCertificate", this);
 
-		return (this : SSLSocket).peerCertificate();
+		return (cast this : SSLSocket).peerCertificate();
 	}
 
 	public inline function read():String {
-		return (this : Socket).read();
+		return this.read();
 	}
 
 	public inline function setBlocking(value:Bool):Void {
-		(this : Socket).setBlocking(value);
+		this.setBlocking(value);
 	}
 
 	public inline function setCA(cert:Certificate):Void {
 		__requireSSL("setCA", this);
 
-		(this : SSLSocket).setCA(cert);
+		(cast this : SSLSocket).setCA(cert);
 	}
 
 	public inline function setCertificate(cert:Certificate, key:Key):Void {
 		__requireSSL("setCertificate", this);
 
-		(this : SSLSocket).setCertificate(cert, key);
+		(cast this : SSLSocket).setCertificate(cert, key);
 	}
 
 	public inline function setFastSend(value:Bool):Void {
-		(this : Socket).setFastSend(value);
+		this.setFastSend(value);
 	}
 
 	public inline function setHostname(name:String):Void {
 		__requireSSL("setHostname", this);
 
-		(this : SSLSocket).setHostname(name);
+		(cast this : SSLSocket).setHostname(name);
 	}
 
 	public inline function setTimeout(value:Float):Void {
-		(this : Socket).setTimeout(value);
+		this.setTimeout(value);
 	}
 
 	public inline function shutdown(read:Bool, write:Bool):Void {
-		(this : Socket).shutdown(read, write);
+		this.shutdown(read, write);
 	}
 
 	private inline function waitForRead():Void {
-		(this : Socket).waitForRead();
+		this.waitForRead();
 	}
 
 	private inline function write(content:String):Void {
-		(this : Socket).write(content);
+		this.write(content);
 	}
 }
 #end
