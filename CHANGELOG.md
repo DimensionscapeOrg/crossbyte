@@ -251,6 +251,8 @@ entry below says how:
 - `Membership.heard` and `sweep` take a `Float` `now`, -1 unless given,
   where they took `Null<Float>`: leave the argument out, or pass -1, where
   code passed null to ask the clock.
+- `NodeChannel.poll()` takes no argument; delete the one passed, which was
+  never read.
 
 ### Added
 - A load and churn harness, `ci/load.hxml` (`tests/load`), run by hand as
@@ -1460,6 +1462,13 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A `NodeChannel` writes what one pass of the runtime's loop sent in one
+  write when the pass ends, each message's length written ahead of it, where
+  every message was framed into a buffer of its own and flushed with a
+  system call. What a pass wrote when the link fails waits for the link, as
+  a message that failed to go always did. Twenty 64-byte messages a round
+  over loopback: 7.0-7.3 µs of CPU a message before, 0.5 µs now.
+  `NodeChannel.poll()` takes no argument: the time it took was not read.
 - A TCP `NetConnection` writes what one pass of the runtime's loop sent on
   it in one write, when the pass ends, where each `send` was a system call
   of its own: RPC over TCP, twenty calls a tick, 7.0 µs of CPU a call
