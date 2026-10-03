@@ -193,6 +193,8 @@ class TestSuites {
 		// SQLite opens only natively.
 		runner.addCase(new crossbyte.db.SQLiteNativeTest());
 		#end
+		// The fixed-slot objects rows and documents are built as.
+		runner.addCase(new crossbyte._internal.AnonBuilderTest());
 	}
 
 	public static function addSystem(runner:Runner):Void {
