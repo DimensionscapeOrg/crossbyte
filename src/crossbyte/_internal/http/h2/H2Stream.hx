@@ -154,7 +154,8 @@ class H2Stream {
 	 */
 	public var pendingEndStream:Bool = false;
 
-	private var __body:BytesBuffer = new BytesBuffer();
+	// Made with the first DATA: most requests have no body.
+	private var __body:Null<BytesBuffer> = null;
 	private var __bodyLength:Int = 0;
 
 	private var __queue:Bytes = null;
@@ -177,6 +178,9 @@ class H2Stream {
 		if (chunk.length == 0) {
 			return;
 		}
+		if (__body == null) {
+			__body = new BytesBuffer();
+		}
 		__body.addBytes(chunk, 0, chunk.length);
 		__bodyLength += chunk.length;
 	}
@@ -186,15 +190,19 @@ class H2Stream {
 	 * being emptied, so this may only be called once, at the end.
 	 */
 	public function takeBody():Bytes {
-		var out:Bytes = __body.getBytes();
-		__body = new BytesBuffer();
+		var out:Bytes = __body == null ? EMPTY : __body.getBytes();
+		__body = null;
 		__bodyLength = 0;
 		return out;
 	}
 
+	// What takeBody answers for a stream that had none. Shared, since nothing
+	// writes to a body after it is taken.
+	private static final EMPTY:Bytes = Bytes.alloc(0);
+
 	/** Lets go of the body received so far, for a response given up on. */
 	public function dropBody():Void {
-		__body = new BytesBuffer();
+		__body = null;
 		__bodyLength = 0;
 	}
 

@@ -1894,6 +1894,16 @@ entry below says how:
 - A statement's text is split at its placeholders once and kept, where it
   was copied a character at a time on every run, placeholder or none:
   a SELECT with no placeholder costs 32-42 ns there instead of 240-410.
+- An HTTP/2 stream's request handler no longer makes the read buffer, header
+  map and body that only the HTTP/1.1 parser uses, nor copies the body the
+  frame layer already holds; a request without a body makes no body object
+  at all until `requestBody` is asked for, on either protocol. The server
+  hears each response through a hook of its own rather than a listener for
+  `HTTP_RESPONSE_STATUS`, so the event is made and dispatched only when
+  something else listens for it, and an HTTP/2 stream no longer adds a
+  listener and a closure. An HTTP/2 request cost the server 6.5 us of CPU
+  natively where it cost 7.5, and an HTTP/1.1 one 14.1 where it cost 14.9
+  (medians of four interleaved runs).
 - The HTTP/1.1 server reads a request's header block where its bytes lie,
   cutting each line out whole, and splits each field by index, lowercasing
   its name only when it has a capital letter. It walked the block twice, a

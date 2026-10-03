@@ -12,7 +12,6 @@ import crossbyte._internal.php.PHPBridge;
 import crossbyte.core.CrossByte;
 import crossbyte.core._internal.PassFlush;
 import crossbyte.events.Event;
-import crossbyte.events.HTTPStatusEvent;
 import crossbyte.events.ProgressEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.net.Socket;
@@ -43,7 +42,7 @@ class H2ConnectionHandler implements PassFlush {
 	// The server's per-response hook, which is where metrics are recorded.
 	// HTTP/1.1 handlers were hooked to it and these were not, so no HTTP/2
 	// response was ever counted.
-	private final __onResponse:Null<(HTTPStatusEvent, HTTPRequestHandler) -> Void>;
+	private final __onResponse:Null<(HTTPRequestHandler, Int) -> Void>;
 
 	// Set while a close is waiting for the end of the pass: see __onDrained.
 	private var __closeQueued:Bool = false;
@@ -84,7 +83,7 @@ class H2ConnectionHandler implements PassFlush {
 	 *        this.
 	 */
 	public function new(socket:Socket, config:HTTPServerConfig, ?php:PHPBridge, ?buffered:ByteArray,
-			?onResponse:(HTTPStatusEvent, HTTPRequestHandler) -> Void, ?sweepWith:({}, Null<Float->Void>) -> Void) {
+			?onResponse:(HTTPRequestHandler, Int) -> Void, ?sweepWith:({}, Null<Float->Void>) -> Void) {
 		__socket = socket;
 		__config = config;
 		__php = php;
@@ -576,11 +575,10 @@ class H2ConnectionHandler implements PassFlush {
 	}
 
 	private function __serveNow(request:H2ServerRequest):Void {
-		var body:ByteArray = new ByteArray();
-		if (request.body.length > 0) {
-			body.writeBytes(request.body, 0, request.body.length);
-			body.position = 0;
-		}
+		// The frame layer's own bytes, taken as they are: they were copied
+		// into a new ByteArray, which was made for a request with no body
+		// too. None at all for that one; requestBody makes it if asked.
+		var body:Null<ByteArray> = request.body.length > 0 ? ByteArray.fromBytes(request.body) : null;
 
 		// Admitted at its headers, so only the body is left to give it.
 		var admitted:Null<HTTPRequestHandler> = request.context;
@@ -642,10 +640,9 @@ class H2ConnectionHandler implements PassFlush {
 	private function __handlerFor(request:H2ServerRequest):HTTPRequestHandler {
 		var writer = new H2ResponseWriter(__connection, __socket, request.streamId, __flushUnlessReceiving, __sweepWith);
 		var handler = new HTTPRequestHandler(__socket, __config, __php, writer);
-		if (__onResponse != null) {
-			var onResponse = __onResponse;
-			handler.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, e -> onResponse(e, handler));
-		}
+		// The server's hook as the handler's own: it was a listener, and a
+		// closure for it, made for every stream.
+		handler.__onResponded = __onResponse;
 		return handler;
 	}
 
