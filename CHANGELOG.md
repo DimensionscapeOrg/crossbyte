@@ -238,6 +238,9 @@ entry below says how:
   meant three and twenty seconds: pass the time wanted, or leave the
   argument out for the default. `StunClient.classifyFiltering` fails for 0,
   and a dial throws for a negative timeout.
+- Code that keeps "no algorithm" in a `CompressionAlgorithm` types it
+  `Null<CompressionAlgorithm>`; `CompressionAlgorithm.fromString` answers
+  that type.
 
 ### Added
 - A load and churn harness, `ci/load.hxml` (`tests/load`), run by hand as
@@ -1447,6 +1450,16 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `CompressionAlgorithm` is an `Int` underneath, where it was a boxed
+  `Null<Int>`. `fromString` answers `Null<CompressionAlgorithm>`, and a
+  token nobody knows, converted where an algorithm is asked for, throws an
+  `ArgumentError`, where it was null.
+- An empty `ByteArray`, every one `ByteArray.fromBytes` makes, per
+  datagram and per frame, no longer allocates a buffer only for it to be
+  replaced; and `ByteArrayOutput.reserve` grows as writing does, where each
+  reserve that did not fit took a chunk of exactly its size, so a codec
+  reserving per value made a chunk and a copy per value: 10,000 reserved
+  ints and 1,000 varints took 11,000 chunks.
 - On eval HTTP/2 works, and the HTTP/1.1 client keeps connections for the
   next request to their origin, as on every other target with threads.
   Both were off there because eval raised a reset connection's error past

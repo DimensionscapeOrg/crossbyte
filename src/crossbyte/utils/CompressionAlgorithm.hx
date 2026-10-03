@@ -1,7 +1,14 @@
 package crossbyte.utils;
 
-/** Enumerates the generic compression codecs supported by CrossByte core. */
-enum abstract CompressionAlgorithm(Null<Int>) {
+/**
+	Enumerates the generic compression codecs supported by CrossByte core.
+
+	An `Int` underneath. It was a `Null<Int>`, so that `fromString` could
+	answer null for a name it did not know: a boxed value natively, compared
+	dynamically wherever one was compared. Code that keeps "no algorithm" in
+	a variable types it `Null<CompressionAlgorithm>`.
+**/
+enum abstract CompressionAlgorithm(Int) {
 	/**
 		Defines the string to use for the deflate compression algorithm: a raw
 		deflate stream (RFC 1951), with no header and no checksum.
@@ -44,9 +51,9 @@ enum abstract CompressionAlgorithm(Null<Int>) {
 
 	/**
 		Converts a lowercase codec token into a supported generic compression
-		algorithm.
+		algorithm, or null for a token it does not know.
 	**/
-	public static function fromString(value:String):CompressionAlgorithm {
+	public static function fromString(value:String):Null<CompressionAlgorithm> {
 		if (value == null) {
 			return null;
 		}
@@ -62,8 +69,19 @@ enum abstract CompressionAlgorithm(Null<Int>) {
 		}
 	}
 
+	/**
+		A token as the algorithm it names, where a `CompressionAlgorithm` is
+		asked for. One it does not know is refused: it was null, which an
+		`Int` cannot hold, and would have read as `DEFLATE`.
+		@throws crossbyte.errors.ArgumentError For a token `fromString` does
+				not know.
+	**/
 	@:from private static function fromStringInternal(value:String):CompressionAlgorithm {
-		return fromString(value);
+		var algorithm:Null<CompressionAlgorithm> = fromString(value);
+		if (algorithm == null) {
+			throw new crossbyte.errors.ArgumentError('Unknown compression algorithm: "$value".');
+		}
+		return algorithm;
 	}
 
 	@:to private function toString():String {
