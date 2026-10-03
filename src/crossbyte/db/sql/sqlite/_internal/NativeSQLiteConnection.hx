@@ -77,6 +77,16 @@ static void crossbyte_sqlite_interrupt(void *db) {
 	sqlite3_interrupt((struct sqlite3 *)db);
 }
 
+// The glue closes its database from a finalizer when the collector takes
+// it, and SQLite refuses -- SQLITE_BUSY, leaving it open, its file locked,
+// for the life of the process -- while a statement prepared on it is not
+// finalized, as the connection\'s kept ones are not. So the connection
+// removes that finalizer and closes the database from its own instead
+// (NativeSQLiteConnection.__letGo), its statements finalized first.
+static void crossbyte_sqlite_disown(Dynamic handle) {
+	_hx_set_finalizer(handle, 0);
+}
+
 // What a cancel() and the work it would stop decide between them, one per
 // connection: for an asynchronous connection made and freed by the
 // connection on the thread that runs it, for a synchronous one by its
@@ -268,6 +278,9 @@ class NativeSQLiteConnection implements Connection {
 	@:noCompletion private var __syncRuns:cpp.Pointer<cpp.Void> = null;
 	// Numbers the requests published there; 0 is none.
 	@:noCompletion private var __syncRun:Int = 0;
+	// The native list of the statements prepared here and not yet freed,
+	// for __letGo; null when the sqlite3 was not reached, and once closed.
+	@:noCompletion private var __owner:cpp.Pointer<cpp.Void> = null;
 
 	/**
 		Opens `path`. `runs`, from `newRuns()`, is an asynchronous
@@ -291,9 +304,39 @@ class NativeSQLiteConnection implements Connection {
 
 			__watch(connection.__db, runs);
 			connection.__watched = true;
+			// Closed by this connection's finalizer, not the glue's, when it
+			// is let go without close(): see __letGo.
+			connection.__owner = NativeSQLiteStatement.newOwner();
+			__disown(connection.__handle);
+			cpp.vm.Gc.setFinalizer(connection, cpp.Callable.fromStaticFunction(__letGo));
 		}
 
 		return connection;
+	}
+
+	/**
+		The collector's, for a connection let go without `close()`, as the
+		glue's own finalizer was: its statements finalized and the database
+		closed. The glue's could not close it once statements were kept on
+		it -- SQLite refuses while one is left -- and the database stayed
+		open, its file locked, for the life of the process. Runs inside a
+		collection: it allocates nothing.
+	**/
+	@:noCompletion private static function __letGo(connection:NativeSQLiteConnection):Void {
+		var db:cpp.Pointer<cpp.Void> = connection.__db;
+		var owner:cpp.Pointer<cpp.Void> = connection.__owner;
+		var runs:cpp.Pointer<cpp.Void> = connection.__syncRuns;
+		connection.__db = null;
+		connection.__owner = null;
+		connection.__syncRuns = null;
+
+		if (db != null) {
+			NativeSQLiteStatement.letGo(owner, db);
+		}
+
+		if (runs != null) {
+			__runsFree(runs);
+		}
 	}
 
 	/**
@@ -454,7 +497,7 @@ class NativeSQLiteConnection implements Connection {
 			return kept;
 		}
 
-		var statement:NativeSQLiteStatement = NativeSQLiteStatement.prepare(__db, s);
+		var statement:NativeSQLiteStatement = NativeSQLiteStatement.prepare(__db, __owner, s);
 		statement.busy = true;
 
 		if (kept == null) {
@@ -777,6 +820,14 @@ class NativeSQLiteConnection implements Connection {
 
 		__prepared = new haxe.ds.StringMap();
 		__preparedOrder = [];
+		var owner:cpp.Pointer<cpp.Void> = __owner;
+
+		if (owner != null) {
+			// One still running is freed as it is given back.
+			__owner = null;
+			NativeSQLiteStatement.freeOwner(owner);
+		}
+
 		__close(__handle);
 	}
 
@@ -857,6 +908,9 @@ class NativeSQLiteConnection implements Connection {
 
 	@:native("crossbyte_sqlite_interrupt")
 	extern private static function __interruptDb(db:cpp.Pointer<cpp.Void>):Void;
+
+	@:native("crossbyte_sqlite_disown")
+	extern private static function __disown(handle:Dynamic):Void;
 
 	@:native("crossbyte_sqlite_runs_new")
 	extern private static function __runsNew():cpp.Pointer<cpp.Void>;
