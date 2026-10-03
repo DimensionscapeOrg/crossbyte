@@ -430,6 +430,169 @@ class NativeSQLiteConnection implements Connection {
 	}
 
 	/**
+		How many prepared statements the connection keeps, by their text. A
+		statement prepared past this takes the place of the oldest kept.
+	**/
+	public static inline var PREPARED_LIMIT:Int = 64;
+
+	// The statements prepared on this connection, by their text, idle or
+	// running, and their texts in the order they were prepared; see
+	// __prepared.
+	@:noCompletion private var __prepared:haxe.ds.StringMap<NativeSQLiteStatement> = new haxe.ds.StringMap();
+	@:noCompletion private var __preparedOrder:Array<String> = [];
+
+	/**
+		`s`'s statement, prepared on this connection: the one kept for its
+		text when it is idle, or a new one, kept for the text when it is not
+		already. Given back with `__give` once its run is over.
+	**/
+	@:noCompletion private function __take(s:String):NativeSQLiteStatement {
+		var kept:NativeSQLiteStatement = __prepared.get(s);
+
+		if (kept != null && !kept.busy) {
+			kept.busy = true;
+			return kept;
+		}
+
+		var statement:NativeSQLiteStatement = NativeSQLiteStatement.prepare(__db, s);
+		statement.busy = true;
+
+		if (kept == null) {
+			__prepared.set(s, statement);
+			__preparedOrder.push(s);
+
+			if (__preparedOrder.length > PREPARED_LIMIT) {
+				var oldest:String = __preparedOrder.shift();
+				var old:NativeSQLiteStatement = __prepared.get(oldest);
+				__prepared.remove(oldest);
+
+				if (old != null) {
+					if (old.busy) {
+						// Running: freed when it is given back.
+						old.kept = false;
+					} else {
+						old.free();
+					}
+				}
+			}
+		} else {
+			// Its text's kept one is running, a statement read a page at a
+			// time, another run of the same text meanwhile, so this one is
+			// used once and freed.
+			statement.kept = false;
+		}
+
+		return statement;
+	}
+
+	/** `statement`'s run is over: reset and kept for its next, or freed. **/
+	@:noCompletion private function __give(statement:NativeSQLiteStatement):Void {
+		statement.busy = false;
+
+		if (!statement.kept) {
+			statement.free();
+			return;
+		}
+
+		try {
+			statement.reset();
+		} catch (e:Dynamic) {
+			// Reset reports the run's own failure again; it is reset regardless.
+		}
+	}
+
+	/**
+		`s` run with `parameters` bound to its `:name`s, prepared once and
+		kept: `request`, for a statement with values to bind. Asked for when
+		`cancels()` read `since`, and stopped by an `interrupt()` as
+		`requestSince` is.
+	**/
+	public function requestBound(s:String, parameters:Null<haxe.ds.StringMap<Dynamic>>, since:Int):ResultSet {
+		return __requestWith(s, parameters, since, true);
+	}
+
+	/**
+		`s` run with `parameters` bound, its rows given to `each` one at a
+		time, as a row `SQLRow` reads by column, with nothing made for a row:
+		`SQLiteStatement.executeEach`. Answers the rows the statement
+		changed, for one that returns none. Stopped by an `interrupt()` as
+		`requestSince` is; a failure in `each` ends the run and is thrown
+		as it is.
+	**/
+	public function eachRow(s:String, parameters:Null<haxe.ds.StringMap<Dynamic>>, since:Int, each:crossbyte.db.sql.SQLRow->Void):Int {
+		if (__db == null) {
+			throw new crossbyte.errors.IllegalOperationError("The connection's sqlite3 was not reached, so there is no statement to read by column.");
+		}
+
+		settle();
+		var statement:NativeSQLiteStatement = __take(s);
+		var row:SQLiteRow = new SQLiteRow(statement);
+		var more:Bool;
+
+		try {
+			statement.bind(parameters);
+			more = __firstStep(statement, since);
+
+			while (more) {
+				each(row);
+				more = statement.step();
+			}
+		} catch (e:Dynamic) {
+			__give(statement);
+			throw e;
+		}
+
+		var changed:Int = statement.columns == 0 ? statement.changes() : 0;
+		__give(statement);
+		return changed;
+	}
+
+	/**
+		The first step of `statement`, which is what runs a write, under the
+		same watch as `requestSince`: an `interrupt()` made since `since`
+		was read stops it.
+	**/
+	@:noCompletion private function __firstStep(statement:NativeSQLiteStatement, since:Int):Bool {
+		var runs:cpp.Pointer<cpp.Void> = __syncRuns;
+
+		if (runs == null) {
+			return statement.step();
+		}
+
+		var run:Int = ++__syncRun;
+
+		if (run == 0) {
+			run = __syncRun = 1;
+		}
+
+		if (__syncBegin(runs, run, since)) {
+			__syncEnd(runs, run);
+			throw "Sqlite error : interrupted";
+		}
+
+		var more:Bool;
+
+		try {
+			more = statement.step();
+		} catch (e:Dynamic) {
+			__syncEnd(runs, run);
+			throw e;
+		}
+
+		if (__syncEnd(runs, run) && more) {
+			__dbLock.acquire();
+
+			if (__db != null) {
+				__interruptDb(__db);
+			}
+
+			__dbLock.release();
+		}
+
+		return more;
+	}
+
+	/**
 		`request(s)`, asked for when `cancels()` read `since`.
 
 		On a synchronous connection an `interrupt()` made since then stops it,
@@ -443,12 +606,28 @@ class NativeSQLiteConnection implements Connection {
 		a SELECT through every row.
 	**/
 	public function requestSince(s:String, since:Int):ResultSet {
+		return __requestWith(s, null, since, false);
+	}
+
+	/**
+		`requestSince`, with `parameters` bound when `bound`. Natively the
+		statement is prepared once and kept (`__take`), its rows made with
+		fixed slots; the glue prepares it again for every run, and is used
+		only when the connection's `sqlite3` was not reached.
+	**/
+	@:noCompletion private function __requestWith(s:String, parameters:Null<haxe.ds.StringMap<Dynamic>>, since:Int, bound:Bool):ResultSet {
 		settle();
 		var runs:cpp.Pointer<cpp.Void> = __syncRuns;
 		var result:NativeSQLiteResultSet;
 
+		if (__db == null && bound) {
+			// No sqlite3 reached to prepare on: the values written into the
+			// text, through the glue, as before.
+			s = @:privateAccess crossbyte.db.sql.sqlite.SQLiteConnection.__substitute(s, parameters);
+		}
+
 		if (runs == null) {
-			result = new NativeSQLiteResultSet(__request(__handle, s));
+			result = __start(s, parameters);
 		} else {
 			var run:Int = ++__syncRun;
 
@@ -463,7 +642,7 @@ class NativeSQLiteConnection implements Connection {
 			}
 
 			try {
-				result = new NativeSQLiteResultSet(__request(__handle, s));
+				result = __start(s, parameters);
 			} catch (e:Dynamic) {
 				__syncEnd(runs, run);
 				throw e;
@@ -488,6 +667,30 @@ class NativeSQLiteConnection implements Connection {
 		}
 
 		return result;
+	}
+
+	/**
+		Starts `s`: prepared once and kept, `parameters` bound, its first step
+		taken, which is what runs a write. Through the glue when the
+		connection's `sqlite3` was not reached.
+	**/
+	@:noCompletion private function __start(s:String, parameters:Null<haxe.ds.StringMap<Dynamic>>):NativeSQLiteResultSet {
+		if (__db == null) {
+			return new NativeSQLiteResultSet(__request(__handle, s), null, null);
+		}
+
+		var statement:NativeSQLiteStatement = __take(s);
+
+		try {
+			statement.bind(parameters);
+		} catch (e:Dynamic) {
+			__give(statement);
+			throw e;
+		}
+
+		// Its first step, taken by the result as it is made, gives the
+		// statement back itself should it fail.
+		return new NativeSQLiteResultSet(null, statement, this);
 	}
 
 	// The result of the last request while it may still have rows to give.
@@ -515,6 +718,13 @@ class NativeSQLiteConnection implements Connection {
 
 		live.__exhausted = true;
 		live.__cache.clear();
+
+		if (live.__statement != null) {
+			// Reset, which ends its read, and kept for its next run.
+			live.__release();
+			return;
+		}
+
 		// The glue finalizes the statement before it as it prepares one, and
 		// has no call to finalize one otherwise. This one is never stepped,
 		// so it holds nothing, and the next request finalizes it in turn.
@@ -546,7 +756,27 @@ class NativeSQLiteConnection implements Connection {
 			__runsFree(runs);
 		}
 
+		// Every statement prepared here, finalized: SQLite will not close a
+		// connection that still has one.
+		var live:NativeSQLiteResultSet = __live;
 		__live = null;
+
+		if (live != null && live.__statement != null) {
+			live.__exhausted = true;
+			live.__cache.clear();
+			live.__release();
+		}
+
+		for (statement in __prepared) {
+			if (statement.busy) {
+				statement.kept = false;
+			} else {
+				statement.free();
+			}
+		}
+
+		__prepared = new haxe.ds.StringMap();
+		__preparedOrder = [];
 		__close(__handle);
 	}
 
@@ -673,11 +903,21 @@ class NativeSQLiteConnection implements Connection {
 
 @:noCompletion
 @:allow(crossbyte.db.sql.sqlite._internal.NativeSQLiteConnection)
+@:access(crossbyte.db.sql.sqlite._internal.NativeSQLiteConnection)
 private class NativeSQLiteResultSet implements ResultSet {
 	public var length(get, null):Int;
 	public var nfields(get, null):Int;
 
+	// The glue's result, or null for a statement of the connection's own.
 	@:noCompletion private var __result:Dynamic;
+	// The prepared statement being read, until its run is over; then null,
+	// and given back to the connection.
+	@:noCompletion private var __statement:NativeSQLiteStatement;
+	@:noCompletion private var __owner:NativeSQLiteConnection;
+	@:noCompletion private var __columns:Int = 0;
+	@:noCompletion private var __stepped:Bool = false;
+	// What a write changed, read as its run ended.
+	@:noCompletion private var __changed:Int = 0;
 	@:noCompletion private var __cache:List<Dynamic>;
 	// Whether the statement has no row left to give: stepped to its end.
 	@:noCompletion private var __exhausted:Bool = false;
@@ -686,9 +926,16 @@ private class NativeSQLiteResultSet implements ResultSet {
 	@:noCompletion private var __failed:Bool = false;
 	@:noCompletion private var __failure:Dynamic = null;
 
-	public function new(result:Dynamic) {
+	public function new(result:Dynamic, statement:NativeSQLiteStatement, owner:NativeSQLiteConnection) {
 		__cache = new List();
 		__result = result;
+		__statement = statement;
+		__owner = owner;
+
+		if (statement != null) {
+			__columns = statement.columns;
+		}
+
 		// Steps the statement once, which is what runs a write.
 		hasNext();
 	}
@@ -705,13 +952,17 @@ private class NativeSQLiteResultSet implements ResultSet {
 			return __cache.length;
 		}
 
-		return __length(__result);
+		return __result == null ? __changed : __length(__result);
 	}
 
 	/** The next row from the statement itself, or null once it has none. **/
 	@:noCompletion private function __step():Dynamic {
 		if (__exhausted) {
 			return null;
+		}
+
+		if (__result == null) {
+			return __stepPrepared();
 		}
 
 		var row:Dynamic = __next(__result);
@@ -721,6 +972,59 @@ private class NativeSQLiteResultSet implements ResultSet {
 		}
 
 		return row;
+	}
+
+	/**
+		`__step` for a prepared statement: its run is over at its last row or
+		its failure, and the statement is then given back to be run again.
+	**/
+	@:noCompletion private function __stepPrepared():Dynamic {
+		var statement:NativeSQLiteStatement = __statement;
+
+		if (statement == null) {
+			__exhausted = true;
+			return null;
+		}
+
+		var more:Bool;
+
+		try {
+			more = statement.step();
+		} catch (e:Dynamic) {
+			__exhausted = true;
+			__release();
+			throw e;
+		}
+
+		if (!__stepped) {
+			// Its columns as they are once it has run: SQLite prepares it again
+			// at its first step when the schema has changed.
+			__stepped = true;
+			__columns = statement.columns;
+		}
+
+		if (more) {
+			return statement.row();
+		}
+
+		__exhausted = true;
+
+		if (__columns == 0) {
+			__changed = statement.changes();
+		}
+
+		__release();
+		return null;
+	}
+
+	/** Gives the prepared statement back, its run over. **/
+	@:noCompletion private function __release():Void {
+		var statement:NativeSQLiteStatement = __statement;
+
+		if (statement != null) {
+			__statement = null;
+			__owner.__give(statement);
+		}
 	}
 
 	/**
@@ -743,7 +1047,7 @@ private class NativeSQLiteResultSet implements ResultSet {
 	}
 
 	private function get_nfields():Int {
-		return __nfields(__result);
+		return __result == null ? __columns : __nfields(__result);
 	}
 
 	public function hasNext():Bool {
@@ -791,15 +1095,46 @@ private class NativeSQLiteResultSet implements ResultSet {
 	}
 
 	public function getResult(n:Int):String {
+		if (__result == null) {
+			return __current(n).columnText(n);
+		}
+
 		return new String(__get(__result, n));
 	}
 
 	public function getIntResult(n:Int):Int {
+		if (__result == null) {
+			return __current(n).columnInt(n);
+		}
+
 		return __getInt(__result, n);
 	}
 
 	public function getFloatResult(n:Int):Float {
+		if (__result == null) {
+			return __current(n).columnFloat(n);
+		}
+
 		return __getFloat(__result, n);
+	}
+
+	/**
+		The prepared statement standing on the row last read, for reading
+		column `n` of it by position, as the glue's result reads its current
+		row; refused as the glue refuses once there is none.
+	**/
+	@:noCompletion private function __current(n:Int):NativeSQLiteStatement {
+		var statement:NativeSQLiteStatement = __statement;
+
+		if (statement == null) {
+			throw "Sqlite: no more results";
+		}
+
+		if (n < 0 || n >= __columns) {
+			throw "Sqlite: Invalid index";
+		}
+
+		return statement;
 	}
 
 	public function getFieldsNames():Null<Array<String>> {
