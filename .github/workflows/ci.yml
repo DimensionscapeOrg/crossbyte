@@ -71,6 +71,7 @@ jobs:
             arena \
             http2 \
             localconnection \
+            multicore \
             rpc-greeter \
             rudp \
             sharedchannel \
@@ -776,6 +777,7 @@ jobs:
             @("arena", "cpp.hxml"),
             @("http2", "cpp.hxml"),
             @("localconnection", "cpp.hxml"),
+            @("multicore", "cpp.hxml"),
             @("rpc-greeter", "cpp.hxml"),
             @("rudp", "cpp.hxml"),
             @("sharedchannel", "cpp.hxml"),
@@ -825,6 +827,13 @@ jobs:
       - name: Run HTTP/2 sample
         working-directory: export/http2
         run: .\Http2Sample.exe
+
+      # One listener spread over several runtimes: sixteen requests at once,
+      # answered by more than one runtime, then a drain that exits them. Exits
+      # 1 if a request goes unanswered or a single runtime answered them all.
+      - name: Run multicore sample
+        working-directory: export/multicore
+        run: .\MulticoreSample.exe
 
       - name: Run simple application sample
         working-directory: export/simple-application

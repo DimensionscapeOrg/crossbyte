@@ -40,6 +40,14 @@ import sys.net.Host;
 	completes.
 	The accepted socket mode is controlled by `socketMode`, allowing the server to
 	accept either datagram-style or stream-style sessions.
+
+	A server is one datagram socket on one runtime. Unlike `ServerSocket`, it
+	cannot be spread over several runtimes, with `reusePort` or otherwise: a
+	session is its peer's address on that socket, and a NAT rebinding or a
+	TURN relay could move a peer's datagrams to a socket that does not hold
+	its session. To use more cores, run a server per runtime, each on a port
+	of its own, and send each client to one of them.
+
 	@event close Dispatched when the server socket is closed.
 	@event connect Dispatched when a session a peer opened completes its
 	       handshake. A session this server dials, with `connect` or
