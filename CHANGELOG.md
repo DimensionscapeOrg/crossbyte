@@ -1583,8 +1583,14 @@ entry below says how:
   server accepts. Measured on a server of 500 sessions at 30 Hz, each
   sending it a 16-byte input a tick and sent a 64-byte reliable and a
   128-byte sequenced message, over 10 s: it read 150,600 datagrams where it
-  read 300,800, sent 151,900 where it sent 301,300, and spent 4.3 s of CPU
-  where it spent 5.4, its kernel time 2.3-2.9 s where it was 4.0.
+  read 300,800, sent 151,900 where it sent 301,300, and spent 3.2-4.2 s of
+  CPU where it spent 4.4-4.9 s, its kernel time 2.3-2.5 s where it was
+  3.2-3.4 s. At 60 Hz it spent 4.0-4.3 s where it spent 6.0-6.7 s; at 1,000
+  sessions, where it fell behind before, taking 83-91% of the inputs, it
+  keeps up, on 6.1-7.3 s where it spent 8.2-9.3 s. In the load harness's
+  game scenario, whose traffic is mostly sequenced and so not acknowledged,
+  a tick at 1,000 clients and 60 Hz costs 12.2-12.5 ms where it cost
+  12.5-13.0 ms.
 - A reliable datagram reaches its session without being copied or wrapped on
   the way. The socket hands it over directly rather than as an event when
   nothing else listens; the frame is decoded into one the session keeps, and
