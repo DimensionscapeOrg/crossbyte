@@ -1484,6 +1484,12 @@ entry below says how:
   input, where `deflateInit` and `deflateEnd` ran for every compressed
   response and permessage-deflate message: a 437-byte message compresses
   in 3.4-3.7 µs instead of 5.8-6.9.
+- A `ConnectionPool.acquire` waiting for a connection is woken by the
+  `release`, `discard` or `close` that frees one, where it slept a
+  millisecond at a time and looked again: a waiter takes a released
+  connection in 11-30 µs (median; 18-77 µs at the 90th percentile), where
+  it took 0.5-1 ms (1-2 ms), and seven waiting threads no longer wake a
+  thousand times a second each. A wait still ends at its deadline.
 - SQLite statements are prepared once and kept, by the connection, for
   their text (64 texts), with their `:name` parameters bound as their
   types, where every run wrote its values into the statement as literals
