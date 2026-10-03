@@ -93,6 +93,38 @@ class JWTVerifyTest extends utest.Test {
 		Assert.isNull(jwt.verifyToken(forge(header, claims({exp: now - 10}))));
 	}
 
+	/**
+		A signature is accepted in the one spelling the issuer wrote. It was
+		compared as text with the MAC encoded again; it is compared now as
+		the 32 bytes it decodes to, and only its canonical base64url decodes:
+		the low bits of its last character zero, no padding, no `+` or `/`.
+		Any other spelling of the same bytes would let one token be written
+		several ways, which a replay cache or revocation list keyed by the
+		token's text would not recognise.
+	**/
+	public function testASignatureIsAcceptedInOneSpellingOnly():Void {
+		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]), ISSUER, "api");
+		var token:String = forge('{"alg":"HS256","typ":"JWT"}', claims());
+		Assert.isTrue(jwt.verify(token).valid);
+
+		var cut:Int = token.lastIndexOf(".") + 1;
+		var signature:String = token.substr(cut);
+		var alphabet:String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+		var last:Int = alphabet.indexOf(signature.charAt(signature.length - 1));
+		// The last of 43 characters carries 4 bits of the MAC and 2 unused.
+		for (low in 1...4) {
+			var respelled:String = token.substr(0, token.length - 1) + alphabet.charAt(last | low);
+			expectRefused(jwt, respelled, BAD_SIGNATURE);
+		}
+		expectRefused(jwt, token + "=", BAD_SIGNATURE);
+		var standard:String = StringTools.replace(StringTools.replace(signature, "-", "+"), "_", "/");
+		if (standard != signature) {
+			expectRefused(jwt, token.substr(0, cut) + standard, BAD_SIGNATURE);
+		}
+		expectRefused(jwt, token.substr(0, cut) + signature.substr(1), BAD_SIGNATURE);
+		expectRefused(jwt, token.substr(0, cut), BAD_SIGNATURE);
+	}
+
 	public function testTheSizeCapIsConfigurable():Void {
 		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]), ISSUER, "api");
 		var bulky:String = forge('{"alg":"HS256","typ":"JWT"}', claims({groups: StringTools.lpad("", "g", 5000)}));

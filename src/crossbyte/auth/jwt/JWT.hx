@@ -1,9 +1,10 @@
 package crossbyte.auth.jwt;
 
 import haxe.io.Bytes;
-import haxe.crypto.Base64;
 import haxe.Json;
+import crossbyte._internal.Utf8;
 import crossbyte._internal.serial.JsonNesting;
+import crossbyte.auth.jwt._internal.Base64Url;
 import crossbyte.auth.jwt._internal.sign.IJWTSigner;
 import crossbyte.auth.jwt._internal.sign.HS256Signer;
 import crossbyte.auth.jwt._internal.sign.Ed25519Signer;
@@ -36,7 +37,7 @@ using StringTools;
  * argument, and `UNKNOWN_KEY` is the cue to fetch it again.
  */
 class JWT {
-	@:noCompletion private var __signer:IJWTSigner;
+	@:noCompletion private var __keys:JWTKeys;
 
 	/** The issuer a token's `iss` has to be. `null` leaves `iss` unchecked. */
 	public var expectedIssuer:String;
@@ -92,7 +93,7 @@ class JWT {
 	}
 
 	@:noCompletion private function new(signer:IJWTSigner) {
-		this.__signer = signer;
+		this.__keys = new JWTKeys(signer);
 	}
 
 	/**
@@ -105,7 +106,7 @@ class JWT {
 	 * @throws String When `spec` is invalid, as `make` does.
 	 */
 	public function updateKeys(spec:JWTSigner):Void {
-		__signer = __signerFor(spec);
+		__keys = new JWTKeys(__signerFor(spec));
 	}
 
 	/**
@@ -119,12 +120,12 @@ class JWT {
 	 *         one, such as `JWKSet.signer` makes.
 	 */
 	public function generateToken(payload:JWTPayload):String {
-		var signer:IJWTSigner = __signer;
-		var header:JWTHeader = JWTHeader.make(signer.algorithm, signer.signKeyId, "JWT");
-		var headerStr:String = base64UrlEncodeString(Json.stringify(header.toData()));
-		var payloadStr:String = base64UrlEncodeString(Json.stringify(__claimsToWrite(payload.toData())));
-		var signature:String = signer.sign(headerStr + "." + payloadStr, header.keyId);
-		return headerStr + "." + payloadStr + "." + signature;
+		// One read: the header and the key that signs under it are swapped
+		// together.
+		var keys:JWTKeys = __keys;
+		var claims:String = Base64Url.encode(Utf8.bytesOf(Json.stringify(__claimsToWrite(payload.toData()))));
+		var input:String = keys.header + "." + claims;
+		return input + "." + keys.signer.sign(input, keys.signer.signKeyId);
 	}
 
 	/**
@@ -166,21 +167,24 @@ class JWT {
 			return JWTVerification.refused(TOO_LARGE);
 		}
 
-		var parts = token.split('.');
-		if (parts.length != 3) {
+		// The three segments, found in place: the token is not split into
+		// substrings, nor its signing input put back together from them.
+		var headerEnd:Int = token.indexOf(".");
+		var inputEnd:Int = headerEnd < 0 ? -1 : token.indexOf(".", headerEnd + 1);
+		if (inputEnd < 0 || token.indexOf(".", inputEnd + 1) >= 0) {
 			return JWTVerification.refused(MALFORMED);
 		}
 
 		// Bounded: the header is parsed before the signature is checked, so it
 		// is the part anyone can write. See MAX_NESTING.
-		var header:Null<Dynamic> = __decodeObject(parts[0], MAX_NESTING);
+		var header:Null<Dynamic> = __decodeObject(token, 0, headerEnd, MAX_NESTING);
 		if (header == null) {
 			return JWTVerification.refused(MALFORMED);
 		}
 
-		// One read of the signer: updateKeys may swap it meanwhile, and a
+		// One read of the keys: updateKeys may swap them meanwhile, and a
 		// verification uses one set of keys throughout.
-		var signer:IJWTSigner = __signer;
+		var signer:IJWTSigner = __keys.signer;
 
 		var alg:Dynamic = Reflect.field(header, "alg");
 		if (!Std.isOfType(alg, String) || !__isSupported(alg)) {
@@ -213,13 +217,13 @@ class JWT {
 		if (!signer.hasKey(kid)) {
 			return JWTVerification.refused(UNKNOWN_KEY);
 		}
-		if (!signer.verify(parts[0] + "." + parts[1], parts[2], kid)) {
+		if (!signer.verifyToken(token, inputEnd, kid)) {
 			return JWTVerification.refused(BAD_SIGNATURE);
 		}
 
 		// Unbounded: parsed only once the signature has shown the issuer wrote
 		// them. Measuring them too cost a typical token's verification 2%.
-		var claims:Null<Dynamic> = __decodeObject(parts[1], 0);
+		var claims:Null<Dynamic> = __decodeObject(token, headerEnd + 1, inputEnd, 0);
 		if (claims == null) {
 			return JWTVerification.refused(MALFORMED);
 		}
@@ -425,12 +429,20 @@ class JWT {
 	@:noCompletion private static inline var MAX_NESTING:Int = 32;
 
 	/**
-		Decodes one segment into a JSON object, or null for anything else,
-		including JSON nested deeper than `maxNesting`, when that is above 0.
+		Decodes the segment of `token` from `start` to `end` into a JSON
+		object, or null for anything else, including JSON nested deeper
+		than `maxNesting`, when that is above 0.
 	**/
-	@:noCompletion private static function __decodeObject(segment:String, maxNesting:Int):Null<Dynamic> {
-		var text:Null<String> = safeBase64UrlDecodeString(segment);
+	@:noCompletion private static function __decodeObject(token:String, start:Int, end:Int, maxNesting:Int):Null<Dynamic> {
+		var text:Null<String> = Base64Url.decodeText(token, start, end);
 		if (text == null) {
+			return null;
+		}
+
+		// An object or nothing: JSON whose first character is `{` parses to an
+		// object or not at all. Asked of the text, where four type tests of
+		// the parsed value asked it after the work of parsing.
+		if (!__opensObject(text)) {
 			return null;
 		}
 
@@ -442,35 +454,33 @@ class JWT {
 			return null;
 		}
 
-		var value:Dynamic;
 		try {
-			value = Json.parse(text);
+			return Json.parse(text);
 		} catch (_:Dynamic) {
 			return null;
 		}
+	}
 
-		if (value == null || Std.isOfType(value, String) || Std.isOfType(value, Float) || Std.isOfType(value, Bool) || Std.isOfType(value, Array)) {
-			return null;
+	/** Whether `text`'s first character past JSON's whitespace is `{`. **/
+	@:noCompletion private static function __opensObject(text:String):Bool {
+		for (i in 0...text.length) {
+			switch (StringTools.fastCodeAt(text, i)) {
+				case " ".code, "\t".code, "\n".code, "\r".code:
+				case "{".code:
+					return true;
+				default:
+					return false;
+			}
 		}
-		return value;
+		return false;
 	}
 
 	public static inline function base64UrlEncodeString(s:String):String {
-		return base64UrlEncodeBytes(Bytes.ofString(s));
-	}
-
-	@:noCompletion private static inline function __stripPad(s:String):String {
-		var i:Int = s.length, eq = '='.code;
-		while (i > 0 && s.charCodeAt(i - 1) == eq) {
-			i--;
-		}
-		return s.substr(0, i);
+		return Base64Url.encode(Utf8.bytesOf(s));
 	}
 
 	public static inline function base64UrlEncodeBytes(b:Bytes):String {
-		var s:String = Base64.encode(b);
-		s = s.split("+").join("-").split("/").join("_");
-		return __stripPad(s);
+		return Base64Url.encode(b);
 	}
 
 	/**
@@ -499,21 +509,7 @@ class JWT {
 	 * does.
 	 */
 	public static function safeBase64UrlDecodeString(s:String):Null<String> {
-		var b64:String = s.split("-").join("+").split("_").join("/");
-		switch (b64.length % 4) {
-			case 2:
-				b64 += "==";
-			case 3:
-				b64 += "=";
-			case 0:
-			case 1:
-				return null;
-		}
-		try {
-			return Base64.decode(b64).toString();
-		} catch (_:Dynamic) {
-			return null;
-		}
+		return s == null ? null : Base64Url.decodeText(s, 0, s.length);
 	}
 
 	/**
@@ -540,5 +536,26 @@ class JWT {
 			diff |= ca ^ cb;
 		}
 		return (aLen == bLen) && (diff == 0);
+	}
+}
+
+/**
+	A signer and the header segment it signs under, made once: `updateKeys`
+	swaps the two together, so no token pairs one signer's header with
+	another's key. The header was serialized and encoded again for every
+	token. It is `{"alg":..,"typ":"JWT","kid":..}`, in that order on every
+	target; its members' order followed each target's objects before.
+**/
+@:noCompletion
+private final class JWTKeys {
+	public final signer:IJWTSigner;
+	public final header:String;
+
+	public function new(signer:IJWTSigner) {
+		this.signer = signer;
+		var keyId:Null<String> = signer.signKeyId;
+		var json:String = '{"alg":' + Json.stringify((signer.algorithm : String)) + ',"typ":"JWT"'
+			+ (keyId != null ? ',"kid":' + Json.stringify(keyId) : "") + "}";
+		header = Base64Url.encode(Utf8.bytesOf(json));
 	}
 }

@@ -1,10 +1,9 @@
 package crossbyte.auth.jwt._internal.sign;
 
-import crossbyte.auth.jwt.JWT;
 import crossbyte.auth.jwt.JWTAlgorithm;
+import crossbyte.auth.jwt._internal.Base64Url;
 import crossbyte.crypto.ConstantTime;
 import crossbyte.crypto.Ed25519;
-import haxe.crypto.Base64;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
 #if !cpp
@@ -112,7 +111,7 @@ class Ed25519Signer implements IJWTSigner {
 		}
 
 		var signature:Bytes = Ed25519.signDetached(Bytes.ofString(input), __privateKey);
-		return JWT.base64UrlEncodeBytes(signature);
+		return Base64Url.encode(signature);
 	}
 
 	public function hasKey(keyId:Null<String>):Bool {
@@ -123,19 +122,22 @@ class Ed25519Signer implements IJWTSigner {
 		if (input == null || signature == null) {
 			return false;
 		}
+		return __verify(input, signature, 0, keyId);
+	}
 
+	public function verifyToken(token:String, inputEnd:Int, keyId:Null<String>):Bool {
+		return __verify(token.substring(0, inputEnd), token, inputEnd + 1, keyId);
+	}
+
+	/** The signature is `text` from `signatureStart` to its end. **/
+	private function __verify(input:String, text:String, signatureStart:Int, keyId:Null<String>):Bool {
 		var publicKey:Bytes = (keyId != null) ? __publicKeys.get(keyId) : (__signKeyId != null ? __publicKeys.get(__signKeyId) : null);
 		if (publicKey == null) {
 			return false;
 		}
 
-		var rawSignature:Bytes;
-		try {
-			rawSignature = Base64.decode(JWT.normalizeBase64Url(signature));
-		} catch (_:Dynamic) {
-			return false;
-		}
-		if (rawSignature.length != Ed25519.SIGNATURE_BYTES) {
+		var rawSignature:Null<Bytes> = Base64Url.decode(text, signatureStart, text.length);
+		if (rawSignature == null || rawSignature.length != Ed25519.SIGNATURE_BYTES) {
 			return false;
 		}
 
