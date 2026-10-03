@@ -24,7 +24,14 @@ class TlsProbe {
 		what happened.
 	**/
 	public static function run(port:Int, options:TlsProbeOptions, then:TlsProbeOutcome->Void):Void {
-		var outcome:TlsProbeOutcome = {error: null, alpn: null, status: null};
+		var outcome:TlsProbeOutcome = {
+			error: null,
+			alpn: null,
+			status: null,
+			during: null,
+			seconds: 0.0
+		};
+		var started:Float = haxe.Timer.stamp();
 
 		#if nodejs
 		var settings:Dynamic = {port: port, host: "127.0.0.1", rejectUnauthorized: options.trust != null};
@@ -74,7 +81,10 @@ class TlsProbe {
 			finished = true;
 		});
 
-		NetPump.until(() -> finished, 20.0, function(_) then(outcome));
+		NetPump.until(() -> finished, 20.0, function(_) {
+			outcome.seconds = haxe.Timer.stamp() - started;
+			then(outcome);
+		});
 		#elseif (cpp || java || jvm || hl || neko)
 		// Released by the client thread once it has written `outcome`, so what
 		// it wrote is published to this thread rather than raced for.
@@ -82,6 +92,8 @@ class TlsProbe {
 
 		sys.thread.Thread.create(() -> {
 			var client = new crossbyte._internal.socket.FlexSocket(true);
+			// Where it got to, for a failure to say: the handshake is connect's.
+			var step:String = "connect";
 			try {
 				client.setTimeout(5);
 				client.verifyCert = options.trust != null;
@@ -101,12 +113,15 @@ class TlsProbe {
 				outcome.alpn = client.getALPN();
 
 				if (options.upgrade == true) {
+					step = "write";
 					client.output.writeString(UPGRADE);
 					client.output.flush();
+					step = "read";
 					outcome.status = client.input.readLine();
 				}
 			} catch (e:Dynamic) {
 				outcome.error = Std.string(e);
+				outcome.during = step;
 			}
 
 			try {
@@ -120,6 +135,7 @@ class TlsProbe {
 			if (!finished && outcome.error == null) {
 				outcome.error = "the probe neither finished nor failed";
 			}
+			outcome.seconds = haxe.Timer.stamp() - started;
 			then(outcome);
 		});
 		#else
@@ -155,4 +171,13 @@ typedef TlsProbeOutcome = {
 
 	/** The first line of the answer to the upgrade, or `null`. **/
 	var status:Null<String>;
+
+	/**
+		Natively, the step the probe failed in: `connect` (which includes the
+		TLS handshake), `write` or `read`; `null` when it did not fail.
+	**/
+	var during:Null<String>;
+
+	/** How long the probe took, from its start to its outcome. **/
+	var seconds:Float;
 }
