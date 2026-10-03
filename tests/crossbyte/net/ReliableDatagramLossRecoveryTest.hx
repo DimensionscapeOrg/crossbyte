@@ -579,10 +579,10 @@ private class RecordingSocket extends ReliableDatagramSocket {
 	}
 
 	override private function __sendFrame(type:ReliableDatagramFrameType, sequence:Seq32, payload:ByteArray, offset:Int, length:Int, resend:Bool,
-			ack:Null<Seq32>, more:Bool, graceful:Bool = false):Void {
+			ack:Int, hasAck:Bool, more:Bool, graceful:Bool = false):Void {
 		var frame = new ByteArray();
 		frame.length = ReliableDatagramProtocol.MAX_FRAME_SIZE;
-		frame.length = ReliableDatagramProtocol.encodeInto(frame, type, sequence, payload, offset, length, resend, ack, more, 0, graceful);
+		frame.length = ReliableDatagramProtocol.encodeInto(frame, type, sequence, payload, offset, length, resend, ack, hasAck, more, 0, graceful);
 		__recorded.push(frame);
 	}
 

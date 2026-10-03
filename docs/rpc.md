@@ -248,7 +248,9 @@ else a handler throws, a null access, a database error, a bug, is the
 handler failing, and the caller is told only `RPCError.INTERNAL_MESSAGE`, so a
 stack trace or a file path never crosses to whoever made the call. The error
 itself goes to the session's `onHandlerError`, which logs it unless you
-replace it:
+replace it. It arrives as a `haxe.Exception`: what was thrown, if it was one,
+and otherwise a `haxe.ValueException` holding what was thrown in its `value`,
+with the stack in its `stack`:
 
 ```haxe
 // Given session:RPCSession<ChatCommands>.
@@ -301,7 +303,7 @@ class GuardedChatHandler extends ChatHandler {
 		return null;
 	}
 
-	override public function afterCall(method:String, requestId:Int, error:Dynamic):Void {
+	override public function afterCall(method:String, requestId:Int, error:Null<haxe.Exception>):Void {
 		if (error != null) {
 			failures++;
 		}
@@ -316,8 +318,9 @@ call run, or an `RPCError` to refuse it: a request is answered with its
 message, and a one-way call is dropped. Refusing by returning rather than
 throwing keeps a flood of refusals from costing an exception each.
 `afterCall` runs once the method has run and its answer has been sent; `error`
-is what it threw, or `null`. It is not given the result, which would mean
-boxing every `Int` a handler returns.
+is what it threw, as a `haxe.Exception`, wrapped in one when it was not one,
+or `null`. It is not given the result, which would mean boxing every `Int`
+a handler returns.
 
 The calls to the hooks are generated only into a handler that overrides them,
 or whose ancestor does. A handler that overrides neither pays nothing for

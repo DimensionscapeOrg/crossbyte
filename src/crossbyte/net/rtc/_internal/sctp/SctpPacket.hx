@@ -103,8 +103,17 @@ class SctpPacket {
 		produces a checksum a peer computes the same way.
 	**/
 	public function encode():ByteArray {
-		var out = new ByteArray();
+		// Made at its size, zeroed, the padding and the checksum field are
+		// already what they must be, where it grew from empty a field at a
+		// time, copied each time it did.
+		var total:Int = HEADER_LENGTH;
+		for (chunk in chunks) {
+			total += SctpChunk.HEADER_LENGTH + ((chunk.value.length + 3) & ~3);
+		}
+
+		var out = new ByteArray(total);
 		out.endian = Endian.BIG_ENDIAN;
+		out.position = 0;
 		out.writeShort(sourcePort);
 		out.writeShort(destinationPort);
 		out.writeInt(verificationTag);
@@ -119,11 +128,7 @@ class SctpPacket {
 				out.writeBytes(chunk.value, 0, chunk.value.length);
 			}
 
-			var padding:Int = (4 - (chunk.value.length % 4)) % 4;
-
-			for (_ in 0...padding) {
-				out.writeByte(0);
-			}
+			out.position += (4 - (chunk.value.length % 4)) % 4;
 		}
 
 		writeChecksum(out);
@@ -169,10 +174,15 @@ class SctpPacket {
 	/**
 		Whether a packet's checksum is the one its contents produce.
 
-		Checked against the bytes as they arrived, with the field zeroed in a
-		copy rather than in place, a receiver that edited the packet to verify
-		it would hand the layer above something it had already altered.
+		Checked against the bytes as they arrived, untouched, a receiver that
+		edited the packet to verify it would hand the layer above something it
+		had already altered. The checksum is taken over the bytes before the
+		field, four zeros in its place and the bytes after, where every packet
+		was copied whole to zero the field in the copy.
 	**/
+	// What the checksum field counts as while the checksum is taken. Only read.
+	private static var __fourZeros:ByteArray = new ByteArray(4);
+
 	public static function verifyChecksum(packet:ByteArray):Bool {
 		if (packet == null || packet.length < HEADER_LENGTH) {
 			return false;
@@ -186,14 +196,9 @@ class SctpPacket {
 			| (packet.readUnsignedByte() << 16)
 			| (packet.readUnsignedByte() << 24);
 
-		var copy = new ByteArray();
-		packet.position = 0;
-		copy.writeBytes(packet, 0, packet.length);
-		copy.endian = Endian.BIG_ENDIAN;
-		copy.position = 8;
-		copy.writeInt(0);
-
-		var expected:Int = Crc32c.of(copy, 0, copy.length);
+		var expected:Int = Crc32c.of(packet, 0, 8);
+		expected = Crc32c.of(__fourZeros, 0, 4, expected ^ 0xFFFFFFFF);
+		expected = Crc32c.of(packet, 12, packet.length - 12, expected ^ 0xFFFFFFFF);
 		packet.position = position;
 
 		return expected == found;

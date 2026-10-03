@@ -240,33 +240,64 @@ class DataChannelTest extends utest.Test {
 		pair.serverChannels.onChannel = channel -> accepted.push(channel);
 
 		var state = pair.clientChannels.create("state", false, "", 0);
-		var timed = pair.clientChannels.create("timed", true, "", null, 250);
+		var timed = pair.clientChannels.create("timed", true, "", -1, 250);
 		var reliable = pair.clientChannels.create("chat");
 
 		Assert.isTrue(pair.run(() -> accepted.length == 3), "the channels never arrived");
 		Assert.equals(0, state.maxRetransmits);
-		Assert.isNull(state.maxPacketLifeTime);
+		Assert.equals(-1, state.maxPacketLifeTime);
 
 		for (channel in accepted) {
 			switch (channel.label) {
 				case "state":
 					Assert.equals(0, channel.maxRetransmits, "the peer's maxRetransmits was dropped");
-					Assert.isNull(channel.maxPacketLifeTime);
+					Assert.equals(-1, channel.maxPacketLifeTime);
 					Assert.isFalse(channel.ordered);
 				case "timed":
 					Assert.equals(250, channel.maxPacketLifeTime, "the peer's maxPacketLifeTime was dropped");
-					Assert.isNull(channel.maxRetransmits);
+					Assert.equals(-1, channel.maxRetransmits);
 					Assert.isTrue(channel.ordered);
 				default:
-					Assert.isNull(channel.maxRetransmits, "a reliable channel arrived with a limit");
-					Assert.isNull(channel.maxPacketLifeTime);
+					Assert.equals(-1, channel.maxRetransmits, "a reliable channel arrived with a limit");
+					Assert.equals(-1, channel.maxPacketLifeTime);
 			}
 		}
 
 		// The WebRTC API's rules on what may be asked.
 		Assert.raises(() -> pair.clientChannels.create("both", false, "", 1, 100), ArgumentError);
-		Assert.raises(() -> pair.clientChannels.create("negative", false, "", -1), ArgumentError);
-		Assert.raises(() -> pair.clientChannels.create("huge", false, "", null, 70000), ArgumentError);
+		Assert.raises(() -> pair.clientChannels.create("negative", false, "", -2), ArgumentError);
+		Assert.raises(() -> pair.clientChannels.create("huge", false, "", -1, 70000), ArgumentError);
+	}
+
+	/**
+		No limit is -1, an `Int`, where it was the WebRTC API's null: a
+		`Null<Int>`, which a native build holds as an object, made and unboxed
+		to read. -1 may be passed for no limit; nothing below it may.
+	**/
+	public function testNoLimitIsMinusOne():Void {
+		var reliable = DcepMessage.decode(DcepMessage.open("chat", true, "", -1, -1).encode());
+		Assert.equals(DcepMessage.RELIABLE, reliable.channelType);
+		var retransmits:Int = reliable.maxRetransmits;
+		var lifetime:Int = reliable.maxPacketLifeTime;
+		Assert.equals(-1, retransmits);
+		Assert.equals(-1, lifetime);
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var channel = pair.clientChannels.create("chat", true, "", -1, -1);
+		var limit:Int = channel.maxRetransmits;
+		Assert.equals(-1, limit);
+		Assert.equals(-1, channel.maxPacketLifeTime);
+		Assert.raises(() -> pair.clientChannels.create("below", true, "", -1, -2), ArgumentError);
+	}
+
+	/**
+		The transfer a `DataChannelSet` runs over is its connection's own, and
+		not part of what it offers: it was a public field, through which an
+		application could send on a stream behind its channel's back.
+	**/
+	public function testTheSetsTransferIsNotOffered():Void {
+		Assert.equals(-1, Type.getInstanceFields(DataChannelSet).indexOf("transfer"), "DataChannelSet.transfer is public");
 	}
 
 	/**
@@ -276,18 +307,18 @@ class DataChannelTest extends utest.Test {
 		var rexmit = DcepMessage.decode(DcepMessage.open("state", false, "", 3).encode());
 		Assert.equals(DcepMessage.PARTIAL_RETRANSMIT_UNORDERED, rexmit.channelType);
 		Assert.equals(3, rexmit.maxRetransmits);
-		Assert.isNull(rexmit.maxPacketLifeTime);
+		Assert.equals(-1, rexmit.maxPacketLifeTime);
 		Assert.isTrue(rexmit.unordered);
 
-		var timed = DcepMessage.decode(DcepMessage.open("timed", true, "", null, 1500).encode());
+		var timed = DcepMessage.decode(DcepMessage.open("timed", true, "", -1, 1500).encode());
 		Assert.equals(DcepMessage.PARTIAL_TIMED, timed.channelType);
 		Assert.equals(1500, timed.maxPacketLifeTime);
-		Assert.isNull(timed.maxRetransmits);
+		Assert.equals(-1, timed.maxRetransmits);
 
 		var reliable = DcepMessage.decode(DcepMessage.open("chat").encode());
 		Assert.equals(DcepMessage.RELIABLE, reliable.channelType);
-		Assert.isNull(reliable.maxRetransmits);
-		Assert.isNull(reliable.maxPacketLifeTime);
+		Assert.equals(-1, reliable.maxRetransmits);
+		Assert.equals(-1, reliable.maxPacketLifeTime);
 
 		// What a browser sends for {ordered: false, maxRetransmits: 0}.
 		var browser = DcepMessage.decode(new DcepMessage(DcepMessage.OPEN, 0x81, 0, 0, "state", "").encode());

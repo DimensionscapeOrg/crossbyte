@@ -1,5 +1,6 @@
 package crossbyte.net.rtc;
 
+import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
 import crossbyte.io.ByteArray;
 import crossbyte.io.Endian;
@@ -97,6 +98,40 @@ class SctpDataTransferTest extends utest.Test {
 		}
 
 		return false;
+	}
+
+	/**
+		With a runtime, what a pass sends goes when the pass ends, together:
+		ten small messages in one packet, where each was a packet, and a
+		DTLS record and a `sendto`, of its own. Without one, as everywhere
+		else here, each goes as it is sent.
+	**/
+	public function testAPassesMessagesShareAPacket():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var packets:Int = 0;
+		pair.watchClient(_ -> packets++);
+		var got:Array<Int> = [];
+		pair.serverData.onMessage = (_, payload, _) -> {
+			payload.position = 0;
+			got.push(payload.readShort());
+		};
+
+		pair.clientData.runtime = CrossByte.current();
+		for (i in 0...10) {
+			pair.clientData.send(0, numbered(i), SctpDataChunk.PPID_BINARY, true, pair.now);
+		}
+		Assert.equals(0, packets, "a message went before the pass ended");
+		CrossByte.current().pump(0, 0);
+		Assert.equals(1, packets, "ten messages sent in one pass took " + packets + " packets");
+		pair.run(() -> got.length == 10);
+		Assert.equals("0,1,2,3,4,5,6,7,8,9", got.join(","));
+
+		pair.clientData.runtime = null;
+		packets = 0;
+		pair.clientData.send(0, numbered(10), SctpDataChunk.PPID_BINARY, true, pair.now);
+		Assert.equals(1, packets, "without a runtime a message waited");
 	}
 
 	public function testAMessageCrossesIntact():Void {

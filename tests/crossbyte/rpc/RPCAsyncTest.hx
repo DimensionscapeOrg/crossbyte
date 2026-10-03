@@ -356,7 +356,7 @@ private class LaterHandler extends RPCHandler {
 		return fired.future;
 	}
 
-	override public function afterCall(method:String, requestId:Int, error:Dynamic):Void {
+	override public function afterCall(method:String, requestId:Int, error:Null<haxe.Exception>):Void {
 		afterCalls.push(method + " " + (error == null ? "ok" : Std.string(error.message != null ? error.message : error)));
 	}
 }

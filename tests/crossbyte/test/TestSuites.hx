@@ -410,6 +410,8 @@ class TestSuites {
 		// of the reliable datagram cases it is not portable.
 		runner.addCase(new crossbyte.net.ReliableDatagramRelayTest());
 		runner.addCase(new crossbyte.net.CongestionControlTest());
+		runner.addCase(new crossbyte.net.ReliableDatagramAckDelayTest());
+		runner.addCase(new crossbyte.net.ReliableDatagramSendQueueTest());
 	}
 
 	/**

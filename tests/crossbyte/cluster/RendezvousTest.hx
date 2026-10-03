@@ -188,6 +188,56 @@ class RendezvousTest extends utest.Test {
 		Assert.equals("gamma", hash.owner(""));
 	}
 
+	/**
+		The hash is CRC-32 of the name's UTF-8 bytes, whichever way it is
+		worked out: from the characters of an ASCII name, or from the bytes
+		of any other.
+	**/
+	public function testTheHashIsTheCrcOfTheUtf8Bytes():Void {
+		for (value in ["", "a", "room:1", "player:abc", "shard/7", "~\x7F", "caf\u00E9", "\u6F22\u5B57", "emoji \u{1F600}", "mixed-\u00FC-ascii"]) {
+			var expected:Int = haxe.crypto.Crc32.make(haxe.io.Bytes.ofString(value));
+			Assert.equals(expected, @:privateAccess Rendezvous.hash(value), "the hash of '" + value + "'");
+		}
+	}
+
+	/** `owners` ranks as a full sort by score, and name between equals, would. **/
+	public function testOwnersIsTheTopOfTheFullRanking():Void {
+		var names = [for (i in 0...40) "node-" + i];
+		var hash = ring(names);
+		var wrong:String = null;
+
+		for (k in 0...300) {
+			var key = "key-" + k;
+			var keyHash:Int = @:privateAccess Rendezvous.hash(key);
+			var ranked = names.copy();
+			var scores = new Map<String, Int>();
+			for (name in names) {
+				scores.set(name, @:privateAccess Rendezvous.weigh(keyHash, Rendezvous.hash(name)));
+			}
+			ranked.sort(function(a, b):Int {
+				var sa = scores.get(a);
+				var sb = scores.get(b);
+				if (sa != sb) {
+					return sa > sb ? -1 : 1;
+				}
+				return a < b ? 1 : (a > b ? -1 : 0);
+			});
+
+			for (count in [1, 2, 3, 7, 40, 41]) {
+				var got = hash.owners(key, count).join(",");
+				var want = ranked.slice(0, count).join(",");
+				if (got != want) {
+					wrong = key + " x" + count + ": " + got + " against " + want;
+				}
+			}
+			if (wrong != null) {
+				break;
+			}
+		}
+
+		Assert.isNull(wrong, wrong);
+	}
+
 	/** An empty membership owns nothing, rather than guessing. **/
 	public function testAnEmptyMembershipOwnsNothing():Void {
 		var hash = new Rendezvous();

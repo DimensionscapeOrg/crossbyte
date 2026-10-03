@@ -117,7 +117,7 @@ class SharedObject {
 	 *         when the region under the name, or its lock file, is not this
 	 *         user's own.
 	 */
-	public function new(name:String, maxSize:Int = 65536, ?defaultData:Dynamic) {
+	public function new(name:String, maxSize:Int = 65536, ?defaultData:Object) {
 		__requireSupported();
 		if (name == null || name.length == 0) {
 			throw new ArgumentError("SharedObject name cannot be empty");

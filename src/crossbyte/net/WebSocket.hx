@@ -105,6 +105,9 @@ class WebSocket extends Socket {
 	// Whether the server's `upgrade` hook turned this session down, which
 	// the server does not count as a failed handshake.
 	@:noCompletion private var __upgradeRefused:Bool = false;
+	// Where the server keeps this session in its list of open ones, or -1
+	// while it is in none. See ServerWebSocket.__tracks.
+	@:noCompletion private var __serverSlot:Int = -1;
 
 	/**
 		The subprotocols a client asks for, most preferred first. Set before
@@ -1080,7 +1083,7 @@ class WebSocket extends Socket {
 
 		var closed:WebsocketEvent = Std.downcast(event, WebsocketEvent);
 		if (closed != null) {
-			code = (closed.code == null) ? 0 : closed.code;
+			code = closed.code;
 			reason = closed.reason;
 		}
 
@@ -1094,8 +1097,8 @@ class WebSocket extends Socket {
 		// arrived with no account of which it was.
 		var text:String = "";
 		var failed:WebsocketEvent = Std.downcast(e, WebsocketEvent);
-		if (failed != null && failed.data != null) {
-			text = Std.string(failed.data);
+		if (failed != null && failed.text != null) {
+			text = failed.text;
 		}
 
 		// A deadline that passed says so with its id, which a NetConnection
@@ -1105,7 +1108,7 @@ class WebSocket extends Socket {
 
 	@:noCompletion override private function socket_onMessage(msg:Dynamic):Void {
 		var message:WebsocketEvent = msg;
-		var newData:ByteArray = message.data;
+		var newData:ByteArray = message.message;
 
 		// One message, whole, to whoever asked for messages, and then not
 		// into the stream as well, which nobody would be reading and which

@@ -207,7 +207,7 @@ class BenchMain {
 		scratch.length = ReliableDatagramProtocol.MAX_FRAME_SIZE;
 
 		Bench.run("encode a 100B frame into the scratch", function():Void {
-			ReliableDatagramProtocol.encodeInto(scratch, PACKET, 12345, payload, 0, 100, false, 678, false);
+			ReliableDatagramProtocol.encodeInto(scratch, PACKET, 12345, payload, 0, 100, false, 678, true, false);
 		});
 
 		Bench.run("encode a 100B frame of its own", function():Void {
@@ -217,6 +217,12 @@ class BenchMain {
 		var frame = ReliableDatagramProtocol.encode(PACKET, 12345, payload, false, 678);
 		Bench.run("decode a 100B frame", function():Void {
 			ReliableDatagramProtocol.decode(frame);
+		});
+
+		// As a session decodes each arrival: into the frame it keeps for it.
+		var into = new crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrame(PACKET, 0, null, false);
+		Bench.run("decode a 100B frame into a kept one", function():Void {
+			ReliableDatagramProtocol.decodeInto(frame, 0, frame.length, false, into);
 		});
 	}
 

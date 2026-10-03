@@ -41,8 +41,8 @@ class DataChannelSet {
 	/** RFC 8832's identifier for a channel control message. **/
 	private static inline var PPID_CONTROL:Int = 50;
 
-	/** The transfer these channels run over. **/
-	public var transfer(default, null):SctpDataTransfer;
+	/** The transfer these channels run over: the connection's, not the application's. **/
+	@:noCompletion private var __transfer:SctpDataTransfer;
 
 	/** Whether this peer takes the even stream numbers. **/
 	public var usesEvenStreams(default, null):Bool;
@@ -69,7 +69,7 @@ class DataChannelSet {
 			throw new ArgumentError("Data channels need a transfer to run over.");
 		}
 
-		this.transfer = transfer;
+		this.__transfer = transfer;
 		this.usesEvenStreams = wasDtlsClient;
 		this.__nextId = wasDtlsClient ? 0 : 1;
 
@@ -110,23 +110,27 @@ class DataChannelSet {
 		which is what `opened` is for. Sending before then throws rather than
 		buffering, since a caller cannot otherwise tell a message that went from
 		one that is waiting.
+
+		@param maxRetransmits As `PeerConnection.createDataChannel`'s: -1 for
+		no limit.
+		@param maxPacketLifeTime As `PeerConnection.createDataChannel`'s: -1
+		for no limit.
 	**/
-	public function create(label:String, ordered:Bool = true, protocol:String = "", ?maxRetransmits:Int,
-			?maxPacketLifeTime:Int):DataChannel {
+	public function create(label:String, ordered:Bool = true, protocol:String = "", maxRetransmits:Int = -1,
+			maxPacketLifeTime:Int = -1):DataChannel {
 		// The WebRTC API's rules: one limit or the other, each an unsigned
 		// short.
-		if (maxRetransmits != null && maxPacketLifeTime != null) {
+		if (maxRetransmits >= 0 && maxPacketLifeTime >= 0) {
 			throw new ArgumentError("A channel may limit how many times a message is sent or for how long, not both.");
 		}
 
-		if ((maxRetransmits != null && (maxRetransmits < 0 || maxRetransmits > 65535))
-			|| (maxPacketLifeTime != null && (maxPacketLifeTime < 0 || maxPacketLifeTime > 65535))) {
-			throw new ArgumentError("maxRetransmits and maxPacketLifeTime must be between 0 and 65535.");
+		if (maxRetransmits < -1 || maxRetransmits > 65535 || maxPacketLifeTime < -1 || maxPacketLifeTime > 65535) {
+			throw new ArgumentError("maxRetransmits and maxPacketLifeTime must be between 0 and 65535, or -1 for no limit.");
 		}
 
 		var id:Int = __freeStreamId();
 
-		var channel = @:privateAccess new DataChannel(transfer, id, label, ordered, protocol, maxRetransmits, maxPacketLifeTime);
+		var channel = @:privateAccess new DataChannel(__transfer, id, label, ordered, protocol, maxRetransmits, maxPacketLifeTime);
 		__channels.set(id, channel);
 		@:privateAccess channel.__onClosed = __release;
 
@@ -135,7 +139,7 @@ class DataChannelSet {
 		// The OPEN travels on the very stream it is about, told apart from that
 		// channel's messages by its identifier alone. That is what saves a
 		// channel from needing a second stream to be negotiated on.
-		transfer.send(id, open.encode(), PPID_CONTROL, true, haxe.Timer.stamp());
+		__transfer.send(id, open.encode(), PPID_CONTROL, true, haxe.Timer.stamp());
 
 		return channel;
 	}
@@ -204,12 +208,12 @@ class DataChannelSet {
 		// maxRetransmits: 0}` channel was answered as a reliable one: the type
 		// and the reliability parameter were parsed and dropped, so what this
 		// end sent back on it was retransmitted like everything else.
-		var channel = @:privateAccess new DataChannel(transfer, streamId, message.label, !message.unordered, message.protocol,
+		var channel = @:privateAccess new DataChannel(__transfer, streamId, message.label, !message.unordered, message.protocol,
 			message.maxRetransmits, message.maxPacketLifeTime);
 		__channels.set(streamId, channel);
 		@:privateAccess channel.__onClosed = __release;
 
-		transfer.send(streamId, DcepMessage.acknowledge().encode(), PPID_CONTROL, true, haxe.Timer.stamp());
+		__transfer.send(streamId, DcepMessage.acknowledge().encode(), PPID_CONTROL, true, haxe.Timer.stamp());
 
 		// Open at both ends the moment the acknowledgement goes out: this side
 		// has everything it needs, and waiting for a reply to a reply would
@@ -265,7 +269,7 @@ class DataChannelSet {
 			__channels.remove(channel.id);
 
 			if (!__ending) {
-				transfer.resetStreams([channel.id], transfer.association.clock);
+				__transfer.resetStreams([channel.id], __transfer.association.clock);
 			}
 		}
 	}
