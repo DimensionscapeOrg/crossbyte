@@ -1460,6 +1460,12 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A TCP `NetConnection` writes what one pass of the runtime's loop sent on
+  it in one write, when the pass ends, where each `send` was a system call
+  of its own: RPC over TCP, twenty calls a tick, 7.0 µs of CPU a call
+  before, 0.5 µs now. From another thread, or with no runtime running, a
+  send still goes at once, and a socket whose output limit throws is still
+  flushed by `send`, so the throw reaches it.
 - A `LocalConnection` writes what one pass of the runtime's loop sent in one
   write when the pass ends, framed straight into one buffer, where each
   `send` made a buffer of its own, grew it twice and asked the system
