@@ -272,6 +272,10 @@ entry below says how:
   so one budget per client holds across them; the metrics count them all;
   with PHP each runtime dials the backend with a bridge of its own; and
   `drain()` drains every runtime's connections, finishing once each has.
+  The README's "Using more than one core" says what runs where and what
+  it must be, with examples for a socket server, an HTTP server and a game
+  server routing by match; the `multicore` sample runs one, and
+  `tests/scaling` measures it.
 - `HTTPServerConfig.http2MaxRequestBodyBuffer`: what one HTTP/2 connection
   holds of request bodies at once, across all its streams, 4 MB
   (`DEFAULT_HTTP2_REQUEST_BODY_BUFFER`) unless changed, `0` for no limit,
