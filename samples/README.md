@@ -241,6 +241,23 @@ haxe check.hxml
 haxe cpp.hxml
 ```
 
+## Multicore
+
+`multicore` starts a localhost `HTTPServer` spread over four runtimes with
+`HTTPServerConfig.runtimeCount`, fetches from it sixteen times at once, and
+prints which runtime answered how many before draining the server.
+
+Each runtime is a thread of its own, and the server hands every connection
+to one of them, so the middleware runs on four threads at once: it shares
+what it only reads, and takes a lock for what it changes.
+
+Raw HXML entrypoints:
+
+```sh
+haxe check.hxml
+haxe cpp.hxml
+```
+
 ## Windows Service
 
 `windows-service` runs an `HTTPServer` that drains its in-flight requests when

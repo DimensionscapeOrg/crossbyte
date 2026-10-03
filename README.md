@@ -140,6 +140,133 @@ The short version: reach for the wheel when you have actually seen the
 scheduler in a profile and your timers are numerous and short. Otherwise the
 default is already the right answer.
 
+## Using more than one core
+
+A runtime runs on one thread. Everything a server does, its sockets, its
+handlers, its timers, runs on its runtime's thread, so a server on one
+runtime uses one core however many the machine has. `CrossByte.make` makes a
+runtime per thread, and a server can spread its connections over several:
+
+```haxe
+var server = new ServerSocket();
+// Four runtimes, each a thread of its own polling its sockets.
+server.runtimes = [for (_ in 0...4) CrossByte.make(POLL)];
+server.addEventListener(ServerSocketConnectEvent.CONNECT, function(event) {
+	// Runs on the runtime this connection was handed to, and so does
+	// everything the connection does from here on.
+	var socket = event.socket;
+	socket.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
+		socket.writeUTFBytes(socket.readUTFBytes(socket.bytesAvailable));
+		socket.flush();
+	});
+});
+server.bind(9000);
+server.listen();
+```
+
+The listener stays on the runtime that called `listen()` and accepts. Each
+connection it accepts is handed, before its TLS handshake, to one of
+`runtimes`: each in turn, passing over one that has exited, and is that
+runtime's for its whole life: its socket is polled there, its events and
+deadlines run there, and so does the `connect` listener that receives it.
+`runtimeCount = 4` makes the runtimes instead. `ServerWebSocket` takes the
+same, and so does `HTTPServer`, through its configuration:
+
+```haxe
+var config = new HTTPServerConfig("0.0.0.0", 8080);
+config.runtimeCount = 4;
+config.middleware.push(router.middleware());
+var server = new HTTPServer(config);
+```
+
+Each request is served on its connection's runtime, HTTP/1.1 and HTTP/2
+alike. `maxConnections`, the rate limiter and the metrics count every
+runtime's connections together, and `drain()`, `close()` and
+`stopAccepting()` cover all of them.
+
+What it buys, measured natively on Windows with small GETs from 64
+kept-alive connections, the server held to eight logical CPUs and the
+clients to eight others (`tests/scaling`):
+
+| runtimes | HTTP/1.1 requests/s | HTTP/2 requests/s |
+| --- | --- | --- |
+| one (not spread) | 78,000 | 75,000 |
+| 2 | 178,000 | 154,000 |
+| 4 | 312,000 | 312,000 |
+
+A server on one runtime pays nothing for the feature: the same server built
+before it measured the same.
+
+`selectRuntime` chooses the runtime instead, on the listener's runtime, from
+the peer's address. A game server that runs each match on a runtime of its
+own sends a player to the runtime that owns their match, so the match's
+state is only ever touched from one thread:
+
+```haxe
+// What the matchmaker decided: the runtime each joining address's match runs on.
+var joining:Map<String, CrossByte> = new Map();
+
+var server = new ServerWebSocket();
+server.runtimes = matchRuntimes;
+server.selectRuntime = (address, port) -> joining.get(address);
+server.addEventListener(ServerSocketConnectEvent.CONNECT, function(event) {
+	// On the match's runtime: the match can be reached without a lock.
+	matchOn(CrossByte.current()).join(cast event.socket);
+});
+```
+
+An answer of `null`, or of a runtime that has exited, takes the next in
+turn.
+
+**What runs where, and what it must be.** Handlers that keep to their own
+connection need nothing. What several runtimes' handlers share, a table of
+players, a cache, a counter, a database pool, is touched from several
+threads at once, and must be thread-safe or kept per runtime: reach the
+runtime's own with `CrossByte.current()`, or hand work to one with
+`runtime.post(...)`, the one thread-safe way into a runtime. In particular:
+
+- `connect` listeners, an `HTTPServer`'s middleware, routes and hooks
+  (`onError`, `onExpectContinue`, `rateLimitKey`), a `ServerWebSocket`'s
+  `upgrade` and an SNI predicate run on each connection's runtime, several
+  at once;
+- `admit` and `selectRuntime` run on the listener's runtime alone;
+- a `Router` is read-only once its routes are added, and safe to share;
+- the server's own shared pieces are made safe for you: the limits and
+  counts, `HTTPServerConfig.rateLimiter` (given a lock as the server starts),
+  the metrics registry and the compression cache.
+
+Add listeners and routes before `listen()`; `close()` on a connection from
+any thread is handed to its runtime, as everywhere.
+
+**On Linux**, `reusePort` gives each runtime a listening socket of its own on
+the port (`SO_REUSEPORT`) and lets the kernel share connections out, so no
+one runtime accepts for the others, worth it when connections arrive faster
+than one thread accepts them. The kernel then decides where a connection
+goes, so `selectRuntime` is not asked, and each runtime asks `admit` for
+itself. macOS and the BSDs take the option without sharing anything out, and
+Windows has nothing like it; setting it there throws.
+
+**Where it works.** Natively and on the jvm each runtime is a thread and they
+run at once. neko's threads run at once too but contend for its allocator:
+the server above, on neko, answered 1.4 times as many requests on two
+runtimes as on one, and no more on four. hl runs them on threads as well. On
+the interpreter the runtimes take turns, two busy threads take twice as
+long as one, so a spread server is served correctly and no faster. On Node
+every runtime shares one thread, so a spread server is refused; run several
+processes there (Node's `cluster`).
+
+**When several processes are better.** Every runtime in a process shares one
+garbage collector, and a collection stops all of them at once: at high
+allocation rates the pauses, not the cores, bound the throughput, and a
+latency-sensitive server sees every runtime's pause. A process also fails as
+a whole, one handler's crash, one leak, takes every runtime down, and
+shares one memory budget. Several processes behind a load balancer, or, on
+Linux, a server in each with `reusePort` set, all on one port, give each
+its own collector and its own fate, at the price of sharing nothing without
+a network hop. Spread a process over
+runtimes when connections need to reach shared state cheaply (a game world, a
+cache); use processes when they do not.
+
 ## Extensions
 
 CrossByte's extension story is intentional: features that benefit from native backends or external platform libraries can live in sibling haxelibs instead of bloating the core.
@@ -248,6 +375,7 @@ The repository includes small runnable samples for:
 - LocalConnection, SharedChannel, and SharedObject IPC
 - UDP and reliable datagrams
 - HTTP serving
+- one HTTP server on several cores (`multicore`)
 - worker/background tasks
 
 See [samples/README.md](samples/README.md) for the current sample index and build commands.
