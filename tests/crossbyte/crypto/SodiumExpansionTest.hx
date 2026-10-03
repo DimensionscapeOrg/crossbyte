@@ -6,7 +6,7 @@ import utest.Assert;
 import crossbyte.test.Require;
 
 /**
- * Tests for the expanded libsodium bridge (proposal 0001):
+ * Tests for the expanded libsodium bridge:
  * Aead, X25519, KeyExchange, GenericHash, HKDF, Argon2id, ConstantTime,
  * SecureMemory.
  *

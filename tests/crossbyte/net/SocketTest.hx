@@ -914,7 +914,7 @@ class SocketTest extends utest.Test {
 
 	public function testDefaultPolicyStillClosesOnPeerFin():Void {
 		// The default has to stay exactly what it was, or every consumer that
-		// never heard of this proposal changes behaviour. A peer FIN closes,
+		// never heard of half-close changes behaviour. A peer FIN closes,
 		// dispatches CLOSE and not PEER_CLOSE, and peerShutdown is still set,
 		// so a CLOSE consumer can tell a graceful end from an error one.
 		var server = new ServerSocket();

@@ -9,6 +9,9 @@ obj/
 coverage/
 .aedifex/
 
+# Design proposals: working notes, kept locally and not published.
+/docs/proposals/
+
 # Editor / OS noise
 .DS_Store
 Thumbs.db
