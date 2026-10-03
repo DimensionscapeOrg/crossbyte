@@ -12,31 +12,33 @@ import crossbyte.crypto._internal.SodiumGlue;
 /**
  * A key-exchange keypair (X25519 keys in libsodium's `crypto_kx` format).
  */
-typedef KeyExchangeKeyPair = {
+@:structInit
+final class KeyExchangeKeyPair {
 	/**
 	 * The 32-byte public key.
 	 */
-	var publicKey:Bytes;
+	public var publicKey:Bytes;
 
 	/**
 	 * The 32-byte secret key.
 	 */
-	var secretKey:Bytes;
+	public var secretKey:Bytes;
 }
 
 /**
  * Directional session keys produced by a key exchange.
  */
-typedef SessionKeys = {
+@:structInit
+final class SessionKeys {
 	/**
 	 * The 32-byte receive key: decrypts data sent by the peer.
 	 */
-	var rx:Bytes;
+	public var rx:Bytes;
 
 	/**
 	 * The 32-byte transmit key: encrypts data sent to the peer.
 	 */
-	var tx:Bytes;
+	public var tx:Bytes;
 }
 
 /**

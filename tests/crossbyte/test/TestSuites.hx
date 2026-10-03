@@ -12,6 +12,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.auth.jwt.EdDSAJwtTest());
 		runner.addCase(new crossbyte.auth.jwt.PkJwtTest());
 		runner.addCase(new crossbyte.auth.jwt.JWKSetTest());
+		runner.addCase(new crossbyte.auth.jwt.JWTTypesTest());
 	}
 
 	public static function addCrypto(runner:Runner):Void {
