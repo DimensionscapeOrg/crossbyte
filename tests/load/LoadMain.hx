@@ -127,6 +127,17 @@ class Affinity {
 		if (range == null) {
 			return;
 		}
+		try {
+			__apply(range);
+		} catch (error:Dynamic) {
+			// The jvm, which has no process affinity: the run goes on without.
+			Report.say("load: processor ranges are not available here: " + Std.string(error));
+			server = null;
+			clients = null;
+		}
+	}
+
+	static function __apply(range:{from:Int, to:Int}):Void {
 		var count:Int = crossbyte.sys.System.processorCount;
 		if (count > 64) {
 			count = 64;
