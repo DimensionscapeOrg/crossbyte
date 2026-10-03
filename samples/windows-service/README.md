@@ -4,7 +4,7 @@
 the Windows Service Control Manager stops it — and behaves the same way under
 `Ctrl+C` when run from a console.
 
-It is also the harness for verifying proposal 0014 by hand. Nothing in CI
+It is also the harness for verifying the service control by hand. Nothing in CI
 installs a real service, so `StartServiceCtrlDispatcher` succeeding,
 `ServiceMain` being invoked, and the status transitions as the SCM sees them
 are only ever proven here.
@@ -62,7 +62,7 @@ The point of the exercise is that the stop is orderly rather than a kill:
 2. `http://127.0.0.1:8080/` serves the sample page while the service runs.
 3. After `sc stop`, the log contains `stop requested; draining` followed by
    `drain complete; reporting service stopped`. **This is the observable that
-   did not exist before proposal 0014** — the callback did not run at all, so
+   did not exist before service control was added** — the callback did not run at all, so
    neither line was ever written.
 4. `sc query` reports `STOPPED`, and the Windows event log has no
    "terminated unexpectedly" entry for the service. That entry is what a

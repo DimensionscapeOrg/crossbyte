@@ -12,7 +12,7 @@ import utest.Assert;
 /**
  * The server serving PHP, end to end, against a backend held open on purpose.
  *
- * Proposal 0021 names four things an asynchronous bridge has to survive. Two
+ * There are four things an asynchronous bridge has to survive. Two
  * are covered where the bridge itself is tested -- a backend that never
  * answers, and a record torn across two reads. The other two are not properties
  * of the bridge at all but of the handler wrapped around it, and they only

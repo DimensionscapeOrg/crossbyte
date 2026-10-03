@@ -1045,7 +1045,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testNotFoundKeepsConnectionUsable(async:Async):Void {
-		// The proposal's motivating case: a page with a missing favicon
+		// The motivating case: a page with a missing favicon
 		// must not pay a new handshake for the 404. tryFiles is set here
 		// rather than left to the default -- it is the same two entries the
 		// default now carries, but a test that needs a 404 should say so
