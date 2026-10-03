@@ -509,7 +509,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			}
 
 			if (options.collation != null) {
-				w.value("collation", options.collation, 1);
+				w.value("collation", __collationDocument(options.collation), 1);
 			}
 
 			if (options.comment != null) {
@@ -578,7 +578,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			}
 
 			if (options.collation != null) {
-				statement.add("collation", options.collation);
+				statement.add("collation", __collationDocument(options.collation));
 			}
 		}
 
@@ -603,7 +603,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			}
 
 			if (options.collation != null) {
-				statement.add("collation", options.collation);
+				statement.add("collation", __collationDocument(options.collation));
 			}
 		}
 
@@ -643,7 +643,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			}
 
 			if (options.collation != null) {
-				w.value("collation", options.collation, 1);
+				w.value("collation", __collationDocument(options.collation), 1);
 			}
 
 			if (options.comment != null) {
@@ -727,7 +727,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			}
 
 			if (index.collation != null) {
-				spec.add("collation", index.collation);
+				spec.add("collation", __collationDocument(index.collation));
 			}
 
 			specs.push(spec);
@@ -741,7 +741,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 
 	/** Creates one index and answers its name. **/
 	public function createIndex(collection:String, key:Dynamic, ?options:{?name:String, ?unique:Bool, ?sparse:Bool, ?expireAfterSeconds:Int,
-		?partialFilterExpression:Dynamic, ?collation:Dynamic}):String {
+		?partialFilterExpression:Dynamic, ?collation:MongoCollation}):String {
 		var index:MongoIndex = {key: key};
 
 		if (options != null) {
@@ -1663,6 +1663,45 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		var message:String = __text(Reflect.field(reply, "errmsg"));
 		return new MongoError(operation, message == "" ? "the server reported failure" : message, __int(Reflect.field(reply, "code")),
 			__text(Reflect.field(reply, "codeName")), labels, null, null, result, reply);
+	}
+
+	/** A collation as the document the server reads: the fields set, in the order MongoDB documents them. **/
+	@:noCompletion private static function __collationDocument(collation:MongoCollation):BsonDocument {
+		var document:BsonDocument = new BsonDocument().add("locale", collation.locale);
+
+		if (collation.caseLevel != null) {
+			document.add("caseLevel", collation.caseLevel);
+		}
+
+		if (collation.caseFirst != null) {
+			document.add("caseFirst", collation.caseFirst);
+		}
+
+		if (collation.strength != null) {
+			document.add("strength", collation.strength);
+		}
+
+		if (collation.numericOrdering != null) {
+			document.add("numericOrdering", collation.numericOrdering);
+		}
+
+		if (collation.alternate != null) {
+			document.add("alternate", collation.alternate);
+		}
+
+		if (collation.maxVariable != null) {
+			document.add("maxVariable", collation.maxVariable);
+		}
+
+		if (collation.backwards != null) {
+			document.add("backwards", collation.backwards);
+		}
+
+		if (collation.normalization != null) {
+			document.add("normalization", collation.normalization);
+		}
+
+		return document;
 	}
 
 	@:noCompletion private static function __concernDocument(concern:MongoWriteConcern):BsonDocument {

@@ -184,6 +184,7 @@ class MongoCrudTest extends utest.Test {
 		var upsert:MongoWriteResult = connection.update("people", {last: "Knuth"}, {"$set": {first: "Donald"}}, {upsert: true});
 		Assert.equals(0, upsert.matched);
 		Assert.equals(1, upsert.upserted.length);
+		Assert.isTrue(Std.isOfType(upsert.upserted[0], MongoWriteResult.MongoUpserted));
 		Assert.equals(0, upsert.upserted[0].index);
 		Assert.isTrue(Std.isOfType(upsert.upserted[0].id, ObjectId));
 		Assert.equals(upsert.upserted[0].id, connection.lastInsertId);
@@ -241,6 +242,44 @@ class MongoCrudTest extends utest.Test {
 		Assert.equals(true, specs[2].get("unique"));
 	}
 
+	public function testHintsAndCollationsGoOutAsDocuments():Void {
+		__start();
+		server.seed("app.people", [__person(1, "Muller", "Anna", 30)]);
+
+		connection.find("people", {last: "muller"}, {hint: {last: 1}, collation: {locale: "de", strength: 1, numericOrdering: true}}).toArray();
+		connection.count("people", null, {hint: "last_1"});
+		connection.update("people", {last: "Muller"}, {"$set": {seen: true}}, {
+			hint: new BsonDocument().add("last", 1).add("first", 1),
+			collation: {locale: "de", strength: 2}
+		});
+		connection.delete("people", {last: "nobody"}, {collation: {locale: "fr", backwards: true}});
+		connection.aggregate("people", [{"$match": {}}], {collation: {locale: "sv"}}).toArray();
+		connection.createIndexes("people", [{key: {last: 1}, collation: {locale: "de", caseFirst: "upper"}}]);
+
+		var find:BsonDocument = server.commands("find")[0].body;
+		Assert.same(["last"], (find.get("hint") : BsonDocument).keys());
+		var collation:BsonDocument = find.get("collation");
+		// Only the fields set, in the order MongoDB documents them.
+		Assert.same(["locale", "strength", "numericOrdering"], collation.keys());
+		Assert.equals("de", collation.get("locale"));
+		Assert.equals(1, collation.get("strength"));
+		Assert.equals(true, collation.get("numericOrdering"));
+
+		Assert.equals("last_1", server.commands("count")[0].body.get("hint"));
+
+		var update:BsonDocument = (server.commands("update")[0].body.get("updates") : Array<Dynamic>)[0];
+		Assert.same(["last", "first"], (update.get("hint") : BsonDocument).keys());
+		Assert.same(["locale", "strength"], (update.get("collation") : BsonDocument).keys());
+
+		var delete:BsonDocument = (server.commands("delete")[0].body.get("deletes") : Array<Dynamic>)[0];
+		Assert.same(["locale", "backwards"], (delete.get("collation") : BsonDocument).keys());
+
+		Assert.equals("sv", (server.commands("aggregate")[0].body.get("collation") : BsonDocument).get("locale"));
+
+		var spec:BsonDocument = server.indexes("app.people")[0];
+		Assert.equals("upper", (spec.get("collation") : BsonDocument).get("caseFirst"));
+	}
+
 	public function testDropAnswersWhetherThereWasACollection():Void {
 		__start();
 		connection.insert("scratch", [{x: 1}]);
@@ -265,6 +304,7 @@ class MongoCrudTest extends utest.Test {
 		Assert.equals(MongoError.DUPLICATE_KEY, ordered.errorID);
 		Assert.equals("DuplicateKey", ordered.codeName);
 		Assert.equals(1, ordered.writeErrors.length);
+		Assert.isTrue(Std.isOfType(ordered.writeErrors[0], MongoError.MongoWriteError));
 		Assert.equals(1, ordered.writeErrors[0].index);
 		// Stopped at the failure: one stored before it, none after.
 		Assert.equals(1, ordered.result.inserted);

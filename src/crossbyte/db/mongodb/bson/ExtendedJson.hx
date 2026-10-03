@@ -296,10 +296,11 @@ class ExtendedJson {
 
 /**
 	The parser behind `ExtendedJson.parse`: recursive descent over the text,
-	with the position in a field.
+	with the position in a field. Private to this module: `parse` is its
+	only door.
 **/
 @:noCompletion
-class ExtendedJsonParser {
+private class ExtendedJsonParser {
 	private var __text:String;
 	private var __pos:Int = 0;
 	private var __parameters:String->Dynamic;

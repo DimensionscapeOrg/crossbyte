@@ -381,7 +381,7 @@ class MongoUri {
 				}
 
 				var count:Int = crossbyte.utils.IntParse.decimal(value);
-				out.writeConcern.w = count >= 0 ? (count : Dynamic) : (value : Dynamic);
+				out.writeConcern.w = count >= 0 ? (count : MongoW) : (value : MongoW);
 			case "wtimeoutms":
 				if (out.writeConcern == null) {
 					out.writeConcern = {};

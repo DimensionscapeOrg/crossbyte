@@ -282,5 +282,7 @@ class PortableSuite {
 		// PrimitiveValue's numbers, which Std.parseInt and Std.int read
 		// differently on each target.
 		runner.addCase(new crossbyte.foundation.FoundationConstructsTest());
+		// The MongoDB driver's public types, decided at compile time.
+		runner.addCase(new crossbyte.db.mongodb.MongoApiTest());
 	}
 }
