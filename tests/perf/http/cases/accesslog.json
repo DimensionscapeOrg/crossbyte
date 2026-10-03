@@ -1,0 +1,49 @@
+[
+ {
+  "label": "access-off",
+  "exe": "export/perf-http/release/PerfHttpServer.exe",
+  "scenario": "mw",
+  "load": "http",
+  "env": "",
+  "seconds": 10,
+  "warmup": 2,
+  "args": [
+   "--conns",
+   "64",
+   "--procs",
+   "4"
+  ]
+ },
+ {
+  "label": "access-file",
+  "exe": "export/perf-http/release/PerfHttpServer.exe",
+  "scenario": "mw",
+  "load": "http",
+  "env": "PERF_ACCESS_LOG=on",
+  "stdout": "file",
+  "seconds": 10,
+  "warmup": 2,
+  "args": [
+   "--conns",
+   "64",
+   "--procs",
+   "4"
+  ]
+ },
+ {
+  "label": "access-console",
+  "exe": "export/perf-http/release/PerfHttpServer.exe",
+  "scenario": "mw",
+  "load": "http",
+  "env": "PERF_ACCESS_LOG=on",
+  "stdout": "console",
+  "seconds": 10,
+  "warmup": 2,
+  "args": [
+   "--conns",
+   "64",
+   "--procs",
+   "4"
+  ]
+ }
+]

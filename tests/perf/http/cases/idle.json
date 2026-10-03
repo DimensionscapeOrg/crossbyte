@@ -1,0 +1,62 @@
+[
+ {
+  "label": "idle1k-sweep",
+  "exe": "export/perf-http/release/PerfHttpServer.exe",
+  "scenario": "mw",
+  "load": "idle-http",
+  "env": "PERF_MAX_CONNS=12000,PERF_KEEPALIVE_TIMEOUT=600",
+  "seconds": 8,
+  "warmup": 5,
+  "args": [
+   "--conns",
+   "1000",
+   "--rate",
+   "10"
+  ]
+ },
+ {
+  "label": "idle1k-nosweep",
+  "exe": "export/perf-http/release/PerfHttpServer.exe",
+  "scenario": "mw",
+  "load": "idle-http",
+  "env": "PERF_MAX_CONNS=12000,PERF_KEEPALIVE_TIMEOUT=0,PERF_REQUEST_TIMEOUT=0",
+  "seconds": 8,
+  "warmup": 5,
+  "args": [
+   "--conns",
+   "1000",
+   "--rate",
+   "10"
+  ]
+ },
+ {
+  "label": "idle10k-sweep",
+  "exe": "export/perf-http/release/PerfHttpServer.exe",
+  "scenario": "mw",
+  "load": "idle-http",
+  "env": "PERF_MAX_CONNS=12000,PERF_KEEPALIVE_TIMEOUT=600",
+  "seconds": 8,
+  "warmup": 5,
+  "args": [
+   "--conns",
+   "10000",
+   "--rate",
+   "10"
+  ]
+ },
+ {
+  "label": "idle10k-nosweep",
+  "exe": "export/perf-http/release/PerfHttpServer.exe",
+  "scenario": "mw",
+  "load": "idle-http",
+  "env": "PERF_MAX_CONNS=12000,PERF_KEEPALIVE_TIMEOUT=0,PERF_REQUEST_TIMEOUT=0",
+  "seconds": 8,
+  "warmup": 5,
+  "args": [
+   "--conns",
+   "10000",
+   "--rate",
+   "10"
+  ]
+ }
+]
