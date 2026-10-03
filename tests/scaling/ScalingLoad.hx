@@ -1,6 +1,7 @@
 import haxe.io.Bytes;
 import sys.net.Host;
 import sys.net.Socket;
+import sys.thread.Deque;
 import sys.thread.Mutex;
 import sys.thread.Thread;
 
@@ -20,7 +21,7 @@ class ScalingLoad {
 	private static final __lock:Mutex = new Mutex();
 	private static var __done:Int = 0;
 	private static var __errors:Int = 0;
-	private static var __finished:Int = 0;
+	private static final __finished:Deque<Bool> = new Deque();
 
 	public static function main():Void {
 		var args:Array<String> = Sys.args();
@@ -46,19 +47,13 @@ class ScalingLoad {
 				if (failed) {
 					__errors++;
 				}
-				__finished++;
 				__lock.release();
+				__finished.add(true);
 			});
 		}
 
-		while (true) {
-			Sys.sleep(0.05);
-			__lock.acquire();
-			var finished:Int = __finished;
-			__lock.release();
-			if (finished >= connections) {
-				break;
-			}
+		for (_ in 0...connections) {
+			__finished.pop(true);
 		}
 		Sys.println('RPS ${Math.round(__done / seconds)} requests=$__done errors=$__errors');
 	}
