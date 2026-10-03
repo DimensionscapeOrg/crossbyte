@@ -137,7 +137,9 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 			return;
 		}
 
-		__socket.writeBytes(bytes, 0, bytes.length);
+		// As it is: writeBytes takes a ByteArray, and a Bytes passed to it was
+		// wrapped in a new one first.
+		__socket.__writeRawBytes(bytes, 0, bytes.length);
 
 		// While a read is being taken apart, what it answers at once goes out
 		// together when it is done (see __receive). Every frame was flushed
@@ -151,9 +153,8 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 	}
 
 	// A frame's header, written here and then into the socket ahead of what
-	// it carries: one per connection, a ByteArray so the socket takes it as
-	// it is.
-	private final __frameHead:ByteArray = new ByteArray(H2Frame.HEADER_SIZE);
+	// it carries: one per connection.
+	private final __frameHead:Bytes = Bytes.alloc(H2Frame.HEADER_SIZE);
 
 	/**
 		The frame layer's frames, written straight into the socket: the header
@@ -167,14 +168,13 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 			return;
 		}
 
-		var head:ByteArrayData = __frameHead;
-		H2Frame.writeHeaderTo(head, 0, length, type, flags, streamId);
-		__socket.writeBytes(__frameHead, 0, H2Frame.HEADER_SIZE);
+		H2Frame.writeHeaderTo(__frameHead, 0, length, type, flags, streamId);
+		__socket.__writeRawBytes(__frameHead, 0, H2Frame.HEADER_SIZE);
 		if (length > 0) {
-			// Taken as it is when it is a ByteArray already -- a body handed
-			// over whole (H2ResponseWriter.writeBodyTaken) -- and wrapped,
-			// not copied, otherwise.
-			__socket.writeBytes(payload, offset, length);
+			// The slice as it lies, a body's ByteArray or a header block's or
+			// queue's Bytes alike: writeBytes took a ByteArray, and a Bytes was
+			// wrapped in a new one per frame to pass it.
+			__socket.__writeRawBytes(payload, offset, length);
 		}
 
 		if (!__receiving) {

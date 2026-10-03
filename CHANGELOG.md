@@ -1995,6 +1995,12 @@ entry below says how:
   CPU under HTTP/2 natively where it cost 51 (user time 16 where it was
   24), and a small one 7.2 where it cost 8.6 (medians of four interleaved
   runs).
+- The HTTP/2 server hands each frame's header and payload to the socket as
+  the `Bytes` they are, where each was wrapped in a new `ByteArray` to be
+  written: one object less per frame. Too small to see beside the rest of a
+  request: over eight interleaved runs a small response cost 5.99 us of CPU
+  natively against 5.93 before, and a 64 KB one 32.5 against 32.0 (paired
+  differences -0.05 and -0.32 us, within the runs' spread).
 - An HTTP/2 stream's request handler no longer makes the read buffer, header
   map and body that only the HTTP/1.1 parser uses, nor copies the body the
   frame layer already holds; a request without a body makes no body object
