@@ -14,7 +14,6 @@ import js.node.net.Socket as NodeSocket;
 import crossbyte._internal.net.Resolver;
 import sys.net.Host;
 #end
-import crossbyte.Function;
 import crossbyte._internal.system.timer.TimerScheduler;
 import crossbyte.core.CrossByte;
 import crossbyte.crypto.SecureRandom;
@@ -143,10 +142,10 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	// Whether what this side sends may go compressed: only where its peer
 	// agreed to inflate each message on its own; see __takeDeflateAnswer.
 	private var __deflateSend:Bool = false;
-	public var onclose:Function = (e:WebsocketEvent) -> {};
-	public var onerror:Function = (e:WebsocketEvent) -> {};
-	public var onmessage:Function = (e:WebsocketEvent) -> {};
-	public var onopen:Function = (e:WebsocketEvent) -> {};
+	public var onclose:WebsocketEvent->Void = (e:WebsocketEvent) -> {};
+	public var onerror:WebsocketEvent->Void = (e:WebsocketEvent) -> {};
+	public var onmessage:WebsocketEvent->Void = (e:WebsocketEvent) -> {};
+	public var onopen:WebsocketEvent->Void = (e:WebsocketEvent) -> {};
 
 	/**
 	 * A server session's say over its own upgrade, asked once the request has
@@ -780,7 +779,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			// reported there on Windows and never becomes writable, so it sat
 			// here until the deadline, ten seconds by default for a refusal
 			// the system had reported at once.
-			var sockets:Dynamic = FlexSocket.select(null, [__socket], [__socket], 0);
+			var sockets = FlexSocket.select(null, [__socket], [__socket], 0);
 
 			#if cpp
 			// Writable is not connected: POSIX makes a refused connect
@@ -875,13 +874,25 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * asked through its type, not dynamically, since the registry asks every
 	 * TLS session on every pump.
 	 */
+	#if (java || jvm)
+	// The socket `__jvmTls` was cast from, and what the cast gave.
+	@:noCompletion private var __jvmTlsOf:FlexSocket = null;
+	@:noCompletion private var __jvmTls:crossbyte._internal.socket._jvm.JvmSsl.JvmSslSocket = null;
+	#end
+
 	public function registryHasBufferedInput():Bool {
 		#if (java || jvm)
 		if (!__tls || __socket == null) {
 			return false;
 		}
 
-		var tls = Std.downcast((__socket : sys.net.Socket), crossbyte._internal.socket._jvm.JvmSsl.JvmSslSocket);
+		// Cast once per socket rather than once per pump: an `instanceof`
+		// and a checked cast, per TLS session, for every pass of the loop.
+		if (__jvmTlsOf != __socket) {
+			__jvmTlsOf = __socket;
+			__jvmTls = Std.downcast((__socket : sys.net.Socket), crossbyte._internal.socket._jvm.JvmSsl.JvmSslSocket);
+		}
+		var tls = __jvmTls;
 		if (tls == null) {
 			return false;
 		}
@@ -2561,13 +2572,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	private function __onError(errorMessage:String, errorID:Int = 0):Void {
 		__errorReported = true;
-		var event = new WebsocketEvent(WebsocketEvent.ERROR, this, errorMessage);
+		var event = new WebsocketEvent(WebsocketEvent.ERROR, this, null, errorMessage);
 		event.errorID = errorID;
 		onerror(event);
-	}
-
-	private function __onMessage(data:Dynamic):Void {
-		onmessage(new WebsocketEvent(WebsocketEvent.MESSAGE, this, data));
 	}
 
 	/**
@@ -2794,7 +2801,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		__detachTickListeners();
 
 		__closeReported = true;
-		onclose(new WebsocketEvent(WebsocketEvent.CLOSE, this, null, code, reason));
+		onclose(new WebsocketEvent(WebsocketEvent.CLOSE, this, null, null, code, reason));
 
 		__socket = null;
 	}
