@@ -8,3 +8,7 @@ int crossbyte_socket_recv_from(Dynamic socket, Array<unsigned char> buffer, int 
 String crossbyte_socket_connect_error(Dynamic socket);
 int crossbyte_socket_send_batch(Dynamic socket, Array<unsigned char> buffer, Array<int> spans, Array<Dynamic> targets, int first, int count);
 Array<Dynamic> crossbyte_socket_select(Array<Dynamic> rs, Array<Dynamic> ws, Array<Dynamic> es, Dynamic timeout);
+int crossbyte_socket_try_send(Dynamic socket, Array<unsigned char> buffer, int position, int length);
+int crossbyte_socket_try_recv(Dynamic socket, Array<unsigned char> buffer, int position, int length);
+int crossbyte_socket_try_send_to(Dynamic socket, Array<unsigned char> buffer, int position, int length, Dynamic address);
+int crossbyte_socket_try_recv_from(Dynamic socket, Array<unsigned char> buffer, int position, int length, Dynamic address);
