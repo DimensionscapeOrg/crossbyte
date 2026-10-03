@@ -1,0 +1,16 @@
+# The scaling measurement: ScalingServer and ScalingLoad, natively. Run from
+# its own directory: haxe --cwd tests/scaling scaling.hxml. See the two
+# classes for their arguments.
+--cwd ../..
+--each
+-cp src
+-cp tests/scaling
+-D HXCPP_M64
+--macro crossbyte._internal.macro.HostPlatform.define()
+-main ScalingServer
+--cpp export/scaling-server
+--next
+-cp tests/scaling
+-D HXCPP_M64
+-main ScalingLoad
+--cpp export/scaling-load

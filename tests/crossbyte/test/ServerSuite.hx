@@ -44,6 +44,9 @@ class ServerSuite {
 		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
 		runner.addCase(new crossbyte.http.HTTPStreamingTest());
 		runner.addCase(new crossbyte.http.HTTPServerDrainTest());
+		// One server's connections on several runtimes; its cases are the
+		// threaded targets' (on Node a spread server is refused).
+		runner.addCase(new crossbyte.http.HTTPServerSpreadTest());
 		runner.addCase(new crossbyte.http.HTTPServerMetricsTest());
 		runner.addCase(new crossbyte.http.RouterServerTest());
 		runner.addCase(new crossbyte.http.HTTPServerH2Test());

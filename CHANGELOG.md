@@ -249,6 +249,43 @@ entry below says how:
   errors, handles and memory as the run goes, and memory against where the
   server started once the clients have gone. The README's Testing section
   says how to run them.
+- One `ServerSocket` can serve its connections on several runtimes, so a
+  server uses more than one core: `runtimes` takes runtimes made with
+  `CrossByte.make(POLL)`, or `runtimeCount` makes them. The listener stays
+  on its runtime and hands each connection it accepts, before its TLS
+  handshake, to the runtime `selectRuntime` names -- a game server sends a
+  player to the runtime that owns their match -- or to the next in turn,
+  passing over one that has exited. From then on the connection is that
+  runtime's: polled, timed and announced there, its `connect` listener
+  run there. `admit`, `maxPendingHandshakes` and `handshakeFailures` hold
+  for the server as a whole. On Linux, `reusePort` gives each runtime a
+  listener of its own on the port instead (`SO_REUSEPORT`), the kernel
+  sharing connections out; refused on every other system. Natively, on the
+  jvm, hl, neko (whose threads contend for its allocator) and the
+  interpreter (where the runtimes take turns); on Node, whose runtimes share
+  one thread, refused.
+- `ServerWebSocket` takes `runtimes`, `runtimeCount`, `selectRuntime` and
+  `reusePort` too: each session's TLS handshake, upgrade, messages and close
+  run on the runtime it was handed to, and the `upgrade` hook is asked
+  there. `maxPendingHandshakes`, `pendingHandshakeCount()`,
+  `handshakeFailures`, `clientCount` and the published metrics count every
+  runtime's sessions; `drain()` sends each runtime's sessions their close
+  frame there and finishes once all have gone, exiting the runtimes
+  `runtimeCount` made; `close()` and `stopAccepting()` drop what is still
+  upgrading on every runtime.
+- `HTTPServerConfig.runtimes`, `runtimeCount` and `reusePort` spread an
+  `HTTPServer` the same way: each connection is served on its runtime, its
+  TLS handshake and its requests, HTTP/1.1 and HTTP/2, and the middleware,
+  routes and hooks run there, several at once -- `HTTPServerConfig.runtimes`
+  says what that asks of them. `maxConnections` counts every runtime's
+  connections together; `rateLimiter` is given a lock as the server starts,
+  so one budget per client holds across them; the metrics count them all;
+  with PHP each runtime dials the backend with a bridge of its own; and
+  `drain()` drains every runtime's connections, finishing once each has.
+  The README's "Using more than one core" says what runs where and what
+  it must be, with examples for a socket server, an HTTP server and a game
+  server routing by match; the `multicore` sample runs one, and
+  `tests/scaling` measures it.
 - `HTTPServerConfig.http2MaxRequestBodyBuffer`: what one HTTP/2 connection
   holds of request bodies at once, across all its streams -- 4 MB
   (`DEFAULT_HTTP2_REQUEST_BODY_BUFFER`) unless changed, `0` for no limit,
@@ -2456,6 +2493,21 @@ entry below says how:
   not tell a server keeping up from one falling behind. Each loop now judges
   a frame by its work, as the default loop and JavaScript's already did.
   `loopLag` still reports the lateness, and says what is usual for it.
+- `HTTPServer.drain()` called from another thread is handed to the
+  server's runtime, as `ServerWebSocket.drain()` already was, and finishes
+  there. It ran on the calling thread: it closed the runtime's connections
+  and put its wait on the runtime's tick from there, and with nothing to
+  wait for it called `onComplete` there, where the doc says the runtime's
+  thread.
+- A runtime woken from another thread as it exits no longer writes to a
+  closed socket. Every hand-off wakes a POLL runtime by writing a byte to
+  a socket it polls -- a `post`, an `exit()`, a parent exiting its
+  children -- and the runtime closes that socket as it exits, on its own
+  thread; the wake checked and wrote without holding anything against the
+  close. On the interpreter the write raised an error no `catch` sees,
+  which ended the process; natively it went to a descriptor the system
+  may already have handed another socket. The wake and the close now take
+  the same lock.
 - A `FileStream` open in `UPDATE` mode reads back what it wrote on macOS.
   It reads and writes through two handles, flushing the writer and
   seeking the reader before each read; BSD stdio, macOS's, keeps a

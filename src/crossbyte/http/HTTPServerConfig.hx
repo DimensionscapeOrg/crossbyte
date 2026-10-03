@@ -276,6 +276,14 @@ class HTTPServerConfig {
 		eleven assets used to come back as ten served and two refused.
 
 		Pass a limiter of your own to say something different.
+
+		A server spread over `runtimes` asks it from each runtime's thread,
+		and a `RateLimiter` is not safe to call from two at once, so the
+		server puts a lock in front of it as it starts: from then on this is
+		a limiter that passes each call to the one you gave, one at a time,
+		keeping one budget per client across every runtime. Call it through
+		this property from code of your own on other threads, not through the
+		limiter you passed.
 	**/
 	public var rateLimiter:RateLimiter;
 
@@ -341,6 +349,52 @@ class HTTPServerConfig {
 	**/
 	public var maxConnections:Int;
 	public var backlog:Int;
+
+	/**
+		The runtimes the server's connections are served on, so that it
+		uses more than one core; `null`, the default, serves them all on the
+		runtime that makes the server. See `ServerSocket.runtimes`, which this
+		sets as the server starts: the listener stays on its runtime, and
+		each connection it accepts is handed to one of these, where all of it
+		-- its TLS handshake, its requests, HTTP/1.1 or HTTP/2, its timeouts
+		-- is served for its whole life. Make them with
+		`CrossByte.make(POLL)`, or set `runtimeCount` instead.
+
+		Every runtime then runs the code this configuration names, at once:
+		`middleware`, routes, `onError`, `onExpectContinue` and `rateLimitKey`
+		are called on whichever runtime holds the request, so what they share
+		between requests -- a cache, a session table, a connection pool --
+		must be thread-safe, or kept per runtime (`CrossByte.current()` says
+		which). A `Router` is read-only once its routes are added, and is
+		safe to share once they are. What the server itself shares is made
+		safe: `maxConnections` counts every runtime's connections together,
+		`rateLimiter` keeps one budget per client across them (see there),
+		the metrics registry and `compression`'s cache take locks of their
+		own, and with PHP each runtime has a bridge of its own to the same
+		backend.
+
+		`HTTPServer.drain()`, `close()` and `stopAccepting()` cover every
+		runtime's connections. On Node, whose runtimes share one thread, a
+		server with runtimes is refused.
+	**/
+	public var runtimes:Array<crossbyte.core.CrossByte> = null;
+
+	/**
+		How many runtimes the server makes to serve its connections on, as
+		`runtimes` does with given ones: `ServerSocket.runtimeCount`. `0`, the
+		default, makes none; `runtimes`, when set, wins. Made as the server
+		starts, POLL loops each, and exited once `HTTPServer.drain()` has
+		finished.
+	**/
+	public var runtimeCount:Int = 0;
+
+	/**
+		Whether each runtime listens for itself, the kernel sharing
+		connections out, rather than the server's runtime handing them on:
+		`ServerSocket.reusePort`, Linux only, refused elsewhere. Needs
+		`runtimes` or `runtimeCount`.
+	**/
+	public var reusePort:Bool = false;
 	public var phpEnabled:Bool;
 	public var phpAddress:String;
 	public var phpPort:Int;
