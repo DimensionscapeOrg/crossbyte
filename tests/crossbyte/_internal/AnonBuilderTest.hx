@@ -116,6 +116,21 @@ class AnonBuilderTest extends utest.Test {
 		}
 	}
 
+	public function testALongNameIsNotMadePermanent():Void {
+		// A name read from a peer can be as long as the peer likes, and a
+		// fixed slot keeps its name for the life of the process.
+		var long:String = StringTools.lpad("", "n", AnonBuilder.MAX_NAME_LENGTH + 1);
+		var builder:AnonBuilder = new AnonBuilder(["short", long]);
+		Assert.isFalse(builder.fixed);
+		var object:Dynamic = builder.begin();
+		builder.setInt(object, 0, 1);
+		builder.setInt(object, 1, 2);
+		Assert.equals(2, Reflect.field(object, long));
+		#if cpp
+		Assert.isTrue(new AnonBuilder(["short", long.substr(1)]).fixed, "a name of the longest length takes a slot");
+		#end
+	}
+
 	public function testMatchesComparesTheLeadingNames():Void {
 		var builder:AnonBuilder = new AnonBuilder(["a", "b"]);
 		Assert.isTrue(builder.matches(["a", "b", "c"], 2));

@@ -28,7 +28,7 @@ class IsoDate {
 			throw new ArgumentError("Not an ISO 8601 date: null.");
 		}
 
-		var cursor:{pos:Int} = {pos: 0};
+		var cursor:IsoCursor = new IsoCursor();
 		var year:Int = __number(text, cursor, 4, 4);
 		__expect(text, cursor, "-".code);
 		var month:Int = __number(text, cursor, 2, 2);
@@ -199,7 +199,7 @@ class IsoDate {
 		}
 	}
 
-	@:noCompletion private static function __number(text:String, cursor:{pos:Int}, min:Int, max:Int):Int {
+	@:noCompletion private static function __number(text:String, cursor:IsoCursor, min:Int, max:Int):Int {
 		var value:Int = 0;
 		var count:Int = 0;
 
@@ -222,7 +222,7 @@ class IsoDate {
 		return value;
 	}
 
-	@:noCompletion private static function __expect(text:String, cursor:{pos:Int}, code:Int):Void {
+	@:noCompletion private static function __expect(text:String, cursor:IsoCursor, code:Int):Void {
 		if (cursor.pos >= text.length || StringTools.fastCodeAt(text, cursor.pos) != code) {
 			__fail(text);
 		}
@@ -243,4 +243,15 @@ class IsoDate {
 	@:noCompletion private static function __fail(text:String):Void {
 		throw new ArgumentError('Not an ISO 8601 date: "$text".');
 	}
+}
+
+/**
+	Where a parse has got to in its text. A class, so its position is a
+	field rather than looked up by name in an anonymous object, about
+	thirty times a date.
+**/
+private class IsoCursor {
+	public var pos:Int = 0;
+
+	public function new() {}
 }

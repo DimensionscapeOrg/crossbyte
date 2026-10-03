@@ -45,6 +45,9 @@ class SQLiteJob {
 	public var statement(default, null):Null<SQLiteStatement>;
 	public var call(default, null):Null<SQLiteCall>;
 	public var sql(default, null):Null<String>;
+	// The statement's parameters as they were when it was asked to run: its
+	// own map can change before the worker binds them.
+	public var parameters(default, null):Null<haxe.ds.StringMap<Dynamic>>;
 	public var epoch(default, null):Int;
 	public var statementEpoch(default, null):Int;
 	public var gen(default, null):Int;
@@ -53,8 +56,9 @@ class SQLiteJob {
 	public var fresh(default, null):Bool;
 
 	public function new(run:Null<Void->Void>, operation:String, statement:Null<SQLiteStatement>, epoch:Int, keep:Bool, call:Null<SQLiteCall>,
-			gen:Int, fresh:Bool, sql:Null<String>, prefetch:Int) {
+			gen:Int, fresh:Bool, sql:Null<String>, prefetch:Int, ?parameters:haxe.ds.StringMap<Dynamic>) {
 		this.run = run;
+		this.parameters = parameters;
 		this.operation = operation;
 		this.statement = statement;
 		this.epoch = epoch;

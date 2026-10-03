@@ -4,15 +4,16 @@ import crossbyte.errors.SQLError;
 
 /**
 	One document a write could not apply: its position in what was sent, and
-	the server's reason.
+	the server's reason. For a write concern error, `index` is -1.
 **/
-typedef MongoWriteError = {
+@:structInit
+final class MongoWriteError {
 	/** The document's position among those passed to the call, from 0. **/
-	var index:Int;
+	public final index:Int;
 
-	var code:Int;
-	var codeName:String;
-	var message:String;
+	public final code:Int;
+	public final codeName:String;
+	public final message:String;
 }
 
 /**

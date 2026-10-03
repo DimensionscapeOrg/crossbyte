@@ -23,8 +23,12 @@ extern class NativePostgres {
 	@:native("crossbyte_postgres_is_open")
 	public static function isOpen(handle:VoidPointer):Bool;
 
-	@:native("crossbyte_postgres_request_json")
-	public static function requestJson(handle:VoidPointer, sql:String):String;
+	/**
+		Runs `sql` with `PQexec`, several statements, when it holds several,
+		and returns its result as an encoded block (see `PostgresWire`).
+	**/
+	@:native("crossbyte_postgres_request_block")
+	public static function requestBlock(handle:VoidPointer, sql:String):BytesData;
 
 	@:native("crossbyte_postgres_request_params")
 	public static function requestParams(handle:VoidPointer, sql:String, params:BytesData, paramsLength:Int):BytesData;

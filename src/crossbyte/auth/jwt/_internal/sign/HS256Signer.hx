@@ -2,20 +2,42 @@ package crossbyte.auth.jwt._internal.sign;
 
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
-import haxe.crypto.Hmac;
-import haxe.crypto.Hmac.HashMethod;
-import crossbyte.auth.jwt.JWT;
 import crossbyte.auth.Secret;
 import crossbyte.auth.jwt.JWTAlgorithm;
+import crossbyte.auth.jwt._internal.Base64Url;
+import crossbyte.crypto._internal.HmacSha256;
 
+/**
+ * HS256: HMAC-SHA-256 under shared secrets, by key id.
+ *
+ * Each secret's HMAC key blocks are hashed once, here, and kept
+ * (`HmacSha256`), and a token is checked in place: the MAC is taken over
+ * the token's own characters and compared, in constant time, with the 32
+ * bytes its signature decodes to. A verification built the HMAC from the
+ * secret each time through `haxe.crypto.Hmac`, copied the signing input
+ * into new `Bytes`, and encoded the MAC as text to compare strings: about
+ * half of what a verification cost.
+ *
+ * Only the one canonical spelling of a signature decodes, so a token is
+ * accepted in exactly the spelling a string comparison accepted.
+ */
 class HS256Signer implements IJWTSigner {
 	public var algorithm(get, never):JWTAlgorithm;
 	public var keys(get, never):StringMap<String>;
 	public var signKeyId(get, never):String;
 
 	private var __keys:StringMap<String>;
+	private var __macs:StringMap<HmacSha256>;
 	private var __signKeyId:String;
 	private var __hasSoleSecret:Bool;
+
+	/**
+	 * The sole secret's MAC, which a token naming no key is checked with;
+	 * null when there are several. Found once, here: it was found by
+	 * iterating the key map for each such token, which natively copies
+	 * every key.
+	 */
+	private var __soleMac:Null<HmacSha256>;
 
 	private inline function get_algorithm():JWTAlgorithm {
 		return JWTAlgorithm.HS256;
@@ -37,6 +59,8 @@ class HS256Signer implements IJWTSigner {
 		__hasSoleSecret = secrets.length == 1;
 
 		__keys = new StringMap();
+		__macs = new StringMap();
+		var soleKeyId:Null<String> = null;
 
 		for (i in 0...secrets.length) {
 			var secret:Secret = secrets[i];
@@ -56,6 +80,12 @@ class HS256Signer implements IJWTSigner {
 				throw 'HS256Signer: empty secret for key "$keyId"';
 			}
 			__keys.set(keyId, secret.secret);
+			__macs.set(keyId, new HmacSha256(Bytes.ofString(secret.secret)));
+			soleKeyId = keyId;
+		}
+
+		if (__hasSoleSecret) {
+			__soleMac = __macs.get(soleKeyId);
 		}
 
 		if (signKeyId != null) {
@@ -64,7 +94,7 @@ class HS256Signer implements IJWTSigner {
 			}
 			__signKeyId = signKeyId;
 		} else {
-			__signKeyId = __hasSoleSecret ? __singleKeyId() : null;
+			__signKeyId = __hasSoleSecret ? soleKeyId : null;
 			if (!__hasSoleSecret && __signKeyId == null) {
 				throw "HS256Signer: multiple keys provided; signKeyId is required";
 			}
@@ -93,64 +123,45 @@ class HS256Signer implements IJWTSigner {
 	}
 
 	public function sign(input:String, ?keyId:String):String {
-		keyId = keyId != null ? keyId : (__signKeyId != null ? __signKeyId : (__hasSoleSecret ? __singleKeyId() : null));
+		keyId = keyId != null ? keyId : __signKeyId;
 
 		if (keyId == null) {
 			throw "HS256Signer.sign: no key id available";
 		}
-		var secret:String = __keys.get(keyId);
-		if (secret == null) {
+		var mac:Null<HmacSha256> = __macs.get(keyId);
+		if (mac == null) {
 			throw 'HS256Signer.sign: unknown key id "$keyId"';
 		}
 
-		var mac:Bytes = new Hmac(HashMethod.SHA256).make(Bytes.ofString(secret), Bytes.ofString(input));
-		return JWT.base64UrlEncodeBytes(mac);
+		return Base64Url.encode(mac.macText(input, 0, input.length));
 	}
 
 	public function verify(input:String, signature:String, ?keyId:String):Bool {
-		if (keyId != null) {
-			var secret:String = __keys.get(keyId);
-			if (secret == null) {
-				return false;
-			}
-			var mac:Bytes = new Hmac(HashMethod.SHA256).make(Bytes.ofString(secret), Bytes.ofString(input));
-
-            return JWT.secureCompare(signature, JWT.base64UrlEncodeBytes(mac));
+		if (input == null || signature == null) {
+			return false;
 		}
-
-		if (__hasSoleSecret) {
-			var soleKeyId:String = __singleKeyId();
-			if (soleKeyId == null) {
-				return false;
-			}
-			var secret:String = __keys.get(soleKeyId);
-			if (secret == null) {
-				return false;
-			}
-			var mac:Bytes = new Hmac(HashMethod.SHA256).make(Bytes.ofString(secret), Bytes.ofString(input));
-
-            return JWT.secureCompare(signature, JWT.base64UrlEncodeBytes(mac));
+		var mac:Null<HmacSha256> = __macFor(keyId);
+		if (mac == null) {
+			return false;
 		}
+		var expected:Null<Bytes> = Base64Url.decodeCanonical(signature, 0, signature.length);
+		return expected != null && mac.verifyText(input, 0, input.length, expected);
+	}
 
-		return false;
+	public function verifyToken(token:String, inputEnd:Int, keyId:Null<String>):Bool {
+		var mac:Null<HmacSha256> = __macFor(keyId);
+		if (mac == null) {
+			return false;
+		}
+		var expected:Null<Bytes> = Base64Url.decodeCanonical(token, inputEnd + 1, token.length);
+		return expected != null && mac.verifyText(token, 0, inputEnd, expected);
 	}
 
 	public function hasKey(keyId:Null<String>):Bool {
 		return keyId != null ? __keys.exists(keyId) : __hasSoleSecret;
 	}
 
-	private inline function __singleKeyId():String {
-		var k:String = null;
-		var seen:Bool = false;
-		for (id in __keys.keys()) {
-			if (!seen) {
-				k = id;
-				seen = true;
-			} else{
-                k = null;
-                break;
-            }
-		}
-		return k;
+	private inline function __macFor(keyId:Null<String>):Null<HmacSha256> {
+		return keyId != null ? __macs.get(keyId) : __soleMac;
 	}
 }

@@ -94,6 +94,9 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	// handle a cancel is using cannot be freed under it. Nothing on the query
 	// path takes it.
 	@:noCompletion private var __handleLock:Mutex = new Mutex();
+	// The row shapes request() has met lately, so each result's rows are made
+	// with fixed slots without working the slots out again.
+	@:noCompletion private var __shapes:Array<crossbyte._internal.AnonBuilder> = [];
 	#end
 	@:noCompletion private var __inTransaction:Bool = false;
 	@:noCompletion private var __autocommit:Bool = true;
@@ -387,7 +390,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		and a `String` for a connection not open, so code catching `SQLError`
 		caught neither.
 	**/
-	public function request(sql:String):Dynamic {
+	public function request(sql:String):PostgresResultSet {
 		return __request(sql, true);
 	}
 
@@ -397,7 +400,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		`implicitBegin` false: none of them may begin a transaction for
 		`autocommit` off.
 	**/
-	@:noCompletion private function __request(sql:String, implicitBegin:Bool):Dynamic {
+	@:noCompletion private function __request(sql:String, implicitBegin:Bool):PostgresResultSet {
 		__requireConnected();
 
 		if (implicitBegin && !__autocommit && !__inTransaction) {
@@ -405,20 +408,12 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		}
 
 		#if cpp
-		var rawJson = NativePostgres.requestJson(__nativeHandle, sql);
-		__syncTransaction();
-		var parsed:Dynamic = Json.parse(rawJson == null || rawJson == "" ? "{\"rows\":[],\"affectedRows\":0,\"lastInsertRowID\":0}" : rawJson);
-		var errorMessage:Dynamic = Reflect.field(parsed, "error");
-		if (errorMessage != null) {
-			var detail:String = Std.string(errorMessage);
-			throw new SQLError("request", detail, detail);
-		}
-
-		var rows:Array<Dynamic> = __toRows(Reflect.field(parsed, "rows"));
-		__lastAffectedRows = __count(Reflect.field(parsed, "affectedRows"));
-		__lastInsertRowID = __count(Reflect.field(parsed, "lastInsertRowID"));
-		__lastCommand = Reflect.field(parsed, "command");
-		return new PostgresResultSet(rows);
+		var block:Bytes = __requestBlock(sql);
+		var decoded:PostgresRows = PostgresWire.decodeRows(block, __shapes);
+		__lastAffectedRows = decoded.affectedRows;
+		__lastInsertRowID = decoded.lastInsertRowID;
+		__lastCommand = decoded.command;
+		return new PostgresResultSet(decoded.rows, decoded.fields);
 		#else
 		var statement:Dynamic = null;
 		var rows:Array<Dynamic> = [];
@@ -478,6 +473,23 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		rather than silently falling back to substitution, which would defeat
 		the point.
 	**/
+	#if cpp
+	/**
+		`sql` run as `request()` runs it, by `PQexec`, its result as the bridge's
+		block (see `PostgresWire`), with the transaction state read after it.
+	**/
+	@:noCompletion private function __requestBlock(sql:String):Bytes {
+		var data:haxe.io.BytesData = NativePostgres.requestBlock(__nativeHandle, sql);
+		__syncTransaction();
+
+		if (data == null) {
+			throw new IOError("Postgres bridge returned no result block.");
+		}
+
+		return Bytes.ofData(data);
+	}
+	#end
+
 	public function requestParams(sql:String, ?params:Array<PostgresParameter>):PostgresRawResult {
 		__requireConnected();
 
@@ -1012,27 +1024,5 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		}
 	}
 	#end
-}
-
-private class PostgresResultSet {
-	public var length(default, null):Int = 0;
-
-	@:noCompletion private var __rows:Array<Dynamic>;
-	@:noCompletion private var __index:Int = 0;
-
-	public function new(rows:Array<Dynamic>) {
-		__rows = rows != null ? rows : [];
-		length = __rows.length;
-	}
-
-	public function hasNext():Bool {
-		return __index < __rows.length;
-	}
-
-	public function next():Dynamic {
-		var out = __rows[__index];
-		__index++;
-		return out;
-	}
 }
 #end

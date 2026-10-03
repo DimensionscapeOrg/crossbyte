@@ -12,6 +12,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.auth.jwt.EdDSAJwtTest());
 		runner.addCase(new crossbyte.auth.jwt.PkJwtTest());
 		runner.addCase(new crossbyte.auth.jwt.JWKSetTest());
+		runner.addCase(new crossbyte.auth.jwt.JWTTypesTest());
+		runner.addCase(new crossbyte.auth.jwt.Base64UrlTest());
 	}
 
 	public static function addCrypto(runner:Runner):Void {
@@ -22,6 +24,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.crypto.password.BCryptVectorsTest());
 		runner.addCase(new crossbyte.crypto.password.BCryptByteVectorsTest());
 		runner.addCase(new crossbyte.crypto.password.PasswordOffloadTest());
+		runner.addCase(new crossbyte.crypto.SecureRandomTest());
+		runner.addCase(new crossbyte.crypto.HmacSha256Test());
 	}
 
 	public static function addCore(runner:Runner):Void {
@@ -200,6 +204,14 @@ class TestSuites {
 		#end
 		// The fixed-slot objects rows and documents are built as.
 		runner.addCase(new crossbyte._internal.AnonBuilderTest());
+		// Rows read by column, Postgres's result block, statement templates.
+		runner.addCase(new crossbyte.db.SQLRowTest());
+		#if cpp
+		// SQLite statements prepared once, their values bound, rows read by column.
+		runner.addCase(new crossbyte.db.SQLiteBindingTest());
+		#end
+		// The MongoDB driver's public types, decided at compile time.
+		runner.addCase(new crossbyte.db.mongodb.MongoApiTest());
 	}
 
 	public static function addSystem(runner:Runner):Void {

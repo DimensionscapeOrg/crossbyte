@@ -280,6 +280,42 @@ entry below says how:
   ...)` compiles, `(e:IOErrorEvent) -> ...` no longer does; the same for a
   `ServerSocket`'s listeners. Read `UncaughtErrorEvent.origin` through a type
   test and a cast.
+- `parameters` of `SQLiteStatement`, `MySQLStatement` and
+  `PostgresStatement` is a `FieldStruct<SQLValue>`: a `Bool`, `Int`,
+  `Float`, `Int64`, `String`, `Bytes`, `Date` or null converts to it as it
+  is set. A value read back is a `SQLValue`; cast it to its type
+  (`var name:String = statement.parameters.name`). On SQLite, which took
+  `String`s only, a number now goes in as a number and `Bytes` as a blob.
+- `PostgresConnection.request()` answers a `PostgresResultSet`, a
+  `sys.db.ResultSet`, where it answered `Dynamic`; the
+  `PostgresStatement.PostgresResultSet` typedef of `Dynamic` is gone.
+  `PostgresRawResult` is a class in `crossbyte.db.postgres`, and
+  `SQLiteConnection`'s `WalCheckpointResult`, `FKViolation`,
+  `SQLSchemaResult`, `SQLTableSchema`, `SQLColumnSchema`, `SQLViewSchema`,
+  `SQLIndexSchema`, `SQLTriggerSchema` and `DBStats`, and
+  `SchemaMigrator.MigrationReport`, are classes: object literals with their
+  fields still make them, but a value built as another anonymous structure
+  no longer passes for one.
+- MongoDB options are classes: an options object built as an anonymous
+  structure in a variable, parsed from JSON, or shared between `find` and
+  `count`, has to be written as a literal at the call or copied into the
+  class (`var o:MongoFindOptions = {limit: 5}`). A `hint` is a name, a
+  `BsonDocument` or an object of keys, not a number; a `collation` is a
+  literal of `MongoCollation`'s fields with `locale`, or a
+  `MongoCollation`, not a `BsonDocument`; a write concern's `w` is an
+  `Int` or a `String`. Code that built a `MongoWriteError` or an upserted
+  entry as an anonymous object builds it as a literal of the class, and
+  cannot assign its fields; code that made a `MongoCursor` or an
+  `ExtendedJsonParser` itself uses `MongoConnection` and
+  `ExtendedJson.parse`.
+- A JWT claims literal whose times mix `Int` and `Float` converts one of them
+  (`exp: now + 3600.0`); a time that is not a number no longer compiles.
+- `JWTPayload.audience` is a `JWTAudience`: ask it with `contains(name)` or
+  read `toArray()`. `JWTPayload.seconds` is no longer public.
+- `Secret`, `JWTHeaderData`, `IgnoredKey`, `SigningKeyPair`,
+  `KeyExchangeKeyPair` and `SessionKeys` are classes: a value typed as an
+  anonymous structure no longer passes for one, and `Json.stringify` writes a
+  `JWTHeaderData`'s unset members as `null`.
 
 ### Added
 - `GlobalTimer.setTimeout` and `setInterval` take a `Void->Void` function by
@@ -288,6 +324,13 @@ entry below says how:
 - `TypedWorker<In, Out, Progress>`: a `Worker` whose run message, progress
   and result have types, with `onProgress` and `onComplete` handlers that
   receive them typed. `Worker` is `TypedWorker<Dynamic, Dynamic, Dynamic>`.
+- `SQLRow` and `executeEach` on `SQLiteStatement`, `MySQLStatement` and
+  `PostgresStatement`: a result read row by row and column by column
+  (`getInt`, `getFloat`, `getBool`, `getString`, `getBytes`, `getValue`,
+  `isNull`, `columnName`, `columnCount`), through one object moved on to
+  each row, with no object made for a row. On SQLite, natively, the same
+  SELECT of 20,000 rows of 8 columns reads at 320-480 ns a row this way;
+  on Postgres at 260-340 ns a row, from the block the bridge sends.
 - A load and churn harness, `ci/load.hxml` (`tests/load`), run by hand as
   the soak is: a reliable-UDP game server at 30 or 60 ticks a second with
   its clients in other processes; HTTP/1.1, HTTP/2 and WebSocket clients
@@ -1728,6 +1771,122 @@ entry below says how:
   reserve that did not fit took a chunk of exactly its size, so a codec
   reserving per value made a chunk and a copy per value: 10,000 reserved
   ints and 1,000 varints took 11,000 chunks.
+- `JWT.verify` and `generateToken` for HS256 cost about a quarter of what they
+  did. An HMAC key's two padded blocks are hashed once per secret, when the
+  signer is made, rather than for every token through `haxe.crypto.Hmac`; the
+  MAC is taken straight over the token's characters and compared, in constant
+  time, with the 32 bytes the signature decodes to, in its one canonical
+  spelling, so the same tokens are accepted as before. Base64url has a codec
+  of its own, which decodes a segment where it lies and answers a malformed
+  one without an exception; the token is no longer split into substrings and
+  joined back together; a header that a verified token carried is not decoded
+  again; and a signer's header is made once. Natively a typical token's
+  verification took 11-13 microseconds of CPU and takes about 3, its signing
+  9.5-12 and 3.5-4; on the jvm 6.4-10.5 and 2.3-2.5 microseconds, and 5.3-8.2
+  and 2.8-4.3; on Node 22-26 and 3-4, and 20-24 and 4.5-5. On Node,
+  `crypto.createHmac` was slower than this. The header `generateToken` writes
+  is `{"alg":..,"typ":"JWT","kid":..}`, in that order on every target.
+- RS256 and ES256 tokens, `SignatureKey` and `PublicKeySignature` hash the
+  message with a faster SHA-256: 1.7 microseconds for a token's signing input
+  where `haxe.crypto.Sha256` took 4.9.
+- Natively `SecureRandom.getSecureRandomBytes` hands out bytes from a 4 KB pool
+  each thread fills from the system, BCryptGenRandom on Windows,
+  `/dev/urandom` elsewhere, and zeroes each range it hands out; it made a
+  system call per draw, and on Linux and macOS took a lock and read through a
+  `FileInput` for each. Draws of 1 KB or more still go straight to the system,
+  and a forked child drops the pool it inherited. A 4-byte draw, a WebSocket
+  client's mask for each frame, took 88-120 nanoseconds of CPU on Windows and
+  takes 72-89, most of it now the `ByteArray` returned; on Linux 104-127 and
+  67-87.
+- The JWT types, for 1.0: `JWTPayloadData`'s `iat`, `exp` and `nbf` are
+  `Float`s rather than `Dynamic`, so a time that is not a number no longer
+  compiles; a literal may still give them as `Int`s, all of them, or as
+  `Float`s. `JWTPayload.audience` is a `JWTAudience`, one audience or several,
+  asked with `contains` and read with `toArray`. `JWTPayload.seconds` is
+  private. `Secret`, `JWTHeaderData`, `JWKSet.IgnoredKey`, `SigningKeyPair`,
+  `KeyExchangeKeyPair` and `SessionKeys` are `@:structInit` classes, which
+  object literals still build. `JWTPayload.ofData` says that a literal with
+  claims of an application's own converts through `ofClaims`.
+- Encoding BSON asks each value what it is once, on hxcpp its own type
+  code, rather than through a chain of up to six `Std.isOfType` tests
+  for a number and seventeen, with a class name compared as text, for a
+  nested document. A 12-field document encodes 17-28% faster natively, and
+  a document for an insert 14-29%; the bytes are the same on every target.
+- On hxcpp a document the MongoDB driver or `Bson.decode` reads is made
+  with fixed slots, as an object literal is, once its shape, its field
+  names, has been met before at its depth, rather than with every field
+  in a hash map allocated beside it. A 101-document reply decodes 4-15%
+  faster, reading its fields 13-22% faster, each document holds 25% less
+  memory, and a find of 101 documents from a local server took 35-44%
+  less CPU. Documents of shapes never seen twice, of more than 64 fields
+  or with names over 32 bytes are made as before, so a server sending
+  ever-new shapes costs no more than it did.
+- The MongoDB driver writes its own command fields, the command's name,
+  write concern, update and delete statements, cursor ids, straight into
+  the message, typed, rather than boxing them or building a
+  `BsonDocument` per operation to be encoded again; `findOne` no longer
+  copies its options; a reply's numbers are typed with one test each;
+  update and delete collect write errors once, and only when there are
+  any; the server's `hello` is read once. None of it shows through a
+  loopback round trip's noise.
+- MongoDB's option bags, `MongoFindOptions`, `MongoInsertOptions`,
+  `MongoUpdateOptions`, `MongoDeleteOptions`, `MongoAggregateOptions`,
+  `MongoCountOptions`: and `MongoIndex` are classes (`@:structInit`),
+  every field optional as before, so an object literal at the call still
+  compiles and each option is read directly rather than by name. `hint` is
+  a `MongoHint`: an index's name, a `BsonDocument` of its keys, or an
+  object of one field, checked when it is made; `collation` is a
+  `MongoCollation` with MongoDB's collation fields, `locale` required,
+  written in MongoDB's order; a write concern's `w` is a `MongoW`, a count
+  or a tag. `MongoWriteError` and the entries of `MongoWriteResult.upserted`
+  (`MongoUpserted`) are classes with final fields.
+- `ExtendedJsonParser` is private to `ExtendedJson`, whose `parse` is its
+  only door, and `MongoCursor`'s constructor is private to
+  `MongoConnection`, which makes every cursor.
+- Inflating, a compressed WebSocket message, a request body sent with a
+  `Content-Encoding`, a compressed response to the native HTTP client,
+  `ByteArray.uncompress`: goes through zlib natively (hxcpp's own), on
+  Node and on the jvm (the JDK's), where it was Haxe's `InflateImpl` on
+  every target, building its tables and a 64 KB window as objects for
+  each call. A 437-byte JSON message took 27-84 µs to inflate natively and
+  takes 2.1-2.5 µs; on Node 24 µs and 5-6 µs; on the jvm 6-21 µs and
+  1.4-6 µs. A 29.5 KB body, natively, 112-136 µs and 71-103 µs (the
+  audit's InflatePerf). The limit `uncompress` takes is still kept inside
+  the read, and a stream cut short is still an `IOError`.
+- Natively each thread keeps one deflate stream and resets it for the next
+  input, where `deflateInit` and `deflateEnd` ran for every compressed
+  response and permessage-deflate message: a 437-byte message compresses
+  in 3.4-3.7 µs instead of 5.8-6.9.
+- A `ConnectionPool.acquire` waiting for a connection is woken by the
+  `release`, `discard` or `close` that frees one, where it slept a
+  millisecond at a time and looked again: a waiter takes a released
+  connection in 11-30 µs (median; 18-77 µs at the 90th percentile), where
+  it took 0.5-1 ms (1-2 ms), and seven waiting threads no longer wake a
+  thousand times a second each. A wait still ends at its deadline.
+- SQLite statements are prepared once and kept, by the connection, for
+  their text (64 texts), with their `:name` parameters bound as their
+  types, where every run wrote its values into the statement as literals
+  and had SQLite prepare the whole text again. A statement with six values,
+  run again and again, took 4.0-7.3 µs a run and takes 0.8-2.2 µs (W1 and
+  W6 of the audit's SqlitePerf, natively, against 0.37-0.81 µs for SQLite
+  itself). A statement prepared before a schema change is prepared again
+  by SQLite, its new columns read. Rows of SQLite, and of Postgres's
+  `request()` and `executeParams`, are objects with fixed slots (see
+  `AnonBuilder`), which a field is read from faster: a page of SQLite rows
+  costs 34-53% less to read, and their fields 44-57% less.
+- Postgres's `request()`, and `PostgresStatement.execute()`, read the
+  result from the bridge's binary block, as `requestParams()` does, where
+  the bridge rendered every row as JSON and Haxe parsed it: 2.7-3.9 µs a
+  row of 8 columns became 0.32-0.42 µs, and a query of one row went from
+  4.4-6.2 µs to 1.6-2.2 µs (the audit's PostgresPerf, against a stand-in
+  libpq).
+- `itemClass` works out once a page which field each column goes to,
+  where every row asked for its field names and looked each up along the
+  class's: its cost over plain rows fell by about two thirds (SqlitePerf
+  R2i against R2).
+- A statement's text is split at its placeholders once and kept, where it
+  was copied a character at a time on every run, placeholder or none:
+  a SELECT with no placeholder costs 32-42 ns there instead of 240-410.
 - On eval HTTP/2 works, and the HTTP/1.1 client keeps connections for the
   next request to their origin, as on every other target with threads.
   Both were off there because eval raised a reset connection's error past

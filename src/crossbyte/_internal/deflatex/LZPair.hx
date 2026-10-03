@@ -1,80 +1,11 @@
 package crossbyte._internal.deflatex;
 
 import haxe.ds.Vector;
-import haxe.Exception;
-
-/**
- * Implements a Lempel-Ziv distance / length pair.
- */
-class LZPair {
-	/*
-	 * Ranges for Length/distance symbols
-	 * (see RFC 1951, section 3.2.5)
-	 */
-	public static final SYMBOLS:Symbols = new Symbols();
-
-	/** The distance value. */
-	public var dist:Int;
-
-	/** The distance symbol. */
-	public var distSymbol:Int;
-
-	/** The distance bits. */
-	public var distBits:Int;
-
-	/** The number of distance bits. */
-	public var distNumBits:Int;
-
-	/** The length value. */
-	public var len:Int;
-
-	/** The length symbol. */
-	public var lenSymbol:Int;
-
-	/** The length bits. */
-	public var lenBits:Int;
-
-	/** The number of length bits. */
-	public var lenNumBits:Int;
-
-	/**
-	 * Create a new distance / length pair.
-	 * @param dist The distance value
-	 * @param len The length value
-	 */
-	public function new(dist:Int, len:Int) {
-		this.dist = dist;
-		this.len = len;
-
-		distSymbol = -1;
-		lenSymbol = -1;
-		for (i in 0...29) {
-			if (len <= SYMBOLS.lenUpper[i]) {
-				lenSymbol = 257 + i;
-				lenBits = len - SYMBOLS.lenLower[i];
-				lenNumBits = SYMBOLS.lenNBits[i];
-				break;
-			}
-		}
-		for (i in 0...30) {
-			if (dist <= SYMBOLS.distUpper[i]) {
-				distSymbol = i;
-				distBits = dist - SYMBOLS.distLower[i];
-				distNumBits = SYMBOLS.distNBits[i];
-				break;
-			}
-		}
-
-		if (distSymbol == -1 || lenSymbol == -1) {
-			throw new Exception("Couldn't find distance/length symbol");
-		}
-	}
-}
 
 /**
  * The length and distance ranges of RFC 1951 section 3.2.5. Built from
  * nothing but constants, so a class can make its own during its static
- * initialisation without depending on LZPair's having run first.
+ * initialisation.
  */
 class Symbols {
 	public var lenLower:Vector<Int>;

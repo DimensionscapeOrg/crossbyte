@@ -7,6 +7,10 @@ import crossbyte.db.postgres._internal.PostgresWire;
 import crossbyte.db.sql.SQLResult;
 import crossbyte.db.sql._internal.ItemRows;
 import crossbyte.db.sql._internal.ParamBinder;
+import crossbyte.db.sql._internal.ParamBinder.ParamTemplate;
+import crossbyte.db.sql.SQLRow;
+import crossbyte.db.sql.SQLValue;
+import sys.db.ResultSet;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
@@ -14,8 +18,6 @@ import crossbyte.errors.SQLError;
 import crossbyte.FieldStruct;
 
 /** Statement helper for executing PostgreSQL queries and paging result rows. */
-typedef PostgresResultSet = Dynamic;
-
 @:access(crossbyte.db.postgres.PostgresConnection)
 class PostgresStatement extends EventDispatcher {
 	public var executing(get, null):Bool;
@@ -28,7 +30,10 @@ class PostgresStatement extends EventDispatcher {
 	**/
 	public var itemClass:Class<Dynamic>;
 	/**
-		Named values substituted into `text` by `execute()`.
+		Named values substituted into `text` by `execute()`, as `:name`, each
+		written as the PostgreSQL literal for its type (see `SQLValue`): `NULL`,
+		`TRUE`/`FALSE`, a number, a `bytea` hex literal for `Bytes`, an ISO
+		8601 UTC timestamp for a `Date`, and a `String` quoted.
 
 		Substituted, not bound: the value becomes part of the statement, so it
 		is only ever as safe as `quote()` makes it, and no quoting can carry a
@@ -36,13 +41,17 @@ class PostgresStatement extends EventDispatcher {
 		nothing reported. Use `executeParams()` for anything carrying data that
 		did not come from your own source code.
 	**/
-	public var parameters(default, null):FieldStruct<String>;
+	public var parameters(default, null):FieldStruct<SQLValue>;
 	public var sqlConnection(get, set):PostgresConnection;
 	public var text:String;
 
 	@:noCompletion private var __sqlConnection:PostgresConnection;
 	@:noCompletion private var __connection:Dynamic;
-	@:noCompletion private var __resultSet:Dynamic;
+	// Any object with request() serves, as tests script one; the rows it
+	// answers are read through ResultSet, not by name.
+	@:noCompletion private var __resultSet:ResultSet;
+	// `text` split at its placeholders, kept while it stays the same.
+	@:noCompletion private var __template:ParamTemplate;
 	@:noCompletion private var __prefetch:Int = 0;
 	@:noCompletion private var __executing:Bool = false;
 	// What the connection said of this statement as it ran: the rows it
@@ -173,22 +182,33 @@ class PostgresStatement extends EventDispatcher {
 	// Bound results arrive as fields and rows of bytes; the statement API hands
 	// back row objects, so they are rebuilt here rather than in the connection,
 	// which has no opinion about shape.
-	@:noCompletion private function __toResultSet(result:crossbyte.db.postgres._internal.PostgresWire.PostgresRawResult):Dynamic {
+	@:noCompletion private function __toResultSet(result:PostgresRawResult):PostgresResultSet {
 		var rows:Array<Dynamic> = [];
+		var fieldCount:Int = result.fields.length;
+		// Made with fixed slots, as request()'s rows are.
+		var shape:crossbyte._internal.AnonBuilder = crossbyte._internal.AnonBuilder.recent(__shapes, result.fields);
 
 		for (row in result.rows) {
-			var object:Dynamic = {};
+			var object:Dynamic = shape.begin();
 
-			for (i in 0...result.fields.length) {
+			for (i in 0...fieldCount) {
 				var value = row[i];
-				Reflect.setField(object, result.fields[i], value == null ? null : value.toString());
+
+				if (value == null) {
+					shape.set(object, i, null);
+				} else {
+					shape.setString(object, i, value.toString());
+				}
 			}
 
 			rows.push(object);
 		}
 
-		return new BoundResultSet(rows);
+		return new PostgresResultSet(rows, result.fields);
 	}
+
+	// The row shapes executeParams() has met lately.
+	@:noCompletion private var __shapes:Array<crossbyte._internal.AnonBuilder> = [];
 
 	public function next(prefetch:Int = -1):Void {
 		if (__resultSet == null) {
@@ -246,9 +266,13 @@ class PostgresStatement extends EventDispatcher {
 		string, `$$ ... $$`, is substituted.
 	**/
 	private function __applyParameters(query:String):String {
-		var params:FieldStruct<String> = parameters;
-		return ParamBinder.substituteWith(query, name -> FieldStruct.exists(params, name), name -> FieldStruct.get(params, name), __quoteValue,
-			false, true);
+		var template:ParamTemplate = __template;
+
+		if (template == null || !template.matches(query, false, true)) {
+			template = __template = ParamTemplate.parse(query, false, true);
+		}
+
+		return template.renderMap(cast parameters, __quoteValue);
 	}
 
 	private function __quoteValue(value:Dynamic):String {
@@ -260,11 +284,54 @@ class PostgresStatement extends EventDispatcher {
 			return value ? "TRUE" : "FALSE";
 		}
 
+		// Before Int: an Int64 held in a Dynamic passes for one on cpp and the
+		// jvm, and printed as a Float loses what is past 2^53.
+		if (__isInt64(value)) {
+			return haxe.Int64.toStr(value);
+		}
+
 		if (Std.isOfType(value, Int) || Std.isOfType(value, Float)) {
+			var number:Float = value;
+
+			if (Math.isNaN(number) || !Math.isFinite(number)) {
+				// PostgreSQL spells these as quoted words.
+				return Math.isNaN(number) ? "'NaN'" : (number > 0 ? "'Infinity'" : "'-Infinity'");
+			}
+
 			return Std.string(value);
 		}
 
+		if (Std.isOfType(value, haxe.io.Bytes)) {
+			// A bytea's hex input, exact for any byte, NUL included.
+			return "'" + PostgresWire.encodeByteaHex(value) + "'";
+		}
+
+		if (Std.isOfType(value, Date)) {
+			return "'" + __utc(value) + "'";
+		}
+
 		return __sqlConnection != null ? __sqlConnection.quote(Std.string(value)) : ("'" + Std.string(value).split("'").join("''") + "'");
+	}
+
+	/** Whether `value` is an `Int64`, and not an `Int` that converts to one. **/
+	@:noCompletion private static inline function __isInt64(value:Dynamic):Bool {
+		#if cpp
+		return value != null && (untyped __cpp__("{0}->__GetType() == vtInt64", value) : Bool);
+		#else
+		return !Std.isOfType(value, Int) && haxe.Int64.isInt64(value);
+		#end
+	}
+
+	/** `YYYY-MM-DDThh:mm:ss.mmmZ`: a `Date` as an ISO 8601 UTC timestamp. **/
+	@:noCompletion private static function __utc(date:Date):String {
+		var time:Float = date.getTime();
+		var millis:Int = Std.int(((time % 1000.0) + 1000.0) % 1000.0);
+		return date.getUTCFullYear() + "-" + __pad(date.getUTCMonth() + 1, 2) + "-" + __pad(date.getUTCDate(), 2) + "T" + __pad(date.getUTCHours(), 2)
+			+ ":" + __pad(date.getUTCMinutes(), 2) + ":" + __pad(date.getUTCSeconds(), 2) + "." + __pad(millis, 3) + "Z";
+	}
+
+	@:noCompletion private static inline function __pad(value:Int, width:Int):String {
+		return StringTools.lpad(Std.string(value), "0", width);
 	}
 
 	private function __queueResult():Void {
@@ -315,34 +382,60 @@ class PostgresStatement extends EventDispatcher {
 
 	/** Queues a page, its rows made instances of `itemClass` when it is set. **/
 	@:noCompletion private inline function __push(rows:Array<Dynamic>):Void {
-		__resultQueue.push(ItemRows.make(rows, itemClass));
-	}
-}
-
-/**
- * The shape the statement result machinery expects, built from a bound result.
- * Kept here rather than reaching into the connection's own private one, which
- * exists for a different call path and is not this file's to depend on.
- */
-private class BoundResultSet {
-	public var length(default, null):Int;
-
-	private var __rows:Array<Dynamic>;
-	private var __index:Int = 0;
-
-	public function new(rows:Array<Dynamic>) {
-		__rows = rows == null ? [] : rows;
-		length = __rows.length;
+		__resultQueue.push(ItemRows.make(rows, itemClass, true));
 	}
 
-	public function hasNext():Bool {
-		return __index < __rows.length;
-	}
+	/**
+		Runs `text`, with `parameters` substituted, and hands each row of its
+		result to `each`, as an `SQLRow` that reads the row by column from what
+		the server sent: one object for the whole result, moved on to each row
+		in turn, none made for a row, and no text made for a value until it is
+		asked for. A row is valid inside the call only. Answers the rows the
+		statement changed, 0 for one that returns rows; nothing is queued,
+		and no `SQLEvent.RESULT` is dispatched.
 
-	public function next():Dynamic {
-		var out = __rows[__index];
-		__index++;
-		return out;
+		Values are the text PostgreSQL sends: `getInt` and `getFloat` parse it,
+		`getBool` reads `t` as true, and `getBytes` decodes a `bytea`'s `\x`
+		hex.
+
+		Needs the native driver.
+
+		@throws SQLError When the server refuses the statement, as `execute()`
+		throws, after dispatching it as an `SQLErrorEvent`. What `each`
+		throws ends the run and is thrown as it is.
+	**/
+	public function executeEach(each:SQLRow->Void):Float {
+		if (__sqlConnection == null) {
+			throw "PostgresStatement: no connection set.";
+		}
+
+		#if cpp
+		var query:String = __applyParameters(text);
+		var block:haxe.io.Bytes = null;
+
+		try {
+			__sqlConnection.__requireConnected();
+
+			if (!__sqlConnection.__autocommit && !__sqlConnection.__inTransaction) {
+				__sqlConnection.__beginImplicitly();
+			}
+
+			block = __sqlConnection.__requestBlock(query);
+		} catch (e:Dynamic) {
+			__fail(e);
+		}
+
+		try {
+			// The server's refusal, raised before any row is read.
+			PostgresWire.check(block);
+		} catch (e:Dynamic) {
+			__fail(e);
+		}
+
+		return PostgresWire.eachRow(block, each);
+		#else
+		throw new crossbyte.errors.IllegalOperationError("PostgresStatement.executeEach needs the native driver.");
+		#end
 	}
 }
 #end
