@@ -56,6 +56,8 @@ class ServerSuite {
 		runner.addCase(new crossbyte.http.HTTPResponseStreamTest());
 		// What the server compresses, and what its answers say about it.
 		runner.addCase(new crossbyte.http.HTTPCompressionTest());
+		// The access log, written off the runtime.
+		runner.addCase(new crossbyte.http.HTTPAccessLogTest());
 		// What a listener takes and what it refuses, on every target that can
 		// listen, Node included, whose TLS server asks on a different event.
 		runner.addCase(new crossbyte.net.ServerSocketAdmissionTest());
