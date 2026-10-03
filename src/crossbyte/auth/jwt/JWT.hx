@@ -175,50 +175,80 @@ class JWT {
 			return JWTVerification.refused(MALFORMED);
 		}
 
-		// Bounded: the header is parsed before the signature is checked, so it
-		// is the part anyone can write. See MAX_NESTING.
-		var header:Null<Dynamic> = __decodeObject(token, 0, headerEnd, MAX_NESTING);
-		if (header == null) {
-			return JWTVerification.refused(MALFORMED);
-		}
-
 		// One read of the keys: updateKeys may swap them meanwhile, and a
 		// verification uses one set of keys throughout.
 		var signer:IJWTSigner = __keys.signer;
 
-		var alg:Dynamic = Reflect.field(header, "alg");
-		if (!Std.isOfType(alg, String) || !__isSupported(alg)) {
-			return JWTVerification.refused(UNSUPPORTED_ALGORITHM);
-		}
-		if ((alg : String) != (signer.algorithm : String)) {
-			return JWTVerification.refused(ALGORITHM_MISMATCH);
+		// A header seen before in a token that verified is not decoded again:
+		// what it says is kept, and every check that depends on this
+		// verifier's settings or keys is made again below.
+		var known:Null<JWTHeaderSeen> = __headerSeen(token, headerEnd);
+		var alg:String;
+		var typ:Null<String>;
+		var kid:Null<String>;
+
+		if (known != null) {
+			alg = known.alg;
+			typ = known.typ;
+			kid = known.kid;
+			if (alg != (signer.algorithm : String)) {
+				return JWTVerification.refused(ALGORITHM_MISMATCH);
+			}
+			if (!__typeAccepted(typ)) {
+				return JWTVerification.refused(TYPE_NOT_ACCEPTED);
+			}
+		} else {
+			// Bounded: the header is parsed before the signature is checked, so
+			// it is the part anyone can write. See MAX_NESTING.
+			var header:Null<Dynamic> = __decodeObject(token, 0, headerEnd, MAX_NESTING);
+			if (header == null) {
+				return JWTVerification.refused(MALFORMED);
+			}
+
+			var algValue:Dynamic = Reflect.field(header, "alg");
+			if (!Std.isOfType(algValue, String) || !__isSupported(algValue)) {
+				return JWTVerification.refused(UNSUPPORTED_ALGORITHM);
+			}
+			alg = algValue;
+			if (alg != (signer.algorithm : String)) {
+				return JWTVerification.refused(ALGORITHM_MISMATCH);
+			}
+
+			// RFC 7515 4.1.11: the extensions `crit` names are ones the token
+			// may not be accepted without, and none is implemented here. It was
+			// ignored, so a token with `"b64":false`, its payload unencoded,
+			// was read as though its payload were base64url.
+			if (Reflect.hasField(header, "crit")) {
+				return JWTVerification.refused(UNSUPPORTED_CRITICAL);
+			}
+
+			var typValue:Dynamic = Reflect.field(header, "typ");
+			if (typValue != null && !Std.isOfType(typValue, String)) {
+				return JWTVerification.refused(MALFORMED);
+			}
+			typ = typValue;
+			if (!__typeAccepted(typ)) {
+				return JWTVerification.refused(TYPE_NOT_ACCEPTED);
+			}
+
+			var kidValue:Dynamic = Reflect.field(header, "kid");
+			if (kidValue != null && !Std.isOfType(kidValue, String)) {
+				return JWTVerification.refused(MALFORMED);
+			}
+			kid = kidValue;
 		}
 
-		// RFC 7515 4.1.11: the extensions `crit` names are ones the token may
-		// not be accepted without, and none is implemented here. It was
-		// ignored, so a token with `"b64":false`, its payload unencoded,
-		// was read as though its payload were base64url.
-		if (Reflect.hasField(header, "crit")) {
-			return JWTVerification.refused(UNSUPPORTED_CRITICAL);
-		}
-
-		var typ:Dynamic = Reflect.field(header, "typ");
-		if (typ != null && !Std.isOfType(typ, String)) {
-			return JWTVerification.refused(MALFORMED);
-		}
-		if (!__typeAccepted(typ)) {
-			return JWTVerification.refused(TYPE_NOT_ACCEPTED);
-		}
-
-		var kid:Dynamic = Reflect.field(header, "kid");
-		if (kid != null && !Std.isOfType(kid, String)) {
-			return JWTVerification.refused(MALFORMED);
-		}
 		if (!signer.hasKey(kid)) {
 			return JWTVerification.refused(UNKNOWN_KEY);
 		}
 		if (!signer.verifyToken(token, inputEnd, kid)) {
 			return JWTVerification.refused(BAD_SIGNATURE);
+		}
+		if (known == null) {
+			// Only now: a header is kept only once a token carrying it has been
+			// shown to come from a key holder, so a stream of forged headers
+			// cannot fill the list or push the real ones out.
+			__rememberHeader(token.substring(0, headerEnd), alg, typ, kid);
 		}
 
 		// Unbounded: parsed only once the signature has shown the issuer wrote
@@ -297,6 +327,36 @@ class JWT {
 			case ES256(pubKeys, privKey, signKeyId):
 				new PkSigner(JWTAlgorithm.ES256, pubKeys, privKey, signKeyId);
 		};
+	}
+
+	/**
+		Headers of tokens that verified, by their encoded text. Replaced, never
+		changed in place, so a verification on another thread reads either the
+		old list or the new one; a header two threads add at once may be kept
+		once rather than twice, which costs only a decode. At most
+		`__HEADERS_KEPT`: an issuer signs under a key id or two at a time, and
+		a full list starts again from the newest.
+	**/
+	@:noCompletion private var __headers:Array<JWTHeaderSeen> = [];
+
+	@:noCompletion private static inline var __HEADERS_KEPT:Int = 8;
+
+	@:noCompletion private function __headerSeen(token:String, headerEnd:Int):Null<JWTHeaderSeen> {
+		var headers:Array<JWTHeaderSeen> = __headers;
+		for (i in 0...headers.length) {
+			var seen:JWTHeaderSeen = headers[i];
+			if (seen.segment.length == headerEnd && StringTools.startsWith(token, seen.segment)) {
+				return seen;
+			}
+		}
+		return null;
+	}
+
+	@:noCompletion private function __rememberHeader(segment:String, alg:String, typ:Null<String>, kid:Null<String>):Void {
+		var headers:Array<JWTHeaderSeen> = __headers;
+		var next:Array<JWTHeaderSeen> = headers.length < __HEADERS_KEPT ? headers.copy() : [];
+		next.push(new JWTHeaderSeen(segment, alg, typ, kid));
+		__headers = next;
 	}
 
 	@:noCompletion private static function __isSupported(alg:String):Bool {
@@ -536,6 +596,27 @@ class JWT {
 			diff |= ca ^ cb;
 		}
 		return (aLen == bLen) && (diff == 0);
+	}
+}
+
+/**
+	What a header that verified said, by its encoded text: `alg`, a string
+	`JWT` verifies; `typ` and `kid`, strings or null; and no `crit`.
+**/
+@:noCompletion
+private final class JWTHeaderSeen {
+	/** The header as the token carried it, encoded. **/
+	public final segment:String;
+
+	public final alg:String;
+	public final typ:Null<String>;
+	public final kid:Null<String>;
+
+	public function new(segment:String, alg:String, typ:Null<String>, kid:Null<String>) {
+		this.segment = segment;
+		this.alg = alg;
+		this.typ = typ;
+		this.kid = kid;
 	}
 }
 
