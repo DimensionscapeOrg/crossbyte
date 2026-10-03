@@ -201,6 +201,8 @@ class TestSuites {
 		// SQLite statements prepared once, their values bound, rows read by column.
 		runner.addCase(new crossbyte.db.SQLiteBindingTest());
 		#end
+		// The MongoDB driver's public types, decided at compile time.
+		runner.addCase(new crossbyte.db.mongodb.MongoApiTest());
 	}
 
 	public static function addSystem(runner:Runner):Void {

@@ -24,7 +24,7 @@ class MongoWriteResult {
 	public var deleted(default, null):Float = 0.0;
 
 	/** The `_id` of each document an update inserted, with the position of the update that did it. **/
-	public var upserted(default, null):Array<{index:Int, id:Dynamic}>;
+	public var upserted(default, null):Array<MongoUpserted>;
 
 	/**
 		The `_id` of each document an insert sent, in order, the ones it
@@ -45,4 +45,13 @@ class MongoWriteResult {
 		this.modified += modified;
 		this.deleted += deleted;
 	}
+}
+
+/** A document an update inserted: the update's position among those sent, and the new document's `_id`. **/
+@:structInit
+final class MongoUpserted {
+	public final index:Int;
+
+	/** The inserted document's `_id`, whatever its type. **/
+	public final id:Dynamic;
 }
