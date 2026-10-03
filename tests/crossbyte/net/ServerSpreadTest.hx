@@ -259,6 +259,41 @@ class ServerSpreadTest extends utest.Test {
 	}
 
 	/**
+		A connection handed to a runtime that exits before taking it up is
+		closed, not left open and unread. What was posted to a runtime before
+		it exits still runs as it exits, after its poll set is past use.
+	**/
+	@:timeout(30000)
+	public function testAConnectionReachingAnExitingRuntimeIsClosed():Void {
+		var acceptor:CrossByte = SpreadSupport.runtime();
+		var worker:CrossByte = SpreadSupport.runtime();
+		var arrived:Deque<Arrival> = new Deque();
+
+		var server:ServerSocket = SpreadSupport.on(acceptor, () -> {
+			var server = new ServerSocket();
+			server.runtimes = [worker];
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, e -> arrived.add(Arrival.of(e.socket)));
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			return server;
+		});
+
+		// The worker busy for a while, so the hand-off waits in its queue.
+		worker.post(() -> crossbyte.sys.System.sleep(0.6));
+		var client:sys.net.Socket = SpreadSupport.connect(server.localPort);
+		client.setTimeout(3.0);
+		Assert.isTrue(SpreadSupport.waitFor(() -> worker.postQueueDepth > 0, WAIT), "the connection was never handed to the runtime");
+		worker.exit();
+
+		Assert.isTrue(SpreadSupport.ended(client), "a connection handed to a runtime as it exited was left open");
+		Assert.isNull(SpreadSupport.pop(arrived, 0.2), "a connection was announced on a runtime that had exited");
+
+		SpreadSupport.closeAll([client]);
+		SpreadSupport.on(acceptor, () -> server.close());
+		SpreadSupport.stop([acceptor, worker]);
+	}
+
+	/**
 		`admit` is asked once, on the listener's runtime, before the hand-off;
 		a refusal costs no runtime anything.
 	**/
