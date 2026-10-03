@@ -82,6 +82,60 @@ class HTTPStaticPathTest extends utest.Test {
 		});
 	}
 
+	/**
+		A small static file is kept in memory once it has settled (two
+		seconds unmodified) and served from there while its size and
+		modification time stay as they were: rewritten on disk, it is served
+		anew, the same length or not.
+	**/
+	public function testAKeptFileChangedOnDiskIsServedAnew(async:Async):Void {
+		var server:HTTPServer = __serve(null);
+		var root:File = __roots[__roots.length - 1];
+		__write(root, "kept.txt", "first version");
+		var keptBytes:Int = -1;
+
+		var settled:Float = haxe.Timer.stamp() + 2.5;
+		HTTPTestSupport.pumpWallUntilAsync(() -> haxe.Timer.stamp() >= settled, 10, _ -> {
+			HTTPTestSupport.exchangeEach(server, ["GET /kept.txt HTTP/1.1\r\nHost: x\r\n\r\n"], function(first):Void {
+				keptBytes = @:privateAccess server.__config.__keptFiles.bytes;
+				// The same length, so only the modification time can tell.
+				__write(root, "kept.txt", "other version", true);
+
+				HTTPTestSupport.exchangeEach(server, ["GET /kept.txt HTTP/1.1\r\nHost: x\r\n\r\n"], function(second):Void {
+					__write(root, "kept.txt", "a longer third version", true);
+
+					HTTPTestSupport.exchangeEach(server, ["GET /kept.txt HTTP/1.1\r\nHost: x\r\n\r\n"], function(third):Void {
+						try server.close() catch (_:Dynamic) {}
+
+						Assert.equals("first version", first[0].body);
+						Assert.equals(13, keptBytes, "a settled file was not kept");
+						Assert.equals("other version", second[0].body, "a kept file was served after it changed on disk");
+						Assert.equals("a longer third version", third[0].body);
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
+	/** `fileCacheSize` 0 keeps nothing. **/
+	public function testFileCacheSizeZeroKeepsNothing(async:Async):Void {
+		var server:HTTPServer = __serve(config -> config.fileCacheSize = 0);
+		var root:File = __roots[__roots.length - 1];
+		__write(root, "kept.txt", "first version");
+
+		var settled:Float = haxe.Timer.stamp() + 2.5;
+		HTTPTestSupport.pumpWallUntilAsync(() -> haxe.Timer.stamp() >= settled, 10, _ -> {
+			HTTPTestSupport.exchangeEach(server, ["GET /kept.txt HTTP/1.1\r\nHost: x\r\n\r\n"], function(first):Void {
+				try server.close() catch (_:Dynamic) {}
+
+				Assert.equals("first version", first[0].body);
+				Assert.equals(0, @:privateAccess server.__config.__keptFiles.bytes, "a file was kept with fileCacheSize 0");
+				async.done();
+			});
+		});
+	}
+
 	/** RFC 8615's directory is for files a site means to publish. **/
 	public function testWellKnownIsServed(async:Async):Void {
 		var server:HTTPServer = __serve(null);
@@ -337,9 +391,9 @@ class HTTPStaticPathTest extends utest.Test {
 		return new HTTPServer(config);
 	}
 
-	private static function __write(root:File, relative:String, text:String):Void {
+	private static function __write(root:File, relative:String, text:String, overwrite:Bool = false):Void {
 		var data:ByteArray = new ByteArray();
 		data.writeUTFBytes(text);
-		root.resolvePath(relative).save(data);
+		root.resolvePath(relative).save(data, overwrite);
 	}
 }
