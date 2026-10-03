@@ -33,6 +33,16 @@ final class WakeSocket implements IPollableSocket {
 	@:noCompletion private var __onWake:Void->Void;
 	@:noCompletion private var __drain:Bytes;
 	@:noCompletion private var __closed:Bool = false;
+	#if target.threaded
+	// Held while the writing end is written to or closed. Another thread
+	// wakes the runtime, a post, an exit, a parent exiting its children,
+	// while the runtime's own thread may be closing the pair as it exits, and
+	// the write then went to a descriptor already closed: on the interpreter
+	// an error no catch sees, which ended the process, and natively a
+	// descriptor the system may have handed to another socket by then.
+	// Taken once per wake, when a runtime's queue goes from empty to not.
+	@:noCompletion private final __lock:sys.thread.Mutex = new sys.thread.Mutex();
+	#end
 
 	public var registryClosed(get, never):Bool;
 
@@ -92,13 +102,17 @@ final class WakeSocket implements IPollableSocket {
 		since one byte waiting is already a wake.
 	**/
 	public function wake():Void {
-		if (__closed) {
-			return;
+		#if target.threaded
+		__lock.acquire();
+		#end
+		if (!__closed) {
+			try {
+				__writer.output.writeByte(1);
+			} catch (_:Dynamic) {}
 		}
-
-		try {
-			__writer.output.writeByte(1);
-		} catch (_:Dynamic) {}
+		#if target.threaded
+		__lock.release();
+		#end
 	}
 
 	public function registryOnReadable():Void {
@@ -120,14 +134,24 @@ final class WakeSocket implements IPollableSocket {
 	}
 
 	public function close():Void {
-		if (__closed) {
-			return;
-		}
+		// The writing end under the lock, so no wake is part way through a
+		// write to it; the reading end is the runtime's own.
+		#if target.threaded
+		__lock.acquire();
+		#end
+		var closing:Bool = !__closed;
 		__closed = true;
-
-		for (socket in [reader, __writer]) {
+		if (closing) {
 			try {
-				socket.close();
+				__writer.close();
+			} catch (_:Dynamic) {}
+		}
+		#if target.threaded
+		__lock.release();
+		#end
+		if (closing) {
+			try {
+				reader.close();
 			} catch (_:Dynamic) {}
 		}
 	}
