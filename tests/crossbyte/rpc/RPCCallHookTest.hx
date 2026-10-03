@@ -1,5 +1,6 @@
 package crossbyte.rpc;
 
+import crossbyte.test.Require;
 import utest.Assert;
 
 /**
@@ -88,6 +89,38 @@ class RPCCallHookTest extends utest.Test {
 		Assert.same([true, true], answeredFirst, "afterCall ran before the answer was sent");
 		Assert.equals("item-1", answered.result);
 		Assert.equals(RPCError.INTERNAL_MESSAGE, failed.error);
+	}
+
+	/**
+		What a handler threw reaches `afterCall` and `onHandlerError` as a
+		`haxe.Exception`: the very one, when it was one, an `RPCError`,
+		and otherwise wrapped, the thrown value in its `value`.
+	**/
+	public function testAFailureArrivesAsAnException():Void {
+		var link = LinkedConnection.pair();
+		var commands = new HookCommands();
+		var handler = new WatchedHandler();
+		var clientSession = new RPCSession<HookCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, handler);
+		var reported:Array<haxe.Exception> = [];
+		serverSession.onHandlerError = (op, method, error) -> reported.push(error);
+
+		// A plain value thrown: wrapped, the value kept.
+		commands.lookup(0);
+		var thrown = Require.notNull(handler.lastError, "afterCall was not told of the failure");
+		Assert.equals("no item 0", thrown.message);
+		Assert.isTrue(Std.isOfType(thrown, haxe.ValueException), "a thrown value was not wrapped in a ValueException");
+		Assert.equals("no item 0", ((cast thrown : haxe.ValueException).value : String));
+		Assert.equals(1, reported.length);
+		Assert.isTrue(reported.length == 1 && reported[0] == thrown, "the report and afterCall were told of different errors");
+
+		// An RPCError: itself, not wrapped, and its caller told its message.
+		handler.lastError = null;
+		var refused = commands.lookup(-1);
+		Assert.equals("negative", refused.error);
+		var error = Require.notNull(handler.lastError);
+		Assert.isTrue(Std.isOfType(error, RPCError), "an RPCError was wrapped");
+		Assert.equals(1, reported.length, "an RPCError its caller was told of was reported too");
 	}
 
 	public function testAHookThatThrowsCountsAsTheCallFailing():Void {
@@ -276,15 +309,18 @@ private class WatchedHandler extends RPCHandler {
 		return method == refuse ? new RPCError('$method is not allowed') : null;
 	}
 
-	override public function afterCall(method:String, requestId:Int, error:Dynamic):Void {
+	override public function afterCall(method:String, requestId:Int, error:Null<haxe.Exception>):Void {
 		if (throwAfter) {
 			throw "afterCall broke";
 		}
 		if (probe != null) {
 			probe();
 		}
+		lastError = error;
 		after.push(method + (error == null ? " ok" : " failed: " + Std.string(error)));
 	}
+
+	public var lastError:Null<haxe.Exception> = null;
 
 	@:rpc public function move(id:Int, x:Float, y:Float):Void {
 		ran.push('moved $id');
@@ -293,6 +329,9 @@ private class WatchedHandler extends RPCHandler {
 	@:rpc public function lookup(id:Int):String {
 		if (id == 0) {
 			throw "no item 0";
+		}
+		if (id < 0) {
+			throw new RPCError("negative");
 		}
 		ran.push('looked up $id');
 		return 'item-$id';
@@ -310,7 +349,7 @@ private class GateHandler extends RPCHandler {
 		return signedIn ? null : new RPCError("sign in first");
 	}
 
-	override public function afterCall(method:String, requestId:Int, error:Dynamic):Void {
+	override public function afterCall(method:String, requestId:Int, error:Null<haxe.Exception>):Void {
 		finished.push(method);
 	}
 }

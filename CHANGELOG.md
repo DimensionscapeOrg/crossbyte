@@ -238,6 +238,33 @@ entry below says how:
   meant three and twenty seconds: pass the time wanted, or leave the
   argument out for the default. `StunClient.classifyFiltering` fails for 0,
   and a dial throws for a negative timeout.
+- A reliable session holds an acknowledgement for up to 25 ms (`ackDelay`)
+  for something it sends to carry it. Set `ackDelay` to 0, on the socket or
+  on `ReliableDatagramServerSocket`, for one every pass as before; a peer on
+  1.0.0-rc.1 is acknowledged every pass either way.
+- `ReliableDatagramSocket.maxOutputBufferSize` is 256 KB by default: a
+  session that would hold more waiting for its window is ended with an
+  `ioError`. One `send` larger than the window waits whole, so an
+  application that sends more than that at once, one large reliable
+  message, a file, raises it on its sessions, or sets it to 0 for no
+  limit.
+- `Membership.heard` and `sweep` take a `Float` `now`, -1 unless given,
+  where they took `Null<Float>`: leave the argument out, or pass -1, where
+  code passed null to ask the clock.
+- `NodeChannel.poll()` takes no argument; delete the one passed, which was
+  never read.
+- `RPCHandler.afterCall(method, requestId, error)` takes a
+  `Null<haxe.Exception>`, and `onHandlerError` and
+  `RPCSession.afterRuntimeCall` a `haxe.Exception`, where they took
+  `Dynamic`: change the parameter's type in an override or handler. What was
+  thrown is the exception, or, for a value that was not one, the `value` of
+  the `haxe.ValueException` given.
+- `DataChannel.maxRetransmits` and `maxPacketLifeTime` are -1, not null, for
+  no limit, and `PeerConnection.createDataChannel` takes -1, or nothing,
+  where it took null: compare with -1, and pass -1 where code passed null
+  for the limit it did not set.
+- `DataChannelSet.transfer` is gone from its public surface: send on a
+  `DataChannel`.
 
 ### Added
 - A load and churn harness, `ci/load.hxml` (`tests/load`), run by hand as
@@ -1447,6 +1474,138 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A `PeerConnection`'s data channels send what one pass of the runtime's
+  loop sent when the pass ends, sharing SCTP packets, DTLS records and
+  datagrams, where each message was a packet, a record and a `sendto` of its
+  own; `close()` sends them first. Ten 32-byte messages a tick between two
+  peers over loopback, the whole stack: 14-17 µs of CPU a message before,
+  3.1-3.5 µs now; one a tick costs what it did, 28-30 µs.
+- An SCTP packet's checksum is checked over the bytes as they arrived, four
+  zeros in the field's place, where every packet received was copied whole
+  to zero the field in the copy, and packets and DATA chunks are made at
+  their size rather than grown. Encoding a 1 KB DATA packet took 640-676 ns
+  before and 511-535 ns now, decoding and checking one 717-810 ns before and
+  594-634 ns now.
+- A native DTLS session is looked up without a lock when the thread looked
+  it up last, which every call for one record does, half a dozen, each of
+  which took a process-wide lock and searched a map. Under what the whole
+  stack resolves, 0.4 µs a message.
+- `DataChannel.maxRetransmits` and `maxPacketLifeTime` are `Int`s, -1 for no
+  limit, where they were `Null<Int>`s and null;
+  `PeerConnection.createDataChannel` and `DataChannelSet.create` take -1,
+  the default, for no limit. `DataChannelSet.transfer` is no longer public:
+  it is the connection's own, and a message sent on it went behind the
+  channels' backs. `PeerDescription` says why it stays an anonymous
+  structure: it is wire data, written and read as JSON.
+- `RPCHandler.afterCall` and `onHandlerError`, and
+  `RPCSession.afterRuntimeCall`, are given the error as a `haxe.Exception`,
+  where it was `Dynamic`. The generated code wraps what a handler threw
+  once, as `haxe.Exception.caught` does: an `RPCError` arrives as itself,
+  and anything thrown that was not an exception as a `haxe.ValueException`
+  holding it in `value`.
+- A compiled RPC call or answer is framed in a buffer made at its size, from
+  the arguments' types, where the frame began at 9 bytes and grew by a chunk
+  for every argument: in memory, a one-way call from stub to handler took
+  206-280 ns before and 72-85 ns now, a request and its answer 421-501 ns
+  before and 230-259 ns now.
+- A `NodeChannel` writes what one pass of the runtime's loop sent in one
+  write when the pass ends, each message's length written ahead of it, where
+  every message was framed into a buffer of its own and flushed with a
+  system call. What a pass wrote when the link fails waits for the link, as
+  a message that failed to go always did. Twenty 64-byte messages a round
+  over loopback: 7.0-7.3 µs of CPU a message before, 0.5 µs now.
+  `NodeChannel.poll()` takes no argument: the time it took was not read.
+- A TCP `NetConnection` writes what one pass of the runtime's loop sent on
+  it in one write, when the pass ends, where each `send` was a system call
+  of its own: RPC over TCP, twenty calls a tick, 7.0 µs of CPU a call
+  before, 0.5 µs now. From another thread, or with no runtime running, a
+  send still goes at once, and a socket whose output limit throws is still
+  flushed by `send`, so the throw reaches it.
+- A `LocalConnection` writes what one pass of the runtime's loop sent in one
+  write when the pass ends, framed straight into one buffer, where each
+  `send` made a buffer of its own, grew it twice and asked the system
+  whether the channel was open before writing it; what the pipe does not
+  take is tried again each frame, as well as by the reader thread. That
+  thread hands what it reads to the runtime without asking which runtime it
+  is on, an exception thrown and caught for every frame, and reads again
+  at once after a pass that found something, where it slept first, a
+  millisecond at least on Windows. CPU per message, two connections in one
+  process: 64-byte messages 7.5-8.4 µs before, 3.0-3.6 µs now; 4 KB messages
+  178-197 µs before, 29-34 µs now, 20 MB/s before and 120-140 MB/s now.
+- A `SharedChannel` message is framed into one buffer of its size, where it
+  went through a `BytesBuffer`, natively a byte at a time, and two more
+  copies, and one received is taken as the connection made it rather than
+  copied first.
+- `SharedObject`'s constructor takes its `defaultData` as an `Object`, the
+  type of `data`, where it took `Dynamic`.
+- A `ServerWebSocket` keeps its open sessions where it can take one out at
+  once, each session knowing its place, where every connection searched the
+  list of sessions for it and every close searched it again: a session's
+  arrival and departure took 4.1-4.9 µs at 1,000 sessions and 40-43 µs at
+  10,000, and take 0.12-0.31 µs at either. On the jvm a TLS session's socket
+  is cast once, not on every pump. The framing layer's handlers and events
+  are typed rather than `Dynamic`.
+- `Membership.sweep()` looks at no node until the earliest heard from is
+  `timeout` old, with heartbeats arriving, once a timeout rather than
+  every tick, and walks a list when it does, where it walked the map's
+  keys, natively copied first, and looked each up again. A node that an
+  `onLeave` forgets during a sweep is reported once; it was reported, and
+  counted off `length`, twice. A sweep a tick at 60 Hz over 1,024 nodes,
+  each heard from once a second: 52-65 µs a tick before, 0.29-0.52 µs now,
+  the heartbeats included.
+- `Rendezvous` hashes an ASCII key from its characters, by a table, where it
+  encoded the key's bytes first and took the CRC a bit at a time, and
+  `owners()` keeps the best few by insertion, where it made an anonymous
+  structure for every node and sorted them all with a closure. The answers
+  are the same. Over 16 nodes, `owner` took 78-156 ns a key before and 65-77
+  ns now, and `owners(key, 3)` 2.3-2.7 µs before and 0.20-0.24 µs now.
+- `Membership.heard` and `sweep` take `now:Float = -1`, a negative time
+  asking the membership's clock, where a `?now:Float`, natively an object
+  made for every heartbeat that passed one, did for null.
+- `ReliableDatagramSocket.maxOutputBufferSize` is 256 KB unless changed,
+  where it was 0, no limit. A session that would hold more than that waiting
+  for its congestion window is ended at once, with an `ioError` saying why,
+  where it held everything sent to it, a server overloaded with a thousand
+  such sessions held 1.2 GB. A game server at 1,000 clients and 60 Hz held
+  nothing waiting in any session while it kept its tick, and 18 KB at most
+  in one when it was starved of processor time.
+- A reliable session holds the acknowledgement of what arrives in order for
+  up to 25 ms, `ReliableDatagramSocket.ackDelay`, as QUIC holds one for its
+  `max_ack_delay`, for something of its own to carry it. A game server's
+  session, taking an input a tick and sending a state a tick, sent half its
+  datagrams for acknowledgements alone. One goes at once for a frame out of
+  order, a duplicate or one that fills a gap, for the second frame not yet
+  acknowledged, and for a peer on 1.0.0-rc.1, which cannot be told; one that
+  goes alone says how long it was held, and the peer measures its round trip
+  without the hold and waits that much longer before it sends anything
+  again. A HANDSHAKE now carries the value, and a change to it is sent at
+  once. `ReliableDatagramServerSocket.ackDelay` sets it for the sessions a
+  server accepts. Measured on a server of 500 sessions at 30 Hz, each
+  sending it a 16-byte input a tick and sent a 64-byte reliable and a
+  128-byte sequenced message, over 10 s: it read 150,600 datagrams where it
+  read 300,800, sent 151,900 where it sent 301,300, and spent 3.2-4.2 s of
+  CPU where it spent 4.4-4.9 s, its kernel time 2.3-2.5 s where it was
+  3.2-3.4 s. At 60 Hz it spent 4.0-4.3 s where it spent 6.0-6.7 s; at 1,000
+  sessions, where it fell behind before, taking 83-91% of the inputs, it
+  keeps up, on 6.1-7.3 s where it spent 8.2-9.3 s. In the load harness's
+  game scenario, whose traffic is mostly sequenced and so not acknowledged,
+  a tick at 1,000 clients and 60 Hz costs 12.2-12.5 ms where it cost
+  12.5-13.0 ms.
+- A reliable datagram reaches its session without being copied or wrapped on
+  the way. The socket hands it over directly rather than as an event when
+  nothing else listens; the frame is decoded into one the session keeps, and
+  a whole datagram's payload is used where it lies; an empty ACK makes no
+  payload; the acknowledgement is an `Int` with a flag rather than a
+  `Null<Int>`, an object natively; a server finds a session by address
+  without building a string key; a source address is not formatted again for
+  every datagram; and the retransmission check is not a closure and a walk
+  of a map's keys. Measured over 200 sessions: 416-454 bytes allocated a
+  datagram before, 249-252 now, with `ackDelay` 0 so that both send as many;
+  with it, 333-373 KB a round of 200 sessions before, 191 KB now.
+- A `ReliableDatagramSocket` in `STREAM` mode appends what arrives to what
+  is unread, where each frame copied all the unread input into a new buffer,
+  so a reader a megabyte behind paid for the megabyte with every frame: CPU
+  per megabyte received, 766-875 ms before, 8-12 ms now.
 - On eval HTTP/2 works, and the HTTP/1.1 client keeps connections for the
   next request to their origin, as on every other target with threads.
   Both were off there because eval raised a reset connection's error past

@@ -26,8 +26,25 @@ final class ReliableDatagramFrame {
 	public var resend(default, null):Bool;
 	public var sequence(default, null):Seq32;
 	public var type(default, null):ReliableDatagramFrameType;
+
+	/**
+		What the frame carries. Null on an ACK or a FIN that carries nothing,
+		when it was decoded by `decodeInto`.
+	**/
 	public var payload(default, null):ByteArray;
-	public var ack(default, null):Null<Seq32>;
+
+	/**
+		Whether the frame carries a cumulative acknowledgement, and its value.
+		Two fields rather than a `Null<Seq32>`, which on hxcpp is an object
+		made for every frame: sequence numbers start anywhere in 32 bits, so
+		none of them is a small integer the runtime keeps made.
+	**/
+	public var hasAck(default, null):Bool;
+
+	public var ackValue(default, null):Seq32;
+
+	/** The acknowledgement, or null for none. For tests; not for a hot path. **/
+	public var ack(get, never):Null<Seq32>;
 
 	/**
 		Whether more of this message follows in the next PACKET. Set on every
@@ -48,16 +65,35 @@ final class ReliableDatagramFrame {
 	**/
 	public var graceful(default, null):Bool;
 
+	/**
+		On an ACK: how long, in seconds, its sender held it before sending it,
+		from the arrival of the newest frame it acknowledges; -1 when it does
+		not say. See `ReliableDatagramProtocol.ACK_DELAY_MASK`.
+	**/
+	public var ackDelay(default, null):Float;
+
+	/** For a frame to keep; the hot path decodes into one with `decodeInto`. **/
 	public function new(type:ReliableDatagramFrameType, sequence:Seq32, payload:ByteArray, resend:Bool, ?ack:Seq32, more:Bool = false,
 			bundles:Bool = false, graceful:Bool = false) {
+		__set(type, sequence, payload, resend, ack == null ? 0 : (ack : Int), ack != null, more, bundles, graceful, -1);
+	}
+
+	@:noCompletion public inline function __set(type:ReliableDatagramFrameType, sequence:Seq32, payload:ByteArray, resend:Bool, ackValue:Seq32,
+			hasAck:Bool, more:Bool, bundles:Bool, graceful:Bool, ackDelay:Float):Void {
 		this.type = type;
 		this.sequence = sequence;
 		this.payload = payload;
 		this.resend = resend;
-		this.ack = ack;
+		this.ackValue = ackValue;
+		this.hasAck = hasAck;
 		this.more = more;
 		this.bundles = bundles;
 		this.graceful = graceful;
+		this.ackDelay = ackDelay;
+	}
+
+	private function get_ack():Null<Seq32> {
+		return hasAck ? ackValue : null;
 	}
 }
 
@@ -91,6 +127,16 @@ final class ReliableDatagramFrame {
 	last set byte. An ACK without one, from an older peer or one holding
 	nothing past a gap, says only what the cumulative value says; an older
 	peer given one ignores it.
+
+	An ACK with `ACK_DELAY_MASK`, the bit a FIN calls graceful, which no
+	ACK set before, starts its payload with two bytes saying how long its
+	sender held it, in `ACK_DELAY_UNIT`s, and the map follows. Its receiver
+	takes that off the round trip it measures, as QUIC's ACK Delay is taken
+	off. Only a peer that said it reads them is sent one: a HANDSHAKE from
+	this build carries six bytes, the peer's connection id echoed (0 for
+	none) and then the most its sender holds an acknowledgement, in the same
+	units, and a peer whose HANDSHAKE carries fewer is from before 1.0, and
+	acknowledged every pass, as it always was.
 
 	A bundle is several frames in one datagram: `BUNDLE_MAGIC`, then each
 	frame preceded by its length in two bytes. A session sends one only to a
@@ -132,6 +178,27 @@ final class ReliableDatagramProtocol {
 
 	/** Channels a SEQUENCED frame can name, and the counter's range within one. **/
 	public static inline var SEQUENCED_COUNTER_MASK:Int = 0xFFFFFF;
+
+	/** On an ACK: a delay leads the payload. The bit is `GRACEFUL_MASK`, which means that only on a FIN. **/
+	public static inline var ACK_DELAY_MASK:Int = 0x08;
+
+	/** What one unit of an ACK's delay, or of a HANDSHAKE's announced one, stands for: ten microseconds. **/
+	public static inline var ACK_DELAY_UNIT:Float = 0.00001;
+
+	/** The longest delay two bytes of units say: 0.65535 seconds. **/
+	public static inline var MAX_ACK_DELAY:Float = 0.65535;
+
+	/** A HANDSHAKE's payload from this build: an echoed id, four bytes, and an announced delay, two. **/
+	public static inline var HANDSHAKE_PAYLOAD_SIZE:Int = 6;
+
+	/** Seconds as whole `ACK_DELAY_UNIT`s, held to two bytes. **/
+	public static inline function delayUnits(seconds:Float):Int {
+		if (!(seconds > 0)) {
+			return 0;
+		}
+		var units:Int = Std.int(seconds / ACK_DELAY_UNIT + 0.5);
+		return units > 0xFFFF ? 0xFFFF : units;
+	}
 
 	@:noCompletion private static inline var ACK_PRESENT_MASK:Int = 0x80;
 	@:noCompletion private static inline var RESEND_MASK:Int = 0x40;
@@ -180,6 +247,27 @@ final class ReliableDatagramProtocol {
 		build knows.
 	**/
 	public static function decodeRange(packet:ByteArray, from:Int, length:Int):ReliableDatagramFrame {
+		return decodeInto(packet, from, length, false, new ReliableDatagramFrame(ACK, 0, null, false), true);
+	}
+
+	/**
+		`decodeRange` into a frame the caller keeps for the purpose, which
+		is what a session does with each arrival: nothing holds a decoded
+		frame past the call that takes it, so one frame serves them all, where
+		each had one made for it.
+
+		@param owned Whether `packet` is this frame's alone, a datagram made
+		       for it that nobody else reads: then a frame that is the whole
+		       datagram carries its payload in `packet` itself, moved down to
+		       its start, rather than in a copy.
+		@param keepEmpty Whether an ACK or a FIN with nothing in it is given
+		       an empty payload, as `decodeRange` gives one; a session passes
+		       false, and reads null.
+		@return `into`, or null for anything that is not a frame this build
+		        knows, `into` then unchanged.
+	**/
+	public static function decodeInto(packet:ByteArray, from:Int, length:Int, owned:Bool, into:ReliableDatagramFrame,
+			keepEmpty:Bool = false):ReliableDatagramFrame {
 		// Read off the storage rather than through the stream API: the header
 		// is a handful of fixed offsets, and a datagram is decoded for every
 		// packet a session receives.
@@ -208,18 +296,44 @@ final class ReliableDatagramProtocol {
 		}
 
 		var sequence:Seq32 = __getInt(bytes, from + 3);
-		var ack:Null<Seq32> = ackPresent ? __getInt(bytes, from + HEADER_SIZE) : null;
+		var ack:Int = ackPresent ? __getInt(bytes, from + HEADER_SIZE) : 0;
+
+		// An ACK that says how long it was held: the two bytes lead the payload.
+		var delay:Float = -1;
+		if (typeValue == (ACK : Int) && (meta & ACK_DELAY_MASK) != 0) {
+			if (length < start + 2) {
+				return null;
+			}
+			delay = ((bytes.get(from + start) << 8) | bytes.get(from + start + 1)) * ACK_DELAY_UNIT;
+			start += 2;
+		}
 
 		var payloadLength:Int = length - start;
-		var payload:ByteArray = new ByteArray();
-		if (payloadLength > 0) {
-			payload.length = payloadLength;
-			(payload : Bytes).blit(0, bytes, from + start, payloadLength);
+		var payload:ByteArray = null;
+		if (payloadLength == 0 && !keepEmpty && (typeValue == (ACK : Int) || typeValue == (FIN : Int))) {
+			// Nothing reads one.
+		} else if (owned && from == 0 && length == packet.length) {
+			// Moved down within its own buffer: overlapping, and moving down,
+			// which every target copies safely.
+			if (payloadLength > 0) {
+				bytes.blit(0, bytes, start, payloadLength);
+			}
+			packet.length = payloadLength;
+			payload = packet;
+		} else {
+			payload = new ByteArray();
+			if (payloadLength > 0) {
+				payload.length = payloadLength;
+				(payload : Bytes).blit(0, bytes, from + start, payloadLength);
+			}
 		}
-		payload.position = 0;
+		if (payload != null) {
+			payload.position = 0;
+		}
 
-		return new ReliableDatagramFrame(cast typeValue, sequence, payload, (meta & RESEND_MASK) != 0, ack, (meta & MORE_MASK) != 0,
-			(meta & BUNDLES_MASK) != 0, (meta & GRACEFUL_MASK) != 0);
+		into.__set(cast typeValue, sequence, payload, (meta & RESEND_MASK) != 0, ack, ackPresent, (meta & MORE_MASK) != 0,
+			(meta & BUNDLES_MASK) != 0, typeValue == (FIN : Int) && (meta & GRACEFUL_MASK) != 0, delay);
+		return into;
 	}
 
 	/** Whether a datagram is a bundle rather than a frame. **/
@@ -257,7 +371,8 @@ final class ReliableDatagramProtocol {
 		var payloadLength:Int = payload != null ? payload.length : 0;
 		var frame:ByteArray = new ByteArray();
 		frame.length = HEADER_SIZE + ACK_FIELD_SIZE + payloadLength;
-		var written:Int = encodeInto(frame, type, sequence, payload, 0, payloadLength, resend, ack, more, 0, graceful);
+		var written:Int = encodeInto(frame, type, sequence, payload, 0, payloadLength, resend, ack == null ? 0 : (ack : Int), ack != null, more, 0,
+			graceful);
 		frame.length = written;
 		frame.position = 0;
 		return frame;
@@ -276,10 +391,13 @@ final class ReliableDatagramProtocol {
 		@param payload Whatever is to be carried, from `offset` for `length`
 		       bytes; it must fit `MAX_PAYLOAD_SIZE`, which the socket checks
 		       before it gets here.
-		@param graceful On a FIN, that it is the graceful kind, in sequence.
+		@param ack The cumulative acknowledgement, when `hasAck`.
+		@param graceful The 0x08 bit: on a FIN, that it is the graceful kind,
+		       in sequence; on an ACK, that its payload starts with a delay
+		       (`ACK_DELAY_MASK`), which the caller has written there.
 	**/
 	public static function encodeInto(out:ByteArray, type:ReliableDatagramFrameType, sequence:Seq32, payload:ByteArray, offset:Int, length:Int,
-			resend:Bool, ack:Null<Seq32>, more:Bool, start:Int = 0, graceful:Bool = false):Int {
+			resend:Bool, ack:Int, hasAck:Bool, more:Bool, start:Int = 0, graceful:Bool = false):Int {
 		var bytes:Bytes = out;
 		var meta:Int = (type : Int);
 		if (resend) {
@@ -291,7 +409,7 @@ final class ReliableDatagramProtocol {
 		if (graceful) {
 			meta |= GRACEFUL_MASK;
 		}
-		if (ack != null) {
+		if (hasAck) {
 			meta |= ACK_PRESENT_MASK;
 		}
 		if (type == CONNECT || type == HANDSHAKE) {
@@ -304,7 +422,7 @@ final class ReliableDatagramProtocol {
 		__setInt(bytes, start + 3, sequence);
 
 		var at:Int = start + HEADER_SIZE;
-		if (ack != null) {
+		if (hasAck) {
 			__setInt(bytes, at, ack);
 			at += ACK_FIELD_SIZE;
 		}

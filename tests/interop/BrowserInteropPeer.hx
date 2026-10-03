@@ -399,8 +399,9 @@ class BrowserInteropPeer {
 					event: "terms",
 					label: opened.label,
 					ordered: opened.ordered,
-					maxRetransmits: opened.maxRetransmits,
-					maxPacketLifeTime: opened.maxPacketLifeTime
+					// The WebRTC API's null for no limit, where CrossByte says -1.
+					maxRetransmits: opened.maxRetransmits >= 0 ? (opened.maxRetransmits : Null<Int>) : null,
+					maxPacketLifeTime: opened.maxPacketLifeTime >= 0 ? (opened.maxPacketLifeTime : Null<Int>) : null
 				});
 			}
 

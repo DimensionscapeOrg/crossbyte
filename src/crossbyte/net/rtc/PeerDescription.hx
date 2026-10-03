@@ -38,6 +38,14 @@ typedef CandidateDescription = {
 	have no reason to serialise it any particular way. A browser on the other
 	end needs SDP; that is a rendering of this, not a replacement for it, and it
 	belongs in a codec rather than in the connection.
+
+	It stays an anonymous structure, not a class, because it is wire data:
+	`haxe.Json.stringify` writes one and `haxe.Json.parse` gives one back, on
+	either peer and on any target, with nothing to construct between them, as
+	a browser's `RTCSessionDescriptionInit` is plain JSON. Read once per
+	connection, its fields cost nothing worth a class, a value received is
+	checked when it is applied, not when it is typed. Its candidates are
+	`CandidateDescription`s, which are wire data for the same reason.
 **/
 typedef PeerDescription = {
 	/** Names the ICE session. Not a secret. **/

@@ -104,15 +104,14 @@ class NodeChannelTest extends utest.Test {
 	}
 
 	/**
-		A link whose peer drops it comes back, whatever clock it is polled
-		with.
+		A link whose peer drops it comes back when it is polled.
 
 		`poll` took the time from its caller and compared it with retries
 		scheduled on `haxe.Timer.stamp()`. Polled with the runtime's uptime,
 		as `crossbyte.Timer.stamp()` gives it, it was always early on Linux
 		native, jvm and eval, where the two clocks are far apart, and a link
-		that dropped once never came back. The time passed here is one far
-		behind on every target.
+		that dropped once never came back. It takes no time now, and reads
+		the clock its retries are scheduled by.
 	**/
 	public function testALinkThatDropsComesBackWhateverTheCallersClock():Void {
 		var server = new ServerSocket();
@@ -137,14 +136,66 @@ class NodeChannelTest extends utest.Test {
 		Assert.equals(1, downs, "the drop was not noticed");
 
 		pumpUntil(() -> {
-			link.poll(0.0);
+			link.poll();
 			return link.up;
 		}, 5.0);
 
-		Assert.isTrue(link.up, "a link polled with a clock of its caller's never came back");
+		Assert.isTrue(link.up, "a polled link never came back");
 		Assert.equals(2, ups);
 		link.close();
 		for (channel in accepted) {
+			channel.close();
+		}
+		closeQuietly(server);
+	}
+
+	/**
+		What is sent in one pass goes when the pass ends, together, and what
+		the pass had written when the link failed waits for it, in order, as a
+		message that failed to go always did.
+	**/
+	public function testAPassesMessagesGoTogetherOrWaitIfTheLinkFails():Void {
+		var server = new ServerSocket();
+		var accepted:NodeChannel = null;
+		var everyAccepted:Array<NodeChannel> = [];
+		var atServer:Array<Int> = [];
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(event):Void {
+			accepted = NodeChannel.adopt(cast event.socket);
+			everyAccepted.push(accepted);
+			accepted.onMessage = payload -> atServer.push(payload.length);
+		});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		var link = NodeChannel.dial("127.0.0.1", server.localPort);
+		pumpUntil(() -> link.up && accepted != null, 5.0);
+		Assert.isTrue(link.up, "the link never came up");
+
+		for (size in [10, 20, 30]) {
+			link.send(filled(size));
+		}
+		Assert.equals(3, @:privateAccess link.__inPassCount, "the pass's messages were not held for its end");
+		pumpUntil(() -> atServer.length >= 3, 5.0);
+		Assert.equals("10,20,30", atServer.join(","));
+		Assert.equals(0, @:privateAccess link.__inPassCount);
+
+		// Written in a pass that the link fails before the end of.
+		link.send(filled(40));
+		link.send(filled(50));
+		@:privateAccess link.__scheduleRetry("failed in the pass");
+		Assert.isFalse(link.up);
+		Assert.equals(90, link.bufferedAmount, "what the pass wrote was lost with the link");
+		link.send(filled(60));
+		Assert.equals(150, link.bufferedAmount);
+
+		pumpUntil(() -> {
+			link.poll();
+			return atServer.length >= 6;
+		}, 5.0);
+		Assert.equals("10,20,30,40,50,60", atServer.join(","), "after the repair the server saw " + atServer.join(","));
+
+		link.close();
+		for (channel in everyAccepted) {
 			channel.close();
 		}
 		closeQuietly(server);
