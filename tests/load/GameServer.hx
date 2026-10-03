@@ -152,10 +152,11 @@ class GameServer {
 			Report.emit({kind: "game-world", entities: world.entities.length, seconds: round(Timer.stamp() - built)});
 		}
 
-		cpp_gc();
+		var baselineGcMs:Float = cpp_gc();
 		baseline = ProcessStats.sample();
 		Report.emit({
 			kind: "game-start",
+			fullCollectionMs: round(baselineGcMs),
 			port: server.localPort,
 			clients: clients,
 			hz: hz,
@@ -208,12 +209,13 @@ class GameServer {
 	}
 
 	function __beginMeasuring():Void {
-		cpp_gc();
+		var gcMs:Float = cpp_gc();
 		steady = ProcessStats.sample();
 		var n:Int = sessions.length > 0 ? sessions.length : 1;
 		Report.emit({
 			kind: "game-steady",
 			sessions: sessions.length,
+			fullCollectionMs: round(gcMs),
 			heapLiveMB: ProcessStats.mb(steady.heapLive),
 			rssMB: ProcessStats.mb(steady.rss),
 			privateMB: ProcessStats.mb(steady.privateBytes),
@@ -222,6 +224,11 @@ class GameServer {
 			rssPerSessionKB: Math.round((steady.rss - baseline.rss) / n / 102.4) / 10
 		});
 
+		// After the collection's pause, and what it held up, has passed.
+		crossbyte.Timer.setTimeout(3.0, __startWindows);
+	}
+
+	function __startWindows():Void {
 		phase = "measuring";
 		measuredFrom = windowFrom = Timer.stamp();
 		windowSample = runSample = ProcessStats.sample();
@@ -489,12 +496,15 @@ class GameServer {
 		return Math.round(value * 1000) / 1000;
 	}
 
-	static function cpp_gc():Void {
+	/** A full collection, and how long it held the process, in ms. **/
+	static function cpp_gc():Float {
+		var started:Float = Timer.stamp();
 		#if cpp
 		cpp.vm.Gc.run(true);
 		#elseif (java || jvm)
 		java.lang.System.gc();
 		#end
+		return (Timer.stamp() - started) * 1000;
 	}
 }
 
