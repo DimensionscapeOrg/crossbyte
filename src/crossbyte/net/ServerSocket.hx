@@ -1369,7 +1369,10 @@ class ServerSocket extends EventDispatcher {
 	@:noCompletion private function __adopt(socket:Socket, peer:{host:Host, port:Int}):Void {
 		var shared:ServerSpread = __shared;
 		var tracked:Bool = __front.__tracksHandshakes();
-		if (__closed || !listening || shared.stopped) {
+		// Run as its runtime exits, too: what was posted before an exit still
+		// runs. A connection taken up then would sit in a poll set about to be
+		// let go of, open and never read, so it is closed instead.
+		if (__closed || !listening || shared.stopped || !@:privateAccess __cbInstance.__getRunning()) {
 			if (tracked) {
 				shared.addInFlight(-1, __front.maxPendingHandshakes);
 			}
@@ -1445,6 +1448,13 @@ class ServerSocket extends EventDispatcher {
 	@:noCompletion private function __drainReplicas(timeoutSeconds:Float, drainOne:(ServerSocket, Void->Void) -> Void, finish:Void->Void):Void {
 		var spread:ServerSpread = __spread;
 		var runtime:CrossByte = __cbInstance;
+		if (runtime == null) {
+			// Closed already: nothing on this side to wait on, and nowhere to be
+			// told. Each runtime still drains what it holds.
+			spread.each(replica -> drainOne(replica, () -> {}));
+			finish();
+			return;
+		}
 		var waiting:Int = spread.replicas.length;
 		var finished:Bool = false;
 		var onTick:TickEvent->Void = null;
