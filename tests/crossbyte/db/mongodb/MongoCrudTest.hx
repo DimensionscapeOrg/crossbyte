@@ -2,6 +2,7 @@ package crossbyte.db.mongodb;
 
 #if (sys && !js)
 import crossbyte.db.mongodb.FakeMongoServer.ReceivedCommand;
+import crossbyte.db.mongodb._internal.BsonWriter;
 import crossbyte.db.mongodb.bson.BsonDateTime;
 import crossbyte.db.mongodb.bson.BsonDocument;
 import crossbyte.db.mongodb.bson.BsonInt64;
@@ -667,6 +668,56 @@ class MongoCrudTest extends utest.Test {
 		Assert.equals("1,2 3,4 5+", pages.join(" "));
 	}
 
+	public function testRepliesAreAnonymousObjectsCarryingTheirSequences():Void {
+		// The connection decodes every reply into anonymous objects, never
+		// into BsonDocuments: the branches MongoWire and MongoStatement kept
+		// for one were never taken, and are gone.
+		__start();
+		var reply:Dynamic = connection.runCommand({ping: 1});
+		Assert.isFalse(Std.isOfType(reply, BsonDocument));
+		Assert.isTrue(BsonWriter.isPlainObject(reply));
+
+		// A reply with a document sequence beside its body: the sequence is
+		// an array field of the body, its documents plain too.
+		var next:Int = @:privateAccess connection.__wire.__requestId + 1;
+		var writer:BsonWriter = new BsonWriter();
+		writer.int32(0);
+		writer.int32(5);
+		writer.int32(next);
+		writer.int32(2013);
+		writer.int32(0);
+		writer.byte(0);
+		writer.document(new BsonDocument().add("ok", 1));
+		writer.byte(1);
+		var sequence:Int = writer.length;
+		writer.int32(0);
+		writer.cstring("items");
+		writer.document(new BsonDocument().add("n", 1));
+		writer.document(new BsonDocument().add("n", 2));
+		writer.patchInt32(sequence, writer.length - sequence);
+		writer.patchInt32(0, writer.length);
+		server.rawNext("ping", writer.toBytes());
+
+		var carried:Dynamic = connection.runCommand({ping: 1});
+		Assert.isTrue(BsonWriter.isPlainObject(carried));
+		var items:Array<Dynamic> = carried.items;
+		Require.notNull(items);
+		Assert.equals(2, items.length);
+		Assert.equals(2, items[1].n);
+		Assert.isTrue(BsonWriter.isPlainObject(items[0]));
+
+		// A statement's one row for a command with no cursor is that reply,
+		// made an instance of itemClass like any document.
+		var statement = new MongoStatement();
+		statement.sqlConnection = connection;
+		statement.itemClass = PingReply;
+		statement.text = '{"ping": 1}';
+		statement.execute();
+		var row:Dynamic = Require.notNull(statement.getResult()).data[0];
+		Assert.isTrue(Std.isOfType(row, PingReply));
+		Assert.equals(1, (row : PingReply).ok);
+	}
+
 	private function __start(?config:MongoConfig):Void {
 		server.start();
 		var cfg:MongoConfig = config == null ? {} : config;
@@ -680,5 +731,12 @@ class MongoCrudTest extends utest.Test {
 	private static function __person(id:Int, last:String, first:String, age:Int):BsonDocument {
 		return new BsonDocument().add("_id", id).add("last", last).add("first", first).add("age", age);
 	}
+}
+
+/** A ping's reply, as a statement's itemClass. **/
+class PingReply {
+	public var ok:Dynamic;
+
+	public function new() {}
 }
 #end
