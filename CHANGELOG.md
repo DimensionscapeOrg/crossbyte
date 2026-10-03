@@ -2425,6 +2425,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `CrossByte.frameOverruns` counts frames whose work outran their tick,
+  as it says, on a `POLL` loop on Windows too. It counted every frame that
+  ended past its deadline, and the `POLL` loop waits in poll until its
+  deadline, which Windows ends on the system timer's tick, up to a
+  millisecond or two late: a game server with nothing to do at sixty
+  ticks a second reported 165 overruns in 301 frames, so the count told a
+  server that was keeping up from one that was not. Each loop now judges
+  a frame by its work, as the default loop and JavaScript's already did.
+  `loopLag` still reports the lateness, and says what is usual for it.
 - A `FileStream` open in `UPDATE` mode reads back what it wrote on macOS.
   It reads and writes through two handles, flushing the writer and
   seeking the reader before each read; BSD stdio, macOS's, keeps a
