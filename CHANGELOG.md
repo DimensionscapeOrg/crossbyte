@@ -244,6 +244,9 @@ entry below says how:
 - A `TaskPool.submit` task's result is `Any`: cast it to read from it.
 
 ### Added
+- `TypedWorker<In, Out, Progress>`: a `Worker` whose run message, progress
+  and result have types, with `onProgress` and `onComplete` handlers that
+  receive them typed. `Worker` is `TypedWorker<Dynamic, Dynamic, Dynamic>`.
 - A load and churn harness, `ci/load.hxml` (`tests/load`), run by hand as
   the soak is: a reliable-UDP game server at 30 or 60 ticks a second with
   its clients in other processes; HTTP/1.1, HTTP/2 and WebSocket clients
@@ -1451,6 +1454,10 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A `Worker` delivers a backlog without moving it: each turn's share of
+  queued messages was spliced off the front of the queue, moving everything
+  behind it. A million queued messages are delivered in 0.05 to 0.08 s
+  natively, where they took 0.6 to 0.7.
 - `TaskPool.submit` returns a `Task<Any>`, where it was `Task<Dynamic>`.
 - A `TaskPool` lets go of a finished task in constant time, where it searched
   its list of tasks in flight and shifted everything after it: a burst cost
