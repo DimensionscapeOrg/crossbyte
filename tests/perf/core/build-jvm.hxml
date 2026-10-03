@@ -1,0 +1,13 @@
+# jvm, A (baseline export/baseline/src) and B (src). From the repository root:
+#   haxe tests/perf/core/build-jvm.hxml
+# then: java -jar export/perf-core-jvm/a.jar tick 1000 3   (and b.jar)
+-cp tests/perf/core
+-main PerfCore
+--macro crossbyte._internal.macro.StdOverrides.use()
+--each
+-cp export/baseline/src
+--jvm export/perf-core-jvm/a.jar
+--next
+-cp src
+-D perf_new
+--jvm export/perf-core-jvm/b.jar

@@ -1,0 +1,12 @@
+# B: this worktree's src, the fixes. A is build.hxml, the baseline.
+#   haxe tests/perf/core/build-b.hxml
+# For the audit's shadow A/B (shadow/, a patched copy of src files), add
+# -cp tests/perf/core/shadow LAST: Haxe searches the most recently added
+# class path first, so a shadow listed before src is silently ignored.
+-cp src
+-cp tests/perf/core
+-D windows
+-D HXCPP_M64
+-main PerfCore
+-D perf_new
+--cpp export/perf-core-b
