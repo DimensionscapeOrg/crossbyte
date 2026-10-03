@@ -245,6 +245,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.KeyTest());
 		runner.addCase(new crossbyte._internal.socket.poll.PollBackendRegistryTest());
 		runner.addCase(new crossbyte._internal.socket.poll.PollBackendSeamTest());
+		// Every threaded target: a runtime woken while it closes its wake.
+		runner.addCase(new crossbyte._internal.socket.poll.WakeSocketTest());
 		runner.addCase(new crossbyte._internal.socket.FlexSocketTest());
 		runner.addCase(new crossbyte._internal.socket.BlockedErrorTest());
 		runner.addCase(new crossbyte._internal.net.IPv6Test());
@@ -310,6 +312,10 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.ServerSocketBacklogTest());
 		// A child runtime's real POLL loop, so every threaded target.
 		runner.addCase(new crossbyte.net.SocketReadinessTest());
+		// One listener's connections on several runtimes: every threaded
+		// target, its TLS cases natively and on the jvm.
+		runner.addCase(new crossbyte.net.ServerSpreadTest());
+		runner.addCase(new crossbyte.net.ServerWebSocketSpreadTest());
 		// Deliberately unguarded: the exact-buffer read-loop hang it protects
 		// against lives on the interpreter, where sockets cannot be made
 		// non-blocking. Guarding it to cpp would run it only where the bug

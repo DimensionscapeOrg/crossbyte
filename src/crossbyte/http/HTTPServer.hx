@@ -44,10 +44,16 @@ class HTTPServer extends ServerSocket {
 	private var __connections:Int;
 	private var docRoot:String;
 	private var autoIndex:Array<String>;
-	private var php:PHPBridge;
+	// Null unless PHP is on. Given a value as the server is made, as every
+	// field another thread writes must be: see ServerSocket.__makeReplica.
+	private var php:PHPBridge = null;
 
-	@:noCompletion private var __requestsTotal:crossbyte.metrics.Counter;
-	@:noCompletion private var __requestSeconds:crossbyte.metrics.Histogram;
+	@:noCompletion private var __requestsTotal:crossbyte.metrics.Counter = null;
+	@:noCompletion private var __requestSeconds:crossbyte.metrics.Histogram = null;
+	// On a replica: what its connections hold unsent, as last measured by
+	// its sweep, for the front's gauges; see __publishBufferStats.
+	@:noCompletion private var __publishedMaxBuffer:Int = 0;
+	@:noCompletion private var __publishedTotalBuffer:Int = 0;
 	// The status-class counters, by status / 100, each looked up once.
 	@:noCompletion private var __statusCounters:Array<Null<crossbyte.metrics.Counter>> = [for (_ in 0...10) null];
 	@:noCompletion private static inline var RECEIVE_SWEEP_INTERVAL:Float = 0.25;
@@ -65,6 +71,20 @@ class HTTPServer extends ServerSocket {
 	// __sweepWith, made once and handed to every writer and HTTP/2 connection.
 	@:noCompletion private final __sweepHook:({}, Null<Float->Void>) -> Void;
 
+	/**
+		Makes the server and starts it listening on the configuration's
+		address and port.
+
+		With `HTTPServerConfig.runtimes` or `runtimeCount` set, the server
+		serves its connections on those runtimes, as `ServerSocket.runtimes`
+		describes: everything a request runs, the configuration's middleware
+		and hooks included, then runs on several threads at once. See
+		`HTTPServerConfig.runtimes` for what that asks of them.
+
+		@throws IllegalOperationError When the configuration spreads the
+			server over runtimes on a target that cannot: Node, whose runtimes
+			share one thread; or asks for `reusePort` where there is none.
+	**/
 	public function new(config:HTTPServerConfig) {
 		config.validate();
 		super(config.tlsEnabled);
@@ -72,8 +92,12 @@ class HTTPServer extends ServerSocket {
 		__config = config;
 		__pumps = new ObjectMap();
 		__sweepHook = __sweepWith;
+		// A replica, made by a server spread over runtimes for one of them:
+		// it is handed connections, and has no listener, certificate or
+		// metrics of its own.
+		var replica:Bool = __front != null;
 
-		if (config.tlsEnabled) {
+		if (config.tlsEnabled && !replica) {
 			try {
 				setCertificate(crossbyte.net.Certificate.fromFile(config.tlsCertificatePath), crossbyte.net.Key.fromFile(config.tlsKeyPath));
 			} catch (e:Dynamic) {
@@ -105,12 +129,47 @@ class HTTPServer extends ServerSocket {
 				default:
 					throw "Invalid PHPMode enum";
 			}
+			if (replica) {
+				// A bridge per runtime, since a bridge is its runtime's: each
+				// dials the backend the front launched, or was told of.
+				mode = Connect(__config.phpAddress, __config.phpPort);
+			}
 			php = new PHPBridge(mode, docRoot, autoIndex, __config.phpTimeout);
 		}
 
-		__initMetrics();
+		if (replica) {
+			// The front's series, which take locks of their own.
+			var front:HTTPServer = cast __front;
+			__requestsTotal = front.__requestsTotal;
+			__requestSeconds = front.__requestSeconds;
+		} else {
+			__initMetrics();
+		}
 
-		addEventListener(ServerSocketConnectEvent.CONNECT, this_onConnect);
+		// Its own listener: on a server spread over runtimes it runs on each
+		// runtime's replica, with that runtime's connections.
+		__addOwnConnectListener(this_onConnect);
+
+		if (replica) {
+			return;
+		}
+
+		// Spread as the configuration says, before the listener exists.
+		if (config.runtimes != null && config.runtimes.length > 0) {
+			runtimes = config.runtimes;
+		} else if (config.runtimeCount > 0) {
+			runtimeCount = config.runtimeCount;
+		}
+		if (config.reusePort) {
+			reusePort = true;
+		}
+		#if (target.threaded && !js)
+		if (runtimeCount > 0) {
+			// One budget per client across every runtime, with a lock in front
+			// of it; see HTTPServerConfig.rateLimiter.
+			config.rateLimiter = crossbyte._internal.http.SharedRateLimiter.around(config.rateLimiter);
+		}
+		#end
 
 		try {
 			bind(__config.port, __config.address);
@@ -125,10 +184,18 @@ class HTTPServer extends ServerSocket {
 
 	/**
 		Number of client connections currently being served.
+
+		On a server spread over runtimes, every runtime's together: the count
+		`maxConnections` is held to.
 	**/
 	public var activeConnections(get, never):Int;
 
 	private function get_activeConnections():Int {
+		#if (target.threaded && !js)
+		if (__spread != null) {
+			return __spread.connections;
+		}
+		#end
 		return __connections;
 	}
 
@@ -153,18 +220,42 @@ class HTTPServer extends ServerSocket {
 		can bind the port while this one finishes its work. Connections still
 		open when `timeoutSeconds` elapses are closed regardless.
 
+		On a server spread over runtimes, each runtime drains the connections
+		it holds, at once and on its own thread, and the drain finishes once
+		every one has; the runtimes made for it (`runtimeCount`) then exit.
+
+		It may be called from any thread, as `close()` may: from one that is
+		not the server's runtime's, the drain is handed to the runtime and
+		begins there after this returns. Begun elsewhere, it walked the
+		connections and put its wait on the runtime's tick from the wrong
+		thread.
+
 		@param timeoutSeconds How long to wait for active connections before
 			forcing them closed. Values at or below zero close immediately.
 		@param onComplete Invoked once shutdown finishes, on the runtime
 			thread, whether it completed naturally or by timeout.
 	**/
 	public function drain(timeoutSeconds:Float = 30.0, ?onComplete:Void->Void):Void {
+		var owner:Null<CrossByte> = __cbInstance;
+		if (crossbyte.net._internal.RuntimeHandOff.offThread(owner) && owner.post(() -> drain(timeoutSeconds, onComplete))) {
+			return;
+		}
 		if (draining) {
 			return;
 		}
 		draining = true;
 
 		stopAccepting();
+
+		#if (target.threaded && !js)
+		if (__spread != null) {
+			// Each runtime drains its own; this finishes once they all have.
+			Logger.info('HTTP Server draining: ${activeConnections} active connection(s) across ${__spread.runtimes.length} runtimes');
+			__drainReplicas(timeoutSeconds, (replica, drained) -> (cast replica : HTTPServer).drain(timeoutSeconds, drained),
+				() -> __finishDrain(onComplete));
+			return;
+		}
+		#end
 
 		// An idle keep-alive connection is between requests: there is
 		// nothing in flight to wait for, so it closes now rather than
@@ -207,8 +298,11 @@ class HTTPServer extends ServerSocket {
 		}
 
 		// After the walk __connections counts only in-flight work, which
-		// also makes this log line honest.
-		Logger.info('HTTP Server draining: ${__connections} active connection(s)');
+		// also makes this log line honest. A spread server's runtimes do not
+		// each say it: the server said it once for them.
+		if (__front == null) {
+			Logger.info('HTTP Server draining: ${__connections} active connection(s)');
+		}
 
 		if (__connections <= 0 || timeoutSeconds <= 0) {
 			__finishDrain(onComplete);
@@ -276,13 +370,29 @@ class HTTPServer extends ServerSocket {
 		__sniffing = new ObjectMap();
 		__pumps = new ObjectMap();
 		__pumpCount = 0;
+		#if (target.threaded && !js)
+		// What is left of this runtime's share of the server's count.
+		if (__shared != null) {
+			__shared.releaseConnections(__connections);
+		}
+		#end
 		__connections = 0;
 
 		try {
 			close();
 		} catch (_:Dynamic) {}
 
+		#if (target.threaded && !js)
+		if (__front == null) {
+			Logger.info("HTTP Server drained");
+		}
+		// Runtimes made for this server have nothing left to serve.
+		if (__spread != null) {
+			__spread.exitOwned();
+		}
+		#else
 		Logger.info("HTTP Server drained");
+		#end
 
 		if (onComplete != null) {
 			onComplete();
@@ -332,7 +442,7 @@ class HTTPServer extends ServerSocket {
 	 * arrived.
 	 */
 	@:noCompletion private function __sniff(socket:CBSocket):Void {
-		if (__connections >= __maxConnections) {
+		if (!__claimConnection()) {
 			// Nothing to answer in: which protocol would be a guess.
 			Logger.error('Connection refused: concurrency limit ${__maxConnections}');
 			try {
@@ -342,7 +452,6 @@ class HTTPServer extends ServerSocket {
 		}
 
 		__sniffing.set(socket, __config.requestTimeout > 0 ? haxe.Timer.stamp() + __config.requestTimeout : 0);
-		__connections++;
 		__armReceiveSweep();
 
 		socket.addEventListener("close", (_) -> cleanupSocket(socket));
@@ -358,16 +467,52 @@ class HTTPServer extends ServerSocket {
 			return;
 		}
 
-		// Handed over rather than counted twice: the serve functions below
-		// count the connection themselves.
+		// Handed over still counted: it keeps the place it took. It was let
+		// go of and counted again by the serve functions, and on a server
+		// spread over runtimes another runtime could take the place between.
 		__sniffing.remove(socket);
-		__connections--;
 
 		if (isHttp2) {
-			__serveHttp2(socket, buffered);
+			__serveHttp2(socket, buffered, true);
 		} else {
-			__serveHttp1(socket, buffered);
+			__serveHttp1(socket, buffered, true);
 		}
+	}
+
+	/**
+		Counts a connection, unless the server already holds
+		`maxConnections`: whether it was counted. On a server spread over
+		runtimes the limit is every runtime's connections together, checked
+		and counted in one step.
+	**/
+	@:noCompletion private function __claimConnection():Bool {
+		#if (target.threaded && !js)
+		if (__shared != null) {
+			if (!__shared.claimConnection(__maxConnections)) {
+				return false;
+			}
+			__connections++;
+			return true;
+		}
+		#end
+		if (__connections >= __maxConnections) {
+			return false;
+		}
+		__connections++;
+		return true;
+	}
+
+	/** A connection counted by `__claimConnection` has ended. **/
+	@:noCompletion private function __releaseConnection():Void {
+		if (__connections <= 0) {
+			return;
+		}
+		__connections--;
+		#if (target.threaded && !js)
+		if (__shared != null) {
+			__shared.releaseConnections(1);
+		}
+		#end
 	}
 
 	/**
@@ -377,8 +522,8 @@ class HTTPServer extends ServerSocket {
 	 * unit of concurrency here, not connections, so the concurrency limit and
 	 * the keep-alive sweep have nothing to count.
 	 */
-	@:noCompletion private function __serveHttp2(socket:CBSocket, buffered:ByteArray):Void {
-		if (__connections >= __maxConnections) {
+	@:noCompletion private function __serveHttp2(socket:CBSocket, buffered:ByteArray, counted:Bool = false):Void {
+		if (!counted && !__claimConnection()) {
 			// Counted against the same ceiling as HTTP/1.1. Left out, the limit
 			// was one a peer could ignore entirely by speaking HTTP/2.
 			Logger.error('Connection refused: concurrency limit ${__maxConnections}');
@@ -393,17 +538,16 @@ class HTTPServer extends ServerSocket {
 		// reported almost nothing.
 		var handler:H2ConnectionHandler = new H2ConnectionHandler(socket, __config, php, buffered, this_onResponse, __sweepHook);
 		__activeHttp2.set(socket, handler);
-		__connections++;
 		__armReceiveSweep();
 
 		socket.addEventListener("close", (_) -> cleanupSocket(socket));
 		socket.addEventListener("error", (_) -> cleanupSocket(socket));
 	}
 
-	@:noCompletion private function __serveHttp1(socket:CBSocket, buffered:ByteArray = null):Void {
+	@:noCompletion private function __serveHttp1(socket:CBSocket, buffered:ByteArray = null, counted:Bool = false):Void {
 		var e = {socket: socket};
 
-		if (__connections >= __maxConnections) {
+		if (!counted && !__claimConnection()) {
 			Logger.error('Connection refused: concurrency limit ${__maxConnections}');
 			try {
 				e.socket.writeUTFBytes('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
@@ -426,7 +570,6 @@ class HTTPServer extends ServerSocket {
 		// Its writer made here, so a body it pumps out reaches the sweep.
 		var handler:HTTPRequestHandler = new HTTPRequestHandler(e.socket, __config, php, new HTTP1ResponseWriter(e.socket, __sweepHook));
 		__active.set(e.socket, handler);
-		__connections++;
 		__armReceiveSweep();
 
 		// A closure rather than the bare method: the response hook needs
@@ -462,7 +605,7 @@ class HTTPServer extends ServerSocket {
 	 * connection for good.
 	 */
 	@:noCompletion private function __armReceiveSweep():Void {
-		if (__sweepArmed || (!__timeoutsLive() && __pumpCount <= 0)) {
+		if (__sweepArmed || (!__timeoutsLive() && __pumpCount <= 0 && !__publishesBuffers())) {
 			return;
 		}
 
@@ -515,12 +658,16 @@ class HTTPServer extends ServerSocket {
 		__sweepAccumulator = 0;
 
 		// Asked here, a few times a second, rather than above on every tick.
-		if (!__timeoutsLive() && __pumpCount <= 0) {
+		if (!__timeoutsLive() && __pumpCount <= 0 && !__publishesBuffers()) {
 			__disarmReceiveSweep();
 			return;
 		}
 
 		__sweep(haxe.Timer.stamp());
+		if (__publishesBuffers()) {
+			__publishedMaxBuffer = __maxOutputBuffer();
+			__publishedTotalBuffer = __totalOutputBuffer();
+		}
 	}
 
 	@:noCompletion private function __disarmReceiveSweep():Void {
@@ -529,6 +676,20 @@ class HTTPServer extends ServerSocket {
 			runtime.removeEventListener(TickEvent.TICK, this_onReceiveSweep);
 		}
 		__sweepArmed = false;
+		// Disarmed with nothing held, or with nothing measured: either way the
+		// front's gauges are told nothing is held here.
+		__publishedMaxBuffer = 0;
+		__publishedTotalBuffer = 0;
+	}
+
+	/**
+		Whether the sweep measures what this runtime's connections hold
+		unsent, for the gauges of the server it serves: a replica's, while
+		metrics are kept. The front cannot walk another thread's connections,
+		so each runtime measures its own a few times a second.
+	**/
+	@:noCompletion private inline function __publishesBuffers():Bool {
+		return __front != null && __config.metrics != null;
 	}
 
 	/**
@@ -594,25 +755,19 @@ class HTTPServer extends ServerSocket {
 	private function cleanupSocket(sock:Dynamic):Void {
 		if (__sniffing.exists(sock)) {
 			__sniffing.remove(sock);
-			if (__connections > 0) {
-				__connections--;
-			}
+			__releaseConnection();
 			return;
 		}
 
 		if (__active.exists(sock)) {
 			__active.remove(sock);
-			if (__connections > 0) {
-				__connections--;
-			}
+			__releaseConnection();
 			return;
 		}
 
 		if (__activeHttp2.exists(sock)) {
 			__activeHttp2.remove(sock);
-			if (__connections > 0) {
-				__connections--;
-			}
+			__releaseConnection();
 		}
 	}
 
@@ -650,7 +805,8 @@ class HTTPServer extends ServerSocket {
 
 		// Bound to the live counter rather than mirrored, so the gauge
 		// cannot drift from the server's own accounting.
-		registry.gaugeFn(prefix + "_active_connections", () -> __connections, null, "Client connections currently being served.");
+		// Every runtime's, on a server spread over several.
+		registry.gaugeFn(prefix + "_active_connections", () -> activeConnections, null, "Client connections currently being served.");
 
 		// Aggregates across connections, never a series per peer: a label
 		// carrying a client address would create a time series that
@@ -689,6 +845,17 @@ class HTTPServer extends ServerSocket {
 				peak = pending;
 			}
 		}
+		#if (target.threaded && !js)
+		// Spread: what each runtime's sweep last measured of its own.
+		if (__spread != null) {
+			for (replica in __spread.replicas) {
+				var measured:Int = (cast replica : HTTPServer).__publishedMaxBuffer;
+				if (measured > peak) {
+					peak = measured;
+				}
+			}
+		}
+		#end
 		return peak;
 	}
 
@@ -700,8 +867,22 @@ class HTTPServer extends ServerSocket {
 		for (handler in __activeHttp2) {
 			total += handler.heldBytes;
 		}
+		#if (target.threaded && !js)
+		if (__spread != null) {
+			for (replica in __spread.replicas) {
+				total += (cast replica : HTTPServer).__publishedTotalBuffer;
+			}
+		}
+		#end
 		return total;
 	}
+
+	#if (target.threaded && !js)
+	/** One runtime's share of this server: the same configuration, no listener. **/
+	@:noCompletion override private function __replicate():ServerSocket {
+		return new HTTPServer(__config);
+	}
+	#end
 
 	@:noCompletion private function __recordResponse(e:HTTPStatusEvent):Void {
 		if (__requestsTotal == null) {

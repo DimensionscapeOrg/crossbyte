@@ -1,0 +1,14 @@
+<xml>
+	<pragma once="true"/>
+	<files id="crossbyte-net-reuseport-native">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${this_dir}"/>
+		<file name="${this_dir}/NativeReusePort.cpp">
+			<depend name="${this_dir}/NativeReusePort.h"/>
+		</file>
+	</files>
+
+	<target id="haxe">
+		<files id="crossbyte-net-reuseport-native"/>
+	</target>
+</xml>
