@@ -23,4 +23,16 @@ class TypeCheck {
 		}
 		return macro null;
 	}
+
+	/**
+		The type `e` has where it is written, as the compiler prints it, or
+		the error it fails to type with.
+	**/
+	public static macro function typeOf(e:Expr):ExprOf<String> {
+		try {
+			return macro $v{haxe.macro.TypeTools.toString(Context.typeof(e))};
+		} catch (error:Dynamic) {
+			return macro $v{"error: " + Std.string(error)};
+		}
+	}
 }
