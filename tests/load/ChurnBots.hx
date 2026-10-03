@@ -278,6 +278,9 @@ class H1Session extends ChurnSession {
 	var expectLength:Int = -1;
 	var bodyLength:Int = -1;
 	var closing:Bool = false;
+	// The server said Connection: close -- keepAliveMaxRequests -- before
+	// this session's last request.
+	var retiring:Bool = false;
 
 	public function new(bots:ChurnBots, secure:Bool, ops:Int) {
 		super(bots, secure ? "h1s" : "h1", ops);
@@ -357,6 +360,9 @@ class H1Session extends ChurnSession {
 				return;
 			}
 			expectLength = Std.parseInt(lengthMatch.matched(1));
+			if (~/connection:\s*close/i.match(head)) {
+				retiring = true;
+			}
 			if (bodyLength >= 0 && expectLength != bodyLength) {
 				fail("echo length");
 				return;
@@ -380,6 +386,11 @@ class H1Session extends ChurnSession {
 		bots.time(name, (Timer.stamp() - sentAt) * 1000);
 		bots.count(name + ".ops");
 		done++;
+		if (retiring && done < ops) {
+			// A browser would go on over a new connection.
+			bots.count(name + ".retired");
+			done = ops;
+		}
 		if (done >= ops) {
 			// The server closes after the last: wait for it, so the TIME_WAIT
 			// is the server's, as with a browser's last request.
@@ -523,6 +534,9 @@ class H2cSession extends ChurnSession {
 	var received:Int = 0;
 	var bodyLength:Int = -1;
 	var closing:Bool = false;
+	// The server's GOAWAY -- keepAliveMaxRequests -- before this session's
+	// last request: the stream in flight is answered, and the session ends.
+	var retiring:Bool = false;
 	var scratch:ByteArray = new ByteArray();
 
 	public function new(bots:ChurnBots, ops:Int) {
@@ -638,9 +652,7 @@ class H2cSession extends ChurnSession {
 					}
 				}
 			case H2FrameType.GOAWAY:
-				if (!closing) {
-					fail("goaway");
-				}
+				retiring = true;
 			case H2FrameType.RST_STREAM:
 				if (frame.streamId == stream) {
 					fail("rst_stream");
@@ -657,6 +669,10 @@ class H2cSession extends ChurnSession {
 		bots.time(name, (Timer.stamp() - sentAt) * 1000);
 		bots.count(name + ".ops");
 		done++;
+		if (retiring && done < ops) {
+			bots.count(name + ".retired");
+			done = ops;
+		}
 		if (done >= ops) {
 			closing = true;
 			var goaway = Bytes.alloc(8);
