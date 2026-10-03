@@ -1,0 +1,18 @@
+# The load and churn harness, natively, for the machine it is built on:
+# scenario G (a reliable-UDP game server), S (HTTP/1.1, HTTP/2 and
+# WebSocket under connection churn, half over TLS) and I (idle WebSockets
+# at scale). See tests/load/LoadMain.hx, and the README's Testing section
+# for how to run each.
+#
+#   haxe ci/load.hxml
+#   ./export/load/LoadMain game --clients 1000 --hz 60 --seconds 600
+#
+# CI does not run this: like ci/soak.hxml it is a long measurement, not a
+# gate. For the crossbyte-libuv backend, add its defines (README).
+-cp src
+-cp tests/load
+-D HXCPP_M64
+-main LoadMain
+--cpp export/load
+--macro crossbyte._internal.macro.HostPlatform.define()
+--macro crossbyte._internal.macro.StdOverrides.use()
