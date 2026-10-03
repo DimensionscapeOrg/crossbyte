@@ -106,7 +106,7 @@ class HTTP2Backend implements HTTPBackend {
 		var url:URL = new URL(context.url);
 		var method:String = context.method;
 		var headers:Array<String> = context.headers;
-		var data:Dynamic = context.data;
+		var data:Null<HTTPRequestBody> = context.data;
 		var contentType:Null<String> = context.contentType;
 		var cookies:Null<CookieJar> = context.manageCookies == true ? new CookieJar() : null;
 
@@ -216,7 +216,7 @@ class HTTP2Backend implements HTTPBackend {
 	 * Sends one request and waits for its response, or reports why it could
 	 * not and answers null.
 	 */
-	private function __exchange(context:HTTPRequestContext, url:URL, method:String, headers:Array<String>, query:Null<String>, data:Dynamic,
+	private function __exchange(context:HTTPRequestContext, url:URL, method:String, headers:Array<String>, query:Null<String>, data:Null<HTTPRequestBody>,
 			contentType:Null<String>, cookies:Null<CookieJar>, leftOrigin:Bool):Null<H2Exchange> {
 		if (__cancelled(context)) {
 			// Between two hops, or before the first. Nothing is opened for it,
@@ -551,20 +551,14 @@ class HTTP2Backend implements HTTPBackend {
 		return HttpSyntax.encodeRequestTarget((query != null && query.length > 0) ? '$path?$query' : path);
 	}
 
-	private function __body(method:String, data:Dynamic):Null<Bytes> {
+	private function __body(method:String, data:Null<HTTPRequestBody>):Null<Bytes> {
 		if (method == "HEAD" || method == "GET") {
 			return null;
 		}
 		if (data == null) {
 			return null;
 		}
-		if (Std.isOfType(data, String)) {
-			return Bytes.ofString((data : String));
-		}
-		if (Std.isOfType(data, Bytes)) {
-			return (data : Bytes);
-		}
-		return null;
+		return data.toBytes();
 	}
 
 	/**

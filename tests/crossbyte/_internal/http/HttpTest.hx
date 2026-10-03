@@ -171,7 +171,11 @@ class HttpTest extends utest.Test {
 		Assert.equals(HttpVersion.HTTP_2, backend.lastContext.version);
 		Assert.equals("X-Test: yes", backend.lastContext.headers[0]);
 		Assert.equals("text/plain", backend.lastContext.contentType);
-		Assert.equals("body", backend.lastContext.data);
+		// Typed now (HTTPRequestBody): text given as text, which it was not
+		// before, data was Dynamic, the String itself.
+		Assert.isTrue(backend.lastContext.data.isText);
+		Assert.equals("body", backend.lastContext.data.text);
+		Assert.equals("body", backend.lastContext.data.toBytes().toString());
 		Assert.equals(5000, backend.lastContext.timeout);
 		Assert.equals("TestAgent", backend.lastContext.userAgent);
 		Assert.isFalse(backend.lastContext.followRedirects);
