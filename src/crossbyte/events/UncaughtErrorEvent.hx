@@ -54,11 +54,16 @@ class UncaughtErrorEvent extends Event {
 
 	/**
 		What the failing callback belonged to, where that is known: the socket
-		whose handler threw. Null otherwise.
-	**/
-	public var origin(default, null):Dynamic;
+		whose handler threw, the task whose listener did. Null otherwise.
 
-	public function new(type:String, error:Dynamic, source:String, origin:Dynamic = null) {
+		Typed `Any`: what it is varies with the source, so it is read through
+		a test and a cast to the type expected --
+		`if (Std.isOfType(event.origin, Socket)) (cast event.origin : Socket).close()`.
+		It was `Dynamic`, which let a field be read from it unchecked.
+	**/
+	public var origin(default, null):Any;
+
+	public function new(type:String, error:Dynamic, source:String, origin:Any = null) {
 		super(type);
 
 		this.error = error;

@@ -248,6 +248,11 @@ entry below says how:
   `KeyValuePair`s of `ListedMap`, `OrderedMap` and `Object.entries()` are
   classes, so code that builds one from another anonymous type, rather than
   a literal, constructs it instead.
+- A listener added for a typed event-type constant must take that event or
+  one it extends: `addEventListener(ProgressEvent.SOCKET_DATA, (e:Event) ->
+  ...)` compiles, `(e:IOErrorEvent) -> ...` no longer does; the same for a
+  `ServerSocket`'s listeners. Read `UncaughtErrorEvent.origin` through a type
+  test and a cast.
 
 ### Added
 - `GlobalTimer.setTimeout` and `setInterval` take a `Void->Void` function by
@@ -1463,6 +1468,18 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- The event-type constants are typed: `Event.CLOSE` is an
+  `EventType<Event>`, `ProgressEvent.SOCKET_DATA` an
+  `EventType<ProgressEvent>`, and so on for `Event`, `FileListEvent`,
+  `IOErrorEvent`, `ProgressEvent`, `ServerSocketConnectEvent`, `ThreadEvent`
+  and `TickEvent`. A listener of the wrong event is refused where it is
+  added; as `String`s they let `addEventListener` take the type from the
+  listener, so any listener fit. A listener of a supertype, `Event->Void`,
+  still fits. `TaskEvent`'s stay `String`s, since a task's event carries its
+  own result type. `ServerSocket.addEventListener` and `removeEventListener`
+  check their listener against the type as every other dispatcher does,
+  where they took `Dynamic->Void`.
+- `UncaughtErrorEvent.origin` is `Any`, where it was `Dynamic`.
 - `crossbyte.Object` drops `@:generic`, which did nothing. `values()` and
   `entries()` no longer make a closure, and `entries()` an anonymous object
   per field. `Event.target`'s doc says how to read it typed.
@@ -2565,6 +2582,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A server under a connection storm takes what is waiting in its listen
+  queue until it is empty, before the runtime waits. A pass took
+  `maxAcceptsPerTick` connections and left the rest for the next frame, and
+  meanwhile the queue -- 200 on a client edition of Windows -- filled and the
+  kernel refused the connections arriving.
 - On the jvm, neko, HashLink and the interpreter, two runtimes reading
   sockets at once no longer hand one client's bytes to another client's
   connection. The socket read buffer is shared per thread, as it already

@@ -14,6 +14,7 @@ import crossbyte.errors.RangeError;
 import crossbyte.errors.Error as CBError;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
+import crossbyte.events.EventType;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.net.Socket as CBSocket;
 import crossbyte.net._internal.RuntimeHandOff;
@@ -133,9 +134,9 @@ class ServerSocket extends EventDispatcher {
 		128 to 4096 on Linux -- and refuses any that arrive while it is full.
 		Taking one a tick, as this server used to, spent 190 ticks clearing 190
 		waiting connections, and a login burst larger than the queue was
-		refused by the kernel before the server saw it. The cap keeps one wake
-		from being spent entirely on arrivals: what is left is taken at the
-		next.
+		refused by the kernel before the server saw it. The cap keeps one pass
+		from being spent entirely on arrivals: what is left is taken by the
+		next, which the runtime makes at once, before it waits.
 
 		Node accepts as connections arrive, so it has no use for this.
 	**/
@@ -1775,10 +1776,22 @@ class ServerSocket extends EventDispatcher {
 	@:noCompletion private function __onListenerReadable():Void {
 		var started:Int = __pendingHandshakes == null ? 0 : __pendingHandshakes.length;
 		var limit:Int = maxAcceptsPerTick < 1 ? 1 : maxAcceptsPerTick;
-		for (_ in 0...limit) {
+		var taken:Int = 0;
+		while (taken < limit) {
 			if (!__acceptOne()) {
 				break;
 			}
+			taken++;
+		}
+
+		// Stopped at the cap with more likely waiting: the loop polls again
+		// before it sleeps, as it does for a socket that stopped at its read
+		// budget, rather than leaving the rest in the listen queue for a
+		// frame. Under a connection storm the queue -- 200 on a client
+		// edition of Windows -- filled during that frame, and the kernel
+		// refused the connections arriving while it was full.
+		if (taken >= limit && __pollRuntime != null) {
+			@:privateAccess __pollRuntime.__noteMoreToRead();
 		}
 
 		// Once for the lot rather than once per arrival: a pump steps every
@@ -1952,7 +1965,7 @@ class ServerSocket extends EventDispatcher {
 		dispatchEvent(new crossbyte.events.IOErrorEvent(crossbyte.events.IOErrorEvent.IO_ERROR, message));
 	}
 
-	override public function addEventListener(type:String, listener:Dynamic->Void, priority:Int = 0):Void {
+	override public function addEventListener<T>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
 		super.addEventListener(type, listener, priority);
 
 		if (type == Event.CONNECT) {
@@ -1966,7 +1979,7 @@ class ServerSocket extends EventDispatcher {
 		}
 	}
 
-	override public function removeEventListener(type:String, listener:Dynamic->Void):Void {
+	override public function removeEventListener<T>(type:EventType<T>, listener:T->Void):Void {
 		super.removeEventListener(type, listener);
 
 		if (type == Event.CONNECT) {
