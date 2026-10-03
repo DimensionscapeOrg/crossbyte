@@ -258,6 +258,13 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 
 	@:noCompletion private var __bound:Bool = false;
 	@:noCompletion private var __cbInstance:CrossByte;
+
+	/**
+		Handed each datagram before any listener, with no event made for it;
+		see `DatagramReceiver`. Set through `__setReceiver`, which polls the
+		socket for it as a listener would be.
+	**/
+	@:noCompletion public var __receiver(default, null):crossbyte.net._internal.DatagramReceiver = null;
 	#if cpp
 	// What senders handed this socket during the pass, gathered for one call
 	// when the pass ends; see __sendInPass. Kept between passes, emptied.
@@ -313,6 +320,13 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	// datagram used to cost a Host, its formatting, and a getsockname() call.
 	@:noCompletion private var __sourceHost:Int = 0;
 	@:noCompletion private var __sourceText:String = null;
+
+	// And what the last few hundred did, by host: a server's datagrams come
+	// from many peers in turn, so the last one's alone missed nearly every
+	// time and each named its sender afresh. One slot per host's low bits, a
+	// new one taking the slot over; made on first use.
+	@:noCompletion private var __sourceHosts:haxe.ds.Vector<Int> = null;
+	@:noCompletion private var __sourceTexts:haxe.ds.Vector<String> = null;
 	@:noCompletion private var __localText:String = null;
 	@:noCompletion private var __localNumber:Int = 0;
 
@@ -1016,6 +1030,9 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	override public function addEventListener<T>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
 		var shouldSync:Bool = type == DatagramSocketDataEvent.DATA && !hasEventListener(DatagramSocketDataEvent.DATA);
 		super.addEventListener(type, listener, priority);
+		if (type == DatagramSocketDataEvent.DATA) {
+			__hasDataListener = true;
+		}
 		if (shouldSync) {
 			__syncPolling();
 		}
@@ -1024,8 +1041,19 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	override public function removeEventListener<T>(type:EventType<T>, listener:T->Void):Void {
 		super.removeEventListener(type, listener);
 		if (type == DatagramSocketDataEvent.DATA && !hasEventListener(DatagramSocketDataEvent.DATA)) {
+			__hasDataListener = false;
 			__syncPolling();
 		}
+	}
+
+	// Whether anyone listens for DATA, kept rather than asked for each
+	// datagram a receiver has already taken.
+	@:noCompletion private var __hasDataListener:Bool = false;
+
+	/** Sets, or with null clears, the `DatagramReceiver` each datagram goes to first. **/
+	@:noCompletion public function __setReceiver(receiver:crossbyte.net._internal.DatagramReceiver):Void {
+		__receiver = receiver;
+		__syncPolling();
 	}
 
 	#if !nodejs
@@ -1072,16 +1100,27 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 				}
 			}
 
-			// An IPv4 source is its number; an IPv6 one is named afresh.
+			// An IPv4 source is its number, named once; an IPv6 one is named
+			// afresh.
 			var source:String = __sourceText;
-			if (source == null || __tempAddress.host != __sourceHost || @:privateAccess __tempAddress.ipv6 != null) {
+			if (@:privateAccess __tempAddress.ipv6 != null) {
 				source = IPv6.compress(__tempAddress.getHost().toString());
-				__sourceText = @:privateAccess __tempAddress.ipv6 == null ? source : null;
+			} else if (source == null || __tempAddress.host != __sourceHost) {
+				source = __sourceOf(__tempAddress.host);
+				__sourceText = source;
 				__sourceHost = __tempAddress.host;
 			}
 
 			var payload:ByteArray = ByteArray.fromBytes(packetBytes);
 			payload.endian = __endian;
+
+			processed++;
+			if (__receiver != null) {
+				__receiver.__receiveDatagram(payload, source, __tempAddress.port);
+				if (!__hasDataListener) {
+					continue;
+				}
+			}
 
 			dispatchEvent(new DatagramSocketDataEvent(
 				DatagramSocketDataEvent.DATA,
@@ -1091,8 +1130,6 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 				__localText != null ? __localNumber : 0,
 				payload
 			));
-
-			processed++;
 		}
 
 		// Stopped at the cap, not at an empty socket: the loop is told, so
@@ -1103,6 +1140,24 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			@:privateAccess __cbInstance.__noteMoreToRead();
 		}
 	}
+
+	/** An IPv4 source host's text, from the cache by host or made and kept there. **/
+	@:noCompletion private function __sourceOf(host:Int):String {
+		if (__sourceHosts == null) {
+			__sourceHosts = new haxe.ds.Vector<Int>(SOURCE_SLOTS);
+			__sourceTexts = new haxe.ds.Vector<String>(SOURCE_SLOTS);
+		}
+		var slot:Int = (host ^ (host >>> 8) ^ (host >>> 16) ^ (host >>> 24)) & (SOURCE_SLOTS - 1);
+		var text:String = __sourceTexts[slot];
+		if (text == null || __sourceHosts[slot] != host) {
+			text = IPv6.compress(__tempAddress.getHost().toString());
+			__sourceTexts[slot] = text;
+			__sourceHosts[slot] = host;
+		}
+		return text;
+	}
+
+	@:noCompletion private static inline var SOURCE_SLOTS:Int = 256;
 
 	public inline function registryOnWritable():Void {}
 
@@ -1336,7 +1391,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		// has already set.
 		return;
 		#else
-		var shouldPoll:Bool = __receiving && hasEventListener(DatagramSocketDataEvent.DATA);
+		var shouldPoll:Bool = __receiving && (__receiver != null || hasEventListener(DatagramSocketDataEvent.DATA));
 		if (shouldPoll && !__registered && __cbInstance != null && __socket != null) {
 			__cbInstance.registerSocket(__socket);
 			__registered = true;
@@ -1446,6 +1501,13 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 
 		var payload:ByteArray = ByteArray.fromBytes(Bytes.ofData(message.buffer.slice(message.byteOffset, message.byteOffset + message.byteLength)));
 		payload.endian = __endian;
+
+		if (__receiver != null) {
+			__receiver.__receiveDatagram(payload, source, remote.port);
+			if (!__hasDataListener) {
+				return;
+			}
+		}
 
 		dispatchEvent(new DatagramSocketDataEvent(DatagramSocketDataEvent.DATA, source, remote.port, __localAddress, __localPort, payload));
 	}

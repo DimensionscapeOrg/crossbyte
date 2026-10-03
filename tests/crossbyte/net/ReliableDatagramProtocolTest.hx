@@ -112,7 +112,7 @@ class ReliableDatagramProtocolTest extends utest.Test {
 		for (i in 0...scratch.length) {
 			scratch[i] = 0xAA;
 		}
-		var written = ReliableDatagramProtocol.encodeInto(scratch, PACKET, 0x80000001, payload, 3, 4, true, 0xFFFFFFFE, true);
+		var written = ReliableDatagramProtocol.encodeInto(scratch, PACKET, 0x80000001, payload, 3, 4, true, 0xFFFFFFFE, true, true);
 
 		Assert.equals(expected.length, written);
 		var same = true;

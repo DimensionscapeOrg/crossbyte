@@ -238,6 +238,10 @@ entry below says how:
   meant three and twenty seconds: pass the time wanted, or leave the
   argument out for the default. `StunClient.classifyFiltering` fails for 0,
   and a dial throws for a negative timeout.
+- A reliable session holds an acknowledgement for up to 25 ms (`ackDelay`)
+  for something it sends to carry it. Set `ackDelay` to 0, on the socket or
+  on `ReliableDatagramServerSocket`, for one every pass as before; a peer on
+  1.0.0-rc.1 is acknowledged every pass either way.
 
 ### Added
 - A load and churn harness, `ci/load.hxml` (`tests/load`), run by hand as
@@ -1447,6 +1451,37 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A reliable session holds the acknowledgement of what arrives in order for
+  up to 25 ms, `ReliableDatagramSocket.ackDelay`, as QUIC holds one for its
+  `max_ack_delay`, for something of its own to carry it. A game server's
+  session, taking an input a tick and sending a state a tick, sent half its
+  datagrams for acknowledgements alone. One goes at once for a frame out of
+  order, a duplicate or one that fills a gap, for the second frame not yet
+  acknowledged, and for a peer on 1.0.0-rc.1, which cannot be told; one that
+  goes alone says how long it was held, and the peer measures its round trip
+  without the hold and waits that much longer before it sends anything
+  again. A HANDSHAKE now carries the value, and a change to it is sent at
+  once. `ReliableDatagramServerSocket.ackDelay` sets it for the sessions a
+  server accepts. Measured on a server of 500 sessions at 30 Hz, each
+  sending it a 16-byte input a tick and sent a 64-byte reliable and a
+  128-byte sequenced message, over 10 s: it read 150,600 datagrams where it
+  read 300,800, sent 151,900 where it sent 301,300, and spent 4.3 s of CPU
+  where it spent 5.4, its kernel time 2.3-2.9 s where it was 4.0.
+- A reliable datagram reaches its session without being copied or wrapped on
+  the way. The socket hands it over directly rather than as an event when
+  nothing else listens; the frame is decoded into one the session keeps, and
+  a whole datagram's payload is used where it lies; an empty ACK makes no
+  payload; the acknowledgement is an `Int` with a flag rather than a
+  `Null<Int>`, an object natively; a server finds a session by address
+  without building a string key; a source address is not formatted again for
+  every datagram; and the retransmission check is not a closure and a walk
+  of a map's keys. Measured over 200 sessions: 416-454 bytes allocated a
+  datagram before, 249-252 now, with `ackDelay` 0 so that both send as many;
+  with it, 333-373 KB a round of 200 sessions before, 191 KB now.
+- A `ReliableDatagramSocket` in `STREAM` mode appends what arrives to what
+  is unread, where each frame copied all the unread input into a new buffer,
+  so a reader a megabyte behind paid for the megabyte with every frame: CPU
+  per megabyte received, 766-875 ms before, 8-12 ms now.
 - On eval HTTP/2 works, and the HTTP/1.1 client keeps connections for the
   next request to their origin, as on every other target with threads.
   Both were off there because eval raised a reset connection's error past
