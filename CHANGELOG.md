@@ -1460,6 +1460,13 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A `ServerWebSocket` keeps its open sessions where it can take one out at
+  once, each session knowing its place, where every connection searched the
+  list of sessions for it and every close searched it again: a session's
+  arrival and departure took 4.1-4.9 µs at 1,000 sessions and 40-43 µs at
+  10,000, and take 0.12-0.31 µs at either. On the jvm a TLS session's socket
+  is cast once, not on every pump. The framing layer's handlers and events
+  are typed rather than `Dynamic`.
 - `Membership.sweep()` looks at no node until the earliest heard from is
   `timeout` old -- with heartbeats arriving, once a timeout rather than
   every tick -- and walks a list when it does, where it walked the map's

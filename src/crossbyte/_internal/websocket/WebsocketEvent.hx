@@ -2,9 +2,14 @@ package crossbyte._internal.websocket;
 
 // Not built for the browser: server-side WebSocket framing over a raw socket. A page uses the browser's own WebSocket through crossbyte.net.Socket.
 #if !(js && !nodejs)
+import crossbyte.io.ByteArray;
 
 /**
- * ...
+ * What a framed session tells its owner, `crossbyte.net.WebSocket`: it
+ * opened, a message arrived, something failed, it closed. Typed, where its
+ * payload was `Dynamic` and read back as a `ByteArray` or a `String` by a
+ * checked conversion for every message.
+ *
  * @author Christopher Speciale
  */
 class WebsocketEvent {
@@ -14,9 +19,17 @@ class WebsocketEvent {
 	public static var CLOSE:String = "close";
 
 	public var type:String;
-	public var target:Dynamic;
-	public var data:Dynamic;
-	public var code:Null<Int>;
+	public var target:WebSocket;
+
+	/** On a message: what it carried. **/
+	public var message:ByteArray;
+
+	/** On an error: what went wrong. **/
+	public var text:String;
+
+	/** On a close: its code, or 0 for none. **/
+	public var code:Int;
+
 	public var reason:Null<String>;
 
 	/** On a message: whether it was sent as text rather than binary. **/
@@ -28,10 +41,11 @@ class WebsocketEvent {
 	**/
 	public var errorID:Int = 0;
 
-	public function new(type:String, target:WebSocket, ?data:Dynamic, ?code:Int, ?reason:String) {
+	public function new(type:String, target:WebSocket, ?message:ByteArray, ?text:String, code:Int = 0, ?reason:String) {
 		this.type = type;
 		this.target = target;
-		this.data = data;
+		this.message = message;
+		this.text = text;
 		this.code = code;
 
 		if (type == CLOSE && reason == null) {
