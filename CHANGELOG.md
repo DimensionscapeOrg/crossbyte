@@ -331,6 +331,12 @@ entry below says how:
   each row, with no object made for a row. On SQLite, natively, the same
   SELECT of 20,000 rows of 8 columns reads at 320-480 ns a row this way;
   on Postgres at 260-340 ns a row, from the block the bridge sends.
+- `HTTPServerConfig.fileCacheSize` (default 16 MB, `0` for none): static
+  files of 256 KB or less are kept in memory once read, and served from
+  there while the size and modification time read on each request are as
+  they were. A file modified in the last two seconds is not kept, so one
+  rewritten twice within a second at the same size is never served as it
+  first was. Every request read the file from disk again.
 - A load and churn harness, `ci/load.hxml` (`tests/load`), run by hand as
   the soak is: a reliable-UDP game server at 30 or 60 ticks a second with
   its clients in other processes; HTTP/1.1, HTTP/2 and WebSocket clients
@@ -1894,6 +1900,16 @@ entry below says how:
 - A statement's text is split at its placeholders once and kept, where it
   was copied a character at a time on every run, placeholder or none:
   a SELECT with no placeholder costs 32-42 ns there instead of 240-410.
+- The HTTP server asks the system about a static file once: whether it is
+  there, a directory, its size and modification time, in one call (one
+  `stat` and an exact size natively, one `readAttributes` on the jvm, one
+  `statSync` on Node), shared by the resolver and the handler, where it
+  asked seven times. A precompressed sibling is one call where it was up to
+  four, and the document root is normalized once rather than for every
+  path. Small files are also kept in memory (see `fileCacheSize`). A 79-byte
+  static file cost the server 125 us of CPU natively where it cost 345
+  (kernel time 84 us where it was 267; medians of four interleaved runs on
+  a busy machine).
 - An HTTP/2 response body the server made, or keeps and never changes, is
   queued as it is rather than copied, and each frame is written into the
   socket from where its bytes lie, its 9-byte header, then the slice of

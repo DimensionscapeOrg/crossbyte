@@ -113,6 +113,30 @@ class HTTPServerConfig {
 	public var compression:HTTPCompression = new HTTPCompression();
 
 	/**
+		Bytes of small static files kept in memory, so a file read once is
+		served from memory while its size and modification time stay as they
+		were, they are read on every request, which is how a change is seen.
+		Defaults to 16 MB; `0` keeps nothing. Files over 256 KB, which are
+		streamed from disk, are not kept, and neither is a file modified in the
+		last two seconds: a modification time is often whole seconds, so a
+		file written twice within one, at the same size, would otherwise be
+		served as it first was.
+
+		Every request for a static file read it from disk again: an open, a
+		read and a close on the runtime's thread.
+	**/
+	public var fileCacheSize(default, set):Int = 16 * 1024 * 1024;
+
+	// The kept files: shared by the servers this configuration starts, which
+	// may run on several runtimes' threads, and locked per call.
+	@:noCompletion private final __keptFiles:crossbyte._internal.http.KeptBodies = new crossbyte._internal.http.KeptBodies(16 * 1024 * 1024);
+
+	@:noCompletion private function set_fileCacheSize(value:Int):Int {
+		__keptFiles.budget = value;
+		return fileCacheSize = value;
+	}
+
+	/**
 		Asked, with the request's method, path and headers, whether a request
 		carrying `Expect: 100-continue` may send its body. Return `true` to let
 		it; to refuse, answer with `handler.respond()`, a `401`, say, and
