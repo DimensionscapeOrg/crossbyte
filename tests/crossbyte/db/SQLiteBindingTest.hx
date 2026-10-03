@@ -11,6 +11,8 @@ import crossbyte.errors.SQLError;
 import crossbyte.test.Require;
 import haxe.Int64;
 import haxe.io.Bytes;
+import sys.thread.Lock;
+import sys.thread.Thread;
 import utest.Assert;
 
 /**
@@ -180,6 +182,95 @@ class SQLiteBindingTest extends utest.Test {
 		Assert.equals(50, __rows(again, "SELECT COUNT(*) AS n FROM t")[0].n);
 		again.close();
 		sys.FileSystem.deleteFile(path);
+	}
+
+	/**
+		A connection let go without `close()` is closed when the collector
+		takes it, as the glue's finalizer closed it before statements were
+		kept: with one kept, SQLite refused that close, and the database
+		stayed open, its file locked, for the life of the process.
+	**/
+	public function testAConnectionLetGoUnclosedIsClosedWhenCollected():Void {
+		var directory:String = haxe.io.Path.join([Sys.getCwd(), "export"]);
+
+		if (!sys.FileSystem.exists(directory)) {
+			sys.FileSystem.createDirectory(directory);
+		}
+
+		var path:String = haxe.io.Path.join([directory, "sqlite-let-go-" + Std.random(0x7FFFFFFF) + ".db"]);
+
+		// Opened and let go on a thread of its own, which then ends: nothing
+		// of the connection is left on a stack or in a register for the
+		// collector to take as a reference to it.
+		var opened:Lock = new Lock();
+		var weak:cpp.vm.WeakRef<SQLiteConnection> = null;
+		var failure:String = null;
+		Thread.create(() -> {
+			try {
+				weak = __openAndLetGo(path);
+			} catch (e:Dynamic) {
+				failure = Std.string(e);
+			}
+
+			opened.release();
+		});
+
+		Assert.isTrue(opened.wait(10.0), "the connection was never opened");
+		Assert.isNull(failure);
+
+		if (weak == null) {
+			return;
+		}
+
+		// The collections first, and the reference read only after them: read
+		// between them, it is on this frame, and the collector keeps it.
+		for (_ in 0...10) {
+			cpp.vm.Gc.run(true);
+			crossbyte.sys.System.sleep(0.01);
+		}
+
+		// What the test stands on: the connection is gone.
+		if (!__gone(weak)) {
+			Assert.fail("The connection let go was still reachable after ten collections, so there is nothing to judge.");
+			return;
+		}
+
+		// Closed: its exclusive lock is gone, and another connection writes.
+		var other:SQLiteConnection = new SQLiteConnection();
+		var wrote:String = try {
+			other.open(path, SQLiteMode.UPDATE, false, 4096);
+			other.request("INSERT INTO t VALUES (2)");
+			"";
+		} catch (e:Dynamic) {
+			Std.string(e);
+		}
+
+		Assert.equals("", wrote, "the database let go is still open");
+
+		if (wrote == "") {
+			Assert.equals(2, __rows(other, "SELECT COUNT(*) AS n FROM t")[0].n);
+			other.close();
+
+			try {
+				sys.FileSystem.deleteFile(path);
+			} catch (_:Dynamic) {}
+		}
+	}
+
+	// Opens a file in exclusive locking mode, writes, keeps a statement, and
+	// lets go of the connection without closing it.
+	private static function __openAndLetGo(path:String):cpp.vm.WeakRef<SQLiteConnection> {
+		var connection:SQLiteConnection = new SQLiteConnection();
+		connection.open(path, SQLiteMode.CREATE, false, 4096);
+		connection.request("PRAGMA locking_mode = EXCLUSIVE");
+		connection.request("CREATE TABLE t (x)");
+		connection.request("INSERT INTO t VALUES (1)");
+		__rows(connection, "SELECT x FROM t");
+		return new cpp.vm.WeakRef(connection);
+	}
+
+	private static function __gone(weak:cpp.vm.WeakRef<SQLiteConnection>):Bool {
+		return weak.get() == null;
 	}
 
 	public function testExecuteEachReadsEveryColumnByIndex():Void {
