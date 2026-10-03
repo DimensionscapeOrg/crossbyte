@@ -248,6 +248,12 @@ function worker(index) {
       }
       time(name, now() - sent);
       count(name + '.ops');
+      if (response.closing && !last) {
+        // The server retiring the connection, keepAliveMaxRequests, which
+        // a browser answers with a new one.
+        count(name + '.retired');
+        break;
+      }
       if (!last) await think();
     }
     // The server closes after a `Connection: close` response: wait for it, so
@@ -268,11 +274,12 @@ function worker(index) {
             const m = /content-length:\s*(\d+)/i.exec(head);
             if (!m) { clearTimeout(timer); waiting = null; resolve({ error: 'no content-length' }); return; }
             const length = +m[1];
+            const closing = /connection:\s*close/i.test(head);
             if (buffer.length >= end + 4 + length) {
               buffer = buffer.slice(end + 4 + length);
               clearTimeout(timer);
               waiting = null;
-              resolve({ status, length });
+              resolve({ status, length, closing });
               return;
             }
           }
@@ -309,9 +316,13 @@ function worker(index) {
     }
     const client = http2.connect((secure ? 'https' : 'http') + '://localhost:' + port, { createConnection: () => socket });
     let failed = null;
+    // The server retiring the connection, keepAliveMaxRequests, ends the
+    // session early, as a browser would move to a new connection.
+    let retired = false;
+    client.on('goaway', () => { retired = true; });
     client.on('error', (e) => { failed = failed || (e.code || e.message); });
     count(name + '.sessions');
-    for (let i = 0; i < ops && !failed; i++) {
+    for (let i = 0; i < ops && !failed && !retired; i++) {
       const sent = now();
       const post = i % 3 === 1;
       const body = post ? crypto.randomBytes(256 + Math.floor(Math.random() * 1024)) : null;
@@ -332,6 +343,11 @@ function worker(index) {
         req.on('error', (e) => { clearTimeout(timer); resolve({ error: e.code || e.message }); });
         if (post) req.end(body); else req.end();
       });
+      if (result.error === 'ERR_HTTP2_GOAWAY_SESSION' || (result.error && retired)) {
+        // Sent as the server's GOAWAY crossed it: not taken, safe elsewhere.
+        count(name + '.retired');
+        break;
+      }
       if (result.error || failed) {
         fail(name, result.error || failed);
         client.destroy();
@@ -346,9 +362,14 @@ function worker(index) {
       count(name + '.ops');
       if (i < ops - 1) await think();
     }
+    // The session's own close event, not close()'s callback: a session that
+    // took the server's GOAWAY has closed itself already, and close() then
+    // returns without ever calling back.
     await new Promise((resolve) => {
+      if (client.destroyed) { resolve(); return; }
       const timer = setTimeout(() => { fail(name, 'close timeout'); client.destroy(); resolve(); }, a.timeout);
-      client.close(() => { clearTimeout(timer); resolve(); });
+      client.once('close', () => { clearTimeout(timer); resolve(); });
+      client.close();
     });
     if (failed && failed !== 'ERR_HTTP2_GOAWAY_SESSION') fail(name, failed);
   }
