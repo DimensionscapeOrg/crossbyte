@@ -455,12 +455,29 @@ class BrowserInteropPeer {
 			if (!lost) {
 				var packet = SctpPacket.decode(payload, false);
 
-				for (chunk in (packet == null ? [] : packet.chunks)) {
-					var data = SctpDataChunk.fromChunk(chunk);
+				if (packet != null) {
+					// Only that message's chunk is lost, not the packet it rides in.
+					// A channel's sends in one pass go out bundled in one packet, so
+					// "kept-1" to "kept-5" travel with "lost": dropping the whole
+					// packet lost them all, and on a channel that sends each message
+					// once the browser rightly had nothing to deliver.
+					var kept:Array<SctpChunk> = [];
 
-					if (data != null && data.streamId == channel.id && data.protocolId == SctpDataChunk.PPID_STRING) {
-						lost = true;
-						say({event: "lost", tsn: data.tsn});
+					for (chunk in packet.chunks) {
+						var data = SctpDataChunk.fromChunk(chunk);
+
+						if (!lost && data != null && data.streamId == channel.id && data.protocolId == SctpDataChunk.PPID_STRING) {
+							lost = true;
+							say({event: "lost", tsn: data.tsn});
+							continue;
+						}
+						kept.push(chunk);
+					}
+
+					if (lost) {
+						if (kept.length > 0) {
+							send(new SctpPacket(packet.sourcePort, packet.destinationPort, packet.verificationTag, kept).encode());
+						}
 						return;
 					}
 				}
