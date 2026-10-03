@@ -256,7 +256,7 @@ class ServerWebSocket extends ServerSocket {
 	// `ServerSocket` bounds this for its own accepts by deferring the TLS
 	// handshake and sweeping deadlines from the tick. This class overrides
 	// `this_onTick` and accepts through its own path, so it never populated
-	// that queue and never swept it, proposal 0010 recorded the gap and it
+	// that queue and never swept it, a review recorded the gap, and it
 	// is this list that closes it. One deadline covers both ways an upgrade
 	// can stall: a peer that finishes the TCP connection and then says nothing
 	// during TLS, and one that completes TLS and never sends the HTTP upgrade.

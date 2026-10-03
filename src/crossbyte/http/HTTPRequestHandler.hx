@@ -2777,7 +2777,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// The header loop and the body readers leave position exactly one
 		// byte past the request's framing, so everything beyond it is the
 		// next pipelined request and must survive the reset, clearing
-		// it here is the hang the proposal exists to avoid.
+		// it here is the hang this exists to avoid.
 		var surplus:Int = __incomingBuffer.length - __incomingBuffer.position;
 		if (surplus > 0) {
 			// Allocate-and-swap rather than compacting in place: a
