@@ -757,7 +757,7 @@ class Http {
 					var offset:Int = 0;
 
 					while (offset < total) {
-						var n:Int = __socket.input.readBytes(data, offset, total - offset);
+						var n:Int = __readInto(data, offset, total - offset);
 						if (n <= 0) {
 							break;
 						}
@@ -825,7 +825,7 @@ class Http {
 							throw "Chunked response exceeded maximum size of " + MAX_CHUNKED_BODY_SIZE + " bytes";
 						}
 
-						var chunk:Bytes = __socket.input.read(chunkSize);
+						var chunk:Bytes = __readExact(chunkSize);
 						if (chunk == null || chunk.length != chunkSize)
 							throw "Truncated chunk";
 						buffer.add(chunk);
@@ -833,7 +833,7 @@ class Http {
 						bytesLoaded += chunkSize;
 						onProgress(bytesLoaded, bytesTotalForProgress);
 
-						var lineEnd:Bytes = __socket.input.read(2);
+						var lineEnd:Bytes = __readExact(2);
 						if (lineEnd == null || lineEnd.length != 2 || lineEnd.get(0) != 13 || lineEnd.get(1) != 10) {
 							throw "Invalid chunk terminator";
 						}
@@ -846,7 +846,7 @@ class Http {
 					while (true) {
 						var n:Int;
 						try {
-							n = __socket.input.readBytes(b, 0, b.length);
+							n = __readInto(b, 0, b.length);
 						} catch (_:haxe.io.Eof) {
 							// The connection closing is how this body ends.
 							n = 0;
@@ -1184,7 +1184,9 @@ class Http {
 		#if sys
 		var connection:Null<String> = __responseHeaders.get("connection");
 		var closing:Bool = connection != null && connection.toLowerCase().indexOf("close") >= 0;
-		if (framed && __pooling() && __responseHttp11 && !closing && __socket != null && __version == HttpVersion.HTTP_1_1) {
+		// Not with bytes read ahead past the response: nothing a server sends
+		// unasked belongs to the next request on the connection.
+		if (framed && __pooling() && __responseHttp11 && !closing && __socket != null && __version == HttpVersion.HTTP_1_1 && __inPos >= __inEnd) {
 			// Out of a cancel's reach first: a cancel shutting down a
 			// connection already back in the pool would hand the next request
 			// to this origin a dead one.
@@ -1345,56 +1347,140 @@ class Http {
 	private var __lineBytes:Int = 0;
 
 	/**
+		What the connection has sent and the response not yet read: the bytes
+		of `__in` from `__inPos` to `__inEnd`. The head was read a byte at a
+		time, and a byte read from a socket is a `recv()`, a third of what a
+		small response cost the client, and more the longer its head. Now a
+		read takes what has arrived, up to `READ_AHEAD`, and the head's lines
+		and then the body come out of that before the socket is asked again.
+
+		Emptied as each request is written, so only one response's bytes are
+		ever here; a connection with any left after its response is not kept
+		(see __release).
+	**/
+	private var __in:Null<Bytes> = null;
+
+	private var __inPos:Int = 0;
+	private var __inEnd:Int = 0;
+
+	private static inline var READ_AHEAD:Int = 16 * 1024;
+
+	/**
+		Reads ahead into `__in`: what the socket has, at least a byte. Throws
+		`Eof` at the end of the stream, as a socket's input does.
+	**/
+	private function __fill():Void {
+		if (__in == null) {
+			__in = Bytes.alloc(READ_AHEAD);
+		}
+		var n:Int = __socket.input.readBytes(__in, 0, READ_AHEAD);
+		if (n <= 0) {
+			throw new haxe.io.Eof();
+		}
+		__inPos = 0;
+		__inEnd = n;
+	}
+
+	/**
+		Up to `length` bytes into `target` from `offset`: what was read ahead
+		first, then straight from the socket into `target`. As
+		`Input.readBytes`: how many, at least one, or `Eof`.
+	**/
+	private function __readInto(target:Bytes, offset:Int, length:Int):Int {
+		var ahead:Int = __inEnd - __inPos;
+		if (ahead > 0) {
+			var n:Int = ahead < length ? ahead : length;
+			target.blit(offset, __in, __inPos, n);
+			__inPos += n;
+			return n;
+		}
+		return __socket.input.readBytes(target, offset, length);
+	}
+
+	/** `count` bytes, or `Eof` before they have all arrived, as `Input.read`. */
+	private function __readExact(count:Int):Bytes {
+		var out:Bytes = Bytes.alloc(count);
+		var at:Int = 0;
+		while (at < count) {
+			var n:Int = __readInto(out, at, count - at);
+			if (n <= 0) {
+				throw haxe.io.Error.Blocked;
+			}
+			at += n;
+		}
+		return out;
+	}
+
+	/**
 	 * One line of the response without its line ending, or `Eof` when the
 	 * stream ends before any of it. Throws `LineTooLong` once more than
 	 * `limit` bytes have arrived without the line ending: this was
 	 * `Input.readLine`, which read a line for as long as the server kept it
 	 * going, into memory, with no bound at all.
 	 *
-	 * A byte at a time, as `readLine` read, so nothing past the line is taken
-	 * from the body. On eval through `readBytes`: a socket's `readByte` there
-	 * answers 0 at the end of the stream rather than throwing, so a server
-	 * closing without an answer read as endless NUL bytes, the line never
-	 * ended, and `load()` never returned.
+	 * Out of what was read ahead (`__in`), which keeps what follows the line
+	 * for whatever reads next, the next line, or the body. It was read a
+	 * byte at a time, a socket read each, so that nothing past the line was
+	 * taken from the body. (On eval a socket's `readByte` answers 0 at the end
+	 * of the stream rather than throwing, which a read of many bytes does not
+	 * share: it says so as `Eof`.)
 	 */
 	private function __readLine(limit:Int):String {
-		var input:haxe.io.Input = __socket.input;
-		var line:BytesBuffer = new BytesBuffer();
+		var spill:Null<BytesBuffer> = null;
 		var count:Int = 0;
 		var read:Bool = false;
-		#if eval
-		var one:Bytes = Bytes.alloc(1);
-		#end
 		while (true) {
-			var byte:Int;
-			try {
-				#if eval
-				input.readBytes(one, 0, 1);
-				byte = one.get(0);
-				#else
-				byte = input.readByte();
-				#end
-			} catch (e:haxe.io.Eof) {
-				if (!read) {
-					throw e;
+			if (__inPos >= __inEnd) {
+				try {
+					__fill();
+				} catch (e:haxe.io.Eof) {
+					if (!read) {
+						throw e;
+					}
+					break;
 				}
-				break;
 			}
-			read = true;
-			if (byte == "\n".code) {
-				break;
+
+			var start:Int = __inPos;
+			var end:Int = __inEnd;
+			var lf:Int = -1;
+			for (i in start...end) {
+				if (__in.get(i) == "\n".code) {
+					lf = i;
+					break;
+				}
 			}
-			if (++count > limit) {
+			var stop:Int = lf >= 0 ? lf : end;
+			if (count + (stop - start) > limit) {
 				throw new LineTooLong(limit);
 			}
-			line.addByte(byte);
+			count += stop - start;
+			read = true;
+			if (lf >= 0) {
+				__inPos = lf + 1;
+				if (spill == null) {
+					__lineBytes = count;
+					return __withoutCR(crossbyte._internal.Utf8.stringOf(__in, start, stop - start));
+				}
+				spill.addBytes(__in, start, stop - start);
+				break;
+			}
+			if (spill == null) {
+				spill = new BytesBuffer();
+			}
+			spill.addBytes(__in, start, stop - start);
+			__inPos = end;
 		}
 		__lineBytes = count;
-		var text:String = line.getBytes().toString();
-		if (text.length > 0 && StringTools.fastCodeAt(text, text.length - 1) == "\r".code) {
-			text = text.substr(0, text.length - 1);
+		if (spill == null) {
+			return "";
 		}
-		return text;
+		var bytes:Bytes = spill.getBytes();
+		return __withoutCR(crossbyte._internal.Utf8.stringOf(bytes, 0, bytes.length));
+	}
+
+	private static inline function __withoutCR(text:String):String {
+		return (text.length > 0 && StringTools.fastCodeAt(text, text.length - 1) == "\r".code) ? text.substr(0, text.length - 1) : text;
 	}
 
 	/**
@@ -1483,16 +1569,23 @@ class Http {
 			// the URL's path, the user agent, the content type, ended its
 			// line and began one of the value's choosing.
 			var target:String = HttpSyntax.encodeRequestTarget(path + queryString);
-			__socket.output.writeString('${__method} ${target} $__version${CRLF}');
-			__socket.output.writeString('User-Agent: ${HttpSyntax.sanitizeHeaderValue(__userAgent)}${CRLF}');
+			// The head is built here and written once: each line was written as
+			// it was made, a send() apiece, and over TLS a record apiece.
+			var head:StringBuf = new StringBuf();
+			// Read ahead from the response before this one, if there was one:
+			// nothing, or the connection would not have been kept.
+			__inPos = 0;
+			__inEnd = 0;
+			head.add('${__method} ${target} $__version${CRLF}');
+			head.add('User-Agent: ${HttpSyntax.sanitizeHeaderValue(__userAgent)}${CRLF}');
 			var hostHeader:String = HttpSyntax.authority(__url.host, __url.port, __url.ssl ? 443 : 80);
-			__socket.output.writeString('Host: ${HttpSyntax.sanitizeHeaderValue(hostHeader)}${CRLF}');
+			head.add('Host: ${HttpSyntax.sanitizeHeaderValue(hostHeader)}${CRLF}');
 			if (__version == HttpVersion.HTTP_1_1 && __pooling()) {
 				// Kept for the next request to this origin if the response
 				// allows it: see HttpConnectionPool.
-				__socket.output.writeString('Connection: ${Connection.KEEP_ALIVE}${CRLF}');
+				head.add('Connection: ${Connection.KEEP_ALIVE}${CRLF}');
 			} else if (__version == HttpVersion.HTTP_1_1 || __version == HttpVersion.HTTP_1) {
-				__socket.output.writeString('Connection: ${Connection.CLOSE}${CRLF}');
+				head.add('Connection: ${Connection.CLOSE}${CRLF}');
 			}
 
 			// Whatever an earlier hop in this same request was handed. Skipped
@@ -1501,16 +1594,16 @@ class Http {
 			if (__cookies != null && !__hasHeader("cookie:")) {
 				var jar:Null<String> = __cookies.headerFor(__url.host, __url.ssl == true);
 				if (jar != null) {
-					__socket.output.writeString('Cookie: ${jar}${CRLF}');
+					head.add('Cookie: ${jar}${CRLF}');
 				}
 			}
 
 			var sentAcceptEncoding:Bool = __hasHeader("accept-encoding:");
 			if (!sentAcceptEncoding) {
-				__socket.output.writeString('Accept-Encoding: ' + crossbyte._internal.http.headers.AcceptEncoding.IDENTITY + CRLF);
+				head.add('Accept-Encoding: ' + crossbyte._internal.http.headers.AcceptEncoding.IDENTITY + CRLF);
 			}
 
-			__writeHeaders();
+			__writeHeaders(head);
 
 			var hasContentType:Bool = false;
 			var hasContentLength:Bool = false;
@@ -1553,14 +1646,15 @@ class Http {
 				// Bytes handed over with no type went out as "Content-Type:
 				// null"; a body with no Content-Type at all is the honest form.
 				if (!hasContentType && __contentType != null) {
-					__socket.output.writeString('Content-Type: ${HttpSyntax.sanitizeHeaderValue(__contentType)}${CRLF}');
+					head.add('Content-Type: ${HttpSyntax.sanitizeHeaderValue(__contentType)}${CRLF}');
 				}
 				if (!hasContentLength) {
-					__socket.output.writeString('$HEADER_CONTENT_LENGTH: ${body.length}${CRLF}');
+					head.add('$HEADER_CONTENT_LENGTH: ${body.length}${CRLF}');
 				}
 			}
 
-			__socket.output.writeString(CRLF);
+			head.add(CRLF);
+			__socket.output.writeString(head.toString());
 
 			if (body != null) {
 				// Full, not writeBytes: that writes what it can and says how
@@ -1596,7 +1690,7 @@ class Http {
 		//__status = 0;
 	}
 
-	private function __writeHeaders():Void {
+	private function __writeHeaders(head:StringBuf):Void {
 		if (__headers == null) {
 			return;
 		}
@@ -1616,7 +1710,7 @@ class Http {
 				continue;
 			}
 
-			__socket.output.writeString(name + ": " + StringTools.trim(HttpSyntax.sanitizeHeaderValue(header.substr(colon + 1))) + CRLF);
+			head.add(name + ": " + StringTools.trim(HttpSyntax.sanitizeHeaderValue(header.substr(colon + 1))) + CRLF);
 		}
 	}
 
