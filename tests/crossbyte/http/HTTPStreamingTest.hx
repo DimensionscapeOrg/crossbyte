@@ -22,8 +22,8 @@ class HTTPStreamingTest extends utest.Test {
 	// of HELD_PIECE bytes each, written whole, see __serveHeld, under an
 	// output cap raised past their total.
 	private static inline var HELD_PIECE:Int = 512 * 1024;
-	private static inline var HELD_PIECES:Int = 48;
-	private static inline var HELD_CAP:Int = 32 * 1024 * 1024;
+	private static inline var HELD_PIECES:Int = 128;
+	private static inline var HELD_CAP:Int = 96 * 1024 * 1024;
 
 	// What the last __serveHeld saw while it waited, for a precondition that
 	// fails: whether the server answered at all, and what it held.
@@ -428,6 +428,11 @@ class HTTPStreamingTest extends utest.Test {
 		Linux's buffers stop at about 10 MB and the jvm's writes at its own.
 		Sends of this size it stops taking, as it stops taking a file pumped
 		out in bursts.
+
+		And more of them than the system will take: late in a full suite,
+		Windows' loopback buffers had grown to take all 24 MB of the 48
+		answers this sent, so nothing was held (5,751 samples of 0 bytes,
+		2026-10-03) where alone it holds 21.5 MB at once. 64 MB now.
 	**/
 	private static function __serveHeld(configure:HTTPServerConfig->Void, lastFields:String,
 			then:(HTTPServer, sys.net.Socket, Bool) -> Void):Void {
