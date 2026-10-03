@@ -17,6 +17,11 @@ import crossbyte.net.Endpoint.__parseListenURL;
  * `NetHost` normalizes TCP, WebSocket, and reliable datagram listeners behind
  * the `INetHost` contract. Accepted clients are surfaced through `onAccept`
  * and later disconnects are forwarded to `onDisconnect`.
+ *
+ * When the underlying `ServerSocket` or `ServerWebSocket` is spread over
+ * several runtimes (`runtimes`, `runtimeCount`), `onAccept` and
+ * `onDisconnect` run on the runtime that serves the connection, so they
+ * must be safe to call from those threads.
  */
 abstract NetHost(INetHost) from INetHost to INetHost {
 	/**

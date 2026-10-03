@@ -85,6 +85,8 @@ class Aedifex {
 		.task("sample-web-server-cpp", "haxe", ["cpp.hxml"], "samples/web-server", "Build the web server sample.")
 		.task("sample-http2-check", "haxe", ["check.hxml"], "samples/http2", "Type-check the HTTP/2 sample.")
 		.task("sample-http2-cpp", "haxe", ["cpp.hxml"], "samples/http2", "Build the HTTP/2 sample.")
+		.task("sample-multicore-check", "haxe", ["check.hxml"], "samples/multicore", "Type-check the multicore sample.")
+		.task("sample-multicore-cpp", "haxe", ["cpp.hxml"], "samples/multicore", "Build the multicore sample.")
 		.task("sample-windows-service-check", "haxe", ["check.hxml"], "samples/windows-service", "Type-check the Windows service sample.")
 		.task("sample-windows-service-cpp", "haxe", ["cpp.hxml"], "samples/windows-service", "Build the Windows service sample.")
 		.task("sample-worker-check", "haxe", ["check.hxml"], "samples/worker", "Type-check the worker sample.")
