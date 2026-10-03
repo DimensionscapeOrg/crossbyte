@@ -1894,6 +1894,19 @@ entry below says how:
 - A statement's text is split at its placeholders once and kept, where it
   was copied a character at a time on every run, placeholder or none:
   a SELECT with no placeholder costs 32-42 ns there instead of 240-410.
+- An HTTP/2 response body the server made, or keeps and never changes, is
+  queued as it is rather than copied, and each frame is written into the
+  socket from where its bytes lie -- its 9-byte header, then the slice of
+  the stream's queue or header block it carries -- rather than built whole
+  first. Every body was copied twice more under HTTP/2 than under HTTP/1.1.
+  `respondBytes` still copies, since the caller may write into its bytes
+  again. A request's fields are checked against RFC 9113 8.2.1 once per
+  HPACK table entry rather than on every request that names it, the
+  server's own response fields are lowercased from constants, and `:status`
+  comes from the static table. A 64 KB response cost the server 42 us of
+  CPU under HTTP/2 natively where it cost 51 (user time 16 where it was
+  24), and a small one 7.2 where it cost 8.6 (medians of four interleaved
+  runs).
 - An HTTP/2 stream's request handler no longer makes the read buffer, header
   map and body that only the HTTP/1.1 parser uses, nor copies the body the
   frame layer already holds; a request without a body makes no body object

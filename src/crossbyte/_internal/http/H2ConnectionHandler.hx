@@ -14,6 +14,8 @@ import crossbyte.core._internal.PassFlush;
 import crossbyte.events.Event;
 import crossbyte.events.ProgressEvent;
 import crossbyte.io.ByteArray;
+import crossbyte.io.ByteArray.ByteArrayData;
+import crossbyte._internal.http.h2.H2Frame;
 import crossbyte.net.Socket;
 import crossbyte.utils.Logger;
 import haxe.io.Bytes;
@@ -92,7 +94,7 @@ class H2ConnectionHandler implements PassFlush {
 		__budget = config.maxOutputBufferSize > 0 ? config.maxOutputBufferSize : 0;
 		__watermark = (__budget > 0 && __budget < HTTPRequestHandler.STREAM_WATERMARK) ? __budget : HTTPRequestHandler.STREAM_WATERMARK;
 
-		__connection = new H2ServerConnection(__send);
+		__connection = new H2ServerConnection(__send, null, __sendFrame);
 		__connection.maxResetStreams = config.http2MaxResetStreams;
 		__connection.resetWindowSeconds = config.http2ResetWindowSeconds;
 		// The limit an HTTP/1.1 body is held to. Without it DATA piled up for
@@ -143,6 +145,38 @@ class H2ConnectionHandler implements PassFlush {
 		// and DATA -- a system call apiece: two a request, where HTTP/1.1
 		// pays one. A frame sent at any other time, an answer that came later,
 		// still goes at once.
+		if (!__receiving) {
+			__flushOut();
+		}
+	}
+
+	// A frame's header, written here and then into the socket ahead of what
+	// it carries: one per connection, a ByteArray so the socket takes it as
+	// it is.
+	private final __frameHead:ByteArray = new ByteArray(H2Frame.HEADER_SIZE);
+
+	/**
+		The frame layer's frames, written straight into the socket: the header
+		from `__frameHead`, then the slice of the stream's queue or header
+		block it carries. Each frame was built whole first, a copy of its
+		payload, and then copied again into the socket. As __send, flushed at
+		once unless a read is being answered.
+	**/
+	private function __sendFrame(type:Int, flags:Int, streamId:Int, payload:Null<Bytes>, offset:Int, length:Int):Void {
+		if (!__socket.connected) {
+			return;
+		}
+
+		var head:ByteArrayData = __frameHead;
+		H2Frame.writeHeaderTo(head, 0, length, type, flags, streamId);
+		__socket.writeBytes(__frameHead, 0, H2Frame.HEADER_SIZE);
+		if (length > 0) {
+			// Taken as it is when it is a ByteArray already -- a body handed
+			// over whole (H2ResponseWriter.writeBodyTaken) -- and wrapped,
+			// not copied, otherwise.
+			__socket.writeBytes(payload, offset, length);
+		}
+
 		if (!__receiving) {
 			__flushOut();
 		}

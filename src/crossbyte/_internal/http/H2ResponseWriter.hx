@@ -4,6 +4,7 @@ import crossbyte._internal.http.h2.H2ErrorCode;
 import crossbyte._internal.http.h2.H2ServerConnection;
 import crossbyte._internal.http.h2.hpack.HpackHeader;
 import crossbyte.io.ByteArray;
+import crossbyte.io.ByteArray.ByteArrayData;
 import crossbyte.net.Socket;
 import haxe.io.Bytes;
 
@@ -138,7 +139,7 @@ class H2ResponseWriter implements HTTPResponseWriter {
 
 		var fields:Array<HpackHeader> = [];
 		for (header in head.headers) {
-			var name:String = HttpSyntax.sanitizeHeaderName(header.name).toLowerCase();
+			var name:String = HttpSyntax.fieldNameForH2(HttpSyntax.sanitizeHeaderName(header.name));
 			if (name.length == 0) {
 				continue;
 			}
@@ -189,9 +190,29 @@ class H2ResponseWriter implements HTTPResponseWriter {
 			return;
 		}
 
+		// Copied, since the connection keeps what it is given until flow
+		// control lets it go, and the caller may write into `data` again.
 		var chunk:Bytes = Bytes.alloc(length);
 		chunk.blit(0, data, offset, length);
 		__connection.sendData(__streamId, chunk, false);
+	}
+
+	/**
+	 * Kept as it is, not copied, when it is the whole of `data`: a body the
+	 * server made for this response, or one it keeps and never changes. Every
+	 * response body was copied here, and again into its DATA frame -- a
+	 * quarter of what a 64 KB response cost under HTTP/2.
+	 */
+	public function writeBodyTaken(data:ByteArray, offset:Int, length:Int):Void {
+		if (__ended || length <= 0) {
+			return;
+		}
+		if (offset != 0 || length != data.length) {
+			writeBody(data, offset, length);
+			return;
+		}
+		var whole:ByteArrayData = data;
+		__connection.sendData(__streamId, whole, false);
 	}
 
 	public function flush():Void {

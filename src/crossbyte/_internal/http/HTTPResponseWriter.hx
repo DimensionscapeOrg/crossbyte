@@ -84,6 +84,13 @@ interface HTTPResponseWriter {
 	/** Appends body bytes. May be called repeatedly while streaming. */
 	function writeBody(data:ByteArray, offset:Int, length:Int):Void;
 
+	/**
+	 * `writeBody`, for bytes the caller hands over: it never changes them
+	 * again, so a writer that holds a body until its peer takes it -- HTTP/2,
+	 * behind flow control -- may keep `data` itself rather than a copy.
+	 */
+	function writeBodyTaken(data:ByteArray, offset:Int, length:Int):Void;
+
 	/** Pushes whatever is queued toward the peer. */
 	function flush():Void;
 

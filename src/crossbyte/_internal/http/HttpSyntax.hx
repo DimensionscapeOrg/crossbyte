@@ -274,6 +274,32 @@ class HttpSyntax {
 	}
 
 	/**
+	 * `name` as HTTP/2 sends it, lowercase (RFC 9113 8.2.1): the fields this
+	 * server writes on every response from constants, and anything else
+	 * through `lowerAscii`. Lowercasing them made a new string for each
+	 * field of every response.
+	 */
+	public static function fieldNameForH2(name:String):String {
+		return switch (name) {
+			case "Date": "date";
+			case "Content-Type": "content-type";
+			case "X-Content-Type-Options": "x-content-type-options";
+			case "Server": "server";
+			case "Content-Length": "content-length";
+			case "Content-Encoding": "content-encoding";
+			case "Vary": "vary";
+			case "Last-Modified": "last-modified";
+			case "Accept-Ranges": "accept-ranges";
+			case "ETag": "etag";
+			case "Cache-Control": "cache-control";
+			case "Location": "location";
+			case "Set-Cookie": "set-cookie";
+			case "Access-Control-Allow-Origin": "access-control-allow-origin";
+			case _: lowerAscii(name);
+		}
+	}
+
+	/**
 	 * Strips from a header value everything that could end the header early.
 	 */
 	public static function sanitizeHeaderValue(v:String):String {

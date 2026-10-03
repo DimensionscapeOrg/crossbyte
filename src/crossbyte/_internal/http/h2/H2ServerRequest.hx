@@ -163,9 +163,12 @@ class H2ServerRequest {
 			// sees. An uppercase name is malformed rather than merely unusual:
 			// normalising it would let two spellings of one header disagree
 			// about which a router matched.
-			var problem:Null<String> = H2FieldRules.violation(name, field.value);
-			if (problem != null) {
-				throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR, problem);
+			if (!field.lawful) {
+				var problem:Null<String> = H2FieldRules.violation(name, field.value);
+				if (problem != null) {
+					throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR, problem);
+				}
+				field.lawful = true;
 			}
 
 			if (name.charAt(0) == ":") {

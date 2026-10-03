@@ -67,6 +67,19 @@ class H2Frame {
 		return out;
 	}
 
+	/** The 9-octet header for a payload of `length` bytes, into `out` from `at`. **/
+	public static inline function writeHeaderTo(out:Bytes, at:Int, length:Int, type:Int, flags:Int, streamId:Int):Void {
+		out.set(at, (length >> 16) & 0xff);
+		out.set(at + 1, (length >> 8) & 0xff);
+		out.set(at + 2, length & 0xff);
+		out.set(at + 3, type & 0xff);
+		out.set(at + 4, flags & 0xff);
+		out.set(at + 5, (streamId >> 24) & 0x7f);
+		out.set(at + 6, (streamId >> 16) & 0xff);
+		out.set(at + 7, (streamId >> 8) & 0xff);
+		out.set(at + 8, streamId & 0xff);
+	}
+
 	public static function writeHeader(out:BytesBuffer, length:Int, type:H2FrameType, flags:Int, streamId:Int):Void {
 		out.addByte((length >> 16) & 0xff);
 		out.addByte((length >> 8) & 0xff);
