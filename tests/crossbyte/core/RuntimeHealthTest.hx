@@ -83,6 +83,37 @@ class RuntimeHealthTest extends utest.Test {
 	}
 
 	/**
+		A POLL frame with nothing to do is not an overrun, however late the
+		system's wait in poll ends. The loop waits in poll until its deadline,
+		and Windows ends that wait on the system timer's tick, up to a
+		millisecond or two past it; each such frame was counted as one whose
+		work outran its tick. The load harness's game server, idle at sixty
+		ticks a second, reported 165 overruns in 301 frames.
+	**/
+	public function testAQuietPollFrameIsNotAnOverrun():Void {
+		var quiet = BusySocket.create(0);
+		if (quiet == null) {
+			Assert.fail("could not open a loopback connection");
+			return;
+		}
+
+		var runtime = new CrossByte(false, POLL, true);
+		runtime.tps = 60;
+		// Registered and never written to, so each frame waits in poll.
+		runtime.registerSocket(quiet.reader);
+		runtime.__frameDeadline = Timer.stamp() + runtime.__tickInterval;
+		for (_ in 0...30) {
+			runtime.__pollBasedMainLoop();
+		}
+		var overruns = runtime.frameOverruns;
+		runtime.deregisterSocket(quiet.reader);
+		runtime.exit();
+		quiet.close();
+
+		Assert.equals(0, overruns, "30 frames with nothing to do counted " + overruns + " overruns");
+	}
+
+	/**
 		A socket that stopped with its share of a pass taken is read again
 		before the frame is waited out. With a megabyte the most a socket may
 		read in one pass, a POLL loop at 1,000 ticks a second, a frame too
