@@ -125,6 +125,56 @@ class JWTVerifyTest extends utest.Test {
 		expectRefused(jwt, token.substr(0, cut), BAD_SIGNATURE);
 	}
 
+	/**
+		A header met before in a token that verified is not decoded again,
+		and remembering it changes no answer: the checks that depend on this
+		verifier's settings and keys are made for every token, and a header
+		is remembered only once its token's signature has checked, so
+		forgeries cannot fill the list.
+	**/
+	public function testARememberedHeaderIsStillCheckedEveryTime():Void {
+		var jwt:JWT = JWT.make(HS256([{key: "k1", secret: SECRET}], "k1"), ISSUER, "api");
+		var header:String = '{"alg":"HS256","typ":"JWT","kid":"k1"}';
+		var token:String = forge(header, claims());
+		Assert.isTrue(jwt.verify(token).valid);
+		Assert.isTrue(jwt.verify(token).valid, "again, with the header remembered");
+
+		// The same header over other claims, and over a forged signature.
+		Assert.isTrue(jwt.verify(forge(header, claims({sub: "someone-else"}))).valid);
+		var forged:String = token.substr(0, token.lastIndexOf(".") + 1) + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+		expectRefused(jwt, forged, BAD_SIGNATURE);
+		expectRefused(jwt, forge(header, '"a string"'), MALFORMED);
+
+		// Settings changed after it was remembered.
+		jwt.acceptedTypes = ["at+jwt"];
+		expectRefused(jwt, token, TYPE_NOT_ACCEPTED);
+		jwt.acceptedTypes = ["JWT"];
+		Assert.isTrue(jwt.verify(token).valid);
+
+		// Keys changed after it was remembered.
+		jwt.updateKeys(HS256([{key: "k1", secret: "another-secret-another-secret-0123"}], "k1"));
+		expectRefused(jwt, token, BAD_SIGNATURE);
+		jwt.updateKeys(HS256([{key: "k2", secret: SECRET}], "k2"));
+		expectRefused(jwt, token, UNKNOWN_KEY);
+	}
+
+	public function testOnlyHeadersOfVerifiedTokensAreRemembered():Void {
+		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]), ISSUER, "api");
+		// Forged headers, each different, none signed by the key.
+		for (i in 0...50) {
+			var forged:String = JWT.base64UrlEncodeString('{"alg":"HS256","typ":"JWT","n":$i}') + "." + JWT.base64UrlEncodeString(claims()) + ".AAAA";
+			expectRefused(jwt, forged, BAD_SIGNATURE);
+		}
+		Assert.equals(0, @:privateAccess jwt.__headers.length);
+
+		// Signed ones are remembered, never more than a few at once.
+		for (i in 0...50) {
+			Assert.isTrue(jwt.verify(forge('{"alg":"HS256","typ":"JWT","n":$i}', claims())).valid);
+			Assert.isTrue(@:privateAccess jwt.__headers.length <= 8);
+		}
+		Assert.isTrue(@:privateAccess jwt.__headers.length > 0);
+	}
+
 	public function testTheSizeCapIsConfigurable():Void {
 		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]), ISSUER, "api");
 		var bulky:String = forge('{"alg":"HS256","typ":"JWT"}', claims({groups: StringTools.lpad("", "g", 5000)}));
