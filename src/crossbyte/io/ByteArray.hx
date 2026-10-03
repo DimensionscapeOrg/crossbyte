@@ -802,6 +802,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	public static var defaultEndian(get, set):Endian;
 	public static var defaultObjectEncoding:ObjectEncoding = ObjectEncoding.DEFAULT;
 	@:noCompletion private static var __defaultEndian:Endian = null;
+	#if !js
+	@:noCompletion private static var __emptyData:BytesData = null;
+	#end
 
 	public var bytesAvailable(get, never):UInt;
 	public var endian(get, set):Endian;
@@ -819,18 +822,30 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		// server on Node makes several a request.
 		super(new js.lib.ArrayBuffer(length));
 		#else
-		var bytes = Bytes.alloc(length);
+		// An empty one shares one empty buffer: every ByteArray made from a
+		// Bytes (fromBytes, every implicit conversion -- per datagram, per
+		// frame) starts empty and is handed the bytes' own buffer at once, and
+		// this allocated a Bytes and its buffer only for them to be dropped.
+		// Nothing writes into a buffer of no length; growing replaces it.
+		var data:BytesData;
+		if (length == 0) {
+			data = __emptyData;
+			if (data == null) {
+				data = __emptyData = Bytes.alloc(0).getData();
+			}
+		} else {
+			var bytes = Bytes.alloc(length);
 
-		#if sys
-		if (length > 0) {
+			#if sys
 			bytes.fill(0, length, 0);
+			#end
+			data = bytes.getData();
 		}
-		#end
 
 		#if hl
-		super(bytes.getData(), length);
+		super(data, length);
 		#else
-		super(length, bytes.getData());
+		super(length, data);
 		#end
 		#end
 
@@ -1404,6 +1419,19 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			__resize(position + count, position);
 			blit(position, bytes, 0, count);
 			position += count;
+		}
+	}
+
+	/**
+		Writes `length` bytes of `bytes` from `offset` at the position, as
+		`writeBytes` does, from a plain `Bytes` with no ByteArray made around
+		it. The range is the caller's to have checked.
+	**/
+	@:noCompletion public inline function __writeRange(bytes:Bytes, offset:Int, length:Int):Void {
+		if (length > 0) {
+			__resize(position + length, position);
+			blit(position, bytes, offset, length);
+			position += length;
 		}
 	}
 

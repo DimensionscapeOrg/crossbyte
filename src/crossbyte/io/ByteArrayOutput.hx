@@ -13,8 +13,7 @@ import crossbyte.errors.RangeError;
  * Every writer makes room for what it writes, in every build, `final` included. When the active
  * chunk cannot hold a value a new one is taken, at least as large as everything written so far,
  * so writing value after value takes a handful of chunks. `reserve()` ahead of a run of writes
- * takes one chunk of exactly that size instead: what a codec that knows its sizes does to grow
- * once rather than as it goes.
+ * makes room for the run at once, the same way: a chunk of at least what it asks for.
  *
  * Converting the output to `Bytes` or a `ByteArray`, by assigning it to one, merges the chunks
  * into one contiguous array (`flush()`).
@@ -159,19 +158,13 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param size Number of bytes to reserve beyond current offset.
 	 */
 	public inline function reserve(size:Int):Void {
-		// Against the room left in the active chunk, not against the total.
-		// `length` is that total, so the old guard asked whether
-		// size + length <= length -- false for every positive size, which
-		// made it dead code. Every call therefore allocated a fresh chunk
-		// and abandoned whatever was still free in the one it left behind,
-		// so a codec reserving per value paid two allocations and a copy
-		// for each one.
-		if (validateSize(size)) {
-			return;
-		}
-
-		this_resize(size + length);
-		this.__outputPosition = 0;
+		// Against the room left in the active chunk, and grown as a write
+		// grows it: a chunk at least as large as everything written so far.
+		// A reserve that did not fit took a chunk of exactly its size, so a
+		// codec reserving per value -- every varint and string writer here
+		// does, through `reserved = false` -- made a chunk, and copied the
+		// last one's used bytes out, for each value it wrote.
+		__room(size);
 	}
 
 	/**
