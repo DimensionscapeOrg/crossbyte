@@ -169,6 +169,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.db.mongodb.ExtendedJsonTest());
 		runner.addCase(new crossbyte.db.mongodb.ScramTest());
 		runner.addCase(new crossbyte.db.mongodb.MongoUriTest());
+		// The objects BSON documents are decoded into.
+		runner.addCase(new crossbyte._internal.AnonBuilderTest());
 		// BCrypt is pure Haxe, so the published vectors hold it to the same
 		// answers on every target; hashes made on one have to verify on another.
 		runner.addCase(new crossbyte.crypto.password.BCryptHardeningTest());
