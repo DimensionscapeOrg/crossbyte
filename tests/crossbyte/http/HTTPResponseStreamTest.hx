@@ -539,6 +539,10 @@ private class CountingWriter implements crossbyte._internal.http.HTTPResponseWri
 		__unflushed += length;
 	}
 
+	public function writeBodyTaken(data:ByteArray, offset:Int, length:Int):Void {
+		writeBody(data, offset, length);
+	}
+
 	public function flush():Void {
 		flushes++;
 		__unflushed = 0;

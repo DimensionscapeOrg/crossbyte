@@ -68,6 +68,24 @@ class HpackStaticTable {
 		return byPair;
 	}
 
+	/**
+		The `:status` field for `status`: the static table's own for the seven
+		it lists, a new one otherwise. A response made one, and the text of
+		its code, every time.
+	**/
+	public static function statusField(status:Int):HpackHeader {
+		return switch (status) {
+			case 200: FIELDS[7];
+			case 204: FIELDS[8];
+			case 206: FIELDS[9];
+			case 304: FIELDS[10];
+			case 400: FIELDS[11];
+			case 404: FIELDS[12];
+			case 500: FIELDS[13];
+			case _: new HpackHeader(":status", Std.string(status));
+		}
+	}
+
 	/** 1-based index of an exact name/value match, or `-1`. */
 	public static function findPair(name:String, value:String):Int {
 		var values:Null<Map<String, Int>> = __byPair.get(name);

@@ -53,13 +53,22 @@ class HpackEncoder {
 		__pendingCapacity = value;
 	}
 
-	public function encode(headers:Array<HpackHeader>):Bytes {
+	/**
+		`headers` as a header block, after `first` when one is given, a
+		response's `:status`, which must lead (RFC 9113 8.3.2), so the
+		caller need not build a list with it at the front.
+	**/
+	public function encode(headers:Array<HpackHeader>, ?first:HpackHeader):Bytes {
 		var out:BytesBuffer = new BytesBuffer();
 
 		if (__pendingCapacity >= 0) {
 			// 001xxxxx, 5-bit prefix.
 			__writeInteger(out, __pendingCapacity, 5, 0x20);
 			__pendingCapacity = -1;
+		}
+
+		if (first != null) {
+			__encodeOne(out, first);
 		}
 
 		for (header in headers) {

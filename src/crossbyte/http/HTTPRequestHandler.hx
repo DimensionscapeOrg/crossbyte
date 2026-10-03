@@ -2076,9 +2076,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/**
 	 * @param open The head of a response whose body follows through `write`
 	 *        with no length yet known: see `beginResponse`.
+	 * @param callersData `data` is the caller's, who may change it after
+	 *        this returns (`respondBytes`): the writer copies it. Every other
+	 *        body here is made for the response, or kept and never changed.
 	 */
 	@:noCompletion private function __dispatchResponseBytes(statusCode:Int, statusMessage:String, headers:Array<URLRequestHeader>, contentType:String,
-			data:ByteArray, headOnly:Bool = false, ?contentLength:Int, open:Bool = false, mayEncode:Bool = true):Void {
+			data:ByteArray, headOnly:Bool = false, ?contentLength:Int, open:Bool = false, mayEncode:Bool = true, callersData:Bool = false):Void {
 		// A response for this request slot has already been written (a
 		// middleware that called respond() and then next() anyway), or begun
 		// and cut short by a write that threw; a second one would corrupt
@@ -2272,7 +2275,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		if (bodyLength > 0) {
-			__writer.writeBody(responseData, 0, bodyLength);
+			if (callersData && responseData == data) {
+				__writer.writeBody(responseData, 0, bodyLength);
+			} else {
+				__writer.writeBodyTaken(responseData, 0, bodyLength);
+			}
 		}
 
 		__writer.flush();
@@ -2334,7 +2341,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 */
 	public function respondBytes(statusCode:Int, contentType:String, body:ByteArray, ?headers:Array<URLRequestHeader>, ?statusMessage:String):Void {
 		var reason:String = (statusMessage == null) ? __statusMessage(statusCode) : statusMessage;
-		__dispatchResponseBytes(statusCode, reason, headers, contentType, body != null ? body : new ByteArray(), __method == "HEAD");
+		__dispatchResponseBytes(statusCode, reason, headers, contentType, body != null ? body : new ByteArray(), __method == "HEAD", null, false, true, true);
 	}
 
 	/**
