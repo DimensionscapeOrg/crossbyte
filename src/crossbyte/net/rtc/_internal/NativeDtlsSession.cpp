@@ -18,6 +18,7 @@
 #error "NativeDtlsBuild.xml must compile this against hxcpp's mbedtls-flags.xml, which sets MBEDTLS_THREADING_C as hxcpp builds mbedtls, or every struct shared with it is the wrong size."
 #endif
 
+#include <atomic>
 #include <deque>
 #include <map>
 #include <mutex>
@@ -98,6 +99,21 @@ std::mutex g_lock;
 std::map<int, Session *> g_sessions;
 int g_nextHandle = 1;
 
+// How many sessions have closed, raised under g_lock before one is freed:
+// what a thread's remembered lookup below is checked against.
+std::atomic<unsigned> g_closes(0);
+
+// The last session this thread looked up. A record in or out is half a dozen
+// calls on one session, feed, step, pending, take, available, read, and
+// each took g_lock and searched the map; now the first does. Handles are
+// never reused, so a remembered one is wrong only once a session has closed
+// since, which g_closes says. A session is only ever used by the thread of
+// the runtime that opened it, and closed by it, so one this thread remembers
+// cannot be freed under it.
+thread_local int t_lastHandle = 0;
+thread_local Session *t_lastSession = 0;
+thread_local unsigned t_lastCloses = 0;
+
 // Shared across sessions. mbedTLS guards it with the mutex MBEDTLS_THREADING_C
 // gives it, which is exactly the configuration hxcpp builds, so one is safe and
 // seeding per session would only be slower.
@@ -126,9 +142,25 @@ bool ensureRng()
 
 Session *find(int handle)
 {
-   std::lock_guard<std::mutex> guard(g_lock);
-   std::map<int, Session *>::iterator at = g_sessions.find(handle);
-   return at == g_sessions.end() ? 0 : at->second;
+   unsigned closes = g_closes.load(std::memory_order_acquire);
+
+   if (handle != 0 && handle == t_lastHandle && closes == t_lastCloses)
+      return t_lastSession;
+
+   Session *session = 0;
+
+   {
+      std::lock_guard<std::mutex> guard(g_lock);
+      std::map<int, Session *>::iterator at = g_sessions.find(handle);
+      session = at == g_sessions.end() ? 0 : at->second;
+      // Read under the lock, with the map: what this answer is as of.
+      closes = g_closes.load(std::memory_order_relaxed);
+   }
+
+   t_lastHandle = handle;
+   t_lastSession = session;
+   t_lastCloses = closes;
+   return session;
 }
 
 // mbedTLS wants to put a datagram on the wire. It goes on a queue instead, and
@@ -401,6 +433,8 @@ void crossbyte_dtls_close(int handle)
 
       session = at->second;
       g_sessions.erase(at);
+      // Before it is freed: no thread's remembered lookup answers it now.
+      g_closes.fetch_add(1, std::memory_order_release);
    }
 
    mbedtls_ssl_free(&session->ssl);

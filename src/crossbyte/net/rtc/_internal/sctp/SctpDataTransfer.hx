@@ -1,5 +1,6 @@
 package crossbyte.net.rtc._internal.sctp;
 
+import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
 import crossbyte.io.ByteArray;
 import crossbyte.io.Endian;
@@ -64,7 +65,24 @@ import haxe.ds.IntMap;
 	Ten timeouts in a row with nothing acknowledged between them, and the peer
 	is unreachable: the association ends with an ABORT.
 **/
-class SctpDataTransfer {
+class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
+	/**
+		The runtime whose loop this transfer's sends wait on, set by the
+		connection that owns it. What `send` is given on that runtime's thread
+		goes on the wire when the pass ends, the pass's messages sharing as
+		few packets as the window lets them; with no runtime, or from another
+		thread, at once.
+
+		Each message was a packet of its own, a DTLS record and a `sendto`:
+		ten sent in a tick cost 14.8 µs of CPU each over loopback.
+	**/
+	public var runtime:Null<CrossByte> = null;
+
+	// Whether the runtime will flush this pass's sends when it ends, and the
+	// time the last of them was given.
+	@:noCompletion private var __passQueued:Bool = false;
+	@:noCompletion private var __passNow:Float = 0;
+
 	/**
 		The most payload one DATA chunk carries.
 
@@ -589,8 +607,40 @@ class SctpDataTransfer {
 			first = false;
 		} while (offset < total);
 
+		if (__holdForPass(now)) {
+			return;
+		}
 		__beginOpportunity();
 		__flush(now);
+	}
+
+	/**
+		Whether what was just queued can wait for the end of the pass: on
+		`runtime`'s own thread, while it runs. Asks the runtime once a pass.
+	**/
+	@:noCompletion private function __holdForPass(now:Float):Bool {
+		if (__passQueued) {
+			__passNow = now;
+			return true;
+		}
+		var owner:Null<CrossByte> = runtime;
+		if (owner == null || @:privateAccess owner.__didExit || CrossByte.__currentOrNull() != owner) {
+			return false;
+		}
+		__passQueued = true;
+		__passNow = now;
+		@:privateAccess owner.__queuePassFlush(this);
+		return true;
+	}
+
+	/** The runtime's call at the end of a pass: what the pass's sends queued goes now. **/
+	@:noCompletion public function __flushPass():Void {
+		__passQueued = false;
+		if (association.state == SctpAssociationState.CLOSED) {
+			return;
+		}
+		__beginOpportunity();
+		__flush(__passNow);
 	}
 
 	/**

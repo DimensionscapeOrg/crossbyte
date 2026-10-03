@@ -177,6 +177,64 @@ class PeerConnectionTest extends utest.Test {
 	}
 
 	/**
+		What is sent just before `close()`, in the same pass, arrives ahead of
+		the close. A pass's messages wait for the pass to end, to share
+		packets; a close in the pass sends them first, as each went at once
+		before they waited.
+	**/
+	public function testWhatIsSentJustBeforeClosingArrives():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+		var accepted:DataChannel = null;
+		var heard:Array<String> = [];
+		var bobClosed:Bool = false;
+
+		try {
+			bob.onChannel = function(channel:DataChannel):Void {
+				accepted = channel;
+				channel.onMessage = text -> heard.push(text);
+			};
+			bob.onClose = _ -> bobClosed = true;
+
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+			if (!alice.connected || !bob.connected) {
+				Assert.fail("the two never connected");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			var chat = alice.createDataChannel("chat");
+			pumpUntil(() -> chat.open && accepted != null, 5.0);
+			if (!chat.open || accepted == null) {
+				Assert.fail("the channel never opened");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			chat.send("one");
+			chat.send("last");
+			alice.close();
+			pumpUntil(() -> bobClosed, 5.0);
+
+			Assert.isTrue(bobClosed, "the peer never heard the close");
+			Assert.equals("one,last", heard.join(","), "what was sent before the close: " + heard.join(","));
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
 		A peer whose DTLS session ends is heard even with no ABORT before it.
 
 		The close_notify on its own, as a peer that tears down the session
