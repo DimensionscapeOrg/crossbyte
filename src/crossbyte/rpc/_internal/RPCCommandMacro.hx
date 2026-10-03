@@ -276,7 +276,39 @@ class RPCCommandMacro {
 
 	private static function createMetaFunction(metaName:String, commandName:String, args:Array<FunctionArg>, errPos:Position, opCode:Int):Field {
 		var statements:Array<Expr> = [];
-		statements.push(macro var framed:crossbyte.io.ByteArrayOutput = new crossbyte.io.ByteArrayOutput(crossbyte.rpc._internal.RPCWire.MIN_PAYLOAD_LEN + 4));
+		// Made the size the frame will be: its length, flags and op, the
+		// request id at its longest, each fixed-size argument's bytes, and for
+		// a string or bytes what its length allows. It was made nine bytes
+		// long, and each argument's reserve() then added a chunk of its own,
+		// which flush() joined: a one-way call of three numbers cost 203 ns
+		// from stub to handler, and costs 73.
+		// The length, flags and op (RPCWire.MIN_PAYLOAD_LEN, 5), a varint id.
+		var fixed:Int = 4 + 5 + 5;
+		var sized:Expr = macro 0;
+		for (a in args) {
+			var ct:ComplexType = a.type;
+			if (ct == null) {
+				continue;
+			}
+			if (a.opt || isNullWrapped(ct)) {
+				fixed += 1;
+			}
+			var name:Expr = macro $i{a.name};
+			switch (typeKey(unwrapNull(ct), errPos)) {
+				case "Int":
+					fixed += 4;
+				case "Bool":
+					fixed += 1;
+				case "Float":
+					fixed += 8;
+				case "String":
+					// UTF-8 is at most three bytes a UTF-16 unit; a varint length.
+					sized = macro $sized + ($name == null ? 0 : $name.length * 3) + 5;
+				default:
+					sized = macro $sized + ($name == null ? 0 : $name.length) + 5;
+			}
+		}
+		statements.push(macro var framed:crossbyte.io.ByteArrayOutput = new crossbyte.io.ByteArrayOutput($v{fixed} + $sized));
 		statements.push(macro framed.writeInt(0));
 		statements.push(macro {
 			framed.writeByte(requestId != 0 ? crossbyte.rpc._internal.RPCWire.FLAG_REQUEST : 0);

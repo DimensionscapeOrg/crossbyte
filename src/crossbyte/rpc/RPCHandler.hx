@@ -115,7 +115,9 @@ abstract class RPCHandler {
 	/**
 		Called after each call `beforeCall` let through, once its method has
 		run and its answer, if it has one, has been sent. `error` is `null`
-		when the method returned, and what it threw when it did not. It is
+		when the method returned, and what it threw when it did not, as a
+		`haxe.Exception`: what was thrown, if it was one, an `RPCError`, say,
+		and otherwise a `haxe.ValueException` holding it in its `value`. It is
 		not given the result: handing over an `Int` or a `Float` as `Dynamic`
 		would allocate on every call.
 
@@ -123,7 +125,7 @@ abstract class RPCHandler {
 		does. What it throws goes to `RPCSession.onHandlerError` and changes
 		nothing else.
 	**/
-	public function afterCall(method:String, requestId:Int, error:Dynamic):Void {}
+	public function afterCall(method:String, requestId:Int, error:Null<haxe.Exception>):Void {}
 
 	/**
 		What a handler method throwing becomes, once its arguments have been
@@ -135,7 +137,7 @@ abstract class RPCHandler {
 		The frame was sound, only the method failed, so the read goes on
 		at the next one.
 	**/
-	@:noCompletion private function __rpc_fail(op:Int, method:String, requestId:Int, error:Dynamic):Void {
+	@:noCompletion private function __rpc_fail(op:Int, method:String, requestId:Int, error:haxe.Exception):Void {
 		final session = this_session;
 		if (session != null) {
 			session.__callFailed(op, method, requestId, error, true);
@@ -178,13 +180,13 @@ abstract class RPCHandler {
 		final session = this_session;
 		final epoch:Int = session.__epoch;
 		final settle = function(settled:Future<T>):Void {
-			var failure:Dynamic = null;
+			var failure:Null<haxe.Exception> = null;
 			final answerable:Bool = requestId != 0 && session.__isCurrent(epoch);
 			if (settled.succeeded) {
 				if (answerable) {
 					try {
 						answer(session, settled.result);
-					} catch (error:Dynamic) {
+					} catch (error:haxe.Exception) {
 						failure = error;
 						session.__callFailed(op, method, requestId, error, true);
 					}
@@ -196,7 +198,7 @@ abstract class RPCHandler {
 			if (hooked) {
 				try {
 					afterCall(method, requestId, failure);
-				} catch (error:Dynamic) {
+				} catch (error:haxe.Exception) {
 					session.__reportHandlerError(op, method, error);
 				}
 			}
@@ -222,7 +224,7 @@ abstract class RPCHandler {
 	}
 
 	/** `afterCall` threw: the call is over, so all there is to do is say so. **/
-	@:noCompletion private function __rpc_report(op:Int, method:String, error:Dynamic):Void {
+	@:noCompletion private function __rpc_report(op:Int, method:String, error:haxe.Exception):Void {
 		if (this_session != null) {
 			this_session.__reportHandlerError(op, method, error);
 		}
