@@ -1,0 +1,5 @@
+--cwd ../..
+-cp src
+-cp samples/multicore
+-main MulticoreSample
+--cpp export/multicore
