@@ -242,6 +242,12 @@ entry below says how:
   for something it sends to carry it. Set `ackDelay` to 0, on the socket or
   on `ReliableDatagramServerSocket`, for one every pass as before; a peer on
   1.0.0-rc.1 is acknowledged every pass either way.
+- `ReliableDatagramSocket.maxOutputBufferSize` is 256 KB by default: a
+  session that would hold more waiting for its window is ended with an
+  `ioError`. One `send` larger than the window waits whole, so an
+  application that sends more than that at once -- one large reliable
+  message, a file -- raises it on its sessions, or sets it to 0 for no
+  limit.
 
 ### Added
 - A load and churn harness, `ci/load.hxml` (`tests/load`), run by hand as
@@ -1451,6 +1457,13 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `ReliableDatagramSocket.maxOutputBufferSize` is 256 KB unless changed,
+  where it was 0, no limit. A session that would hold more than that waiting
+  for its congestion window is ended at once, with an `ioError` saying why,
+  where it held everything sent to it -- a server overloaded with a thousand
+  such sessions held 1.2 GB. A game server at 1,000 clients and 60 Hz held
+  nothing waiting in any session while it kept its tick, and 18 KB at most
+  in one when it was starved of processor time.
 - A reliable session holds the acknowledgement of what arrives in order for
   up to 25 ms, `ReliableDatagramSocket.ackDelay`, as QUIC holds one for its
   `max_ack_delay`, for something of its own to carry it. A game server's
