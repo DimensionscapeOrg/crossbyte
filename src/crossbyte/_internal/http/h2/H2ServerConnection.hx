@@ -834,7 +834,7 @@ class H2ServerConnection {
 			var last:Bool = target.queued == chunk && target.pendingEndStream;
 
 			if (__writeFrameTo != null) {
-				__writeFrameTo(H2FrameType.DATA, last ? H2Flags.END_STREAM : 0, target.id, target.queueBuffer, target.queueStart, chunk);
+				__writeFrameTo.writeFrame(H2FrameType.DATA, last ? H2Flags.END_STREAM : 0, target.id, target.queueBuffer, target.queueStart, chunk);
 				target.consume(chunk);
 			} else {
 				__write(target.takeFrame(chunk, last ? H2Flags.END_STREAM : 0));
@@ -2346,7 +2346,7 @@ class H2ServerConnection {
 
 	private inline function __writeFrame(type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {
 		if (__writeFrameTo != null) {
-			__writeFrameTo(type, flags, streamId, payload, 0, payload == null ? 0 : payload.length);
+			__writeFrameTo.writeFrame(type, flags, streamId, payload, 0, payload == null ? 0 : payload.length);
 		} else {
 			__write(H2Frame.encode(type, flags, streamId, payload));
 		}
@@ -2355,7 +2355,7 @@ class H2ServerConnection {
 	/** A frame of `length` bytes of `source` from `offset`, without cutting them out first. **/
 	private inline function __writeFrameOf(type:H2FrameType, flags:Int, streamId:Int, source:Bytes, offset:Int, length:Int):Void {
 		if (__writeFrameTo != null) {
-			__writeFrameTo(type, flags, streamId, source, offset, length);
+			__writeFrameTo.writeFrame(type, flags, streamId, source, offset, length);
 		} else {
 			__write(H2Frame.encode(type, flags, streamId, source, offset, length));
 		}
@@ -2398,8 +2398,14 @@ class H2ServerConnection {
 }
 
 /**
-	A frame's header fields and the bytes it carries, `length` of them from
-	`offset` in `payload` (null when `length` is 0): see
-	`H2ServerConnection.new`.
+	Takes each frame a connection writes: see `H2ServerConnection.new`. An
+	interface rather than a function type, since neko makes no closure of
+	more than five arguments.
 **/
-typedef H2FrameSink = (type:Int, flags:Int, streamId:Int, payload:Null<Bytes>, offset:Int, length:Int) -> Void;
+interface H2FrameSink {
+	/**
+		A frame's header fields and the bytes it carries, `length` of them from
+		`offset` in `payload` (null when `length` is 0).
+	**/
+	function writeFrame(type:Int, flags:Int, streamId:Int, payload:Null<Bytes>, offset:Int, length:Int):Void;
+}

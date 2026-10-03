@@ -35,7 +35,7 @@ import haxe.io.Bytes;
  * once on a single socket; sharing one would interleave them.
  */
 @:access(crossbyte.http.HTTPRequestHandler)
-class H2ConnectionHandler implements PassFlush {
+class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2FrameSink {
 	private final __socket:Socket;
 	private final __config:HTTPServerConfig;
 	private final __php:PHPBridge;
@@ -94,7 +94,7 @@ class H2ConnectionHandler implements PassFlush {
 		__budget = config.maxOutputBufferSize > 0 ? config.maxOutputBufferSize : 0;
 		__watermark = (__budget > 0 && __budget < HTTPRequestHandler.STREAM_WATERMARK) ? __budget : HTTPRequestHandler.STREAM_WATERMARK;
 
-		__connection = new H2ServerConnection(__send, null, __sendFrame);
+		__connection = new H2ServerConnection(__send, null, this);
 		__connection.maxResetStreams = config.http2MaxResetStreams;
 		__connection.resetWindowSeconds = config.http2ResetWindowSeconds;
 		// The limit an HTTP/1.1 body is held to. Without it DATA piled up for
@@ -162,7 +162,7 @@ class H2ConnectionHandler implements PassFlush {
 		payload, and then copied again into the socket. As __send, flushed at
 		once unless a read is being answered.
 	**/
-	private function __sendFrame(type:Int, flags:Int, streamId:Int, payload:Null<Bytes>, offset:Int, length:Int):Void {
+	public function writeFrame(type:Int, flags:Int, streamId:Int, payload:Null<Bytes>, offset:Int, length:Int):Void {
 		if (!__socket.connected) {
 			return;
 		}
