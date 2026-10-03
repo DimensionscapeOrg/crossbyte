@@ -1900,6 +1900,16 @@ entry below says how:
 - A statement's text is split at its placeholders once and kept, where it
   was copied a character at a time on every run, placeholder or none:
   a SELECT with no placeholder costs 32-42 ns there instead of 240-410.
+- The HTTP/1.1 client (`URLLoader` and `Http` on every target but the
+  browser and Node) reads a response a buffer at a time and takes its
+  status line, header lines and body out of that, where it read the head a
+  byte at a time, a `recv()` per byte, on the jvm a selector wait and a
+  read per byte, and writes a request's head in one write rather than a
+  `send()` per line (over TLS, a record per line). A load of a small
+  response cost the client 95 us of CPU natively where it cost 189, and
+  with a 2 KB response head 100 where it cost 925 (medians of three
+  interleaved runs). A connection with bytes read past its response is not
+  kept for the next request.
 - Choosing a response's content coding reads the request's `Accept-Encoding`
   once and keeps it with the connection, rather than splitting and
   lowercasing it, and building a map and four anonymous options, for every
