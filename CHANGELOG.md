@@ -2584,11 +2584,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
-- A server under a connection storm takes what is waiting in its listen
-  queue until it is empty, before the runtime waits. A pass took
-  `maxAcceptsPerTick` connections and left the rest for the next frame, and
-  meanwhile the queue, 200 on a client edition of Windows, filled and the
-  kernel refused the connections arriving.
+- On Windows a server's listen queue holds as many connections as its
+  backlog asks, up to 65535, where it held 200: Windows grants 200 to any
+  larger backlog asked as a number, the default's included, and refused
+  every connection arriving while 200 waited, the refusals the load pass
+  saw under a connection storm. `listen()` asks as `SOMAXCONN_HINT`
+  natively, on HashLink and on neko: with nothing accepting, 300 connects
+  all wait now, where the 201st was refused after 2 s of retrying. The jvm
+  and the interpreter cannot ask that way, and still get 200.
 - On the jvm, neko, HashLink and the interpreter, two runtimes reading
   sockets at once no longer hand one client's bytes to another client's
   connection. The socket read buffer is shared per thread, as it already
