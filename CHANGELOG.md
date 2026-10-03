@@ -2425,6 +2425,18 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On Linux and macOS a process holding more than about a thousand
+  descriptors can still connect and accept. CrossByte asks `select` about
+  single sockets, whether a client's connect has finished, whether a
+  listener has a connection waiting, and `select` there takes no
+  descriptor at or past FD_SETSIZE (1,024), which hxcpp refuses rather
+  than overflow its set: so every socket made after the thousandth failed,
+  a WebSocket or `Socket` client's connect with "Socket descriptor too
+  large for select", and a `ServerSocket`, `ServerWebSocket` or
+  `HTTPServer` opened then accepted nothing. The load harness's idle
+  scenario stopped at 1,018 WebSocket clients a process. `sys.net.Socket.select`
+  now uses `poll` there, natively; Windows, where a set is a counted array,
+  keeps `select`.
 - A process supervising children with `NativeProcess` no longer dies with
   an access violation when one of them ends. The thread that waited for
   the child sent its completion and then closed the child through a field
