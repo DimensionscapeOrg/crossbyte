@@ -85,11 +85,13 @@ class LoaderRun {
 
 			var requestData:Dynamic = null;
 			var contentType:Null<String> = null;
-			var bodyData:Dynamic = null;
+			// `URLRequest.data` is AIR's Object, told apart here once: a body
+			// of text or bytes, typed from here on, or a form's fields.
+			var bodyData:Null<crossbyte.http.HTTPRequestBody> = null;
 
 			if (request.data != null) {
 				if (Std.isOfType(request.data, haxe.io.Bytes) || Std.isOfType(request.data, String)) {
-					bodyData = request.data;
+					bodyData = Std.isOfType(request.data, String) ? crossbyte.http.HTTPRequestBody.fromString(cast request.data) : crossbyte.http.HTTPRequestBody.fromBytes(cast request.data);
 					contentType = (request.contentType != null) ? request.contentType : "application/octet-stream";
 				} else if (Reflect.isObject(request.data)) {
 					requestData = request.data;
@@ -97,7 +99,7 @@ class LoaderRun {
 						contentType = request.contentType;
 					}
 				} else {
-					bodyData = Std.string(request.data);
+					bodyData = crossbyte.http.HTTPRequestBody.fromString(Std.string(request.data));
 					contentType = (request.contentType != null) ? request.contentType : "text/plain; charset=utf-8";
 				}
 			}

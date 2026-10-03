@@ -148,7 +148,7 @@ class Http {
 	private var __url:URL;
 	private var __headers:Array<String>;
 	private var __status:Int = 0;
-	private var __data:Dynamic;
+	private var __data:Null<crossbyte.http.HTTPRequestBody>;
 	private var __requestData:Dynamic;
 	private var __timeout:Int;
 	private var __connected:Bool = false;
@@ -193,7 +193,7 @@ class Http {
 	@:noCompletion public static var poolConnections:Bool = true;
 
 	public function new(url:String, method:String = "GET", headers:Array<String> = null, requestData:Dynamic = null, contentType:Null<String> = null,
-			data:Dynamic = null, version:HttpVersion = HttpVersion.HTTP_1_1, timeout:Int = 10000, userAgent:String = "CrossByte", followRedirects:Bool = true,
+			data:Null<crossbyte.http.HTTPRequestBody> = null, version:HttpVersion = HttpVersion.HTTP_1_1, timeout:Int = 10000, userAgent:String = "CrossByte", followRedirects:Bool = true,
 			manageCookies:Bool = true, followInsecureRedirects:Bool = false) {
 		__followInsecureRedirects = followInsecureRedirects;
 		__url = new URL(url);
@@ -1622,17 +1622,12 @@ class Http {
 
 			if (!isHead) {
 				if (__data != null) {
-					if (Std.isOfType(__data, String)) {
-						if (__contentType == null) {
-							__contentType = "text/plain; charset=utf-8";
-						}
-
-						body = haxe.io.Bytes.ofString((__data : String));
-					} else if (Std.isOfType(__data, haxe.io.Bytes)) {
-						body = (__data : haxe.io.Bytes);
-					} else {
-						throw "Data Type not recognized";
+					// Text or bytes, decided as the request was made (see
+					// HTTPRequestBody): it was told apart again here.
+					if (__data.isText && __contentType == null) {
+						__contentType = "text/plain; charset=utf-8";
 					}
+					body = __data.toBytes();
 				} else if (!isGetLike && __requestData != null && Reflect.isObject(__requestData)) {
 					var form:String = __buildQuery(__requestData);
 					body = haxe.io.Bytes.ofString(form);
