@@ -23,10 +23,11 @@ class JWTTypesTest extends utest.Test {
 
 	public function testTimesAreFloats():Void {
 		// Not a number: refused by the compiler, where it was refused only
-		// when the token was made.
-		Assert.notNull(TypeCheck.errorOf(JWTPayload.ofData({sub: "a", exp: "tomorrow"})), "a String time compiled");
-		Assert.notNull(TypeCheck.errorOf({
-			var data:JWTPayloadData = {exp: 1.0};
+		// when the token was made. The error is asked about, so a test that
+		// fails to compile for some other reason does not pass for this one.
+		__refusedFor("Float", TypeCheck.errorOf(JWTPayload.ofData({sub: "a", exp: "tomorrow"})), "a String time compiled");
+		__refusedFor("String", TypeCheck.errorOf({
+			var data:crossbyte.auth.jwt.JWTPayload.JWTPayloadData = {exp: 1.0};
 			var text:String = data.exp;
 		}), "a time read as a String compiled");
 
@@ -79,7 +80,12 @@ class JWTTypesTest extends utest.Test {
 	}
 
 	public function testSecondsIsNotPublic():Void {
-		Assert.notNull(TypeCheck.errorOf(JWTPayload.seconds(1)), "JWTPayload.seconds is callable");
+		__refusedFor("private", TypeCheck.errorOf(JWTPayload.seconds(1)), "JWTPayload.seconds is callable");
+	}
+
+	/** That `error` is a compile error, and the one expected: it names `expected`. **/
+	static function __refusedFor(expected:String, error:Null<String>, message:String, ?pos:haxe.PosInfos):Void {
+		Assert.isTrue(error != null && error.indexOf(expected) >= 0, '$message (error: $error)', pos);
 	}
 
 	public function testTheRecordsAreClasses():Void {
