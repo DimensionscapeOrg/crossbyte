@@ -321,6 +321,54 @@ class BsonWriter {
 		int64(value);
 	}
 
+	// Fields whose type the caller knows -- a driver's own: a collection's
+	// name, a batch size, a flag -- written without asking `value` what they
+	// are, and without boxing them to ask.
+
+	/** A string field; `null` is written as BSON null, as `value` would. **/
+	public function stringField(name:String, text:String):Void {
+		if (text == null) {
+			byte(0x0A);
+			cstring(name);
+			return;
+		}
+
+		byte(0x02);
+		cstring(name);
+		string(text);
+	}
+
+	public function int32Field(name:String, value:Int):Void {
+		byte(0x10);
+		cstring(name);
+		int32(value);
+	}
+
+	public function boolField(name:String, value:Bool):Void {
+		byte(0x08);
+		cstring(name);
+		byte(value ? 1 : 0);
+	}
+
+	/** Starts a sub-document field, and answers where, for `endDocument`. **/
+	public function beginDocumentField(name:String):Int {
+		byte(0x03);
+		cstring(name);
+		return beginDocument();
+	}
+
+	/** Starts an array field, whose elements are named by `elementName`; answers where, for `endDocument`. **/
+	public function beginArrayField(name:String):Int {
+		byte(0x04);
+		cstring(name);
+		return beginDocument();
+	}
+
+	/** The name of an array's element `index`: its index, as text. **/
+	public static inline function elementName(index:Int):String {
+		return index < __INDEX_NAMES.length ? __INDEX_NAMES[index] : Std.string(index);
+	}
+
 	/**
 		Whether `value`, held in a `Dynamic`, is a `haxe.Int64`.
 
@@ -590,7 +638,7 @@ class BsonWriter {
 		1024 are made once, so an ordinary array costs no string per element.
 	**/
 	@:noCompletion private inline function __element(index:Int, value:Dynamic, depth:Int):Void {
-		this.value(index < __INDEX_NAMES.length ? __INDEX_NAMES[index] : Std.string(index), value, depth);
+		this.value(elementName(index), value, depth);
 	}
 
 	// Filled when the class initialises, before any thread can use it, and
