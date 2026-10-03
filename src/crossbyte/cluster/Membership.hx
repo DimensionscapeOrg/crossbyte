@@ -1,6 +1,7 @@
 package crossbyte.cluster;
 
 import crossbyte.errors.ArgumentError;
+import haxe.ds.StringMap;
 
 /**
 	Which nodes are alive, from how recently each was heard from.
@@ -56,7 +57,17 @@ class Membership {
 	/** Called when a node has gone unheard for longer than `timeout`. **/
 	public dynamic function onLeave(node:String):Void {}
 
-	private var __lastHeard:Map<String, Float>;
+	// Each node once, in a list the sweep walks by index and a map from its
+	// name: the sweep asks no map anything, and makes nothing while no one
+	// leaves. It walked the map's keys, which natively are copied into an
+	// array first, and looked each one up again for its time.
+	private var __heard:StringMap<HeardNode>;
+	private var __order:Array<HeardNode> = [];
+	// No node was last heard from before this: the sweep looks at none of
+	// them until it is `timeout` old, which with heartbeats coming is once a
+	// timeout rather than every tick. Exact after a sweep that looked, and
+	// only ever earlier than the truth between them.
+	private var __earliest:Float = Math.POSITIVE_INFINITY;
 	private var __clock:Void->Float;
 
 	/**
@@ -73,34 +84,44 @@ class Membership {
 		this.timeout = timeout;
 		this.maxNodes = maxNodes < 0 ? 0 : maxNodes;
 		this.__clock = clock == null ? function():Float return haxe.Timer.stamp() : clock;
-		this.__lastHeard = new Map();
+		this.__heard = new StringMap();
 	}
 
 	/**
 		Records that a node was heard from.
 
+		@param now When, by the clock this was made with; left out, or
+		       negative, it asks that clock.
 		@return Whether this is the first time it has been heard from since
 		        it was last alive -- which is when `onJoin` fires. Returns
 		        false for a name refused by `maxNodes`.
 	**/
-	public function heard(node:String, ?now:Float):Bool {
+	public function heard(node:String, now:Float = -1):Bool {
 		if (node == null || node == "") {
 			throw new ArgumentError("A node needs a name.");
 		}
 
-		var at:Float = now == null ? __clock() : now;
-		var known:Bool = __lastHeard.exists(node);
+		var at:Float = now < 0 ? __clock() : now;
+		var entry:HeardNode = __heard.get(node);
 
-		if (!known && maxNodes > 0 && length >= maxNodes) {
+		if (entry != null) {
+			entry.at = at;
+			if (at < __earliest) {
+				__earliest = at;
+			}
 			return false;
 		}
 
-		__lastHeard.set(node, at);
-
-		if (known) {
+		if (maxNodes > 0 && length >= maxNodes) {
 			return false;
 		}
 
+		entry = new HeardNode(node, at, __order.length);
+		if (at < __earliest) {
+			__earliest = at;
+		}
+		__heard.set(node, entry);
+		__order.push(entry);
 		length++;
 		onJoin(node);
 		return true;
@@ -109,38 +130,54 @@ class Membership {
 	/**
 		Drops whatever has gone unheard for longer than `timeout`.
 
+		@param now When, by the clock this was made with; left out, or
+		       negative, it asks that clock.
 		@return How many left.
 	**/
-	public function sweep(?now:Float):Int {
-		var at:Float = now == null ? __clock() : now;
-		var gone:Array<String> = null;
+	public function sweep(now:Float = -1):Int {
+		var at:Float = now < 0 ? __clock() : now;
+		if (at - __earliest < timeout) {
+			return 0;
+		}
 
-		for (node in __lastHeard.keys()) {
-			if (at - __lastHeard.get(node) >= timeout) {
+		var gone:Array<HeardNode> = null;
+		var earliest:Float = Math.POSITIVE_INFINITY;
+
+		for (i in 0...__order.length) {
+			var entry:HeardNode = __order[i];
+			if (at - entry.at >= timeout) {
 				if (gone == null) {
 					gone = [];
 				}
 
-				gone.push(node);
+				gone.push(entry);
+			} else if (entry.at < earliest) {
+				earliest = entry.at;
 			}
 		}
+		// Before anyone is told: what they are told may hear from a node.
+		__earliest = earliest;
 
 		if (gone == null) {
 			return 0;
 		}
 
-		for (node in gone) {
-			__lastHeard.remove(node);
-			length--;
-			onLeave(node);
+		// Reported after all are found, as each `onLeave` may change the
+		// membership; one an earlier `onLeave` forgot is not reported twice.
+		var left:Int = 0;
+		for (entry in gone) {
+			if (__drop(entry)) {
+				left++;
+				onLeave(entry.name);
+			}
 		}
 
-		return gone.length;
+		return left;
 	}
 
 	/** Whether a node is currently alive. **/
 	public function has(node:String):Bool {
-		return __lastHeard.exists(node);
+		return __heard.exists(node);
 	}
 
 	/**
@@ -151,35 +188,68 @@ class Membership {
 		from.
 	**/
 	public function lastHeardFrom(node:String):Float {
-		return __lastHeard.exists(node) ? __lastHeard.get(node) : -1;
+		var entry:HeardNode = __heard.get(node);
+		return entry != null ? entry.at : -1;
 	}
 
 	/** Everyone currently alive, in no particular order. **/
 	public function alive():Array<String> {
-		var out:Array<String> = [];
-
-		for (node in __lastHeard.keys()) {
-			out.push(node);
-		}
-
-		return out;
+		return [for (entry in __order) entry.name];
 	}
 
 	/** Drops a node now, without waiting for it to time out. **/
 	public function forget(node:String):Bool {
-		if (!__lastHeard.exists(node)) {
+		var entry:HeardNode = __heard.get(node);
+		if (entry == null || !__drop(entry)) {
 			return false;
 		}
 
-		__lastHeard.remove(node);
-		length--;
 		onLeave(node);
 		return true;
 	}
 
 	/** Drops everyone, without reporting any of them as leaving. **/
 	public function clear():Void {
-		__lastHeard = new Map();
+		for (entry in __order) {
+			entry.slot = -1;
+		}
+		__heard = new StringMap();
+		__order = [];
+		__earliest = Math.POSITIVE_INFINITY;
 		length = 0;
+	}
+
+	/**
+		Takes a node out, its place in the list filled by the last: false
+		for one already out.
+	**/
+	private function __drop(entry:HeardNode):Bool {
+		var slot:Int = entry.slot;
+		if (slot < 0 || slot >= __order.length || __order[slot] != entry) {
+			return false;
+		}
+
+		var last:HeardNode = __order.pop();
+		if (last != entry) {
+			__order[slot] = last;
+			last.slot = slot;
+		}
+		entry.slot = -1;
+		__heard.remove(entry.name);
+		length--;
+		return true;
+	}
+}
+
+/** A node alive, when it was last heard from, and where it is in the list. **/
+private class HeardNode {
+	public var name:String;
+	public var at:Float;
+	public var slot:Int;
+
+	public function new(name:String, at:Float, slot:Int) {
+		this.name = name;
+		this.at = at;
+		this.slot = slot;
 	}
 }
