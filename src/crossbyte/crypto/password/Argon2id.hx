@@ -515,11 +515,13 @@ class Argon2id {
 }
 
 #if nodejs
-private typedef PhcHash = {
-	var memoryKiB:Int;
-	var passes:Int;
-	var lanes:Int;
-	var salt:Bytes;
-	var hash:Bytes;
+/** A PHC string's parts, as `__decode` reads them. **/
+@:structInit
+private final class PhcHash {
+	public final memoryKiB:Int;
+	public final passes:Int;
+	public final lanes:Int;
+	public final salt:Bytes;
+	public final hash:Bytes;
 }
 #end
