@@ -20,7 +20,6 @@ import haxe.Timer;
 import crossbyte._internal.serial.BoundedUnserializer;
 import haxe.Serializer;
 import haxe.io.Bytes;
-import haxe.io.BytesBuffer;
 #if (cpp || neko || hl)
 import sys.thread.Deque;
 import sys.thread.Mutex;
@@ -148,10 +147,9 @@ class SharedChannel extends EventDispatcher {
 		__running = true;
 		__listener = new LocalConnection();
 		__listener.onData = input -> {
-			var payload = new ByteArray();
-			if (input.length > 0) {
-				payload.writeBytes(cast input, 0, input.length);
-			}
+			// The connection's own, made for this message: taken as it is,
+			// where it was copied into one of this channel's first.
+			var payload:ByteArray = cast input;
 			payload.position = 0;
 			__dispatchReceivedData(payload);
 		};
@@ -187,15 +185,17 @@ class SharedChannel extends EventDispatcher {
 			return;
 		}
 
-		var messageBuffer = new BytesBuffer();
-		messageBuffer.addInt32(methodBytes.length);
-		messageBuffer.addBytes(methodBytes, 0, methodBytes.length);
-		messageBuffer.addInt32(serializationBytes.length);
-		messageBuffer.addBytes(serializationBytes, 0, serializationBytes.length);
-
-		var payload = messageBuffer.getBytes();
-		var message = new ByteArray();
-		message.writeBytes(payload, 0, payload.length);
+		// Framed straight into one buffer of its size, little-endian lengths as
+		// BytesBuffer wrote them: BytesBuffer on hxcpp adds a byte at a time,
+		// and what it made was copied twice more before it was sent.
+		var methodLength:Int = methodBytes.length;
+		var serializationLength:Int = serializationBytes.length;
+		var framed:Bytes = Bytes.alloc(8 + methodLength + serializationLength);
+		framed.setInt32(0, methodLength);
+		framed.blit(4, methodBytes, 0, methodLength);
+		framed.setInt32(4 + methodLength, serializationLength);
+		framed.blit(8 + methodLength, serializationBytes, 0, serializationLength);
+		var message:ByteArray = ByteArray.fromBytes(framed);
 		message.position = 0;
 
 		var status = false;
@@ -401,11 +401,8 @@ class SharedChannel extends EventDispatcher {
 			return true;
 		}
 
-		try {
-			return CrossByte.current() == __runtime;
-		} catch (_:Dynamic) {
-			return false;
-		}
+		// Asked without an exception for the answer "none".
+		return CrossByte.__currentOrNull() == __runtime;
 	}
 	#end
 
