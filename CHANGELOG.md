@@ -1538,6 +1538,13 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A `DatagramSocket` reads with the transfer that answers -1 when nothing
+  is waiting, where `readFrom` threw `Blocked` to end every pass that read
+  the socket dry, and its pass's sends that go one at a time use the one
+  that answers -1 for a full send buffer. Reliable UDP, STUN, TURN and
+  WebRTC all read through it. A socket woken for one 64-byte datagram at a
+  time spent 10.2-11.3 µs of CPU a datagram, and spends 8.2-9.0 µs; ten a
+  wake, where the end of the pass is shared, cost what they did.
 - A `PeerConnection`'s data channels send what one pass of the runtime's
   loop sent when the pass ends, sharing SCTP packets, DTLS records and
   datagrams, where each message was a packet, a record and a `sendto` of its

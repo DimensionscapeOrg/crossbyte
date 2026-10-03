@@ -952,9 +952,11 @@ private class FloodUdpSocket extends sys.net.UdpSocket {
 
 	public var remaining:Int = 0;
 
-	override public function readFrom(buf:haxe.io.Bytes, pos:Int, len:Int, addr:sys.net.Address):Int {
+	// The read a DatagramSocket makes: the one that answers -1, rather than
+	// throwing, for nothing waiting.
+	override private function __tryReadFrom(buf:haxe.io.Bytes, pos:Int, len:Int, addr:sys.net.Address):Int {
 		if (remaining <= 0) {
-			return super.readFrom(buf, pos, len, addr);
+			return super.__tryReadFrom(buf, pos, len, addr);
 		}
 		remaining--;
 		buf.set(pos, 0x2A);
