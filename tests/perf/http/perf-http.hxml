@@ -1,0 +1,18 @@
+# The HTTP server benchmark, native release: the server whose CPU per
+# request runner.js reads while Node clients load it over loopback. Not run
+# by CI; the numbers are for reading. From the repository root:
+#
+#   haxe tests/perf/http/perf-http.hxml
+#   node tests/perf/http/runner.js --exe export/perf-http/release/PerfHttpServer.exe \
+#     --scenario mw --load http -- --conns 32 --procs 4 --headers browser
+#
+# suite.js runs a list of cases (cases/*.json) with their repetitions
+# interleaved; build-stage.ps1 keeps one build per stage for before and after.
+# Windows: the runner pins with `start /affinity`, the server reads its CPU
+# with GetProcessTimes.
+-cp tests/perf/http
+-cp src
+-D windows
+-D HXCPP_M64
+-main PerfHttpServer
+--cpp export/perf-http/release

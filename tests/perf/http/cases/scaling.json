@@ -1,0 +1,11 @@
+[
+  { "label": "h1-routes1", "exe": "export/perf-http/release/PerfHttpServer.exe", "scenario": "route", "load": "http", "args": ["--conns", "32", "--procs", "4", "--headers", "browser"] },
+  { "label": "h1-routes20", "exe": "export/perf-http/release/PerfHttpServer.exe", "scenario": "route", "load": "http", "env": "PERF_ROUTES=20", "args": ["--conns", "32", "--procs", "4", "--headers", "browser"] },
+  { "label": "h1-routes50", "exe": "export/perf-http/release/PerfHttpServer.exe", "scenario": "route", "load": "http", "env": "PERF_ROUTES=50", "args": ["--conns", "32", "--procs", "4", "--headers", "browser"] },
+  { "label": "h1-mw", "exe": "export/perf-http/release/PerfHttpServer.exe", "scenario": "mw", "load": "http", "args": ["--conns", "32", "--procs", "4", "--headers", "browser"] },
+  { "label": "h1-mw-bare", "exe": "export/perf-http/release/PerfHttpServer.exe", "scenario": "mw", "load": "http", "args": ["--conns", "32", "--procs", "4"] },
+  { "label": "h1-mw-accesslog", "exe": "export/perf-http/release/PerfHttpServer.exe", "scenario": "mw", "load": "http", "env": "PERF_ACCESS_LOG=on", "args": ["--conns", "32", "--procs", "4", "--headers", "browser"] },
+  { "label": "h2-routes1", "exe": "export/perf-http/release/PerfHttpServer.exe", "scenario": "route", "load": "h2", "env": "PERF_HTTP2=1", "args": ["--sessions", "8", "--streams", "8", "--procs", "4", "--headers", "browser"] },
+  { "label": "h2-routes20", "exe": "export/perf-http/release/PerfHttpServer.exe", "scenario": "route", "load": "h2", "env": "PERF_HTTP2=1,PERF_ROUTES=20", "args": ["--sessions", "8", "--streams", "8", "--procs", "4", "--headers", "browser"] },
+  { "label": "h2-mw", "exe": "export/perf-http/release/PerfHttpServer.exe", "scenario": "mw", "load": "h2", "env": "PERF_HTTP2=1", "args": ["--sessions", "8", "--streams", "8", "--procs", "4", "--headers", "browser"] }
+]

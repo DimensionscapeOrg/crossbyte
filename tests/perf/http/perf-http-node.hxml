@@ -1,0 +1,9 @@
+# The same server on Node: haxe tests/perf/http/perf-http-node.hxml, then
+# runner.js --exe export/perf-http/node/PerfHttpServer.js (runner.js runs a
+# .js through node). CPU is process.cpuUsage(), since Sys.cpuTime is wall
+# time there.
+-cp tests/perf/http
+-cp src
+-lib hxnodejs
+-main PerfHttpServer
+--js export/perf-http/node/PerfHttpServer.js

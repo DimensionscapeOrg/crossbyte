@@ -1,0 +1,7 @@
+# The client side: URLLoader fetching back to back (see client-runner.js).
+# haxe tests/perf/http/perf-http-client.hxml --cpp export/perf-http/client
+-cp tests/perf/http
+-cp src
+-D windows
+-D HXCPP_M64
+-main PerfHttpClient
