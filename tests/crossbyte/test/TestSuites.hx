@@ -309,6 +309,9 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.ServerSocketBacklogTest());
 		// A child runtime's real POLL loop, so every threaded target.
 		runner.addCase(new crossbyte.net.SocketReadinessTest());
+		// One listener's connections on several runtimes: every threaded
+		// target, its TLS cases natively and on the jvm.
+		runner.addCase(new crossbyte.net.ServerSpreadTest());
 		// Deliberately unguarded: the exact-buffer read-loop hang it protects
 		// against lives on the interpreter, where sockets cannot be made
 		// non-blocking. Guarding it to cpp would run it only where the bug
