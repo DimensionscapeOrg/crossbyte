@@ -1454,6 +1454,9 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- On the jvm, `File.modificationDate` reads one attribute: 20 us, where
+  `FileSystem.stat`, which first asks for attributes Windows refuses with an
+  exception, took 108 to 138.
 - `Logger`'s JSON records are written out directly, and always as `level`,
   `message`, `time`, `category` and then the fields, where an anonymous
   object went through `haxe.Json`, which wrote the keys in whatever order

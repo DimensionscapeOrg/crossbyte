@@ -252,7 +252,18 @@ class FilePath {
 	}
 }
 
-typedef FilePathParts = {
-	var root:String;
-	var segments:Array<String>;
+/**
+	A path split into its root and its segments. A class, built from a
+	literal as the structure it was: its two fields are read on every path
+	operation, by name, as an anonymous structure's are.
+**/
+@:structInit
+final class FilePathParts {
+	public var root:String;
+	public var segments:Array<String>;
+
+	public inline function new(root:String, segments:Array<String>) {
+		this.root = root;
+		this.segments = segments;
+	}
 }
