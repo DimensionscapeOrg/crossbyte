@@ -135,11 +135,12 @@ class HpackHuffman {
 			symbol[node] = sym;
 		}
 
-		// Published last: a concurrent reader either sees null and builds its
-		// own identical tree, or sees a finished one. Never a half-filled one.
-		__left = left;
+		// Published last, and `__left`, the one checked above, after the
+		// others: a concurrent reader either sees null and builds its own
+		// identical tree, or sees all three. Never a half-published one.
 		__right = right;
 		__symbol = symbol;
+		__left = left;
 	}
 
 	/** Encoded size in bytes, including the pad to a byte boundary. */

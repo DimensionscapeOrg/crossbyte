@@ -2462,6 +2462,16 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On the jvm, neko, HashLink and the interpreter, two runtimes reading
+  sockets at once no longer hand one client's bytes to another client's
+  connection. The socket read buffer is shared per thread, as it already
+  was natively; on those targets it was one buffer for every thread, so
+  two runtimes reading at the same moment could copy each other's data.
+  The spread-server tests caught it: clients received each other's
+  responses on the jvm, neko and the interpreter.
+- The HTTP/2 Huffman decoder's tables are published with the one checked
+  for completeness last, so a second thread decoding while the first
+  built them can no longer find two of the three missing.
 - On Linux and macOS a process holding more than about a thousand
   descriptors can still connect and accept. CrossByte asks `select` about
   single sockets, whether a client's connect has finished, whether a

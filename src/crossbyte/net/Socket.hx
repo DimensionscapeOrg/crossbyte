@@ -17,7 +17,7 @@ import js.html.WebSocket;
 #end
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
-#if cpp
+#if target.threaded
 import sys.thread.Tls;
 #end
 import haxe.io.Eof;
@@ -458,7 +458,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	 * many connections a thread carries, less than the 1 MB those 256
 	 * sockets used to hold between them at 4 KB each.
 	 */
-	#if cpp
+	#if target.threaded
 	@:noCompletion private static final __readScratch:Tls<Bytes> = new Tls();
 	#else
 	@:noCompletion private static var __readScratch:Bytes;
@@ -502,11 +502,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private static function __scratch():Bytes {
-		var buffer:Bytes = #if cpp __readScratch.value #else __readScratch #end;
+		var buffer:Bytes = #if target.threaded __readScratch.value #else __readScratch #end;
 
 		if (buffer == null) {
 			buffer = Bytes.alloc(READ_CHUNK);
-			#if cpp
+			#if target.threaded
 			__readScratch.value = buffer;
 			#else
 			__readScratch = buffer;
