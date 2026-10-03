@@ -68,6 +68,14 @@ class LoadMain extends ServerApplication {
 	}
 
 	function __init(_:Event):Void {
+		// The parts a scenario starts end when it does.
+		Report.exitWhenOrphaned = StringTools.endsWith(args.role, "-bots");
+		if (Report.exitWhenOrphaned) {
+			// And at the latest a few minutes past their own deadline, whatever
+			// they are stuck in.
+			var hardStop:Float = args.float("seconds", 60) + 180;
+			crossbyte.Timer.setTimeout(hardStop, () -> Sys.exit(5));
+		}
 		try {
 			switch (args.role) {
 				case "game":

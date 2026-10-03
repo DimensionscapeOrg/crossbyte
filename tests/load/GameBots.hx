@@ -52,6 +52,8 @@ class GameBots {
 	var latency:Histogram = new Histogram();
 	var snapshots:Float = 0;
 	var reliableSnapshots:Float = 0;
+	var duplicates:Float = 0;
+	var reliableDuplicates:Float = 0;
 	var inputs:Float = 0;
 	var ioErrors:Int = 0;
 	var unexpectedCloses:Int = 0;
@@ -177,6 +179,18 @@ class GameBots {
 		var acknowledged:Int = data.readInt();
 		snapshots++;
 
+		// The same tick twice: a message delivered more than once, which
+		// no delivery mode allows.
+		var slot:Int = snapshotTick & (Bot.SEEN - 1);
+		if (bot.seen[slot] == snapshotTick) {
+			duplicates++;
+			if (type == GameServer.RELIABLE_SNAPSHOT) {
+				reliableDuplicates++;
+			}
+			return;
+		}
+		bot.seen[slot] = snapshotTick;
+
 		if (bot.firstTick < 0) {
 			bot.firstTick = snapshotTick;
 		}
@@ -215,6 +229,8 @@ class GameBots {
 			connected: connected,
 			snapshots: snapshots,
 			reliableSnapshots: reliableSnapshots,
+			duplicates: duplicates,
+			reliableDuplicates: reliableDuplicates,
 			missing: missingNow - missingReported,
 			inputs: inputs,
 			ioErrors: ioErrors,
@@ -233,6 +249,8 @@ class GameBots {
 		latency.clear();
 		snapshots = 0;
 		reliableSnapshots = 0;
+		duplicates = 0;
+		reliableDuplicates = 0;
 		inputs = 0;
 		ioErrors = 0;
 		unexpectedCloses = 0;
@@ -269,7 +287,10 @@ class GameBots {
 }
 
 class Bot {
+	public static inline var SEEN:Int = 4096;
+
 	public var index:Int;
+	public var seen:Array<Int> = [for (_ in 0...4096) -1];
 	public var socket:ReliableDatagramSocket;
 	public var connected:Bool = false;
 	public var closed:Bool = false;
