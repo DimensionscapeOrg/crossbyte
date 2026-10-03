@@ -6,14 +6,15 @@ import haxe.io.Bytes;
  * A native signing keypair consisting of a public verification key and a
  * private signing key.
  */
-typedef SigningKeyPair = {
+@:structInit
+final class SigningKeyPair {
 	/**
 	 * The public verification key bytes.
 	 */
-	var publicKey:Bytes;
+	public var publicKey:Bytes;
 
 	/**
 	 * The private signing key bytes.
 	 */
-	var secretKey:Bytes;
+	public var secretKey:Bytes;
 }
