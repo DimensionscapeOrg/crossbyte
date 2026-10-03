@@ -2675,6 +2675,11 @@ private class FlushCountingSocket extends Socket {
 		}
 	}
 
+	// How the HTTP/2 server writes its frames: a Bytes slice, unwrapped.
+	override public function __writeRawBytes(bytes:Bytes, offset:Int, length:Int):Void {
+		__written.addBytes(bytes, offset, length);
+	}
+
 	override public function flush():Void {
 		flushes++;
 	}
@@ -2698,15 +2703,24 @@ private class BreakingDataSocket extends FlushCountingSocket {
 	}
 
 	override public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
-		var count:Int = length == 0 ? bytes.length - offset : length;
-		if (!__broken && count >= H2Frame.HEADER_SIZE && bytes[offset + 3] == (H2FrameType.DATA : Int)) {
-			var streamId:Int = ((bytes[offset + 5] & 0x7F) << 24) | (bytes[offset + 6] << 16) | (bytes[offset + 7] << 8) | bytes[offset + 8];
+		__breakOnData(bytes, offset, length == 0 ? bytes.length - offset : length);
+		super.writeBytes(bytes, offset, length);
+	}
+
+	override public function __writeRawBytes(bytes:Bytes, offset:Int, length:Int):Void {
+		__breakOnData(bytes, offset, length);
+		super.__writeRawBytes(bytes, offset, length);
+	}
+
+	private function __breakOnData(bytes:Bytes, offset:Int, count:Int):Void {
+		if (!__broken && count >= H2Frame.HEADER_SIZE && bytes.get(offset + 3) == (H2FrameType.DATA : Int)) {
+			var streamId:Int = ((bytes.get(offset + 5) & 0x7F) << 24) | (bytes.get(offset + 6) << 16) | (bytes.get(offset + 7) << 8)
+				| bytes.get(offset + 8);
 			if (streamId == __streamId) {
 				__broken = true;
 				throw new crossbyte.errors.IOError("the write broke");
 			}
 		}
-		super.writeBytes(bytes, offset, length);
 	}
 }
 
