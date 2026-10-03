@@ -300,6 +300,9 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.SocketRetentionTest());
 		// More sockets than one select can name, which neko refused.
 		runner.addCase(new crossbyte.net.SocketRegistryScaleTest());
+		// Sockets numbered past select's FD_SETSIZE, which natively on Linux
+		// and macOS could not be asked about.
+		runner.addCase(new crossbyte.net.DescriptorCeilingTest());
 		runner.addCase(new crossbyte.net.NameLookupTest());
 		runner.addCase(new crossbyte.net.ServerSocketAcceptTest());
 		// Also in PortableSuite: most of it is Node's listener.

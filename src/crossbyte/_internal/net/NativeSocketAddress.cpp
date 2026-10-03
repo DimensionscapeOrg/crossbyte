@@ -16,6 +16,10 @@ typedef int SocketLen;
 #include <sys/types.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <poll.h>
+#include <limits.h>
+#include <math.h>
+#include <vector>
 #if defined(__linux__)
 #include <netinet/udp.h>
 #endif
@@ -581,5 +585,94 @@ int crossbyte_socket_send_batch(Dynamic socket, Array<unsigned char> buffer, Arr
 		sent++;
 	}
 	return sent;
+#endif
+}
+
+/**
+	select, for a socket of any number. On Linux and macOS select takes no
+	descriptor at or past FD_SETSIZE, 1,024, and hxcpp refuses one
+	rather than overflow the set: a process holding a thousand descriptors
+	could ask about none of its newer sockets, so a client's connect never
+	finished and a listener opened then accepted nothing. poll has no such
+	ceiling. Windows keeps hxcpp's select, whose set is a
+	counted array where a socket's number is no limit, and so does a call
+	with no sockets, which is a wait that select times more finely.
+
+	The arguments and the answer are hxcpp's: three arrays of sockets and a
+	timeout in seconds, or null for none; then the sockets of each that are
+	ready, in the order given. Readable and writable mean what select means,
+	data, the end, or an error, and the third is out-of-band data, as
+	select's exception set is on POSIX. A wait is in whole milliseconds,
+	rounded up.
+**/
+Array<Dynamic> crossbyte_socket_select(Array<Dynamic> rs, Array<Dynamic> ws, Array<Dynamic> es, Dynamic timeout) {
+#if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
+	return _hx_std_socket_select(rs, ws, es, timeout);
+#else
+	Array<Dynamic> sets[3] = {rs, ws, es};
+	int counts[3];
+	int total = 0;
+	for (int set = 0; set < 3; set++) {
+		counts[set] = sets[set].mPtr ? sets[set]->length : 0;
+		total += counts[set];
+	}
+	if (total == 0) {
+		return _hx_std_socket_select(rs, ws, es, timeout);
+	}
+
+	const short events[3] = {POLLIN, POLLOUT, POLLPRI};
+	std::vector<struct pollfd> fds(total);
+	int at = 0;
+	for (int set = 0; set < 3; set++) {
+		for (int i = 0; i < counts[set]; i++) {
+			SOCKET nativeSocket = crossbyte_val_sock(sets[set][i]);
+			if (nativeSocket == INVALID_SOCKET) {
+				hx::Throw(HX_CSTRING("Closed socket in select"));
+			}
+			fds[at].fd = nativeSocket;
+			fds[at].events = events[set];
+			fds[at].revents = 0;
+			at++;
+		}
+	}
+
+	int wait = -1;
+	if (timeout.mPtr) {
+		double seconds = timeout;
+		double milliseconds = ceil(seconds * 1000.0);
+		wait = seconds <= 0 ? 0 : (milliseconds >= (double)INT_MAX ? INT_MAX : (int)milliseconds);
+	}
+
+	hx::EnterGCFreeZone();
+	int ready;
+	do {
+		ready = poll(&fds[0], (nfds_t)total, wait);
+	} while (ready < 0 && errno == EINTR);
+	int error = errno;
+	hx::ExitGCFreeZone();
+	if (ready < 0) {
+		hx::Throw(HX_CSTRING("Select error ") + String(error));
+	}
+
+	Array<Dynamic> result = Array_obj<Dynamic>::__new(3, 3);
+	at = 0;
+	for (int set = 0; set < 3; set++) {
+		Array<Dynamic> chosen = Array_obj<Dynamic>::__new(0, 0);
+		for (int i = 0; i < counts[set]; i++, at++) {
+			short got = fds[at].revents;
+			if (got & POLLNVAL) {
+				// What select says of a descriptor that is not open.
+				hx::Throw(HX_CSTRING("Select error ") + String(EBADF));
+			}
+			bool isReady = set == 0 ? (got & (POLLIN | POLLHUP | POLLERR)) != 0
+				: set == 1 ? (got & (POLLOUT | POLLHUP | POLLERR)) != 0
+				: (got & POLLPRI) != 0;
+			if (isReady) {
+				chosen->push(sets[set][i]);
+			}
+		}
+		result[set] = chosen;
+	}
+	return result;
 #endif
 }
