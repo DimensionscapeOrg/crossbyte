@@ -30,6 +30,13 @@ import crossbyte.sys.NativeProcessStartupInfo;
 	status is 0 when it finished and every client saw what it should have;
 	the numbers are for reading, not gating, as the benchmarks' are.
 
+	`--out <file>` writes the records to a file as well as to standard
+	output. `--cpus 0-3` keeps this process on those processors, and
+	`--client-cpus 4-15` the clients it starts on those (Windows and Linux;
+	`--cpus N` is `0-(N-1)`). Two logical processors are often one core:
+	a server sharing one with its own clients measured 60% more processor
+	time a tick.
+
 	The parts the scenarios start themselves, `game-bots`, `churn-bots`,
 	`idle-bots`: can also be started by hand against a server on another
 	machine, with `--host` and `--port`.
@@ -39,6 +46,13 @@ class LoadMain extends ServerApplication {
 
 	public static function main():Void {
 		args = new Args(Sys.args());
+		Report.open(args.string("out", null));
+		// --cpus for this process, --client-cpus for the ones it starts: room
+		// left for whatever else the machine runs, and a server that does not
+		// share a core with its own clients.
+		Affinity.server = Affinity.parse(args.string("cpus", null));
+		Affinity.clients = Affinity.parse(args.string("client-cpus", null));
+		Affinity.apply(Affinity.server);
 		#if crossbyte_libuv_native
 		if (args.flag("libuv") && !crossbyte.libuv.LibuvPoll.install()) {
 			Report.say("the libuv backend did not install");
@@ -76,6 +90,48 @@ class LoadMain extends ServerApplication {
 		} catch (error:Dynamic) {
 			Report.say("load: " + args.role + " failed to start: " + Std.string(error));
 			Sys.exit(3);
+		}
+	}
+}
+
+/** Which processors the run's processes may use: inclusive ranges. **/
+class Affinity {
+	public static var server:Null<{from:Int, to:Int}> = null;
+	public static var clients:Null<{from:Int, to:Int}> = null;
+
+	/** `a-b`, or `N` for `0-(N-1)`; null for none. **/
+	public static function parse(text:Null<String>):Null<{from:Int, to:Int}> {
+		if (text == null || text == "") {
+			return null;
+		}
+		var dash:Int = text.indexOf("-");
+		if (dash < 0) {
+			var n:Null<Int> = Std.parseInt(text);
+			return n == null || n <= 0 ? null : {from: 0, to: n - 1};
+		}
+		var from:Null<Int> = Std.parseInt(text.substr(0, dash));
+		var to:Null<Int> = Std.parseInt(text.substr(dash + 1));
+		return from == null || to == null || to < from ? null : {from: from, to: to};
+	}
+
+	/** Allows the range, then refuses the rest, so the mask is never empty. **/
+	public static function apply(range:Null<{from:Int, to:Int}>):Void {
+		if (range == null) {
+			return;
+		}
+		var count:Int = crossbyte.sys.System.processorCount;
+		if (count > 64) {
+			count = 64;
+		}
+		for (i in 0...count) {
+			if (i >= range.from && i <= range.to) {
+				crossbyte.sys.System.setProcessAffinity(i, true);
+			}
+		}
+		for (i in 0...count) {
+			if (i < range.from || i > range.to) {
+				crossbyte.sys.System.setProcessAffinity(i, false);
+			}
 		}
 	}
 }
@@ -188,7 +244,22 @@ class Children {
 		});
 		processes.push(process);
 		running++;
-		process.start(new NativeProcessStartupInfo(executable, arguments));
+		// A child takes the mask it is started with: the clients', for the
+		// moment it takes, then this process's own again.
+		if (Affinity.clients != null) {
+			Affinity.apply(Affinity.clients);
+		}
+		try {
+			process.start(new NativeProcessStartupInfo(executable, arguments));
+		} catch (error:Dynamic) {
+			if (Affinity.clients != null) {
+				Affinity.apply(Affinity.server != null ? Affinity.server : {from: 0, to: crossbyte.sys.System.processorCount - 1});
+			}
+			throw error;
+		}
+		if (Affinity.clients != null) {
+			Affinity.apply(Affinity.server != null ? Affinity.server : {from: 0, to: crossbyte.sys.System.processorCount - 1});
+		}
 	}
 
 	function __line(name:String, line:String):Void {

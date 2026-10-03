@@ -30,6 +30,7 @@ import haxe.Timer;
 	LoadMain game --clients 1000 --hz 60 --seconds 600 [--procs 4]
 	              [--warmup 10] [--report 10] [--reliable-every 4]
 	              [--bots <native exe>] [--rate 200]
+	              [--world-mb 1024 --world-churn 0.0002]
 	```
 
 	The run: the server alone, measured after a full collection (the
@@ -46,7 +47,9 @@ import haxe.Timer;
 	`cpuLoad` gives it (timers, the tick, sending, and reading every input
 	that arrived);
 	frames that overran their interval, how late the loop ran, input to
-	acknowledgement as the clients see it, snapshots lost or superseded,
+	acknowledgement as the clients see it, the gap from one tick's start to
+	the next, where a collection's pause shows, with `--world-mb` of live
+	world data held, snapshots lost or superseded,
 	the transport's loss and timeout events on both ends, and heap, resident
 	memory and handles.
 **/
@@ -65,6 +68,7 @@ class GameServer {
 	var warmup:Float;
 	var reportEvery:Float;
 	var reliableEvery:Int;
+	var world:Null<World> = null;
 
 	var server:ReliableDatagramServerSocket;
 	var sessions:Array<GameSession> = [];
@@ -80,6 +84,11 @@ class GameServer {
 	var runTick:Histogram = new Histogram();
 	var runFrame:Histogram = new Histogram();
 	var tickEnd:TickEnd;
+	// Tick start to tick start: a frame held up by anything, a collection
+	// above all, shows here, where cpuLoad stops at a whole frame.
+	var tickGaps:Histogram = new Histogram();
+	var runGaps:Histogram = new Histogram();
+	var lastTickAt:Float = -1;
 	var runLatency:Histogram = new Histogram();
 	var windowLatency:Histogram = new Histogram();
 
@@ -135,6 +144,13 @@ class GameServer {
 		server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, __onConnect);
 		server.bind(0, args.string("host", "127.0.0.1"));
 		server.listen();
+
+		var worldMb:Float = args.float("world-mb", 0);
+		if (worldMb > 0) {
+			var built:Float = Timer.stamp();
+			world = new World(worldMb, args.float("world-churn", 0.0002));
+			Report.emit({kind: "game-world", entities: world.entities.length, seconds: round(Timer.stamp() - built)});
+		}
 
 		cpp_gc();
 		baseline = ProcessStats.sample();
@@ -240,6 +256,8 @@ class GameServer {
 			cpuUsPerClientTick: round(cpu * 1e6 / Math.max(1, runTicks) / Math.max(1, sessions.length)),
 			step: runStep.summary(),
 			tick: runTick.summary(),
+			tickGap: runGaps.summary(),
+			worldEntities: world != null ? world.entities.length : 0,
 			frameWork: runFrame.summary(),
 			overruns: runtime.frameOverruns - overrunsAtStart,
 			droppedScheduleSeconds: round(runtime.droppedScheduleDebt - debtAtStart),
@@ -335,6 +353,13 @@ class GameServer {
 	function __onTick(_:TickEvent):Void {
 		var started:Float = Timer.stamp();
 		tick++;
+		if (phase == "measuring" && lastTickAt >= 0) {
+			tickGaps.add((started - lastTickAt) * 1000);
+		}
+		lastTickAt = started;
+		if (world != null) {
+			world.step(tick);
+		}
 
 		// The frame before this one: everything the loop did in it but wait.
 		if (phase == "measuring") {
@@ -405,6 +430,7 @@ class GameServer {
 			kernelShare: round((sample.kernel - windowSample.kernel) / Math.max(1e-9, (sample.user - windowSample.user) + (sample.kernel - windowSample.kernel))),
 			step: stepTimes.summary(),
 			tick: tickTimes.summary(),
+			tickGap: tickGaps.summary(),
 			frameWork: frameWork.summary(),
 			overruns: runtime.frameOverruns - overrunsAtStart,
 			loopLagMaxMs: round(maxLag * 1000),
@@ -429,6 +455,7 @@ class GameServer {
 
 		runStep.merge(stepTimes);
 		runTick.merge(tickTimes);
+		runGaps.merge(tickGaps);
 		runFrame.merge(frameWork);
 		runLatency.merge(windowLatency);
 		runClient.merge(windowClient);
@@ -446,6 +473,7 @@ class GameServer {
 	function __clearWindow():Void {
 		stepTimes.clear();
 		tickTimes.clear();
+		tickGaps.clear();
 		frameWork.clear();
 		windowLatency.clear();
 		windowClient = new ClientTotals();
@@ -507,6 +535,85 @@ class TickEnd implements crossbyte.core._internal.PassFlush {
 			record(Timer.stamp() - started);
 			started = -1;
 		}
+	}
+}
+
+/**
+	Live world data, as a game server holds it: `--world-mb` megabytes of
+	entities, each a handful of numbers, a component array and a name,
+	listed and indexed by id, millions of small objects, which is what a
+	collector that stops the world has to mark. Every tick some move, and
+	`--world-churn` of them are despawned and replaced, so the heap keeps
+	making garbage the way a world does, and collections keep happening
+	with all of it live.
+**/
+class World {
+	public var entities:Array<WorldEntity> = [];
+
+	var byId:Map<Int, WorldEntity> = new Map();
+	var churn:Float;
+	var nextId:Int = 0;
+	var seed:Int = 0x2545F491;
+
+	public function new(megabytes:Float, churn:Float) {
+		this.churn = churn;
+		// About 300 bytes each as hxcpp lays them out, measured: the object,
+		// its eight-slot component array, its name, and its slot in the index.
+		var count:Int = Std.int(megabytes * 1048576 / 300);
+		for (_ in 0...count) {
+			spawn(entities.length);
+		}
+	}
+
+	function spawn(slot:Int):Void {
+		var e = new WorldEntity(nextId++, random(4096), random(4096));
+		e.name = "e" + e.id;
+		for (i in 0...8) {
+			e.components.push(random(1000));
+		}
+		entities[slot] = e;
+		byId.set(e.id, e);
+	}
+
+	public function step(tick:Int):Void {
+		var n:Int = entities.length;
+		// A thousand move a tick; churn of the world is despawned and spawned.
+		for (_ in 0...1000) {
+			var e = entities[random(n)];
+			e.x += e.vx;
+			e.y += e.vy;
+		}
+		var replace:Int = Std.int(n * churn);
+		for (_ in 0...replace) {
+			var slot:Int = random(n);
+			byId.remove(entities[slot].id);
+			spawn(slot);
+		}
+	}
+
+	inline function random(bound:Int):Int {
+		seed ^= seed << 13;
+		seed ^= seed >>> 17;
+		seed ^= seed << 5;
+		return (seed & 0x7FFFFFFF) % bound;
+	}
+}
+
+class WorldEntity {
+	public var id:Int;
+	public var x:Float;
+	public var y:Float;
+	public var z:Float = 0;
+	public var vx:Float = 0.5;
+	public var vy:Float = -0.25;
+	public var hp:Int = 100;
+	public var name:String;
+	public var components:Array<Int> = [];
+
+	public function new(id:Int, x:Float, y:Float) {
+		this.id = id;
+		this.x = x;
+		this.y = y;
 	}
 }
 
