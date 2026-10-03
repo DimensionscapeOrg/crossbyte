@@ -356,8 +356,14 @@ haxe ci/load.hxml
   connection, and what holding them costs of a core.
 
 Each prints `LOAD {json}` lines -- a window every `--report` seconds, then a
-summary -- and exits 0 when every client saw what it should have. On Linux,
-raise the descriptor limit before a large idle run (`ulimit -n 65536`). To run
+summary -- and exits 0 when every client saw what it should have. Useful
+options: `--cpus 2-5 --client-cpus 6-15` keeps the server and its clients on
+separate processors (a server sharing a core with its own clients measures
+far more processor time a tick); `game --world-mb 1024` holds that much live
+world data, to see the collector's pauses (see Build defines); `churn --ops
+1000:1000 --think 0 --kinds h1 --tls-share 0` measures one runtime's
+throughput for one protocol rather than its churn. On Linux, raise the
+descriptor limit before a large idle run (`ulimit -n 65536`). To run
 on crossbyte-libuv's backend, build with that library as its README says
 (`-lib crossbyte-libuv -D crossbyte_libuv_native`, plus `LIBUV_INCLUDE`,
 `LIBUV_LIB` and `LIBUV_STATIC` on Windows) and pass `--libuv`.
