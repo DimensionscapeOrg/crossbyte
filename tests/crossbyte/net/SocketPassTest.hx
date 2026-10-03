@@ -10,9 +10,8 @@ import sys.net.Host;
 import utest.Assert;
 
 /**
-	What one pass of the runtime does for a socket and a listener: the raw
-	write CrossByte's framers use, and how many waiting connections one pass
-	takes.
+	A socket's raw write, which CrossByte's framers use, and how many
+	connections a listener's queue holds before the system refuses one.
 **/
 class SocketPassTest extends utest.Test {
 	#if (sys && !(js || php))
@@ -67,48 +66,52 @@ class SocketPassTest extends utest.Test {
 
 	#if !eval
 	/**
-		Connections waiting in the listen queue past `maxAcceptsPerTick` are
-		taken by another pass at once, before the runtime waits. It took the
-		cap's worth and left the rest for the next frame, in which a storm
-		filled the queue -- 200 on a client edition of Windows -- and the
-		kernel refused what arrived meanwhile. Before, one pass here accepted
-		the cap's 16 of 120.
+		Connections past 200 wait in the listen queue on Windows rather than
+		being refused. Windows grants 200 to a backlog asked as a number, the
+		default's included, and refused the 201st connection to arrive while
+		none had been accepted; asked as `SOMAXCONN_HINT`, it holds them all.
+		Before, the 201st connect here failed, natively and on neko.
 
-		Not on eval, whose blocking sockets make a client's connect wait for
-		the accept that only the pump below can make.
+		Elsewhere the system's own limit applies -- `somaxconn` on Linux, 128
+		on macOS -- so only Windows is held to the number, and only where
+		`listen()` can ask Windows that way: not the jvm or eval.
 	**/
-	public function testAQueuedBurstIsTakenWithinOnePass():Void {
+	public function testABurstPastTwoHundredWaitsInTheListenQueue():Void {
+		#if (cpp || hl || neko)
+		if (!crossbyte.sys.System.isWindows) {
+			Assert.pass();
+			return;
+		}
+
 		var server = new ServerSocket();
-		var accepted:Array<Socket> = [];
 		var waiting:Array<sys.net.Socket> = [];
-		var runtime = CrossByte.current();
+		var connected:Int = 0;
+		var failure:String = null;
 
 		try {
-			server.maxAcceptsPerTick = 16;
-			server.addEventListener(ServerSocketConnectEvent.CONNECT, (e:ServerSocketConnectEvent) -> accepted.push(e.socket));
 			server.bind(0, "127.0.0.1");
 			server.listen();
 
-			// Connected by the kernel, in the listen queue, before any pump.
-			for (_ in 0...120) {
+			// Nothing is accepted -- the runtime is never pumped -- so every
+			// one of these waits in the queue.
+			for (_ in 0...300) {
 				var peer = new sys.net.Socket();
-				peer.connect(new Host("127.0.0.1"), server.localPort);
 				waiting.push(peer);
+				peer.connect(new Host("127.0.0.1"), server.localPort);
+				connected++;
 			}
-
-			runtime.pump(2.0, 0);
-			Assert.equals(120, accepted.length, "one pass took only " + accepted.length + " of 120 waiting connections");
 		} catch (e:Dynamic) {
-			Assert.fail("the burst failed: " + Std.string(e));
+			failure = Std.string(e);
 		}
+		Assert.equals(300, connected, "connection " + (connected + 1) + " of 300 was refused: " + failure);
 
-		for (socket in accepted) {
-			closeQuietly(socket);
-		}
 		for (peer in waiting) {
 			try peer.close() catch (_:Dynamic) {}
 		}
 		try server.close() catch (_:Dynamic) {}
+		#else
+		Assert.pass();
+		#end
 	}
 	#end
 
