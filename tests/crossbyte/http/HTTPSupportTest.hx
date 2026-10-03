@@ -287,6 +287,35 @@ class HTTPSupportTest extends utest.Test {
 		try root.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
+	/**
+		A rewrite rule and its conditions are classes built from literals, and
+		a condition that needs no key, or does not negate, may leave those
+		out. Before, `RewriteCondition` was a typedef with four required
+		fields, so this did not compile.
+	**/
+	public function testARewriteConditionMayLeaveOutItsKeyAndNegate():Void {
+		var root = File.createTempDirectory();
+		try {
+			root.resolvePath("a.txt").save(ByteArray.fromBytes(Bytes.ofString("A")));
+			var cfg = new HTTPServerConfig("127.0.0.1", 0, root);
+			var rule:crossbyte.http.config.RewriteRule = {pattern: "^/x$", target: "/a.txt", conditions: [{type: RewriteConditionType.Method, pattern: "^GET$"}]};
+			cfg.rewrites = [rule];
+			Assert.isTrue(Std.isOfType(rule, crossbyte.http.config.RewriteRule));
+			Assert.isNull(rule.flags);
+			Assert.isFalse(rule.conditions[0].negate);
+			Assert.isNull(rule.conditions[0].key);
+
+			var matched = RewriteEngine.decide(cfg, "/x", "", "GET", new StringMap<String>());
+			Require.notNull(matched, "a Method condition with no key or negate did not match");
+			Assert.equals("/a.txt", matched.finalPath);
+			Assert.isNull(RewriteEngine.decide(cfg, "/x", "", "POST", new StringMap<String>()));
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
 	public function testAHeaderConditionMatchesWhateverCaseItsKeyIsWrittenIn():Void {
 		// A field's name has no case (RFC 9110 5.1), and both parsers store a
 		// request's fields lowercase. The condition looked its key up as

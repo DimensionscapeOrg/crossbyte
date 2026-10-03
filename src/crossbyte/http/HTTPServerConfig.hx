@@ -892,12 +892,20 @@ class HTTPServerConfig {
 	}
 }
 
-typedef Middleware = (HTTPRequestHandler, ?Dynamic->Void) -> Void;
+/**
+	A middleware: given the request and `next`, it answers the request, or
+	calls `next()` to pass it on, or `next(error)` to fail it -- an `Int` is
+	the status to answer with, anything else answers `500` (see
+	`HTTPServerConfig.onError`). The error is `Any`, as a thrown value is.
+**/
+typedef Middleware = (HTTPRequestHandler, ?Any->Void) -> Void;
 
 /** `HTTPServerConfig.errorDocument` as read: `body` is null when it could not be. */
-@:noCompletion typedef ErrorPage = {
-	var document:File;
-	var body:Null<haxe.io.Bytes>;
-	var type:String;
+@:noCompletion
+@:structInit
+final class ErrorPage {
+	public final document:File;
+	public final body:Null<haxe.io.Bytes>;
+	public final type:String;
 }
 #end
