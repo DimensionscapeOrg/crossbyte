@@ -914,12 +914,16 @@ class PeerConnection {
 		@param maxRetransmits How many times a message may be sent again
 		before it is given up on -- 0 sends each once -- for a channel that
 		would rather lose a message than wait for it, as a game's state
-		channel does. See `DataChannel.maxRetransmits`.
+		channel does. See `DataChannel.maxRetransmits`. -1, unless given, for
+		no limit.
 		@param maxPacketLifeTime Milliseconds a message is tried for, the other
-		way to say the same. One or the other, not both.
+		way to say the same; -1, unless given, for no limit. One or the other,
+		not both.
+		@throws ArgumentError For both limits, or for one past 65535 or below
+		-1.
 	**/
-	public function createDataChannel(label:String, ordered:Bool = true, protocol:String = "", ?maxRetransmits:Int,
-			?maxPacketLifeTime:Int):DataChannel {
+	public function createDataChannel(label:String, ordered:Bool = true, protocol:String = "", maxRetransmits:Int = -1,
+			maxPacketLifeTime:Int = -1):DataChannel {
 		if (!connected || __channels == null) {
 			throw new ArgumentError("This connection is not ready yet. Wait on `ready` before creating channels.");
 		}
