@@ -195,6 +195,12 @@ class TestSuites {
 		#end
 		// The fixed-slot objects rows and documents are built as.
 		runner.addCase(new crossbyte._internal.AnonBuilderTest());
+		// Rows read by column, Postgres's result block, statement templates.
+		runner.addCase(new crossbyte.db.SQLRowTest());
+		#if cpp
+		// SQLite statements prepared once, their values bound, rows read by column.
+		runner.addCase(new crossbyte.db.SQLiteBindingTest());
+		#end
 	}
 
 	public static function addSystem(runner:Runner):Void {

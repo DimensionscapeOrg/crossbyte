@@ -688,8 +688,18 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			return value ? "1" : "0";
 		}
 
+		// Before Int: an Int64 held in a Dynamic passes for one on cpp and the
+		// jvm, and printed as a Float loses what is past 2^53.
+		if (__isInt64(value)) {
+			return Int64.toStr(value);
+		}
+
 		if (Std.isOfType(value, Int) || Std.isOfType(value, Float)) {
 			return Std.string(value);
+		}
+
+		if (Std.isOfType(value, haxe.io.Bytes)) {
+			return "x'" + (value : haxe.io.Bytes).toHex() + "'";
 		}
 
 		var text:String = Std.string(value);
@@ -707,6 +717,15 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		}
 
 		return "'" + text.split("'").join("''") + "'";
+	}
+
+	/** Whether `value` is an `Int64`, and not an `Int` that converts to one. **/
+	@:noCompletion private static inline function __isInt64(value:Dynamic):Bool {
+		#if cpp
+		return value != null && (untyped __cpp__("{0}->__GetType() == vtInt64", value) : Bool);
+		#else
+		return !Std.isOfType(value, Int) && Int64.isInt64(value);
+		#end
 	}
 
 	/** Whether the connection is open, as the calling thread sees it. **/
@@ -1078,6 +1097,34 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		#end
 
 		return __live().request(sql);
+	}
+
+	/**
+		A statement's `text` run with its `parameters`, on the thread that
+		runs the connection's work: natively prepared once and kept, its
+		values bound to its `:name`s (`NativeSQLiteConnection.requestBound`);
+		otherwise, a connection that is not SQLite's own, such as a test's,
+		written into the text as literals, as before.
+	**/
+	@:noCompletion private function __requestStatement(text:String, parameters:Null<haxe.ds.StringMap<Dynamic>>, since:Int):ResultSet {
+		#if cpp
+		var native:NativeSQLiteConnection = __native;
+
+		if (native != null) {
+			return native.requestBound(text, parameters, since);
+		}
+		#end
+
+		return __live().request(__substitute(text, parameters));
+	}
+
+	/** `text` with `parameters` written into it as literals; see `__literal`. **/
+	@:noCompletion private static function __substitute(text:String, parameters:Null<haxe.ds.StringMap<Dynamic>>):String {
+		if (parameters == null) {
+			return crossbyte.db.sql._internal.ParamBinder.substituteWith(text, _ -> false, _ -> null, __literal, false);
+		}
+
+		return crossbyte.db.sql._internal.ParamBinder.substituteWith(text, name -> parameters.exists(name), name -> parameters.get(name), __literal, false);
 	}
 
 	/** `value` with each quote doubled, for inside an SQL string literal. Needs no SQLite. **/
@@ -1675,9 +1722,10 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		otherwise its `next()`; `prefetch` rows a page. The statement runs it
 		on the worker, from the job itself, with no function made for it.
 	**/
-	@:noCompletion private function __queueStatement(statement:SQLiteStatement, fresh:Bool, sql:Null<String>, prefetch:Int):Void {
+	@:noCompletion private function __queueStatement(statement:SQLiteStatement, fresh:Bool, sql:Null<String>, prefetch:Int,
+			?parameters:haxe.ds.StringMap<Dynamic>):Void {
 		#if !php
-		__enqueue(new SQLiteJob(null, SQLEvent.RESULT, statement, __cancelEpoch, false, null, __cancelGen, fresh, sql, prefetch));
+		__enqueue(new SQLiteJob(null, SQLEvent.RESULT, statement, __cancelEpoch, false, null, __cancelGen, fresh, sql, prefetch, parameters));
 		#end
 	}
 
@@ -2259,70 +2307,96 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 }
 
-typedef WalCheckpointResult = {
-	var busy:Int;
-	var log:Int;
-	var checkpointed:Int;
+/*
+	What the connection's own reads answer. Classes, where they were
+	anonymous structures: each field is read directly rather than looked up
+	by name, and an object literal with the same fields still makes one.
+*/
+
+/** What a WAL checkpoint did (`walCheckpoint`): SQLite's three counts. **/
+@:structInit
+final class WalCheckpointResult {
+	public final busy:Int;
+	public final log:Int;
+	public final checkpointed:Int;
 }
 
-typedef FKViolation = {
-	var table:String;
+/** A row that breaks a foreign key (`foreignKeyCheck`). **/
+@:structInit
+final class FKViolation {
+	public final table:String;
 
 	/** Exact to 2^53; null for a row of a `WITHOUT ROWID` table, which has none. **/
-	var rowid:Null<Float>;
-	var parent:String;
-	var fkid:Int;
+	public final rowid:Null<Float>;
+
+	public final parent:String;
+	public final fkid:Int;
 }
 
 /** What `SQLiteConnection.loadSchema` read: a database's tables, views, indices and triggers. **/
-typedef SQLSchemaResult = {
-	var tables:Array<SQLTableSchema>;
-	var views:Array<SQLViewSchema>;
-	var indices:Array<SQLIndexSchema>;
-	var triggers:Array<SQLTriggerSchema>;
+@:structInit
+final class SQLSchemaResult {
+	public final tables:Array<SQLTableSchema>;
+	public final views:Array<SQLViewSchema>;
+	public final indices:Array<SQLIndexSchema>;
+	public final triggers:Array<SQLTriggerSchema>;
 }
 
-typedef SQLTableSchema = {
-	var name:String;
+@:structInit
+final class SQLTableSchema {
+	public final name:String;
+
 	/** The `CREATE TABLE` statement, as SQLite keeps it. **/
-	var sql:Null<String>;
-	var columns:Array<SQLColumnSchema>;
+	public final sql:Null<String>;
+
+	public final columns:Array<SQLColumnSchema>;
 }
 
-typedef SQLColumnSchema = {
-	var name:String;
+@:structInit
+final class SQLColumnSchema {
+	public final name:String;
+
 	/** The declared type, as written; SQLite's affinity follows from it. **/
-	var dataType:String;
-	var allowNull:Bool;
-	var primaryKey:Bool;
+	public final dataType:String;
+
+	public final allowNull:Bool;
+	public final primaryKey:Bool;
+
 	/** The default, as the SQL text of its expression, or null for none. **/
-	var defaultValue:Null<String>;
+	public final defaultValue:Null<String>;
 }
 
-typedef SQLViewSchema = {
-	var name:String;
-	var sql:Null<String>;
+@:structInit
+final class SQLViewSchema {
+	public final name:String;
+	public final sql:Null<String>;
 }
 
-typedef SQLIndexSchema = {
-	var name:String;
-	var table:String;
+@:structInit
+final class SQLIndexSchema {
+	public final name:String;
+	public final table:String;
+
 	/** Null for an index SQLite made itself, for a UNIQUE or PRIMARY KEY constraint. **/
-	var sql:Null<String>;
+	public final sql:Null<String>;
 }
 
-typedef SQLTriggerSchema = {
-	var name:String;
-	var table:String;
-	var sql:Null<String>;
+@:structInit
+final class SQLTriggerSchema {
+	public final name:String;
+	public final table:String;
+	public final sql:Null<String>;
 }
 
-typedef DBStats = {
-	var pageSize:Int;
+/** The database's size (`stats`). **/
+@:structInit
+final class DBStats {
+	public final pageSize:Int;
+
 	// Floats, exact to 2^53: SQLite counts pages in 32 bits unsigned.
-	var pageCount:Float;
-	var freeListCount:Float;
-	var dbSizeBytes:Int64;
-	var freeBytes:Int64;
+	public final pageCount:Float;
+	public final freeListCount:Float;
+	public final dbSizeBytes:Int64;
+	public final freeBytes:Int64;
 }
 #end

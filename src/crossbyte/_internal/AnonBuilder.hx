@@ -166,6 +166,33 @@ class AnonBuilder {
 		#end
 	}
 
+	/**
+		The builder for `names` in `shapes`, the recent shapes a decoder has
+		met, most recent last: one made before for the same names, or a new
+		one, kept in place of the oldest when `shapes` holds `keep` already.
+	**/
+	public static function recent(shapes:Array<AnonBuilder>, names:Array<String>, keep:Int = 8):AnonBuilder {
+		var count:Int = names.length;
+		var i:Int = shapes.length;
+
+		while (--i >= 0) {
+			var shape:AnonBuilder = shapes[i];
+
+			if (shape.matches(names, count)) {
+				return shape;
+			}
+		}
+
+		var made:AnonBuilder = new AnonBuilder(names);
+
+		if (shapes.length >= keep) {
+			shapes.shift();
+		}
+
+		shapes.push(made);
+		return made;
+	}
+
 	#if cpp
 	/**
 		Works out the slots, in the order hxcpp's lookups expect: by the hash
