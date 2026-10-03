@@ -248,6 +248,9 @@ entry below says how:
   application that sends more than that at once, one large reliable
   message, a file, raises it on its sessions, or sets it to 0 for no
   limit.
+- `Membership.heard` and `sweep` take a `Float` `now`, -1 unless given,
+  where they took `Null<Float>`: leave the argument out, or pass -1, where
+  code passed null to ask the clock.
 
 ### Added
 - A load and churn harness, `ci/load.hxml` (`tests/load`), run by hand as
@@ -1457,6 +1460,23 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `Membership.sweep()` looks at no node until the earliest heard from is
+  `timeout` old, with heartbeats arriving, once a timeout rather than
+  every tick, and walks a list when it does, where it walked the map's
+  keys, natively copied first, and looked each up again. A node that an
+  `onLeave` forgets during a sweep is reported once; it was reported, and
+  counted off `length`, twice. A sweep a tick at 60 Hz over 1,024 nodes,
+  each heard from once a second: 52-65 µs a tick before, 0.29-0.52 µs now,
+  the heartbeats included.
+- `Rendezvous` hashes an ASCII key from its characters, by a table, where it
+  encoded the key's bytes first and took the CRC a bit at a time, and
+  `owners()` keeps the best few by insertion, where it made an anonymous
+  structure for every node and sorted them all with a closure. The answers
+  are the same. Over 16 nodes, `owner` took 78-156 ns a key before and 65-77
+  ns now, and `owners(key, 3)` 2.3-2.7 µs before and 0.20-0.24 µs now.
+- `Membership.heard` and `sweep` take `now:Float = -1`, a negative time
+  asking the membership's clock, where a `?now:Float`, natively an object
+  made for every heartbeat that passed one, did for null.
 - `ReliableDatagramSocket.maxOutputBufferSize` is 256 KB unless changed,
   where it was 0, no limit. A session that would hold more than that waiting
   for its congestion window is ended at once, with an `ioError` saying why,
