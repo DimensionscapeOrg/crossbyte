@@ -1454,6 +1454,12 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `Logger`'s JSON records are written out directly, and always as `level`,
+  `message`, `time`, `category` and then the fields, where an anonymous
+  object went through `haxe.Json`, which wrote the keys in whatever order
+  the target's reflection gave: 0.83 to 0.90 us a record natively, where it
+  cost 0.97 to 1.09, and 0.24 to 0.45 on the jvm, where it cost 0.66 to
+  0.71.
 - A child process's output is held at most `NativeProcess.MAX_OUTPUT_AHEAD`
   (256 KB) ahead of the runtime: past that the readers stop reading, and a
   child that goes on writing waits on its pipe until the runtime has
