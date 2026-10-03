@@ -961,7 +961,7 @@ final class CrossByte extends EventDispatcher {
 		       source constants.
 		@param origin What the failing callback belonged to, if known.
 	**/
-	@:noCompletion public function __uncaught(error:Dynamic, source:String, ?origin:Dynamic):Void {
+	@:noCompletion public function __uncaught(error:Dynamic, source:String, ?origin:Any):Void {
 		// Read before anything below can catch something else and replace it.
 		var stack:String = __caughtStack();
 
@@ -997,7 +997,7 @@ final class CrossByte extends EventDispatcher {
 		native registry reports one: through `__uncaught` on the calling
 		thread's runtime, or to the log when there is none.
 	**/
-	@:noCompletion public static function __socketListenerThrew(error:Dynamic, socket:Dynamic, what:String):Void {
+	@:noCompletion public static function __socketListenerThrew(error:Dynamic, socket:Any, what:String):Void {
 		var runtime:Null<CrossByte> = __currentOrNull();
 		if (runtime != null) {
 			runtime.__uncaught(error, UncaughtErrorEvent.SOCKET, socket);
@@ -1028,7 +1028,7 @@ final class CrossByte extends EventDispatcher {
 		}
 	}
 
-	@:noCompletion private static function __describeOrigin(origin:Dynamic):Null<String> {
+	@:noCompletion private static function __describeOrigin(origin:Any):Null<String> {
 		if (origin == null) {
 			return null;
 		}
