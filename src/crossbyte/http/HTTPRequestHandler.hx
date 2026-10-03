@@ -2335,8 +2335,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 	**/
 	@:noCompletion private function __keptFile(file:File, total:Int, modified:Float):ByteArray {
 		var kept:crossbyte._internal.http.KeptBodies = @:privateAccess __config.__keptFiles;
-		// time of day: a file's modification time is one.
-		var settled:Bool = kept.budget > 0 && total <= STREAM_THRESHOLD && modified < (Sys.time() - 2) * 1000;
+		var now:Float = Sys.time(); // time of day: a file's modification time is one
+		var settled:Bool = kept.budget > 0 && total <= STREAM_THRESHOLD && modified < (now - 2) * 1000;
 		if (settled) {
 			var body:Null<haxe.io.Bytes> = kept.get(0, file.nativePath, total, modified);
 			if (body != null) {
