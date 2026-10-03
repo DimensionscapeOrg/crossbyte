@@ -240,6 +240,15 @@ entry below says how:
   and a dial throws for a negative timeout.
 
 ### Added
+- A load and churn harness, `ci/load.hxml` (`tests/load`), run by hand as
+  the soak is: a reliable-UDP game server at 30 or 60 ticks a second with
+  its clients in other processes; HTTP/1.1, HTTP/2 and WebSocket clients
+  half over TLS 1.3, resuming as browsers do, connecting and leaving for as
+  long as a plan says; and ten thousand idle WebSockets, on the built-in
+  backend or crossbyte-libuv's. Each reports processor time, latency,
+  errors, handles and memory as the run goes, and memory against where the
+  server started once the clients have gone. The README's Testing section
+  says how to run them.
 - `HTTPServerConfig.http2MaxRequestBodyBuffer`: what one HTTP/2 connection
   holds of request bodies at once, across all its streams -- 4 MB
   (`DEFAULT_HTTP2_REQUEST_BODY_BUFFER`) unless changed, `0` for no limit,
@@ -2416,6 +2425,37 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On Linux and macOS a process holding more than about a thousand
+  descriptors can still connect and accept. CrossByte asks `select` about
+  single sockets -- whether a client's connect has finished, whether a
+  listener has a connection waiting -- and `select` there takes no
+  descriptor at or past FD_SETSIZE (1,024), which hxcpp refuses rather
+  than overflow its set: so every socket made after the thousandth failed,
+  a WebSocket or `Socket` client's connect with "Socket descriptor too
+  large for select", and a `ServerSocket`, `ServerWebSocket` or
+  `HTTPServer` opened then accepted nothing. The load harness's idle
+  scenario stopped at 1,018 WebSocket clients a process. `sys.net.Socket.select`
+  now uses `poll` there, natively; Windows, where a set is a counted array,
+  keeps `select`.
+- A process supervising children with `NativeProcess` no longer dies with
+  an access violation when one of them ends. The thread that waited for
+  the child sent its completion and then closed the child through a field
+  that the runtime clears as it dispatches `EXIT`; when the runtime got
+  there first the thread closed null, which natively no `catch` takes,
+  and elsewhere left the child's handles for the collector. The load
+  harness's game server, whose clients run as child processes, died this
+  way in three of four runs with a thousand clients. The child is now
+  closed before the completion goes, so by `EXIT` its handles are
+  released.
+- `CrossByte.frameOverruns` counts frames whose work outran their tick,
+  as it says, on a `POLL` loop on Windows too. It counted every frame that
+  ended past its deadline, and the `POLL` loop waits in poll until its
+  deadline, which Windows ends on the system timer's tick, up to a
+  millisecond or two late: a game server with nothing to do at sixty
+  ticks a second reported 165 overruns in 301 frames, so the count could
+  not tell a server keeping up from one falling behind. Each loop now judges
+  a frame by its work, as the default loop and JavaScript's already did.
+  `loopLag` still reports the lateness, and says what is usual for it.
 - A `FileStream` open in `UPDATE` mode reads back what it wrote on macOS.
   It reads and writes through two handles, flushing the writer and
   seeking the reader before each read; BSD stdio, macOS's, keeps a

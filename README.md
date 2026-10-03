@@ -174,6 +174,18 @@ For example:
 haxe -lib crossbyte -lib crossbyte-lz4 -D crossbyte_lz4_native -main Main --cpp bin
 ```
 
+One of hxcpp's own matters to a server that holds a lot in memory. hxcpp's
+collector numbers its 32 KB blocks in two bytes, so a native process can hold
+about 2 GB of objects and no more: past that, an allocation stops the process
+with an access violation ("Memory exhausted" in a debug log). Build with
+`-D HXCPP_GC_BIG_BLOCKS` for 64 KB blocks and twice that. The collector also
+stops every thread while it marks, for a time that grows with what is live --
+about 0.2 ms a megabyte of small objects, measured by the load harness's game
+server at sixty ticks a second: pauses of 50-70 ms every few seconds with
+300 MB live, about 200 ms every twenty seconds with 1.1 GB, up to 0.7 s with
+2.4 GB. A runtime whose ticks must stay inside a frame wants its live heap
+well under 100 MB, or the world held where the collector does not scan it.
+
 ## HashLink and Neko
 
 Both build and run the test suite, in CI on Windows and Linux. What they need,
@@ -313,6 +325,51 @@ haxe ci/bench.hxml
 It reports the best of several samples per case; the numbers compare shapes of
 code on one machine in one sitting and are not comparable across machines. CI
 runs it so it cannot rot, and ignores the numbers.
+
+### Load and churn
+
+`tests/load` runs CrossByte the way a server and a game server run it -- for
+minutes, at scale, with the clients in other processes -- and reports what the
+server costs and whether what it holds comes back down once the clients have
+gone. Build it natively for the machine you are on, then run a scenario:
+
+```sh
+haxe ci/load.hxml
+./export/load/LoadMain game  --clients 1000 --hz 60 --seconds 600
+./export/load/LoadMain churn --plan 50:300,200:300,1000:300,0:120
+./export/load/LoadMain idle  --clients 10000 --seconds 120
+```
+
+- `game`: a reliable-UDP game server ticking at `--hz`, sending every client
+  a 100-400 byte snapshot each tick (sequenced, every fourth reliable) and
+  taking an input from each every tick. Reports processor time per tick, tick
+  time, input-to-acknowledgement latency, lost snapshots and retransmissions,
+  and memory per session.
+- `churn`: HTTP/1.1 keep-alive, HTTP/2 and WebSocket clients, half over TLS,
+  connecting, doing a few requests and leaving, at each concurrency of
+  `--plan` (`concurrency:seconds,...`; end with a `0:` phase to watch memory
+  come back). Its default clients are `tests/load/churn-client.js` and need
+  Node 18 or later, whose TLS connections resume their sessions as browsers'
+  do; `--client native` uses CrossByte's own clients instead, which do not
+  resume and speak HTTP/2 in clear only.
+- `idle`: that many WebSocket connections held open and quiet: memory per
+  connection, and what holding them costs of a core.
+
+Each prints `LOAD {json}` lines -- a window every `--report` seconds, then a
+summary -- and exits 0 when every client saw what it should have. Useful
+options: `--cpus 2-5 --client-cpus 6-15` keeps the server and its clients on
+separate processors (a server sharing a core with its own clients measures
+far more processor time a tick); `game --world-mb 1024` holds that much live
+world data, to see the collector's pauses (see Build defines); `churn --ops
+1000:1000 --think 0 --kinds h1 --tls-share 0` measures one runtime's
+throughput for one protocol rather than its churn. On Linux, raise the
+descriptor limit before a large idle run (`ulimit -n 65536`). To run
+on crossbyte-libuv's backend, build with that library as its README says
+(`-lib crossbyte-libuv -D crossbyte_libuv_native`, plus `LIBUV_INCLUDE`,
+`LIBUV_LIB` and `LIBUV_STATIC` on Windows) and pass `--libuv`.
+`ci/load-jvm.hxml` builds the game server for the jvm; give it `--bots` with
+the native executable so only the server is the jvm's. Like the soak, CI does
+not run any of this: the numbers are for reading, not gating.
 
 ## CI
 
