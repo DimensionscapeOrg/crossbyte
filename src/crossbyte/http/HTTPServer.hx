@@ -27,18 +27,18 @@ using StringTools;
 @:access(crossbyte.http.HTTPRequestHandler)
 class HTTPServer extends ServerSocket {
 	private var __config:HTTPServerConfig;
-	private var __active:ObjectMap<Dynamic, HTTPRequestHandler>;
+	private var __active:ObjectMap<CBSocket, HTTPRequestHandler>;
 
 	// Kept apart from __active rather than widened into it: the two hold
 	// different handlers and the sweep asks each a different question.
-	private var __activeHttp2:ObjectMap<Dynamic, H2ConnectionHandler>;
+	private var __activeHttp2:ObjectMap<CBSocket, H2ConnectionHandler>;
 
 	// Cleartext connections whose first bytes have not yet said which protocol
 	// they speak, with the time each must say it by (0 for none). Counted
 	// against maxConnections like any other: while waiting here they used to
 	// be counted by nothing, timed by nothing and drained by nothing, so six
 	// silent sockets all got in past a limit of two and outlived drain().
-	private var __sniffing:ObjectMap<Dynamic, Float>;
+	private var __sniffing:ObjectMap<CBSocket, Float>;
 	private var __maxConnections:Int;
 	private var __connections:Int;
 	private var docRoot:String;
@@ -267,7 +267,7 @@ class HTTPServer extends ServerSocket {
 		// wall deadline is a backstop, not the norm. Snapshot before
 		// closing: close() re-enters cleanupSocket synchronously, which
 		// mutates __active mid-walk.
-		var idleSockets:Array<Dynamic> = [];
+		var idleSockets:Array<CBSocket> = [];
 		for (socket in __active.keys()) {
 			var handler:HTTPRequestHandler = __active.get(socket);
 			// A connection that has never sent a byte, a browser's
@@ -285,7 +285,7 @@ class HTTPServer extends ServerSocket {
 		}
 		for (socket in idleSockets) {
 			try {
-				(cast socket : crossbyte.net.Socket).close();
+				socket.close();
 			} catch (_:Dynamic) {}
 		}
 
@@ -346,13 +346,13 @@ class HTTPServer extends ServerSocket {
 	}
 
 	private function __finishDrain(onComplete:Void->Void):Void {
-		var sockets:Array<Dynamic> = [for (socket in __active.keys()) socket];
+		var sockets:Array<CBSocket> = [for (socket in __active.keys()) socket];
 		for (socket in __sniffing.keys()) {
 			sockets.push(socket);
 		}
 		for (socket in sockets) {
 			try {
-				(cast socket : crossbyte.net.Socket).close();
+				socket.close();
 			} catch (_:Dynamic) {}
 		}
 
@@ -732,7 +732,7 @@ class HTTPServer extends ServerSocket {
 
 		// A connection still silent at its deadline never began a request, so
 		// there is nothing to answer it with; it is closed.
-		var silent:Array<Dynamic> = [];
+		var silent:Array<CBSocket> = [];
 		for (socket in __sniffing.keys()) {
 			var deadline:Float = __sniffing.get(socket);
 			if (deadline > 0 && now >= deadline) {
@@ -741,7 +741,7 @@ class HTTPServer extends ServerSocket {
 		}
 		for (socket in silent) {
 			try {
-				(cast socket : CBSocket).close();
+				socket.close();
 			} catch (_:Dynamic) {}
 		}
 
@@ -752,7 +752,7 @@ class HTTPServer extends ServerSocket {
 			handler.checkDeadline(now);
 		}
 	}
-	private function cleanupSocket(sock:Dynamic):Void {
+	private function cleanupSocket(sock:CBSocket):Void {
 		if (__sniffing.exists(sock)) {
 			__sniffing.remove(sock);
 			__releaseConnection();
@@ -831,7 +831,7 @@ class HTTPServer extends ServerSocket {
 	@:noCompletion private function __maxOutputBuffer():Int {
 		var peak:Int = 0;
 		for (socket in __active.keys()) {
-			var pending:Int = (cast socket : crossbyte.net.Socket).outputBufferLength;
+			var pending:Int = socket.outputBufferLength;
 			if (pending > peak) {
 				peak = pending;
 			}
@@ -862,7 +862,7 @@ class HTTPServer extends ServerSocket {
 	@:noCompletion private function __totalOutputBuffer():Int {
 		var total:Int = 0;
 		for (socket in __active.keys()) {
-			total += (cast socket : crossbyte.net.Socket).outputBufferLength;
+			total += socket.outputBufferLength;
 		}
 		for (handler in __activeHttp2) {
 			total += handler.heldBytes;

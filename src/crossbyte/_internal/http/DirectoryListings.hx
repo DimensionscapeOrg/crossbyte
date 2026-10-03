@@ -100,14 +100,19 @@ class DirectoryListings {
 			__size++;
 		}
 
-		var listing:Listing = {names: names, at: now};
+		var listing:Listing = new Listing(names, now);
 		__listings.set(directory, listing);
 		return listing;
 	}
 }
 
-private typedef Listing = {
-	var names:StringMap<Bool>;
-	var at:Float;
+private final class Listing {
+	public final names:StringMap<Bool>;
+	public final at:Float;
+
+	public function new(names:StringMap<Bool>, at:Float) {
+		this.names = names;
+		this.at = at;
+	}
 }
 #end

@@ -1506,7 +1506,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var rangeHdr:String = __headers.exists("range") ? __headers.get("range") : null;
 
 		if (rangeHdr != null) {
-			var r:Dynamic = __parseRange(rangeHdr, total);
+			var r:Null<ByteRange> = __parseRange(rangeHdr, total);
 			if (r == null) {
 				var h:Array<URLRequestHeader> = baseHeaders.concat([new URLRequestHeader("Content-Range", 'bytes */${total}')]);
 				__dispatchResponse(416, "Range Not Satisfiable", h, "text/plain", "Requested Range Not Satisfiable", headOnly);
@@ -3742,7 +3742,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * as a start it lies beyond any file this serves, as an end or a suffix
 	 * it covers the whole file, which is what RFC 9110 14.1.2 makes of it.
 	 */
-	@:noCompletion private static function __parseRange(h:String, total:Int):{start:Int, end:Int} {
+	@:noCompletion private static function __parseRange(h:String, total:Int):Null<ByteRange> {
 		if (h == null || total <= 0) {
 			// A range of an empty representation is never satisfiable.
 			return null;
@@ -3769,7 +3769,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			if (last <= 0) {
 				return null;
 			}
-			return {start: total > last ? total - last : 0, end: total - 1};
+			return new ByteRange(total > last ? total - last : 0, total - 1);
 		}
 
 		if (first >= total) {
@@ -3780,7 +3780,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (end < first) {
 			return null;
 		}
-		return {start: first, end: end};
+		return new ByteRange(first, end);
 	}
 
 	@:noCompletion private static inline var RANGE_ABSENT:Int = -1;
@@ -4693,6 +4693,18 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return buf;
 		}
 		return buf + safeName + ": " + __sanitizeHeaderValue(value) + "\r\n";
+	}
+}
+
+/** A satisfiable byte range of a file: its first and last bytes. */
+private final class ByteRange {
+	// Vars, so a structure of the two still reads one (the tests do).
+	public var start:Int;
+	public var end:Int;
+
+	public function new(start:Int, end:Int) {
+		this.start = start;
+		this.end = end;
 	}
 }
 

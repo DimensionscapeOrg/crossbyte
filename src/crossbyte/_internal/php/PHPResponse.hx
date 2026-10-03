@@ -3,8 +3,11 @@ package crossbyte._internal.php;
 import haxe.io.Bytes;
 import haxe.ds.StringMap;
 
-typedef PHPResponse = {
-  var status:Int;
-  var headers:StringMap<String>; // lowercased keys
-  var body:Bytes;
+/** What PHP answered: built from an object literal. */
+@:structInit
+final class PHPResponse {
+	public var status:Int;
+	// Lowercased keys.
+	public var headers:StringMap<String>;
+	public var body:Bytes;
 }
