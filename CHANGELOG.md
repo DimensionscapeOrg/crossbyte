@@ -1450,6 +1450,10 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- An event reaches its listeners for half of what it cost natively: each
+  listener's entry is a class, where a dispatch read its anonymous fields by
+  name, twice a listener. A tick with 1,000 listeners costs 4.2 to 5.3 us
+  natively, where it cost 11.3 to 12.2.
 - `FlexSocket` is an abstract over `sys.net.Socket`, which every TLS socket
   it holds extends, rather than over `EitherType`, which converted it from
   `Dynamic` on every call. On the jvm an accepted socket is constructed
