@@ -450,6 +450,53 @@ class HTTPServerSpreadTest extends utest.Test {
 		SpreadSupport.stop([acceptor, first, second]);
 	}
 
+	/**
+		PHP on a spread server: each runtime answers its requests through a
+		bridge of its own to the one backend, a bridge being its runtime's.
+	**/
+	@:timeout(30000)
+	public function testPhpIsServedThroughABridgePerRuntime():Void {
+		var acceptor:CrossByte = SpreadSupport.runtime();
+		var first:CrossByte = SpreadSupport.runtime();
+		var second:CrossByte = SpreadSupport.runtime();
+		var backendRuntime:CrossByte = SpreadSupport.runtime();
+		var backend:crossbyte.net.ServerSocket = SpreadSupport.on(backendRuntime, () -> FastCgiWire.serve("from php"));
+
+		var root = crossbyte.io.File.createTempDirectory();
+		var script = new crossbyte.io.ByteArray();
+		script.writeUTFBytes("<?php echo 1; ?>");
+		root.resolvePath("index.php").save(script);
+
+		var server:HTTPServer = SpreadSupport.on(acceptor, () -> {
+			var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.php"]);
+			config.rateLimiter = new RateLimiter(1000000, 1.0);
+			config.phpEnabled = true;
+			config.phpMode = 0;
+			config.phpAddress = "127.0.0.1";
+			config.phpPort = backend.localPort;
+			config.runtimes = [first, second];
+			return new HTTPServer(config);
+		});
+
+		var bridges:Array<Dynamic> = [for (replica in server.__spread.replicas) (cast replica : HTTPServer).php];
+		Assert.isTrue(bridges[0] != null && bridges[1] != null && bridges[0] != bridges[1] && bridges[0] != server.php,
+			"the runtimes did not each have a bridge of their own");
+
+		var clients:Array<sys.net.Socket> = [];
+		for (i in 0...4) {
+			var client = SpreadSupport.connect(server.localPort);
+			clients.push(client);
+			var answer = HttpWire.get(client, "/index.php?n=" + i);
+			Assert.equals(200, answer.status, 'PHP request $i on its runtime was not answered');
+			Assert.equals("from php", answer.body);
+		}
+
+		SpreadSupport.closeAll(clients);
+		SpreadSupport.on(acceptor, () -> server.close());
+		SpreadSupport.on(backendRuntime, () -> backend.close());
+		SpreadSupport.stop([acceptor, first, second, backendRuntime]);
+	}
+
 	/** The server's metrics count every runtime's requests and connections. **/
 	@:timeout(30000)
 	public function testMetricsCountEveryRuntime():Void {
@@ -522,6 +569,65 @@ class HTTPServerSpreadTest extends utest.Test {
 }
 
 #if target.threaded
+/**
+	A FastCGI backend that answers each request with `body` as soon as the
+	request's input has ended.
+**/
+class FastCgiWire {
+	/** Listening on the calling runtime; its `localPort` is the backend's. **/
+	public static function serve(body:String):crossbyte.net.ServerSocket {
+		var listener = new crossbyte.net.ServerSocket();
+		var held:Array<crossbyte.net.Socket> = [];
+		listener.addEventListener(crossbyte.events.ServerSocketConnectEvent.CONNECT, function(e:crossbyte.events.ServerSocketConnectEvent):Void {
+			var peer:crossbyte.net.Socket = e.socket;
+			held.push(peer);
+			var buffer = new crossbyte.io.ByteArray();
+			peer.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(_):Void {
+				peer.readBytes(buffer, buffer.length, peer.bytesAvailable);
+				// Records: version, type, id (2), length (2), padding, reserved.
+				while (buffer.length - buffer.position >= 8) {
+					var start:Int = buffer.position;
+					var type:Int = buffer[start + 1];
+					var id:Int = (buffer[start + 2] << 8) | buffer[start + 3];
+					var length:Int = (buffer[start + 4] << 8) | buffer[start + 5];
+					var padding:Int = buffer[start + 6];
+					if (buffer.length - start < 8 + length + padding) {
+						break;
+					}
+					buffer.position = start + 8 + length + padding;
+					if (type == 5 && length == 0) {
+						__answer(peer, id, body);
+					}
+				}
+			});
+		});
+		listener.bind(0, "127.0.0.1");
+		listener.listen();
+		return listener;
+	}
+
+	private static function __answer(peer:crossbyte.net.Socket, id:Int, body:String):Void {
+		var out = new crossbyte.io.ByteArray();
+		var cgi = haxe.io.Bytes.ofString("Status: 200\r\nContent-Type: text/plain\r\n\r\n" + body);
+		__record(out, 6, id, cgi);
+		__record(out, 3, id, haxe.io.Bytes.alloc(8));
+		peer.writeBytes(out, 0, out.length);
+		peer.flush();
+	}
+
+	private static function __record(into:crossbyte.io.ByteArray, type:Int, id:Int, content:haxe.io.Bytes):Void {
+		into.writeByte(1);
+		into.writeByte(type);
+		into.writeByte((id >> 8) & 0xFF);
+		into.writeByte(id & 0xFF);
+		into.writeByte((content.length >> 8) & 0xFF);
+		into.writeByte(content.length & 0xFF);
+		into.writeByte(0);
+		into.writeByte(0);
+		into.writeBytes(crossbyte.io.ByteArray.fromBytes(content), 0, content.length);
+	}
+}
+
 /** HTTP/1.1 by hand over a blocking socket. **/
 class HttpWire {
 	/** One GET on a kept-alive connection: its status and body, status 0 if none came. **/
