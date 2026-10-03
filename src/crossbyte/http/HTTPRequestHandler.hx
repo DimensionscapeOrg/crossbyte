@@ -1158,7 +1158,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// ignored, including the asynchronous case, where the __responded
 		// guard alone cannot help because a later slot has already opened.
 		var slot:Int = __requestGeneration;
-		var next = function(?error:Dynamic):Void {
+		var next = function(?error:Any):Void {
 			if (alreadyCalled || slot != __requestGeneration) {
 				return;
 			}
@@ -1189,7 +1189,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * `Status: 500`, and nothing said why. The client still hears only the
 	 * status: the error's text is the operator's, not the caller's.
 	 */
-	@:noCompletion private function __dispatchMiddlewareError(error:Dynamic, ?stack:Array<haxe.CallStack.StackItem>):Void {
+	@:noCompletion private function __dispatchMiddlewareError(error:Any, ?stack:Array<haxe.CallStack.StackItem>):Void {
 		var status:Int = 500;
 		if (Std.isOfType(error, Int)) {
 			status = cast error;
