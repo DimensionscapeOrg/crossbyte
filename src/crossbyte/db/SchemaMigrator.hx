@@ -96,19 +96,21 @@ typedef SchemaMigratorOptions<T> = {
 }
 
 /**
- * What a `migrate()` call did.
+ * What a `migrate()` call did. A class, where it was an anonymous structure;
+ * an object literal with these fields still makes one.
  */
-typedef MigrationReport = {
+@:structInit
+final class MigrationReport {
 	/**
 	 * Versions applied by this call, in the order applied. Empty when the
 	 * schema was already current.
 	 */
-	var applied:Array<Int>;
+	public final applied:Array<Int>;
 
 	/**
 	 * Registered migrations that were already recorded and so were left alone.
 	 */
-	var alreadyApplied:Int;
+	public final alreadyApplied:Int;
 }
 
 /**

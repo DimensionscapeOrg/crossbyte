@@ -8,6 +8,9 @@ import crossbyte.errors.SQLError;
 import crossbyte.db.sql.SQLResult;
 import crossbyte.db.sql._internal.ItemRows;
 import crossbyte.db.sql._internal.ParamBinder;
+import crossbyte.db.sql._internal.ParamBinder.ParamTemplate;
+import crossbyte.db.sql.SQLRow;
+import crossbyte.db.sql.SQLValue;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
@@ -44,7 +47,7 @@ class MySQLStatement extends EventDispatcher {
 		  unless the process runs in UTC, and on the jvm Haxe's JDBC binding
 		  makes a `Date` of `DATE` and `TIME` columns only, leaving a
 		  `DATETIME` the JDBC driver's own value;
-		- anything else as a string, quoted by the connection's `quote()`,
+		- a `String` quoted by the connection's `quote()`,
 		  which follows the session's `NO_BACKSLASH_ESCAPES`.
 
 		Substituted, not bound: the text is scanned for placeholders outside
@@ -52,7 +55,7 @@ class MySQLStatement extends EventDispatcher {
 		the session reads them -- and the value spliced in. There is no bound
 		alternative: the client speaks the text protocol only.
 	**/
-	public var parameters(default, null):FieldStruct<Dynamic>;
+	public var parameters(default, null):FieldStruct<SQLValue>;
 	public var sqlConnection(get, set):MySQLConnection;
 	public var text:String;
 
@@ -74,6 +77,10 @@ class MySQLStatement extends EventDispatcher {
 	// target. It was a Deque on cpp and, elsewhere, an Array read with pop(),
 	// which hands back the newest page first.
 	private var __resultQueue:Array<Array<Dynamic>> = [];
+
+	// `text` split at its placeholders, kept while it and the session's
+	// escaping stay the same.
+	@:noCompletion private var __template:ParamTemplate;
 
 	public function new() {
 		super();
@@ -163,15 +170,19 @@ class MySQLStatement extends EventDispatcher {
 	}
 
 	@:noCompletion private function __applyParameters(query:String):String {
-		var params:FieldStruct<Dynamic> = parameters;
+		var params:FieldStruct<SQLValue> = parameters;
 		// MySQL's default is backslash escapes on, and the scan is safe that
 		// way round: reading an escape the server does not honour leaves a
 		// placeholder unsubstituted, a loud failure, where missing one it does
 		// honour substitutes inside what the server reads as a literal.
 		var backslashes:Bool = __sqlConnection != null ? __sqlConnection.__backslashEscapes() : true;
+		var template:ParamTemplate = __template;
 
-		return ParamBinder.substituteWith(query, name -> FieldStruct.exists(params, name), name -> FieldStruct.get(params, name), __literal,
-			backslashes);
+		if (template == null || !template.matches(query, backslashes, false)) {
+			template = __template = ParamTemplate.parse(query, backslashes, false);
+		}
+
+		return template.renderMap(cast params, __literal);
 	}
 
 	/** A parameter's value as a MySQL literal; see `parameters`. **/
@@ -376,7 +387,73 @@ class MySQLStatement extends EventDispatcher {
 
 	/** Queues a page, its rows made instances of `itemClass` when it is set. **/
 	@:noCompletion private inline function __push(rows:Array<Dynamic>):Void {
-		__resultQueue.push(ItemRows.make(rows, itemClass));
+		__resultQueue.push(ItemRows.make(rows, itemClass, true));
+	}
+
+	/**
+		Runs `text`, with `parameters` substituted, and hands each row of its
+		result to `each` as an `SQLRow` read by column, in the order the server
+		sent the columns: one object for the whole result, moved on to each
+		row in turn, read as the rows arrive. Nothing is queued, and no
+		`SQLEvent.RESULT` is dispatched. Answers the rows the statement
+		changed, 0 for one that returns rows.
+
+		The client makes an object of every row anyway, so this saves the
+		queueing and the paging, not the row: `SQLRow` reads the same way on
+		every driver, and costs least on SQLite and Postgres.
+
+		@throws SQLError When the server refuses the statement, as `execute()`
+		throws, after dispatching it as an `SQLErrorEvent`. What `each`
+		throws ends the run and is thrown as it is.
+	**/
+	public function executeEach(each:SQLRow->Void):Float {
+		if (__live() == null) {
+			throw "MySQLStatement: no connection set.";
+		}
+
+		var sql:String = __applyParameters(text);
+		var result:ResultSet = null;
+
+		try {
+			result = __sqlConnection != null ? __sqlConnection.__requestStream(sql) : __live().request(sql);
+		} catch (e:Dynamic) {
+			__fail(e);
+		}
+
+		if (result == null) {
+			return 0;
+		}
+
+		if (result.nfields == 0) {
+			return __sqlConnection != null ? __sqlConnection.__affectedBy(result) : result.length;
+		}
+
+		var names:Null<Array<String>> = result.getFieldsNames();
+		var row:Null<crossbyte.db.sql._internal.ObjectRow> = names != null ? new crossbyte.db.sql._internal.ObjectRow(names) : null;
+
+		while (true) {
+			var next:Dynamic = null;
+
+			try {
+				if (!result.hasNext()) {
+					break;
+				}
+
+				next = result.next();
+			} catch (e:Dynamic) {
+				__fail(e);
+			}
+
+			if (row == null) {
+				// A binding that does not name its columns: the first row's.
+				row = new crossbyte.db.sql._internal.ObjectRow(Reflect.fields(next));
+			}
+
+			row.moveTo(next);
+			each(row);
+		}
+
+		return 0;
 	}
 
 	private function get_executing():Bool {

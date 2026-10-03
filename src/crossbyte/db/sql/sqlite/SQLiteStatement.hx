@@ -10,7 +10,10 @@ import crossbyte.events.EventDispatcher;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
 import crossbyte.db.sql.SQLResult;
+import crossbyte.db.sql.SQLRow;
+import crossbyte.db.sql.SQLValue;
 import crossbyte.db.sql._internal.ItemRows;
+import haxe.ds.StringMap;
 import crossbyte.db.sql._internal.ParamBinder;
 import crossbyte.db.sql.sqlite._internal.SQLiteJob;
 import sys.db.Connection;
@@ -42,7 +45,21 @@ class SQLiteStatement extends EventDispatcher {
 		`SQLError`. Null, the default, leaves rows anonymous objects.
 	**/
 	public var itemClass:Class<Dynamic>;
-	public var parameters(default, null):FieldStruct<String>;
+
+	/**
+		Values for the `:name` parameters in `text`, by name without the
+		colon: `statement.parameters.id = 7`. Each is bound to the statement
+		as its type (see `SQLValue`); one not set, or a parameter written
+		`?`, `@name` or `$name`, reads as NULL.
+
+		Natively the statement is prepared once per text and kept by the
+		connection, so running it again with other values costs SQLite's own
+		work only. They were `String`s written into the text as quoted
+		literals, and the text prepared again on every run: a repeated INSERT
+		took 3.8-6.1 µs where it takes 0.36-0.63 µs bound (the audit's
+		SqlitePerf).
+	**/
+	public var parameters(default, null):FieldStruct<SQLValue>;
 	public var sqlConnection(get, set):SQLiteConnection;
 	public var text:String;
 
@@ -167,7 +184,7 @@ class SQLiteStatement extends EventDispatcher {
 			throw new IllegalOperationError("SQLiteStatement: sqlConnection is not set, or is not open.");
 		}
 
-		var sql:String = __applyParameters(text);
+		var values:StringMap<Dynamic> = __values();
 
 		__executing = true;
 		__resultQueue = [];
@@ -176,7 +193,8 @@ class SQLiteStatement extends EventDispatcher {
 
 		if (connection.__async) {
 			try {
-				connection.__queueStatement(this, true, sql, prefetch);
+				// The values as they are now, bound on the worker later.
+				connection.__queueStatement(this, true, text, prefetch, values.copy());
 			} catch (e:Dynamic) {
 				// Refused: its worker has stopped, after an open that failed.
 				__executing = false;
@@ -204,7 +222,7 @@ class SQLiteStatement extends EventDispatcher {
 		__running = true;
 
 		try {
-			__resultSet = connection.__requestSince(sql, since);
+			__resultSet = connection.__requestStatement(text, values, since);
 			__affected = __affectedOf(__resultSet);
 			var rows:Array<Dynamic> = __readRows(__resultSet, prefetch);
 
@@ -248,13 +266,95 @@ class SQLiteStatement extends EventDispatcher {
 		parameter -- NULL as well, by luck rather than by design.
 	**/
 	@:noCompletion private function __applyParameters(query:String):String {
-		var params:FieldStruct<String> = parameters;
-		return ParamBinder.substituteWith(query, name -> FieldStruct.exists(params, name), name -> FieldStruct.get(params, name), __escapeValue,
-			false);
+		return SQLiteConnection.__substitute(query, __values());
 	}
 
-	@:noCompletion private function __escapeValue(value:Dynamic):String {
-		return SQLiteConnection.__literal(value);
+	/** The map `parameters` keeps its values in. **/
+	@:noCompletion private inline function __values():StringMap<Dynamic> {
+		return cast parameters;
+	}
+
+	/**
+		Runs `text` with `parameters` and hands each row of its result to
+		`each`, as an `SQLRow` that reads the row by column: one object for
+		the whole result, moved on to each row in turn, and none made for a
+		row -- where `execute()` makes each row an object and queues them
+		for `getResult()`. A row is valid inside the call only. Answers the
+		rows the statement changed, for one that returns no rows; nothing is
+		queued, and no `SQLEvent.RESULT` is dispatched.
+
+		Natively, on a synchronous connection only: an asynchronous one runs
+		its statements on its worker, where `each` cannot be called.
+
+		The same SELECT of 20,000 rows of 8 columns took 199-330 ns a row this
+		way, and 539-775 ns a row as objects read by name (the audit's
+		SqlitePerf).
+
+		@throws SQLError When SQLite refuses the statement, as `execute()`
+		throws, after dispatching it as an `SQLErrorEvent`. What `each`
+		throws ends the run and is thrown as it is.
+		@throws IllegalOperationError When `sqlConnection` is not set or not
+		open, is asynchronous, or is not SQLite's own native connection.
+	**/
+	public function executeEach(each:SQLRow->Void):Float {
+		if (__sqlConnection == null || !__sqlConnection.__isOpen()) {
+			throw new IllegalOperationError("SQLiteStatement: sqlConnection is not set, or is not open.");
+		}
+
+		var connection:SQLiteConnection = __sqlConnection;
+
+		if (connection.__async) {
+			throw new IllegalOperationError("SQLiteStatement.executeEach needs a synchronous connection: an asynchronous one runs statements on its worker.");
+		}
+
+		#if cpp
+		var native:crossbyte.db.sql.sqlite._internal.NativeSQLiteConnection = connection.__native;
+
+		if (native == null) {
+			throw new IllegalOperationError("SQLiteStatement.executeEach reads SQLite's own native connection, which this one is not.");
+		}
+
+		if (__resultSet != null) {
+			connection.__letGo(__resultSet);
+			__resultSet = null;
+		}
+
+		connection.__settle();
+		var since:Int = connection.__cancelsNow();
+		__running = true;
+		__executing = true;
+		var changed:Int = 0;
+		var failure:Dynamic = null;
+		var failed:Bool = false;
+		var inCallback:Bool = false;
+
+		try {
+			changed = native.eachRow(text, __values(), since, row -> {
+				inCallback = true;
+				each(row);
+				inCallback = false;
+			});
+		} catch (e:Dynamic) {
+			failed = true;
+			failure = e;
+		}
+
+		__running = false;
+		__executing = false;
+
+		if (failed) {
+			if (inCallback) {
+				throw failure;
+			}
+
+			__fail(failure);
+		}
+
+		__rowId = __rowIdNow();
+		return changed;
+		#else
+		throw new IllegalOperationError("SQLiteStatement.executeEach needs the native target, where SQLite is.");
+		#end
 	}
 
 	/**
@@ -269,7 +369,7 @@ class SQLiteStatement extends EventDispatcher {
 	**/
 	@:noCompletion private function __work(job:SQLiteJob):Void {
 		if (job.fresh) {
-			__executeOnWorker(job.sql, job.prefetch, job.statementEpoch);
+			__executeOnWorker(job.sql, job.parameters, job.prefetch, job.statementEpoch);
 		} else {
 			__nextOnWorker(job.prefetch, job.statementEpoch);
 		}
@@ -283,12 +383,12 @@ class SQLiteStatement extends EventDispatcher {
 		connection the worker opened is read here, as the job runs, and the
 		worker is the connection's while a statement's work runs on it.
 	**/
-	@:noCompletion private function __executeOnWorker(sql:String, prefetch:Int, epoch:Int):Void {
+	@:noCompletion private function __executeOnWorker(sql:String, values:Null<StringMap<Dynamic>>, prefetch:Int, epoch:Int):Void {
 		var connection:SQLiteConnection = __sqlConnection;
 		var message:SQLiteStatementMessage = new SQLiteStatementMessage(this, true, epoch);
 
 		try {
-			__resultSet = connection.__connection.request(sql);
+			__resultSet = connection.__requestStatement(sql, values, 0);
 			__resultEpoch = epoch;
 			message.affected = __affectedOf(__resultSet);
 			var rows:Array<Dynamic> = __readRows(__resultSet, prefetch);
@@ -386,7 +486,7 @@ class SQLiteStatement extends EventDispatcher {
 			__pageDone = !result.hasNext();
 		}
 
-		return ItemRows.make(rows, itemClass);
+		return ItemRows.make(rows, itemClass, true);
 	}
 
 	/**

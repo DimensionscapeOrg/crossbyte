@@ -24,6 +24,8 @@ class SchemaMigratorTest extends utest.Test {
 
 		var report = migrator.migrate(connection);
 
+		// A class, where it was an anonymous structure.
+		Assert.isTrue(Std.isOfType(report, crossbyte.db.SchemaMigrator.MigrationReport));
 		Assert.same([1, 2, 3], report.applied);
 		Assert.equals(0, report.alreadyApplied);
 		Assert.same([1, 2, 3], __recordedVersions(connection));

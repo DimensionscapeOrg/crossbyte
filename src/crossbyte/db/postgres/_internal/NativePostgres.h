@@ -13,6 +13,9 @@ void* crossbyte_postgres_open(::String conninfo, Array< ::String > libraryPaths)
 void crossbyte_postgres_close(void* handle);
 bool crossbyte_postgres_is_open(void* handle);
 ::String crossbyte_postgres_request_json(void* handle, ::String sql);
+// Runs SQL text, which may hold several statements, and returns the last
+// one's result as the same encoded block as crossbyte_postgres_request_params.
+Array<unsigned char> crossbyte_postgres_request_block(void* handle, ::String sql);
 // Runs a statement with bound parameters and returns the encoded result block
 // in one call. PostgresWire documents the format.
 Array<unsigned char> crossbyte_postgres_request_params(void* handle, ::String sql, Array<unsigned char> params, int paramsLength);

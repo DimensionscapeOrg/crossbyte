@@ -238,8 +238,31 @@ entry below says how:
   meant three and twenty seconds: pass the time wanted, or leave the
   argument out for the default. `StunClient.classifyFiltering` fails for 0,
   and a dial throws for a negative timeout.
+- `parameters` of `SQLiteStatement`, `MySQLStatement` and
+  `PostgresStatement` is a `FieldStruct<SQLValue>`: a `Bool`, `Int`,
+  `Float`, `Int64`, `String`, `Bytes`, `Date` or null converts to it as it
+  is set. A value read back is a `SQLValue`; cast it to its type
+  (`var name:String = statement.parameters.name`). On SQLite, which took
+  `String`s only, a number now goes in as a number and `Bytes` as a blob.
+- `PostgresConnection.request()` answers a `PostgresResultSet`, a
+  `sys.db.ResultSet`, where it answered `Dynamic`; the
+  `PostgresStatement.PostgresResultSet` typedef of `Dynamic` is gone.
+  `PostgresRawResult` is a class in `crossbyte.db.postgres`, and
+  `SQLiteConnection`'s `WalCheckpointResult`, `FKViolation`,
+  `SQLSchemaResult`, `SQLTableSchema`, `SQLColumnSchema`, `SQLViewSchema`,
+  `SQLIndexSchema`, `SQLTriggerSchema` and `DBStats`, and
+  `SchemaMigrator.MigrationReport`, are classes: object literals with their
+  fields still make them, but a value built as another anonymous structure
+  no longer passes for one.
 
 ### Added
+- `SQLRow` and `executeEach` on `SQLiteStatement`, `MySQLStatement` and
+  `PostgresStatement`: a result read row by row and column by column
+  (`getInt`, `getFloat`, `getBool`, `getString`, `getBytes`, `getValue`,
+  `isNull`, `columnName`, `columnCount`), through one object moved on to
+  each row, with no object made for a row. On SQLite, natively, the same
+  SELECT of 20,000 rows of 8 columns reads at 320-480 ns a row this way;
+  on Postgres at 260-340 ns a row, from the block the bridge sends.
 - A load and churn harness, `ci/load.hxml` (`tests/load`), run by hand as
   the soak is: a reliable-UDP game server at 30 or 60 ticks a second with
   its clients in other processes; HTTP/1.1, HTTP/2 and WebSocket clients
@@ -1447,6 +1470,30 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- SQLite statements are prepared once and kept, by the connection, for
+  their text (64 texts), with their `:name` parameters bound as their
+  types, where every run wrote its values into the statement as literals
+  and had SQLite prepare the whole text again. A statement with six values,
+  run again and again, took 4.0-7.3 µs a run and takes 0.8-2.2 µs (W1 and
+  W6 of the audit's SqlitePerf, natively, against 0.37-0.81 µs for SQLite
+  itself). A statement prepared before a schema change is prepared again
+  by SQLite, its new columns read. Rows of SQLite, and of Postgres's
+  `request()` and `executeParams`, are objects with fixed slots (see
+  `AnonBuilder`), which a field is read from faster: a page of SQLite rows
+  costs 34-53% less to read, and their fields 44-57% less.
+- Postgres's `request()`, and `PostgresStatement.execute()`, read the
+  result from the bridge's binary block, as `requestParams()` does, where
+  the bridge rendered every row as JSON and Haxe parsed it: 2.7-3.9 µs a
+  row of 8 columns became 0.32-0.42 µs, and a query of one row went from
+  4.4-6.2 µs to 1.6-2.2 µs (the audit's PostgresPerf, against a stand-in
+  libpq).
+- `itemClass` works out once a page which field each column goes to,
+  where every row asked for its field names and looked each up along the
+  class's: its cost over plain rows fell by about two thirds (SqlitePerf
+  R2i against R2).
+- A statement's text is split at its placeholders once and kept, where it
+  was copied a character at a time on every run, placeholder or none:
+  a SELECT with no placeholder costs 32-42 ns there instead of 240-410.
 - On eval HTTP/2 works, and the HTTP/1.1 client keeps connections for the
   next request to their origin, as on every other target with threads.
   Both were off there because eval raised a reset connection's error past
