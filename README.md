@@ -81,7 +81,8 @@ CrossByte currently includes:
 - workers, task pools, and `NativeProcess`, which starts a child process and reads its output natively, on the jvm, HashLink, Neko and Node; not on the interpreter, whose process calls hold every thread while they wait, nor in a browser
 - data structures and utility packages
 - database surfaces for:
-  - SQLite
+  - SQLite, natively, its statements prepared once and their parameters bound
+  - every SQL driver's statements take `parameters` as `SQLValue`s, and read a result row by row and column by column with `executeEach` and `SQLRow`
   - MySQL and MariaDB: natively through hxcpp's bundled client, which logs in with `caching_sha2_password` or `mysql_native_password`, uses TLS when the server offers it (`MySQLConfig.sslMode`), bounds its waits and can `cancel()` a statement; on the jvm through Connector/J on the class path, without the TLS or limit settings
   - PostgreSQL: natively through libpq, loaded at run time, with bound parameters, statement and connect timeouts and `cancel()`; on php through PDO; no other target
   - MongoDB, through its wire protocol (OP_MSG, SCRAM, TLS, cursors, transactions) on hxcpp, the jvm, the interpreter, hl and neko; not on JavaScript, which cannot block
