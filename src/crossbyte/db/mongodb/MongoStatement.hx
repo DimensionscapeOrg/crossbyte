@@ -272,25 +272,12 @@ class MongoStatement extends EventDispatcher {
 		__resultQueue = [];
 	}
 
-	/** Queues a page, its documents made instances of `itemClass` when it is set. **/
+	/**
+		Queues a page, its documents made instances of `itemClass` when it is
+		set. A command's reply is an anonymous object, as every document the
+		connection decodes is.
+	**/
 	@:noCompletion private function __push(documents:Array<Dynamic>):Void {
-		if (itemClass != null) {
-			// A command's reply comes back as a BsonDocument, whose fields are
-			// its keys rather than its class's.
-			for (i in 0...documents.length) {
-				if (Std.isOfType(documents[i], BsonDocument)) {
-					var ordered:BsonDocument = documents[i];
-					var plain:Dynamic = {};
-
-					for (key in ordered.keys()) {
-						Reflect.setField(plain, key, ordered.get(key));
-					}
-
-					documents[i] = plain;
-				}
-			}
-		}
-
 		__resultQueue.push(ItemRows.make(documents, itemClass));
 	}
 }
