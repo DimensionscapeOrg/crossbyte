@@ -222,7 +222,7 @@ class GameBots {
 			connectFailures: connectFailures,
 			losses: CountingCongestion.losses - lossesReported,
 			timeouts: CountingCongestion.timeouts - timeoutsReported,
-			cpu: (sample.user - lastSample.user) + (sample.kernel - lastSample.kernel),
+			cpu: (sample.cpu - lastSample.cpu),
 			rssMB: ProcessStats.mb(sample.rss),
 			latency: latency.encode()
 		});

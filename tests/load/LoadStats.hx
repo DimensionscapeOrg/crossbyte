@@ -149,6 +149,7 @@ class Histogram {
 @:cppFileCode('
 #include <windows.h>
 #include <psapi.h>
+#include <intrin.h>
 ')
 #end
 class ProcessStats {
@@ -166,6 +167,20 @@ class ProcessStats {
 
 	/** Open handles on Windows, open descriptors on Linux. **/
 	public var handles:Int = -1;
+
+	/**
+		Seconds of processor time, user and kernel, counted exactly: on
+		Windows from the cycles the process's threads ran
+		(`QueryProcessCycleTime`), on Linux the same as `user + kernel`,
+		which the kernel already scales to the scheduler's exact count.
+
+		Windows charges `user` and `kernel` a whole clock tick to whichever
+		thread is running when the tick lands. A loop that wakes on the
+		timer and works for less than a tick before sleeping again is mostly
+		never there when it lands, and is charged a fraction of what it
+		used: an idle game server read a fifth of its real cost.
+	**/
+	public var cpu:Float = -1;
 
 	/** The collector's heap: in use at the last collection, now, and reserved. **/
 	public var heapLive:Float = -1;
@@ -215,11 +230,48 @@ class ProcessStats {
 		s.rss = times[2];
 		s.privateBytes = times[3];
 		s.handles = Std.int(times[4]);
+		var cycles:Float = untyped __cpp__('
+			([]() -> double {
+				ULONG64 cycles = 0;
+				return QueryProcessCycleTime(GetCurrentProcess(), &cycles) ? (double)cycles : -1.0;
+			})()
+		');
+		s.cpu = cycles >= 0 ? cycles / __cycleHz() : s.user + s.kernel;
 		#elseif (sys && !windows)
 		__readLinux(s);
+		s.cpu = s.user + s.kernel;
 		#end
 		return s;
 	}
+
+	#if (cpp && windows)
+	static var __hz:Float = 0;
+
+	/**
+		The rate the cycle counter runs at, measured once against the
+		performance counter: an invariant TSC, which is what
+		`QueryProcessCycleTime` counts on any machine this runs on, ticks at a
+		constant rate whatever the clock speed.
+	**/
+	static function __cycleHz():Float {
+		if (__hz == 0) {
+			__hz = untyped __cpp__('
+				([]() -> double {
+					LARGE_INTEGER frequency, start, end;
+					QueryPerformanceFrequency(&frequency);
+					QueryPerformanceCounter(&start);
+					unsigned __int64 c0 = __rdtsc();
+					do {
+						QueryPerformanceCounter(&end);
+					} while ((double)(end.QuadPart - start.QuadPart) / (double)frequency.QuadPart < 0.05);
+					unsigned __int64 c1 = __rdtsc();
+					return (double)(c1 - c0) / ((double)(end.QuadPart - start.QuadPart) / (double)frequency.QuadPart);
+				})()
+			');
+		}
+		return __hz;
+	}
+	#end
 
 	#if (sys && !windows)
 	static var __ticksPerSecond:Float = 100;
