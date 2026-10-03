@@ -284,5 +284,7 @@ class PortableSuite {
 		runner.addCase(new crossbyte.foundation.FoundationConstructsTest());
 		// The MongoDB driver's public types, decided at compile time.
 		runner.addCase(new crossbyte.db.mongodb.MongoApiTest());
+		// The types of JWT claims, audiences and key records, alike everywhere.
+		runner.addCase(new crossbyte.auth.jwt.JWTTypesTest());
 	}
 }

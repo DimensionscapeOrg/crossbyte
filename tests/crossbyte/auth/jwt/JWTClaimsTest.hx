@@ -98,8 +98,14 @@ class JWTClaimsTest extends utest.Test {
 	public function testTimesAndRegisteredClaimsKeepTheirTypes():Void {
 		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]));
 
-		// Made here: a time that is not a number is refused before signing.
-		Assert.raises(() -> jwt.generateToken({sub: "a", exp: "tomorrow"}), ArgumentError);
+		// Made here: a time that is not a number is refused before signing --
+		// by the compiler when it is written in a literal (JWTTypesTest), and
+		// here when it is built by name. Field by field rather than a literal:
+		// the jvm types a literal's fields, and refuses the string in a Float.
+		var named:Dynamic = {};
+		Reflect.setField(named, "sub", "a");
+		Reflect.setField(named, "exp", "tomorrow");
+		Assert.raises(() -> jwt.generateToken(JWTPayload.ofData(named)), ArgumentError);
 		Assert.raises(() -> jwt.generateToken({sub: "a", exp: 1.0 / 0.0}), ArgumentError);
 
 		// Made elsewhere and signed: refused rather than misread.

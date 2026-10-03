@@ -220,45 +220,63 @@ class JWT {
 		// Unbounded: parsed only once the signature has shown the issuer wrote
 		// them. Measuring them too cost a typical token's verification 2%.
 		var claims:Null<Dynamic> = __decodeObject(parts[1], 0);
-		if (claims == null || !__registeredClaimsWellTyped(claims)) {
+		if (claims == null) {
 			return JWTVerification.refused(MALFORMED);
 		}
-		var payload:JWTPayload = JWTPayload.ofData(claims);
+
+		// The registered claims, read once and checked for the JSON types RFC
+		// 7519 gives them: strings for `sub`, `name`, `iss` and `jti`, numbers
+		// for the times. Checked here, so the payload's typed properties
+		// cannot hand back, say, an Int as a String -- which the jvm answers
+		// with a cast exception -- and read the field with no check of their
+		// own. A missing or non-numeric `exp` is MISSING_EXPIRY.
+		var issuerValue:Dynamic = Reflect.field(claims, "iss");
+		if (!__isTextOrNull(Reflect.field(claims, "sub")) || !__isTextOrNull(Reflect.field(claims, "name")) || !__isTextOrNull(issuerValue)
+			|| !__isTextOrNull(Reflect.field(claims, "jti"))) {
+			return JWTVerification.refused(MALFORMED);
+		}
+		var issuedAtValue:Dynamic = Reflect.field(claims, "iat");
+		var issuedAt:Float = __seconds(issuedAtValue);
+		var notBeforeValue:Dynamic = Reflect.field(claims, "nbf");
+		var notBefore:Float = __seconds(notBeforeValue);
+		if ((issuedAtValue != null && Math.isNaN(issuedAt)) || (notBeforeValue != null && Math.isNaN(notBefore))) {
+			return JWTVerification.refused(MALFORMED);
+		}
+		var expiresAt:Float = __seconds(Reflect.field(claims, "exp"));
+		if (Math.isNaN(expiresAt)) {
+			return JWTVerification.refused(MISSING_EXPIRY);
+		}
 
 		// Float throughout: a time past 2038 does not fit an Int, and one near
 		// the limit plus the leeway wrapped where an Int is 32 bits.
 		var nowSec:Float = now != null ? now : Date.now().getTime() / 1000;
-		var expiresAt:Null<Float> = payload.expiresAt;
-		if (expiresAt == null) {
-			return JWTVerification.refused(MISSING_EXPIRY);
-		}
 		if (nowSec > expiresAt + leeway) {
 			return JWTVerification.refused(EXPIRED);
 		}
-		var issuedAt:Null<Float> = payload.issuedAt;
-		if (issuedAt != null && (nowSec + leeway) < issuedAt) {
+		if (issuedAtValue != null && (nowSec + leeway) < issuedAt) {
 			return JWTVerification.refused(ISSUED_IN_FUTURE);
 		}
-		var notBefore:Null<Float> = payload.notBeforeTime;
-		if (notBefore != null && (nowSec + leeway) < notBefore) {
+		if (notBeforeValue != null && (nowSec + leeway) < notBefore) {
 			return JWTVerification.refused(NOT_YET_VALID);
 		}
 
-		if (expectedIssuer != null && payload.issuer != expectedIssuer) {
+		var issuer:Null<String> = issuerValue;
+		if (expectedIssuer != null && issuer != expectedIssuer) {
 			return JWTVerification.refused(WRONG_ISSUER);
 		}
+		var audience:JWTAudience = Reflect.field(claims, "aud");
 		if (expectedAudience != null) {
-			if (!__audMatches(expectedAudience, payload.audience)) {
+			if (!audience.contains(expectedAudience)) {
 				return JWTVerification.refused(WRONG_AUDIENCE);
 			}
-		} else if (payload.audience != null) {
+		} else if (audience != null) {
 			// RFC 7519 4.1.3: a recipient that does not identify itself with a
 			// value in `aud` must reject the token. One minted for another
 			// service the issuer and key serve was accepted here.
 			return JWTVerification.refused(WRONG_AUDIENCE);
 		}
 
-		return JWTVerification.accepted(payload);
+		return JWTVerification.accepted(JWTPayload.ofData(claims));
 	}
 
 	@:noCompletion private static function __signerFor(spec:JWTSigner):IJWTSigner {
@@ -345,32 +363,30 @@ class JWT {
 		return (code >= "A".code && code <= "Z".code) ? code + 32 : code;
 	}
 
-	/**
-	 * The registered claims with the JSON types RFC 7519 gives them, where
-	 * present: strings for `sub`, `name`, `iss` and `jti`, numbers for `iat`
-	 * and `nbf`. A missing or non-numeric `exp` is `MISSING_EXPIRY` instead.
-	 * Checked so the typed properties of the payload cannot hand back, say, an
-	 * `Int` as a `String`, which the jvm answers with a cast exception.
-	 */
-	@:noCompletion private static function __registeredClaimsWellTyped(claims:Dynamic):Bool {
-		for (field in __STRING_CLAIMS) {
-			var value:Dynamic = Reflect.field(claims, field);
-			if (value != null && !Std.isOfType(value, String)) {
-				return false;
-			}
-		}
-		for (field in __TIME_CLAIMS) {
-			var value:Dynamic = Reflect.field(claims, field);
-			if (value != null && JWTPayload.seconds(value) == null) {
-				return false;
-			}
-		}
-		return true;
+	@:noCompletion private static inline function __isTextOrNull(value:Dynamic):Bool {
+		return value == null || Std.isOfType(value, String);
 	}
 
-	// Made once: an array literal in the loop above is an allocation per token.
-	@:noCompletion private static final __STRING_CLAIMS:Array<String> = ["sub", "name", "iss", "jti"];
-	@:noCompletion private static final __TIME_CLAIMS:Array<String> = ["iat", "nbf"];
+	/**
+		Seconds since the epoch from a claim as JSON gives it -- an `Int` or a
+		`Float` depending on the target and the size of the number -- or NaN
+		when it is absent or not a finite number. NaN rather than `null`, which
+		natively boxes the number in an allocation.
+	**/
+	@:noCompletion private static function __seconds(value:Dynamic):Float {
+		return switch (Type.typeof(value)) {
+			// `+ 0.0` rather than a typed assignment: on the interpreter a
+			// Float variable given an Int keeps Int arithmetic, and the leeway
+			// added to 2147483647 would wrap.
+			case TInt: (value : Int) + 0.0;
+			case TFloat:
+				var number:Float = value;
+				Math.isFinite(number) ? number : Math.NaN;
+			default: Math.NaN;
+		}
+	}
+
+	// Made once: an array literal in the loop below is an allocation per token.
 	@:noCompletion private static final __WRITTEN_TIME_CLAIMS:Array<String> = ["iat", "exp", "nbf"];
 
 	/**
@@ -437,25 +453,6 @@ class JWT {
 			return null;
 		}
 		return value;
-	}
-
-	@:noCompletion private static function __audMatches(expected:String, aud:Dynamic):Bool {
-		if (aud == null) {
-			return false;
-		}
-		if (Std.isOfType(aud, String)) {
-			return (cast aud : String) == expected;
-		}
-		if (Std.isOfType(aud, Array)) {
-			var arr:Array<Dynamic> = cast aud;
-			for (v in arr) {
-				if (Std.isOfType(v, String) && (cast v : String) == expected) {
-					return true;
-				}
-			}
-			return false;
-		}
-		return false;
 	}
 
 	public static inline function base64UrlEncodeString(s:String):String {

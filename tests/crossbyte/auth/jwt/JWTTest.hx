@@ -24,7 +24,7 @@ class JWTTest extends utest.Test {
 		Assert.equals("subject", verified.subject);
 		Assert.equals("Chris", verified.name);
 		Assert.equals("issuer-a", verified.issuer);
-		Assert.equals("aud-a", verified.audience);
+		Assert.same(["aud-a"], verified.audience.toArray());
 		Assert.equals("token-1", verified.tokenId);
 	}
 

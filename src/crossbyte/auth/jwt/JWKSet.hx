@@ -14,9 +14,13 @@ import haxe.io.Bytes;
  * it *can* use — at exactly the moment it needs them. Refusing silently
  * is worse, so they are reported.
  */
-typedef IgnoredKey = {
-	var kid:Null<String>;
-	var reason:String;
+@:structInit
+final class IgnoredKey {
+	/** The key's `kid`, or `null` when it had none. */
+	public var kid:Null<String> = null;
+
+	/** Why the key cannot be used. */
+	public var reason:String;
 }
 
 /**
