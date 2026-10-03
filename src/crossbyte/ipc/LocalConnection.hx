@@ -22,7 +22,6 @@ import crossbyte.net.Transport;
 import crossbyte.utils.Logger;
 import haxe.io.Bytes;
 import haxe.io.BytesData;
-import haxe.io.BytesBuffer;
 #if cpp
 import cpp.Pointer;
 import crossbyte.ipc._internal.NativeLocalConnection;
@@ -98,7 +97,7 @@ private enum LocalConnectionDispatch {
 #if cpp
 @:access(crossbyte.ipc._internal.NativeLocalConnection)
 #end
-class LocalConnection implements INetConnection implements CloseObservable {
+class LocalConnection implements INetConnection implements CloseObservable implements crossbyte.core._internal.PassFlush {
 	/**
 	 * Whether this target has local IPC: natively (cpp) on Windows, over a
 	 * named pipe, and on Linux and macOS, over a Unix domain socket. Elsewhere
@@ -216,12 +215,19 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	// Bytes of payload queued for delivery, or held until reads are enabled,
 	// and not yet delivered. See __countInbound.
 	@:noCompletion private var __inQueued:Int = 0;
-	// What send() has queued that the peer has not taken: whole frames, the
-	// first of them written as far as __outOffset. Under __handleLock.
-	@:noCompletion private var __outFrames:Array<ByteArray> = [];
-	@:noCompletion private var __outHead:Int = 0;
-	@:noCompletion private var __outOffset:Int = 0;
+	// What send() has framed that the peer has not taken: one buffer, each
+	// frame written into it where it ends, and the channel written from
+	// __outSent. Under __handleLock. Each send was a frame of its own, a
+	// buffer made, grown twice and copied into, and a write.
+	@:noCompletion private var __outBuffer:ByteArray = null;
+	@:noCompletion private var __outSent:Int = 0;
 	@:noCompletion private var __outQueued:Int = 0;
+	// Whether this pass's sends are to be written when it ends; see send().
+	@:noCompletion private var __outPassQueued:Bool = false;
+	// Whether the runtime will try again, at its next frame, to write what
+	// the channel did not take; see __flushPass.
+	@:noCompletion private var __outRetryArmed:Bool = false;
+	@:noCompletion private var __outRetry:Void->Void = null;
 	// Advanced by close(), which listen() and connect() begin with, so a
 	// reader thread can say which session it belonged to.
 	@:noCompletion private var __session:Int = 0;
@@ -386,10 +392,7 @@ class LocalConnection implements INetConnection implements CloseObservable {
 			return;
 		}
 
-		var frame = new ByteArray();
-		frame.writeInt(data.length);
-		frame.writeBytes(data, 0, data.length);
-		frame.position = 0;
+		var length:Int = data.length;
 
 		// Queued and written without waiting, under __handleLock so the reader
 		// thread's close/disconnect cannot tear the handle down (and the OS
@@ -403,18 +406,21 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		var failure:LocalConnectionDispatch = null;
 		var stuck:Null<Reason> = null;
 		var pipe = __activePipe;
-		if (!__connected || pipe == null || !__isOpen(pipe)) {
+		// Not asked first whether the channel is still open, a system call a
+		// send: the write says so, and a failed one is asked why.
+		if (!__connected || pipe == null) {
 			failure = Error(Reason.Closed);
-		} else if (maxQueuedBytes > 0 && __outQueued > 0 && __outQueued + frame.length > maxQueuedBytes) {
+		} else if (maxQueuedBytes > 0 && __outQueued > 0 && __outQueued + length + 4 > maxQueuedBytes) {
 			// Only with something already waiting: a frame larger than the
 			// limit still goes to a peer that has kept up.
 			stuck = Reason.Error("Local transport peer is not reading: " + __outQueued + " bytes wait for it, and "
-				+ frame.length + " more would pass the " + maxQueuedBytes + "-byte limit.");
+				+ (length + 4) + " more would pass the " + maxQueuedBytes + "-byte limit.");
 		} else {
-			__outFrames.push(frame);
-			__outQueued += frame.length;
-			if (!__flushOutput(pipe)) {
-				failure = Error(Reason.Error("Local transport write failed."));
+			__frameOutput(data, length);
+			// On the runtime's own thread the pass's sends go together when
+			// it ends, in a write or a few; from any other, now.
+			if (!__holdForPass() && !__flushOutput(pipe)) {
+				failure = __writeFailure(pipe);
 			}
 		}
 		#if (cpp || neko || hl)
@@ -444,39 +450,122 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		seconds, and the peer's next read began in the middle of it.
 	**/
 	@:noCompletion private function __flushOutput(pipe:LocalConnectionHandle):Bool {
-		while (__outHead < __outFrames.length) {
-			final frame:ByteArray = __outFrames[__outHead];
-			final left:Int = frame.length - __outOffset;
-			final written:Int = __writeSome(pipe, (cast frame : Bytes).getData(), __outOffset, left);
+		while (__outQueued > 0) {
+			final written:Int = __writeSome(pipe, (cast __outBuffer : Bytes).getData(), __outSent, __outQueued);
 			if (written < 0) {
 				return false;
 			}
-			__outOffset += written;
-			__outQueued -= written;
-			if (written < left) {
+			if (written == 0) {
 				break;
 			}
-			__outFrames[__outHead] = null;
-			__outHead++;
-			__outOffset = 0;
+			__outSent += written;
+			__outQueued -= written;
 		}
-		if (__outHead >= __outFrames.length) {
-			if (__outHead > 0) {
-				__outFrames = [];
-				__outHead = 0;
+		if (__outQueued == 0) {
+			if (__outBuffer != null) {
+				__outBuffer.clear();
 			}
-		} else if (__outHead > 32 && __outHead * 2 >= __outFrames.length) {
-			__outFrames = __outFrames.slice(__outHead);
-			__outHead = 0;
+			__outSent = 0;
+		} else if (__outSent >= __outQueued) {
+			// What is left moved down over what went, once what went is as
+			// long: no byte is moved more often than bytes are written.
+			final raw:Bytes = cast __outBuffer;
+			raw.blit(0, raw, __outSent, __outQueued);
+			__outBuffer.length = __outQueued;
+			__outSent = 0;
 		}
 		return true;
 	}
 
+	/** Frames `length` bytes of `data` at the end of what waits to be written. Under __handleLock. **/
+	@:noCompletion private function __frameOutput(data:ByteArray, length:Int):Void {
+		if (__outBuffer == null) {
+			__outBuffer = new ByteArray();
+		}
+		// In the byte order a frame always had: `ByteArray.defaultEndian`'s,
+		// as the reader's own buffer reads it.
+		__outBuffer.endian = ByteArray.defaultEndian;
+		__outBuffer.position = __outBuffer.length;
+		__outBuffer.writeInt(length);
+		if (length > 0) {
+			__outBuffer.writeBytes(data, 0, length);
+		}
+		__outQueued += 4 + length;
+	}
+
+	/**
+		Whether this pass's sends can wait for its end: on the runtime's own
+		thread, while it runs, they do, and one write takes them all; asked of
+		the runtime once a pass. Under __handleLock.
+	**/
+	@:noCompletion private function __holdForPass():Bool {
+		if (__outPassQueued) {
+			return true;
+		}
+		var runtime:CrossByte = __runtime;
+		if (runtime == null || @:privateAccess runtime.__didExit || CrossByte.__currentOrNull() != runtime) {
+			return false;
+		}
+		__outPassQueued = true;
+		@:privateAccess runtime.__queuePassFlush(this);
+		return true;
+	}
+
+	/**
+		The runtime's call at the end of a pass: what this pass's sends framed
+		is written.
+
+		What the channel does not take is tried again at the runtime's next
+		frame, once a frame until it is all written, as well as by the reader
+		thread, which waits a sleep between tries, on Windows a millisecond
+		at least: a burst larger than the pipe's buffer crossed a buffer a
+		sleep, 4 KB messages at 20 MB/s. Once a frame, not at once: a peer
+		that is not reading costs a runtime a write a frame, not a spin.
+	**/
+	@:noCompletion public function __flushPass():Void {
+		var failure:LocalConnectionDispatch = null;
+		#if (cpp || neko || hl)
+		__handleLock.acquire();
+		#end
+		__outPassQueued = false;
+		var pipe = __activePipe;
+		if (__connected && pipe != null && __outQueued > 0 && !__flushOutput(pipe)) {
+			failure = __writeFailure(pipe);
+		}
+		var runtime:CrossByte = __runtime;
+		if (failure == null && __connected && pipe != null && __outQueued > 0 && !__outRetryArmed && runtime != null
+			&& !@:privateAccess runtime.__didExit) {
+			if (__outRetry == null) {
+				__outRetry = __retryOutput;
+			}
+			__outRetryArmed = true;
+			@:privateAccess runtime.__timer.setTimeout(0, __outRetry);
+		}
+		#if (cpp || neko || hl)
+		__handleLock.release();
+		#end
+		if (failure != null) {
+			__dispatchLifecycle(failure);
+		}
+	}
+
+	/** The retry __flushPass arms: at the frame after, what still waits. **/
+	@:noCompletion private function __retryOutput():Void {
+		__outRetryArmed = false;
+		__flushPass();
+	}
+
+	/** Why a write failed: the channel closed, or something else. Under __handleLock. **/
+	@:noCompletion private function __writeFailure(pipe:LocalConnectionHandle):LocalConnectionDispatch {
+		return __isOpen(pipe) ? Error(Reason.Error("Local transport write failed.")) : Error(Reason.Closed);
+	}
+
 	/** Drops whatever is queued to send. Under __handleLock. **/
 	@:noCompletion private inline function __dropOutput():Void {
-		__outFrames = [];
-		__outHead = 0;
-		__outOffset = 0;
+		if (__outBuffer != null) {
+			__outBuffer.clear();
+		}
+		__outSent = 0;
 		__outQueued = 0;
 	}
 
@@ -643,18 +732,22 @@ class LocalConnection implements INetConnection implements CloseObservable {
 					// reader paused while the application catches up lets happen.
 					// A frame too long is caught where it is framed.
 					var bytesRemaining = available > READ_PER_PASS ? READ_PER_PASS : available;
-					var aggregate = new BytesBuffer();
+					// One buffer of the size known, filled a chunk at a time: a
+					// BytesBuffer on hxcpp adds a byte at a time.
+					var whole:Bytes = Bytes.alloc(bytesRemaining);
+					var filled:Int = 0;
 					while (bytesRemaining > 0) {
 						var length = bytesRemaining > BUFFER_SIZE ? BUFFER_SIZE : bytesRemaining;
 						if (__read(pipe, chunk.getData(), length) != 0) {
 							failure = Reason.Error("Local transport read failed.");
 							break;
 						}
-						aggregate.addBytes(chunk, 0, length);
+						whole.blit(filled, chunk, 0, length);
+						filled += length;
 						bytesRemaining -= length;
 					}
 					if (failure == null) {
-						received = aggregate.getBytes();
+						received = whole;
 					}
 				}
 			}
@@ -688,6 +781,15 @@ class LocalConnection implements INetConnection implements CloseObservable {
 			}
 
 			idle = busy ? POLL_MIN : (idle * 2 > POLL_MAX ? POLL_MAX : idle * 2);
+			// A pass that read, wrote or took a client is followed by another at
+			// once, which finds out whether there is more. It waited first,
+			// on Windows a Sleep of a millisecond at least, and up to the 15.6
+			// of the system's clock, so a peer sending steadily was read a
+			// pass a sleep: 4 KB messages crossed at 20 MB/s.
+			if (busy) {
+				wokeForWork = false;
+				continue;
+			}
 			// Ready, and yet nothing came of it: once, and then a plain wait,
 			// so a socket that says it is ready and lets nothing through
 			// cannot spin this thread.
@@ -887,6 +989,14 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	/** From a reader thread, for its session: refused once close() has ended it. **/
 	@:noCompletion private function __dispatchFromReader(message:LocalConnectionDispatch, session:Int):Void {
 		#if (cpp || neko || hl)
+		// A reader thread is never its runtime's: with a runtime, what it
+		// reads is handed over, and nothing need be asked. It asked which
+		// runtime this thread had, and the answer, none, was an exception
+		// thrown and caught for every frame.
+		if (__runtime != null) {
+			__queueDispatch(message, session);
+			return;
+		}
 		if (!__canDispatchInline()) {
 			__queueDispatch(message, session);
 			return;
@@ -1063,11 +1173,8 @@ class LocalConnection implements INetConnection implements CloseObservable {
 			return true;
 		}
 
-		try {
-			return CrossByte.current() == __runtime;
-		} catch (_:Dynamic) {
-			return false;
-		}
+		// Asked without an exception for the answer "none".
+		return CrossByte.__currentOrNull() == __runtime;
 	}
 
 	/**
@@ -1201,12 +1308,8 @@ class LocalConnection implements INetConnection implements CloseObservable {
 			return __runtime.uptime;
 		}
 
-		try {
-			var runtime = CrossByte.current();
-			return runtime != null ? runtime.uptime : 0.0;
-		} catch (_:Dynamic) {
-			return 0.0;
-		}
+		var runtime = CrossByte.__currentOrNull();
+		return runtime != null ? runtime.uptime : 0.0;
 	}
 
 	@:noCompletion private inline function get_remoteAddress():String {
