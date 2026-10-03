@@ -1065,16 +1065,13 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		var processed:Int = 0;
 		while (__receiving && processed < MAX_DATAGRAMS_PER_TICK) {
 			var bytesReady:Int = 0;
+			// -1 when nothing is waiting, which ends every pass that read:
+			// readFrom threw Blocked for it, an exception made and caught each
+			// time the socket was drained.
 			try {
-				bytesReady = __socket.readFrom(__readBuffer, 0, __readBuffer.length, __tempAddress);
+				bytesReady = @:privateAccess __socket.__tryReadFrom(__readBuffer, 0, __readBuffer.length, __tempAddress);
 			} catch (_:Eof) {
 				break;
-			} catch (e:HxIOError) {
-				if (__isBlockedError(e)) {
-					return;
-				}
-				__onReadFailed(Std.string(e));
-				return;
 			} catch (e:Dynamic) {
 				if (__isBlockedError(e)) {
 					return;
@@ -1083,6 +1080,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 				return;
 			}
 
+			// Nothing waiting (-1), or the empty read readFrom ended the pass
+			// with as Eof (0).
 			if (bytesReady <= 0) {
 				return;
 			}
@@ -1306,10 +1305,10 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			if (__socket == null) {
 				throw new IOError("Operation attempted on invalid socket.");
 			}
-			__socket.sendTo(bytes, offset, length, target);
+			// A full send buffer (-1) drops the datagram, as a full queue
+			// anywhere on the path would; it is not the sender's failure.
+			@:privateAccess __socket.__trySendTo(bytes, offset, length, target);
 		} catch (e:Dynamic) {
-			// A full send buffer drops the datagram, as a full queue anywhere
-			// on the path would; it is not the sender's failure.
 			if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
 				return;
 			}
@@ -1350,7 +1349,10 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			var stopped:Int = first++;
 			try {
 				var target:Address = __outTargets[stopped];
-				__socket.sendTo(__outBytes, __outSpans[2 * stopped], __outSpans[2 * stopped + 1], target);
+				// A full send buffer: it and what follows are dropped.
+				if (@:privateAccess __socket.__trySendTo(__outBytes, __outSpans[2 * stopped], __outSpans[2 * stopped + 1], target) < 0) {
+					break;
+				}
 			} catch (e:Dynamic) {
 				if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
 					break;
