@@ -41,6 +41,15 @@ class EventDispatcher implements IEventDispatcher {
 	@:noCompletion private var __targetDispatcher:IEventDispatcher;
 
 	/**
+		The next listener's place in the order of additions. Dispatch does not
+		read it, a list is kept in priority order as listeners are added,
+		but a listener's entry keeps it, so a subclass can tell one entry from
+		another without comparing functions: on HashLink a listener is stored
+		wrapped, and compares equal to nothing it was added as.
+	**/
+	@:noCompletion private var __nextListenerOrder:Int;
+
+	/**
 		How many dispatches on this dispatcher are walking a listener list
 		right now. While one is, adding or removing a listener replaces the
 		list rather than changing it, so the walk goes on over the list it
@@ -64,6 +73,7 @@ class EventDispatcher implements IEventDispatcher {
 	public function new(target:IEventDispatcher = null) {
 		__targetDispatcher = target;
 		__eventMap = null;
+		__nextListenerOrder = 0;
 		__walking = 0;
 	}
 
@@ -94,7 +104,7 @@ class EventDispatcher implements IEventDispatcher {
 			throw "listener must not be null";
 		}
 
-		var entry:ListenerEntry = new ListenerEntry(cast listener, priority);
+		var entry:ListenerEntry = new ListenerEntry(cast listener, priority, __nextListenerOrder++);
 
 		var eventMap = __eventMap;
 		if (eventMap == null) {
@@ -403,8 +413,12 @@ private final class ListenerEntry {
 	public final listener:Function;
 	public final priority:Int;
 
-	public inline function new(listener:Function, priority:Int) {
+	/** Its place in the order of additions, from `__nextListenerOrder`. **/
+	public final order:Int;
+
+	public inline function new(listener:Function, priority:Int, order:Int) {
 		this.listener = listener;
 		this.priority = priority;
+		this.order = order;
 	}
 }
