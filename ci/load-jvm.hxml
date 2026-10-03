@@ -1,0 +1,9 @@
+# The load harness on the jvm: `java -jar export/load-jvm/LoadMain.jar game
+# ...`. Only the game scenario is meant to run here; pass `--bots` the native
+# LoadMain so the clients are native and only the server is the jvm's.
+-cp src
+-cp tests/load
+-main LoadMain
+--jvm export/load-jvm/LoadMain.jar
+--macro crossbyte._internal.macro.HostPlatform.define()
+--macro crossbyte._internal.macro.StdOverrides.use()

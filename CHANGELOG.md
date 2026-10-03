@@ -240,6 +240,15 @@ entry below says how:
   and a dial throws for a negative timeout.
 
 ### Added
+- A load and churn harness, `ci/load.hxml` (`tests/load`), run by hand as
+  the soak is: a reliable-UDP game server at 30 or 60 ticks a second with
+  its clients in other processes; HTTP/1.1, HTTP/2 and WebSocket clients
+  half over TLS 1.3, resuming as browsers do, connecting and leaving for as
+  long as a plan says; and ten thousand idle WebSockets, on the built-in
+  backend or crossbyte-libuv's. Each reports processor time, latency,
+  errors, handles and memory as the run goes, and memory against where the
+  server started once the clients have gone. The README's Testing section
+  says how to run them.
 - `HTTPServerConfig.http2MaxRequestBodyBuffer`: what one HTTP/2 connection
   holds of request bodies at once, across all its streams -- 4 MB
   (`DEFAULT_HTTP2_REQUEST_BODY_BUFFER`) unless changed, `0` for no limit,
