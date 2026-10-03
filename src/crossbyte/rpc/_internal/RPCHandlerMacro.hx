@@ -446,18 +446,18 @@ class RPCHandlerMacro {
 			// side's, and becomes an error answer instead; see `__rpc_fail`.
 			var guarded:Expr = {expr: EBlock(callStmts), pos: m.pos};
 			if (callsAfter) {
-				stmts.push(macro var __failure:Dynamic = null);
-				stmts.push(macro try $e{guarded} catch (__error:Dynamic) {
+				stmts.push(macro var __failure:Null<haxe.Exception> = null);
+				stmts.push(macro try $e{guarded} catch (__error:haxe.Exception) {
 					__failure = __error;
 					this.__rpc_fail($op, $name, requestId, __error);
 				});
 				stmts.push(macro try {
 					this.afterCall($name, requestId, __failure);
-				} catch (__error:Dynamic) {
+				} catch (__error:haxe.Exception) {
 					this.__rpc_report($op, $name, __error);
 				});
 			} else {
-				stmts.push(macro try $e{guarded} catch (__error:Dynamic) {
+				stmts.push(macro try $e{guarded} catch (__error:haxe.Exception) {
 					this.__rpc_fail($op, $name, requestId, __error);
 				});
 			}
@@ -476,7 +476,7 @@ class RPCHandlerMacro {
 				var __runs:Bool = true;
 				try {
 					__refusal = this.beforeCall($name, requestId, this.this_frameEnd - input.position);
-				} catch (__error:Dynamic) {
+				} catch (__error:haxe.Exception) {
 					__runs = false;
 					this.__rpc_fail($op, $name, requestId, __error);
 				}
@@ -534,13 +534,13 @@ class RPCHandlerMacro {
 		final noFuture:Expr = macro $v{"RPC handler method '" + m.name + "' answered with no future"};
 		final after:Expr = callsAfter ? macro try {
 			this.afterCall($name, requestId, __failure);
-		} catch (__error:Dynamic) {
+		} catch (__error:haxe.Exception) {
 			this.__rpc_report($op, $name, __error);
 		} : macro {};
 
 		return macro if (this.__rpc_mayWait($op, requestId)) {
 			var __future:$futureType = null;
-			var __failure:Dynamic = null;
+			var __failure:Null<haxe.Exception> = null;
 			var __answered:Bool = false;
 			try {
 				__future = $callExpr;
@@ -554,7 +554,7 @@ class RPCHandlerMacro {
 						$sendNow;
 					}
 				}
-			} catch (__error:Dynamic) {
+			} catch (__error:haxe.Exception) {
 				__failure = __error;
 				__answered = true;
 				this.__rpc_fail($op, $name, requestId, __error);
@@ -903,8 +903,18 @@ class RPCHandlerMacro {
 			};
 		}
 		final send:Expr = session == null ? macro this.__rpc_answer(framed) : macro this.__rpc_answerOn($session, framed);
+		// Made the size the answer will be, as a call's frame is (see
+		// RPCCommandMacro): the length, flags and op, a varint id, a presence
+		// byte, and the value.
+		final sized:Expr = switch (typeKey(unwrapNull(ret), pos)) {
+			case "Int": macro 4;
+			case "Bool": macro 1;
+			case "Float": macro 8;
+			case "String": macro($value == null ? 0 : $value.length * 3) + 5;
+			default: macro($value == null ? 0 : $value.length) + 5;
+		}
 		return macro {
-			var framed:crossbyte.io.ByteArrayOutput = new crossbyte.io.ByteArrayOutput(crossbyte.rpc._internal.RPCWire.MIN_PAYLOAD_LEN + 4);
+			var framed:crossbyte.io.ByteArrayOutput = new crossbyte.io.ByteArrayOutput(4 + 5 + 5 + 1 + $sized);
 			framed.writeInt(0);
 			framed.writeByte(crossbyte.rpc._internal.RPCWire.FLAG_RESPONSE);
 			framed.writeInt($v{op});

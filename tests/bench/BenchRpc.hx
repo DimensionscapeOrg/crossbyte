@@ -164,7 +164,7 @@ private class HookedBenchHandler extends BenchHandler {
 		return null;
 	}
 
-	override public function afterCall(method:String, requestId:Int, error:Dynamic):Void {}
+	override public function afterCall(method:String, requestId:Int, error:Null<haxe.Exception>):Void {}
 }
 
 /** Two connections joined in memory: what one sends, the other reads at once. **/

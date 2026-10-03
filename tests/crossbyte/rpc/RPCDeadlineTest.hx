@@ -193,7 +193,7 @@ private class DeadlineHandler extends RPCHandler {
 		return value;
 	}
 
-	override public function afterCall(method:String, requestId:Int, error:Dynamic):Void {
+	override public function afterCall(method:String, requestId:Int, error:Null<haxe.Exception>):Void {
 		if (method == "slow") {
 			afterCalls.push(method + " " + (error == null ? "ok" : (cast error : RPCError).message));
 		}

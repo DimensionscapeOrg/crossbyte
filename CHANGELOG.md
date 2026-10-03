@@ -253,6 +253,12 @@ entry below says how:
   code passed null to ask the clock.
 - `NodeChannel.poll()` takes no argument; delete the one passed, which was
   never read.
+- `RPCHandler.afterCall(method, requestId, error)` takes a
+  `Null<haxe.Exception>`, and `onHandlerError` and
+  `RPCSession.afterRuntimeCall` a `haxe.Exception`, where they took
+  `Dynamic`: change the parameter's type in an override or handler. What was
+  thrown is the exception, or, for a value that was not one, the `value` of
+  the `haxe.ValueException` given.
 
 ### Added
 - A load and churn harness, `ci/load.hxml` (`tests/load`), run by hand as
@@ -1462,6 +1468,17 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `RPCHandler.afterCall` and `onHandlerError`, and
+  `RPCSession.afterRuntimeCall`, are given the error as a `haxe.Exception`,
+  where it was `Dynamic`. The generated code wraps what a handler threw
+  once, as `haxe.Exception.caught` does: an `RPCError` arrives as itself,
+  and anything thrown that was not an exception as a `haxe.ValueException`
+  holding it in `value`.
+- A compiled RPC call or answer is framed in a buffer made at its size, from
+  the arguments' types, where the frame began at 9 bytes and grew by a chunk
+  for every argument: in memory, a one-way call from stub to handler took
+  206-280 ns before and 72-85 ns now, a request and its answer 421-501 ns
+  before and 230-259 ns now.
 - A `NodeChannel` writes what one pass of the runtime's loop sent in one
   write when the pass ends, each message's length written ahead of it, where
   every message was framed into a buffer of its own and flushed with a
