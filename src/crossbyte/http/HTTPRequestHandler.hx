@@ -357,7 +357,22 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (key.length > 0 && (StringTools.isSpace(key, 0) || StringTools.isSpace(key, key.length - 1))) {
 			key = StringTools.trim(key);
 		}
-		return __headers.get(key);
+		return __header(key);
+	}
+
+	/**
+		The request header `key` (lower case), or null. On js a missing key
+		reads `undefined`, which a concatenation prints as "undefined" where
+		every other target prints "null": made null here, in one lookup.
+	**/
+	@:noCompletion private inline function __header(key:String):Null<String> {
+		var value:Null<String> = __headers.get(key);
+		#if js
+		if (value == null) {
+			return null;
+		}
+		#end
+		return value;
 	}
 
 	/** Returns `true` when a request header exists. */
@@ -418,7 +433,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function __getCookieHeader():String {
-		return __headers != null ? __headers.get("cookie") : null;
+		return __headers != null ? __header("cookie") : null;
 	}
 
 	@:noCompletion private function __onData(e:ProgressEvent):Void {
