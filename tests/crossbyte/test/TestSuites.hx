@@ -71,6 +71,8 @@ class TestSuites {
 		runner.addCase(new crossbyte._internal.compression.CompressionRoundTripTest());
 		runner.addCase(new crossbyte._internal.compression.BrotliCodecTest());
 		runner.addCase(new crossbyte._internal.compression.CodecFormatsTest());
+		// Also in PortableSuite: typed pairs, callbacks and SwitchTable lookups.
+		runner.addCase(new crossbyte.ds.TypedShapesTest());
 	}
 
 	public static function addHttp(runner:Runner):Void {

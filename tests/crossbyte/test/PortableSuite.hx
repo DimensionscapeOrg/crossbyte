@@ -129,6 +129,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.test.RequireTest());
 		runner.addCase(new crossbyte.FutureTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
+		// Typed pairs, callbacks and a typed SwitchTable, where Dynamic used to be.
+		runner.addCase(new crossbyte.ds.TypedShapesTest());
 		// Specialised per element type, and Map keys that differ by target.
 		runner.addCase(new crossbyte.ds.PriorityQueueTest());
 		runner.addCase(new crossbyte.ds.OrderedMapTest());
