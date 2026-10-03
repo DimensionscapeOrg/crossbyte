@@ -1816,7 +1816,12 @@ private class HoldingSocket extends SysSocket {
 		output = new HoldingOutput(output, this);
 	}
 
-	/** Holds the next write. */
+	/**
+		Holds the next write that carries a HEADERS frame: a request's head.
+		Not simply the next write, which after a request may be the session's
+		WINDOW_UPDATE or SETTINGS ack -- holding that left the request unstarted
+		and the cancel finding it "before it started" (CI, 2026-10-03).
+	**/
 	public function hold():Void {
 		__lock.acquire();
 		__armed = true;
@@ -1839,10 +1844,12 @@ private class HoldingSocket extends SysSocket {
 	}
 
 	/** Called by the output before each write: false once a held write was let go. */
-	public function beforeWrite():Bool {
+	public function beforeWrite(?buffer:Bytes, position:Int = 0, length:Int = 0):Bool {
 		__lock.acquire();
-		var hold:Bool = __armed;
-		__armed = false;
+		var hold:Bool = __armed && __carriesHeaders(buffer, position, length);
+		if (hold) {
+			__armed = false;
+		}
 		if (hold) {
 			__holding = true;
 		}
@@ -1867,6 +1874,22 @@ private class HoldingSocket extends SysSocket {
 			output = __output;
 		}
 		super.close();
+	}
+
+	/** Whether `buffer` holds, among the frames it starts, a HEADERS frame (type 1). */
+	private static function __carriesHeaders(buffer:Null<Bytes>, position:Int, length:Int):Bool {
+		if (buffer == null) {
+			return false;
+		}
+		var at:Int = position;
+		var end:Int = position + length;
+		while (at + 9 <= end) {
+			if (buffer.get(at + 3) == 1) {
+				return true;
+			}
+			at += 9 + ((buffer.get(at) << 16) | (buffer.get(at + 1) << 8) | buffer.get(at + 2));
+		}
+		return false;
 	}
 
 	private function __letGo():Void {
@@ -1907,7 +1930,7 @@ private class HoldingOutput extends haxe.io.Output {
 	}
 
 	override public function writeBytes(buffer:Bytes, position:Int, length:Int):Int {
-		if (!__socket.beforeWrite()) {
+		if (!__socket.beforeWrite(buffer, position, length)) {
 			throw haxe.io.Error.Custom("the write was ended under it");
 		}
 		return __inner.writeBytes(buffer, position, length);
