@@ -399,6 +399,14 @@ class ServerSocket extends EventDispatcher {
 	// added, as an array no one changes once it is published, which the
 	// replicas walk from their own threads. See __dispatchShared.
 	@:noCompletion private var __ownConnect:Dynamic = null;
+	// Which entry in the dispatcher's list that listener is, by the order
+	// it was added in. On hl the list holds the listener wrapped for
+	// addEventListener's generic signature, and neither == nor
+	// Reflect.compareMethods matches a wrapper to the function the class
+	// passed in: the front ran its own listener for every replica's
+	// connection too, so a session was counted twice and two handlers on two
+	// threads read one socket.
+	@:noCompletion private var __ownConnectOrder:Int = -1;
 	@:noCompletion private var __sharedConnect:Array<Dynamic> = null;
 	#if (target.threaded && !js)
 	// On the front of a spread server: the runtimes and their replicas.
@@ -1624,7 +1632,7 @@ class ServerSocket extends EventDispatcher {
 		var published:Array<Dynamic> = [];
 		for (entry in listed) {
 			var listener:Dynamic = entry == null ? null : entry.listener;
-			if (listener == null || __isOwnConnect(listener)) {
+			if (listener == null || entry.order == __ownConnectOrder || __isOwnConnect(listener)) {
 				continue;
 			}
 			published.push(listener);
@@ -1644,6 +1652,7 @@ class ServerSocket extends EventDispatcher {
 	**/
 	@:noCompletion private function __addOwnConnectListener(listener:ServerSocketConnectEvent->Void):Void {
 		__ownConnect = listener;
+		__ownConnectOrder = __nextListenerOrder;
 		addEventListener(ServerSocketConnectEvent.CONNECT, listener);
 	}
 

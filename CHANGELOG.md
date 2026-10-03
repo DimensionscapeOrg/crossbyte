@@ -2462,6 +2462,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On HashLink a spread `HTTPServer` or `ServerWebSocket` no longer answers
+  wrongly. The front of a spread server publishes the application's
+  `connect` listeners to its runtimes, leaving out the one the class
+  attaches for itself; on hl that one is stored wrapped for
+  `addEventListener`'s generic signature, so it was never recognised and
+  the front ran it for every runtime's connection as well: WebSocket
+  sessions counted twice, and two HTTP handlers on two threads reading one
+  socket, which left clients with empty answers. It is now recognised by
+  the order it was added in.
 - On the jvm, neko, HashLink and the interpreter, two runtimes reading
   sockets at once no longer hand one client's bytes to another client's
   connection. The socket read buffer is shared per thread, as it already
