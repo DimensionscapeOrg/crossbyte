@@ -1470,6 +1470,20 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- Inflating, a compressed WebSocket message, a request body sent with a
+  `Content-Encoding`, a compressed response to the native HTTP client,
+  `ByteArray.uncompress`: goes through zlib natively (hxcpp's own), on
+  Node and on the jvm (the JDK's), where it was Haxe's `InflateImpl` on
+  every target, building its tables and a 64 KB window as objects for
+  each call. A 437-byte JSON message took 27-84 µs to inflate natively and
+  takes 2.1-2.5 µs; on Node 24 µs and 5-6 µs; on the jvm 6-21 µs and
+  1.4-6 µs. A 29.5 KB body, natively, 112-136 µs and 71-103 µs (the
+  audit's InflatePerf). The limit `uncompress` takes is still kept inside
+  the read, and a stream cut short is still an `IOError`.
+- Natively each thread keeps one deflate stream and resets it for the next
+  input, where `deflateInit` and `deflateEnd` ran for every compressed
+  response and permessage-deflate message: a 437-byte message compresses
+  in 3.4-3.7 µs instead of 5.8-6.9.
 - SQLite statements are prepared once and kept, by the connection, for
   their text (64 texts), with their `:name` parameters bound as their
   types, where every run wrote its values into the statement as literals

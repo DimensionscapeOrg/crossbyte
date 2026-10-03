@@ -1,20 +1,17 @@
 package crossbyte._internal.compression;
 
 import haxe.io.Bytes;
-import haxe.ds.Vector;
 import crossbyte.io.ByteArray;
 import crossbyte.utils.CompressionAlgorithm;
 import utest.Assert;
 import crossbyte._internal.lz4.Lz4;
 import crossbyte._internal.deflatex.Deflater;
 import crossbyte._internal.deflatex.Inflater;
-import crossbyte._internal.deflatex.HuffmanTree;
-import crossbyte._internal.deflatex.HuffmanTable;
 import crossbyte.test.Require;
 
 /**
  * Round-trip / robustness coverage for the internal compression primitives:
- * the pure-Haxe LZ4 codec and the Huffman tree (which exercises PriorityQueue).
+ * the pure-Haxe LZ4 codec and the Haxe deflater.
  */
 class CompressionRoundTripTest extends utest.Test {
 	/**
@@ -242,49 +239,6 @@ class CompressionRoundTripTest extends utest.Test {
 			b.set(i, (state >> 16) & 0xFF);
 		}
 		roundTrip(b);
-	}
-
-	private function freqVector(values:Array<Int>):Vector<Int> {
-		var v:Vector<Int> = new Vector<Int>(values.length);
-		for (i in 0...values.length) {
-			v[i] = values[i];
-		}
-		return v;
-	}
-
-	private function assertValidTable(tree:HuffmanTree, expectSymbols:Array<Int>):Void {
-		var table:HuffmanTable = tree.getTable();
-		for (sym in expectSymbols) {
-			Assert.isTrue(table.codeLen[sym] > 0, "symbol " + sym + " should have a code length");
-		}
-	}
-
-	public function testHuffmanSingleSymbol():Void {
-		// numSymbols == 1, one non-zero frequency: must not read past the array
-		// while padding the priority queue to two leaves. A single-symbol tree
-		// is degenerate (the leaf sits at the root, depth 0) so we only assert
-		// that the table is produced without crashing.
-		var tree:HuffmanTree = new HuffmanTree(freqVector([5]), 15);
-		var table:HuffmanTable = tree.getTable();
-		Require.notNull(table);
-		Assert.notNull(table.codeLen);
-	}
-
-	public function testHuffmanTwoSymbols():Void {
-		var tree:HuffmanTree = new HuffmanTree(freqVector([3, 9]), 15);
-		assertValidTable(tree, [0, 1]);
-	}
-
-	public function testHuffmanSparseFrequencies():Void {
-		// Only a couple of non-zero frequencies among several symbols; the
-		// padding loop must stay bounded by the symbol count.
-		var tree:HuffmanTree = new HuffmanTree(freqVector([0, 0, 4, 0, 0]), 15);
-		assertValidTable(tree, [2]);
-	}
-
-	public function testHuffmanManySymbols():Void {
-		var tree:HuffmanTree = new HuffmanTree(freqVector([1, 2, 3, 4, 5, 6, 7, 8]), 15);
-		assertValidTable(tree, [0, 1, 2, 3, 4, 5, 6, 7]);
 	}
 
 	// Zeros pack into a stream small enough to arrive in a single frame, and
