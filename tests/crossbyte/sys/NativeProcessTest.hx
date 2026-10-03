@@ -200,6 +200,58 @@ class NativeProcessTest extends utest.Test {
 		#end
 	}
 
+	/**
+		The worker that waited for a child survives the runtime dispatching
+		the child's `EXIT` first, and the child is closed all the same.
+
+		The worker sent its completion and then closed the child through the
+		field `EXIT` clears. A runtime that got there first left the worker
+		closing null: an access violation natively, which the `try` around
+		the close cannot catch, and the child's handles left for the
+		collector to close. The load harness's game server died of it in
+		three runs of four when a thousand clients' processes ended at once.
+		The test hook holds the worker at that moment until the runtime has
+		dispatched `EXIT`; before the fix this test ended the native suite
+		with a segmentation fault.
+	**/
+	public function testAChildWhoseExitIsDispatchedFirstIsStillClosed():Void {
+		#if (sys && target.threaded && !eval)
+		var proc = new NativeProcess();
+		var exited:Bool = false;
+		var dispatched = new sys.thread.Lock();
+		var resumed:Bool = false;
+		proc.addEventListener(NativeProcessEvent.EXIT, _ -> {
+			exited = true;
+			dispatched.release();
+		});
+		@:privateAccess NativeProcess.__afterCompleteForTest = () -> {
+			// Released from inside the EXIT listener; the runtime finishes
+			// dispatching it a moment later.
+			dispatched.wait(TIMEOUT);
+			crossbyte.sys.System.sleep(0.1);
+			resumed = true;
+		};
+
+		try {
+			proc.start(getDefaultInfo());
+			pumpUntil(() -> exited, TIMEOUT);
+			// The worker goes on from where the hook held it, after EXIT, and
+			// is given a moment to finish.
+			waitUntil(() -> resumed, TIMEOUT);
+			crossbyte.sys.System.sleep(0.5);
+		} catch (error:Dynamic) {
+			@:privateAccess NativeProcess.__afterCompleteForTest = null;
+			throw error;
+		}
+		@:privateAccess NativeProcess.__afterCompleteForTest = null;
+
+		Assert.isTrue(exited, "the child never exited");
+		Assert.isTrue(resumed, "the worker never went on past its completion");
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testExitEventDispatchesOnOwningRuntimeTick():Void {
 		#if (sys && target.threaded && !eval)
 		var primordial = CrossByte.current();
