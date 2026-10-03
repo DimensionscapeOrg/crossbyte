@@ -1894,6 +1894,15 @@ entry below says how:
 - A statement's text is split at its placeholders once and kept, where it
   was copied a character at a time on every run, placeholder or none:
   a SELECT with no placeholder costs 32-42 ns there instead of 240-410.
+- The HTTP/1.1 server reads a request's header block where its bytes lie,
+  cutting each line out whole, and splits each field by index, lowercasing
+  its name only when it has a capital letter. It walked the block twice, a
+  byte at a time through `ByteArray`'s read calls, and made five or six
+  strings a field. A response's head is built in one buffer, where `+=`
+  made a new string of all of it so far some thirty times. With the
+  fourteen fields a browser sends, a request cost the server 16.2 us of CPU
+  natively where it cost 18.0 (user time 6.2 us where it was 9.6; medians
+  of four interleaved runs), and about 10% less on the jvm.
 - On eval HTTP/2 works, and the HTTP/1.1 client keeps connections for the
   next request to their origin, as on every other target with threads.
   Both were off there because eval raised a reset connection's error past

@@ -259,6 +259,21 @@ class HttpSyntax {
 	}
 
 	/**
+	 * `text.toLowerCase()`, and `text` itself when that would change nothing,
+	 * as for nearly every field name a client sends: `toLowerCase` makes a
+	 * new string every time natively, whatever it holds.
+	 */
+	public static function lowerAscii(text:String):String {
+		for (i in 0...text.length) {
+			var code:Int = StringTools.fastCodeAt(text, i);
+			if ((code >= "A".code && code <= "Z".code) || code >= 0x80) {
+				return text.toLowerCase();
+			}
+		}
+		return text;
+	}
+
+	/**
 	 * Strips from a header value everything that could end the header early.
 	 */
 	public static function sanitizeHeaderValue(v:String):String {
