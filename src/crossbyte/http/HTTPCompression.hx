@@ -4,9 +4,8 @@ package crossbyte.http;
 // configures the server, which cannot run in a page.
 #if !(js && !nodejs)
 import crossbyte.utils.CompressionAlgorithm;
-#if target.threaded
-import sys.thread.Mutex;
-#end
+import crossbyte._internal.http.HttpSyntax;
+import crossbyte._internal.http.KeptBodies;
 
 /**
 	What an `HTTPServer` compresses, and how hard: `HTTPServerConfig.compression`.
@@ -91,17 +90,16 @@ class HTTPCompression {
 		A 150 KB script was recompressed on every request: 863 requests a second
 		as it was, 64 as Brotli, natively.
 	**/
-	public var cacheSize:Int = 16 * 1024 * 1024;
+	public var cacheSize(default, set):Int = 16 * 1024 * 1024;
 
-	@:noCompletion private var __cache:Map<String, CachedBody> = new Map();
-	@:noCompletion private var __cacheOrder:Array<String> = [];
-	@:noCompletion private var __cacheBytes:Int = 0;
-	#if target.threaded
-	// A configuration can be shared by servers on different runtimes, and so
-	// by different threads. Taken once per static file compressed or found,
-	// which is small beside compressing it.
-	@:noCompletion private final __cacheLock:Mutex = new Mutex();
-	#end
+	// A slot per coding under one budget. It takes a lock per call: a
+	// configuration can be shared by servers on different runtimes' threads.
+	@:noCompletion private final __kept:KeptBodies = new KeptBodies(16 * 1024 * 1024);
+
+	@:noCompletion private function set_cacheSize(value:Int):Int {
+		__kept.budget = value;
+		return cacheSize = value;
+	}
 
 	public function new() {
 		types = DEFAULT_TYPES.copy();
@@ -116,16 +114,22 @@ class HTTPCompression {
 			return false;
 		}
 		var semi:Int = contentType.indexOf(";");
-		var media:String = StringTools.trim(semi >= 0 ? contentType.substr(0, semi) : contentType).toLowerCase();
+		var media:String = semi >= 0 ? contentType.substr(0, semi) : contentType;
+		if (media.length > 0 && (StringTools.isSpace(media, 0) || StringTools.isSpace(media, media.length - 1))) {
+			media = StringTools.trim(media);
+		}
 		if (media.length == 0 || types == null) {
 			return false;
 		}
+		// Compared without regard to case, rather than lowercased: each of the
+		// fourteen default types was lowercased afresh for every response.
 		for (entry in types) {
 			if (entry == null || entry.length == 0) {
 				continue;
 			}
-			var wanted:String = entry.toLowerCase();
-			if (StringTools.endsWith(wanted, "/") ? StringTools.startsWith(media, wanted) : media == wanted) {
+			var matches:Bool = StringTools.fastCodeAt(entry, entry.length - 1) == "/".code ? HttpSyntax.startsWithIgnoreCase(media,
+				entry) : HttpSyntax.equalsIgnoreCase(media, entry);
+			if (matches) {
 				return true;
 			}
 		}
@@ -140,22 +144,7 @@ class HTTPCompression {
 		if (cacheSize <= 0) {
 			return null;
 		}
-		var key:String = __key(path, algorithm);
-		__acquire();
-		var entry:Null<CachedBody> = __cache.get(key);
-		var found:Null<haxe.io.Bytes> = null;
-		if (entry != null) {
-			if (entry.size == size && entry.modified == modified) {
-				found = entry.body;
-				// Most recently used last, so the oldest goes first.
-				__cacheOrder.remove(key);
-				__cacheOrder.push(key);
-			} else {
-				__drop(key);
-			}
-		}
-		__release();
-		return found;
+		return __kept.get(__slot(algorithm), path, size, modified);
 	}
 
 	/** Keeps `body`, the file at `path` compressed with `algorithm`, while there is room. */
@@ -163,67 +152,26 @@ class HTTPCompression {
 		if (cacheSize <= 0 || body.length > cacheSize) {
 			return;
 		}
-		var key:String = __key(path, algorithm);
-		__acquire();
-		__drop(key);
-		while (__cacheBytes + body.length > cacheSize && __cacheOrder.length > 0) {
-			__drop(__cacheOrder[0]);
-		}
-		__cache.set(key, {size: size, modified: modified, body: body});
-		__cacheOrder.push(key);
-		__cacheBytes += body.length;
-		__release();
+		__kept.put(__slot(algorithm), path, size, modified, body);
 	}
 
 	/** Forgets every kept body. */
 	public function clearCache():Void {
-		__acquire();
-		__cache = new Map();
-		__cacheOrder = [];
-		__cacheBytes = 0;
-		__release();
+		__kept.clear();
 	}
 
 	/** Bytes of compressed bodies kept right now. **/
 	public var cachedBytes(get, never):Int;
 
 	private function get_cachedBytes():Int {
-		__acquire();
-		var bytes:Int = __cacheBytes;
-		__release();
-		return bytes;
+		return __kept.bytes;
 	}
 
-	private function __drop(key:String):Void {
-		var entry:Null<CachedBody> = __cache.get(key);
-		if (entry != null) {
-			__cache.remove(key);
-			__cacheOrder.remove(key);
-			__cacheBytes -= entry.body.length;
-		}
+	// The coding's own number, a small one: its slot in __kept.
+	private static inline function __slot(algorithm:CompressionAlgorithm):Int {
+		var value:Null<Int> = cast algorithm;
+		return value == null ? 0 : value;
 	}
 
-	private static inline function __key(path:String, algorithm:CompressionAlgorithm):String {
-		// A path holds no line break; see the request path's settling.
-		return Std.string(algorithm) + "\n" + path;
-	}
-
-	private inline function __acquire():Void {
-		#if target.threaded
-		__cacheLock.acquire();
-		#end
-	}
-
-	private inline function __release():Void {
-		#if target.threaded
-		__cacheLock.release();
-		#end
-	}
-}
-
-private typedef CachedBody = {
-	var size:Int;
-	var modified:Float;
-	var body:haxe.io.Bytes;
 }
 #end

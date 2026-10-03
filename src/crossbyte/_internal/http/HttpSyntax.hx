@@ -300,6 +300,43 @@ class HttpSyntax {
 	}
 
 	/**
+	 * Whether `a` and `b` are the same text but for the case of ASCII
+	 * letters, as field names and media types compare. Allocates nothing.
+	 */
+	public static function equalsIgnoreCase(a:String, b:String):Bool {
+		if (a.length != b.length) {
+			return false;
+		}
+		for (i in 0...a.length) {
+			var x:Int = StringTools.fastCodeAt(a, i);
+			var y:Int = StringTools.fastCodeAt(b, i);
+			if (x != y && __lowerCode(x) != __lowerCode(y)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** Whether `text` starts with `prefix`, ASCII letters compared without case. */
+	public static function startsWithIgnoreCase(text:String, prefix:String):Bool {
+		if (text.length < prefix.length) {
+			return false;
+		}
+		for (i in 0...prefix.length) {
+			var x:Int = StringTools.fastCodeAt(text, i);
+			var y:Int = StringTools.fastCodeAt(prefix, i);
+			if (x != y && __lowerCode(x) != __lowerCode(y)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private static inline function __lowerCode(code:Int):Int {
+		return (code >= "A".code && code <= "Z".code) ? code + 32 : code;
+	}
+
+	/**
 	 * Strips from a header value everything that could end the header early.
 	 */
 	public static function sanitizeHeaderValue(v:String):String {
