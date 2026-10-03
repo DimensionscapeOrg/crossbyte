@@ -1,0 +1,6 @@
+--cwd ../..
+-cp src
+-cp samples/multicore
+-main MulticoreSample
+--cpp export/sample-multicore-check
+-D no-compilation
