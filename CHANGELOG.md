@@ -1474,6 +1474,22 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A `PeerConnection`'s data channels send what one pass of the runtime's
+  loop sent when the pass ends, sharing SCTP packets, DTLS records and
+  datagrams, where each message was a packet, a record and a `sendto` of its
+  own; `close()` sends them first. Ten 32-byte messages a tick between two
+  peers over loopback, the whole stack: 14-17 µs of CPU a message before,
+  3.1-3.5 µs now; one a tick costs what it did, 28-30 µs.
+- An SCTP packet's checksum is checked over the bytes as they arrived, four
+  zeros in the field's place, where every packet received was copied whole
+  to zero the field in the copy, and packets and DATA chunks are made at
+  their size rather than grown. Encoding a 1 KB DATA packet took 640-676 ns
+  before and 511-535 ns now, decoding and checking one 717-810 ns before and
+  594-634 ns now.
+- A native DTLS session is looked up without a lock when the thread looked
+  it up last, which every call for one record does, half a dozen, each of
+  which took a process-wide lock and searched a map. Under what the whole
+  stack resolves, 0.4 µs a message.
 - `DataChannel.maxRetransmits` and `maxPacketLifeTime` are `Int`s, -1 for no
   limit, where they were `Null<Int>`s and null;
   `PeerConnection.createDataChannel` and `DataChannelSet.create` take -1,

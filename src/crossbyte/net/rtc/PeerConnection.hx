@@ -1062,6 +1062,15 @@ class PeerConnection {
 		connected = false;
 		closeReason = reason;
 
+		// What this pass sent goes ahead of the ABORT, as it did when each
+		// send went at once: it waits for the pass to end otherwise, and the
+		// association is gone by then.
+		if (__transfer != null && notifyPeer) {
+			try {
+				__transfer.__flushPass();
+			} catch (_:Dynamic) {}
+		}
+
 		// The channels first, so an application tearing down what it keeps per
 		// channel hears about each before it hears the connection has gone.
 		if (__channels != null) {
@@ -1985,6 +1994,9 @@ class PeerConnection {
 
 		__transfer = new SctpDataTransfer(__association);
 		__transfer.peerMaxMessageSize = __peerMaxMessageSize;
+		// What a pass sends goes when it ends, together: this runs on the
+		// connection's runtime, from what arrived or from its tick.
+		__transfer.runtime = CrossByte.__currentOrNull();
 		// RFC 8832: the DTLS client takes the even streams. Two peers that
 		// disagreed about which of them that is would collide on every channel
 		// they opened at the same moment.
