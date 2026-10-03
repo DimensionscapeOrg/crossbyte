@@ -1460,6 +1460,23 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A `LocalConnection` writes what one pass of the runtime's loop sent in one
+  write when the pass ends, framed straight into one buffer, where each
+  `send` made a buffer of its own, grew it twice and asked the system
+  whether the channel was open before writing it; what the pipe does not
+  take is tried again each frame, as well as by the reader thread. That
+  thread hands what it reads to the runtime without asking which runtime it
+  is on -- an exception thrown and caught for every frame -- and reads again
+  at once after a pass that found something, where it slept first, a
+  millisecond at least on Windows. CPU per message, two connections in one
+  process: 64-byte messages 7.5-8.4 µs before, 3.0-3.6 µs now; 4 KB messages
+  178-197 µs before, 29-34 µs now, 20 MB/s before and 120-140 MB/s now.
+- A `SharedChannel` message is framed into one buffer of its size, where it
+  went through a `BytesBuffer` -- natively a byte at a time -- and two more
+  copies, and one received is taken as the connection made it rather than
+  copied first.
+- `SharedObject`'s constructor takes its `defaultData` as an `Object`, the
+  type of `data`, where it took `Dynamic`.
 - A `ServerWebSocket` keeps its open sessions where it can take one out at
   once, each session knowing its place, where every connection searched the
   list of sessions for it and every close searched it again: a session's
