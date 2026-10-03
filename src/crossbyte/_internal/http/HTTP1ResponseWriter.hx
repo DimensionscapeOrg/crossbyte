@@ -132,6 +132,11 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 		__socket.writeUTFBytes("\r\n");
 	}
 
+	// The socket copies what it is given into its own buffer either way.
+	public function writeBodyTaken(data:ByteArray, offset:Int, length:Int):Void {
+		writeBody(data, offset, length);
+	}
+
 	public function flush():Void {
 		__socket.flush();
 	}

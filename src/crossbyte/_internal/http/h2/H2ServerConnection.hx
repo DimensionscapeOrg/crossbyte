@@ -4,6 +4,7 @@ import crossbyte._internal.http.h2.hpack.HpackDecoder;
 import crossbyte._internal.http.h2.hpack.HpackEncoder;
 import crossbyte._internal.http.h2.hpack.HpackError;
 import crossbyte._internal.http.h2.hpack.HpackHeader;
+import crossbyte._internal.http.h2.hpack.HpackStaticTable;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
 
@@ -322,6 +323,14 @@ class H2ServerConnection {
 	public var receivingStreams(get, never):Int;
 
 	private final __write:Bytes->Void;
+
+	/**
+		Where a frame goes as its header's fields and a slice of what it
+		carries, for an owner that writes both straight into a buffer of its
+		own; null to build each frame whole and hand it to `__write`. See the
+		constructor.
+	**/
+	private final __writeFrameTo:Null<H2FrameSink>;
 	private final __decoder:HpackDecoder;
 	private final __encoder:HpackEncoder;
 	private final __frames:H2FrameDecoder;
@@ -416,9 +425,14 @@ class H2ServerConnection {
 	 * @param write Sink for outbound bytes. A function rather than an
 	 *        `Output` so a caller can hand over a non-blocking socket's
 	 *        buffered write without this needing to know about it.
+	 * @param writeFrame Takes each frame instead of `write`, as its header's
+	 *        fields and the slice of bytes it carries, so a DATA frame is not
+	 *        copied out of the stream's queue into a frame of its own before
+	 *        the owner copies it again into its socket.
 	 */
-	public function new(write:Bytes->Void, ?settings:H2Settings) {
+	public function new(write:Bytes->Void, ?settings:H2Settings, ?writeFrame:H2FrameSink) {
 		__write = write;
+		__writeFrameTo = writeFrame;
 		localSettings = settings != null ? settings : __defaultSettings();
 		remoteSettings = new H2Settings();
 
@@ -560,15 +574,12 @@ class H2ServerConnection {
 
 		// §8.3.2: :status comes first and is the only pseudo-header on a
 		// response.
-		var block:Array<HpackHeader> = [new HpackHeader(":status", Std.string(status))];
-		for (header in headers) {
-			block.push(header);
-		}
+		var statusField:HpackHeader = HpackStaticTable.statusField(status);
 
 		if (status >= 200) {
 			target.answered = true;
 		}
-		__writeHeaderBlock(streamId, __encoder.encode(block), endStream);
+		__writeHeaderBlock(streamId, __encoder.encode(headers, statusField), endStream);
 
 		if (endStream) {
 			// Through __finishStream, which releases the stream's concurrency
@@ -822,7 +833,12 @@ class H2ServerConnection {
 
 			var last:Bool = target.queued == chunk && target.pendingEndStream;
 
-			__write(target.takeFrame(chunk, last ? H2Flags.END_STREAM : 0));
+			if (__writeFrameTo != null) {
+				__writeFrameTo(H2FrameType.DATA, last ? H2Flags.END_STREAM : 0, target.id, target.queueBuffer, target.queueStart, chunk);
+				target.consume(chunk);
+			} else {
+				__write(target.takeFrame(chunk, last ? H2Flags.END_STREAM : 0));
+			}
 			target.sendWindow -= chunk;
 			__connectionSendWindow -= chunk;
 			__queuedTotal -= chunk;
@@ -2329,12 +2345,20 @@ class H2ServerConnection {
 	}
 
 	private inline function __writeFrame(type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {
-		__write(H2Frame.encode(type, flags, streamId, payload));
+		if (__writeFrameTo != null) {
+			__writeFrameTo(type, flags, streamId, payload, 0, payload == null ? 0 : payload.length);
+		} else {
+			__write(H2Frame.encode(type, flags, streamId, payload));
+		}
 	}
 
 	/** A frame of `length` bytes of `source` from `offset`, without cutting them out first. **/
 	private inline function __writeFrameOf(type:H2FrameType, flags:Int, streamId:Int, source:Bytes, offset:Int, length:Int):Void {
-		__write(H2Frame.encode(type, flags, streamId, source, offset, length));
+		if (__writeFrameTo != null) {
+			__writeFrameTo(type, flags, streamId, source, offset, length);
+		} else {
+			__write(H2Frame.encode(type, flags, streamId, source, offset, length));
+		}
 	}
 
 	private function __fail(e:H2ConnectionError):Void {
@@ -2372,3 +2396,10 @@ class H2ServerConnection {
 		return (source.get(offset) << 24) | (source.get(offset + 1) << 16) | (source.get(offset + 2) << 8) | source.get(offset + 3);
 	}
 }
+
+/**
+	A frame's header fields and the bytes it carries, `length` of them from
+	`offset` in `payload` (null when `length` is 0): see
+	`H2ServerConnection.new`.
+**/
+typedef H2FrameSink = (type:Int, flags:Int, streamId:Int, payload:Null<Bytes>, offset:Int, length:Int) -> Void;

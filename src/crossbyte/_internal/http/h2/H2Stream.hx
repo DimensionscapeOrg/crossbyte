@@ -294,6 +294,29 @@ class H2Stream {
 		return out;
 	}
 
+	/** The queue's bytes, waiting from `queueStart`: what a frame is written from where they lie. */
+	public var queueBuffer(get, never):Null<Bytes>;
+
+	private inline function get_queueBuffer():Null<Bytes> {
+		return __queue;
+	}
+
+	public var queueStart(get, never):Int;
+
+	private inline function get_queueStart():Int {
+		return __queueOffset;
+	}
+
+	/** Lets go of `count` queued bytes, once they have been written from `queueBuffer`. */
+	public function consume(count:Int):Void {
+		__queueOffset += count;
+		if (__queueOffset >= __queueLength) {
+			__queue = null;
+			__queueOffset = 0;
+			__queueLength = 0;
+		}
+	}
+
 	/**
 		A DATA frame of up to `count` queued bytes, `flags` on it, made from the
 		queue where they sit: take() cut them out into a Bytes of their own and

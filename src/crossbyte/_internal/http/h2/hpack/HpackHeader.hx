@@ -26,13 +26,32 @@ class HpackHeader {
 	 * evict on a different schedule than the peer encoding against it, which
 	 * desynchronizes the two tables and corrupts every later block.
 	 */
-	public final tableSize:Int;
+	public var tableSize(get, never):Int;
+
+	// Measured when first asked for: a field the encoder finds in a table,
+	// as most response fields are after the first response, never is.
+	private var __tableSize:Int = -1;
+
+	/**
+		Set once the field has been found well-formed (RFC 9113 8.2.1) on a
+		request: a field the decoder hands out again from its table, a
+		browser's same User-Agent and Accept on every request, is not read
+		character by character again. The check reads only the two strings,
+		so its answer holds for the field's life.
+	**/
+	public var lawful:Bool = false;
 
 	public function new(name:String, value:String, sensitive:Bool = false) {
 		this.name = name;
 		this.value = value;
 		this.sensitive = sensitive;
-		this.tableSize = __octets(name) + __octets(value) + 32;
+	}
+
+	private inline function get_tableSize():Int {
+		if (__tableSize < 0) {
+			__tableSize = __octets(name) + __octets(value) + 32;
+		}
+		return __tableSize;
 	}
 
 	/**
