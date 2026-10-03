@@ -4,7 +4,7 @@ import crossbyte.events.Event;
 
 /** Event dispatched when an asynchronous I/O operation fails. */
 class IOErrorEvent extends ErrorEvent {
-	public static inline var IO_ERROR:String = "ioError";
+	public static inline var IO_ERROR:EventType<IOErrorEvent> = "ioError";
 
 	/**
 		The `errorID` of an `ioError` that reports a deadline passing rather

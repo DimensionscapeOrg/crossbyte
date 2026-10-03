@@ -10,6 +10,15 @@ class TimerNode {
 	public var callback:TimerHandle->Void;
 
 	/**
+	 * A `Void->Void` callback, kept as it was given and called directly; null
+	 * for one that takes its handle. It used to be wrapped in a closure that
+	 * took the handle and dropped it: a closure made per timer armed, two
+	 * dynamic calls per fire, and the handle boxed for each, an allocation
+	 * once a reused slot's generation put it past hxcpp's small-int cache.
+	 */
+	public var voidCallback:Void->Void;
+
+	/**
 	 * Where this node sits in the scheduler's heap, or -1 when it is not in
 	 * one. Carried here so sifting writes a field instead of a hash entry:
 	 * a generic queue has to keep positions in a side map, and at scale that
@@ -25,10 +34,11 @@ class TimerNode {
 	 */
 	public var armPass:Int = 0;
 
-	public inline function new(id:Int, time:Float, interval:Float, callback:TimerHandle->Void) {
+	public inline function new(id:Int, time:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void) {
 		this.id = id;
 		this.time = time;
 		this.interval = interval;
 		this.callback = callback;
+		this.voidCallback = voidCallback;
 	}
 }

@@ -4,6 +4,10 @@ import crossbyte.sys.Task;
 
 /** Event dispatched when a `Task` changes state or completes with a result. */
 class TaskEvent<T> extends Event {
+	// Strings, not EventType<TaskEvent<...>>: a task's event carries its own
+	// result type, which no one constant can name, and a listener taking a
+	// TaskEvent<Int> would not fit a constant typed for TaskEvent<Dynamic>.
+	// Given a String, addEventListener takes the type from the listener.
 	public static inline var COMPLETE:String = "complete";
 	public static inline var ERROR:String = "error";
 	public static inline var CANCEL:String = "cancel";

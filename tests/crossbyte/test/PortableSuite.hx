@@ -129,6 +129,10 @@ class PortableSuite {
 		runner.addCase(new crossbyte.test.RequireTest());
 		runner.addCase(new crossbyte.FutureTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
+		// Typed pairs, callbacks and a typed SwitchTable, where Dynamic used to be.
+		runner.addCase(new crossbyte.ds.TypedShapesTest());
+		// Event-type constants that refuse a listener of the wrong event.
+		runner.addCase(new crossbyte.events.EventTypesTest());
 		// Specialised per element type, and Map keys that differ by target.
 		runner.addCase(new crossbyte.ds.PriorityQueueTest());
 		runner.addCase(new crossbyte.ds.OrderedMapTest());
@@ -169,6 +173,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.db.mongodb.ExtendedJsonTest());
 		runner.addCase(new crossbyte.db.mongodb.ScramTest());
 		runner.addCase(new crossbyte.db.mongodb.MongoUriTest());
+		// The objects BSON documents are decoded into.
+		runner.addCase(new crossbyte._internal.AnonBuilderTest());
 		// BCrypt is pure Haxe, so the published vectors hold it to the same
 		// answers on every target; hashes made on one have to verify on another.
 		runner.addCase(new crossbyte.crypto.password.BCryptHardeningTest());

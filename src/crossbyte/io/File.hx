@@ -763,7 +763,7 @@ final class File extends EventDispatcher {
 		handed what it asks, between steps, to learn whether it has been
 		cancelled; a cancelled one ends by throwing FileCancelled.
 	**/
-	@:noCompletion private function __startAsync(work:(Void->Bool)->Dynamic, done:Dynamic->Void):Void {
+	@:noCompletion private function __startAsync<T>(work:(Void->Bool)->T, done:T->Void):Void {
 		var worker:Worker = new Worker();
 		__pending.push(worker);
 
@@ -777,7 +777,7 @@ final class File extends EventDispatcher {
 		});
 
 		worker.doWork = function(_:Dynamic):Void {
-			var result:Dynamic = null;
+			var result:Null<T> = null;
 
 			try {
 				result = work(() -> worker.cancelRequested);
@@ -2773,7 +2773,21 @@ final class File extends EventDispatcher {
 	}
 
 	@:noCompletion private function get_modificationDate():Date {
+		#if jvm
+		// One stat, through java.io.File. Haxe's FileSystem.stat on the jvm
+		// asks for the "unix:*" attributes first, which Windows refuses with
+		// an exception, and then reads them again another way: 56 us a call,
+		// and an HTTP server asks for every static file it serves.
+		var file = new java.io.File(__path);
+		var modified:haxe.Int64 = file.lastModified();
+		// 0 is both "no such file" and the epoch: only the first is an error.
+		if (modified == 0 && !file.exists()) {
+			throw __missingOr(__path, "it could not be examined");
+		}
+		return Date.fromTime(__longToFloat(modified));
+		#else
 		return __stat().mtime;
+		#end
 	}
 
 	@:noCompletion private function get_name():String {

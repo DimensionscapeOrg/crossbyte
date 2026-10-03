@@ -74,6 +74,38 @@ class AlpnSocket extends SSLSocket {
 		return context == null ? null : NativeAlpn.selected(context);
 	}
 
+	/**
+		Reads decrypted bytes without an exception of its own for "would
+		block": -1 then, 0 at the end of the stream. The TLS layer still
+		throws natively for it; through `input` that was caught and thrown
+		again as `Blocked`, a second exception for every read that ended a
+		pass.
+	**/
+	@:noCompletion private override function __tryRead(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		try {
+			handshake();
+			return cpp.NativeSsl.ssl_recv(ssl, buf.getData(), pos, len);
+		} catch (e:Dynamic) {
+			if (BlockedError.isBlocked(e)) {
+				return -1;
+			}
+			throw haxe.io.Error.Custom(e);
+		}
+	}
+
+	/** Writes as `__tryRead` reads: the bytes taken, or -1 when the session cannot take more yet. **/
+	@:noCompletion private override function __tryWrite(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		try {
+			handshake();
+			return cpp.NativeSsl.ssl_send(ssl, buf.getData(), pos, len);
+		} catch (e:Dynamic) {
+			if (BlockedError.isBlocked(e)) {
+				return -1;
+			}
+			throw haxe.io.Error.Custom(e);
+		}
+	}
+
 	@:noCompletion private override function buildSSLConfig(server:Bool):Dynamic {
 		var conf:Dynamic = super.buildSSLConfig(server);
 

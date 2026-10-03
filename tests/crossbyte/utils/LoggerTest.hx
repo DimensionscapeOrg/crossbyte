@@ -334,6 +334,22 @@ class LoggerTest extends utest.Test {
 		Assert.isFalse(Logger.isEnabledFor("http", LogLevel.INFO));
 	}
 
+	/**
+		A JSON record is written in one order on every target, and escaped as
+		JSON escapes. It was an anonymous object handed to haxe.Json, whose
+		keys came out in whatever order the target's reflection gave.
+	**/
+	public function testJsonRecordsAreWrittenInOneOrder():Void {
+		Logger.json = true;
+		var fields = new Map<String, String>();
+		fields.set("path", "/a\"b\\c\n");
+		Logger.log(LogLevel.INFO, "tab\there", fields, "http.access");
+		Assert.equals('{"level":"INFO","message":"tab\\there","category":"http.access","path":"/a\\"b\\\\c\\n"}', captured[0]);
+		var parsed:Dynamic = haxe.Json.parse(captured[0]);
+		Assert.equals("/a\"b\\c\n", parsed.path);
+		Assert.equals("tab\there", parsed.message);
+	}
+
 	public function testJsonCarriesTheCategory():Void {
 		Logger.json = true;
 		Logger.log(LogLevel.INFO, "served", ["category" => "spoofed"], "http.access");
