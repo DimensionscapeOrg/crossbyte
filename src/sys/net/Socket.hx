@@ -922,9 +922,17 @@ class Socket {
 		NativeSocket.socket_set_fast_send(__s, b);
 	}
 
+	/**
+		hxcpp's select, by `poll` on Linux and macOS. `select` there takes
+		no descriptor at or past FD_SETSIZE (1,024), and hxcpp refuses one
+		rather than overflow its set, so in a process holding a thousand
+		descriptors every newer socket failed here: a client's connect never
+		finished, and a listener opened then accepted nothing. See
+		`NativeSocketAddress.select`.
+	**/
 	public static function select(read:Array<Socket>, write:Array<Socket>, others:Array<Socket>,
 			?timeout:Float):{read:Array<Socket>, write:Array<Socket>, others:Array<Socket>} {
-		var neko_array = NativeSocket.socket_select(read, write, others, timeout);
+		var neko_array = NativeSocketAddress.select(cast read, cast write, cast others, timeout);
 		if (neko_array == null)
 			throw "Select error";
 		return @:fixed {
