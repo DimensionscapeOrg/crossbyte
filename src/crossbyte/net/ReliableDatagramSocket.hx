@@ -62,6 +62,13 @@ import crossbyte._internal.net.IPv6;
 	One that tells of a gap goes at once. The peer's round trip is measured
 	without the wait, which each acknowledgement states.
 
+	What the congestion window has not let out waits, up to
+	`maxOutputBufferSize`: 256 KB unless changed. A session that would hold
+	more is ended at once with an `ioError` saying why, as a peer that has
+	stopped taking what it is sent would otherwise have this side hold all of
+	it; one `send` larger than the window waits whole, so a larger one needs
+	the limit raised, or set to zero for none.
+
 	A frame lost on the way is found from what arrives after it. The
 	receiver's acknowledgement names the frames it holds past a gap, and a
 	frame sent before one that arrived is sent again once it has had that
@@ -198,12 +205,32 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		How many bytes may wait for the window before `outputOverflowPolicy`
-		decides what happens. Zero, the default, means no limit.
+		decides what happens: `DEFAULT_MAX_OUTPUT_BUFFER_SIZE`, 256 KB,
+		unless changed. Zero means no limit.
 
 		What is waiting is visible as `bufferedAmount`; an application that
-		watches that never reaches this.
+		watches that never reaches this. Under the default `CLOSE` policy a
+		session past it is ended at once, with an `ioError` saying why, as a
+		TCP connection to a peer that has stopped reading would be ended: a
+		peer that cannot take what it is sent, gone quiet, or on a path that
+		cannot carry it, otherwise made this side hold everything sent to
+		it, without end. A server holding a thousand such sessions held 1.2
+		GB.
+
+		A healthy session holds next to nothing here: a game server sending
+		1,000 clients a snapshot every tick at 60 Hz, every fourth one
+		reliable, held nothing waiting in any session while it kept its tick,
+		and at most 18 KB in one when it was starved of processor time, so far
+		behind that inputs took half a second to be acknowledged. One `send`
+		larger than the window lets out at once waits here whole, so an
+		application that sends more than 256 KB in a burst, a level, a file,
+		one large reliable message, raises this, sets it to zero, or watches
+		`bufferedAmount` and waits.
 	**/
-	public var maxOutputBufferSize:Int = 0;
+	public var maxOutputBufferSize:Int = DEFAULT_MAX_OUTPUT_BUFFER_SIZE;
+
+	/** `maxOutputBufferSize` unless changed: 256 KB. **/
+	public static inline var DEFAULT_MAX_OUTPUT_BUFFER_SIZE:Int = 256 * 1024;
 
 	/** What to do when the queue exceeds `maxOutputBufferSize`. **/
 	public var outputOverflowPolicy:OutputOverflowPolicy = CLOSE;
