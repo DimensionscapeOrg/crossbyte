@@ -286,5 +286,9 @@ class PortableSuite {
 		runner.addCase(new crossbyte.db.mongodb.MongoApiTest());
 		// The types of JWT claims, audiences and key records, alike everywhere.
 		runner.addCase(new crossbyte.auth.jwt.JWTTypesTest());
+		// HS256's HMAC keeps its words in an Int32Array on JavaScript, and the
+		// codec builds its text through TextDecoder there.
+		runner.addCase(new crossbyte.auth.jwt.Base64UrlTest());
+		runner.addCase(new crossbyte.crypto.HmacSha256Test());
 	}
 }

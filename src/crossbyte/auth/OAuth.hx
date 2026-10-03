@@ -427,9 +427,8 @@ class OAuth {
 		return Std.string(data);
 	}
 
-	@:noCompletion private static function __base64Url(bytes:Bytes):String {
-		var text:String = Base64.encode(bytes, false);
-		return text.replace("+", "-").replace("/", "_");
+	@:noCompletion private static inline function __base64Url(bytes:Bytes):String {
+		return crossbyte.auth.jwt._internal.Base64Url.encode(bytes);
 	}
 
 	@:noCompletion private static inline function __encode(value:String):String {
