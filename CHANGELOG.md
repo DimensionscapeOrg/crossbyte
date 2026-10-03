@@ -321,6 +321,11 @@ entry below says how:
   `context.data.text` (or `isText`) where it matters which it was. Code that
   builds an `HTTPRequestContext` from an object literal still compiles; code
   that passes some other structure as one does not.
+- `RouteContext`, `RewriteRule` and `RewriteCondition` are classes: object
+  literals still build them, but a value of some other structure type no
+  longer passes as one, build it from a literal.
+- A `Dynamic` value no longer converts to a `URL` on its own: cast it,
+  `(value : String)`, or build `new URL(value)`.
 
 ### Added
 - `GlobalTimer.setTimeout` and `setInterval` take a `Void->Void` function by
@@ -1518,6 +1523,10 @@ entry below says how:
 - accepted `wss://` sessions now run the deferred, timeout-guarded TLS handshake the client path already used; previously a server-side handshake happened implicitly on first read with no bound, so a peer that completed TCP then stalled mid-TLS held the socket indefinitely
 
 ### Removed
+- `URL`'s implicit conversion from any `Dynamic`, which compiled whatever was
+  assigned and failed at run time if it was not a String; a `String` still
+  converts. And the `ResponseEncodingDecision` typedef, a helper of
+  `HTTPRequestHandler`'s that was public by accident and is now private.
 - `crossbyte.rpc._internal.schema`: `RPCHeader`, `RPCHeaderField`,
   `RPCHeaderFieldType` and `RPCValueType`, a header schema moved out of the
   public API in the August 2025 RPC refactor for a macro-level use that
@@ -1908,6 +1917,13 @@ entry below says how:
 - A statement's text is split at its placeholders once and kept, where it
   was copied a character at a time on every run, placeholder or none:
   a SELECT with no placeholder costs 32-42 ns there instead of 240-410.
+- `RouteContext`, `RewriteRule` and `RewriteCondition` are `@:structInit`
+  final classes rather than anonymous structures, built from the same object
+  literals; a `RewriteCondition` may now leave out `key` (null) and `negate`
+  (false). Their fields are read directly natively, where a structure's
+  were looked up by name, for a `RouteContext`, at every use in a route.
+  A middleware's `next` takes `?error:Any` rather than `?error:Dynamic`:
+  the same values, an `Int` status or anything thrown.
 - `HTTPRequestContext`, what an `HTTPBackend` is handed, is a `@:structInit`
   final class rather than an anonymous structure, built from the same object
   literal (the fields that were optional may still be left out), and its

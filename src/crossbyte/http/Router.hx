@@ -161,7 +161,7 @@ class Router {
 	 * Push the result onto `HTTPServerConfig.middleware`.
 	 */
 	public function middleware():Middleware {
-		return function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+		return function(handler:HTTPRequestHandler, next:?Any->Void):Void {
 			switch (__match(handler.method, handler.requestPath)) {
 				case null:
 					next();
@@ -191,12 +191,7 @@ class Router {
 		}
 
 		var segments:Array<RouteSegment> = __compile(pattern);
-		__routes.push({
-			method: method,
-			segments: segments,
-			hasRest: segments[segments.length - 1].match(Rest(_)),
-			handler: handler
-		});
+		__routes.push(new Route(method, segments, segments[segments.length - 1].match(Rest(_)), handler));
 		return this;
 	}
 
@@ -339,25 +334,36 @@ class Router {
 /**
  * What a matched route handler receives: the request, and what matching
  * learned from the path.
+ *
+ * A class built from an object literal (`@:structInit`): an anonymous
+ * structure's fields were looked up by name natively, at every use.
  */
-typedef RouteContext = {
+@:structInit
+final class RouteContext {
 	/**
 	 * The request being answered. `respond()`, `requestBody`, headers and
 	 * cookies already live here; the router wraps none of them again.
 	 */
-	var handler:HTTPRequestHandler;
+	public var handler:HTTPRequestHandler;
 
 	/**
 	 * Values captured by `:param` and `*rest` segments, keyed by name.
 	 */
-	var params:Map<String, String>;
+	public var params:Map<String, String>;
 }
 
-private typedef Route = {
-	var method:String;
-	var segments:Array<RouteSegment>;
-	var hasRest:Bool;
-	var handler:RouteContext->Void;
+private final class Route {
+	public final method:String;
+	public final segments:Array<RouteSegment>;
+	public final hasRest:Bool;
+	public final handler:RouteContext->Void;
+
+	public function new(method:String, segments:Array<RouteSegment>, hasRest:Bool, handler:RouteContext->Void) {
+		this.method = method;
+		this.segments = segments;
+		this.hasRest = hasRest;
+		this.handler = handler;
+	}
 }
 
 /**

@@ -10,10 +10,6 @@ abstract URL(URLAccess) from URLAccess to URLAccess {
 		return new URL(uri);
 	}
 
-	@:private @:noCompletion @:from static private function fromDynamic(uri:Dynamic):URL {
-		return new URL(uri);
-	}
-
 	public var scheme(get, never):Null<String>;
 	public var host(get, never):Null<String>;
 	public var port(get, never):Null<Int>;

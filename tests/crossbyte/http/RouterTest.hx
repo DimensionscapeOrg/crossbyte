@@ -232,6 +232,18 @@ class RouterTest extends utest.Test {
 	 * A filler context for handlers that ignore it; pure matching never
 	 * has a live request to offer.
 	 */
+	/**
+		What a route is handed is a `RouteContext` instance, a class, read
+		by field, built from the same literal, not an anonymous structure.
+		Before, `RouteContext` was a typedef, which `Std.isOfType` cannot
+		name: this did not compile.
+	**/
+	public function testARouteContextIsAClassBuiltFromALiteral():Void {
+		var context:RouteContext = {handler: null, params: ["id" => "7"]};
+		Assert.isTrue(Std.isOfType(context, RouteContext));
+		Assert.equals("7", context.params.get("id"));
+	}
+
 	private static function __ctx():RouteContext {
 		return {handler: null, params: new Map()};
 	}
