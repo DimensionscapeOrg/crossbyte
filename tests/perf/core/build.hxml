@@ -1,0 +1,13 @@
+# A: the baseline, main c253e329's src, exported to export/baseline/src:
+#   git archive c253e329 src | tar -x -C export/baseline
+# B (build-b.hxml): this worktree's src. From the repository root, with a
+# private .haxelib (see FIXING3) and HXCPP_COMPILE_THREADS=4:
+#   haxe tests/perf/core/build.hxml
+# The native glue comes from ${haxelib:crossbyte}, this worktree, for both:
+# new glue functions are added beside the old ones, so A links unchanged.
+-cp export/baseline/src
+-cp tests/perf/core
+-D windows
+-D HXCPP_M64
+-main PerfCore
+--cpp export/perf-core-a

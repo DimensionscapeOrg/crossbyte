@@ -115,7 +115,7 @@ class Store {
 	public function get(key:String):Future<Null<ByteArray>> {
 		var future = new Future<Null<ByteArray>>();
 
-		if (!__usable(cast future, key)) {
+		if (!__usable(future, key)) {
 			return future;
 		}
 
@@ -140,7 +140,7 @@ class Store {
 	public function put(key:String, value:ByteArray):Future<Store> {
 		var future = new Future<Store>();
 
-		if (!__usable(cast future, key)) {
+		if (!__usable(future, key)) {
 			return future;
 		}
 
@@ -168,7 +168,7 @@ class Store {
 	public function remove(key:String):Future<Store> {
 		var future = new Future<Store>();
 
-		if (!__usable(cast future, key)) {
+		if (!__usable(future, key)) {
 			return future;
 		}
 
@@ -332,7 +332,7 @@ class Store {
 		__backend.close();
 	}
 
-	@:noCompletion private function __usable(future:Future<Dynamic>, key:String):Bool {
+	@:noCompletion private function __usable<T>(future:Future<T>, key:String):Bool {
 		if (__closed) {
 			@:privateAccess future.__reject("This store is closed.");
 			return false;

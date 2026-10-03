@@ -137,11 +137,11 @@ class TimerWheel implements ITimerScheduler {
 	}
 
 	public inline function setTimeout(delay:Float, callback:TimerHandle->Void):TimerHandle {
-		return __create(__now + delay, 0, callback);
+		return __create(__now + delay, 0, callback, null);
 	}
 
 	public inline function setTimeoutVoid(delay:Float, callback:Void->Void):TimerHandle {
-		return __create(__now + delay, 0, (handle:TimerHandle) -> callback());
+		return __create(__now + delay, 0, null, callback);
 	}
 
 	public inline function setInterval(delay:Float, interval:Float, callback:TimerHandle->Void):TimerHandle {
@@ -150,7 +150,7 @@ class TimerWheel implements ITimerScheduler {
 			throw "interval must be > 0";
 		}
 		#end
-		return __create(__now + delay, interval, callback);
+		return __create(__now + delay, interval, callback, null);
 	}
 
 	public inline function setIntervalVoid(delay:Float, interval:Float, callback:Void->Void):TimerHandle {
@@ -159,7 +159,7 @@ class TimerWheel implements ITimerScheduler {
 			throw "interval must be > 0";
 		}
 		#end
-		return __create(__now + delay, interval, (handle:TimerHandle) -> callback());
+		return __create(__now + delay, interval, null, callback);
 	}
 
 	public inline function schedule(time:Float, callback:TimerHandle->Void):TimerHandle {
@@ -441,7 +441,13 @@ class TimerWheel implements ITimerScheduler {
 			__firing = node;
 			__rearmed = false;
 			try {
-				node.callback(new TimerHandle(id, gen));
+				// A Void->Void one directly; see TimerNode.voidCallback.
+				var direct:Void->Void = node.voidCallback;
+				if (direct != null) {
+					direct();
+				} else {
+					node.callback(new TimerHandle(id, gen));
+				}
 			} catch (error:Dynamic) {
 				failed = true;
 				failure = error;
@@ -505,7 +511,7 @@ class TimerWheel implements ITimerScheduler {
 		}
 	}
 
-	@:noCompletion private function __create(time:Float, interval:Float, callback:TimerHandle->Void):TimerHandle {
+	@:noCompletion private function __create(time:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void):TimerHandle {
 		var id:Int;
 
 		if (free.length > 0) {
@@ -520,7 +526,7 @@ class TimerWheel implements ITimerScheduler {
 			gens.push(0);
 		}
 
-		var node:WheelNode = new WheelNode(id, time, interval, callback);
+		var node:WheelNode = new WheelNode(id, time, interval, callback, voidCallback);
 		nodes[id] = node;
 		__size++;
 		__link(node);
@@ -623,6 +629,7 @@ private class WheelNode {
 	public var enabled:Bool = true;
 	public var pausedAt:Null<Float> = null;
 	public var callback:TimerHandle->Void;
+	public var voidCallback:Void->Void;
 
 	/** Ring slot holding this node, or -1 when it is in overflow or detached. */
 	public var bucket:Int = -1;
@@ -630,10 +637,11 @@ private class WheelNode {
 	public var prev:WheelNode;
 	public var next:WheelNode;
 
-	public inline function new(id:Int, time:Float, interval:Float, callback:TimerHandle->Void) {
+	public inline function new(id:Int, time:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void) {
 		this.id = id;
 		this.time = time;
 		this.interval = interval;
 		this.callback = callback;
+		this.voidCallback = voidCallback;
 	}
 }

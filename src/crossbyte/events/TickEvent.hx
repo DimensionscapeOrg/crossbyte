@@ -4,7 +4,7 @@ import crossbyte.events.Event;
 
 /** Event dispatched once per runtime tick with the elapsed delta time. */
 class TickEvent extends Event {
-	public static inline var TICK:String = "tick";
+	public static inline var TICK:EventType<TickEvent> = "tick";
 
 	/**
 	 * Seconds elapsed since the previous tick.

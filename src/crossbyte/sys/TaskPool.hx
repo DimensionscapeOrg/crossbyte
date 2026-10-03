@@ -8,9 +8,55 @@ import sys.thread.Mutex;
 import sys.thread.Thread;
 #end
 
-private typedef QueuedTask = {
-	task:Task<Dynamic>,
-	job:Void->Dynamic
+/**
+	What a worker takes from the queue. A class rather than the anonymous
+	`{task, job}` it was, whose two fields hxcpp read by name; the job is
+	held as it was given rather than wrapped in another closure.
+**/
+@:access(crossbyte.sys.Task)
+private class PoolEntry {
+	public function new() {}
+
+	/** The task this runs, or null for the token that retires a worker. **/
+	public function task():Null<Task<Any>> {
+		return null;
+	}
+
+	/** Moves the task to RUNNING; false when it was cancelled while queued. **/
+	public function start():Bool {
+		return false;
+	}
+
+	/** Runs the job and settles the task with what it returned or threw. **/
+	public function run():Void {}
+}
+
+@:access(crossbyte.sys.Task)
+private final class PoolJob<T> extends PoolEntry {
+	@:noCompletion private final __task:Task<T>;
+	@:noCompletion private final __job:Void->T;
+
+	public function new(task:Task<T>, job:Void->T) {
+		super();
+		__task = task;
+		__job = job;
+	}
+
+	override public function task():Null<Task<Any>> {
+		return cast __task;
+	}
+
+	override public function start():Bool {
+		return __task.__start();
+	}
+
+	override public function run():Void {
+		try {
+			__task.__complete(__job());
+		} catch (error:Dynamic) {
+			__task.__fail(error);
+		}
+	}
 }
 
 /**
@@ -31,12 +77,17 @@ class TaskPool {
 
 	@:noCompletion private var __workerCount:Int;
 	@:noCompletion private var __isShutdown:Bool;
-	@:noCompletion private var __retainedTasks:Array<Task<Dynamic>>;
+	// The tasks in flight, kept alive until each is done. Each task holds its
+	// place here, so letting one go swaps the last into it: it was found with
+	// Array.remove, a search and a shift of everything after it per task, so
+	// a burst cost the square of its size -- 200,000 tasks delivered in 1.5 s
+	// where 0.1 s does.
+	@:noCompletion private var __retained:Array<Task<Any>>;
 	#if target.threaded
 	@:noCompletion private var __queued:Int;
 	@:noCompletion private var __running:Int;
 	@:noCompletion private var __activeWorkers:Int;
-	@:noCompletion private var __queue:Deque<QueuedTask>;
+	@:noCompletion private var __queue:Deque<PoolEntry>;
 	// Guards the counters and the shutdown flag. Every critical section taken on
 	// this mutex is short and never blocks, so a thread contending for it always
 	// reaches a GC safepoint promptly.
@@ -53,7 +104,7 @@ class TaskPool {
 
 		__workerCount = workerCount;
 		__isShutdown = false;
-		__retainedTasks = [];
+		__retained = [];
 
 		#if target.threaded
 		__queued = 0;
@@ -69,8 +120,13 @@ class TaskPool {
 		#end
 	}
 
-	public function submit(job:Void->Void):Task<Dynamic> {
-		return submitResult(() -> {
+	/**
+		Runs `job` on a pool thread. The task completes with `null`; its type
+		says so, and is `Any` rather than `Dynamic`, so reading anything from
+		the result needs a cast that says what was meant.
+	**/
+	public function submit(job:Void->Void):Task<Any> {
+		return submitResult(function():Any {
 			job();
 			return null;
 		});
@@ -82,16 +138,7 @@ class TaskPool {
 		}
 
 		var task = new Task<T>();
-		#if target.threaded
-		__retainTask(cast task);
-		task.__registerReleaseHook(() -> {
-			__releaseTask(cast task);
-		});
-		#end
-		var queuedTask:QueuedTask = {
-			task: cast task,
-			job: () -> job()
-		};
+		var entry:PoolJob<T> = new PoolJob(task, job);
 
 		#if target.threaded
 		// No cancel hook is registered: a task cancelled while queued is left in
@@ -103,16 +150,17 @@ class TaskPool {
 			throw new IllegalOperationError("Cannot submit tasks after shutdown.");
 		}
 		__queued++;
+		// Kept under the same lock, once the pool has taken the task: it was
+		// kept first, and a submit refused by a shutdown kept it for good.
+		@:privateAccess task.__poolSlot = __retained.length;
+		__retained.push(cast task);
+		task.__keptBy(this);
 		__stateLock.release();
 
-		__queue.add(queuedTask);
+		__queue.add(entry);
 		#else
-		if (task.__start()) {
-			try {
-				task.__complete(queuedTask.job());
-			} catch (error:Dynamic) {
-				task.__fail(error);
-			}
+		if (entry.start()) {
+			entry.run();
 		}
 		#end
 
@@ -147,7 +195,7 @@ class TaskPool {
 		var workers:Int = __activeWorkers;
 		__stateLock.release();
 
-		var toCancel:Array<Task<Dynamic>> = __drainQueuedTasks();
+		var toCancel:Array<Task<Any>> = __drainQueuedTasks();
 
 		if (!alreadyShutdown) {
 			__wakeWorkersForShutdown(workers);
@@ -191,18 +239,25 @@ class TaskPool {
 		#end
 	}
 
-	#if target.threaded
-	@:noCompletion private function __retainTask(task:Task<Dynamic>):Void {
+	/** A task this pool kept is done: it lets go of it, from wherever it is in the list. **/
+	@:allow(crossbyte.sys.Task)
+	@:noCompletion private function __releaseTask<T>(task:Task<T>):Void {
+		#if target.threaded
 		__stateLock.acquire();
-		__retainedTasks.push(task);
+		var slot:Int = @:privateAccess task.__poolSlot;
+		var last:Int = __retained.length - 1;
+		if (slot >= 0 && slot <= last && __retained[slot] == cast task) {
+			var moved:Task<Any> = __retained[last];
+			__retained[slot] = moved;
+			@:privateAccess moved.__poolSlot = slot;
+			__retained.pop();
+			@:privateAccess task.__poolSlot = -1;
+		}
 		__stateLock.release();
+		#end
 	}
 
-	@:noCompletion private function __releaseTask(task:Task<Dynamic>):Void {
-		__stateLock.acquire();
-		__retainedTasks.remove(task);
-		__stateLock.release();
-	}
+	#if target.threaded
 
 	@:noCompletion private function __workerLoop():Void {
 		while (true) {
@@ -211,30 +266,26 @@ class TaskPool {
 			// wrap `Condition.wait()`, so a worker parked on a condition stays
 			// off every GC safepoint and deadlocks the collector as soon as any
 			// other thread allocates.
-			var queuedTask:QueuedTask = __queue.pop(true);
-			if (queuedTask == null || queuedTask.job == null) {
+			var entry:PoolEntry = __queue.pop(true);
+			if (entry == null || entry.task() == null) {
 				__retireWorker();
 				return;
 			}
 
+			// Started before it is counted, so one lock covers both counts.
+			var started:Bool = entry.start();
 			__stateLock.acquire();
 			__queued--;
+			if (started) {
+				__running++;
+			}
 			__stateLock.release();
 
-			var task:Task<Dynamic> = queuedTask.task;
-			if (!task.__start()) {
+			if (!started) {
 				continue;
 			}
 
-			__stateLock.acquire();
-			__running++;
-			__stateLock.release();
-
-			try {
-				task.__complete(queuedTask.job());
-			} catch (error:Dynamic) {
-				task.__fail(error);
-			}
+			entry.run();
 
 			__stateLock.acquire();
 			__running--;
@@ -257,7 +308,7 @@ class TaskPool {
 	// tells it to retire.
 	@:noCompletion private function __wakeWorkersForShutdown(workers:Int):Void {
 		for (i in 0...workers) {
-			__queue.add({task: null, job: null});
+			__queue.add(new PoolEntry());
 		}
 	}
 
@@ -276,26 +327,27 @@ class TaskPool {
 		__drained.release();
 	}
 
-	@:noCompletion private function __drainQueuedTasks():Array<Task<Dynamic>> {
-		var drained:Array<Task<Dynamic>> = [];
+	@:noCompletion private function __drainQueuedTasks():Array<Task<Any>> {
+		var drained:Array<Task<Any>> = [];
 
 		while (true) {
-			var queuedTask:QueuedTask = __queue.pop(false);
-			if (queuedTask == null) {
+			var entry:PoolEntry = __queue.pop(false);
+			if (entry == null) {
 				break;
 			}
 
-			if (queuedTask.job == null) {
+			var task:Null<Task<Any>> = entry.task();
+			if (task == null) {
 				// A retire token from an earlier shutdown. Put it back so the
 				// worker it was meant for still wakes.
-				__queue.add(queuedTask);
+				__queue.add(entry);
 				break;
 			}
 
 			__stateLock.acquire();
 			__queued--;
 			__stateLock.release();
-			drained.push(queuedTask.task);
+			drained.push(task);
 		}
 
 		return drained;

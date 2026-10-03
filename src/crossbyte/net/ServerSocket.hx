@@ -14,6 +14,7 @@ import crossbyte.errors.RangeError;
 import crossbyte.errors.Error as CBError;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
+import crossbyte.events.EventType;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.net.Socket as CBSocket;
 import crossbyte.net._internal.RuntimeHandOff;
@@ -129,9 +130,9 @@ class ServerSocket extends EventDispatcher {
 		The listener sits in the runtime's poll set, so connections are taken
 		as they arrive rather than at the next tick. The operating system holds
 		connections that have finished their TCP handshake in the listen queue
-		until they are accepted -- 200 of them on a client edition of Windows,
-		128 to 4096 on Linux -- and refuses any that arrive while it is full.
-		Taking one a tick, as this server used to, spent 190 ticks clearing 190
+		until they are accepted -- as many as `listen()`'s backlog, up to the
+		system's limit -- and refuses any that arrive while it is full. Taking
+		one a tick, as this server used to, spent 190 ticks clearing 190
 		waiting connections, and a login burst larger than the queue was
 		refused by the kernel before the server saw it. The cap keeps one wake
 		from being spent entirely on arrivals: what is left is taken at the
@@ -340,12 +341,36 @@ class ServerSocket extends EventDispatcher {
 
 	/**
 		The backlog `listen()` asks for when given none: more than any system
-		grants, so the system's own maximum is what applies -- 200 on a client
-		edition of Windows, `somaxconn` on Linux, whichever value is asked.
+		grants, so the system's own maximum is what applies -- `somaxconn` on
+		Linux, whichever value is asked; on Windows 65535, asked as
+		`SOMAXCONN_HINT` (see `__nativeBacklog`), natively, on HashLink and on
+		neko, and 200 on the jvm and the interpreter.
 		`0x7FFFFFF` rather than the largest Int, which neko's 31-bit integers
 		cannot carry: `listen()` threw there, so no server could start.
 	**/
 	@:noCompletion private static inline var DEFAULT_BACKLOG:Int = 0x7FFFFFF;
+
+	/**
+		The number to hand the system's `listen()` for `backlog`.
+
+		Windows grants at most 200 to a backlog asked as a number --
+		`0x7FFFFFF` included -- and refuses a connection arriving while 200
+		wait. Asked as `SOMAXCONN_HINT(n)`, which is `-n`, it grants `n`, from
+		200 to 65535. With nothing accepting, a listener asked for the default
+		took 200 connections and refused the rest; asked this way, every one
+		of 400. Natively, on HashLink and on neko the number reaches `listen()`
+		as it is. The jvm's `bind` takes a negative backlog as "the default",
+		50, and the interpreter's is not known to pass it on, so both ask
+		plainly.
+	**/
+	@:noCompletion private static function __nativeBacklog(backlog:Int):Int {
+		#if (cpp || hl || neko)
+		if (backlog > 200 && crossbyte.sys.System.isWindows) {
+			return -(backlog > 65535 ? 65535 : backlog);
+		}
+		#end
+		return backlog;
+	}
 
 	@:noCompletion private var __serverSocket:#if nodejs NodeServer #else Socket #end;
 	@:noCompletion private var __closed:Bool;
@@ -1020,6 +1045,12 @@ class ServerSocket extends EventDispatcher {
 		system-maximum value is determined by the SOMAXCONN setting of the TCP network
 		subsystem on the host computer.)
 
+		On Windows, natively, on HashLink and on neko, a backlog above 200 is
+		granted up to 65535, and the default is 65535. Windows grants 200 to
+		any larger number asked plainly, which is all the jvm and the
+		interpreter can ask, so a burst of connections past 200 was refused by
+		the kernel before the server saw it.
+
 		On Node a port that cannot be had is reported after this returns, as
 		an `ioError` and then `close`; see `bind()`.
 		@throws RangeError	The backlog is negative.
@@ -1074,7 +1105,7 @@ class ServerSocket extends EventDispatcher {
 				__listenOnEachRuntime(backlog);
 				return;
 			}
-			__serverSocket.listen(backlog);
+			__serverSocket.listen(__nativeBacklog(backlog));
 			/* @:privateAccess
 				__cbInstance.beginSocketPolling();
 				@:privateAccess
@@ -1221,7 +1252,7 @@ class ServerSocket extends EventDispatcher {
 				var listener:Socket = __newListener();
 				opened.push(listener);
 				__bindListener(listener, host, localPort);
-				listener.listen(backlog);
+				listener.listen(__nativeBacklog(backlog));
 			}
 		} catch (error:Dynamic) {
 			for (listener in opened) {
@@ -1961,7 +1992,7 @@ class ServerSocket extends EventDispatcher {
 		dispatchEvent(new crossbyte.events.IOErrorEvent(crossbyte.events.IOErrorEvent.IO_ERROR, message));
 	}
 
-	override public function addEventListener(type:String, listener:Dynamic->Void, priority:Int = 0):Void {
+	override public function addEventListener<T>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
 		super.addEventListener(type, listener, priority);
 
 		if (type == Event.CONNECT) {
@@ -1975,7 +2006,7 @@ class ServerSocket extends EventDispatcher {
 		}
 	}
 
-	override public function removeEventListener(type:String, listener:Dynamic->Void):Void {
+	override public function removeEventListener<T>(type:EventType<T>, listener:T->Void):Void {
 		super.removeEventListener(type, listener);
 
 		if (type == Event.CONNECT) {

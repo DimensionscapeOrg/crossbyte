@@ -225,12 +225,52 @@ class ByteArrayTest extends utest.Test {
 		}, Exception);
 	}
 
+	/**
+		An algorithm is an Int underneath, so "none" is `Null<CompressionAlgorithm>`
+		and a token nobody knows is refused where it would be taken for one:
+		it was null, and stored as an Int that reads as DEFLATE.
+	**/
+	public function testAnUnknownAlgorithmNameIsRefused():Void {
+		Assert.isNull(CompressionAlgorithm.fromString("zstd"));
+		var refused:Dynamic = null;
+		try {
+			var algorithm:CompressionAlgorithm = "zstd";
+			Assert.fail("an unknown name became " + Std.string(algorithm));
+		} catch (e:crossbyte.errors.ArgumentError) {
+			refused = e;
+		}
+		Assert.notNull(refused);
+		var known:CompressionAlgorithm = "gzip";
+		Assert.equals(CompressionAlgorithm.GZIP, known);
+	}
+
+	/**
+		ByteArrays made empty share one empty buffer until they grow, so none
+		of them may ever write into it: two grown apart hold their own bytes.
+	**/
+	public function testEmptyByteArraysGrowApart():Void {
+		var first = new ByteArray();
+		var second = new ByteArray();
+		var adopted = ByteArray.fromBytes(Bytes.ofString("xy"));
+		first.writeUTFBytes("aaaa");
+		second.writeUTFBytes("bb");
+		Assert.equals(4, first.length);
+		Assert.equals(2, second.length);
+		first.position = 0;
+		second.position = 0;
+		Assert.equals("aaaa", first.readUTFBytes(4));
+		Assert.equals("bb", second.readUTFBytes(2));
+		adopted.position = 0;
+		Assert.equals("xy", adopted.readUTFBytes(2));
+		Assert.equals(0, new ByteArray().length);
+	}
+
 	public function testCompressionAlgorithmMappings():Void {
 		var algorithmDeflate:CompressionAlgorithm = CompressionAlgorithm.fromString("deflate");
 		var algorithmGzip:CompressionAlgorithm = CompressionAlgorithm.fromString("gzip");
 		var algorithmBrotli:CompressionAlgorithm = CompressionAlgorithm.fromString("br");
 		var algorithmLz4:CompressionAlgorithm = CompressionAlgorithm.fromString("lz4");
-		var algorithmUnknown:CompressionAlgorithm = CompressionAlgorithm.fromString("zstd");
+		var algorithmUnknown:Null<CompressionAlgorithm> = CompressionAlgorithm.fromString("zstd");
 
 		Assert.equals(CompressionAlgorithm.DEFLATE, algorithmDeflate);
 		Assert.equals(CompressionAlgorithm.GZIP, algorithmGzip);

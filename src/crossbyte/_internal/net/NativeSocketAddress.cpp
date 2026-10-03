@@ -358,6 +358,185 @@ int crossbyte_socket_recv_from(Dynamic socket, Array<unsigned char> buffer, int 
 	return received;
 }
 
+/*
+	The same four transfers without an exception for "would block": each
+	answers -1 when the socket has nothing to give or no room to take, and
+	throws only for a real failure, as the throwing forms do.
+
+	A would-block is the ordinary end of every pass over a non-blocking
+	socket -- the read that finds a UDP socket empty, the send a slow peer's
+	full window refuses -- and reported by a C++ throw it cost 1.9 us, caught
+	in Haxe and thrown again as haxe.io.Error.Blocked for 4.3 us in all,
+	where the call itself is a few hundred nanoseconds. A server writing to
+	a peer that stopped reading paid that on every pass, for every such peer.
+*/
+namespace {
+
+// True when the last call failed only because it would have blocked. Read
+// before leaving the GC-free zone: leaving it can clear the error code.
+static bool crossbyte_would_block() {
+#if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
+	int error = WSAGetLastError();
+	return error == WSAEWOULDBLOCK || error == WSAEALREADY;
+#else
+	return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINPROGRESS || errno == EALREADY;
+#endif
+}
+
+}
+
+/**
+	`send`, or -1 when the socket's buffer is full. Any other failure throws
+	"EOF", as hxcpp's `socket_send` does, so the two map to the same Haxe
+	errors. An out-of-range position or length sends nothing, as there.
+**/
+int crossbyte_socket_try_send(Dynamic socket, Array<unsigned char> buffer, int position, int length) {
+	SOCKET nativeSocket = crossbyte_val_sock(socket);
+	int bufferLength = buffer->length;
+	if (position < 0 || length < 0 || position > bufferLength || length > bufferLength - position) {
+		return 0;
+	}
+
+	// volatile: the start of the buffer stays visible in this frame, so the
+	// collector's conservative scan keeps it in place while send reads it.
+	const char* volatile data = (const char*)&buffer[0];
+	hx::EnterGCFreeZone();
+	int sent;
+#if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
+	sent = send(nativeSocket, data + position, length, MSG_NOSIGNAL);
+#else
+	do {
+		sent = send(nativeSocket, data + position, length, MSG_NOSIGNAL);
+	} while (sent == SOCKET_ERROR && errno == EINTR);
+#endif
+	if (sent == SOCKET_ERROR) {
+		bool wouldBlock = crossbyte_would_block();
+		hx::ExitGCFreeZone();
+		if (wouldBlock) {
+			return -1;
+		}
+		hx::Throw(HX_CSTRING("EOF"));
+	}
+	hx::ExitGCFreeZone();
+	return sent;
+}
+
+/**
+	`recv`, or -1 when nothing is waiting; 0 is the end of the stream. Any
+	other failure throws "EOF", as hxcpp's `socket_recv` does.
+**/
+int crossbyte_socket_try_recv(Dynamic socket, Array<unsigned char> buffer, int position, int length) {
+	SOCKET nativeSocket = crossbyte_val_sock(socket);
+	int bufferLength = buffer->length;
+	if (position < 0 || length < 0 || position > bufferLength || length > bufferLength - position) {
+		return 0;
+	}
+
+	char* volatile data = (char*)&buffer[0];
+	hx::EnterGCFreeZone();
+	int received;
+#if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
+	received = recv(nativeSocket, data + position, length, MSG_NOSIGNAL);
+	if (received == SOCKET_ERROR && WSAGetLastError() == WSAEMSGSIZE) {
+		// As hxcpp's recv: a datagram longer than the buffer filled it.
+		hx::ExitGCFreeZone();
+		return length;
+	}
+#else
+	do {
+		received = recv(nativeSocket, data + position, length, MSG_NOSIGNAL);
+	} while (received == SOCKET_ERROR && errno == EINTR);
+#endif
+	if (received == SOCKET_ERROR) {
+		bool wouldBlock = crossbyte_would_block();
+		hx::ExitGCFreeZone();
+		if (wouldBlock) {
+			return -1;
+		}
+		hx::Throw(HX_CSTRING("EOF"));
+	}
+	hx::ExitGCFreeZone();
+	return received;
+}
+
+/** `crossbyte_socket_send_to`, answering -1 for a full buffer rather than throwing. **/
+int crossbyte_socket_try_send_to(Dynamic socket, Array<unsigned char> buffer, int position, int length, Dynamic address) {
+	SOCKET nativeSocket = crossbyte_val_sock(socket);
+	int bufferLength = buffer->length;
+	if (position < 0 || length < 0 || position > bufferLength || length > bufferLength - position) {
+		hx::Throw(HX_CSTRING("Invalid data position"));
+	}
+
+	sockaddr_storage nativeAddress;
+	SocketLen nativeAddressLength = 0;
+	crossbyte_dynamic_to_sockaddr(address, nativeAddress, nativeAddressLength);
+
+	const char* volatile data = (const char*)&buffer[0];
+
+	hx::EnterGCFreeZone();
+	int sent;
+#if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
+	sent = sendto(nativeSocket, data + position, length, MSG_NOSIGNAL, reinterpret_cast<sockaddr*>(&nativeAddress), nativeAddressLength);
+#else
+	do {
+		sent = sendto(nativeSocket, data + position, length, MSG_NOSIGNAL, reinterpret_cast<sockaddr*>(&nativeAddress), nativeAddressLength);
+		// See crossbyte_socket_send_to: a connected socket on macOS and the BSDs.
+		if (sent == SOCKET_ERROR && errno == EISCONN) {
+			sent = send(nativeSocket, data + position, length, MSG_NOSIGNAL);
+		}
+	} while (sent == SOCKET_ERROR && errno == EINTR);
+#endif
+	if (sent == SOCKET_ERROR) {
+		bool wouldBlock = crossbyte_would_block();
+		hx::ExitGCFreeZone();
+		if (wouldBlock) {
+			return -1;
+		}
+		hx::Throw(HX_CSTRING("Socket operation failed"));
+	}
+	hx::ExitGCFreeZone();
+	return sent;
+}
+
+/**
+	`crossbyte_socket_recv_from`, answering -1 when nothing is waiting rather
+	than throwing; `address` is left as it was then.
+**/
+int crossbyte_socket_try_recv_from(Dynamic socket, Array<unsigned char> buffer, int position, int length, Dynamic address) {
+	SOCKET nativeSocket = crossbyte_val_sock(socket);
+	int bufferLength = buffer->length;
+	if (position < 0 || length < 0 || position > bufferLength || length > bufferLength - position) {
+		hx::Throw(HX_CSTRING("Invalid data position"));
+	}
+
+	sockaddr_storage nativeAddress;
+	memset(&nativeAddress, 0, sizeof(nativeAddress));
+	SocketLen nativeAddressLength = sizeof(nativeAddress);
+	char* volatile data = (char*)&buffer[0];
+
+	hx::EnterGCFreeZone();
+	int received;
+#if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
+	received = recvfrom(nativeSocket, data + position, length, MSG_NOSIGNAL, reinterpret_cast<sockaddr*>(&nativeAddress), &nativeAddressLength);
+#else
+	do {
+		received = recvfrom(nativeSocket, data + position, length, MSG_NOSIGNAL, reinterpret_cast<sockaddr*>(&nativeAddress), &nativeAddressLength);
+	} while (received == SOCKET_ERROR && errno == EINTR);
+#endif
+	if (received == SOCKET_ERROR) {
+		bool wouldBlock = crossbyte_would_block();
+		hx::ExitGCFreeZone();
+		if (wouldBlock) {
+			return -1;
+		}
+		hx::Throw(HX_CSTRING("Socket operation failed"));
+	}
+	hx::ExitGCFreeZone();
+
+	crossbyte_sockaddr_to_dynamic(reinterpret_cast<sockaddr*>(&nativeAddress), nativeAddressLength, address);
+	return received;
+}
+
 /**
 	Why a non-blocking connect failed, or null when it did not: SO_ERROR, in
 	the system's words. A connect that has finished, either way, makes the

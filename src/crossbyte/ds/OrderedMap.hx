@@ -1,5 +1,7 @@
 package crossbyte.ds;
 
+import crossbyte.ds.ListedMap.KeyValuePair;
+
 /**
  * ...
  * @author Christopher Speciale
@@ -142,9 +144,10 @@ final class OrderedMap<K:Dynamic, V> {
 	/**
 	 * Returns an iterator over `{ key, value }` pairs in insertion order.
 	 *
-	 * @return An iterator of objects with `key` and `value` fields.
+	 * @return An iterator of `KeyValuePair`s: classes, which fit where
+	 *         `{key, value}` structures are asked for.
 	 */
-	public function keyValuePairs():Iterator<{key:K, value:V}> {
+	public function keyValuePairs():Iterator<KeyValuePair<K, V>> {
 		return new OrderedMapPairIterator<K, V>(__first);
 	}
 
@@ -310,8 +313,8 @@ private class OrderedMapPairIterator<K, V> {
 		return __walk.hasNext();
 	}
 
-	public inline function next():{key:K, value:V} {
+	public inline function next():KeyValuePair<K, V> {
 		var entry:OrderedMapEntry<K, V> = __walk.take();
-		return {key: entry.key, value: entry.value};
+		return new KeyValuePair(entry.key, entry.value);
 	}
 }

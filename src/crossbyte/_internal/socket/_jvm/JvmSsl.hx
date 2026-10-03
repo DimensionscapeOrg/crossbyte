@@ -1356,7 +1356,7 @@ private class JvmSslContexts {
 **/
 @:noCompletion private class JvmSslBuffers {
 	private static inline var KEEP:Int = 4;
-	private static var __local:JThreadLocal = new JThreadLocal();
+	private static var __local:JThreadLocal<JvmSslBuffers> = new JThreadLocal();
 
 	private var __size:Int = 0;
 	private var __count:Int = 0;
@@ -1365,12 +1365,12 @@ private class JvmSslContexts {
 	private function new() {}
 
 	private static function __mine():JvmSslBuffers {
-		var existing:Dynamic = __local.get();
+		var existing:Null<JvmSslBuffers> = __local.get();
 		if (existing == null) {
 			existing = new JvmSslBuffers();
 			__local.set(existing);
 		}
-		return cast existing;
+		return existing;
 	}
 
 	/** An empty buffer of `size` bytes, in write mode. **/
