@@ -183,7 +183,7 @@ class ChurnBots {
 		Report.emit({
 			kind: "churn-clients",
 			concurrency: open,
-			cpu: (sample.user - lastSample.user) + (sample.kernel - lastSample.kernel),
+			cpu: (sample.cpu - lastSample.cpu),
 			counts: c,
 			errors: e,
 			latency: l

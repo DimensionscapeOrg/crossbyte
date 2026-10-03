@@ -221,7 +221,7 @@ class GameServer {
 		phase = "closing";
 		var end:ProcessStats = ProcessStats.sample();
 		var wall:Float = Timer.stamp() - measuredFrom;
-		var cpu:Float = (end.user - runSample.user) + (end.kernel - runSample.kernel);
+		var cpu:Float = (end.cpu - runSample.cpu);
 		var summary:Dynamic = {
 			kind: "game-summary",
 			clients: clients,
@@ -232,6 +232,9 @@ class GameServer {
 			ticksPerSecond: round(runTicks / wall),
 			cpuCores: round(cpu / wall),
 			cpuMsPerTick: round(cpu * 1000 / Math.max(1, runTicks)),
+			// What Windows' tick-sampled accounting charged, beside the exact
+			// figure above: the two part where a tick is shorter than the clock's.
+			sampledCpuMsPerTick: round(((end.user - runSample.user) + (end.kernel - runSample.kernel)) * 1000 / Math.max(1, runTicks)),
 			userMsPerTick: round((end.user - runSample.user) * 1000 / Math.max(1, runTicks)),
 			kernelMsPerTick: round((end.kernel - runSample.kernel) * 1000 / Math.max(1, runTicks)),
 			cpuUsPerClientTick: round(cpu * 1e6 / Math.max(1, runTicks) / Math.max(1, sessions.length)),
@@ -391,7 +394,7 @@ class GameServer {
 			return;
 		}
 		var sample:ProcessStats = ProcessStats.sample();
-		var cpu:Float = (sample.user - windowSample.user) + (sample.kernel - windowSample.kernel);
+		var cpu:Float = (sample.cpu - windowSample.cpu);
 		var record:Dynamic = {
 			kind: "game-window",
 			t: round(now - measuredFrom),
@@ -399,7 +402,7 @@ class GameServer {
 			ticks: windowTicks,
 			cpuCores: round(cpu / wall),
 			cpuMsPerTick: round(cpu * 1000 / Math.max(1, windowTicks)),
-			kernelShare: round((sample.kernel - windowSample.kernel) / Math.max(1e-9, cpu)),
+			kernelShare: round((sample.kernel - windowSample.kernel) / Math.max(1e-9, (sample.user - windowSample.user) + (sample.kernel - windowSample.kernel))),
 			step: stepTimes.summary(),
 			tick: tickTimes.summary(),
 			frameWork: frameWork.summary(),
