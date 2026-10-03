@@ -13,6 +13,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.auth.jwt.PkJwtTest());
 		runner.addCase(new crossbyte.auth.jwt.JWKSetTest());
 		runner.addCase(new crossbyte.auth.jwt.JWTTypesTest());
+		runner.addCase(new crossbyte.auth.jwt.Base64UrlTest());
 	}
 
 	public static function addCrypto(runner:Runner):Void {
@@ -24,6 +25,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.crypto.password.BCryptByteVectorsTest());
 		runner.addCase(new crossbyte.crypto.password.PasswordOffloadTest());
 		runner.addCase(new crossbyte.crypto.SecureRandomTest());
+		runner.addCase(new crossbyte.crypto.HmacSha256Test());
 	}
 
 	public static function addCore(runner:Runner):Void {
