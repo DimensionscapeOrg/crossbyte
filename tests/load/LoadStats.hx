@@ -241,6 +241,13 @@ class ProcessStats {
 		__readLinux(s);
 		s.cpu = s.user + s.kernel;
 		#end
+		#if (java || jvm)
+		// The HotSpot bean's figure, as System.totalCpuUsage reads it: the
+		// process's, all threads, user and kernel together.
+		try {
+			s.cpu = @:privateAccess crossbyte.sys.System.__processCpuSeconds();
+		} catch (_:Dynamic) {}
+		#end
 		return s;
 	}
 
@@ -328,11 +335,25 @@ class Report {
 		}
 	}
 
+	/**
+		Set by a process a parent started: once its standard output is gone --
+		the parent died -- it ends, rather than run on with nobody reading.
+		Clients orphaned by a crashed server otherwise lived for good, their
+		reports failing before they reached their own deadline.
+	**/
+	public static var exitWhenOrphaned:Bool = false;
+
 	/** One line, flushed at once: a parent reads it from a pipe. **/
 	public static function emit(record:Dynamic):Void {
 		var line:String = PREFIX + Json.stringify(record) + "\n";
-		Sys.stdout().writeString(line);
-		Sys.stdout().flush();
+		try {
+			Sys.stdout().writeString(line);
+			Sys.stdout().flush();
+		} catch (_:Dynamic) {
+			if (exitWhenOrphaned) {
+				Sys.exit(4);
+			}
+		}
 		if (file != null) {
 			file.writeString(line);
 			file.flush();
@@ -340,8 +361,14 @@ class Report {
 	}
 
 	public static function say(line:String):Void {
-		Sys.stdout().writeString(line + "\n");
-		Sys.stdout().flush();
+		try {
+			Sys.stdout().writeString(line + "\n");
+			Sys.stdout().flush();
+		} catch (_:Dynamic) {
+			if (exitWhenOrphaned) {
+				Sys.exit(4);
+			}
+		}
 	}
 
 	/** A record from a child's line, or null for any other line. **/

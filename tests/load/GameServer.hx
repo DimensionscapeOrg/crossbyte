@@ -294,7 +294,9 @@ class GameServer {
 
 		// The clients close on their own deadline; once every session has
 		// gone, and a little after, what is left is compared with the start.
-		var giveUpAt:Float = Timer.stamp() + 90;
+		// Long enough for the clients' own deadline and then the idle timeout
+		// of any session whose close never got through: the last to go.
+		var giveUpAt:Float = Timer.stamp() + 45 + clients / 200 + server.idleTimeout + 30;
 		var watch:Int = -1;
 		watch = crossbyte.Timer.setInterval(0.5, 0.5, () -> {
 			if ((sessions.length > 0 || children.running > 0) && Timer.stamp() < giveUpAt) {
@@ -308,10 +310,12 @@ class GameServer {
 	function __afterClose():Void {
 		cpp_gc();
 		var after:ProcessStats = ProcessStats.sample();
-		var clean:Bool = children.failed == 0 && runClient.ioErrors == 0 && runClient.unexpectedCloses == 0 && runClient.connectFailures == 0;
+		var clean:Bool = children.failed == 0 && runClient.ioErrors == 0 && runClient.unexpectedCloses == 0 && runClient.connectFailures == 0
+			&& sessions.length == 0;
 		Report.emit({
 			kind: "game-after",
 			sessionsLeft: sessions.length,
+			lastCloseAfterSeconds: round(lastCloseAt - measuredFrom - seconds),
 			children: children.running,
 			childFailures: children.failed,
 			heapLiveMB: ProcessStats.mb(after.heapLive),
@@ -330,6 +334,8 @@ class GameServer {
 		children.killAll();
 		Sys.exit(clean ? 0 : 1);
 	}
+
+	var lastCloseAt:Float = 0;
 
 	function __onConnect(event:ReliableDatagramSocketConnectEvent):Void {
 		var socket:ReliableDatagramSocket = event.socket;
@@ -353,6 +359,7 @@ class GameServer {
 		socket.addEventListener(IOErrorEvent.IO_ERROR, _ -> serverErrors++);
 		socket.addEventListener(Event.CLOSE, _ -> {
 			closes++;
+			lastCloseAt = Timer.stamp();
 			sessions.remove(session);
 		});
 	}
@@ -663,6 +670,8 @@ class ClientTotals {
 	public var connected:Int = 0;
 	public var snapshots:Float = 0;
 	public var reliableSnapshots:Float = 0;
+	public var duplicates:Float = 0;
+	public var reliableDuplicates:Float = 0;
 	public var missing:Float = 0;
 	public var inputs:Float = 0;
 	public var ioErrors:Int = 0;
@@ -679,6 +688,10 @@ class ClientTotals {
 		connected += Std.int(record.connected);
 		snapshots += record.snapshots;
 		reliableSnapshots += record.reliableSnapshots;
+		if (record.duplicates != null) {
+			duplicates += record.duplicates;
+			reliableDuplicates += record.reliableDuplicates;
+		}
 		missing += record.missing;
 		inputs += record.inputs;
 		ioErrors += Std.int(record.ioErrors);
@@ -694,6 +707,8 @@ class ClientTotals {
 		connected = other.connected;
 		snapshots += other.snapshots;
 		reliableSnapshots += other.reliableSnapshots;
+		duplicates += other.duplicates;
+		reliableDuplicates += other.reliableDuplicates;
 		missing += other.missing;
 		inputs += other.inputs;
 		ioErrors += other.ioErrors;
@@ -711,6 +726,8 @@ class ClientTotals {
 			snapshotsPerSecond: Math.round(snapshots / wall),
 			reliableSnapshotsPerSecond: Math.round(reliableSnapshots / wall),
 			missing: missing,
+			duplicates: duplicates,
+			reliableDuplicates: reliableDuplicates,
 			missingShare: snapshots + missing > 0 ? Math.round(missing / (snapshots + missing) * 1e6) / 1e6 : 0,
 			inputsPerSecond: Math.round(inputs / wall),
 			ioErrors: ioErrors,

@@ -174,6 +174,18 @@ For example:
 haxe -lib crossbyte -lib crossbyte-lz4 -D crossbyte_lz4_native -main Main --cpp bin
 ```
 
+One of hxcpp's own matters to a server that holds a lot in memory. hxcpp's
+collector numbers its 32 KB blocks in two bytes, so a native process can hold
+about 2 GB of objects and no more: past that, an allocation stops the process
+with an access violation ("Memory exhausted" in a debug log). Build with
+`-D HXCPP_GC_BIG_BLOCKS` for 64 KB blocks and twice that. The collector also
+stops every thread while it marks, for a time that grows with what is live --
+about 0.2 ms a megabyte of small objects, measured by the load harness's game
+server at sixty ticks a second: pauses of 50-70 ms every few seconds with
+300 MB live, about 200 ms every twenty seconds with 1.1 GB, up to 0.7 s with
+2.4 GB. A runtime whose ticks must stay inside a frame wants its live heap
+well under 100 MB, or the world held where the collector does not scan it.
+
 ## HashLink and Neko
 
 Both build and run the test suite, in CI on Windows and Linux. What they need,
