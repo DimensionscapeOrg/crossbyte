@@ -266,6 +266,14 @@ entry below says how:
   cannot assign its fields; code that made a `MongoCursor` or an
   `ExtendedJsonParser` itself uses `MongoConnection` and
   `ExtendedJson.parse`.
+- A JWT claims literal whose times mix `Int` and `Float` converts one of them
+  (`exp: now + 3600.0`); a time that is not a number no longer compiles.
+- `JWTPayload.audience` is a `JWTAudience`: ask it with `contains(name)` or
+  read `toArray()`. `JWTPayload.seconds` is no longer public.
+- `Secret`, `JWTHeaderData`, `IgnoredKey`, `SigningKeyPair`,
+  `KeyExchangeKeyPair` and `SessionKeys` are classes: a value typed as an
+  anonymous structure no longer passes for one, and `Json.stringify` writes a
+  `JWTHeaderData`'s unset members as `null`.
 
 ### Added
 - `SQLRow` and `executeEach` on `SQLiteStatement`, `MySQLStatement` and
@@ -1482,6 +1490,42 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `JWT.verify` and `generateToken` for HS256 cost about a quarter of what they
+  did. An HMAC key's two padded blocks are hashed once per secret, when the
+  signer is made, rather than for every token through `haxe.crypto.Hmac`; the
+  MAC is taken straight over the token's characters and compared, in constant
+  time, with the 32 bytes the signature decodes to -- in its one canonical
+  spelling, so the same tokens are accepted as before. Base64url has a codec
+  of its own, which decodes a segment where it lies and answers a malformed
+  one without an exception; the token is no longer split into substrings and
+  joined back together; a header that a verified token carried is not decoded
+  again; and a signer's header is made once. Natively a typical token's
+  verification took 11-13 microseconds of CPU and takes about 3, its signing
+  9.5-12 and 3.5-4; on the jvm 6.4-10.5 and 2.3-2.5 microseconds, and 5.3-8.2
+  and 2.8-4.3; on Node 22-26 and 3-4, and 20-24 and 4.5-5. On Node,
+  `crypto.createHmac` was slower than this. The header `generateToken` writes
+  is `{"alg":..,"typ":"JWT","kid":..}`, in that order on every target.
+- RS256 and ES256 tokens, `SignatureKey` and `PublicKeySignature` hash the
+  message with a faster SHA-256: 1.7 microseconds for a token's signing input
+  where `haxe.crypto.Sha256` took 4.9.
+- Natively `SecureRandom.getSecureRandomBytes` hands out bytes from a 4 KB pool
+  each thread fills from the system -- BCryptGenRandom on Windows,
+  `/dev/urandom` elsewhere -- and zeroes each range it hands out; it made a
+  system call per draw, and on Linux and macOS took a lock and read through a
+  `FileInput` for each. Draws of 1 KB or more still go straight to the system,
+  and a forked child drops the pool it inherited. A 4-byte draw, a WebSocket
+  client's mask for each frame, took 88-120 nanoseconds of CPU on Windows and
+  takes 72-89, most of it now the `ByteArray` returned; on Linux 104-127 and
+  67-87.
+- The JWT types, for 1.0: `JWTPayloadData`'s `iat`, `exp` and `nbf` are
+  `Float`s rather than `Dynamic`, so a time that is not a number no longer
+  compiles; a literal may still give them as `Int`s, all of them, or as
+  `Float`s. `JWTPayload.audience` is a `JWTAudience`, one audience or several,
+  asked with `contains` and read with `toArray`. `JWTPayload.seconds` is
+  private. `Secret`, `JWTHeaderData`, `JWKSet.IgnoredKey`, `SigningKeyPair`,
+  `KeyExchangeKeyPair` and `SessionKeys` are `@:structInit` classes, which
+  object literals still build. `JWTPayload.ofData` says that a literal with
+  claims of an application's own converts through `ofClaims`.
 - Encoding BSON asks each value what it is once -- on hxcpp its own type
   code -- rather than through a chain of up to six `Std.isOfType` tests
   for a number and seventeen, with a class name compared as text, for a
