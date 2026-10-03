@@ -1917,6 +1917,20 @@ entry below says how:
 - A statement's text is split at its placeholders once and kept, where it
   was copied a character at a time on every run, placeholder or none:
   a SELECT with no placeholder costs 32-42 ns there instead of 240-410.
+- The HTTP server's access log (on by default, category `http.access`) is
+  written to standard output by a thread of its own, a few times a second,
+  rather than by the runtime as each response goes. To a Windows console a
+  write is drawn before it returns, and an HTTP/1.1 server at its ceiling
+  answered 10,830 requests a second with the log on where it answered
+  91,363 with it off; it answers 70,246 now (87,802 off), and to a file
+  82,769 where it answered 78,898 (medians of three interleaved runs). The
+  queue holds about a megabyte of text: past that a line is dropped and
+  counted, never waited for, and the next write says how many were, about
+  2% of lines at 50,000 a second to a console. What is queued is written as
+  the server closes or finishes draining and as a runtime that logged exits
+  (`Sys.exit` skips that). Lines keep their order, one connection's and
+  every runtime's of a spread server. With a `Logger.sink` or `recordSink`
+  set, and on Node, lines go through `Logger` as they are made, as before.
 - Internal records of the HTTP server and clients are classes rather than
   anonymous structures or `Dynamic`: the server's connection maps are keyed
   by `Socket`, and a byte range, a cookie the client keeps, a DER element of

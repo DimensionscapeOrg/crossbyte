@@ -23,7 +23,20 @@ import crossbyte._internal.php.PHPMode;
 
 using StringTools;
 
-/** Lightweight static-and-middleware HTTP server built on `ServerSocket`. */
+/**
+	Lightweight static-and-middleware HTTP server built on `ServerSocket`.
+
+	**The access log.** Each response is logged at `INFO` in the category
+	`http.access` (`Client <address> <method> <path> - Status: <code>`), on by
+	default; `Logger.setLevel("http.access", LogLevel.WARN)` turns it off. The
+	lines are written to standard output by a thread of their own, a few
+	times a second, so a slow console never holds up the server: a queue of
+	at most about a megabyte of text, past which lines are dropped and
+	counted, and the next write says how many were. What is queued is written
+	when the server closes or finishes draining, and as a runtime that logged
+	exits (`Sys.exit` skips that). With a `Logger.sink` or `Logger.recordSink`
+	set, and on Node, each line goes through `Logger` as it is made instead.
+**/
 @:access(crossbyte.http.HTTPRequestHandler)
 class HTTPServer extends ServerSocket {
 	private var __config:HTTPServerConfig;
@@ -410,6 +423,10 @@ class HTTPServer extends ServerSocket {
 			} catch (_:Dynamic) {}
 			php = null;
 		}
+		// The access log's lines are written off the runtime, a few times a
+		// second; a server that closes, or finishes draining, writes what is
+		// still queued now.
+		crossbyte._internal.http.AccessLog.flush();
 	}
 
 	private function this_onConnect(e:ServerSocketConnectEvent):Void {

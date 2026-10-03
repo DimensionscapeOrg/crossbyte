@@ -63,8 +63,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * The access log's own category, one line per response at `INFO`. An
 	 * operator quiets it with `Logger.setLevel("http.access", WARN)` and keeps
 	 * everything else at `INFO`, where it used to share the one global level.
+	 * Its lines are written off the runtime: see `AccessLog`.
 	 */
-	@:noCompletion private static final ACCESS_LOG:LogCategory = Logger.category("http.access");
+	@:noCompletion private static final ACCESS_LOG:LogCategory = crossbyte._internal.http.AccessLog.CATEGORY;
 
 	/**
 	 * Bytes a request's header block may take before it is answered `431`.
@@ -2228,7 +2229,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// admits it, five concatenations per request, on a server whose
 		// operator has every reason to run above INFO.
 		if (ACCESS_LOG.isEnabled(LogLevel.INFO)) {
-			ACCESS_LOG.info('Client ' + __origin.remoteAddress + ' ' + __method + ' ' + __requestPath + ' - Status: ' + statusCode);
+			crossbyte._internal.http.AccessLog.write('Client ' + __origin.remoteAddress + ' ' + __method + ' ' + __requestPath + ' - Status: ' + statusCode);
 		}
 		// What was answered, as HTTPStatusEvent says: the URL asked for and the
 		// fields the response carries. These were the client's address and
