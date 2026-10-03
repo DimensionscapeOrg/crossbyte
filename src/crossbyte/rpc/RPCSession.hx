@@ -515,10 +515,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	 * Told after each runtime call `beforeRuntimeCall` let through and a
 	 * registered handler ran, once its answer, if it has one, has been sent:
 	 * `error` is `null` when the handler returned, and what it threw when it
-	 * did not. What `RPCHandler.afterCall` is for a compiled handler. What it
-	 * throws goes to `onHandlerError` and changes nothing else.
+	 * did not, as a `haxe.Exception` (see `onHandlerError`). What
+	 * `RPCHandler.afterCall` is for a compiled handler. What it throws goes to
+	 * `onHandlerError` and changes nothing else.
 	 */
-	public var afterRuntimeCall:Null<(op:Int, requestId:Int, error:Dynamic) -> Void> = null;
+	public var afterRuntimeCall:Null<(op:Int, requestId:Int, error:Null<haxe.Exception>) -> Void> = null;
 
 	/**
 	 * Told of whatever a handler threw that its caller will not hear about:
@@ -535,8 +536,12 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	 * Logs by default. Replace it to count failures, raise an alert or keep
 	 * the stack. Whatever it throws is ignored, so a report failing cannot
 	 * close the connection either.
+	 *
+	 * `error` is a `haxe.Exception`: what was thrown, if it was one, an
+	 * `RPCError`, an `RPCTimeoutError`, and otherwise a `haxe.ValueException`
+	 * holding what was thrown in its `value`, its `stack` there to read.
 	 */
-	public dynamic function onHandlerError(op:Int, method:Null<String>, error:Dynamic):Void {
+	public dynamic function onHandlerError(op:Int, method:Null<String>, error:haxe.Exception):Void {
 		Logger.error('RPC handler ' + (method != null ? method : 'for op $op') + ' threw: ' + Std.string(error));
 	}
 
@@ -759,7 +764,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (handler != null) {
 			try {
 				handler.ping();
-			} catch (error:Dynamic) {
+			} catch (error:haxe.Exception) {
 				__reportHandlerError(RPCWire.PING_OP, "ping", error);
 			}
 		}
@@ -816,7 +821,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			return;
 		}
 
-		var failure:Dynamic = null;
+		var failure:Null<haxe.Exception> = null;
 		var later:Null<Future<Dynamic>> = null;
 		try {
 			final result = handler(args);
@@ -827,7 +832,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			} else if (requestId != 0) {
 				__sendRuntimeResponse(op, requestId, result);
 			}
-		} catch (error:Dynamic) {
+		} catch (error:haxe.Exception) {
 			// The caller was sent `Std.string(error)`, whatever it held, a
 			// path, a query, a stack, and a one-way call rethrew, which
 			// closed the connection. The same rules as the compiled lane now.
@@ -848,12 +853,12 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		answered while the connection is on the life, `epoch`, it came in on.
 	**/
 	@:noCompletion private function __settleRuntimeCall(op:Int, requestId:Int, settled:Future<Dynamic>, epoch:Int):Void {
-		var failure:Dynamic = null;
+		var failure:Null<haxe.Exception> = null;
 		if (settled.succeeded) {
 			if (requestId != 0 && __isCurrent(epoch)) {
 				try {
 					__sendRuntimeResponse(op, requestId, settled.result);
-				} catch (error:Dynamic) {
+				} catch (error:haxe.Exception) {
 					failure = error;
 					__answerRuntimeFailure(op, requestId, error, epoch);
 				}
@@ -870,7 +875,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	 * `RPCError`'s message, or `RPCError.INTERNAL_MESSAGE`, and whatever the
 	 * caller is not told is reported.
 	 */
-	@:noCompletion private function __answerRuntimeFailure(op:Int, requestId:Int, error:Dynamic, epoch:Int):Void {
+	@:noCompletion private function __answerRuntimeFailure(op:Int, requestId:Int, error:haxe.Exception, epoch:Int):Void {
 		final answer:Null<String> = __answerFor(error);
 		if (requestId != 0 && __isCurrent(epoch)) {
 			__sendRuntimeError(op, requestId, answer != null ? answer : RPCError.INTERNAL_MESSAGE);
@@ -886,8 +891,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		one-way call, and when it timed out, which its caller is told and
 		which is news here as well.
 	**/
-	@:noCompletion private static inline function __reported(answer:Null<String>, requestId:Int, error:Dynamic):Bool {
-		return answer == null || requestId == 0 || Std.isOfType(error, RPCTimeoutError);
+	@:noCompletion private static inline function __reported(answer:Null<String>, requestId:Int, error:haxe.Exception):Bool {
+		return answer == null || requestId == 0 || (error is RPCTimeoutError);
 	}
 
 	/**
@@ -897,7 +902,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		caller is not told is reported. An `RPCError` for a caller who can no
 		longer be told is neither.
 	**/
-	@:noCompletion private function __callFailed(op:Int, method:String, requestId:Int, error:Dynamic, answerable:Bool):Void {
+	@:noCompletion private function __callFailed(op:Int, method:String, requestId:Int, error:haxe.Exception, answerable:Bool):Void {
 		final answer:Null<String> = __answerFor(error);
 		if (requestId != 0 && answerable) {
 			__sendCompiledError(op, requestId, answer != null ? answer : RPCError.INTERNAL_MESSAGE);
@@ -1021,11 +1026,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		return framed;
 	}
 
-	@:noCompletion private inline function __afterRuntimeCall(op:Int, requestId:Int, failure:Dynamic):Void {
+	@:noCompletion private inline function __afterRuntimeCall(op:Int, requestId:Int, failure:Null<haxe.Exception>):Void {
 		if (afterRuntimeCall != null) {
 			try {
 				afterRuntimeCall(op, requestId, failure);
-			} catch (error:Dynamic) {
+			} catch (error:haxe.Exception) {
 				__reportHandlerError(op, null, error);
 			}
 		}
@@ -1104,9 +1109,12 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 	#end
 
-	/** What a failed future failed with: its cause, or else its message. **/
-	@:noCompletion private static inline function __failureOf<T>(future:Future<T>):Dynamic {
-		return future.cause != null ? future.cause : future.error;
+	/**
+		What a failed future failed with, as an exception: its cause, or else
+		its message, wrapped in one when it is not one already.
+	**/
+	@:noCompletion private static function __failureOf<T>(future:Future<T>):haxe.Exception {
+		return @:privateAccess haxe.Exception.caught(future.cause != null ? future.cause : future.error);
 	}
 
 	/** The failure a call answered later settles with when `handlerTimeout` passes first. **/
@@ -1126,7 +1134,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		var refusal:Null<RPCError> = null;
 		try {
 			refusal = beforeRuntimeCall(op, requestId, payloadSize);
-		} catch (error:Dynamic) {
+		} catch (error:haxe.Exception) {
 			if (requestId != 0) {
 				__sendRuntimeError(op, requestId, RPCError.INTERNAL_MESSAGE);
 			}
@@ -1143,11 +1151,12 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	/** An `RPCError`'s message, which its caller is meant to see, or `null`. **/
-	@:noCompletion private static function __answerFor(error:Dynamic):Null<String> {
-		return Std.isOfType(error, RPCError) ? (cast error : RPCError).message : null;
+	@:noCompletion private static function __answerFor(error:haxe.Exception):Null<String> {
+		final refusal:Null<RPCError> = Std.downcast(error, RPCError);
+		return refusal != null ? refusal.message : null;
 	}
 
-	@:noCompletion private function __reportHandlerError(op:Int, method:Null<String>, error:Dynamic):Void {
+	@:noCompletion private function __reportHandlerError(op:Int, method:Null<String>, error:haxe.Exception):Void {
 		try {
 			onHandlerError(op, method, error);
 		} catch (_:Dynamic) {}
