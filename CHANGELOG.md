@@ -2425,6 +2425,16 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A process supervising children with `NativeProcess` no longer dies with
+  an access violation when one of them ends. The thread that waited for
+  the child sent its completion and then closed the child through a field
+  that the runtime clears as it dispatches `EXIT`; when the runtime got
+  there first the thread closed null, which natively no `catch` takes,
+  and elsewhere left the child's handles for the collector. The load
+  harness's game server, whose clients run as child processes, died this
+  way in three of four runs with a thousand clients. The child is now
+  closed before the completion goes, so by `EXIT` its handles are
+  released.
 - `CrossByte.frameOverruns` counts frames whose work outran their tick,
   as it says, on a `POLL` loop on Windows too. It counted every frame that
   ended past its deadline, and the `POLL` loop waits in poll until its

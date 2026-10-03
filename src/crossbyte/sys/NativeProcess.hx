@@ -78,6 +78,14 @@ class NativeProcess extends EventDispatcher {
 	@:noCompletion private var __pid:Int = -1;
 	@:noCompletion private var __stdoutClosed:Bool = false;
 	@:noCompletion private var __stderrClosed:Bool = false;
+	#if (sys && target.threaded && !eval && !nodejs)
+	/**
+		For a test: run on the worker's thread once the completion has gone to
+		the runtime, the moment the runtime may be dispatching `EXIT`.
+	**/
+	@:noCompletion private static var __afterCompleteForTest:Null<Void->Void> = null;
+	#end
+
 	@:noCompletion private static inline var OUTPUT_BUFFER_SIZE:Int = 4096;
 	@:noCompletion private static inline var STREAM_STDOUT:String = "stdout";
 	@:noCompletion private static inline var STREAM_STDERR:String = "stderr";
@@ -186,14 +194,18 @@ class NativeProcess extends EventDispatcher {
 	#if !nodejs
 	@:noCompletion private function __execute(info:Dynamic):Void {
 		#if (sys && target.threaded && !eval)
+		// The child, held here rather than read from the field each time: the
+		// runtime clears the field when it dispatches EXIT, which the
+		// completion below can lead to while this thread is still running.
+		var process:Process = __process;
 		try {
 			var readerCompletion = new Deque<String>();
 			Thread.create(() -> {
-				__readStream(STREAM_STDOUT, __process.stdout);
+				__readStream(STREAM_STDOUT, process.stdout);
 				readerCompletion.add(STREAM_STDOUT);
 			});
 			Thread.create(() -> {
-				__readStream(STREAM_STDERR, __process.stderr);
+				__readStream(STREAM_STDERR, process.stderr);
 				readerCompletion.add(STREAM_STDERR);
 			});
 
@@ -208,11 +220,23 @@ class NativeProcess extends EventDispatcher {
 
 			__exitCode = __waitForExit();
 
-			__worker.sendComplete({exitCode: __exitCode, pid: __pid});
-
+			// Closed before the completion goes, not after it through the
+			// field. The runtime clears the field as it dispatches EXIT, and
+			// one that got there first left this closing null: natively an
+			// access violation, which no catch takes, and elsewhere the
+			// child's handles left for the collector to close. A game server
+			// supervising its client processes died of it in three runs of
+			// four when a thousand clients' processes ended at once. The output
+			// has been read to its end and the exit code taken, so nothing
+			// needs the child after this.
 			try {
-				__process.close();
+				process.close();
 			} catch (_:Dynamic) {}
+
+			__worker.sendComplete({exitCode: __exitCode, pid: __pid});
+			if (__afterCompleteForTest != null) {
+				__afterCompleteForTest();
+			}
 		} catch (e:Dynamic) {
 			__exitCode = -1;
 			// Whether or not exit() asked for the end, it has come, and EXIT is
