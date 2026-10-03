@@ -159,6 +159,206 @@ class SysSocketTransferTest extends utest.Test {
 	}
 	#end
 
+	#if cpp
+	/**
+		The transfers on a TLS session, through every outcome a read loop
+		meets: -1 while the handshake waits on the peer, however many passes
+		it takes; -1 for a record that carries nothing to read -- the TLS 1.3
+		session ticket a server sends once the handshake is done -- and for a
+		session read dry; the bytes as they arrive; -1 when a blocking
+		socket's read times out; and 0 at the end of the stream. A client
+		reads through its own session (`AlpnSocket`), a socket `accept` made
+		through its `input`, the exception taken inside; both are checked.
+
+		These are the conditions a client-certificate upgrade that failed on
+		Linux was suspected of meeting, after the transfers stopped throwing
+		for "would block". Each maps as it did through `input`.
+	**/
+	public function testTlsTransfersAnswerMinusOneThroughTheHandshakeThenDataThenTheEnd():Void {
+		var fixture = TLSTestFixture.selfSigned();
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
+			return;
+		}
+
+		var listener = new crossbyte._internal.socket.AlpnSocket();
+		var client = new crossbyte._internal.socket.AlpnSocket();
+		var accepted:sys.ssl.Socket = null;
+		try {
+			listener.verifyCert = false;
+			listener.setCertificate(@:privateAccess fixture.certificate.__native, @:privateAccess fixture.key.__native);
+			listener.bind(new Host(LOOPBACK), 0);
+			listener.listen(1);
+
+			client.verifyCert = false;
+			client.setBlocking(false);
+			try {
+				client.connect(new Host(LOOPBACK), listener.host().port);
+			} catch (e:Dynamic) {
+				// The connect, or the handshake behind it, waiting on the peer.
+				if (!BlockedError.isBlocked(e)) {
+					throw e;
+				}
+			}
+			Socket.select([listener], null, null, 5.0);
+			accepted = cast listener.accept();
+			accepted.setBlocking(false);
+
+			// Each side's handshake is stepped by its reads, as a runtime steps
+			// it, and every read until both are done is -1.
+			var buffer = Bytes.alloc(256);
+			var deadline:Float = haxe.Timer.stamp() + 10.0;
+			var passes:Int = 0;
+			var midHandshake:Array<Int> = [];
+			while (!(@:privateAccess client.handshakeDone && @:privateAccess accepted.handshakeDone) && haxe.Timer.stamp() < deadline) {
+				var fromClient:Int = @:privateAccess client.__tryRead(buffer, 0, buffer.length);
+				var fromServer:Int = @:privateAccess accepted.__tryRead(buffer, 0, buffer.length);
+				if (fromClient != -1 || fromServer != -1) {
+					midHandshake.push(fromClient);
+					midHandshake.push(fromServer);
+					break;
+				}
+				passes++;
+				Socket.select([client, accepted], null, null, 0.05);
+			}
+			Assert.same([], midHandshake, "a read during the handshake was not -1 (client, server)");
+			Assert.isTrue(@:privateAccess client.handshakeDone && @:privateAccess accepted.handshakeDone, "the handshake did not finish");
+			Assert.isTrue(passes > 1, "the handshake finished in one pass, so no read met it waiting");
+
+			// What the server sent after its handshake -- a TLS 1.3 session
+			// ticket -- carries nothing for the client to read.
+			Socket.select([client], null, null, 0.5);
+			Assert.equals(-1, @:privateAccess client.__tryRead(buffer, 0, buffer.length), "a read of what follows the handshake was not -1");
+
+			Assert.equals(5, @:privateAccess client.__tryWrite(Bytes.ofString("hello"), 0, 5));
+			Assert.equals(5, readWithin(accepted, buffer, 5.0), "the server read nothing");
+			Assert.equals("hello", buffer.getString(0, 5));
+			Assert.equals(-1, @:privateAccess accepted.__tryRead(buffer, 0, buffer.length), "a dry session's read was not -1");
+
+			Assert.equals(5, @:privateAccess accepted.__tryWrite(Bytes.ofString("world"), 0, 5));
+			Assert.equals(5, readWithin(client, buffer, 5.0), "the client read nothing");
+			Assert.equals("world", buffer.getString(0, 5));
+			Assert.equals(-1, @:privateAccess client.__tryRead(buffer, 0, buffer.length), "a dry session's read was not -1");
+
+			// A blocking socket whose read times out reads as "would block",
+			// as the standard surface throws Blocked for it.
+			client.setBlocking(true);
+			client.setTimeout(0.2);
+			Assert.equals(-1, @:privateAccess client.__tryRead(buffer, 0, buffer.length), "a read that timed out was not -1");
+			var timedOut:Dynamic = null;
+			try {
+				client.input.readBytes(buffer, 0, buffer.length);
+			} catch (e:Dynamic) {
+				timedOut = e;
+			}
+			Assert.isTrue(BlockedError.isBlocked(timedOut), "input's read that timed out threw " + Std.string(timedOut));
+
+			client.close();
+			Socket.select([accepted], null, null, 5.0);
+			Assert.equals(0, @:privateAccess accepted.__tryRead(buffer, 0, buffer.length), "the end of a TLS stream was not 0");
+		} catch (e:Dynamic) {
+			Assert.fail("a TLS transfer threw " + Std.string(e));
+		}
+
+		closeQuietly(accepted);
+		closeQuietly(client);
+		closeQuietly(listener);
+	}
+
+	/**
+		A peer that does not speak TLS is a failure, which throws, on either
+		side: it is no "would block", which would wait on it for good, and no
+		end of the stream.
+	**/
+	public function testATlsTransferWithAPeerSpeakingPlainTextThrows():Void {
+		var fixture = TLSTestFixture.selfSigned();
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
+			return;
+		}
+
+		var buffer = Bytes.alloc(256);
+
+		// A TLS server read by a plain client's request.
+		var listener = new crossbyte._internal.socket.AlpnSocket();
+		var plain = new Socket();
+		var accepted:sys.ssl.Socket = null;
+		var serverError:Dynamic = null;
+		try {
+			listener.verifyCert = false;
+			listener.setCertificate(@:privateAccess fixture.certificate.__native, @:privateAccess fixture.key.__native);
+			listener.bind(new Host(LOOPBACK), 0);
+			listener.listen(1);
+			plain.connect(new Host(LOOPBACK), listener.host().port);
+			plain.output.writeString("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+			Socket.select([listener], null, null, 5.0);
+			accepted = cast listener.accept();
+			accepted.setBlocking(false);
+			Socket.select([accepted], null, null, 5.0);
+			try {
+				var read:Int = @:privateAccess accepted.__tryRead(buffer, 0, buffer.length);
+				serverError = "answered " + read;
+			} catch (e:Dynamic) {
+				serverError = e;
+			}
+		} catch (e:Dynamic) {
+			Assert.fail("could not set the server case up: " + Std.string(e));
+		}
+		Assert.isFalse(serverError == null || Std.string(serverError).indexOf("answered") == 0, "a TLS server's read of plain text did not throw: " + Std.string(serverError));
+		Assert.isFalse(BlockedError.isBlocked(serverError), "a TLS server's read of plain text was taken for would-block");
+		closeQuietly(accepted);
+		closeQuietly(plain);
+		closeQuietly(listener);
+
+		// A TLS client read by a plain server's answer.
+		var plainListener = new Socket();
+		var client = new crossbyte._internal.socket.AlpnSocket();
+		var plainAccepted:Socket = null;
+		var clientError:Dynamic = null;
+		try {
+			plainListener.bind(new Host(LOOPBACK), 0);
+			plainListener.listen(1);
+			client.verifyCert = false;
+			client.setBlocking(false);
+			try {
+				client.connect(new Host(LOOPBACK), plainListener.host().port);
+			} catch (e:Dynamic) {
+				if (!BlockedError.isBlocked(e)) {
+					throw e;
+				}
+			}
+			plainAccepted = plainListener.accept();
+			plainAccepted.output.writeString("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
+			Socket.select([client], null, null, 5.0);
+			try {
+				var read:Int = @:privateAccess client.__tryRead(buffer, 0, buffer.length);
+				clientError = "answered " + read;
+			} catch (e:Dynamic) {
+				clientError = e;
+			}
+		} catch (e:Dynamic) {
+			Assert.fail("could not set the client case up: " + Std.string(e));
+		}
+		Assert.isFalse(clientError == null || Std.string(clientError).indexOf("answered") == 0, "a TLS client's read of plain text did not throw: " + Std.string(clientError));
+		Assert.isFalse(BlockedError.isBlocked(clientError), "a TLS client's read of plain text was taken for would-block");
+		closeQuietly(plainAccepted);
+		closeQuietly(client);
+		closeQuietly(plainListener);
+	}
+
+	/** Reads what arrives within `seconds`: the first answer that is not -1. **/
+	static function readWithin(socket:Socket, buffer:Bytes, seconds:Float):Int {
+		var deadline:Float = haxe.Timer.stamp() + seconds;
+		while (true) {
+			var read:Int = @:privateAccess socket.__tryRead(buffer, 0, buffer.length);
+			if (read != -1 || haxe.Timer.stamp() >= deadline) {
+				return read;
+			}
+			Socket.select([socket], null, null, 0.05);
+		}
+	}
+	#end
+
 	static function connectedPair():Null<TransferPair> {
 		var listener = new Socket();
 		var client = new Socket();
