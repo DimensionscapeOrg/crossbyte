@@ -192,6 +192,60 @@ class ServerWebSocketSpreadTest extends utest.Test {
 	}
 
 	/**
+		On Linux, `reusePort`: each runtime listens for itself, and each
+		session opens on the runtime whose listener the kernel chose.
+	**/
+	@:timeout(60000)
+	public function testReusePortOpensSessionsOnEachRuntime():Void {
+		if (!SpreadSupport.reusePortExpected()) {
+			Assert.pass();
+			return;
+		}
+
+		var acceptor:CrossByte = SpreadSupport.runtime();
+		var first:CrossByte = SpreadSupport.runtime();
+		var second:CrossByte = SpreadSupport.runtime();
+		var opened:Deque<Arrival> = new Deque();
+
+		var server:ServerWebSocket = SpreadSupport.on(acceptor, () -> {
+			var server = new ServerWebSocket();
+			server.reusePort = true;
+			server.runtimes = [first, second];
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, e -> opened.add(Arrival.of(e.socket)));
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			return server;
+		});
+
+		var clients:Array<sys.net.Socket> = [];
+		for (_ in 0...20) {
+			var client = WebSocketWire.open(server.localPort);
+			if (client != null) {
+				clients.push(client);
+			}
+		}
+		Assert.equals(20, clients.length, "sessions were not all upgraded");
+
+		var held:Array<Int> = [0, 0];
+		for (_ in 0...20) {
+			var arrival = SpreadSupport.pop(opened, WAIT);
+			if (arrival != null) {
+				var index:Int = [first, second].indexOf(arrival.runtime);
+				if (index >= 0 && arrival.thread == arrival.runtime.__ownerThread) {
+					held[index]++;
+				}
+			}
+		}
+		Assert.equals(20, held[0] + held[1], "a session opened off the runtime that accepted it");
+		Assert.isTrue(held[0] > 0 && held[1] > 0, 'the kernel gave one runtime every session: $held');
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.clientCount == 20, WAIT));
+
+		SpreadSupport.closeAll(clients);
+		SpreadSupport.on(acceptor, () -> server.close());
+		SpreadSupport.stop([acceptor, first, second]);
+	}
+
+	/**
 		`maxPendingHandshakes` counts the sessions still upgrading on every
 		runtime together, and `handshakeFailures` those that ran out of time
 		on any of them.

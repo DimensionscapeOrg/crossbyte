@@ -33,6 +33,50 @@ using StringTools;
 @:access(crossbyte.net.ServerSocket)
 @:access(crossbyte.net.Socket)
 class ServerSpreadTest extends utest.Test {
+	#if nodejs
+	/**
+		Node runs every runtime on its one thread, so there is nothing to
+		spread a server over: each way of asking is refused, saying so, and
+		asking for none is not.
+	**/
+	public function testNodeRefusesToSpreadAServer():Void {
+		var server = new ServerSocket();
+		var refused:Int = 0;
+		try {
+			server.runtimes = [CrossByte.current()];
+		} catch (_:crossbyte.errors.IllegalOperationError) {
+			refused++;
+		}
+		try {
+			server.runtimeCount = 2;
+		} catch (_:crossbyte.errors.IllegalOperationError) {
+			refused++;
+		}
+		try {
+			server.reusePort = true;
+		} catch (_:crossbyte.errors.IllegalOperationError) {
+			refused++;
+		}
+		server.runtimeCount = 0;
+		server.runtimes = null;
+		Assert.equals(3, refused, "Node took a server spread over runtimes");
+		Assert.isNull(server.runtimes);
+		Assert.equals(0, server.runtimeCount);
+
+		// An HTTPServer told to spread refuses as it is made, before it listens.
+		var config = new crossbyte.http.HTTPServerConfig("127.0.0.1", 0);
+		config.runtimeCount = 2;
+		var threw:Bool = false;
+		try {
+			var made = new crossbyte.http.HTTPServer(config);
+			made.close();
+		} catch (_:crossbyte.errors.IllegalOperationError) {
+			threw = true;
+		}
+		Assert.isTrue(threw, "Node made an HTTPServer spread over runtimes");
+	}
+	#end
+
 	#if target.threaded
 	private static inline var WAIT:Float = 10.0;
 
