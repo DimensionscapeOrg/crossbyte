@@ -1900,6 +1900,16 @@ entry below says how:
 - A statement's text is split at its placeholders once and kept, where it
   was copied a character at a time on every run, placeholder or none:
   a SELECT with no placeholder costs 32-42 ns there instead of 240-410.
+- Choosing a response's content coding reads the request's `Accept-Encoding`
+  once and keeps it with the connection, rather than splitting and
+  lowercasing it, and building a map and four anonymous options, for every
+  response that might be compressed -- and again for a static file's
+  precompressed sibling. Media types and field names are compared without
+  case rather than lowercased, the kept compressed bodies are a list moved
+  in constant time rather than scanned on every hit, and a lookup no longer
+  builds its key. Each is under a microsecond and too small to see beside
+  the file system calls of a compressed static file (162 us of CPU after,
+  160 before).
 - The HTTP server asks the system about a static file once: whether it is
   there, a directory, its size and modification time, in one call (one
   `stat` and an exact size natively, one `readAttributes` on the jvm, one

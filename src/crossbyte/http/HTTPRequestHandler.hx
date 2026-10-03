@@ -156,6 +156,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __onResponded:Null<(HTTPRequestHandler, Int) -> Void> = null;
 	// What the resolver found at a request's own path; see RewriteEngine.decide.
 	@:noCompletion private final __seen:FileSeen = new FileSeen();
+	// The Accept-Encoding the connection last sent, as read; see __acceptedCodings.
+	@:noCompletion private var __acceptedFrom:Null<String> = null;
+	@:noCompletion private var __accepted:Null<AcceptedCodings> = null;
 	@:noCompletion private var __scanA:Int = -1;
 	@:noCompletion private var __scanB:Int = -1;
 	@:noCompletion private var __scanC:Int = -1;
@@ -1579,7 +1582,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		// A refusal of every coding is the ordinary path's to answer, 406.
 		// Kept once encoded, so Brotli first.
-		var decision:ResponseEncodingDecision = __resolveResponseEncoding(200, baseHeaders, false, true);
+		var decision:EncodingChoice = __resolveResponseEncoding(200, baseHeaders, false, true);
 		if (decision.encoding == null) {
 			return false;
 		}
@@ -1638,37 +1641,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 	**/
 	@:noCompletion private function __servePrecompressed(file:File, mimeType:String, baseHeaders:Array<URLRequestHeader>, modified:Float,
 			headOnly:Bool):Bool {
-		var accept:Null<String> = getHeader("accept-encoding");
-		if (accept == null) {
+		var accepted:Null<AcceptedCodings> = __acceptedCodings();
+		if (accepted == null) {
 			return false;
 		}
 
-		var brotli:Float = -1;
-		var gzip:Float = -1;
-		var anything:Float = -1;
-		for (raw in accept.split(",")) {
-			var parts:Array<String> = raw.split(";");
-			var token:String = StringTools.trim(parts[0]).toLowerCase();
-			var q:Float = 1.0;
-			for (i in 1...parts.length) {
-				var param:String = StringTools.trim(parts[i]).toLowerCase();
-				if (StringTools.startsWith(param, "q=")) {
-					var parsed:Float = Std.parseFloat(StringTools.trim(param.substring(2)));
-					q = (parsed != parsed || parsed < 0 || parsed > 1) ? 0 : parsed;
-					break;
-				}
-			}
-			if (token == HTTPContentCoding.BR) {
-				brotli = q;
-			} else if (token == HTTPContentCoding.GZIP) {
-				gzip = q;
-			} else if (token == AcceptEncoding.DEFAULT) {
-				anything = q;
-			}
-		}
-		if (gzip < 0) {
-			gzip = anything;
-		}
+		var brotli:Float = accepted.br;
+		var gzip:Float = accepted.gzip >= 0 ? accepted.gzip : accepted.any;
 
 		var brotliFirst:Bool = brotli >= gzip;
 		for (pass in 0...2) {
@@ -3309,7 +3288,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private static function __weakenETags(fields:Array<URLRequestHeader>):Void {
 		for (i in 0...fields.length) {
 			var field:URLRequestHeader = fields[i];
-			if (field == null || field.name == null || field.name.toLowerCase() != "etag" || field.value == null) {
+			if (field == null || field.name == null || !HttpSyntax.equalsIgnoreCase(field.name, "ETag") || field.value == null) {
 				continue;
 			}
 			var value:String = StringTools.trim(field.value);
@@ -3330,11 +3309,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 		       800 compressed responses a second. A kept body is encoded once,
 		       so it goes as Brotli, the smallest.
 	**/
-	@:noCompletion private function __resolveResponseEncoding(statusCode:Int, headers:Array<URLRequestHeader>, streamable:Bool = false, kept:Bool = false):ResponseEncodingDecision {
+	@:noCompletion private function __resolveResponseEncoding(statusCode:Int, headers:Array<URLRequestHeader>, streamable:Bool = false,
+			kept:Bool = false):EncodingChoice {
 		// A body that is already encoded -- a PHP script's under
 		// zlib.output_compression, a route's own gzip -- is not encoded again.
 		if (statusCode == 206 || __hasResponseHeader(headers, "Content-Range") || __hasResponseHeader(headers, "Content-Encoding")) {
-			return {encoding: null, reject: false};
+			return EncodingChoice.NONE;
 		}
 
 		// A 406 is itself the negotiation failure and always ships
@@ -3343,97 +3323,66 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// builder -> 406 -> builder without bound: one request header
 		// ("Accept-Encoding: identity;q=0") was a stack overflow.
 		if (statusCode == 406) {
-			return {encoding: null, reject: false};
+			return EncodingChoice.NONE;
 		}
 
-		var acceptEncoding:String = getHeader("accept-encoding");
-		if (acceptEncoding == null || StringTools.trim(acceptEncoding) == "") {
-			return {encoding: null, reject: false};
+		var accepted:Null<AcceptedCodings> = __acceptedCodings();
+		if (accepted == null) {
+			return EncodingChoice.NONE;
 		}
 
-		var explicitQ:Map<String, Float> = new Map();
-		var bestEncoding:Null<CompressionAlgorithm> = null;
-		var identityAllowed:Bool = true;
-		var hasIdentityToken:Bool = false;
-
-		for (raw in acceptEncoding.split(",")) {
-			var token:String = StringTools.trim(raw);
-			if (token == "") {
-				continue;
-			}
-
-			var q:Float = 1.0;
-			var parts = token.split(";");
-			token = StringTools.trim(parts[0]);
-			if (parts.length > 1) {
-				for (i in 1...parts.length) {
-					var param = StringTools.trim(parts[i]).toLowerCase();
-					if (StringTools.startsWith(param, "q=")) {
-						var qValue = StringTools.trim(param.substring(2));
-						var parsed = Std.parseFloat(qValue);
-						q = (parsed != parsed || parsed < 0 || parsed > 1) ? 0 : parsed;
-						break;
-					}
-				}
-			}
-
-			token = token.toLowerCase();
-			explicitQ.set(token, q);
-			switch (token) {
-				case HTTPContentCoding.GZIP:
-				case HTTPContentCoding.BR:
-				case HTTPContentCoding.DEFLATE:
-				case HTTPContentCoding.LZ4:
-				case HTTPContentCoding.IDENTITY:
-					hasIdentityToken = true;
-					if (q <= 0) {
-						identityAllowed = false;
-					}
-				default:
-			}
-		}
-
-		var wildcardQ:Float = explicitQ.exists(AcceptEncoding.DEFAULT) ? explicitQ.get(AcceptEncoding.DEFAULT) : -1;
-		var bestQ:Float = -1;
 		// For a streamed body, only the codings that can be flushed a chunk at
-		// a time.
-		var supported = streamable ? [
-			{name: HTTPContentCoding.GZIP, algorithm: CompressionAlgorithm.GZIP},
-			{name: HTTPContentCoding.DEFLATE, algorithm: CompressionAlgorithm.ZLIB}
-		] : (kept || crossbyte._internal.brotli.Brotli.isNativeAvailable()) ? [
-			{name: HTTPContentCoding.BR, algorithm: CompressionAlgorithm.BROTLI},
-			{name: HTTPContentCoding.GZIP, algorithm: CompressionAlgorithm.GZIP},
-			{name: HTTPContentCoding.DEFLATE, algorithm: CompressionAlgorithm.ZLIB},
-			{name: HTTPContentCoding.LZ4, algorithm: CompressionAlgorithm.LZ4}
-		] : [
-			// First among equals wins: see `kept`.
-			{name: HTTPContentCoding.GZIP, algorithm: CompressionAlgorithm.GZIP},
-			{name: HTTPContentCoding.DEFLATE, algorithm: CompressionAlgorithm.ZLIB},
-			{name: HTTPContentCoding.BR, algorithm: CompressionAlgorithm.BROTLI},
-			{name: HTTPContentCoding.LZ4, algorithm: CompressionAlgorithm.LZ4}
-		];
+		// a time. Otherwise first among equals wins: see `kept`. The lists are
+		// made once; four anonymous objects and their list were made here for
+		// every response, and the decision too.
+		var supported:Array<CodingOption> = streamable ? CodingOption.STREAMED : (kept || crossbyte._internal.brotli.Brotli.isNativeAvailable()) ? CodingOption.BROTLI_FIRST : CodingOption.GZIP_FIRST;
 
+		var best:Null<CodingOption> = null;
+		var bestQ:Float = -1;
 		for (option in supported) {
-			if (option.name == HTTPContentCoding.BR && !explicitQ.exists(option.name)) {
+			var explicit:Float = accepted.of(option.algorithm);
+			// Brotli only when named, never through "*".
+			if (option.algorithm == CompressionAlgorithm.BROTLI && explicit < 0) {
 				continue;
 			}
 
-			var q = explicitQ.exists(option.name) ? explicitQ.get(option.name) : wildcardQ;
+			var q:Float = explicit >= 0 ? explicit : accepted.any;
 			if (q > 0 && q > bestQ) {
 				bestQ = q;
-				bestEncoding = option.algorithm;
+				best = option;
 			}
 		}
 
-		if (bestEncoding != null) {
-			return {encoding: bestEncoding, reject: false};
+		if (best != null) {
+			return best.choice;
 		}
 
-		if (hasIdentityToken && !identityAllowed) {
-			return {encoding: null, reject: true};
+		// "identity;q=0" and nothing else this server writes.
+		if (accepted.identityRefused) {
+			return EncodingChoice.REJECT;
 		}
 
-		return {encoding: null, reject: false};
+		return EncodingChoice.NONE;
+	}
+
+	/**
+		The request's `Accept-Encoding` as read, or null when it has none (or
+		an empty one). Read once for the value a connection last sent and kept
+		with it: a client sends the same one on every request, and it was split
+		and lowercased piece by piece, a map of it built, for every response
+		that might be compressed, and again for a static file's precompressed
+		sibling.
+	**/
+	@:noCompletion private function __acceptedCodings():Null<AcceptedCodings> {
+		var header:Null<String> = getHeader("accept-encoding");
+		if (header == null) {
+			return null;
+		}
+		if (header != __acceptedFrom) {
+			__accepted = AcceptedCodings.read(header);
+			__acceptedFrom = header;
+		}
+		return __accepted;
 	}
 
 	@:noCompletion private function __encodingToHeaderValue(algorithm:CompressionAlgorithm):Null<String> {
@@ -3453,9 +3402,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return false;
 		}
 
-		var needle = name.toLowerCase();
+		// Compared without regard to case, rather than lowercased: every field's
+		// name was lowercased, five times a compressible response.
 		for (header in headers) {
-			if (header != null && header.name != null && header.name.toLowerCase() == needle) {
+			if (header != null && header.name != null && HttpSyntax.equalsIgnoreCase(header.name, name)) {
 				return true;
 			}
 		}
@@ -4757,8 +4707,128 @@ private final class ContainedRoot {
 	}
 }
 
-typedef ResponseEncodingDecision = {
-	var encoding:Null<CompressionAlgorithm>;
-	var reject:Bool;
+/**
+	What a response may be encoded with: a coding, none, or none acceptable
+	(answered `406`). Made once each and shared: an anonymous object was made
+	for each decision. Was the public `ResponseEncodingDecision` typedef, which
+	nothing outside this file used.
+**/
+private final class EncodingChoice {
+	public static final NONE:EncodingChoice = new EncodingChoice(null, false);
+	public static final REJECT:EncodingChoice = new EncodingChoice(null, true);
+
+	public final encoding:Null<CompressionAlgorithm>;
+	public final reject:Bool;
+
+	public function new(encoding:Null<CompressionAlgorithm>, reject:Bool) {
+		this.encoding = encoding;
+		this.reject = reject;
+	}
+}
+
+/** A coding this server writes, and the choice of it. */
+private final class CodingOption {
+	static final GZIP:CodingOption = new CodingOption(CompressionAlgorithm.GZIP);
+	static final DEFLATE:CodingOption = new CodingOption(CompressionAlgorithm.ZLIB);
+	static final BR:CodingOption = new CodingOption(CompressionAlgorithm.BROTLI);
+	static final LZ4:CodingOption = new CodingOption(CompressionAlgorithm.LZ4);
+
+	/** What a body written as it goes may be: flushed a chunk at a time. */
+	public static final STREAMED:Array<CodingOption> = [GZIP, DEFLATE];
+
+	/** For a body kept once encoded, or with native Brotli: the smallest first. */
+	public static final BROTLI_FIRST:Array<CodingOption> = [BR, GZIP, DEFLATE, LZ4];
+
+	/** For a body encoded once and sent: the fastest first. */
+	public static final GZIP_FIRST:Array<CodingOption> = [GZIP, DEFLATE, BR, LZ4];
+
+	public final algorithm:CompressionAlgorithm;
+	public final choice:EncodingChoice;
+
+	function new(algorithm:CompressionAlgorithm) {
+		this.algorithm = algorithm;
+		this.choice = new EncodingChoice(algorithm, false);
+	}
+}
+
+/**
+	An `Accept-Encoding` value, read: the `q` of each coding this server
+	knows, `-1` where it is not named.
+**/
+private final class AcceptedCodings {
+	public var gzip:Float = -1;
+	public var deflate:Float = -1;
+	public var br:Float = -1;
+	public var lz4:Float = -1;
+	public var identity:Float = -1;
+	public var any:Float = -1;
+
+	/** Whether any `identity` token said `q=0`. */
+	public var identityRefused:Bool = false;
+
+	function new() {}
+
+	/** The `q` named for `algorithm`, or `-1`. */
+	public function of(algorithm:CompressionAlgorithm):Float {
+		return switch (algorithm) {
+			case CompressionAlgorithm.GZIP: gzip;
+			case CompressionAlgorithm.ZLIB: deflate;
+			case CompressionAlgorithm.BROTLI: br;
+			case CompressionAlgorithm.LZ4: lz4;
+			default: -1;
+		}
+	}
+
+	/**
+		Reads `header`. Each token's coding is lowercased and its `q` read from
+		its parameters (anything not a number from 0 to 1 is 0); a coding named
+		twice takes its last `q`.
+	**/
+	public static function read(header:String):Null<AcceptedCodings> {
+		if (StringTools.trim(header) == "") {
+			return null;
+		}
+		var read:AcceptedCodings = new AcceptedCodings();
+		for (raw in header.split(",")) {
+			var token:String = StringTools.trim(raw);
+			if (token == "") {
+				continue;
+			}
+
+			var q:Float = 1.0;
+			var parts = token.split(";");
+			token = StringTools.trim(parts[0]);
+			if (parts.length > 1) {
+				for (i in 1...parts.length) {
+					var param = StringTools.trim(parts[i]).toLowerCase();
+					if (StringTools.startsWith(param, "q=")) {
+						var parsed = Std.parseFloat(StringTools.trim(param.substring(2)));
+						q = (parsed != parsed || parsed < 0 || parsed > 1) ? 0 : parsed;
+						break;
+					}
+				}
+			}
+
+			switch (token.toLowerCase()) {
+				case HTTPContentCoding.GZIP:
+					read.gzip = q;
+				case HTTPContentCoding.DEFLATE:
+					read.deflate = q;
+				case HTTPContentCoding.BR:
+					read.br = q;
+				case HTTPContentCoding.LZ4:
+					read.lz4 = q;
+				case HTTPContentCoding.IDENTITY:
+					read.identity = q;
+					if (q <= 0) {
+						read.identityRefused = true;
+					}
+				case AcceptEncoding.DEFAULT:
+					read.any = q;
+				default:
+			}
+		}
+		return read;
+	}
 }
 #end
