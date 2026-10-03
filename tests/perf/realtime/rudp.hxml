@@ -1,0 +1,12 @@
+# Reliable UDP game-server load, measured on the server (see RudpLoad.hx).
+# Build: HXCPP_COMPILE_THREADS=4 haxe tests/perf/realtime/rudp.hxml
+# Run:   export/perf-rt/rudp/RudpLoad.exe sessions=1000 rate=30 seconds=10
+# A/B:   build-ab.ps1 builds any main of this folder with a class path of
+#        files as they were (before-from.ps1) after -cp src; run-ab.ps1 and
+#        run-rudp.ps1 run builds interleaved.
+-cp tests/perf/realtime
+-cp src
+-D windows
+-D HXCPP_M64
+-main RudpLoad
+--cpp export/perf-rt/rudp
