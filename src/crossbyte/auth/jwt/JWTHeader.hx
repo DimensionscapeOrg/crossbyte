@@ -1,6 +1,5 @@
 package crossbyte.auth.jwt;
 
-@:structInit
 /** Typed view over the standard JWT header fields. */
 abstract JWTHeader(JWTHeaderData) {
 	/** Signature algorithm (`alg`) used by the token. */
@@ -76,11 +75,18 @@ abstract JWTHeader(JWTHeaderData) {
 		return new JWTHeader(d);
 }
 
-/** Raw data shape encoded into a JWT header segment. */
-typedef JWTHeaderData = {
-	var alg:JWTAlgorithm;
+/**
+ * Raw data shape encoded into a JWT header segment. Written as an object
+ * literal, `{alg: HS256, typ: "JWT"}`; the members a literal leaves out are
+ * `null`.
+ */
+@:structInit
+final class JWTHeaderData {
+	public var alg:JWTAlgorithm;
+
 	/** Optional: AWS Cognito, Sign in with Apple and RFC 8037's own examples send none. */
-	@:optional var typ:String;
-	@:optional var kid:String;
-	@:optional var cty:String;
+	public var typ:Null<String> = null;
+
+	public var kid:Null<String> = null;
+	public var cty:Null<String> = null;
 }

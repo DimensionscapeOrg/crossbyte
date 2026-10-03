@@ -47,7 +47,9 @@ class MongoCursor {
 	@:noCompletion private var __maxTimeMS:Int;
 	@:noCompletion private var __closed:Bool = false;
 
-	@:noCompletion public function new(connection:MongoConnection, id:Int64, namespace:String, batch:Array<Dynamic>, batchSize:Int, maxTimeMS:Int) {
+	// Made by the connection whose cursor it is, from the server's reply.
+	@:allow(crossbyte.db.mongodb.MongoConnection)
+	private function new(connection:MongoConnection, id:Int64, namespace:String, batch:Array<Dynamic>, batchSize:Int, maxTimeMS:Int) {
 		__connection = connection;
 		this.id = id;
 		this.namespace = namespace == null ? "" : namespace;

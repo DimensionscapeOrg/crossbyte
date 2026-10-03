@@ -6,22 +6,11 @@ import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
 
 /**
- * What one query returned, before anything has decided which columns are text.
- *
- * Values are bytes, not strings: a `bytea` column and a `text` column holding
- * invalid UTF-8 both have to survive the trip, and the driver's JSON result
- * path could carry neither.
+ * Where `PostgresRawResult` was declared before it became a class of its
+ * own, `crossbyte.db.postgres.PostgresRawResult`; kept so the old import
+ * still names it.
  */
-typedef PostgresRawResult = {
-	var fields:Array<String>;
-	var rows:Array<Array<Null<Bytes>>>;
-
-	/** Rows the statement changed, or a SELECT returned: exact to 2^53. **/
-	var affectedRows:Float;
-
-	/** `PQoidValue`: an unsigned 32-bit OID, 0 on PostgreSQL 12 and later. **/
-	var lastInsertRowID:Float;
-}
+typedef PostgresRawResult = crossbyte.db.postgres.PostgresRawResult;
 
 /**
  * The byte protocol between `PostgresConnection` and the libpq bridge.
@@ -110,6 +99,105 @@ class PostgresWire {
 	 */
 	public static function decodeResult(data:Bytes):PostgresRawResult {
 		var cursor:Cursor = new Cursor(data);
+		var head:Head = __head(cursor);
+		var fieldCount:Int = head.fields.length;
+		var rows:Array<Array<Null<Bytes>>> = [];
+
+		for (_ in 0...head.rowCount) {
+			var row:Array<Null<Bytes>> = [];
+
+			for (_ in 0...fieldCount) {
+				var length:Int = cursor.readInt();
+				row.push(length < 0 ? null : cursor.readBytes(length));
+			}
+
+			rows.push(row);
+		}
+
+		return {
+			fields: head.fields,
+			rows: rows,
+			affectedRows: head.affectedRows,
+			lastInsertRowID: head.lastInsertRowID,
+			command: __command(cursor)
+		};
+	}
+
+	/**
+		Decodes what the bridge returned for `request()`, each row made an
+		object with a field per column holding its text, or `null` for NULL:
+		with fixed slots, from the builder `shapes` keeps for the columns
+		(see `AnonBuilder`). Each value is decoded once, from the block, with
+		no `Bytes` made for it.
+
+		The bridge rendered `request()`'s rows as JSON, column names repeated
+		in every row, and Haxe parsed it: 2.3-3.1 µs a row of 8 columns, where
+		this block took 0.38-0.63 (the audit's PostgresPerf).
+	**/
+	public static function decodeRows(data:Bytes, shapes:Array<crossbyte._internal.AnonBuilder>):PostgresRows {
+		var cursor:Cursor = new Cursor(data);
+		var head:Head = __head(cursor);
+		var fieldCount:Int = head.fields.length;
+		var shape:crossbyte._internal.AnonBuilder = crossbyte._internal.AnonBuilder.recent(shapes, head.fields);
+		var rows:Array<Dynamic> = [];
+
+		for (_ in 0...head.rowCount) {
+			var row:Dynamic = shape.begin();
+
+			for (field in 0...fieldCount) {
+				var length:Int = cursor.readInt();
+
+				if (length < 0) {
+					shape.set(row, field, null);
+				} else {
+					shape.setString(row, field, cursor.readString(length));
+				}
+			}
+
+			rows.push(row);
+		}
+
+		return new PostgresRows(head.fields, rows, head.affectedRows, head.lastInsertRowID, __command(cursor));
+	}
+
+	/**
+		Reads what the bridge returned row by row, as `row` -- an `SQLRow`
+		over the block itself, moved on to each row in turn -- handing each to
+		`each`: `PostgresStatement.executeEach`. Nothing is made for a row or
+		a value until it is asked for. Answers the rows the statement changed
+		or returned.
+	**/
+	public static function eachRow(data:Bytes, each:crossbyte.db.sql.SQLRow->Void):Float {
+		var cursor:Cursor = new Cursor(data);
+		var head:Head = __head(cursor);
+		var row:PostgresBlockRow = new PostgresBlockRow(data, head.fields);
+
+		for (_ in 0...head.rowCount) {
+			row.__read(cursor);
+			each(row);
+		}
+
+		// What a write changed; a statement that returns rows changed none.
+		return head.fields.length > 0 ? 0 : head.affectedRows;
+	}
+
+	/** Raises the server's message when the block carries an error, as decoding it would. **/
+	public static function check(data:Bytes):Void {
+		var cursor:Cursor = new Cursor(data);
+		var status:Int = cursor.readInt();
+
+		if (status == STATUS_ERROR) {
+			var message:String = cursor.readBytes(cursor.readInt()).toString();
+			throw new SQLError("request", message, message);
+		}
+
+		if (status != STATUS_OK) {
+			throw new SQLError("request", 'status=$status', 'Postgres bridge returned an unknown status: $status.');
+		}
+	}
+
+	/** The block's status, counts and column names, raising its error. **/
+	@:noCompletion private static function __head(cursor:Cursor):Head {
 		var status:Int = cursor.readInt();
 
 		if (status == STATUS_ERROR) {
@@ -157,25 +245,17 @@ class PostgresWire {
 				"Postgres bridge claimed rows in a result with no columns.");
 		}
 
-		var rows:Array<Array<Null<Bytes>>> = [];
-
-		for (_ in 0...rowCount) {
-			var row:Array<Null<Bytes>> = [];
-
-			for (_ in 0...fieldCount) {
-				var length:Int = cursor.readInt();
-				row.push(length < 0 ? null : cursor.readBytes(length));
-			}
-
-			rows.push(row);
-		}
-
 		return {
 			fields: fields,
-			rows: rows,
+			rowCount: rowCount,
 			affectedRows: affectedRows,
 			lastInsertRowID: lastInsertRowID
 		};
+	}
+
+	/** The command tag after the rows, when the bridge sent one. **/
+	@:noCompletion private static function __command(cursor:Cursor):Null<String> {
+		return cursor.remaining() >= 4 ? cursor.readString(cursor.readInt()) : null;
 	}
 
 	/**
@@ -307,6 +387,35 @@ private class Cursor {
 		return out;
 	}
 
+	/** The next `length` bytes as UTF-8 text, made a string once, with no `Bytes` between. **/
+	public function readString(length:Int):String {
+		if (length < 0) {
+			throw new SQLError("request", 'length=$length', "Postgres bridge sent a negative length.");
+		}
+
+		__require(length);
+		var out:String = __data.getString(__position, length);
+		__position += length;
+		return out;
+	}
+
+	/** Steps over the next `length` bytes, which must be there. **/
+	public function skip(length:Int):Void {
+		if (length > 0) {
+			__require(length);
+			__position += length;
+		}
+	}
+
+	/** Where the next read starts. **/
+	public inline function position():Int {
+		return __position;
+	}
+
+	/** How many bytes are left to read. **/
+	public inline function remaining():Int {
+		return __data.length - __position;
+	}
 	private inline function __require(count:Int):Void {
 		// Measured against what is left, rather than by adding to the position.
 		// `__position + count` overflows Int for a large count and wraps
@@ -321,6 +430,129 @@ private class Cursor {
 		if (count > __data.length - __position) {
 			throw new SQLError("request", 'need=$count at=$__position of=${__data.length}',
 				"Postgres bridge returned a truncated result block.");
+		}
+	}
+}
+
+/** The part of a result block before its rows. **/
+@:structInit
+private class Head {
+	public var fields:Array<String>;
+	public var rowCount:Int;
+	public var affectedRows:Float;
+	public var lastInsertRowID:Float;
+}
+
+/** `request()`'s rows, decoded, with what the server said of the statement. **/
+@:noCompletion
+class PostgresRows {
+	public var fields(default, null):Array<String>;
+	public var rows(default, null):Array<Dynamic>;
+	public var affectedRows(default, null):Float;
+	public var lastInsertRowID(default, null):Float;
+	public var command(default, null):Null<String>;
+
+	public function new(fields:Array<String>, rows:Array<Dynamic>, affectedRows:Float, lastInsertRowID:Float, command:Null<String>) {
+		this.fields = fields;
+		this.rows = rows;
+		this.affectedRows = affectedRows;
+		this.lastInsertRowID = lastInsertRowID;
+		this.command = command;
+	}
+}
+
+/**
+	`SQLRow` over a result block, standing on one row at a time: where each of
+	its values starts in the block, and how long it is, -1 for NULL. Values
+	are the text the server sent; `getBytes` decodes a `bytea`'s `\x` hex.
+**/
+@:noCompletion
+@:allow(crossbyte.db.postgres._internal.PostgresWire)
+class PostgresBlockRow implements crossbyte.db.sql.SQLRow {
+	public var columnCount(get, never):Int;
+
+	@:noCompletion private var __data:Bytes;
+	@:noCompletion private var __fields:Array<String>;
+	@:noCompletion private var __starts:Array<Int>;
+	@:noCompletion private var __lengths:Array<Int>;
+
+	@:noCompletion private function new(data:Bytes, fields:Array<String>) {
+		__data = data;
+		__fields = fields;
+		__starts = [for (_ in fields) 0];
+		__lengths = [for (_ in fields) -1];
+	}
+
+	/** Moves on to the row `cursor` is at, and past it. **/
+	@:noCompletion private function __read(cursor:Cursor):Void {
+		for (i in 0...__fields.length) {
+			var length:Int = cursor.readInt();
+			__starts[i] = cursor.position();
+			__lengths[i] = length;
+			cursor.skip(length);
+		}
+	}
+
+	private function get_columnCount():Int {
+		return __fields.length;
+	}
+
+	public function columnName(index:Int):String {
+		__check(index);
+		return __fields[index];
+	}
+
+	public function isNull(index:Int):Bool {
+		__check(index);
+		return __lengths[index] < 0;
+	}
+
+	public function getInt(index:Int):Int {
+		var text:Null<String> = getString(index);
+
+		if (text == null) {
+			return 0;
+		}
+
+		var parsed:Null<Int> = Std.parseInt(text);
+		return parsed == null ? 0 : parsed;
+	}
+
+	public function getFloat(index:Int):Float {
+		var text:Null<String> = getString(index);
+
+		if (text == null) {
+			return 0.0;
+		}
+
+		var parsed:Float = Std.parseFloat(text);
+		return Math.isNaN(parsed) ? 0.0 : parsed;
+	}
+
+	public function getBool(index:Int):Bool {
+		var text:Null<String> = getString(index);
+		return !(text == null || text == "" || text == "0" || text == "f" || text == "false");
+	}
+
+	public function getString(index:Int):Null<String> {
+		__check(index);
+		var length:Int = __lengths[index];
+		return length < 0 ? null : __data.getString(__starts[index], length);
+	}
+
+	public function getBytes(index:Int):Null<Bytes> {
+		__check(index);
+		var length:Int = __lengths[index];
+		return length < 0 ? null : PostgresWire.decodeByteaHex(__data.sub(__starts[index], length));
+	}
+
+	public function getValue(index:Int):Dynamic {
+		return getString(index);
+	}
+
+	@:noCompletion private inline function __check(index:Int):Void {
+		if (index < 0 || index >= __fields.length) {
+			throw new crossbyte.errors.RangeError('Column $index of ${__fields.length}.');
 		}
 	}
 }

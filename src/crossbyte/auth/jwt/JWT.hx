@@ -1,9 +1,10 @@
 package crossbyte.auth.jwt;
 
 import haxe.io.Bytes;
-import haxe.crypto.Base64;
 import haxe.Json;
+import crossbyte._internal.Utf8;
 import crossbyte._internal.serial.JsonNesting;
+import crossbyte.auth.jwt._internal.Base64Url;
 import crossbyte.auth.jwt._internal.sign.IJWTSigner;
 import crossbyte.auth.jwt._internal.sign.HS256Signer;
 import crossbyte.auth.jwt._internal.sign.Ed25519Signer;
@@ -36,7 +37,7 @@ using StringTools;
  * argument, and `UNKNOWN_KEY` is the cue to fetch it again.
  */
 class JWT {
-	@:noCompletion private var __signer:IJWTSigner;
+	@:noCompletion private var __keys:JWTKeys;
 
 	/** The issuer a token's `iss` has to be. `null` leaves `iss` unchecked. */
 	public var expectedIssuer:String;
@@ -92,7 +93,7 @@ class JWT {
 	}
 
 	@:noCompletion private function new(signer:IJWTSigner) {
-		this.__signer = signer;
+		this.__keys = new JWTKeys(signer);
 	}
 
 	/**
@@ -105,7 +106,7 @@ class JWT {
 	 * @throws String When `spec` is invalid, as `make` does.
 	 */
 	public function updateKeys(spec:JWTSigner):Void {
-		__signer = __signerFor(spec);
+		__keys = new JWTKeys(__signerFor(spec));
 	}
 
 	/**
@@ -119,12 +120,12 @@ class JWT {
 	 *         one, such as `JWKSet.signer` makes.
 	 */
 	public function generateToken(payload:JWTPayload):String {
-		var signer:IJWTSigner = __signer;
-		var header:JWTHeader = JWTHeader.make(signer.algorithm, signer.signKeyId, "JWT");
-		var headerStr:String = base64UrlEncodeString(Json.stringify(header.toData()));
-		var payloadStr:String = base64UrlEncodeString(Json.stringify(__claimsToWrite(payload.toData())));
-		var signature:String = signer.sign(headerStr + "." + payloadStr, header.keyId);
-		return headerStr + "." + payloadStr + "." + signature;
+		// One read: the header and the key that signs under it are swapped
+		// together.
+		var keys:JWTKeys = __keys;
+		var claims:String = Base64Url.encode(Utf8.bytesOf(Json.stringify(__claimsToWrite(payload.toData()))));
+		var input:String = keys.header + "." + claims;
+		return input + "." + keys.signer.sign(input, keys.signer.signKeyId);
 	}
 
 	/**
@@ -166,99 +167,150 @@ class JWT {
 			return JWTVerification.refused(TOO_LARGE);
 		}
 
-		var parts = token.split('.');
-		if (parts.length != 3) {
+		// The three segments, found in place: the token is not split into
+		// substrings, nor its signing input put back together from them.
+		var headerEnd:Int = token.indexOf(".");
+		var inputEnd:Int = headerEnd < 0 ? -1 : token.indexOf(".", headerEnd + 1);
+		if (inputEnd < 0 || token.indexOf(".", inputEnd + 1) >= 0) {
 			return JWTVerification.refused(MALFORMED);
 		}
 
-		// Bounded: the header is parsed before the signature is checked, so it
-		// is the part anyone can write. See MAX_NESTING.
-		var header:Null<Dynamic> = __decodeObject(parts[0], MAX_NESTING);
-		if (header == null) {
-			return JWTVerification.refused(MALFORMED);
-		}
-
-		// One read of the signer: updateKeys may swap it meanwhile, and a
+		// One read of the keys: updateKeys may swap them meanwhile, and a
 		// verification uses one set of keys throughout.
-		var signer:IJWTSigner = __signer;
+		var signer:IJWTSigner = __keys.signer;
 
-		var alg:Dynamic = Reflect.field(header, "alg");
-		if (!Std.isOfType(alg, String) || !__isSupported(alg)) {
-			return JWTVerification.refused(UNSUPPORTED_ALGORITHM);
-		}
-		if ((alg : String) != (signer.algorithm : String)) {
-			return JWTVerification.refused(ALGORITHM_MISMATCH);
+		// A header seen before in a token that verified is not decoded again:
+		// what it says is kept, and every check that depends on this
+		// verifier's settings or keys is made again below.
+		var known:Null<JWTHeaderSeen> = __headerSeen(token, headerEnd);
+		var alg:String;
+		var typ:Null<String>;
+		var kid:Null<String>;
+
+		if (known != null) {
+			alg = known.alg;
+			typ = known.typ;
+			kid = known.kid;
+			if (alg != (signer.algorithm : String)) {
+				return JWTVerification.refused(ALGORITHM_MISMATCH);
+			}
+			if (!__typeAccepted(typ)) {
+				return JWTVerification.refused(TYPE_NOT_ACCEPTED);
+			}
+		} else {
+			// Bounded: the header is parsed before the signature is checked, so
+			// it is the part anyone can write. See MAX_NESTING.
+			var header:Null<Dynamic> = __decodeObject(token, 0, headerEnd, MAX_NESTING);
+			if (header == null) {
+				return JWTVerification.refused(MALFORMED);
+			}
+
+			var algValue:Dynamic = Reflect.field(header, "alg");
+			if (!Std.isOfType(algValue, String) || !__isSupported(algValue)) {
+				return JWTVerification.refused(UNSUPPORTED_ALGORITHM);
+			}
+			alg = algValue;
+			if (alg != (signer.algorithm : String)) {
+				return JWTVerification.refused(ALGORITHM_MISMATCH);
+			}
+
+			// RFC 7515 4.1.11: the extensions `crit` names are ones the token
+			// may not be accepted without, and none is implemented here. It was
+			// ignored, so a token with `"b64":false` -- its payload unencoded
+			// -- was read as though its payload were base64url.
+			if (Reflect.hasField(header, "crit")) {
+				return JWTVerification.refused(UNSUPPORTED_CRITICAL);
+			}
+
+			var typValue:Dynamic = Reflect.field(header, "typ");
+			if (typValue != null && !Std.isOfType(typValue, String)) {
+				return JWTVerification.refused(MALFORMED);
+			}
+			typ = typValue;
+			if (!__typeAccepted(typ)) {
+				return JWTVerification.refused(TYPE_NOT_ACCEPTED);
+			}
+
+			var kidValue:Dynamic = Reflect.field(header, "kid");
+			if (kidValue != null && !Std.isOfType(kidValue, String)) {
+				return JWTVerification.refused(MALFORMED);
+			}
+			kid = kidValue;
 		}
 
-		// RFC 7515 4.1.11: the extensions `crit` names are ones the token may
-		// not be accepted without, and none is implemented here. It was
-		// ignored, so a token with `"b64":false` -- its payload unencoded --
-		// was read as though its payload were base64url.
-		if (Reflect.hasField(header, "crit")) {
-			return JWTVerification.refused(UNSUPPORTED_CRITICAL);
-		}
-
-		var typ:Dynamic = Reflect.field(header, "typ");
-		if (typ != null && !Std.isOfType(typ, String)) {
-			return JWTVerification.refused(MALFORMED);
-		}
-		if (!__typeAccepted(typ)) {
-			return JWTVerification.refused(TYPE_NOT_ACCEPTED);
-		}
-
-		var kid:Dynamic = Reflect.field(header, "kid");
-		if (kid != null && !Std.isOfType(kid, String)) {
-			return JWTVerification.refused(MALFORMED);
-		}
 		if (!signer.hasKey(kid)) {
 			return JWTVerification.refused(UNKNOWN_KEY);
 		}
-		if (!signer.verify(parts[0] + "." + parts[1], parts[2], kid)) {
+		if (!signer.verifyToken(token, inputEnd, kid)) {
 			return JWTVerification.refused(BAD_SIGNATURE);
+		}
+		if (known == null) {
+			// Only now: a header is kept only once a token carrying it has been
+			// shown to come from a key holder, so a stream of forged headers
+			// cannot fill the list or push the real ones out.
+			__rememberHeader(token.substring(0, headerEnd), alg, typ, kid);
 		}
 
 		// Unbounded: parsed only once the signature has shown the issuer wrote
 		// them. Measuring them too cost a typical token's verification 2%.
-		var claims:Null<Dynamic> = __decodeObject(parts[1], 0);
-		if (claims == null || !__registeredClaimsWellTyped(claims)) {
+		var claims:Null<Dynamic> = __decodeObject(token, headerEnd + 1, inputEnd, 0);
+		if (claims == null) {
 			return JWTVerification.refused(MALFORMED);
 		}
-		var payload:JWTPayload = JWTPayload.ofData(claims);
+
+		// The registered claims, read once and checked for the JSON types RFC
+		// 7519 gives them: strings for `sub`, `name`, `iss` and `jti`, numbers
+		// for the times. Checked here, so the payload's typed properties
+		// cannot hand back, say, an Int as a String -- which the jvm answers
+		// with a cast exception -- and read the field with no check of their
+		// own. A missing or non-numeric `exp` is MISSING_EXPIRY.
+		var issuerValue:Dynamic = Reflect.field(claims, "iss");
+		if (!__isTextOrNull(Reflect.field(claims, "sub")) || !__isTextOrNull(Reflect.field(claims, "name")) || !__isTextOrNull(issuerValue)
+			|| !__isTextOrNull(Reflect.field(claims, "jti"))) {
+			return JWTVerification.refused(MALFORMED);
+		}
+		var issuedAtValue:Dynamic = Reflect.field(claims, "iat");
+		var issuedAt:Float = __seconds(issuedAtValue);
+		var notBeforeValue:Dynamic = Reflect.field(claims, "nbf");
+		var notBefore:Float = __seconds(notBeforeValue);
+		if ((issuedAtValue != null && Math.isNaN(issuedAt)) || (notBeforeValue != null && Math.isNaN(notBefore))) {
+			return JWTVerification.refused(MALFORMED);
+		}
+		var expiresAt:Float = __seconds(Reflect.field(claims, "exp"));
+		if (Math.isNaN(expiresAt)) {
+			return JWTVerification.refused(MISSING_EXPIRY);
+		}
 
 		// Float throughout: a time past 2038 does not fit an Int, and one near
 		// the limit plus the leeway wrapped where an Int is 32 bits.
 		var nowSec:Float = now != null ? now : Date.now().getTime() / 1000;
-		var expiresAt:Null<Float> = payload.expiresAt;
-		if (expiresAt == null) {
-			return JWTVerification.refused(MISSING_EXPIRY);
-		}
 		if (nowSec > expiresAt + leeway) {
 			return JWTVerification.refused(EXPIRED);
 		}
-		var issuedAt:Null<Float> = payload.issuedAt;
-		if (issuedAt != null && (nowSec + leeway) < issuedAt) {
+		if (issuedAtValue != null && (nowSec + leeway) < issuedAt) {
 			return JWTVerification.refused(ISSUED_IN_FUTURE);
 		}
-		var notBefore:Null<Float> = payload.notBeforeTime;
-		if (notBefore != null && (nowSec + leeway) < notBefore) {
+		if (notBeforeValue != null && (nowSec + leeway) < notBefore) {
 			return JWTVerification.refused(NOT_YET_VALID);
 		}
 
-		if (expectedIssuer != null && payload.issuer != expectedIssuer) {
+		var issuer:Null<String> = issuerValue;
+		if (expectedIssuer != null && issuer != expectedIssuer) {
 			return JWTVerification.refused(WRONG_ISSUER);
 		}
+		var audience:JWTAudience = Reflect.field(claims, "aud");
 		if (expectedAudience != null) {
-			if (!__audMatches(expectedAudience, payload.audience)) {
+			if (!audience.contains(expectedAudience)) {
 				return JWTVerification.refused(WRONG_AUDIENCE);
 			}
-		} else if (payload.audience != null) {
+		} else if (audience != null) {
 			// RFC 7519 4.1.3: a recipient that does not identify itself with a
 			// value in `aud` must reject the token. One minted for another
 			// service the issuer and key serve was accepted here.
 			return JWTVerification.refused(WRONG_AUDIENCE);
 		}
 
-		return JWTVerification.accepted(payload);
+		return JWTVerification.accepted(JWTPayload.ofData(claims));
 	}
 
 	@:noCompletion private static function __signerFor(spec:JWTSigner):IJWTSigner {
@@ -275,6 +327,36 @@ class JWT {
 			case ES256(pubKeys, privKey, signKeyId):
 				new PkSigner(JWTAlgorithm.ES256, pubKeys, privKey, signKeyId);
 		};
+	}
+
+	/**
+		Headers of tokens that verified, by their encoded text. Replaced, never
+		changed in place, so a verification on another thread reads either the
+		old list or the new one; a header two threads add at once may be kept
+		once rather than twice, which costs only a decode. At most
+		`__HEADERS_KEPT`: an issuer signs under a key id or two at a time, and
+		a full list starts again from the newest.
+	**/
+	@:noCompletion private var __headers:Array<JWTHeaderSeen> = [];
+
+	@:noCompletion private static inline var __HEADERS_KEPT:Int = 8;
+
+	@:noCompletion private function __headerSeen(token:String, headerEnd:Int):Null<JWTHeaderSeen> {
+		var headers:Array<JWTHeaderSeen> = __headers;
+		for (i in 0...headers.length) {
+			var seen:JWTHeaderSeen = headers[i];
+			if (seen.segment.length == headerEnd && StringTools.startsWith(token, seen.segment)) {
+				return seen;
+			}
+		}
+		return null;
+	}
+
+	@:noCompletion private function __rememberHeader(segment:String, alg:String, typ:Null<String>, kid:Null<String>):Void {
+		var headers:Array<JWTHeaderSeen> = __headers;
+		var next:Array<JWTHeaderSeen> = headers.length < __HEADERS_KEPT ? headers.copy() : [];
+		next.push(new JWTHeaderSeen(segment, alg, typ, kid));
+		__headers = next;
 	}
 
 	@:noCompletion private static function __isSupported(alg:String):Bool {
@@ -345,32 +427,30 @@ class JWT {
 		return (code >= "A".code && code <= "Z".code) ? code + 32 : code;
 	}
 
-	/**
-	 * The registered claims with the JSON types RFC 7519 gives them, where
-	 * present: strings for `sub`, `name`, `iss` and `jti`, numbers for `iat`
-	 * and `nbf`. A missing or non-numeric `exp` is `MISSING_EXPIRY` instead.
-	 * Checked so the typed properties of the payload cannot hand back, say, an
-	 * `Int` as a `String`, which the jvm answers with a cast exception.
-	 */
-	@:noCompletion private static function __registeredClaimsWellTyped(claims:Dynamic):Bool {
-		for (field in __STRING_CLAIMS) {
-			var value:Dynamic = Reflect.field(claims, field);
-			if (value != null && !Std.isOfType(value, String)) {
-				return false;
-			}
-		}
-		for (field in __TIME_CLAIMS) {
-			var value:Dynamic = Reflect.field(claims, field);
-			if (value != null && JWTPayload.seconds(value) == null) {
-				return false;
-			}
-		}
-		return true;
+	@:noCompletion private static inline function __isTextOrNull(value:Dynamic):Bool {
+		return value == null || Std.isOfType(value, String);
 	}
 
-	// Made once: an array literal in the loop above is an allocation per token.
-	@:noCompletion private static final __STRING_CLAIMS:Array<String> = ["sub", "name", "iss", "jti"];
-	@:noCompletion private static final __TIME_CLAIMS:Array<String> = ["iat", "nbf"];
+	/**
+		Seconds since the epoch from a claim as JSON gives it -- an `Int` or a
+		`Float` depending on the target and the size of the number -- or NaN
+		when it is absent or not a finite number. NaN rather than `null`, which
+		natively boxes the number in an allocation.
+	**/
+	@:noCompletion private static function __seconds(value:Dynamic):Float {
+		return switch (Type.typeof(value)) {
+			// `+ 0.0` rather than a typed assignment: on the interpreter a
+			// Float variable given an Int keeps Int arithmetic, and the leeway
+			// added to 2147483647 would wrap.
+			case TInt: (value : Int) + 0.0;
+			case TFloat:
+				var number:Float = value;
+				Math.isFinite(number) ? number : Math.NaN;
+			default: Math.NaN;
+		}
+	}
+
+	// Made once: an array literal in the loop below is an allocation per token.
 	@:noCompletion private static final __WRITTEN_TIME_CLAIMS:Array<String> = ["iat", "exp", "nbf"];
 
 	/**
@@ -409,12 +489,20 @@ class JWT {
 	@:noCompletion private static inline var MAX_NESTING:Int = 32;
 
 	/**
-		Decodes one segment into a JSON object, or null for anything else --
-		including JSON nested deeper than `maxNesting`, when that is above 0.
+		Decodes the segment of `token` from `start` to `end` into a JSON
+		object, or null for anything else -- including JSON nested deeper
+		than `maxNesting`, when that is above 0.
 	**/
-	@:noCompletion private static function __decodeObject(segment:String, maxNesting:Int):Null<Dynamic> {
-		var text:Null<String> = safeBase64UrlDecodeString(segment);
+	@:noCompletion private static function __decodeObject(token:String, start:Int, end:Int, maxNesting:Int):Null<Dynamic> {
+		var text:Null<String> = Base64Url.decodeText(token, start, end);
 		if (text == null) {
+			return null;
+		}
+
+		// An object or nothing: JSON whose first character is `{` parses to an
+		// object or not at all. Asked of the text, where four type tests of
+		// the parsed value asked it after the work of parsing.
+		if (!__opensObject(text)) {
 			return null;
 		}
 
@@ -426,54 +514,33 @@ class JWT {
 			return null;
 		}
 
-		var value:Dynamic;
 		try {
-			value = Json.parse(text);
+			return Json.parse(text);
 		} catch (_:Dynamic) {
 			return null;
 		}
-
-		if (value == null || Std.isOfType(value, String) || Std.isOfType(value, Float) || Std.isOfType(value, Bool) || Std.isOfType(value, Array)) {
-			return null;
-		}
-		return value;
 	}
 
-	@:noCompletion private static function __audMatches(expected:String, aud:Dynamic):Bool {
-		if (aud == null) {
-			return false;
-		}
-		if (Std.isOfType(aud, String)) {
-			return (cast aud : String) == expected;
-		}
-		if (Std.isOfType(aud, Array)) {
-			var arr:Array<Dynamic> = cast aud;
-			for (v in arr) {
-				if (Std.isOfType(v, String) && (cast v : String) == expected) {
+	/** Whether `text`'s first character past JSON's whitespace is `{`. **/
+	@:noCompletion private static function __opensObject(text:String):Bool {
+		for (i in 0...text.length) {
+			switch (StringTools.fastCodeAt(text, i)) {
+				case " ".code, "\t".code, "\n".code, "\r".code:
+				case "{".code:
 					return true;
-				}
+				default:
+					return false;
 			}
-			return false;
 		}
 		return false;
 	}
 
 	public static inline function base64UrlEncodeString(s:String):String {
-		return base64UrlEncodeBytes(Bytes.ofString(s));
-	}
-
-	@:noCompletion private static inline function __stripPad(s:String):String {
-		var i:Int = s.length, eq = '='.code;
-		while (i > 0 && s.charCodeAt(i - 1) == eq) {
-			i--;
-		}
-		return s.substr(0, i);
+		return Base64Url.encode(Utf8.bytesOf(s));
 	}
 
 	public static inline function base64UrlEncodeBytes(b:Bytes):String {
-		var s:String = Base64.encode(b);
-		s = s.split("+").join("-").split("/").join("_");
-		return __stripPad(s);
+		return Base64Url.encode(b);
 	}
 
 	/**
@@ -502,21 +569,7 @@ class JWT {
 	 * does.
 	 */
 	public static function safeBase64UrlDecodeString(s:String):Null<String> {
-		var b64:String = s.split("-").join("+").split("_").join("/");
-		switch (b64.length % 4) {
-			case 2:
-				b64 += "==";
-			case 3:
-				b64 += "=";
-			case 0:
-			case 1:
-				return null;
-		}
-		try {
-			return Base64.decode(b64).toString();
-		} catch (_:Dynamic) {
-			return null;
-		}
+		return s == null ? null : Base64Url.decodeText(s, 0, s.length);
 	}
 
 	/**
@@ -543,5 +596,47 @@ class JWT {
 			diff |= ca ^ cb;
 		}
 		return (aLen == bLen) && (diff == 0);
+	}
+}
+
+/**
+	What a header that verified said, by its encoded text: `alg`, a string
+	`JWT` verifies; `typ` and `kid`, strings or null; and no `crit`.
+**/
+@:noCompletion
+private final class JWTHeaderSeen {
+	/** The header as the token carried it, encoded. **/
+	public final segment:String;
+
+	public final alg:String;
+	public final typ:Null<String>;
+	public final kid:Null<String>;
+
+	public function new(segment:String, alg:String, typ:Null<String>, kid:Null<String>) {
+		this.segment = segment;
+		this.alg = alg;
+		this.typ = typ;
+		this.kid = kid;
+	}
+}
+
+/**
+	A signer and the header segment it signs under, made once: `updateKeys`
+	swaps the two together, so no token pairs one signer's header with
+	another's key. The header was serialized and encoded again for every
+	token. It is `{"alg":..,"typ":"JWT","kid":..}`, in that order on every
+	target; its members' order followed each target's objects before.
+**/
+@:noCompletion
+private final class JWTKeys {
+	public final signer:IJWTSigner;
+	public final header:String;
+
+	public function new(signer:IJWTSigner) {
+		this.signer = signer;
+		var keyId:Null<String> = signer.signKeyId;
+		var json:String = '{"alg":' + Json.stringify((signer.algorithm : String)) + ',"typ":"JWT"'
+			+ (keyId != null ? ',"kid":' + Json.stringify(keyId) : "") + "}";
+		header = Base64Url.encode(Utf8.bytesOf(json));
 	}
 }

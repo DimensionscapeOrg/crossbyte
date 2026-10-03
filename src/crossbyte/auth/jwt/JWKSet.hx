@@ -1,6 +1,7 @@
 package crossbyte.auth.jwt;
 
 import crossbyte._internal.serial.JsonNesting;
+import crossbyte.auth.jwt._internal.Base64Url;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
 
@@ -14,9 +15,13 @@ import haxe.io.Bytes;
  * it *can* use — at exactly the moment it needs them. Refusing silently
  * is worse, so they are reported.
  */
-typedef IgnoredKey = {
-	var kid:Null<String>;
-	var reason:String;
+@:structInit
+final class IgnoredKey {
+	/** The key's `kid`, or `null` when it had none. */
+	public var kid:Null<String> = null;
+
+	/** Why the key cannot be used. */
+	public var reason:String;
 }
 
 /**
@@ -296,11 +301,7 @@ class JWKSet {
 			return null;
 		}
 
-		try {
-			var bytes:Bytes = haxe.crypto.Base64.decode(JWT.normalizeBase64Url(encoded));
-			return bytes.length == 0 ? null : bytes;
-		} catch (_:Dynamic) {
-			return null;
-		}
+		var bytes:Null<Bytes> = Base64Url.decode(encoded, 0, encoded.length);
+		return bytes == null || bytes.length == 0 ? null : bytes;
 	}
 }

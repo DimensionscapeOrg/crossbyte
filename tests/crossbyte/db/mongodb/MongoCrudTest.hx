@@ -2,6 +2,7 @@ package crossbyte.db.mongodb;
 
 #if (sys && !js)
 import crossbyte.db.mongodb.FakeMongoServer.ReceivedCommand;
+import crossbyte.db.mongodb._internal.BsonWriter;
 import crossbyte.db.mongodb.bson.BsonDateTime;
 import crossbyte.db.mongodb.bson.BsonDocument;
 import crossbyte.db.mongodb.bson.BsonInt64;
@@ -184,6 +185,7 @@ class MongoCrudTest extends utest.Test {
 		var upsert:MongoWriteResult = connection.update("people", {last: "Knuth"}, {"$set": {first: "Donald"}}, {upsert: true});
 		Assert.equals(0, upsert.matched);
 		Assert.equals(1, upsert.upserted.length);
+		Assert.isTrue(Std.isOfType(upsert.upserted[0], MongoWriteResult.MongoUpserted));
 		Assert.equals(0, upsert.upserted[0].index);
 		Assert.isTrue(Std.isOfType(upsert.upserted[0].id, ObjectId));
 		Assert.equals(upsert.upserted[0].id, connection.lastInsertId);
@@ -241,6 +243,44 @@ class MongoCrudTest extends utest.Test {
 		Assert.equals(true, specs[2].get("unique"));
 	}
 
+	public function testHintsAndCollationsGoOutAsDocuments():Void {
+		__start();
+		server.seed("app.people", [__person(1, "Muller", "Anna", 30)]);
+
+		connection.find("people", {last: "muller"}, {hint: {last: 1}, collation: {locale: "de", strength: 1, numericOrdering: true}}).toArray();
+		connection.count("people", null, {hint: "last_1"});
+		connection.update("people", {last: "Muller"}, {"$set": {seen: true}}, {
+			hint: new BsonDocument().add("last", 1).add("first", 1),
+			collation: {locale: "de", strength: 2}
+		});
+		connection.delete("people", {last: "nobody"}, {collation: {locale: "fr", backwards: true}});
+		connection.aggregate("people", [{"$match": {}}], {collation: {locale: "sv"}}).toArray();
+		connection.createIndexes("people", [{key: {last: 1}, collation: {locale: "de", caseFirst: "upper"}}]);
+
+		var find:BsonDocument = server.commands("find")[0].body;
+		Assert.same(["last"], (find.get("hint") : BsonDocument).keys());
+		var collation:BsonDocument = find.get("collation");
+		// Only the fields set, in the order MongoDB documents them.
+		Assert.same(["locale", "strength", "numericOrdering"], collation.keys());
+		Assert.equals("de", collation.get("locale"));
+		Assert.equals(1, collation.get("strength"));
+		Assert.equals(true, collation.get("numericOrdering"));
+
+		Assert.equals("last_1", server.commands("count")[0].body.get("hint"));
+
+		var update:BsonDocument = (server.commands("update")[0].body.get("updates") : Array<Dynamic>)[0];
+		Assert.same(["last", "first"], (update.get("hint") : BsonDocument).keys());
+		Assert.same(["locale", "strength"], (update.get("collation") : BsonDocument).keys());
+
+		var delete:BsonDocument = (server.commands("delete")[0].body.get("deletes") : Array<Dynamic>)[0];
+		Assert.same(["locale", "backwards"], (delete.get("collation") : BsonDocument).keys());
+
+		Assert.equals("sv", (server.commands("aggregate")[0].body.get("collation") : BsonDocument).get("locale"));
+
+		var spec:BsonDocument = server.indexes("app.people")[0];
+		Assert.equals("upper", (spec.get("collation") : BsonDocument).get("caseFirst"));
+	}
+
 	public function testDropAnswersWhetherThereWasACollection():Void {
 		__start();
 		connection.insert("scratch", [{x: 1}]);
@@ -265,6 +305,7 @@ class MongoCrudTest extends utest.Test {
 		Assert.equals(MongoError.DUPLICATE_KEY, ordered.errorID);
 		Assert.equals("DuplicateKey", ordered.codeName);
 		Assert.equals(1, ordered.writeErrors.length);
+		Assert.isTrue(Std.isOfType(ordered.writeErrors[0], MongoError.MongoWriteError));
 		Assert.equals(1, ordered.writeErrors[0].index);
 		// Stopped at the failure: one stored before it, none after.
 		Assert.equals(1, ordered.result.inserted);
@@ -627,6 +668,56 @@ class MongoCrudTest extends utest.Test {
 		Assert.equals("1,2 3,4 5+", pages.join(" "));
 	}
 
+	public function testRepliesAreAnonymousObjectsCarryingTheirSequences():Void {
+		// The connection decodes every reply into anonymous objects, never
+		// into BsonDocuments: the branches MongoWire and MongoStatement kept
+		// for one were never taken, and are gone.
+		__start();
+		var reply:Dynamic = connection.runCommand({ping: 1});
+		Assert.isFalse(Std.isOfType(reply, BsonDocument));
+		Assert.isTrue(BsonWriter.isPlainObject(reply));
+
+		// A reply with a document sequence beside its body: the sequence is
+		// an array field of the body, its documents plain too.
+		var next:Int = @:privateAccess connection.__wire.__requestId + 1;
+		var writer:BsonWriter = new BsonWriter();
+		writer.int32(0);
+		writer.int32(5);
+		writer.int32(next);
+		writer.int32(2013);
+		writer.int32(0);
+		writer.byte(0);
+		writer.document(new BsonDocument().add("ok", 1));
+		writer.byte(1);
+		var sequence:Int = writer.length;
+		writer.int32(0);
+		writer.cstring("items");
+		writer.document(new BsonDocument().add("n", 1));
+		writer.document(new BsonDocument().add("n", 2));
+		writer.patchInt32(sequence, writer.length - sequence);
+		writer.patchInt32(0, writer.length);
+		server.rawNext("ping", writer.toBytes());
+
+		var carried:Dynamic = connection.runCommand({ping: 1});
+		Assert.isTrue(BsonWriter.isPlainObject(carried));
+		var items:Array<Dynamic> = carried.items;
+		Require.notNull(items);
+		Assert.equals(2, items.length);
+		Assert.equals(2, items[1].n);
+		Assert.isTrue(BsonWriter.isPlainObject(items[0]));
+
+		// A statement's one row for a command with no cursor is that reply,
+		// made an instance of itemClass like any document.
+		var statement = new MongoStatement();
+		statement.sqlConnection = connection;
+		statement.itemClass = PingReply;
+		statement.text = '{"ping": 1}';
+		statement.execute();
+		var row:Dynamic = Require.notNull(statement.getResult()).data[0];
+		Assert.isTrue(Std.isOfType(row, PingReply));
+		Assert.equals(1, (row : PingReply).ok);
+	}
+
 	private function __start(?config:MongoConfig):Void {
 		server.start();
 		var cfg:MongoConfig = config == null ? {} : config;
@@ -640,5 +731,12 @@ class MongoCrudTest extends utest.Test {
 	private static function __person(id:Int, last:String, first:String, age:Int):BsonDocument {
 		return new BsonDocument().add("_id", id).add("last", last).add("first", first).add("age", age);
 	}
+}
+
+/** A ping's reply, as a statement's itemClass. **/
+class PingReply {
+	public var ok:Dynamic;
+
+	public function new() {}
 }
 #end

@@ -120,7 +120,7 @@ typedef MongoWriteConcern = {
 		`0` asks for no acknowledgement at all: the write is sent and not
 		waited for, and its result reads `acknowledged: false`.
 	**/
-	@:optional var w:Dynamic;
+	@:optional var w:MongoW;
 
 	/** Wait for the write to reach the on-disk journal. **/
 	@:optional var journal:Bool;
@@ -128,3 +128,10 @@ typedef MongoWriteConcern = {
 	/** Milliseconds to wait for `w` members before reporting a write concern error. **/
 	@:optional var wtimeout:Int;
 }
+
+/**
+	A write concern's `w`: how many members must apply a write, or a tag
+	such as `"majority"`. A config loaded from JSON holds whatever the JSON
+	did; the server refuses anything else.
+**/
+abstract MongoW(Dynamic) from Int from String to Dynamic {}

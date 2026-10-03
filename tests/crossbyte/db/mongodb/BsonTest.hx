@@ -1,5 +1,6 @@
 package crossbyte.db.mongodb;
 
+import crossbyte.db.mongodb._internal.BsonReader;
 import crossbyte.db.mongodb._internal.BsonWriter;
 import crossbyte.db.mongodb.bson.Bson;
 import crossbyte.db.mongodb.bson.BsonBinary;
@@ -413,6 +414,142 @@ class BsonTest extends utest.Test {
 		for (i in 0...names.length) {
 			Assert.equals(i, Reflect.field(back.wide, names[i]));
 		}
+	}
+
+	public function testDocumentsOfOneShapeReadBackExactly():Void {
+		// Enough documents of one shape, at two depths, and decoded more than
+		// once by one reader, that hxcpp makes them with fixed slots from the
+		// second on; an Int64 beside a Float in each, which a widening array
+		// on the way would turn into a double.
+		var wide:Int64 = Int64.parseString("9007199254740993");
+		var items:Array<Dynamic> = [];
+
+		for (i in 0...20) {
+			items.push(new BsonDocument()
+				.add("id", i)
+				.add("wide", wide)
+				.add("half", 0.5 + i)
+				.add("name", "n" + i)
+				.add("none", null)
+				.add("inner", new BsonDocument().add("x", i).add("y", "y" + i)));
+		}
+
+		var bytes:Bytes = Bson.encode(new BsonDocument().add("items", items).add("ok", 1));
+		var reader:BsonReader = new BsonReader();
+		var bad:Int = 0;
+
+		for (_ in 0...3) {
+			var back:Dynamic = reader.readDocument(bytes, 0, bytes.length);
+			var list:Array<Dynamic> = back.items;
+			Assert.equals(20, list.length);
+			Assert.equals(1, back.ok);
+
+			for (i in 0...list.length) {
+				var doc:Dynamic = list[i];
+				var names:Array<String> = Reflect.fields(doc);
+				names.sort(Reflect.compare);
+
+				if (doc.id != i || Int64.toStr(doc.wide) != "9007199254740993" || doc.half != 0.5 + i || doc.name != "n" + i
+					|| !Reflect.hasField(doc, "none") || doc.none != null || doc.inner.x != i || doc.inner.y != "y" + i
+					|| names.join(",") != "half,id,inner,name,none,wide") {
+					bad++;
+				}
+			}
+		}
+
+		Assert.equals(0, bad, "documents read back other than written");
+
+		// They are ordinary objects: a field can be changed, added and removed.
+		var doc:Dynamic = (reader.readDocument(bytes, 0, bytes.length).items : Array<Dynamic>)[3];
+		doc.name = "changed";
+		Reflect.setField(doc, "extra", 7);
+		Assert.isTrue(Reflect.deleteField(doc, "id"));
+		Assert.equals("changed", doc.name);
+		Assert.equals(7, doc.extra);
+		Assert.isFalse(Reflect.hasField(doc, "id"));
+		Assert.equals(6, Reflect.fields(doc).length);
+		var again:Dynamic = Bson.decode(Bson.encode(doc));
+		Assert.equals("changed", again.name);
+		Assert.equals(7, again.extra);
+		Assert.equals("9007199254740993", Int64.toStr(again.wide));
+	}
+
+	public function testDocumentsOfChangingShapesReadBackExactly():Void {
+		var docs:Array<Dynamic> = [];
+
+		// The same names in two orders, alternating: two shapes.
+		for (i in 0...12) {
+			docs.push(i % 2 == 0 ? new BsonDocument().add("a", i).add("b", "x" + i) : new BsonDocument().add("b", "x" + i).add("a", i));
+		}
+
+		// A new shape every time, as a hostile server could send.
+		for (i in 0...12) {
+			docs.push(new BsonDocument().add("k" + i, i).add("v", i));
+		}
+
+		// A name repeated within a document: the last value wins.
+		for (i in 0...3) {
+			docs.push(new BsonDocument().add("dup", i).add("dup", i + 100));
+		}
+
+		// A name longer than the table interns, and more fields than a slot
+		// layout is made for.
+		var long:String = StringTools.lpad("", "l", 40);
+
+		for (i in 0...3) {
+			docs.push(new BsonDocument().add(long, i).add("s", i));
+		}
+
+		for (i in 0...3) {
+			var many:BsonDocument = new BsonDocument();
+
+			for (f in 0...70) {
+				many.add("f" + f, f + i);
+			}
+
+			docs.push(many);
+		}
+
+		// Empty ones.
+		for (_ in 0...3) {
+			docs.push(new BsonDocument());
+		}
+
+		var bytes:Bytes = Bson.encode(new BsonDocument().add("docs", docs));
+		var reader:BsonReader = new BsonReader();
+		var failures:Array<String> = [];
+
+		for (round in 0...2) {
+			var back:Array<Dynamic> = reader.readDocument(bytes, 0, bytes.length).docs;
+			Assert.equals(docs.length, back.length);
+
+			for (i in 0...back.length) {
+				var sent:BsonDocument = docs[i];
+				var got:Dynamic = back[i];
+				var expected:Map<String, Dynamic> = new Map();
+
+				for (k in 0...sent.length) {
+					expected.set(sent.keyAt(k), sent.valueAt(k));
+				}
+
+				var names:Array<String> = Reflect.fields(got);
+				var count:Int = 0;
+
+				for (name in expected.keys()) {
+					count++;
+
+					if (!Reflect.hasField(got, name) || Reflect.field(got, name) != expected.get(name)) {
+						failures.push('round $round document $i field $name');
+					}
+				}
+
+				if (names.length != count) {
+					failures.push('round $round document $i has ${names.length} fields, not $count');
+				}
+			}
+		}
+
+		Assert.same([], failures);
 	}
 
 	public function testOrderedDecodingKeepsTheStoredOrder():Void {
