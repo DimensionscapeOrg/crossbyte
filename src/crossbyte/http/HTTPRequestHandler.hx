@@ -12,6 +12,7 @@ import crossbyte.events.HTTPStatusEvent;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.ProgressEvent;
 import crossbyte.io.ByteArray;
+import crossbyte.io.ByteArray.ByteArrayData;
 import crossbyte.io.File;
 import crossbyte.io.FileMode;
 import crossbyte.io.FileStream;
@@ -780,13 +781,24 @@ final class HTTPRequestHandler extends EventDispatcher {
 				return;
 			}
 
-			headerLine = StringTools.trim(headerLine);
-			if (headerLine.length == 0) {
+			// The line's bounds found by index, and one string cut for the name
+			// and one for the value: it was trimmed whole, split, the name
+			// right-trimmed to compare and lowercased, and the value cut and
+			// trimmed, five or six strings a field.
+			var lineEnd:Int = headerLine.length;
+			while (lineEnd > 0 && StringTools.isSpace(headerLine, lineEnd - 1)) {
+				lineEnd--;
+			}
+			var lineStart:Int = 0;
+			while (lineStart < lineEnd && StringTools.isSpace(headerLine, lineStart)) {
+				lineStart++;
+			}
+			if (lineStart == lineEnd) {
 				break;
 			}
 
-			var sep:Int = headerLine.indexOf(":");
-			if (sep <= 0) {
+			var sep:Int = headerLine.indexOf(":", lineStart);
+			if (sep <= lineStart || sep >= lineEnd) {
 				// No field name at all. Skipping the line left this server and
 				// anything in front of it disagreeing about what the message
 				// contained, which is the same desync by a quieter route.
@@ -794,18 +806,21 @@ final class HTTPRequestHandler extends EventDispatcher {
 				return;
 			}
 
-			var name:String = headerLine.substr(0, sep);
 			// RFC 9112 5.1: no whitespace sits between a field name and its
 			// colon, and a server MUST answer 400 rather than trim it away.
 			// Accepting `Content-Length : 5` where a proxy rejects it is the
 			// same disagreement that obs-fold produces.
-			if (StringTools.rtrim(name) != name) {
+			if (StringTools.isSpace(headerLine, sep - 1)) {
 				__sendErrorResponse(400, "Bad Request");
 				return;
 			}
 
-			var key:String = name.toLowerCase();
-			var value:String = StringTools.trim(headerLine.substr(sep + 1));
+			var key:String = HttpSyntax.lowerAscii(headerLine.substring(lineStart, sep));
+			var valueStart:Int = sep + 1;
+			while (valueStart < lineEnd && StringTools.isSpace(headerLine, valueStart)) {
+				valueStart++;
+			}
+			var value:String = headerLine.substring(valueStart, lineEnd);
 
 			var first:Null<String> = __headers.get(key);
 			if (first == null) {
@@ -3331,29 +3346,39 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __readLine(buffer:ByteArray):Null<String> {
-		var startPos:UInt = buffer.position;
-		// A StringBuf rather than string concatenation: += allocated a new
-		// string per byte, which priced a header block at the square of its
-		// length. addChar keeps the original byte-for-byte semantics, each
-		// byte becomes one code point, no UTF-8 decoding, so header values
-		// carrying bytes above 0x7F read back exactly as they arrived.
-		var line:StringBuf = new StringBuf();
-		while (buffer.position < buffer.length) {
-			// Unsigned, which is the whole claim above. `readByte` carries
-			// Flash's sign extension, so 0xE9 arrives as -23 and `addChar`
-			// gets a negative code point: harmless on a target whose String is
-			// bytes, and a `RangeError: Invalid code point -23` thrown out of
-			// request parsing on Node. Any byte above 0x7F anywhere in a
-			// request line or header did it, a UTF-8 filename in a
-			// Content-Disposition, an accented Referer, a non-ASCII
-			// User-Agent.
-			var b:Int = buffer.readUnsignedByte();
-			line.addChar(b);
-			if (b == 10) {
+		// Read where the bytes lie, and the line cut out whole. It was read a
+		// byte at a time through `readUnsignedByte` into a StringBuf, two
+		// virtual calls and an append per byte: with the scan for the end of
+		// the block, which walked the same bytes the same way, a quarter of
+		// what an HTTP/1.1 request cost natively.
+		var data:ByteArrayData = buffer;
+		var from:Int = data.position;
+		var end:Int = data.length;
+		var ascii:Bool = true;
+		var i:Int = from;
+		while (i < end) {
+			var code:Int = data.get(i);
+			if (code == 10) {
+				data.position = i + 1;
+				if (ascii) {
+					return crossbyte._internal.Utf8.stringOf(data, from, i + 1 - from);
+				}
+				// A byte past 0x7F: each byte becomes one code point, no UTF-8
+				// decoding, so a header value carrying such bytes reads back
+				// exactly as it arrived. Unsigned: `readByte`'s sign extension
+				// gave `addChar` a negative code point, and Node threw a
+				// RangeError out of request parsing for an accented Referer.
+				var line:StringBuf = new StringBuf();
+				for (k in from...i + 1) {
+					line.addChar(data.get(k));
+				}
 				return line.toString();
 			}
+			if (code >= 0x80) {
+				ascii = false;
+			}
+			i++;
 		}
-		buffer.position = startPos;
 		return null;
 	}
 
@@ -3368,18 +3393,19 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * time. Measured at 7.6x on a 2 KB block arriving in 64-byte chunks.
 	 */
 	@:noCompletion private function __hasCompleteHeaderBlock(buffer:ByteArray):Bool {
-		var startPos:UInt = buffer.position;
+		// The bytes read where they lie: see __readLine.
+		var data:ByteArrayData = buffer;
 		var a:Int = __scanA;
 		var b:Int = __scanB;
 		var c:Int = __scanC;
+		var at:Int = __scanned;
+		var end:Int = data.length;
 
-		buffer.position = __scanned;
-
-		while (buffer.position < buffer.length) {
-			var d:Int = buffer.readByte();
+		while (at < end) {
+			var d:Int = data.get(at);
+			at++;
 
 			if ((a == 13 && b == 10 && c == 13 && d == 10) || (c == 10 && d == 10)) {
-				buffer.position = startPos;
 				__resetHeaderScan();
 				return true;
 			}
@@ -3392,8 +3418,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__scanA = a;
 		__scanB = b;
 		__scanC = c;
-		__scanned = buffer.length;
-		buffer.position = startPos;
+		__scanned = end;
 		return false;
 	}
 
