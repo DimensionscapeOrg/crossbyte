@@ -242,8 +242,17 @@ entry below says how:
   `Null<CompressionAlgorithm>`; `CompressionAlgorithm.fromString` answers
   that type.
 - A `TaskPool.submit` task's result is `Any`: cast it to read from it.
+- `Vector.sort` takes a comparator or nothing; `Vector.concat` takes
+  vectors, wrap an array or an item in a `Vector` first.
+- `EnumUtil.getValue` is an `Array<Dynamic>`; `getNameValuePair` and the
+  `KeyValuePair`s of `ListedMap`, `OrderedMap` and `Object.entries()` are
+  classes, so code that builds one from another anonymous type, rather than
+  a literal, constructs it instead.
 
 ### Added
+- `GlobalTimer.setTimeout` and `setInterval` take a `Void->Void` function by
+  an overload of their own, which calls it directly; the ActionScript form,
+  any function with arguments, is unchanged.
 - `TypedWorker<In, Out, Progress>`: a `Worker` whose run message, progress
   and result have types, with `onProgress` and `onComplete` handlers that
   receive them typed. `Worker` is `TypedWorker<Dynamic, Dynamic, Dynamic>`.
@@ -1454,6 +1463,30 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `crossbyte.Object` drops `@:generic`, which did nothing. `values()` and
+  `entries()` no longer make a closure, and `entries()` an anonymous object
+  per field. `Event.target`'s doc says how to read it typed.
+- `ListedMap.KeyValuePair` is a class, built from a `{key, value}` literal as
+  before and fitting where a `{key, value}` structure is asked for;
+  `OrderedMap.keyValuePairs()` and `Object.entries()` answer them.
+  `EnumUtil.getValue` is an `Array<Dynamic>`, where it was `Dynamic`, and
+  `EnumUtil.getNameValuePair` an `EnumNameValue` class.
+  `WeightedGraph.Edge`, what `getNeighbors` answers, is public.
+- `Vector`'s callbacks are `VectorCallback`s: any function of none to three
+  of `(item, index, vector)`, or an untyped `Function` as before. `sort` takes
+  an optional `(T, T) -> Int`, where it took `Dynamic` and threw for a value
+  that was not a function; `concat` takes vectors, as ActionScript's does,
+  where it took anything.
+- `Vector`'s `every`, `filter`, `forEach`, `map` and `some` call a callback
+  whose type says how many arguments it takes directly, where each call went
+  through `Reflect.callMethod` with an argument array: 12 ns an item
+  natively, where it cost 61 to 68, and 5 to 6 on Node, where it cost 12 to
+  15.
+- `SwitchTable.make` looks keys up typed when they are all `Int`s or all
+  `String`s, and makes each handler written as a function literal once
+  rather than on every dispatch: 71 to 77 ns a dispatch of sixteen `Int`
+  keys natively, where it cost 130 to 147. What reaches `otherwise` is
+  unchanged.
 - On the jvm, `File.modificationDate` reads one attribute: 20 us, where
   `FileSystem.stat`, which first asks for attributes Windows refuses with an
   exception, took 108 to 138.

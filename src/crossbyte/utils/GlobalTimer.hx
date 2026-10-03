@@ -71,7 +71,29 @@ final class GlobalTimer {
 		@returns	Unique numeric identifier for the timed process. Use this identifier
 		to cancel the process, by calling the `clearInterval()` method.
 	**/
-	public static function setInterval(closure:Function, delay:Int, args:Array<Dynamic> = null):UInt {
+	overload extern public static inline function setInterval(closure:Void->Void, delay:Int):UInt {
+		return __setIntervalVoid(closure, delay);
+	}
+
+	/**
+		`setInterval` for any function, called with `args`, as ActionScript's
+		takes it: through a dynamic call, and through reflection past four
+		arguments. A `Void->Void` function is taken by the overload above,
+		which calls it directly.
+	**/
+	overload extern public static inline function setInterval(closure:Function, delay:Int, args:Array<Dynamic> = null):UInt {
+		return __setInterval(closure, delay, args);
+	}
+
+	@:noCompletion private static function __setIntervalVoid(closure:Void->Void, delay:Int):UInt {
+		var id = __nextID();
+		var timer = new HxTimer(delay);
+		timer.run = closure;
+		__setTimer(id, timer);
+		return id;
+	}
+
+	@:noCompletion private static function __setInterval(closure:Function, delay:Int, args:Array<Dynamic>):UInt {
 		var id = __nextID();
 		var timer = new HxTimer(delay);
 		timer.run = __onInterval.bind(id, closure, args);
@@ -98,7 +120,29 @@ final class GlobalTimer {
 		@returns	Unique numeric identifier for the timed process. Use this identifier to
 		cancel the process, by calling the `clearTimeout()` method.
 	**/
-	public static function setTimeout(closure:Function, delay:Int, args:Array<Dynamic> = null):UInt {
+	overload extern public static inline function setTimeout(closure:Void->Void, delay:Int):UInt {
+		return __setTimeoutVoid(closure, delay);
+	}
+
+	/**
+		`setTimeout` for any function, called with `args`, as ActionScript's
+		takes it: through a dynamic call, and through reflection past four
+		arguments. A `Void->Void` function is taken by the overload above.
+	**/
+	overload extern public static inline function setTimeout(closure:Function, delay:Int, args:Array<Dynamic> = null):UInt {
+		return __setTimeout(closure, delay, args);
+	}
+
+	@:noCompletion private static function __setTimeoutVoid(closure:Void->Void, delay:Int):UInt {
+		var id = __nextID();
+		__setTimer(id, HxTimer.delay(() -> {
+			__removeTimer(id);
+			closure();
+		}, delay));
+		return id;
+	}
+
+	@:noCompletion private static function __setTimeout(closure:Function, delay:Int, args:Array<Dynamic>):UInt {
 		var id = __nextID();
 		__setTimer(id, HxTimer.delay(__onTimeout.bind(id, closure, args), delay));
 		return id;

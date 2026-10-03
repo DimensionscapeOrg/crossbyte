@@ -25,6 +25,11 @@ import crossbyte.errors.RangeError;
  * called with as many of `(item, index, vector)` as they take. They were
  * called with two and, if that threw, again with one and then none, so a
  * callback that threw was run a second time, missing its index.
+ *
+ * A callback is a `VectorCallback`: any function of none to three of those,
+ * typed, which is called directly. An untyped `Function` still works, and is
+ * called through reflection as before, as is any callback given a
+ * `thisObject`.
  */
 @:forward
 abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
@@ -39,6 +44,51 @@ abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
 	@:arrayAccess private inline function __arraySet(index:Int, value:T):T {
 		this.__set(index, value);
 		return value;
+	}
+}
+
+/**
+	A function `every`, `filter`, `forEach`, `map` and `some` call for each
+	item: one taking none to three of `(item, index, vector)`, returning `R`.
+	A function of a known arity converts to this on its own, and is then
+	called directly; an untyped `Function` converts too, and is called
+	through reflection with as many arguments as it takes.
+
+	These were all `Function`, called through `Reflect.callMethod` with an
+	argument array made per item: 64 ns an item where calling the function
+	takes 17.
+**/
+abstract VectorCallback<T, R>(Dynamic) {
+	@:from @:noCompletion private static inline function ofNone<T, R>(f:Void->R):VectorCallback<T, R> {
+		return cast new VectorCall(0, f);
+	}
+
+	@:from @:noCompletion private static inline function ofItem<T, R>(f:T->R):VectorCallback<T, R> {
+		return cast new VectorCall(1, f);
+	}
+
+	@:from @:noCompletion private static inline function ofItemIndex<T, R>(f:(T, Int)->R):VectorCallback<T, R> {
+		return cast new VectorCall(2, f);
+	}
+
+	@:from @:noCompletion private static inline function ofAll<T, R>(f:(T, Int, Vector<T>)->R):VectorCallback<T, R> {
+		return cast new VectorCall(3, f);
+	}
+
+	@:from @:noCompletion private static inline function ofFunction<T, R>(f:Function):VectorCallback<T, R> {
+		return cast new VectorCall(-1, f);
+	}
+}
+
+/** A callback and how many arguments it takes, or -1 when that is found by asking it. **/
+@:noCompletion
+final class VectorCall {
+	public final arity:Int;
+	public final callback:Dynamic;
+
+	public function new(arity:Int, callback:Dynamic) {
+		this.arity = arity;
+		this.callback = callback;
 	}
 }
 
@@ -82,29 +132,30 @@ class VectorImpl<T> {
 		return __array[key];
 	}
 
-	public function concat(...args:Dynamic):Vector<T> {
+	/**
+		A new vector of this one's items followed by each of `vectors`', as
+		ActionScript's `concat` takes them. It took anything, arrays and
+		lone items too, typed `Dynamic`, and sorted them out by testing
+		each one's type.
+	**/
+	public function concat(...vectors:Vector<T>):Vector<T> {
 		var out:Array<T> = __array.copy();
-		for (arg in args) {
-			if (Std.isOfType(arg, VectorImpl)) {
-				var vector:VectorImpl<T> = cast arg;
-				for (item in vector.__array) {
-					out.push(item);
-				}
-			} else if (Std.isOfType(arg, Array)) {
-				for (item in (cast arg : Array<T>)) {
-					out.push(item);
-				}
-			} else {
-				out.push(cast arg);
+		for (vector in vectors) {
+			if (vector == null) {
+				continue;
+			}
+			for (item in (vector : VectorImpl<T>).__array) {
+				out.push(item);
 			}
 		}
 		return __fromArray(out);
 	}
 
-	public function every(callback:Function, thisObject:Object = null):Bool {
-		var arity:Int = __arity(callback);
+	public function every(callback:VectorCallback<T, Bool>, thisObject:Object = null):Bool {
+		var f:Dynamic = __callback(callback);
+		var arity:Int = __arityOf(callback, f, thisObject);
 		for (i in 0...__array.length) {
-			var result:Dynamic = __call(callback, thisObject, arity, __array[i], i);
+			var result:Dynamic = __call(f, thisObject, arity, __array[i], i);
 			if (arity < 0) {
 				arity = __resolvedArity;
 			}
@@ -115,12 +166,13 @@ class VectorImpl<T> {
 		return true;
 	}
 
-	public function filter(callback:Function, thisObject:Object = null):Vector<T> {
+	public function filter(callback:VectorCallback<T, Bool>, thisObject:Object = null):Vector<T> {
 		var out:Array<T> = [];
-		var arity:Int = __arity(callback);
+		var f:Dynamic = __callback(callback);
+		var arity:Int = __arityOf(callback, f, thisObject);
 		for (i in 0...__array.length) {
 			var value:T = __array[i];
-			var result:Dynamic = __call(callback, thisObject, arity, value, i);
+			var result:Dynamic = __call(f, thisObject, arity, value, i);
 			if (arity < 0) {
 				arity = __resolvedArity;
 			}
@@ -131,10 +183,11 @@ class VectorImpl<T> {
 		return __fromArray(out);
 	}
 
-	public function forEach(callback:Function, thisObject:Object = null):Void {
-		var arity:Int = __arity(callback);
+	public function forEach(callback:VectorCallback<T, Void>, thisObject:Object = null):Void {
+		var f:Dynamic = __callback(callback);
+		var arity:Int = __arityOf(callback, f, thisObject);
 		for (i in 0...__array.length) {
-			__call(callback, thisObject, arity, __array[i], i);
+			__call(f, thisObject, arity, __array[i], i);
 			if (arity < 0) {
 				arity = __resolvedArity;
 			}
@@ -158,11 +211,12 @@ class VectorImpl<T> {
 		return __array.lastIndexOf(searchElement, fromIndex);
 	}
 
-	public function map(callback:Function, thisObject:Object = null):Vector<T> {
+	public function map(callback:VectorCallback<T, Dynamic>, thisObject:Object = null):Vector<T> {
 		var out:Array<T> = [];
-		var arity:Int = __arity(callback);
+		var f:Dynamic = __callback(callback);
+		var arity:Int = __arityOf(callback, f, thisObject);
 		for (i in 0...__array.length) {
-			out.push(cast __call(callback, thisObject, arity, __array[i], i));
+			out.push(cast __call(f, thisObject, arity, __array[i], i));
 			if (arity < 0) {
 				arity = __resolvedArity;
 			}
@@ -200,10 +254,11 @@ class VectorImpl<T> {
 		return __fromArray(__array.slice(startIndex, endIndex));
 	}
 
-	public function some(callback:Function, thisObject:Object = null):Bool {
-		var arity:Int = __arity(callback);
+	public function some(callback:VectorCallback<T, Bool>, thisObject:Object = null):Bool {
+		var f:Dynamic = __callback(callback);
+		var arity:Int = __arityOf(callback, f, thisObject);
 		for (i in 0...__array.length) {
-			var result:Dynamic = __call(callback, thisObject, arity, __array[i], i);
+			var result:Dynamic = __call(f, thisObject, arity, __array[i], i);
 			if (arity < 0) {
 				arity = __resolvedArity;
 			}
@@ -214,13 +269,17 @@ class VectorImpl<T> {
 		return false;
 	}
 
-	public function sort(sortBehavior:Dynamic):Vector<T> {
-		if (sortBehavior == null) {
+	/**
+		Sorts in place by `compare`, which answers a negative number, zero or
+		a positive one as its first argument goes before, with or after its
+		second; by `Reflect.compare` when there is none. It took any value,
+		typed `Dynamic`, and threw for one that was not a function.
+	**/
+	public function sort(?compare:(T, T) -> Int):Vector<T> {
+		if (compare == null) {
 			__array.sort(Reflect.compare);
-		} else if (Reflect.isFunction(sortBehavior)) {
-			__array.sort(cast sortBehavior);
 		} else {
-			throw "Vector sortBehavior must be a comparator function or null";
+			__array.sort(compare);
 		}
 		return this;
 	}
@@ -299,6 +358,26 @@ class VectorImpl<T> {
 	// The count the last `__call` of an unknown arity settled on.
 	@:noCompletion private var __resolvedArity:Int = -1;
 
+	/** The function a callback holds. **/
+	@:noCompletion private static inline function __callback<T, R>(callback:VectorCallback<T, R>):Dynamic {
+		var held:Dynamic = callback;
+		return Std.isOfType(held, VectorCall) ? (cast held : VectorCall).callback : held;
+	}
+
+	/**
+		How many arguments a callback takes: what its type said, when it said
+		and no `thisObject` asks for reflection; otherwise asked of the target.
+	**/
+	@:noCompletion private static function __arityOf<T, R>(callback:VectorCallback<T, R>, f:Dynamic, thisObject:Object):Int {
+		var held:Dynamic = callback;
+		var known:Int = Std.isOfType(held, VectorCall) ? (cast held : VectorCall).arity : -1;
+		if (known >= 0 && thisObject == null) {
+			// Called directly; see __call.
+			return known + 0x100;
+		}
+		return __arity(f);
+	}
+
 	/**
 		How many arguments `callback` takes, where the target can say: -1
 		where it cannot, which is eval.
@@ -322,6 +401,17 @@ class VectorImpl<T> {
 		takes: every one of them past three, and none of them for none.
 	**/
 	@:noCompletion private function __call(callback:Function, thisObject:Object, arity:Int, value:T, index:Int):Dynamic {
+		if (arity >= 0x100) {
+			// A callback whose arity its type gave: called directly, with no
+			// argument array and no reflection.
+			var f:Dynamic = callback;
+			return switch (arity - 0x100) {
+				case 0: f();
+				case 1: f(value);
+				case 2: f(value, index);
+				default: f(value, index, this);
+			}
+		}
 		if (arity < 0) {
 			return __callUnknown(callback, thisObject, value, index);
 		}
