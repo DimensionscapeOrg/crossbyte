@@ -241,6 +241,7 @@ entry below says how:
 - Code that keeps "no algorithm" in a `CompressionAlgorithm` types it
   `Null<CompressionAlgorithm>`; `CompressionAlgorithm.fromString` answers
   that type.
+- A `TaskPool.submit` task's result is `Any`: cast it to read from it.
 
 ### Added
 - A load and churn harness, `ci/load.hxml` (`tests/load`), run by hand as
@@ -1450,6 +1451,13 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `TaskPool.submit` returns a `Task<Any>`, where it was `Task<Dynamic>`.
+- A `TaskPool` lets go of a finished task in constant time, where it searched
+  its list of tasks in flight and shifted everything after it: a burst cost
+  the square of its size. Natively, without a `Mutex` and a `Lock` made per
+  task, a task costs 2.1 to 2.2 us of wall time in bursts of 100,000, where
+  it cost 7.0 to 7.9, and 2.2 in bursts of 1,000, where it cost 4.3 to 4.8;
+  on the jvm 0.46 to 0.55 us in bursts of 100,000, where it cost 4.2 to 4.7.
 - A `Void->Void` timer is called directly, without a closure made around it
   when it is armed or a boxed handle for each run: 82 to 133 ns a fire and
   re-arm, against 89 to 151, natively.

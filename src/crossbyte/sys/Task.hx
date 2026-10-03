@@ -64,7 +64,10 @@ class Task<T> extends EventDispatcher {
 	// first as the submitting thread added its listener -- which was lost,
 	// and its caller waited for good.
 	@:noCompletion private var __cancelHook:Void->Void = null;
-	@:noCompletion private var __releaseHook:Void->Void;
+	// The pool that keeps this task alive until it is done, told when it is.
+	@:noCompletion private var __pool:Null<TaskPool>;
+	// Where this task sits in its pool's list of tasks in flight; -1 outside it.
+	@:noCompletion private var __poolSlot:Int;
 	@:noCompletion private var __released:Bool;
 	// What onComplete, onError and onCancel were given before the task was
 	// done, each told the outcome. Taken under the lock by the step that
@@ -75,9 +78,21 @@ class Task<T> extends EventDispatcher {
 	// the start, for the reason __cancelHook is.
 	@:noCompletion private var __waiting:Array<TaskDispatch<T>->Void> = null;
 
-	#if target.threaded
+	/**
+		Guards the state, the result and the waiting handlers. On cpp a word
+		of this task's own, taken with an atomic compare-and-swap as
+		`Future`'s is; elsewhere a Mutex. Every task made a `Mutex` and a
+		`Lock` natively: an object with a finalizer each, and the Lock a
+		kernel event, 1.7 us a task before it ran. The Lock is `await`'s
+		alone, and is made by the first `await`.
+	**/
+	#if cpp
+	@:noCompletion private var __lockWord:Int = 0;
+	#elseif target.threaded
 	@:noCompletion private var __lock:Mutex;
-	@:noCompletion private var __completion:Lock;
+	#end
+	#if target.threaded
+	@:noCompletion private var __completion:Null<Lock>;
 	@:noCompletion private var __awaiters:Int;
 	#end
 	@:noCompletion private var __runtime:CrossByte;
@@ -88,12 +103,15 @@ class Task<T> extends EventDispatcher {
 		state = PENDING;
 		result = null;
 		error = null;
-		__releaseHook = null;
+		__pool = null;
+		__poolSlot = -1;
 		__released = false;
 
-		#if target.threaded
+		#if (target.threaded && !cpp)
 		__lock = new Mutex();
-		__completion = new Lock();
+		#end
+		#if target.threaded
+		__completion = null;
 		__awaiters = 0;
 		#end
 		// Where its events go. A task made off any runtime's thread has
@@ -107,7 +125,7 @@ class Task<T> extends EventDispatcher {
 		var waiting:Array<TaskDispatch<T>->Void> = null;
 
 		#if target.threaded
-		__lock.acquire();
+		__acquire();
 		#end
 
 		if (state == PENDING) {
@@ -125,7 +143,7 @@ class Task<T> extends EventDispatcher {
 		}
 
 		#if target.threaded
-		__lock.release();
+		__release();
 		#end
 
 		if (didCancel) {
@@ -140,18 +158,22 @@ class Task<T> extends EventDispatcher {
 
 	public function await():T {
 		#if target.threaded
-		__lock.acquire();
+		__acquire();
 		while (!isDone) {
+			if (__completion == null) {
+				__completion = new Lock();
+			}
 			__awaiters++;
-			__lock.release();
-			__completion.wait();
-			__lock.acquire();
+			var completion:Lock = __completion;
+			__release();
+			completion.wait();
+			__acquire();
 		}
 
 		var taskState = state;
 		var value = result;
 		var taskError = error;
-		__lock.release();
+		__release();
 		#else
 		var taskState = state;
 		var value = result;
@@ -220,7 +242,7 @@ class Task<T> extends EventDispatcher {
 	**/
 	@:noCompletion private function __whenDone(waiter:TaskDispatch<T>->Void):Void {
 		#if target.threaded
-		__lock.acquire();
+		__acquire();
 		#end
 		var outcome:TaskDispatch<T> = switch (state) {
 			case COMPLETED: Complete(result);
@@ -235,7 +257,7 @@ class Task<T> extends EventDispatcher {
 			__waiting.push(waiter);
 		}
 		#if target.threaded
-		__lock.release();
+		__release();
 		#end
 
 		if (outcome != null) {
@@ -264,8 +286,8 @@ class Task<T> extends EventDispatcher {
 	}
 
 	@:allow(crossbyte.sys.TaskPool)
-	@:noCompletion private function __registerReleaseHook(handler:Void->Void):Void {
-		__releaseHook = handler;
+	@:noCompletion private inline function __keptBy(pool:TaskPool):Void {
+		__pool = pool;
 	}
 
 	@:allow(crossbyte.sys.TaskPool)
@@ -273,7 +295,7 @@ class Task<T> extends EventDispatcher {
 		var didStart = false;
 
 		#if target.threaded
-		__lock.acquire();
+		__acquire();
 		#end
 		if (state == PENDING) {
 			state = RUNNING;
@@ -281,7 +303,7 @@ class Task<T> extends EventDispatcher {
 			didStart = true;
 		}
 		#if target.threaded
-		__lock.release();
+		__release();
 		#end
 
 		return didStart;
@@ -293,7 +315,7 @@ class Task<T> extends EventDispatcher {
 		var waiting:Array<TaskDispatch<T>->Void> = null;
 
 		#if target.threaded
-		__lock.acquire();
+		__acquire();
 		#end
 		if (state == RUNNING) {
 			// The result before the state, so that nothing reading the state
@@ -310,7 +332,7 @@ class Task<T> extends EventDispatcher {
 			#end
 		}
 		#if target.threaded
-		__lock.release();
+		__release();
 		#end
 
 		if (shouldDispatch) {
@@ -325,7 +347,7 @@ class Task<T> extends EventDispatcher {
 		var waiting:Array<TaskDispatch<T>->Void> = null;
 
 		#if target.threaded
-		__lock.acquire();
+		__acquire();
 		#end
 		if (state == RUNNING) {
 			error = finalError;
@@ -340,13 +362,50 @@ class Task<T> extends EventDispatcher {
 			#end
 		}
 		#if target.threaded
-		__lock.release();
+		__release();
 		#end
 
 		if (shouldDispatch) {
 			__dispatchTerminalEvent(Fail(finalError), waiting);
 		}
 	}
+
+	@:noCompletion private inline function __acquire():Void {
+		#if cpp
+		if ((untyped __cpp__("_hx_atomic_compare_exchange(&{0}, 0, 1)", __lockWord) : Int) != 0) {
+			__contend();
+		}
+		#elseif target.threaded
+		__lock.acquire();
+		#end
+	}
+
+	@:noCompletion private inline function __release():Void {
+		#if cpp
+		untyped __cpp__("_hx_atomic_store(&{0}, 0)", __lockWord);
+		#elseif target.threaded
+		__lock.release();
+		#end
+	}
+
+	#if cpp
+	/**
+		Waits for another thread to let go of the lock, which it holds for a
+		few instructions: letting the collector stop this thread between
+		tries, and yielding after a while in case the holder is not running.
+		As `Future.__contend`.
+	**/
+	@:noCompletion private function __contend():Void {
+		var tries:Int = 0;
+		while ((untyped __cpp__("_hx_atomic_compare_exchange(&{0}, 0, 1)", __lockWord) : Int) != 0) {
+			cpp.vm.Gc.safePoint();
+			if (++tries >= 64) {
+				tries = 0;
+				crossbyte._internal.system.Sleep.sleep(0);
+			}
+		}
+	}
+	#end
 
 	@:allow(crossbyte.sys.TaskPool)
 	@:noCompletion private function __notifyWaiters():Void {
@@ -439,10 +498,10 @@ class Task<T> extends EventDispatcher {
 		}
 
 		__released = true;
-		if (__releaseHook != null) {
-			var hook = __releaseHook;
-			__releaseHook = null;
-			hook();
+		var pool:Null<TaskPool> = __pool;
+		if (pool != null) {
+			__pool = null;
+			pool.__releaseTask(this);
 		}
 	}
 }
