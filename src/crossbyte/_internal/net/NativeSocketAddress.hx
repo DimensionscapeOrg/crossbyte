@@ -11,5 +11,7 @@ extern class NativeSocketAddress {
 	@:native("crossbyte_socket_recv_from") public static function recvFrom(socket:Dynamic, buffer:haxe.io.BytesData, position:Int, length:Int, address:Dynamic):Int;
 	@:native("crossbyte_socket_connect_error") public static function connectError(socket:Dynamic):Null<String>;
 	@:native("crossbyte_socket_send_batch") public static function sendBatch(socket:Dynamic, buffer:haxe.io.BytesData, spans:Array<Int>, targets:Array<Dynamic>, first:Int, count:Int):Int;
+	/** hxcpp's select, by poll on POSIX: no ceiling on a descriptor's number there. **/
+	@:native("crossbyte_socket_select") public static function select(rs:Array<Dynamic>, ws:Array<Dynamic>, es:Array<Dynamic>, timeout:Dynamic):Array<Dynamic>;
 }
 #end
