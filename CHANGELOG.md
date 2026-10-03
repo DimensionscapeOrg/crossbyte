@@ -1503,7 +1503,9 @@ entry below says how:
   `String`s, and makes each handler written as a function literal once
   rather than on every dispatch: 71 to 77 ns a dispatch of sixteen `Int`
   keys natively, where it cost 130 to 147. What reaches `otherwise` is
-  unchanged.
+  unchanged, except on JavaScript, where a key now matches a case only when
+  it is the same value: the `String` `"1"` matched the case `1` there, and
+  nowhere else.
 - On the jvm, `File.modificationDate` reads one attribute: 20 us, where
   `FileSystem.stat`, which first asks for attributes Windows refuses with an
   exception, took 108 to 138.
