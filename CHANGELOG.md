@@ -259,6 +259,12 @@ entry below says how:
   `Dynamic`: change the parameter's type in an override or handler. What was
   thrown is the exception, or, for a value that was not one, the `value` of
   the `haxe.ValueException` given.
+- `DataChannel.maxRetransmits` and `maxPacketLifeTime` are -1, not null, for
+  no limit, and `PeerConnection.createDataChannel` takes -1, or nothing,
+  where it took null: compare with -1, and pass -1 where code passed null
+  for the limit it did not set.
+- `DataChannelSet.transfer` is gone from its public surface: send on a
+  `DataChannel`.
 
 ### Added
 - A load and churn harness, `ci/load.hxml` (`tests/load`), run by hand as
@@ -1468,6 +1474,13 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `DataChannel.maxRetransmits` and `maxPacketLifeTime` are `Int`s, -1 for no
+  limit, where they were `Null<Int>`s and null;
+  `PeerConnection.createDataChannel` and `DataChannelSet.create` take -1,
+  the default, for no limit. `DataChannelSet.transfer` is no longer public:
+  it is the connection's own, and a message sent on it went behind the
+  channels' backs. `PeerDescription` says why it stays an anonymous
+  structure: it is wire data, written and read as JSON.
 - `RPCHandler.afterCall` and `onHandlerError`, and
   `RPCSession.afterRuntimeCall`, are given the error as a `haxe.Exception`,
   where it was `Dynamic`. The generated code wraps what a handler threw
