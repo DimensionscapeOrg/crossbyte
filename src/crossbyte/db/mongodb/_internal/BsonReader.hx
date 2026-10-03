@@ -12,6 +12,9 @@ import crossbyte.db.mongodb.bson.MaxKey;
 import crossbyte.db.mongodb.bson.MinKey;
 import crossbyte.db.mongodb.bson.ObjectId;
 import crossbyte.errors.IOError;
+#if cpp
+import crossbyte._internal.AnonBuilder;
+#end
 import haxe.Int64;
 import haxe.ds.Vector;
 import haxe.io.Bytes;
@@ -25,6 +28,8 @@ import haxe.io.Bytes;
 	A field name is interned: a result set's documents almost always share
 	their names, and a small table of those already made, checked against
 	the bytes before it is trusted, spares a string per field per document.
+	On hxcpp a document of a shape met before is made with fixed slots, as
+	an object literal is; see `__shapedDocument`.
 **/
 class BsonReader {
 	public static inline var MAX_DEPTH:Int = 200;
@@ -107,6 +112,12 @@ class BsonReader {
 			__fail("a document does not end with a NUL");
 		}
 
+		#if cpp
+		if (!asArray && !this.ordered && depth < SHAPED_DEPTHS) {
+			return __shapedDocument(start, end, depth);
+		}
+		#end
+
 		var array:Array<Dynamic> = null;
 		var object:Dynamic = null;
 		var ordered:BsonDocument = null;
@@ -146,6 +157,109 @@ class BsonReader {
 		__pos = end;
 		return asArray ? array : (ordered != null ? ordered : object);
 	}
+
+	#if cpp
+	/** How deep documents are made with fixed slots; deeper ones use the hash map. **/
+	@:noCompletion private static inline var SHAPED_DEPTHS:Int = 16;
+
+	/** The most fields a document made with fixed slots has. **/
+	@:noCompletion private static inline var SHAPED_FIELDS:Int = 64;
+
+	/**
+		The longest field name, in bytes, a document made with fixed slots
+		has: the length the name table interns to. A slot's name is kept for
+		good, so this bounds what names from the server can pin.
+	**/
+	@:noCompletion private static inline var SHAPED_NAME:Int = 32;
+
+	/** How many shapes each depth keeps, the most recently used first. **/
+	@:noCompletion private static inline var SHAPES_PER_DEPTH:Int = 4;
+
+	@:noCompletion private var __levels:Array<BsonLevel>;
+
+	/**
+		A plain document, made the way hxcpp makes an object literal: its
+		fields in fixed slots, found by a binary search, rather than in a hash
+		map allocated beside it and searched by hash, reading a field of one
+		costs a third to a half less. The fields are read first, and the
+		document is made once their names are known.
+
+		The slot order is worked out once per shape, a list of names, and
+		kept per depth: a reply's envelope, a batch's documents and their
+		sub-documents each find theirs at the head of their depth's list. A
+		shape is kept only once it has been met twice running at its depth,
+		so documents of ever-new shapes, as a hostile server could send, cost
+		a comparison of names each, never a new shape each; and only shapes
+		of at most SHAPED_FIELDS names of at most SHAPED_NAME bytes, whose
+		names AnonBuilder keeps for good. Anything else is made as before.
+	**/
+	@:noCompletion private function __shapedDocument(start:Int, end:Int, depth:Int):Dynamic {
+		var bytes:Bytes = __bytes;
+
+		if (__levels == null) {
+			__levels = [];
+		}
+
+		while (__levels.length <= depth) {
+			__levels.push(new BsonLevel());
+		}
+
+		var level:BsonLevel = __levels[depth];
+		var names:Array<String> = level.names;
+		var values:Array<Dynamic> = level.values;
+		var count:Int = 0;
+		var fits:Bool = true;
+		__pos = start + 4;
+		var last:Int = end - 1;
+
+		while (__pos < last) {
+			var type:Int = bytes.get(__pos++);
+			var nameStart:Int = __pos;
+			var nameEnd:Int = __cstringEnd(last);
+
+			if (nameEnd - nameStart > SHAPED_NAME) {
+				fits = false;
+			}
+
+			names[count] = __name(nameStart, nameEnd);
+			__pos = nameEnd + 1;
+			values[count] = __value(type, end, depth);
+			count++;
+		}
+
+		if (__pos != last) {
+			__fail("a field runs into the end of its document");
+		}
+
+		__pos = end;
+
+		if (fits && count > 0 && count <= SHAPED_FIELDS) {
+			var shape:AnonBuilder = level.find(names, count);
+
+			if (shape != null) {
+				var object:Dynamic = shape.begin();
+
+				for (i in 0...count) {
+					shape.set(object, i, values[i]);
+					// Not kept here past the document, where a large value
+					// would stay reachable from an idle connection.
+					values[i] = null;
+				}
+
+				return object;
+			}
+		}
+
+		var object:Dynamic = {};
+
+		for (i in 0...count) {
+			Reflect.setField(object, names[i], values[i]);
+			values[i] = null;
+		}
+
+		return object;
+	}
+	#end
 
 	@:noCompletion private function __value(type:Int, end:Int, depth:Int):Dynamic {
 		var bytes:Bytes = __bytes;
@@ -471,3 +585,86 @@ class BsonReader {
 		throw new IOError("Malformed BSON: " + reason + ".");
 	}
 }
+
+#if cpp
+/**
+	What a `BsonReader` keeps for one depth of plain documents: room for the
+	fields of the one being read, and the shapes met there.
+**/
+@:noCompletion
+private class BsonLevel {
+	@:noCompletion private static inline var SHAPES:Int = 4;
+
+	/** The names and values of the document being read at this depth. **/
+	public var names:Array<String> = [];
+
+	// Not a literal []: on hxcpp that widens as values arrive, and would
+	// turn an Int64 into a double beside a Float.
+	public var values:Array<Dynamic> = ValueArray.create();
+
+	// The shapes met here, the most recently used first.
+	@:noCompletion private var __shapes:Array<AnonBuilder> = [];
+
+	// The names of the last document no shape fitted, and how many.
+	@:noCompletion private var __missed:Array<String> = [];
+	@:noCompletion private var __missedCount:Int = -1;
+
+	public function new() {}
+
+	/**
+		The shape of the first `count` of `names`: one kept, or one made now
+		that the same names have come twice running; otherwise null, and the
+		names are remembered for next time.
+	**/
+	public function find(names:Array<String>, count:Int):AnonBuilder {
+		var shapes:Array<AnonBuilder> = __shapes;
+
+		for (i in 0...shapes.length) {
+			var shape:AnonBuilder = shapes[i];
+
+			if (shape.matches(names, count)) {
+				__toFront(shape, i);
+				return shape;
+			}
+		}
+
+		if (__missedCount == count) {
+			var same:Bool = true;
+
+			for (k in 0...count) {
+				if (__missed[k] != names[k]) {
+					same = false;
+					break;
+				}
+			}
+
+			if (same) {
+				var shape:AnonBuilder = new AnonBuilder(names.slice(0, count));
+				// The least recently used drops off the end.
+				__toFront(shape, shapes.length < SHAPES ? shapes.push(shape) - 1 : SHAPES - 1);
+				__missedCount = -1;
+				return shape;
+			}
+		}
+
+		for (k in 0...count) {
+			__missed[k] = names[k];
+		}
+
+		__missedCount = count;
+		return null;
+	}
+
+	/** Moves `shape`, now at `at`, to the front, the ones before it back one. **/
+	@:noCompletion private inline function __toFront(shape:AnonBuilder, at:Int):Void {
+		var shapes:Array<AnonBuilder> = __shapes;
+
+		while (at > 0) {
+			shapes[at] = shapes[at - 1];
+			at--;
+		}
+
+		shapes[0] = shape;
+	}
+}
+#end
