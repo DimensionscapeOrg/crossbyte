@@ -2416,6 +2416,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A runtime woken from another thread as it exits no longer writes to a
+  closed socket. Every hand-off wakes a POLL runtime by writing a byte to
+  a socket it polls -- a `post`, an `exit()`, a parent exiting its
+  children -- and the runtime closes that socket as it exits, on its own
+  thread; the wake checked and wrote without holding anything against the
+  close. On the interpreter the write raised an error no `catch` sees,
+  which ended the process; natively it went to a descriptor the system
+  may already have handed another socket. The wake and the close now take
+  the same lock.
 - A `FileStream` open in `UPDATE` mode reads back what it wrote on macOS.
   It reads and writes through two handles, flushing the writer and
   seeking the reader before each read; BSD stdio, macOS's, keeps a
