@@ -472,7 +472,14 @@ haxe ci/load.hxml
   a 100-400 byte snapshot each tick (sequenced, every fourth reliable) and
   taking an input from each every tick. Reports processor time per tick, tick
   time, input-to-acknowledgement latency, lost snapshots and retransmissions,
-  and memory per session.
+  and memory per session. What a session sends waits for its congestion
+  window, up to `ReliableDatagramSocket.maxOutputBufferSize`: 256 KB by
+  default, past which the session is ended with an `ioError` saying why,
+  rather than held without end for a client that has stopped taking it. At
+  1,000 clients and 60 Hz no session held anything waiting while the server
+  kept its tick, and none more than 18 KB when it was starved of processor
+  time. A game that sends more at once, a level, one large reliable
+  message, raises the limit, or sets it to 0 for none.
 - `churn`: HTTP/1.1 keep-alive, HTTP/2 and WebSocket clients, half over TLS,
   connecting, doing a few requests and leaving, at each concurrency of
   `--plan` (`concurrency:seconds,...`; end with a `0:` phase to watch memory
