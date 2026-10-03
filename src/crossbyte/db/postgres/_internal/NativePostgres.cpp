@@ -157,36 +157,6 @@ namespace {
 		return out.empty() ? std::string(fallback) : out;
 	}
 
-	std::string jsonEscape(const std::string& value) {
-		std::string out;
-		out.reserve(value.size() + 8);
-		for (size_t i = 0; i < value.size(); ++i) {
-			unsigned char c = static_cast<unsigned char>(value[i]);
-			switch (c) {
-				case '\\': out += "\\\\"; break;
-				case '"': out += "\\\""; break;
-				case '\b': out += "\\b"; break;
-				case '\f': out += "\\f"; break;
-				case '\n': out += "\\n"; break;
-				case '\r': out += "\\r"; break;
-				case '\t': out += "\\t"; break;
-				default:
-					if (c < 0x20) {
-						char buffer[7];
-						std::snprintf(buffer, sizeof(buffer), "\\u%04x", static_cast<unsigned int>(c));
-						out += buffer;
-					} else {
-						out.push_back(static_cast<char>(c));
-					}
-			}
-		}
-		return out;
-	}
-
-	std::string makeErrorJson(const std::string& message) {
-		return std::string("{\"error\":\"") + jsonEscape(message) + "\"}";
-	}
-
 #if defined(_WIN32)
 	void* resolveSymbol(HMODULE module, const char* name) {
 		return reinterpret_cast<void*>(GetProcAddress(module, name));
@@ -343,58 +313,6 @@ namespace {
 		return status == PGRES_COMMAND_OK || status == PGRES_TUPLES_OK || status == PGRES_SINGLE_TUPLE || status == PGRES_EMPTY_QUERY;
 	}
 
-	// Runs inside the GC-free zone, and takes ownership of `result`.
-	std::string renderJson(const Handle& handle, PGresult* result) {
-		const LibPQApi* api = handle.api;
-
-		if (result == nullptr) {
-			return makeErrorJson(trimMessage(api->PQerrorMessage(handle.conn), "PQexec returned null."));
-		}
-
-		ResultGuard guard = {api, result};
-
-		if (!succeeded(api->PQresultStatus(result))) {
-			return makeErrorJson(trimMessage(api->PQerrorMessage(handle.conn), "Postgres query failed."));
-		}
-
-		std::ostringstream out;
-		out << "{\"rows\":[";
-
-		int rows = api->PQntuples(result);
-		int fields = api->PQnfields(result);
-		for (int row = 0; row < rows; ++row) {
-			if (row > 0) {
-				out << ",";
-			}
-			out << "{";
-			for (int field = 0; field < fields; ++field) {
-				if (field > 0) {
-					out << ",";
-				}
-				const char* name = api->PQfname(result, field);
-				out << "\"" << jsonEscape(name == nullptr ? "" : name) << "\":";
-				if (api->PQgetisnull(result, row, field) == 1) {
-					out << "null";
-				} else {
-					const char* value = api->PQgetvalue(result, row, field);
-					out << "\"" << jsonEscape(value == nullptr ? "" : value) << "\"";
-				}
-			}
-			out << "}";
-		}
-
-		// The command tag, because it is the only thing that tells a COMMIT
-		// that committed from one the server turned into a ROLLBACK: both
-		// arrive as success.
-		const char* command = api->PQcmdStatus(result);
-
-		out << "],\"affectedRows\":" << parseAffectedRows(api, result);
-		out << ",\"lastInsertRowID\":" << static_cast<unsigned int>(api->PQoidValue(result));
-		out << ",\"command\":\"" << jsonEscape(command == nullptr ? "" : command) << "\"";
-		out << "}";
-		return out.str();
-	}
-
 	// Little-endian, a byte at a time, so neither side depends on the host byte
 	// order. Mirrored by PostgresWire on the Haxe side.
 	inline unsigned char* putInt(unsigned char* out, int value) {
@@ -547,6 +465,11 @@ namespace {
 			}
 		}
 
+		// The command tag last: COMMIT and ROLLBACK, the INSERT count.
+		const char* command = api->PQcmdStatus(result);
+		int commandLength = command == nullptr ? 0 : static_cast<int>(std::strlen(command));
+		size += 4 + commandLength;
+
 		if (size > INT_MAX) {
 			std::ostringstream message;
 			message << "The result is " << size << " bytes, more than one call can return; fetch it in parts.";
@@ -588,6 +511,8 @@ namespace {
 			}
 		}
 
+		out = putInt(out, commandLength);
+		putBytes(out, command, commandLength);
 		return block;
 	}
 }
@@ -689,22 +614,39 @@ bool crossbyte_postgres_is_open(void* handle) {
 	return h != nullptr && h->conn != nullptr && h->api->PQstatus(h->conn) == CONNECTION_OK;
 }
 
-::String crossbyte_postgres_request_json(void* handle, ::String sql) {
+Array<unsigned char> crossbyte_postgres_request_block(void* handle, ::String sql) {
 	Handle* h = static_cast<Handle*>(handle);
 
 	if (h == nullptr || h->conn == nullptr) {
-		return toHaxe(makeErrorJson("Postgres connection is not open."));
+		return errorBlock("Postgres connection is not open.");
 	}
 
 	std::string text = toNative(sql);
-	std::string json;
+	const LibPQApi* api = h->api;
+	PGresult* result = nullptr;
+	std::string failure;
 
 	{
 		hx::AutoGCFreeZone zone;
-		json = renderJson(*h, h->api->PQexec(h->conn, text.c_str()));
+		// PQexec, as request() has always run: text that holds several
+		// statements runs them all, where PQexecParams takes one.
+		result = api->PQexec(h->conn, text.c_str());
+
+		if (result == nullptr) {
+			failure = trimMessage(api->PQerrorMessage(h->conn), "PQexec returned null.");
+		} else if (!succeeded(api->PQresultStatus(result))) {
+			failure = trimMessage(api->PQerrorMessage(h->conn), "Postgres query failed.");
+			api->PQclear(result);
+			result = nullptr;
+		}
 	}
 
-	return toHaxe(json);
+	if (result == nullptr) {
+		return errorBlock(failure);
+	}
+
+	ResultGuard guard = {api, result};
+	return encodeResult(api, result);
 }
 
 Array<unsigned char> crossbyte_postgres_request_params(void* handle, ::String sql, Array<unsigned char> params, int paramsLength) {

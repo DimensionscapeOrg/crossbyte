@@ -2,10 +2,6 @@ package crossbyte.crypto;
 
 import crossbyte.io.ByteArray;
 import haxe.io.Bytes;
-#if cpp
-import sys.io.File;
-import sys.thread.Mutex;
-#end
 #if php
 import php.Global;
 import php.Syntax;
@@ -24,7 +20,124 @@ import crossbyte.errors.IllegalOperationError;
 #include <Windows.h>
 #include <bcrypt.h>
 #pragma comment(lib, "bcrypt.lib")
+#else
+#include <atomic>
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <unistd.h>
 #endif
+#include <string.h>
+
+namespace {
+	// Each thread keeps the random bytes it has drawn from the system and not
+	// yet handed out, and asks for more 4 KB at a time. One system call per
+	// draw cost more than everything else a small draw does: a 4-byte draw,
+	// a WebSocket client frame mask, took about 170 ns through BCryptGenRandom
+	// on Windows, and a mutex and a read of /dev/urandom elsewhere.
+	const int kRandomPoolSize = 4096;
+
+	// A draw this large goes straight to the system: through the pool it would
+	// only be copied once more.
+	const int kRandomDirect = 1024;
+
+	thread_local unsigned char tRandomPool[kRandomPoolSize];
+	thread_local int tRandomLeft = 0;
+
+#ifdef HX_WINDOWS
+	bool randomFromSystem(unsigned char *out, int length) {
+		return ::BCryptGenRandom(NULL, (PUCHAR)out, (ULONG)length, BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
+	}
+
+	const char *randomFailure() {
+		return "BCryptGenRandom failed";
+	}
+#else
+	// Opened once for the process and shared: concurrent reads of one
+	// descriptor are safe, and /dev/urandom has no position to keep.
+	std::atomic<int> gUrandom(-1);
+
+	int urandom() {
+		int fd = gUrandom.load(std::memory_order_acquire);
+		if (fd >= 0) {
+			return fd;
+		}
+		int opened = ::open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+		if (opened < 0) {
+			return -1;
+		}
+		int expected = -1;
+		if (!gUrandom.compare_exchange_strong(expected, opened)) {
+			// Another thread opened it first.
+			::close(opened);
+			return expected;
+		}
+		return opened;
+	}
+
+	bool randomFromSystem(unsigned char *out, int length) {
+		int fd = urandom();
+		if (fd < 0) {
+			return false;
+		}
+		int filled = 0;
+		while (filled < length) {
+			ssize_t n = ::read(fd, out + filled, (size_t)(length - filled));
+			if (n < 0 && errno == EINTR) {
+				continue;
+			}
+			if (n <= 0) {
+				return false;
+			}
+			filled += (int)n;
+		}
+		return true;
+	}
+
+	const char *randomFailure() {
+		return "Failed to read from /dev/urandom";
+	}
+
+	// A forked child starts with a copy of its parent: the bytes this thread
+	// had not handed out would be handed out by both. The child drops them.
+	void randomForked() {
+		memset(tRandomPool, 0, sizeof(tRandomPool));
+		tRandomLeft = 0;
+	}
+#endif
+
+	// Fills out with length secure random bytes; false when the system
+	// refused. Each range handed out is zeroed in the pool behind it, so what
+	// became a key is not left lying in memory a second time.
+	bool secureRandom(unsigned char *out, int length) {
+		if (length >= kRandomDirect) {
+			return randomFromSystem(out, length);
+		}
+#ifndef HX_WINDOWS
+		static int atfork = pthread_atfork(NULL, NULL, randomForked);
+		(void)atfork;
+#endif
+		int left = tRandomLeft;
+		while (length > 0) {
+			if (left == 0) {
+				if (!randomFromSystem(tRandomPool, kRandomPoolSize)) {
+					tRandomLeft = 0;
+					return false;
+				}
+				left = kRandomPoolSize;
+			}
+			int take = length < left ? length : left;
+			unsigned char *from = tRandomPool + (kRandomPoolSize - left);
+			memcpy(out, from, (size_t)take);
+			memset(from, 0, (size_t)take);
+			out += take;
+			length -= take;
+			left -= take;
+		}
+		tRandomLeft = left;
+		return true;
+	}
+}
 ')
 #end
 /**
@@ -140,81 +253,20 @@ final class SecureRandom {
 	#end
 
 	#if cpp
-	@:noCompletion static var __urandom:sys.io.FileInput = null;
-	// Made up front rather than on first use: two threads drawing their first
-	// bytes at once each made one and locked their own, and then shared the
-	// file between them unguarded. Password hashing runs on worker threads, so
-	// two first draws at once is an ordinary start-up.
-	@:noCompletion static final __lock:Mutex = new Mutex();
-
-	private static inline function __getSecureRandomBytesNative(length:Int):Bytes {
-		return __isWindows() ? __getSecureRandomBytesWindows(length) : __getSecureRandomBytesUnix(length);
-	}
-
-	private static inline function __isWindows():Bool {
-		return Sys.systemName() == "Windows";
-	}
-
-	private static inline function __getSecureRandomBytesWindows(length:Int):Bytes {
-		var out = Bytes.alloc(length);
-		if (length == 0)
-			return out;
-
-		// Chosen at runtime by `__isWindows`, but compiled everywhere, and
-		// bcrypt.h is only included under HX_WINDOWS, so on Linux the call
-		// named symbols that did not exist and the build stopped at
-		// "BCRYPT_USE_SYSTEM_PREFERRED_RNG was not declared". A runtime check
-		// picks which code runs; only the preprocessor decides what has to
-		// compile. Unreachable off Windows, so the other half is never used.
-		var ok:Bool = untyped __cpp__('
-#ifdef HX_WINDOWS
-        (::BCryptGenRandom(
-            (void*)0,
-            (PUCHAR)&{0}->b[0],
-            (unsigned long){1},
-            BCRYPT_USE_SYSTEM_PREFERRED_RNG
-        ) == 0)
-#else
-        false
-#endif
-    ', out, length);
-
-		if (!ok)
-			throw "BCryptGenRandom failed";
-		return out;
-	}
-
-	private static function __getSecureRandomBytesUnix(length:Int):Bytes {
-		if (length <= 0) {
-			return Bytes.alloc(length < 0 ? 0 : length);
-		}
-
+	/**
+		BCryptGenRandom on Windows, /dev/urandom elsewhere, through the calling
+		thread's pool (the native code above). Which system source is chosen
+		by the preprocessor, not at run time: bcrypt.h exists only on Windows,
+		and a call into it compiled on Linux stopped the build at
+		"BCRYPT_USE_SYSTEM_PREFERRED_RNG was not declared".
+	**/
+	private static function __getSecureRandomBytesNative(length:Int):Bytes {
 		var out:Bytes = Bytes.alloc(length);
-
-		__lock.acquire();
-		try {
-			if (__urandom == null) {
-				__urandom = sys.io.File.read("/dev/urandom", true);
-			}
-
-			var filled:Int = 0;
-			while (filled < length) {
-				var n:Int = __urandom.readBytes(out, filled, length - filled);
-				if (n <= 0) {
-					throw "Short read from /dev/urandom";
-				}
-				filled += n;
-			}
-		} catch (e:Dynamic) {
-			try {
-				__urandom.close();
-			} catch (_:Dynamic) {}
-			__urandom = null;
-			__lock.release();
-			throw "Failed to read from /dev/urandom: " + e;
+		var ok:Bool = untyped __cpp__('secureRandom((unsigned char *)&{0}->b[0], {1})', out, length);
+		if (!ok) {
+			var failure:String = untyped __cpp__('::String(randomFailure())');
+			throw failure;
 		}
-
-		__lock.release();
 		return out;
 	}
 	#end

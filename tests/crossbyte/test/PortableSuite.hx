@@ -255,6 +255,7 @@ class PortableSuite {
 		runner.addCase(new crossbyte.utils.IntParseTest());
 		runner.addCase(new crossbyte.db.DBParameterBindingTest());
 		runner.addCase(new crossbyte.db.PostgresWireTest());
+		runner.addCase(new crossbyte.db.SQLRowTest());
 		runner.addCase(new crossbyte.db.PostgresConnInfoTest());
 		runner.addCase(new crossbyte.db.SchemaMigratorTest());
 		runner.addCase(new crossbyte.rpc.RPCTest());
@@ -285,5 +286,13 @@ class PortableSuite {
 		// PrimitiveValue's numbers, which Std.parseInt and Std.int read
 		// differently on each target.
 		runner.addCase(new crossbyte.foundation.FoundationConstructsTest());
+		// The MongoDB driver's public types, decided at compile time.
+		runner.addCase(new crossbyte.db.mongodb.MongoApiTest());
+		// The types of JWT claims, audiences and key records, alike everywhere.
+		runner.addCase(new crossbyte.auth.jwt.JWTTypesTest());
+		// HS256's HMAC keeps its words in an Int32Array on JavaScript, and the
+		// codec builds its text through TextDecoder there.
+		runner.addCase(new crossbyte.auth.jwt.Base64UrlTest());
+		runner.addCase(new crossbyte.crypto.HmacSha256Test());
 	}
 }

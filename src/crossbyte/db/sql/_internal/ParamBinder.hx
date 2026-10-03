@@ -98,11 +98,21 @@ class ParamBinder {
 	 */
 	public static function substituteWith(text:String, has:String->Bool, get:String->Null<Dynamic>, escape:Dynamic->String,
 			backslashEscapes:Bool, dollarQuotes:Bool = false):String {
-		if (text == null || text == "") {
+		if (text == null || text.indexOf(":") < 0) {
+			// No placeholder can be in it.
 			return text;
 		}
 
-		var out:StringBuf = new StringBuf();
+		return ParamTemplate.parse(text, backslashEscapes, dollarQuotes).render(has, get, escape);
+	}
+
+	/**
+		Where `text`'s placeholders are, by the rules above: the start of
+		each `:name` substituted in turn, and the end of its name, as pairs.
+		Empty when it has none.
+	**/
+	@:noCompletion public static function placeholders(text:String, backslashEscapes:Bool, dollarQuotes:Bool):Array<Int> {
+		var found:Array<Int> = [];
 		var len:Int = text.length;
 		var i:Int = 0;
 
@@ -122,7 +132,6 @@ class ParamBinder {
 			var next:Int = (i + 1 < len) ? StringTools.fastCodeAt(text, i + 1) : 0;
 
 			if (lineComment) {
-				out.addChar(c);
 				if (c == NEWLINE) {
 					lineComment = false;
 				}
@@ -137,32 +146,24 @@ class ParamBinder {
 				// an unsafe one.
 				if (c == SLASH && next == STAR) {
 					blockDepth++;
-					out.addChar(c);
-					out.addChar(next);
 					i += 2;
 					continue;
 				}
 
 				if (c == STAR && next == SLASH) {
 					blockDepth--;
-					out.addChar(c);
-					out.addChar(next);
 					i += 2;
 					continue;
 				}
 
-				out.addChar(c);
 				i++;
 				continue;
 			}
 
 			if (quote != 0) {
-				out.addChar(c);
-
 				if (runBackslashes && c == BACKSLASH && i + 1 < len) {
 					// The next character is escaped, a quote included, and
 					// does not end the run.
-					out.addChar(next);
 					i += 2;
 					continue;
 				}
@@ -171,7 +172,6 @@ class ParamBinder {
 					if (next == quote) {
 						// A doubled quote stands for the character itself and
 						// does not end the run.
-						out.addChar(next);
 						i += 2;
 						continue;
 					}
@@ -186,7 +186,6 @@ class ParamBinder {
 			if (c == SINGLE_QUOTE || c == DOUBLE_QUOTE || c == BACKTICK) {
 				quote = c;
 				runBackslashes = backslashEscapes || (c == SINGLE_QUOTE && __isEscapeStringPrefix(text, i));
-				out.addChar(c);
 				i++;
 				continue;
 			}
@@ -199,25 +198,19 @@ class ParamBinder {
 					// end, unterminated, where the server will refuse it.
 					var tag:String = text.substring(i, tagEnd);
 					var close:Int = text.indexOf(tag, tagEnd);
-					var end:Int = close < 0 ? len : close + tag.length;
-					out.add(text.substring(i, end));
-					i = end;
+					i = close < 0 ? len : close + tag.length;
 					continue;
 				}
 			}
 
 			if (c == DASH && next == DASH) {
 				lineComment = true;
-				out.addChar(c);
-				out.addChar(next);
 				i += 2;
 				continue;
 			}
 
 			if (c == SLASH && next == STAR) {
 				blockDepth = 1;
-				out.addChar(c);
-				out.addChar(next);
 				i += 2;
 				continue;
 			}
@@ -227,21 +220,16 @@ class ParamBinder {
 				while (j < len && __isIdentPart(StringTools.fastCodeAt(text, j))) {
 					j++;
 				}
-				var name:String = text.substring(i + 1, j);
-				if (has(name)) {
-					out.add(escape(get(name)));
-				} else {
-					out.add(text.substring(i, j));
-				}
+				found.push(i);
+				found.push(j);
 				i = j;
 				continue;
 			}
 
-			out.addChar(c);
 			i++;
 		}
 
-		return out.toString();
+		return found;
 	}
 
 	/**
@@ -297,5 +285,117 @@ class ParamBinder {
 
 	private static inline function __isIdentPart(c:Int):Bool {
 		return __isIdentStart(c) || (c >= "0".code && c <= "9".code);
+	}
+}
+
+/**
+	A statement's text split once at its placeholders, by `ParamBinder`'s
+	rules, for substituting values into it again and again: a statement run
+	repeatedly scans its text once, not on every run.
+
+	The scan copied the statement into a buffer a character at a time on
+	every run, and ran even with no placeholder in the text: 270-460 ns for a
+	55-character SELECT with none, 1.5-2.8 µs with six (the audit's
+	SqlitePerf). Rendering is now its pieces joined, and text with no
+	placeholder is itself.
+**/
+@:noCompletion
+class ParamTemplate {
+	/** The text it was made from. **/
+	public var text(default, null):String;
+
+	public var backslashEscapes(default, null):Bool;
+	public var dollarQuotes(default, null):Bool;
+
+	// The text between placeholders: one more than there are names.
+	@:noCompletion private var __pieces:Array<String>;
+	// Each placeholder's name, and as it was written, `:name`.
+	@:noCompletion private var __names:Array<String>;
+	@:noCompletion private var __written:Array<String>;
+
+	@:noCompletion private function new(text:String, backslashEscapes:Bool, dollarQuotes:Bool) {
+		this.text = text;
+		this.backslashEscapes = backslashEscapes;
+		this.dollarQuotes = dollarQuotes;
+	}
+
+	/** `text`, split at its placeholders. **/
+	public static function parse(text:String, backslashEscapes:Bool, dollarQuotes:Bool):ParamTemplate {
+		var template:ParamTemplate = new ParamTemplate(text, backslashEscapes, dollarQuotes);
+		var pieces:Array<String> = [];
+		var names:Array<String> = [];
+		var written:Array<String> = [];
+
+		if (text != null && text.indexOf(":") >= 0) {
+			var found:Array<Int> = ParamBinder.placeholders(text, backslashEscapes, dollarQuotes);
+			var at:Int = 0;
+			var k:Int = 0;
+
+			while (k < found.length) {
+				var start:Int = found[k];
+				var end:Int = found[k + 1];
+				pieces.push(text.substring(at, start));
+				names.push(text.substring(start + 1, end));
+				written.push(text.substring(start, end));
+				at = end;
+				k += 2;
+			}
+
+			pieces.push(text.substring(at));
+		}
+
+		template.__pieces = pieces;
+		template.__names = names;
+		template.__written = written;
+		return template;
+	}
+
+	/** Whether it was made from `text`, read the same way. **/
+	public inline function matches(text:String, backslashEscapes:Bool, dollarQuotes:Bool):Bool {
+		return this.text == text && this.backslashEscapes == backslashEscapes && this.dollarQuotes == dollarQuotes;
+	}
+
+	/** The text with each placeholder `has` knows replaced by `escape` of its value. **/
+	public function render(has:String->Bool, get:String->Null<Dynamic>, escape:Dynamic->String):String {
+		var count:Int = __names.length;
+
+		if (count == 0) {
+			return text;
+		}
+
+		var out:StringBuf = new StringBuf();
+
+		for (i in 0...count) {
+			out.add(__pieces[i]);
+			var name:String = __names[i];
+			out.add(has(name) ? escape(get(name)) : __written[i]);
+		}
+
+		out.add(__pieces[count]);
+		return out.toString();
+	}
+
+	/**
+		`render` from a map of values: a placeholder whose name the map has
+		is replaced, even by `escape` of a null value; one it has not is left
+		as written.
+	**/
+	public function renderMap(values:haxe.ds.StringMap<Dynamic>, escape:Dynamic->String):String {
+		var count:Int = __names.length;
+
+		if (count == 0) {
+			return text;
+		}
+
+		var out:StringBuf = new StringBuf();
+
+		for (i in 0...count) {
+			out.add(__pieces[i]);
+			var name:String = __names[i];
+			out.add(values.exists(name) ? escape(values.get(name)) : __written[i]);
+		}
+
+		out.add(__pieces[count]);
+		return out.toString();
 	}
 }

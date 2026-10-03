@@ -30,11 +30,12 @@ import sys.thread.Mutex;
 
 	The shape falls back to `Reflect.setField` on hxcpp too when its names
 	repeat (the last value wins, as before), when one is not ASCII (hxcpp
-	looks fixed slots up by ASCII name only), or when the process has
-	already made `MAX_NAMES` distinct names permanent: an object holds its
-	field names without marking them for the collector, so a name in a
-	fixed slot must never be collected, and names read from a peer would
-	otherwise grow that set without bound.
+	looks fixed slots up by ASCII name only), when one is longer than
+	`MAX_NAME_LENGTH`, or when the process has already made `MAX_NAMES`
+	distinct names, or `MAX_NAME_CHARACTERS` characters of them, permanent:
+	an object holds its field names without marking them for the collector,
+	so a name in a fixed slot must never be collected, and names read from a
+	peer would otherwise grow that set without bound.
 **/
 @:noCompletion
 class AnonBuilder {
@@ -44,6 +45,12 @@ class AnonBuilder {
 		map; shapes already made keep their slots.
 	**/
 	public static inline var MAX_NAMES:Int = 16384;
+
+	/** The longest name a fixed slot takes, in characters. **/
+	public static inline var MAX_NAME_LENGTH:Int = 128;
+
+	/** How many characters of names, across every builder, may be made permanent. **/
+	public static inline var MAX_NAME_CHARACTERS:Int = 1048576;
 
 	/** The field names, in the order the setters index them. **/
 	public var names(default, null):Array<String>;
@@ -62,6 +69,7 @@ class AnonBuilder {
 
 	@:noCompletion private static var __permanent:Map<String, Bool> = new Map();
 	@:noCompletion private static var __permanentCount:Int = 0;
+	@:noCompletion private static var __permanentCharacters:Int = 0;
 	@:noCompletion private static final __lock:Mutex = new Mutex();
 	#end
 
@@ -166,6 +174,33 @@ class AnonBuilder {
 		#end
 	}
 
+	/**
+		The builder for `names` in `shapes`, the recent shapes a decoder has
+		met, most recent last: one made before for the same names, or a new
+		one, kept in place of the oldest when `shapes` holds `keep` already.
+	**/
+	public static function recent(shapes:Array<AnonBuilder>, names:Array<String>, keep:Int = 8):AnonBuilder {
+		var count:Int = names.length;
+		var i:Int = shapes.length;
+
+		while (--i >= 0) {
+			var shape:AnonBuilder = shapes[i];
+
+			if (shape.matches(names, count)) {
+				return shape;
+			}
+		}
+
+		var made:AnonBuilder = new AnonBuilder(names);
+
+		if (shapes.length >= keep) {
+			shapes.shift();
+		}
+
+		shapes.push(made);
+		return made;
+	}
+
 	#if cpp
 	/**
 		Works out the slots, in the order hxcpp's lookups expect: by the hash
@@ -182,7 +217,7 @@ class AnonBuilder {
 		for (i in 0...length) {
 			var name:String = names[i];
 
-			if (name == null || !(untyped __cpp__("{0}.isAsciiEncoded()", name) : Bool)) {
+			if (name == null || name.length > MAX_NAME_LENGTH || !(untyped __cpp__("{0}.isAsciiEncoded()", name) : Bool)) {
 				return false;
 			}
 
@@ -198,14 +233,16 @@ class AnonBuilder {
 
 		try {
 			var fresh:Int = 0;
+			var characters:Int = 0;
 
 			for (name in names) {
 				if (!__permanent.exists(name)) {
 					fresh++;
+					characters += name.length;
 				}
 			}
 
-			if (__permanentCount + fresh > MAX_NAMES) {
+			if (__permanentCount + fresh > MAX_NAMES || __permanentCharacters + characters > MAX_NAME_CHARACTERS) {
 				__lock.release();
 				return false;
 			}
@@ -214,6 +251,7 @@ class AnonBuilder {
 				if (!__permanent.exists(name)) {
 					__permanent.set(name, true);
 					__permanentCount++;
+					__permanentCharacters += name.length;
 				}
 
 				keys.push(untyped __cpp__("{0}.makePermanent()", name));

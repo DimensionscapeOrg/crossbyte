@@ -240,13 +240,11 @@ class MongoWire {
 		}
 
 		if (sequences != null) {
-			// A sequence stands for an array field of the body, by name.
+			// A sequence stands for an array field of the body, by name. The
+			// body is an anonymous object: the connection's reader never makes
+			// BsonDocuments.
 			for (sequence in sequences) {
-				if (Std.isOfType(body, crossbyte.db.mongodb.bson.BsonDocument)) {
-					(body : crossbyte.db.mongodb.bson.BsonDocument).set(sequence.name, sequence.documents);
-				} else {
-					Reflect.setField(body, sequence.name, sequence.documents);
-				}
+				Reflect.setField(body, sequence.name, sequence.documents);
 			}
 		}
 

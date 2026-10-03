@@ -138,6 +138,11 @@ class BsonWriter {
 			return;
 		}
 
+		if (isPlainObject(value)) {
+			__anonymousFields(value, depth);
+			return;
+		}
+
 		if (Std.isOfType(value, BsonDocument)) {
 			var document:BsonDocument = value;
 
@@ -158,13 +163,7 @@ class BsonWriter {
 			return;
 		}
 
-		if (!isPlainObject(value)) {
-			throw new ArgumentError('${__describe(value)} is not a document; use an anonymous object, a BsonDocument or a StringMap.');
-		}
-
-		for (name in Reflect.fields(value)) {
-			this.value(name, Reflect.field(value, name), depth + 1);
-		}
+		throw new ArgumentError('${__describe(value)} is not a document; use an anonymous object, a BsonDocument or a StringMap.');
 	}
 
 	/**
@@ -176,7 +175,21 @@ class BsonWriter {
 		var at:Int = beginDocument();
 		var id:Dynamic = null;
 
-		if (Std.isOfType(value, BsonDocument)) {
+		if (isPlainObject(value)) {
+			id = Reflect.field(value, "_id");
+
+			if (id == null) {
+				id = new ObjectId();
+			}
+
+			this.value("_id", id, 1);
+
+			for (name in Reflect.fields(value)) {
+				if (name != "_id") {
+					this.value(name, Reflect.field(value, name), 1);
+				}
+			}
+		} else if (Std.isOfType(value, BsonDocument)) {
 			var document:BsonDocument = value;
 			id = document.get("_id");
 
@@ -208,23 +221,7 @@ class BsonWriter {
 				}
 			}
 		} else {
-			if (!isPlainObject(value)) {
-				throw new ArgumentError('${__describe(value)} is not a document; use an anonymous object, a BsonDocument or a StringMap.');
-			}
-
-			id = Reflect.field(value, "_id");
-
-			if (id == null) {
-				id = new ObjectId();
-			}
-
-			this.value("_id", id, 1);
-
-			for (name in Reflect.fields(value)) {
-				if (name != "_id") {
-					this.value(name, Reflect.field(value, name), 1);
-				}
-			}
+			throw new ArgumentError('${__describe(value)} is not a document; use an anonymous object, a BsonDocument or a StringMap.');
 		}
 
 		endDocument(at);
@@ -257,53 +254,64 @@ class BsonWriter {
 		an anonymous object or `StringMap` as a document. Anything else, an
 		instance of some other class, an enum, a function, is refused rather
 		than guessed at.
+
+		The value's kind is asked once (`__kindOf`), and only an instance of a
+		class goes on to the BSON classes, the common ones first: a chain of
+		`Std.isOfType` per value, up to six for a number and seventeen for a
+		nested object, cost a fifth to a third of encoding a document on
+		hxcpp.
 	**/
 	public function value(name:String, value:Dynamic, depth:Int):Void {
-		if (value == null) {
-			byte(0x0A);
-			cstring(name);
-			return;
-		}
+		switch (__kindOf(value)) {
+			case KIND_NULL:
+				byte(0x0A);
+				cstring(name);
+			case KIND_STRING:
+				byte(0x02);
+				cstring(name);
+				string(value);
+			case KIND_BOOL:
+				byte(0x08);
+				cstring(name);
+				byte(value ? 1 : 0);
+			case KIND_INT:
+				byte(0x10);
+				cstring(name);
+				#if cpp
+				int32(value);
+				#else
+				// Std.int, not an implicit conversion: off hxcpp an integral
+				// Float is of this kind, and the interpreter would carry it
+				// into setInt32 still a float.
+				int32(Std.int(value));
+				#end
+			case KIND_FLOAT:
+				var number:Float = value;
 
-		if (Std.isOfType(value, String)) {
-			byte(0x02);
-			cstring(name);
-			string(value);
-			return;
+				if (__wholeInt32(number)) {
+					byte(0x10);
+					cstring(name);
+					int32(Std.int(number));
+				} else {
+					byte(0x01);
+					cstring(name);
+					double(number);
+				}
+			case KIND_INT64:
+				byte(0x12);
+				cstring(name);
+				int64(value);
+			case KIND_ARRAY:
+				byte(0x04);
+				cstring(name);
+				array(value, depth);
+			case KIND_OBJECT:
+				byte(0x03);
+				cstring(name);
+				__anonymous(value, depth);
+			default:
+				__rest(name, value, depth);
 		}
-
-		if (Std.isOfType(value, Bool)) {
-			byte(0x08);
-			cstring(name);
-			byte(value ? 1 : 0);
-			return;
-		}
-
-		if (isInt64(value)) {
-			byte(0x12);
-			cstring(name);
-			int64(value);
-			return;
-		}
-
-		if (Std.isOfType(value, Int)) {
-			byte(0x10);
-			cstring(name);
-			// Std.int, not an implicit conversion: an integral Float passes
-			// the test above everywhere, and the interpreter would carry it
-			// into setInt32 still a float.
-			int32(Std.int(value));
-			return;
-		}
-
-		if (Std.isOfType(value, Float)) {
-			byte(0x01);
-			cstring(name);
-			double(value);
-			return;
-		}
-
-		__rest(name, value, depth);
 	}
 
 	/** A field that is an int64 whatever its value: a cursor id, a transaction number. **/
@@ -311,6 +319,54 @@ class BsonWriter {
 		byte(0x12);
 		cstring(name);
 		int64(value);
+	}
+
+	// Fields whose type the caller knows, a driver's own: a collection's
+	// name, a batch size, a flag, written without asking `value` what they
+	// are, and without boxing them to ask.
+
+	/** A string field; `null` is written as BSON null, as `value` would. **/
+	public function stringField(name:String, text:String):Void {
+		if (text == null) {
+			byte(0x0A);
+			cstring(name);
+			return;
+		}
+
+		byte(0x02);
+		cstring(name);
+		string(text);
+	}
+
+	public function int32Field(name:String, value:Int):Void {
+		byte(0x10);
+		cstring(name);
+		int32(value);
+	}
+
+	public function boolField(name:String, value:Bool):Void {
+		byte(0x08);
+		cstring(name);
+		byte(value ? 1 : 0);
+	}
+
+	/** Starts a sub-document field, and answers where, for `endDocument`. **/
+	public function beginDocumentField(name:String):Int {
+		byte(0x03);
+		cstring(name);
+		return beginDocument();
+	}
+
+	/** Starts an array field, whose elements are named by `elementName`; answers where, for `endDocument`. **/
+	public function beginArrayField(name:String):Int {
+		byte(0x04);
+		cstring(name);
+		return beginDocument();
+	}
+
+	/** The name of an array's element `index`: its index, as text. **/
+	public static inline function elementName(index:Int):String {
+		return index < __INDEX_NAMES.length ? __INDEX_NAMES[index] : Std.string(index);
 	}
 
 	/**
@@ -334,7 +390,12 @@ class BsonWriter {
 		Whether `value` is an anonymous object, as opposed to an instance of a
 		class or anything else `Reflect` can see into.
 	**/
-	public static function isPlainObject(value:Dynamic):Bool {
+	public static #if cpp inline #end function isPlainObject(value:Dynamic):Bool {
+		#if cpp
+		// What Type.getClass and Type.typeof ask between them, without the
+		// class name each compares as text.
+		return value != null && (untyped __cpp__("{0}->__GetType() == vtObject", value) : Bool);
+		#else
 		if (value == null || Type.getClass(value) != null) {
 			return false;
 		}
@@ -343,23 +404,106 @@ class BsonWriter {
 			case TObject: true;
 			default: false;
 		}
+		#end
 	}
 
+	// What __kindOf answers: hxcpp's own codes, as `__GetType()` gives them.
+	@:noCompletion private static inline var KIND_NULL:Int = 0;
+	@:noCompletion private static inline var KIND_FLOAT:Int = 1;
+	@:noCompletion private static inline var KIND_BOOL:Int = 2;
+	@:noCompletion private static inline var KIND_STRING:Int = 3;
+	@:noCompletion private static inline var KIND_OBJECT:Int = 4;
+	@:noCompletion private static inline var KIND_ARRAY:Int = 5;
+	@:noCompletion private static inline var KIND_CLASS:Int = 8;
+	@:noCompletion private static inline var KIND_INT64:Int = 9;
+	@:noCompletion private static inline var KIND_INT:Int = 0xFF;
+	@:noCompletion private static inline var KIND_OTHER:Int = -1;
+
+	/**
+		What kind of value `value` is, asked once: null, a string, a bool, an
+		int, a float, an int64, an array, an anonymous object, or something
+		else, a class instance, and on hxcpp also a function or an enum,
+		which `__rest` sorts out.
+
+		On hxcpp it is the value's own type code, one virtual call. Elsewhere
+		the same order of tests the writer always made for a primitive, an
+		Int64 before an Int, since on the jvm a small one passes as an Int,
+		and then one `Type.getClass` for anything else. Not `Type.typeof`
+		throughout: it makes a `TClass` for every class instance, a string
+		included, on most targets.
+
+		On hxcpp a whole number held as a `Float` comes back a float, where
+		`Std.isOfType(v, Int)` would say int: the `KIND_FLOAT` branch asks
+		`__wholeInt32` for that, and nowhere else does it need to.
+	**/
+	@:noCompletion private static inline function __kindOf(value:Dynamic):Int {
+		#if cpp
+		return value == null ? KIND_NULL : (untyped __cpp__("{0}->__GetType()", value) : Int);
+		#else
+		return if (value == null) {
+			KIND_NULL;
+		} else if (Std.isOfType(value, String)) {
+			KIND_STRING;
+		} else if (Std.isOfType(value, Bool)) {
+			KIND_BOOL;
+		} else if (isInt64(value)) {
+			KIND_INT64;
+		} else if (Std.isOfType(value, Int)) {
+			KIND_INT;
+		} else if (Std.isOfType(value, Float)) {
+			KIND_FLOAT;
+		} else if (Std.isOfType(value, Array)) {
+			KIND_ARRAY;
+		} else if (Type.getClass(value) != null) {
+			KIND_CLASS;
+		} else {
+			// isPlainObject's question, its class half answered already.
+			switch (Type.typeof(value)) {
+				case TObject: KIND_OBJECT;
+				default: KIND_OTHER;
+			}
+		}
+		#end
+	}
+
+	/**
+		Whether a value of kind `KIND_FLOAT` is a whole number in the 32-bit
+		range, written as an int32 as `Std.isOfType(v, Int)` would have it.
+		Only on hxcpp can one be: everywhere else `__kindOf` has said int for
+		it already.
+	**/
+	@:noCompletion private static inline function __wholeInt32(number:Float):Bool {
+		#if cpp
+		// The range first: casting a double outside it to an int is undefined.
+		return number >= -2147483648.0 && number <= 2147483647.0 && Std.int(number) == number;
+		#else
+		return false;
+		#end
+	}
+
+	/** An anonymous object as a document: `document`, without asking again what it is. **/
+	@:noCompletion private function __anonymous(value:Dynamic, depth:Int):Void {
+		if (depth > MAX_DEPTH) {
+			throw new ArgumentError('A document nests more than $MAX_DEPTH levels deep, or refers to itself.');
+		}
+
+		var at:Int = beginDocument();
+		__anonymousFields(value, depth);
+		endDocument(at);
+	}
+
+	@:noCompletion private inline function __anonymousFields(value:Dynamic, depth:Int):Void {
+		for (name in Reflect.fields(value)) {
+			this.value(name, Reflect.field(value, name), depth + 1);
+		}
+	}
+
+	/**
+		A value that is none of the kinds `value` writes directly: an instance
+		of one of the BSON classes, the ones values most often are first, or
+		else nothing BSON can hold.
+	**/
 	@:noCompletion private function __rest(name:String, value:Dynamic, depth:Int):Void {
-		if (Std.isOfType(value, Array)) {
-			byte(0x04);
-			cstring(name);
-			array(value, depth);
-			return;
-		}
-
-		if (Std.isOfType(value, BsonDocument) || Std.isOfType(value, haxe.ds.StringMap)) {
-			byte(0x03);
-			cstring(name);
-			document(value, depth);
-			return;
-		}
-
 		if (Std.isOfType(value, ObjectId)) {
 			byte(0x07);
 			cstring(name);
@@ -371,6 +515,13 @@ class BsonWriter {
 			byte(0x09);
 			cstring(name);
 			int64(Int64.fromFloat(Math.ffloor((value : Date).getTime())));
+			return;
+		}
+
+		if (Std.isOfType(value, BsonDocument) || Std.isOfType(value, haxe.ds.StringMap)) {
+			byte(0x03);
+			cstring(name);
+			document(value, depth);
 			return;
 		}
 
@@ -479,13 +630,6 @@ class BsonWriter {
 			return;
 		}
 
-		if (isPlainObject(value)) {
-			byte(0x03);
-			cstring(name);
-			document(value, depth);
-			return;
-		}
-
 		throw new ArgumentError('Field "$name" holds ${__describe(value)}, which has no BSON form. Use an anonymous object for a document.');
 	}
 
@@ -494,7 +638,7 @@ class BsonWriter {
 		1024 are made once, so an ordinary array costs no string per element.
 	**/
 	@:noCompletion private inline function __element(index:Int, value:Dynamic, depth:Int):Void {
-		this.value(index < __INDEX_NAMES.length ? __INDEX_NAMES[index] : Std.string(index), value, depth);
+		this.value(elementName(index), value, depth);
 	}
 
 	// Filled when the class initialises, before any thread can use it, and

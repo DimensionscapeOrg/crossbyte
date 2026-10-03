@@ -20,7 +20,6 @@ import crossbyte.db.mongodb._internal.MongoWire;
 import crossbyte.db.mongodb._internal.Scram;
 import crossbyte.db.mongodb.bson.BsonBinary;
 import crossbyte.db.mongodb.bson.BsonDocument;
-import crossbyte.db.mongodb.bson.BsonInt64;
 import crossbyte.db.mongodb.bson.ExtendedJson;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
@@ -79,6 +78,7 @@ import haxe.io.Bytes;
 	whichever thread is using it.
 **/
 @:access(crossbyte.db.mongodb.MongoCursor)
+@:access(crossbyte.db.mongodb._internal.BsonWriter)
 class MongoConnection extends EventDispatcher implements ITransactionalConnection {
 	/**
 		Whether this target has the blocking sockets the client needs: every
@@ -144,6 +144,11 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	@:noCompletion private var __reader:BsonReader;
 	@:noCompletion private var __settings:MongoSettings;
 	@:noCompletion private var __hello:Dynamic;
+	// What the connection asks of the hello, read from it once (__setHello).
+	@:noCompletion private var __helloSetName:Null<String> = null;
+	@:noCompletion private var __helloPrimary:Null<String> = null;
+	@:noCompletion private var __helloSessions:Bool = false;
+	@:noCompletion private var __helloSharded:Bool = false;
 	@:noCompletion private var __requestId:Int = 0;
 	@:noCompletion private var __bodyStart:Int = 0;
 	@:noCompletion private var __maxWireVersion:Int = 0;
@@ -237,9 +242,9 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			failures.push(host.host + ":" + host.port + ": " + verdict);
 
 			// A secondary knows its primary; go there, once.
-			var primary:Dynamic = __hello != null ? Reflect.field(__hello, "primary") : null;
+			var primary:Null<String> = __hello != null ? __helloPrimary : null;
 
-			if (!followed && Std.isOfType(primary, String)) {
+			if (!followed && primary != null) {
 				var parsed:MongoSettings = new MongoSettings();
 
 				try {
@@ -250,7 +255,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			}
 		}
 
-		__hello = null;
+		__setHello(null);
 		throw new IOError("No usable MongoDB server: " + failures.join("; "));
 	}
 
@@ -265,7 +270,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 
 		if (__sessionId != null && !__wire.closed) {
 			try {
-				__begin("endSessions", [__sessionId]);
+				__begin().value("endSessions", [__sessionId], 1);
 				__endBody("admin", null, false);
 				__send(false);
 			} catch (_:Dynamic) {
@@ -284,7 +289,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		}
 
 		try {
-			__begin("ping", 1);
+			__commandOne("ping");
 			__endBody("admin", null, false);
 			__check("ping", __send(true));
 			return true;
@@ -305,7 +310,8 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	public function runCommand(command:Dynamic, ?database:String):Dynamic {
 		var document:BsonDocument = __commandDocument(command);
 		var name:String = document.keyAt(0);
-		var w:BsonWriter = __begin(name, document.valueAt(0));
+		var w:BsonWriter = __begin();
+		w.value(name, document.valueAt(0), 1);
 
 		for (k in 1...document.length) {
 			var key:String = document.keyAt(k);
@@ -371,11 +377,11 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 
 		while (next < documents.length) {
 			var batchStart:Int = next;
-			var w:BsonWriter = __begin("insert", collection);
-			w.value("ordered", ordered, 1);
+			var w:BsonWriter = __command("insert", collection);
+			w.boolField("ordered", ordered);
 
 			if (options != null && options.bypassDocumentValidation == true) {
-				w.value("bypassDocumentValidation", true, 1);
+				w.boolField("bypassDocumentValidation", true);
 			}
 
 			__endBody(__database, concern, true);
@@ -468,7 +474,24 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		and answers a cursor over them.
 	**/
 	public function find(collection:String, ?filter:Dynamic, ?options:MongoFindOptions):MongoCursor {
-		var w:BsonWriter = __begin("find", collection);
+		return __find(collection, filter, options, false);
+	}
+
+	/** The first document matching `filter`, or `null` when none does. **/
+	public function findOne(collection:String, ?filter:Dynamic, ?options:MongoFindOptions):Dynamic {
+		var cursor:MongoCursor = __find(collection, filter, options, true);
+		var document:Dynamic = cursor.next();
+		cursor.close();
+		return document;
+	}
+
+	/**
+		`find`, or with `single` `findOne`'s: a limit and a batch of one
+		whatever `options` say, its other options as given. It made a copy of
+		the options for that, every call.
+	**/
+	@:noCompletion private function __find(collection:String, filter:Dynamic, options:MongoFindOptions, single:Bool):MongoCursor {
+		var w:BsonWriter = __command("find", collection);
 
 		if (filter != null) {
 			w.value("filter", filter, 1);
@@ -487,29 +510,37 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			}
 
 			if (options.skip != null && options.skip > 0) {
-				w.value("skip", options.skip, 1);
+				w.int32Field("skip", options.skip);
 			}
+		}
 
+		if (single) {
+			w.int32Field("limit", 1);
+			batchSize = 1;
+			w.int32Field("batchSize", batchSize);
+		} else if (options != null) {
 			if (options.limit != null && options.limit > 0) {
-				w.value("limit", options.limit, 1);
+				w.int32Field("limit", options.limit);
 			}
 
 			if (options.batchSize != null && options.batchSize >= 0) {
 				batchSize = options.batchSize;
-				w.value("batchSize", batchSize, 1);
+				w.int32Field("batchSize", batchSize);
 			}
+		}
 
+		if (options != null) {
 			if (options.hint != null) {
 				w.value("hint", __ordered(options.hint, "hint"), 1);
 			}
 
 			if (options.maxTimeMS != null && options.maxTimeMS > 0) {
 				maxTimeMS = options.maxTimeMS;
-				w.value("maxTimeMS", maxTimeMS, 1);
+				w.int32Field("maxTimeMS", maxTimeMS);
 			}
 
 			if (options.collation != null) {
-				w.value("collation", options.collation, 1);
+				w.value("collation", __collationDocument(options.collation), 1);
 			}
 
 			if (options.comment != null) {
@@ -519,29 +550,6 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 
 		__endBody(__database, null, true);
 		return __cursorFrom(__check("find", __send(true)), batchSize, maxTimeMS);
-	}
-
-	/** The first document matching `filter`, or `null` when none does. **/
-	public function findOne(collection:String, ?filter:Dynamic, ?options:MongoFindOptions):Dynamic {
-		var single:MongoFindOptions = {
-			limit: 1,
-			batchSize: 1
-		};
-
-		if (options != null) {
-			single.sort = options.sort;
-			single.projection = options.projection;
-			single.skip = options.skip;
-			single.hint = options.hint;
-			single.maxTimeMS = options.maxTimeMS;
-			single.collation = options.collation;
-			single.comment = options.comment;
-		}
-
-		var cursor:MongoCursor = find(collection, filter, single);
-		var document:Dynamic = cursor.next();
-		cursor.close();
-		return document;
 	}
 
 	/**
@@ -558,31 +566,39 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			throw new ArgumentError("update needs an update document.");
 		}
 
-		var statement:BsonDocument = new BsonDocument().add("q", filter).add("u", update);
+		// Refused before anything is written, as a bad filter is not.
+		var hint:Dynamic = options != null && options.hint != null ? __ordered(options.hint, "hint") : null;
+		var result:MongoWriteResult = __beginWrite("update", "updates", collection, options != null ? options.writeConcern : null);
+		// The statement, straight into the message's sequence.
+		var w:BsonWriter = __writer;
+		var at:Int = w.beginDocument();
+		w.value("q", filter, 1);
+		w.value("u", update, 1);
 
 		if (options != null) {
 			if (options.upsert == true) {
-				statement.add("upsert", true);
+				w.boolField("upsert", true);
 			}
 
 			if (options.multi == true) {
-				statement.add("multi", true);
+				w.boolField("multi", true);
 			}
 
 			if (options.arrayFilters != null) {
-				statement.add("arrayFilters", options.arrayFilters);
+				w.value("arrayFilters", options.arrayFilters, 1);
 			}
 
-			if (options.hint != null) {
-				statement.add("hint", __ordered(options.hint, "hint"));
+			if (hint != null) {
+				w.value("hint", hint, 1);
 			}
 
 			if (options.collation != null) {
-				statement.add("collation", options.collation);
+				w.value("collation", __collationDocument(options.collation), 1);
 			}
 		}
 
-		return __write("update", "updates", collection, [statement], options != null ? options.writeConcern : null);
+		w.endDocument(at);
+		return __endWrite("update", result);
 	}
 
 	/**
@@ -595,19 +611,23 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			throw new ArgumentError("delete needs a filter; {} matches every document.");
 		}
 
-		var statement:BsonDocument = new BsonDocument().add("q", filter).add("limit", options != null && options.justOne == true ? 1 : 0);
+		var hint:Dynamic = options != null && options.hint != null ? __ordered(options.hint, "hint") : null;
+		var result:MongoWriteResult = __beginWrite("delete", "deletes", collection, options != null ? options.writeConcern : null);
+		var w:BsonWriter = __writer;
+		var at:Int = w.beginDocument();
+		w.value("q", filter, 1);
+		w.int32Field("limit", options != null && options.justOne == true ? 1 : 0);
 
-		if (options != null) {
-			if (options.hint != null) {
-				statement.add("hint", __ordered(options.hint, "hint"));
-			}
-
-			if (options.collation != null) {
-				statement.add("collation", options.collation);
-			}
+		if (hint != null) {
+			w.value("hint", hint, 1);
 		}
 
-		return __write("delete", "deletes", collection, [statement], options != null ? options.writeConcern : null);
+		if (options != null && options.collation != null) {
+			w.value("collation", __collationDocument(options.collation), 1);
+		}
+
+		w.endDocument(at);
+		return __endWrite("delete", result);
 	}
 
 	/** Runs an aggregation pipeline and answers a cursor over its output. **/
@@ -616,9 +636,8 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			throw new ArgumentError("aggregate needs a pipeline; [] passes every document through.");
 		}
 
-		var w:BsonWriter = __begin("aggregate", collection);
+		var w:BsonWriter = __command("aggregate", collection);
 		w.value("pipeline", pipeline, 1);
-		var cursor:BsonDocument = new BsonDocument();
 		var batchSize:Int = -1;
 		var maxTimeMS:Int = -1;
 		var concern:Null<MongoWriteConcern> = null;
@@ -626,16 +645,15 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		if (options != null) {
 			if (options.batchSize != null && options.batchSize >= 0) {
 				batchSize = options.batchSize;
-				cursor.add("batchSize", batchSize);
 			}
 
 			if (options.maxTimeMS != null && options.maxTimeMS > 0) {
 				maxTimeMS = options.maxTimeMS;
-				w.value("maxTimeMS", maxTimeMS, 1);
+				w.int32Field("maxTimeMS", maxTimeMS);
 			}
 
 			if (options.allowDiskUse != null) {
-				w.value("allowDiskUse", options.allowDiskUse, 1);
+				w.boolField("allowDiskUse", options.allowDiskUse);
 			}
 
 			if (options.hint != null) {
@@ -643,7 +661,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			}
 
 			if (options.collation != null) {
-				w.value("collation", options.collation, 1);
+				w.value("collation", __collationDocument(options.collation), 1);
 			}
 
 			if (options.comment != null) {
@@ -653,7 +671,14 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			concern = options.writeConcern;
 		}
 
-		w.value("cursor", cursor, 1);
+		// The cursor field aggregate needs, holding the first batch's size.
+		var cursor:Int = w.beginDocumentField("cursor");
+
+		if (batchSize >= 0) {
+			w.int32Field("batchSize", batchSize);
+		}
+
+		w.endDocument(cursor);
 		__endBody(__database, concern, true);
 		return __cursorFrom(__check("aggregate", __send(true)), batchSize, maxTimeMS);
 	}
@@ -666,7 +691,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		an `Int`, held at 2^31 - 1.
 	**/
 	public function count(collection:String, ?filter:Dynamic, ?options:MongoCountOptions):Float {
-		var w:BsonWriter = __begin("count", collection);
+		var w:BsonWriter = __command("count", collection);
 
 		if (filter != null) {
 			w.value("query", filter, 1);
@@ -674,11 +699,11 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 
 		if (options != null) {
 			if (options.skip != null && options.skip > 0) {
-				w.value("skip", options.skip, 1);
+				w.int32Field("skip", options.skip);
 			}
 
 			if (options.limit != null && options.limit > 0) {
-				w.value("limit", options.limit, 1);
+				w.int32Field("limit", options.limit);
 			}
 
 			if (options.hint != null) {
@@ -686,7 +711,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			}
 
 			if (options.maxTimeMS != null && options.maxTimeMS > 0) {
-				w.value("maxTimeMS", options.maxTimeMS, 1);
+				w.int32Field("maxTimeMS", options.maxTimeMS);
 			}
 		}
 
@@ -727,13 +752,13 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			}
 
 			if (index.collation != null) {
-				spec.add("collation", index.collation);
+				spec.add("collation", __collationDocument(index.collation));
 			}
 
 			specs.push(spec);
 		}
 
-		var w:BsonWriter = __begin("createIndexes", collection);
+		var w:BsonWriter = __command("createIndexes", collection);
 		w.value("indexes", specs, 1);
 		__endBody(__database, writeConcern, true);
 		__check("createIndexes", __send(true), true);
@@ -741,7 +766,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 
 	/** Creates one index and answers its name. **/
 	public function createIndex(collection:String, key:Dynamic, ?options:{?name:String, ?unique:Bool, ?sparse:Bool, ?expireAfterSeconds:Int,
-		?partialFilterExpression:Dynamic, ?collation:Dynamic}):String {
+		?partialFilterExpression:Dynamic, ?collation:MongoCollation}):String {
 		var index:MongoIndex = {key: key};
 
 		if (options != null) {
@@ -764,7 +789,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		answers `true` from those either way.
 	**/
 	public function drop(collection:String):Bool {
-		__begin("drop", collection);
+		__command("drop", collection);
 		__endBody(__database, writeConcern, true);
 		var reply:Dynamic = __send(true);
 
@@ -910,7 +935,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		}
 
 		try {
-			__begin("buildInfo", 1);
+			__commandOne("buildInfo");
 			__endBody("admin", null, false);
 			var reply:Dynamic = __check("buildInfo", __send(true));
 			var version:Dynamic = Reflect.field(reply, "version");
@@ -1072,7 +1097,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 					throw failure;
 				}
 				#else
-				if (__peerOf(socket) == null) {
+				if (!__hasPeer(socket)) {
 					throw __connectFailure(socket);
 				}
 				#end
@@ -1093,12 +1118,12 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	}
 
 	#if neko
-	/** The peer, or null for a socket that is not connected. **/
-	@:noCompletion private static function __peerOf(socket:FlexSocket):Dynamic {
+	/** Whether the socket has a peer: false for one that is not connected. **/
+	@:noCompletion private static function __hasPeer(socket:FlexSocket):Bool {
 		try {
-			return socket.peer();
+			return socket.peer() != null;
 		} catch (_:Dynamic) {
-			return null;
+			return false;
 		}
 	}
 	#end
@@ -1166,12 +1191,12 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		var credentials:Bool = settings.username != null || mechanism == "MONGODB-X509";
 		var authSource:String = settings.effectiveAuthSource();
 
-		var w:BsonWriter = __begin("hello", 1);
+		var w:BsonWriter = __commandOne("hello");
 		__clientMetadata(w, settings);
 		w.value("compression", [], 1);
 
 		if (credentials && mechanism == null) {
-			w.value("saslSupportedMechs", authSource + "." + settings.username, 1);
+			w.stringField("saslSupportedMechs", authSource + "." + settings.username);
 		}
 
 		// The first step of authentication rides along with the hello, which
@@ -1202,11 +1227,11 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		if (!__isOk(hello) && __int(Reflect.field(hello, "code")) == MongoError.COMMAND_NOT_FOUND) {
 			// Before 4.4.2 the command was isMaster.
 			scram = null;
-			w = __begin("isMaster", 1);
+			w = __commandOne("isMaster");
 			__clientMetadata(w, settings);
 
 			if (credentials && mechanism == null) {
-				w.value("saslSupportedMechs", authSource + "." + settings.username, 1);
+				w.stringField("saslSupportedMechs", authSource + "." + settings.username);
 			}
 
 			__endBody("admin", null, false);
@@ -1214,7 +1239,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		}
 
 		__check("hello", hello);
-		__hello = hello;
+		__setHello(hello);
 
 		var maxWire:Int = __int(Reflect.field(hello, "maxWireVersion"));
 		var minWire:Int = __int(Reflect.field(hello, "minWireVersion"));
@@ -1232,7 +1257,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		__maxWriteBatchSize = __positive(Reflect.field(hello, "maxWriteBatchSize"), 100000);
 		__wire.maxMessageSize = __positive(Reflect.field(hello, "maxMessageSizeBytes"), 48000000);
 
-		var setName:Dynamic = Reflect.field(hello, "setName");
+		var setName:Null<String> = __helloSetName;
 
 		if (settings.replicaSet != null && setName != settings.replicaSet) {
 			return 'it is ${setName == null ? "not in a replica set" : "in replica set " + setName}, not ${settings.replicaSet}';
@@ -1262,6 +1287,21 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		w.value("client", client, 1);
 	}
 
+	/**
+		Keeps the server's hello, as `serverInfo` answers it, and reads what
+		the connection asks of it later once, into typed fields: they were
+		looked up by name on every `begin()`.
+	**/
+	@:noCompletion private function __setHello(hello:Dynamic):Void {
+		__hello = hello;
+		var setName:Dynamic = hello == null ? null : Reflect.field(hello, "setName");
+		var primary:Dynamic = hello == null ? null : Reflect.field(hello, "primary");
+		__helloSetName = Std.isOfType(setName, String) ? setName : null;
+		__helloPrimary = Std.isOfType(primary, String) ? primary : null;
+		__helloSessions = hello != null && Reflect.field(hello, "logicalSessionTimeoutMinutes") != null;
+		__helloSharded = hello != null && Reflect.field(hello, "msg") == "isdbgrid";
+	}
+
 	/** Whether the server takes writes: a primary, a mongos, or a standalone. **/
 	@:noCompletion private static function __writable(hello:Dynamic):Bool {
 		return __isTrue(Reflect.field(hello, "isWritablePrimary")) || __isTrue(Reflect.field(hello, "ismaster")) || Reflect.field(hello, "msg") == "isdbgrid";
@@ -1273,11 +1313,11 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 				return;
 			}
 
-			var w:BsonWriter = __begin("authenticate", 1);
-			w.value("mechanism", "MONGODB-X509", 1);
+			var w:BsonWriter = __commandOne("authenticate");
+			w.stringField("mechanism", "MONGODB-X509");
 
 			if (settings.username != null) {
-				w.value("user", settings.username, 1);
+				w.stringField("user", settings.username);
 			}
 
 			__endBody("$external", null, false);
@@ -1294,10 +1334,10 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			plain.addByte(0);
 			plain.add(Bytes.ofString(settings.password == null ? "" : settings.password));
 			var payload:Bytes = plain.getBytes();
-			__begin("saslStart", 1);
-			__writer.value("mechanism", "PLAIN", 1);
-			__writer.value("payload", payload, 1);
-			__writer.value("autoAuthorize", 1, 1);
+			var w:BsonWriter = __commandOne("saslStart");
+			w.stringField("mechanism", "PLAIN");
+			w.value("payload", payload, 1);
+			w.int32Field("autoAuthorize", 1);
 			__endBody(authSource, null, false);
 			__checkAuth(__handshakeSend());
 			return;
@@ -1320,20 +1360,24 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			}
 
 			scram = new Scram(chosen, settings.username, settings.password);
-			__begin("saslStart", 1);
-			__writer.value("mechanism", chosen, 1);
-			__writer.value("payload", scram.clientFirst(), 1);
-			__writer.value("autoAuthorize", 1, 1);
-			__writer.value("options", new BsonDocument().add("skipEmptyExchange", true), 1);
+			var w:BsonWriter = __commandOne("saslStart");
+			w.stringField("mechanism", chosen);
+			w.value("payload", scram.clientFirst(), 1);
+			w.int32Field("autoAuthorize", 1);
+			var options:Int = w.beginDocumentField("options");
+			w.boolField("skipEmptyExchange", true);
+			w.endDocument(options);
 			__endBody(authSource, null, false);
 			reply = __checkAuth(__handshakeSend());
 		}
 
-		var conversation:Dynamic = Reflect.field(reply, "conversationId");
+		// An int32, the conversation the server numbered; it was carried as
+		// whatever the reply held.
+		var conversation:Int = __int(Reflect.field(reply, "conversationId"));
 		var proof:Bytes = scram.clientFinal(__payload(reply));
-		__begin("saslContinue", 1);
-		__writer.value("conversationId", conversation, 1);
-		__writer.value("payload", proof, 1);
+		var w:BsonWriter = __commandOne("saslContinue");
+		w.int32Field("conversationId", conversation);
+		w.value("payload", proof, 1);
 		__endBody(authSource, null, false);
 		reply = __checkAuth(__handshakeSend());
 		scram.verifyServer(__payload(reply));
@@ -1347,9 +1391,9 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 				throw new IOError("The server did not finish the SCRAM exchange.");
 			}
 
-			__begin("saslContinue", 1);
-			__writer.value("conversationId", conversation, 1);
-			__writer.value("payload", Bytes.alloc(0), 1);
+			var w:BsonWriter = __commandOne("saslContinue");
+			w.int32Field("conversationId", conversation);
+			w.value("payload", Bytes.alloc(0), 1);
 			__endBody(authSource, null, false);
 			reply = __checkAuth(__handshakeSend());
 		}
@@ -1418,10 +1462,10 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 
 	/**
 		Starts a command message in the connection's writer: the header, the
-		flags, and the body document with the command's own field first.
-		Answers the writer, positioned for the command's other fields.
+		flags, and the body document, empty. Answers the writer, positioned
+		for the command's own field, which names it and goes first.
 	**/
-	@:noCompletion private function __begin(name:String, value:Dynamic):BsonWriter {
+	@:noCompletion private function __begin():BsonWriter {
 		__requireConnected();
 		var w:BsonWriter = __writer;
 		w.reset();
@@ -1433,7 +1477,20 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		w.int32(0);
 		w.byte(0);
 		__bodyStart = w.beginDocument();
-		w.value(name, value, 1);
+		return w;
+	}
+
+	/** `__begin`, and the command's field naming the collection it acts on: `{find: "people", ...`. **/
+	@:noCompletion private function __command(name:String, collection:String):BsonWriter {
+		var w:BsonWriter = __begin();
+		w.stringField(name, collection);
+		return w;
+	}
+
+	/** `__begin`, and the command's field as a command of no subject has it: `{ping: 1, ...`. **/
+	@:noCompletion private function __commandOne(name:String):BsonWriter {
+		var w:BsonWriter = __begin();
+		w.int32Field(name, 1);
 		return w;
 	}
 
@@ -1452,18 +1509,18 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			w.int64Field("txnNumber", __txnNumber);
 
 			if (__txnState == TXN_STARTING) {
-				w.value("startTransaction", true, 1);
+				w.boolField("startTransaction", true);
 				// Started once this is sent, see __send, and not before: a
 				// command refused here, too large to send, starts nothing.
 				__startsTransaction = true;
 			}
 
-			w.value("autocommit", false, 1);
+			w.boolField("autocommit", false);
 		} else if (concern != null) {
-			w.value("writeConcern", __concernDocument(concern), 1);
+			__writeConcernField(w, concern);
 		}
 
-		w.value("$db", database, 1);
+		w.stringField("$db", database);
 		w.endDocument(__bodyStart);
 
 		var size:Int = w.length - __bodyStart;
@@ -1553,23 +1610,30 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		return reply;
 	}
 
-	@:noCompletion private function __write(operation:String, sequenceName:String, collection:String, statements:Array<BsonDocument>,
-			concern:Null<MongoWriteConcern>):MongoWriteResult {
+	// Where the sequence of the update or delete being built starts.
+	@:noCompletion private var __writeSequence:Int = 0;
+
+	/**
+		Starts an update's or a delete's message: its body, and the sequence
+		its statement goes in, which the caller writes straight into the
+		writer, not into a `BsonDocument` made to be written. Answers the
+		result `__endWrite` fills in.
+	**/
+	@:noCompletion private function __beginWrite(operation:String, sequenceName:String, collection:String, concern:Null<MongoWriteConcern>):MongoWriteResult {
 		if (concern == null) {
 			concern = writeConcern;
 		}
 
 		var result:MongoWriteResult = new MongoWriteResult(!__unacknowledged(concern));
-		__begin(operation, collection);
-		__writer.value("ordered", true, 1);
+		__command(operation, collection).boolField("ordered", true);
 		__endBody(__database, concern, true);
-		var sequence:Int = __beginSequence(sequenceName);
+		__writeSequence = __beginSequence(sequenceName);
+		return result;
+	}
 
-		for (statement in statements) {
-			__writer.document(statement, 0);
-		}
-
-		__endSequence(sequence);
+	/** Sends the write `__beginWrite` started, once its statement is written, and reads what it did. **/
+	@:noCompletion private function __endWrite(operation:String, result:MongoWriteResult):MongoWriteResult {
+		__endSequence(__writeSequence);
 		var reply:Dynamic = __send(result.acknowledged);
 
 		if (!result.acknowledged) {
@@ -1577,7 +1641,9 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			return result;
 		}
 
-		__check(operation, reply, true);
+		// Write errors and a write concern error are this method's to raise,
+		// with the counts: not __check's, which collected them for nothing.
+		__check(operation, reply);
 		var n:Float = __count(Reflect.field(reply, "n"));
 
 		if (operation == "update") {
@@ -1599,9 +1665,14 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		}
 
 		__lastAffected = n;
-		var errors:Array<MongoWriteError> = [];
-		__collectWriteErrors(reply, 0, errors);
-		__raiseWriteFailure(operation, errors, __writeConcernError(reply), result);
+		var concernError:MongoWriteError = __writeConcernError(reply);
+
+		if (concernError != null || Reflect.field(reply, "writeErrors") != null) {
+			var errors:Array<MongoWriteError> = [];
+			__collectWriteErrors(reply, 0, errors);
+			__raiseWriteFailure(operation, errors, concernError, result);
+		}
+
 		return result;
 	}
 
@@ -1665,22 +1736,67 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			__text(Reflect.field(reply, "codeName")), labels, null, null, result, reply);
 	}
 
-	@:noCompletion private static function __concernDocument(concern:MongoWriteConcern):BsonDocument {
-		var document:BsonDocument = new BsonDocument();
+	/** A collation as the document the server reads: the fields set, in the order MongoDB documents them. **/
+	@:noCompletion private static function __collationDocument(collation:MongoCollation):BsonDocument {
+		var document:BsonDocument = new BsonDocument().add("locale", collation.locale);
 
-		if (concern.w != null) {
-			document.add("w", concern.w);
+		if (collation.caseLevel != null) {
+			document.add("caseLevel", collation.caseLevel);
 		}
 
-		if (concern.journal != null) {
-			document.add("j", concern.journal);
+		if (collation.caseFirst != null) {
+			document.add("caseFirst", collation.caseFirst);
 		}
 
-		if (concern.wtimeout != null) {
-			document.add("wtimeout", concern.wtimeout);
+		if (collation.strength != null) {
+			document.add("strength", collation.strength);
+		}
+
+		if (collation.numericOrdering != null) {
+			document.add("numericOrdering", collation.numericOrdering);
+		}
+
+		if (collation.alternate != null) {
+			document.add("alternate", collation.alternate);
+		}
+
+		if (collation.maxVariable != null) {
+			document.add("maxVariable", collation.maxVariable);
+		}
+
+		if (collation.backwards != null) {
+			document.add("backwards", collation.backwards);
+		}
+
+		if (collation.normalization != null) {
+			document.add("normalization", collation.normalization);
 		}
 
 		return document;
+	}
+
+	/**
+		The `writeConcern` field, written straight into the message rather
+		than made a `BsonDocument` for every write first. Its values go
+		through `BsonWriter.value`: a concern loaded from JSON holds whatever
+		types the JSON had, as it was sent before.
+	**/
+	@:noCompletion private static function __writeConcernField(w:BsonWriter, concern:MongoWriteConcern):Void {
+		var at:Int = w.beginDocumentField("writeConcern");
+
+		if (concern.w != null) {
+			w.value("w", concern.w, 2);
+		}
+
+		if (concern.journal != null) {
+			w.value("j", concern.journal, 2);
+		}
+
+		if (concern.wtimeout != null) {
+			w.value("wtimeout", concern.wtimeout, 2);
+		}
+
+		w.endDocument(at);
 	}
 
 	@:noCompletion private function __unacknowledged(concern:Null<MongoWriteConcern>):Bool {
@@ -1717,15 +1833,18 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	}
 
 	@:noCompletion private function __getMore(database:String, collection:String, id:Int64, batchSize:Int, maxTimeMS:Int):Dynamic {
-		var w:BsonWriter = __begin("getMore", new BsonInt64(id));
-		w.value("collection", collection, 1);
+		// The id an int64 whatever its value, written as one rather than boxed
+		// in a BsonInt64 to be dispatched.
+		var w:BsonWriter = __begin();
+		w.int64Field("getMore", id);
+		w.stringField("collection", collection);
 
 		if (batchSize > 0) {
-			w.value("batchSize", batchSize, 1);
+			w.int32Field("batchSize", batchSize);
 		}
 
 		if (maxTimeMS > 0) {
-			w.value("maxTimeMS", maxTimeMS, 1);
+			w.int32Field("maxTimeMS", maxTimeMS);
 		}
 
 		__endBody(database, null, true);
@@ -1733,8 +1852,10 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	}
 
 	@:noCompletion private function __killCursor(database:String, collection:String, id:Int64):Void {
-		var w:BsonWriter = __begin("killCursors", collection);
-		w.value("cursors", [new BsonInt64(id)], 1);
+		var w:BsonWriter = __command("killCursors", collection);
+		var cursors:Int = w.beginArrayField("cursors");
+		w.int64Field(BsonWriter.elementName(0), id);
+		w.endDocument(cursors);
 		__endBody(database, null, true);
 		__check("killCursors", __send(true));
 	}
@@ -1742,13 +1863,13 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	// ------------------------------------------------------------ transactions
 
 	@:noCompletion private function __endTransaction(command:String):Void {
-		var w:BsonWriter = __begin(command, 1);
+		var w:BsonWriter = __commandOne(command);
 		w.value("lsid", __sessionId, 1);
 		w.int64Field("txnNumber", __txnNumber);
-		w.value("autocommit", false, 1);
+		w.boolField("autocommit", false);
 
 		if (writeConcern != null && command == "commitTransaction") {
-			w.value("writeConcern", __concernDocument(writeConcern), 1);
+			__writeConcernField(w, writeConcern);
 		}
 
 		__endBody("admin", null, false);
@@ -1760,13 +1881,13 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			return "the connection is not open";
 		}
 
-		if (Reflect.field(__hello, "logicalSessionTimeoutMinutes") == null) {
+		if (!__helloSessions) {
 			return "the server does not support sessions";
 		}
 
-		var sharded:Bool = Reflect.field(__hello, "msg") == "isdbgrid";
+		var sharded:Bool = __helloSharded;
 
-		if (!sharded && Reflect.field(__hello, "setName") == null) {
+		if (!sharded && __helloSetName == null) {
 			return "transactions need a replica set or a sharded cluster, and this server is a standalone";
 		}
 
@@ -1894,31 +2015,32 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			return false;
 		}
 
+		// The value's kind asked once, as BsonWriter asks it, here and in the
+		// helpers below: a reply's numbers were each re-typed through a chain
+		// of Int64.isInt64 and Std.isOfType.
 		var ok:Dynamic = Reflect.field(reply, "ok");
-		return __isTrue(ok) || (ok != null && !Std.isOfType(ok, Bool) && !Std.isOfType(ok, String) && __number(ok) == 1);
+
+		return switch (BsonWriter.__kindOf(ok)) {
+			case BsonWriter.KIND_BOOL: (ok : Bool);
+			case BsonWriter.KIND_INT | BsonWriter.KIND_FLOAT | BsonWriter.KIND_INT64: __number(ok) == 1;
+			default: false;
+		}
 	}
 
 	/** A reply's number, whichever BSON number type it came as; 0 for anything else. **/
 	@:noCompletion private static function __int(value:Dynamic):Int {
-		if (value == null) {
-			return 0;
+		switch (BsonWriter.__kindOf(value)) {
+			case BsonWriter.KIND_INT:
+				return Std.int(value);
+			case BsonWriter.KIND_FLOAT:
+				var number:Float = value;
+				return number > 2147483647.0 ? 2147483647 : (number < -2147483648.0 ? -2147483648 : Std.int(number));
+			case BsonWriter.KIND_INT64:
+				var wide:Int64 = value;
+				return wide.high == (wide.low >> 31) ? wide.low : (wide.high < 0 ? -2147483648 : 2147483647);
+			default:
+				return 0;
 		}
-
-		if (Int64.isInt64(value)) {
-			var wide:Int64 = value;
-			return wide.high == (wide.low >> 31) ? wide.low : (wide.high < 0 ? -2147483648 : 2147483647);
-		}
-
-		if (Std.isOfType(value, Int)) {
-			return Std.int(value);
-		}
-
-		if (Std.isOfType(value, Float)) {
-			var number:Float = value;
-			return number > 2147483647.0 ? 2147483647 : (number < -2147483648.0 ? -2147483648 : Std.int(number));
-		}
-
-		return 0;
 	}
 
 	/**
@@ -1939,36 +2061,28 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	}
 
 	@:noCompletion private static function __number(value:Dynamic):Float {
-		if (Int64.isInt64(value)) {
-			return crossbyte.db.mongodb._internal.Int64Float.toFloat(value);
+		switch (BsonWriter.__kindOf(value)) {
+			case BsonWriter.KIND_INT | BsonWriter.KIND_FLOAT:
+				return value;
+			case BsonWriter.KIND_INT64:
+				return crossbyte.db.mongodb._internal.Int64Float.toFloat(value);
+			default:
+				return Math.NaN;
 		}
-
-		if (Std.isOfType(value, Float) || Std.isOfType(value, Int)) {
-			return value;
-		}
-
-		return Math.NaN;
 	}
 
 	/** A cursor id, which travels as an int64 but may come back as a smaller number. **/
 	@:noCompletion private static function __toInt64(value:Dynamic):Int64 {
-		if (value == null) {
-			return Int64.ofInt(0);
+		switch (BsonWriter.__kindOf(value)) {
+			case BsonWriter.KIND_INT64:
+				return value;
+			case BsonWriter.KIND_INT:
+				return Int64.ofInt(Std.int(value));
+			case BsonWriter.KIND_FLOAT:
+				return Int64.fromFloat(value);
+			default:
+				return Int64.ofInt(0);
 		}
-
-		if (Int64.isInt64(value)) {
-			return value;
-		}
-
-		if (Std.isOfType(value, Int)) {
-			return Int64.ofInt(Std.int(value));
-		}
-
-		if (Std.isOfType(value, Float)) {
-			return Int64.fromFloat(value);
-		}
-
-		return Int64.ofInt(0);
 	}
 
 	@:noCompletion private static function __positive(value:Dynamic, fallback:Int):Int {

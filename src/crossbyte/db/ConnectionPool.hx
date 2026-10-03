@@ -162,6 +162,10 @@ class ConnectionPool<T> {
 
 	#if target.threaded
 	@:noCompletion private var __lock:Mutex;
+	// Released once for each waiting acquire() a freed connection wakes, and
+	// how many are waiting: both under __lock.
+	@:noCompletion private var __wake:sys.thread.Lock;
+	@:noCompletion private var __waiting:Int = 0;
 	#end
 
 	public function new(options:ConnectionPoolOptions<T>) {
@@ -188,6 +192,7 @@ class ConnectionPool<T> {
 
 		#if target.threaded
 		__lock = new Mutex();
+		__wake = new sys.thread.Lock();
 		#end
 
 		__initMetrics(options.metrics, options.metricsPrefix);
@@ -277,7 +282,7 @@ class ConnectionPool<T> {
 		var deadline:Float = started + timeout;
 
 		while (true) {
-			var candidate:Null<T> = __tryTake();
+			var candidate:Null<T> = __tryTake(true);
 			if (candidate != null) {
 				if (__metrics != null) {
 					// Observed on every acquire, not just the contended ones:
@@ -289,7 +294,12 @@ class ConnectionPool<T> {
 				return candidate;
 			}
 
-			if (haxe.Timer.stamp() >= deadline) {
+			var now:Float = haxe.Timer.stamp();
+
+			if (now >= deadline) {
+				#if target.threaded
+				__unwait();
+				#end
 				if (__metrics != null) {
 					__timeoutsTotal.inc();
 					__waitSeconds.observe(haxe.Timer.stamp() - started);
@@ -297,12 +307,54 @@ class ConnectionPool<T> {
 				throw new IllegalOperationError('ConnectionPool.acquire timed out after ${timeout}s with all $maxSize connection(s) in use.');
 			}
 
-			// No condition variable is available across every supported
-			// target, so wait in small slices. Callers are worker threads,
-			// so this costs latency rather than throughput.
+			#if target.threaded
+			// Woken by the release, discard or close that frees a connection,
+			// where it slept a millisecond at a time and looked again: a
+			// thousand wake-ups a second for each caller waiting, and up to a
+			// scheduler tick late after the release (15.6 ms on Windows).
+			// Whole milliseconds, and never long, so the deadline and a close
+			// are looked at again whatever happens.
+			var left:Float = deadline - now;
+			var slice:Float = left > MAX_WAIT ? MAX_WAIT : left;
+			slice = Math.ffloor(slice * 1000) / 1000;
+
+			if (!__wake.wait(slice < 0.001 ? 0.001 : slice)) {
+				__unwait();
+			}
+			#else
 			crossbyte._internal.system.Sleep.sleep(0.001);
+			#end
 		}
 	}
+
+	#if target.threaded
+	/** The longest a waiting `acquire` sleeps before it looks again. **/
+	@:noCompletion private static inline var MAX_WAIT:Float = 0.25;
+
+	/**
+		Counts the caller waiting for a connection off, when its wait ended
+		without a wake: one that ended with one was counted off by the waker.
+		A wake that lands just after this finds the next wait at once, which
+		looks again and waits again: lost never, early at worst.
+	**/
+	@:noCompletion private function __unwait():Void {
+		__acquireLock();
+
+		if (__waiting > 0) {
+			__waiting--;
+		}
+
+		__releaseLock();
+	}
+
+	/** Wakes one waiting `acquire`, if any is: under the pool's lock, as capacity is freed. **/
+	@:noCompletion private inline function __wakeOne():Void {
+		if (__waiting > 0) {
+			__waiting--;
+			__wake.release();
+		}
+	}
+	#end
 
 	/**
 	 * Returns a connection to the pool for reuse. A transaction left open on
@@ -389,12 +441,14 @@ class ConnectionPool<T> {
 
 		if (closed || !reusable) {
 			__created--;
+			__freed();
 			__releaseLock();
 			__closeConnection(connection, closed ? "pool_closed" : "failed_reset");
 			return;
 		}
 
 		__idle.push(connection);
+		__freed();
 		__releaseLock();
 	}
 
@@ -431,6 +485,7 @@ class ConnectionPool<T> {
 		}
 
 		__created--;
+		__freed();
 		__releaseLock();
 
 		__closeConnection(connection, "discarded");
@@ -478,6 +533,15 @@ class ConnectionPool<T> {
 		var toClose:Array<T> = __idle;
 		__idle = [];
 		__created -= toClose.length;
+
+		#if target.threaded
+		// Every caller waiting is woken, to find the pool closed.
+		while (__waiting > 0) {
+			__waiting--;
+			__wake.release();
+		}
+		#end
+
 		__releaseLock();
 
 		for (connection in toClose) {
@@ -485,7 +549,12 @@ class ConnectionPool<T> {
 		}
 	}
 
-	@:noCompletion private function __tryTake():Null<T> {
+	/**
+		A connection, idle or new, or null when every one is out: then, with
+		`wait`, the caller is counted as waiting, under the same lock, so that
+		a release from now on wakes it.
+	**/
+	@:noCompletion private function __tryTake(wait:Bool = false):Null<T> {
 		__acquireLock();
 
 		if (closed) {
@@ -525,6 +594,7 @@ class ConnectionPool<T> {
 			__closeConnection(candidate, "failed_validation");
 			__acquireLock();
 			__created--;
+			__freed();
 			if (closed) {
 				__releaseLock();
 				throw new IllegalOperationError("ConnectionPool is closed.");
@@ -532,6 +602,11 @@ class ConnectionPool<T> {
 		}
 
 		if (__created >= maxSize) {
+			#if target.threaded
+			if (wait) {
+				__waiting++;
+			}
+			#end
 			__releaseLock();
 			return null;
 		}
@@ -549,6 +624,7 @@ class ConnectionPool<T> {
 			__acquireLock();
 			__created--;
 			__reserving--;
+			__freed();
 			__releaseLock();
 			__rethrow(e);
 			return null;
@@ -558,6 +634,7 @@ class ConnectionPool<T> {
 			__acquireLock();
 			__created--;
 			__reserving--;
+			__freed();
 			__releaseLock();
 			throw new IllegalOperationError("ConnectionPool factory returned null.");
 		}
@@ -630,6 +707,13 @@ class ConnectionPool<T> {
 		cpp.Lib.rethrow(e);
 		#else
 		throw e;
+		#end
+	}
+
+	/** Under the pool's lock, a connection freed: one waiting `acquire` is woken. **/
+	@:noCompletion private inline function __freed():Void {
+		#if target.threaded
+		__wakeOne();
 		#end
 	}
 

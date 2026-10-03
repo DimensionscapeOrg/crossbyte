@@ -61,6 +61,7 @@ const STANDALONE = [
   'src/crossbyte/db/mongodb/MongoConfig.hx',
   'src/crossbyte/db/mongodb/MongoConnection.hx',
   'src/crossbyte/db/mongodb/MongoCursor.hx',
+  'src/crossbyte/db/mongodb/MongoOptions.hx',
   'src/crossbyte/db/mongodb/MongoStatement.hx',
   'src/crossbyte/db/mongodb/bson/BsonDocument.hx',
   'src/crossbyte/db/mongodb/bson/Decimal128.hx',

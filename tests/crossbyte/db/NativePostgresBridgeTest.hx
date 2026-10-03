@@ -501,6 +501,51 @@ class NativePostgresBridgeTest extends utest.Test {
 		caller not listening, an `AsyncDatabase` task among them, a failed
 		statement read as one that had run.
 	**/
+	/**
+		`request()` answers a `PostgresResultSet`, a `sys.db.ResultSet`: it was
+		`Dynamic`, its rows built from JSON the bridge rendered, and it had
+		no field names and nothing to read by position.
+	**/
+	public function testRequestAnswersATypedResultSet():Void {
+		var connection = __open(__config("localhost"));
+		var rows:crossbyte.db.postgres.PostgresResultSet = connection.request("fake:count 3");
+		Assert.equals(3, rows.length);
+		Assert.equals("n", rows.getFieldsNames().join(","));
+		Assert.equals(1, rows.nfields);
+		Assert.equals("1", rows.next().n);
+		Assert.equals(1, rows.getIntResult(0));
+		Assert.equals("2", rows.next().n);
+		Assert.equals("2", rows.getResult(0));
+		Assert.equals(3.0, connection.affectedRows);
+		connection.close();
+	}
+
+	/** Rows read by column, from the result block itself. **/
+	public function testExecuteEachReadsTheRowsByColumn():Void {
+		var connection = __open(__config("localhost"));
+		var statement = new crossbyte.db.postgres.PostgresStatement();
+		statement.sqlConnection = connection;
+		statement.text = "fake:count 4";
+		var read:Array<Int> = [];
+		var names:Array<String> = [];
+		Assert.equals(0.0, statement.executeEach(row -> {
+			read.push(row.getInt(0));
+			names.push(row.columnName(0));
+		}));
+		Assert.equals("1,2,3,4", read.join(","));
+		Assert.equals("n,n,n,n", names.join(","));
+
+		statement.text = "fake:affect 7";
+		Assert.equals(7.0, statement.executeEach(_ -> Assert.fail("a write has no rows")));
+
+		statement.text = "fake:fail";
+		var heard:SQLError = null;
+		statement.addEventListener(SQLErrorEvent.ERROR, event -> heard = event.error);
+		Assert.raises(() -> statement.executeEach(_ -> {}), SQLError);
+		Require.notNull(heard);
+		connection.close();
+	}
+
 	public function testAFailedStatementThrowsAsWellAsDispatching():Void {
 		var connection = __open(__config("localhost"));
 		var statement = new crossbyte.db.postgres.PostgresStatement();
