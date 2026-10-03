@@ -2452,8 +2452,8 @@ entry below says how:
   ended past its deadline, and the `POLL` loop waits in poll until its
   deadline, which Windows ends on the system timer's tick, up to a
   millisecond or two late: a game server with nothing to do at sixty
-  ticks a second reported 165 overruns in 301 frames, so the count told a
-  server that was keeping up from one that was not. Each loop now judges
+  ticks a second reported 165 overruns in 301 frames, so the count could
+  not tell a server keeping up from one falling behind. Each loop now judges
   a frame by its work, as the default loop and JavaScript's already did.
   `loopLag` still reports the lateness, and says what is usual for it.
 - A `FileStream` open in `UPDATE` mode reads back what it wrote on macOS.
