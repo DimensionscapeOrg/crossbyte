@@ -113,8 +113,9 @@ class PublicKeyPins {
 	}
 }
 
-private typedef DerElement = {
-	var tag:Int;
-	var content:Int;
-	var end:Int;
+@:structInit
+private final class DerElement {
+	public final tag:Int;
+	public final content:Int;
+	public final end:Int;
 }
