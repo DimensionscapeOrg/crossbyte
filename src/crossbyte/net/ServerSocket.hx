@@ -9,6 +9,7 @@ import crossbyte.events.TickEvent;
 import haxe.io.Error;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.errors.RangeError;
 import crossbyte.errors.Error as CBError;
 import crossbyte.events.Event;
@@ -16,6 +17,10 @@ import crossbyte.events.EventDispatcher;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.net.Socket as CBSocket;
 import crossbyte.net._internal.RuntimeHandOff;
+#if (target.threaded && !js)
+import crossbyte.net._internal.ServerSpread;
+import sys.thread.Tls;
+#end
 import crossbyte.io.ByteArray;
 #if nodejs
 import js.node.Net;
@@ -162,8 +167,11 @@ class ServerSocket extends EventDispatcher {
 		used to be swallowed natively -- no event, no count, and a server out
 		of descriptors looked idle -- or, on the jvm and Node, closed the
 		server.
+
+		On a server spread over `runtimes` with `reusePort`, where each
+		runtime accepts for itself, the count is theirs together.
 	**/
-	public var acceptFailures(default, null):Int = 0;
+	@:isVar public var acceptFailures(get, null):Int = 0;
 
 	/**
 		TLS handshakes that failed, or were given up on at `handshakeTimeout`,
@@ -172,8 +180,10 @@ class ServerSocket extends EventDispatcher {
 		broken clients, and each used to be dropped without a trace. Always 0
 		on a plain server -- but a `ServerWebSocket` counts its sessions' TLS
 		and upgrade together, plain or secure; see there.
+
+		On a server spread over `runtimes`, the count is theirs together.
 	**/
-	public var handshakeFailures(default, null):Int = 0;
+	@:isVar public var handshakeFailures(get, null):Int = 0;
 
 	/**
 		Decides, from the peer's address alone, whether a connection is taken
@@ -189,10 +199,141 @@ class ServerSocket extends EventDispatcher {
 		`RateLimiter` keyed by address, a count of connections per address,
 		`ConcurrencyLimiter.available` while the server is saturated. A hook
 		that throws refuses the connection.
+
+		It runs on the runtime that accepts: the one that called `listen()`,
+		even on a server spread over `runtimes` -- except with `reusePort`,
+		where each of them accepts for itself and so asks this on its own
+		thread, several at once.
 	**/
 	public dynamic function admit(address:String, port:Int):Bool {
 		return true;
 	}
+
+	/**
+		The runtimes this server's connections are served on, so that one
+		listener uses more than one core. `null`, the default, serves every
+		connection on the runtime that called `listen()`, as a server always
+		has. Set before `listen()`.
+
+		A runtime runs on one thread, so a server on one runtime uses one
+		core however many the machine has. Spread over these, the listener
+		stays where it was and accepts, and each connection it accepts is
+		handed to one of them -- the one `selectRuntime` names, or the next
+		in turn -- before anything else is done with it, its TLS handshake
+		included. From then on it is that runtime's for its whole life: its
+		socket is polled there, its events are dispatched there, its
+		deadlines are kept there, and the `connect` listener that receives
+		it runs there. A `close()` from any other thread is handed to it,
+		as everywhere else.
+
+		Which makes `connect` listeners, and whatever they share, code that
+		runs on several threads at once. What one connection's handlers keep
+		to themselves needs nothing; what they share across connections --
+		a registry of players, a cache, a counter -- must be thread-safe, or
+		kept per runtime and reached through `CrossByte.current()`. Add
+		`connect` listeners before `listen()`.
+
+		Make them for a server with `CrossByte.make(POLL)`, whose loop serves
+		a socket as soon as it is ready, or let `runtimeCount` make them; a
+		`DEFAULT` runtime serves its sockets once a tick. The listener's own
+		runtime may be one of them. A runtime that has exited is passed over,
+		and once every one has, each connection is closed as it is accepted
+		and that is logged once. The server never exits these runtimes: they
+		are the caller's.
+
+		`admit`, `maxAcceptsPerTick` and `maxPendingHandshakes` hold for the
+		server as a whole: `admit` is asked on the listener's runtime, and
+		the handshakes under way are counted across every runtime.
+		`handshakeFailures`, `pendingHandshakeCount()` and the counts of the
+		servers built on this one are the sums across them.
+
+		On the jvm, hl and neko, as natively, each runtime is a thread of its
+		own and they run at once. On the interpreter they take turns, so it
+		serves correctly and no faster. On Node every runtime shares the one
+		thread there is, so there is nothing to spread over: setting this
+		throws `IllegalOperationError`, and several processes -- Node's
+		`cluster` -- are the way to use more cores there.
+
+		@throws ArgumentError When the list holds `null`, or a runtime twice.
+		@throws IllegalOperationError When the server is already listening,
+			or on Node.
+	**/
+	public var runtimes(get, set):Null<Array<CrossByte>>;
+
+	/**
+		How many runtimes `listen()` makes for this server, to spread its
+		connections over as `runtimes` would. `0`, the default, makes none.
+
+		Each is a `POLL` runtime made with `CrossByte.make`, a child of the
+		runtime that calls `listen()`, and `runtimes` lists them once they
+		are made -- to `post` per-runtime state to, say. They are the
+		server's: `drain()` exits them once it has finished, where a server
+		has one, and they exit with the runtime that made them in any case.
+		After `close()` they go on serving the connections they hold, as a
+		server's own runtime does.
+
+		Setting this clears `runtimes`, and setting `runtimes` clears this.
+		Everything `runtimes` says about where code runs holds for these.
+
+		@throws ArgumentError When the count is negative.
+		@throws IllegalOperationError When the server is already listening,
+			or on Node with a count above `0`.
+	**/
+	public var runtimeCount(get, set):Int;
+
+	/**
+		Picks which of `runtimes` a connection is served on. Called on the
+		listener's runtime as each connection is accepted -- after `admit`,
+		before any TLS handshake -- with the peer's canonical address and
+		port. Return one of `runtimes`, or `null` for the next in turn, which
+		is what the default does.
+
+		An answer that is not one of `runtimes`, or one that has exited, is
+		replaced by the next in turn. A hook that throws refuses the
+		connection, as `admit` does.
+
+		Where the peer's address says which runtime it belongs on -- a game
+		server whose matchmaker has told it which match each player's
+		address is joining, and runs each match on a runtime of its own --
+		this sends the player to the runtime that owns their match, so the
+		match's state is only ever touched from one thread:
+
+		```haxe
+		server.runtimes = matchRuntimes;
+		server.selectRuntime = (address, port) -> joining.get(address);
+		```
+
+		Not asked with `reusePort`, where the system decides.
+	**/
+	public dynamic function selectRuntime(address:String, port:Int):Null<CrossByte> {
+		return null;
+	}
+
+	/**
+		Whether each of `runtimes` listens on the port for itself, the system
+		sharing the connections out among them, rather than this server's
+		runtime accepting them all and handing them on. `false` by default.
+		Set before `bind()`.
+
+		This is `SO_REUSEPORT`, on Linux: one listening socket per runtime,
+		the kernel spreading arriving connections over them by a hash of each
+		connection's addresses. No runtime accepts for the others, so an
+		accept storm is spread too. In exchange the kernel, not
+		`selectRuntime`, decides where a connection goes, and each runtime
+		asks `admit` for itself, on its own thread.
+
+		It needs `runtimes` or `runtimeCount`, and is refused by `listen()`
+		without one. Natively on Linux, and on the jvm on Linux from Java 9,
+		which first exposes the option. macOS and the BSDs accept the option
+		without spreading anything -- every connection goes to one of the
+		sockets -- and Windows has nothing like it, so there, and on every
+		other target, setting this to `true` throws `IllegalOperationError`;
+		the hand-off `runtimes` makes by default works everywhere.
+
+		@throws IllegalOperationError Where the system or the target cannot
+			do it, or when the server is already bound.
+	**/
+	public var reusePort(default, set):Bool = false;
 
 	/**
 		The backlog `listen()` asks for when given none: more than any system
@@ -229,8 +370,44 @@ class ServerSocket extends EventDispatcher {
 	@:noCompletion private var __hasCertificate:Bool = false;
 	#if !nodejs
 	@:noCompletion private var __pendingHandshakes:Array<PendingHandshake>;
+	// The peer `admit` was last asked about and agreed to; see __admits.
+	@:noCompletion private var __admittedPeer:Null<{host:Host, port:Int}> = null;
+	// Each TLS setting made on the listener, kept so a listener of each
+	// runtime's own, with reusePort, can be given the same; see
+	// __newListener.
+	@:noCompletion private var __tlsReplay:Array<Socket->Void> = [];
 	#end
 	@:noCompletion private var __listenerReleased:Bool = false;
+
+	// What `runtimes` and `runtimeCount` were set to, until listen() acts on
+	// them.
+	@:noCompletion private var __givenRuntimes:Array<CrossByte> = null;
+	@:noCompletion private var __runtimeCount:Int = 0;
+
+	// On a replica, the server it serves connections for; null on every
+	// server an application makes. Declared everywhere, so the servers built
+	// on this one can ask it on every target; set only where a server can be
+	// spread.
+	@:noCompletion private var __front:ServerSocket = null;
+
+	// The listener the class itself attaches for `connect` -- HTTPServer's,
+	// ServerWebSocket's -- which on a spread server runs on each replica
+	// rather than on this one; and the `connect` listeners the application
+	// added, as an array no one changes once it is published, which the
+	// replicas walk from their own threads. See __dispatchShared.
+	@:noCompletion private var __ownConnect:Dynamic = null;
+	@:noCompletion private var __sharedConnect:Array<Dynamic> = null;
+	#if (target.threaded && !js)
+	// On the front of a spread server: the runtimes and their replicas.
+	@:noCompletion private var __spread:ServerSpread = null;
+	// On a replica: its front's.
+	@:noCompletion private var __shared:ServerSpread = null;
+	// On a replica: its handshakes in flight as last told to __shared.
+	@:noCompletion private var __publishedPending:Int = 0;
+	// The front a replica is being made for, on the thread making it; see
+	// __makeReplica.
+	@:noCompletion private static final __replicaOf:Tls<ServerSocket> = new Tls();
+	#end
 	#if nodejs
 	// Collected as it arrives and handed to tls.createServer in listen(),
 	// because that is the moment Node will take it.
@@ -258,6 +435,12 @@ class ServerSocket extends EventDispatcher {
 	**/
 	public function new(secure:Bool = false) {
 		super();
+
+		#if (target.threaded && !js)
+		// Made by a front for one of its runtimes (see __makeReplica): it gets
+		// no listener of its own, and serves what the front hands it.
+		__front = __replicaOf.value;
+		#end
 
 		#if eval
 		if (secure) {
@@ -292,6 +475,14 @@ class ServerSocket extends EventDispatcher {
 		bound = false;
 		listening = false;
 		#else
+		if (__front != null) {
+			// A replica accepts nothing: no listener, so no descriptor.
+			__serverSocket = null;
+			__closed = false;
+			bound = false;
+			listening = false;
+			return;
+		}
 		#if (java || jvm)
 		// JvmSslSocket extends sys.net.Socket, so the accept and select paths
 		// below do not care which of the two this is -- the same arrangement
@@ -353,10 +544,21 @@ class ServerSocket extends EventDispatcher {
 		__tlsCertificate = cert;
 		__tlsKey = key;
 		#else
-		(cast __serverSocket : SSLSocket).setCertificate(cert.__native, key.__native);
+		__applyTls(socket -> (cast socket : SSLSocket).setCertificate(cert.__native, key.__native));
 		#end
 		__hasCertificate = true;
 	}
+
+	#if !nodejs
+	/**
+		Makes a TLS setting on the listener, and keeps it for the listener of
+		each runtime's own that `reusePort` makes.
+	**/
+	@:noCompletion private function __applyTls(setting:Socket->Void):Void {
+		setting(__listenerSocket());
+		__tlsReplay.push(setting);
+	}
+	#end
 
 	/**
 		Adds an additional certificate selected by Server Name Indication,
@@ -375,7 +577,7 @@ class ServerSocket extends EventDispatcher {
 		#if nodejs
 		__tlsSni.push({match: serverNameMatch, certificate: cert, key: key});
 		#else
-		(cast __serverSocket : SSLSocket).addSNICertificate(serverNameMatch, cert.__native, key.__native);
+		__applyTls(socket -> (cast socket : SSLSocket).addSNICertificate(serverNameMatch, cert.__native, key.__native));
 		#end
 		__hasCertificate = true;
 	}
@@ -405,9 +607,11 @@ class ServerSocket extends EventDispatcher {
 		#if nodejs
 		__tlsAuthority = ca;
 		#else
-		var sslSocket:SSLSocket = cast __serverSocket;
-		sslSocket.setCA(ca.__native);
-		sslSocket.verifyCert = true;
+		__applyTls(function(socket:Socket):Void {
+			var sslSocket:SSLSocket = cast socket;
+			sslSocket.setCA(ca.__native);
+			sslSocket.verifyCert = true;
+		});
 		#end
 	}
 
@@ -434,9 +638,9 @@ class ServerSocket extends EventDispatcher {
 		#if nodejs
 		__tlsAlpn = protocols;
 		#elseif cpp
-		(cast __serverSocket : AlpnSocket).setALPN(protocols);
+		__applyTls(socket -> (cast socket : AlpnSocket).setALPN(protocols));
 		#elseif (java || jvm)
-		(cast __serverSocket : SSLSocket).setALPN(protocols);
+		__applyTls(socket -> (cast socket : SSLSocket).setALPN(protocols));
 		#end
 	}
 
@@ -502,7 +706,7 @@ class ServerSocket extends EventDispatcher {
 		#else
 		try {
 			var host:Host = new Host(localAddress);
-			__serverSocket.bind(host, localPort);
+			__bindListener(__serverSocket, host, localPort);
 
 			this.localAddress = localAddress;
 			this.localPort = localPort == 0 ? __serverSocket.host().port : localPort;
@@ -740,11 +944,27 @@ class ServerSocket extends EventDispatcher {
 			return;
 		}
 
+		#if (target.threaded && !js)
+		if (__front != null) {
+			// A replica: its share of the server stops, on its own runtime.
+			__stopReplica();
+			__closed = true;
+			return;
+		}
+		#end
+
 		#if !nodejs
 		__dropPendingHandshakes();
 		// Out of the poll set before the listener is closed; see
 		// Socket.__cleanSocket.
 		__detachAcceptTick();
+		#end
+		#if (target.threaded && !js)
+		// Every runtime drops the handshakes it has under way, as this one
+		// just did, and closes whatever reaches it from here on.
+		if (__spread != null) {
+			__spread.close();
+		}
 		#end
 
 		// stopAccepting() may already have released the listening socket as
@@ -838,17 +1058,619 @@ class ServerSocket extends EventDispatcher {
 
 			listening = true;
 			#else
+			__checkSpread();
+			if (reusePort) {
+				__listenOnEachRuntime(backlog);
+				return;
+			}
 			__serverSocket.listen(backlog);
 			/* @:privateAccess
 				__cbInstance.beginSocketPolling();
 				@:privateAccess
 				__cbInstance.registerSocket(__serverSocket); */
 			listening = true;
+			__startSpread();
 			if (__hasListener) {
 				__attachAcceptTick();
 			}
 			#end
 		}
+	}
+
+	@:noCompletion private function get_runtimes():Null<Array<CrossByte>> {
+		#if (target.threaded && !js)
+		if (__spread != null) {
+			return __spread.runtimes.copy();
+		}
+		#end
+		return __givenRuntimes == null ? null : __givenRuntimes.copy();
+	}
+
+	@:noCompletion private function set_runtimes(value:Null<Array<CrossByte>>):Null<Array<CrossByte>> {
+		__refuseSpreadChange("runtimes");
+		if (value == null || value.length == 0) {
+			__givenRuntimes = null;
+			return value;
+		}
+		#if !(target.threaded && !js)
+		throw new IllegalOperationError(#if nodejs "On Node every runtime shares the one thread, so a server cannot be spread over runtimes; run several processes (Node's cluster) to use more cores." #else "A server can be spread over runtimes only on a target with threads." #end);
+		#else
+		for (i in 0...value.length) {
+			if (value[i] == null) {
+				throw new ArgumentError("runtimes holds null at index " + i + ".");
+			}
+			if (value.indexOf(value[i]) != i) {
+				throw new ArgumentError("runtimes holds the same runtime twice, at " + value.indexOf(value[i]) + " and " + i + ".");
+			}
+		}
+		__givenRuntimes = value.copy();
+		__runtimeCount = 0;
+		return value;
+		#end
+	}
+
+	@:noCompletion private function get_runtimeCount():Int {
+		#if (target.threaded && !js)
+		if (__spread != null) {
+			return __spread.runtimes.length;
+		}
+		#end
+		return __givenRuntimes != null ? __givenRuntimes.length : __runtimeCount;
+	}
+
+	@:noCompletion private function set_runtimeCount(value:Int):Int {
+		__refuseSpreadChange("runtimeCount");
+		if (value < 0) {
+			throw new ArgumentError("runtimeCount cannot be negative: " + value + ".");
+		}
+		#if !(target.threaded && !js)
+		if (value > 0) {
+			throw new IllegalOperationError(#if nodejs "On Node every runtime shares the one thread, so a server cannot be spread over runtimes; run several processes (Node's cluster) to use more cores." #else "A server can be spread over runtimes only on a target with threads." #end);
+		}
+		#end
+		__runtimeCount = value;
+		if (value > 0) {
+			__givenRuntimes = null;
+		}
+		return value;
+	}
+
+	@:noCompletion private function set_reusePort(value:Bool):Bool {
+		if (value == reusePort) {
+			return value;
+		}
+		if (bound || listening || __closed || __listenerReleased) {
+			throw new IllegalOperationError("reusePort must be set before bind(): the option is the socket's before it takes its address.");
+		}
+		if (value) {
+			var refusal:Null<String> = __reusePortRefusal();
+			if (refusal != null) {
+				throw new IllegalOperationError(refusal);
+			}
+		}
+		return reusePort = value;
+	}
+
+	/** Why `reusePort` cannot be had here, or null where it can. **/
+	@:noCompletion private static function __reusePortRefusal():Null<String> {
+		#if (cpp && linux)
+		return null;
+		#elseif (java || jvm)
+		return crossbyte.net._internal.ReusePort.jvmRefusal();
+		#elseif nodejs
+		return "reusePort spreads a server over runtimes, which Node cannot do: its runtimes share one thread.";
+		#elseif cpp
+		return "reusePort is SO_REUSEPORT on Linux; macOS and the BSDs accept it without spreading connections, and Windows has nothing like it. Leave it off: runtimes hands connections out on every system.";
+		#else
+		return "reusePort is available natively and on the jvm, on Linux; this target cannot set the option. Leave it off: runtimes hands connections out on every target.";
+		#end
+	}
+
+	/** Spreading is settled as the server starts listening. **/
+	@:noCompletion private function __refuseSpreadChange(field:String):Void {
+		if (listening || __closed || __listenerReleased) {
+			throw new IllegalOperationError(field + " must be set before listen(): the server spreads its connections as it starts.");
+		}
+	}
+
+	#if !nodejs
+	/**
+		Binds a listener of this server's: with `SO_REUSEPORT` set first when
+		`reusePort` asks for it, so the listeners of every runtime can share
+		the port.
+	**/
+	@:noCompletion private function __bindListener(listener:Socket, host:Host, port:Int):Void {
+		#if (target.threaded && !js)
+		if (reusePort) {
+			crossbyte.net._internal.ReusePort.bind(listener, host, port);
+			return;
+		}
+		#end
+		listener.bind(host, port);
+	}
+
+	/**
+		With `reusePort`: a listener for each runtime, each bound to this
+		server's address with the option set, listening, and handed to that
+		runtime's replica, which accepts from it on its own thread. This
+		server's own socket stays bound and never listens: the system shares
+		connections only among sockets that do.
+
+		Each listener is opened here, so a port that cannot be shared is
+		refused by this call rather than later on another thread.
+	**/
+	@:noCompletion private function __listenOnEachRuntime(backlog:Int):Void {
+		#if (target.threaded && !js)
+		__startSpread();
+		var spread:ServerSpread = __spread;
+		var host:Host = new Host(localAddress);
+		var opened:Array<Socket> = [];
+		try {
+			for (_ in spread.replicas) {
+				var listener:Socket = __newListener();
+				opened.push(listener);
+				__bindListener(listener, host, localPort);
+				listener.listen(backlog);
+			}
+		} catch (error:Dynamic) {
+			for (listener in opened) {
+				try {
+					listener.close();
+				} catch (_:Dynamic) {}
+			}
+			__spread = null;
+			spread.exitOwned();
+			throw new IOError("Could not give each runtime a listener on " + localAddress + ":" + localPort + " with reusePort: " + Std.string(error));
+		}
+
+		listening = true;
+		for (i in 0...spread.replicas.length) {
+			var replica:ServerSocket = spread.replicas[i];
+			replica.__takeListener(opened[i]);
+			if (!spread.runtimes[i].post(replica.__startListening)) {
+				// Exited already: nothing will ever accept from it.
+				replica.__takeListener(null);
+				try {
+					opened[i].close();
+				} catch (_:Dynamic) {}
+			}
+		}
+		#end
+	}
+
+	/**
+		A new listener of this server's kind, set up as its own listener was:
+		non-blocking, and with every TLS setting it was given.
+	**/
+	@:noCompletion private function __newListener():Socket {
+		var listener:Socket = #if cpp secure ? new AlpnSocket() : new sys.net.Socket() #else secure ? new SSLSocket() : new sys.net.Socket() #end;
+		if (secure) {
+			// As the constructor does: a server asks for client certificates
+			// only when told to, which the settings below may do.
+			(cast listener : SSLSocket).verifyCert = false;
+		}
+		listener.setBlocking(false);
+		listener.setFastSend(true);
+		for (setting in __tlsReplay) {
+			setting(listener);
+		}
+		return listener;
+	}
+
+	/** Makes `listener` this server's own: a replica's, with `reusePort`. **/
+	@:noCompletion private function __takeListener(listener:Null<Socket>):Void {
+		__serverSocket = listener;
+		bound = listener != null;
+	}
+
+	/** On a replica given a listener, on its runtime: starts accepting from it. **/
+	@:noCompletion private function __startListening():Void {
+		if (__closed || !listening) {
+			return;
+		}
+		__attachAcceptTick();
+	}
+
+	/**
+		What `listen()` refuses before the listener is opened: `reusePort`
+		with no runtimes to give a listener each.
+	**/
+	@:noCompletion private function __checkSpread():Void {
+		if (reusePort && __givenRuntimes == null && __runtimeCount <= 0) {
+			throw new IOError("reusePort gives each of runtimes a listener of its own, and this server has none: set runtimes or runtimeCount.");
+		}
+	}
+
+	/**
+		Makes the replicas `runtimes` or `runtimeCount` ask for, once the
+		listener is open; nothing for a server on one runtime.
+	**/
+	@:noCompletion private function __startSpread():Void {
+		#if (target.threaded && !js)
+		if (__spread != null || __front != null) {
+			return;
+		}
+
+		var runtimes:Array<CrossByte> = null;
+		var owned:Bool = false;
+		if (__givenRuntimes != null) {
+			runtimes = __givenRuntimes.copy();
+		} else if (__runtimeCount > 0) {
+			runtimes = [for (_ in 0...__runtimeCount) CrossByte.make(POLL)];
+			owned = true;
+		}
+		if (runtimes == null) {
+			return;
+		}
+
+		var spread:ServerSpread = new ServerSpread(this, runtimes, owned);
+		for (runtime in runtimes) {
+			spread.replicas.push(__makeReplica(runtime, spread));
+		}
+		__spread = spread;
+		#end
+	}
+	#end
+
+	#if (target.threaded && !js)
+	/**
+		A replica of this server for `runtime`, made here on this server's
+		runtime and complete before any other thread sees it: every field it
+		has is set by the time it is handed over, which neko needs of an
+		object another thread writes.
+	**/
+	@:noCompletion private function __makeReplica(runtime:CrossByte, spread:ServerSpread):ServerSocket {
+		__replicaOf.value = this;
+		var replica:ServerSocket = null;
+		try {
+			replica = __replicate();
+		} catch (error:Dynamic) {
+			__replicaOf.value = null;
+			#if cpp
+			cpp.Lib.rethrow(error);
+			#else
+			throw error;
+			#end
+		}
+		__replicaOf.value = null;
+
+		replica.__shared = spread;
+		replica.__cbInstance = runtime;
+		replica.localAddress = localAddress;
+		replica.localPort = localPort;
+		replica.listening = true;
+		replica.handshakeTimeout = handshakeTimeout;
+		replica.maxAcceptsPerTick = maxAcceptsPerTick;
+		// The limit is the front's, over every runtime together.
+		replica.maxPendingHandshakes = -1;
+		// Asked by a replica only when it accepts for itself, with reusePort:
+		// the front's hook, as it stands when each connection arrives.
+		var front:ServerSocket = this;
+		replica.admit = function(address:String, port:Int):Bool {
+			return front.admit(address, port);
+		};
+		return replica;
+	}
+
+	/**
+		A new server of this one's class, without a listener: one runtime's
+		share of it. Overridden by the servers built on this one, which keep
+		state of their own per connection.
+	**/
+	@:noCompletion private function __replicate():ServerSocket {
+		return new ServerSocket(secure);
+	}
+
+	/**
+		On a replica, on its runtime: `socket`, accepted by the front and
+		handed here, becomes this runtime's. One that arrives once the server
+		has stopped is closed.
+	**/
+	@:noCompletion private function __adopt(socket:Socket, peer:{host:Host, port:Int}):Void {
+		var shared:ServerSpread = __shared;
+		var tracked:Bool = __front.__tracksHandshakes();
+		if (__closed || !listening || shared.stopped) {
+			if (tracked) {
+				shared.addInFlight(-1, __front.maxPendingHandshakes);
+			}
+			try {
+				socket.close();
+			} catch (_:Dynamic) {}
+			return;
+		}
+
+		__attachAcceptTick();
+		__adoptConnection(socket, peer);
+	}
+
+	/**
+		What a replica does with a connection handed to it: a TLS handshake
+		begins, as the front's would have; a plain connection is announced.
+	**/
+	@:noCompletion private function __adoptConnection(socket:Socket, peer:{host:Host, port:Int}):Void {
+		if (secure) {
+			socket.setBlocking(false);
+			var pending:PendingHandshake = new PendingHandshake(this, socket,
+				handshakeTimeout > 0 ? haxe.Timer.stamp() + handshakeTimeout : Math.POSITIVE_INFINITY, peer);
+			__pendingHandshakes.push(pending);
+			socket.custom = pending;
+			pending.runtime = __cbInstance;
+			@:privateAccess
+			__cbInstance.registerSocket(socket);
+			// It was counted in flight as it was handed over; now it is
+			// counted here instead.
+			__publishPending(1);
+			// The client's first flight may be waiting already.
+			__stepHandshake(pending);
+			return;
+		}
+
+		var cbSocket:Null<CBSocket> = __fromSocket(socket, peer);
+		if (cbSocket == null) {
+			try {
+				socket.close();
+			} catch (_:Dynamic) {}
+			return;
+		}
+		__announceHere(cbSocket);
+	}
+
+	/**
+		A replica's `connect`, contained as a socket handler is: a listener
+		that throws is reported on this runtime and its connection closed,
+		rather than the failure ending the posted hand-off with the
+		connection left open and announced to no one after it.
+	**/
+	@:noCompletion private function __announceHere(socket:CBSocket):Void {
+		try {
+			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
+		} catch (error:Dynamic) {
+			if (__cbInstance != null) {
+				__cbInstance.__uncaught(error, crossbyte.events.UncaughtErrorEvent.SOCKET, socket);
+			}
+			try {
+				socket.close();
+			} catch (_:Dynamic) {}
+		}
+	}
+
+	/**
+		A spread server's drain, for the servers built on this one: each
+		replica drains what it holds on its own runtime, as a server on one
+		runtime drains its own, by `drainOne`, which calls the function it is
+		given once it has finished; `finish` runs here once every one has --
+		or, should one never say so, a second after the deadline they were
+		all given, so the wait ends either way.
+	**/
+	@:noCompletion private function __drainReplicas(timeoutSeconds:Float, drainOne:(ServerSocket, Void->Void) -> Void, finish:Void->Void):Void {
+		var spread:ServerSpread = __spread;
+		var runtime:CrossByte = __cbInstance;
+		var waiting:Int = spread.replicas.length;
+		var finished:Bool = false;
+		var onTick:TickEvent->Void = null;
+
+		function end():Void {
+			if (finished) {
+				return;
+			}
+			finished = true;
+			if (onTick != null) {
+				runtime.removeEventListener(TickEvent.TICK, onTick);
+			}
+			finish();
+		}
+
+		// Told on this runtime as each finishes. One whose runtime has
+		// exited has nothing left to drain.
+		function drained():Void {
+			waiting--;
+			if (waiting <= 0) {
+				end();
+			}
+		}
+
+		if (waiting <= 0) {
+			end();
+			return;
+		}
+		spread.each(replica -> drainOne(replica, () -> runtime.post(drained)), _ -> drained());
+		if (finished) {
+			return;
+		}
+
+		var deadline:Float = haxe.Timer.stamp() + (timeoutSeconds > 0 ? timeoutSeconds : 0) + 1.0;
+		onTick = function(_:TickEvent):Void {
+			if (haxe.Timer.stamp() >= deadline) {
+				end();
+			}
+		};
+		runtime.addEventListener(TickEvent.TICK, onTick);
+	}
+
+	/**
+		On a replica, on its runtime: the front has stopped accepting, or
+		closed. What is still handshaking here is dropped, as the front drops
+		its own.
+	**/
+	@:noCompletion private function __stopReplica():Void {
+		__dropPendingHandshakes();
+		__detachAcceptTick();
+		listening = false;
+		__releaseReplicaListener();
+		__publishPending();
+	}
+
+	/**
+		A replica's own listener, with `reusePort`, closed once it has left
+		the poll set -- which `__detachAcceptTick` takes it out of first.
+	**/
+	@:noCompletion private function __releaseReplicaListener():Void {
+		var listener:Null<Socket> = __listenerSocket();
+		if (listener == null) {
+			return;
+		}
+		__takeListener(null);
+		try {
+			listener.close();
+		} catch (_:Dynamic) {}
+	}
+
+	/**
+		On a replica: tells the front how many handshakes are under way here,
+		so `maxPendingHandshakes` counts every runtime's. `arrivals` were
+		counted by the front as it handed them over, and are taken off that
+		count as this one takes them up.
+	**/
+	@:noCompletion private function __publishPending(arrivals:Int = 0):Void {
+		var shared:ServerSpread = __shared;
+		if (shared == null || !__front.__tracksHandshakes()) {
+			return;
+		}
+		var now:Int = __localPendingCount();
+		var delta:Int = now - __publishedPending - arrivals;
+		__publishedPending = now;
+		if (delta != 0) {
+			shared.addInFlight(delta, __front.maxPendingHandshakes);
+		}
+	}
+
+	/**
+		On the front, on the listener's runtime: hands `socket`, accepted and
+		admitted, to one of the runtimes. Counted in flight on the way when
+		the server waits on a handshake for it.
+	**/
+	@:noCompletion private function __handOff(socket:Socket, peer:{host:Host, port:Int}):Void {
+		var spread:ServerSpread = __spread;
+		var tracked:Bool = __tracksHandshakes();
+		if (tracked) {
+			spread.addInFlight(1, maxPendingHandshakes);
+		}
+		var address:String = crossbyte._internal.net.IPv6.compress(peer.host.toString());
+		if (spread.handOff(socket, peer, address)) {
+			return;
+		}
+
+		if (tracked) {
+			spread.addInFlight(-1, maxPendingHandshakes);
+		}
+		try {
+			socket.close();
+		} catch (_:Dynamic) {}
+	}
+	#end
+
+	/**
+		Whether this server waits on a handshake for each connection before
+		announcing it: a TLS one's. What `maxPendingHandshakes` counts.
+	**/
+	@:noCompletion private function __tracksHandshakes():Bool {
+		return secure;
+	}
+
+	/** Handshakes under way on this server itself, not counting replicas'. **/
+	@:noCompletion private function __localPendingCount():Int {
+		#if nodejs
+		return 0;
+		#else
+		return __pendingHandshakes == null ? 0 : __pendingHandshakes.length;
+		#end
+	}
+
+	/**
+		On the front of a spread server: dispatches `event` -- a `connect`
+		on one of the replicas, on its runtime -- to the `connect` listeners
+		the application added to this server. Walked from the published
+		array, which nothing changes once it is published, rather than from
+		the dispatcher's own lists, which this thread does not own.
+	**/
+	@:noCompletion private function __dispatchShared(event:ServerSocketConnectEvent):Bool {
+		var listeners:Array<Dynamic> = __sharedConnect;
+		if (listeners == null || listeners.length == 0) {
+			return false;
+		}
+		@:privateAccess {
+			event.target = this;
+			event.currentTarget = this;
+		}
+		for (listener in listeners) {
+			listener(event);
+		}
+		return true;
+	}
+
+	/**
+		Publishes the `connect` listeners the application has added, in the
+		order they run, leaving out the one this class attached for itself.
+	**/
+	@:noCompletion private function __refreshSharedConnect():Void {
+		var listed:Array<Dynamic> = __eventMap == null ? null : cast __eventMap.get(ServerSocketConnectEvent.CONNECT);
+		if (listed == null || listed.length == 0) {
+			__sharedConnect = null;
+			return;
+		}
+		var published:Array<Dynamic> = [];
+		for (entry in listed) {
+			var listener:Dynamic = entry == null ? null : entry.listener;
+			if (listener == null || __isOwnConnect(listener)) {
+				continue;
+			}
+			published.push(listener);
+		}
+		__sharedConnect = published;
+	}
+
+	@:noCompletion private function __isOwnConnect(listener:Dynamic):Bool {
+		var own:Dynamic = __ownConnect;
+		return own != null && (listener == own || Reflect.compareMethods(listener, own));
+	}
+
+	/**
+		How a server built on this one attaches its own `connect` listener:
+		as any listener, and noted, so a spread server runs it on each
+		replica rather than among the application's.
+	**/
+	@:noCompletion private function __addOwnConnectListener(listener:ServerSocketConnectEvent->Void):Void {
+		__ownConnect = listener;
+		addEventListener(ServerSocketConnectEvent.CONNECT, listener);
+	}
+
+	/**
+		A replica's `connect` goes to its own listener -- the class's -- and
+		then to those the application added to the front. Every other event,
+		and every event on a server that is not a replica, is dispatched as
+		ever.
+	**/
+	override public function dispatchEvent<T:Event>(event:T):Bool {
+		var front:ServerSocket = __front;
+		if (front != null && event != null && event.type == ServerSocketConnectEvent.CONNECT) {
+			var handled:Bool = super.dispatchEvent(event);
+			return front.__dispatchShared(cast event) || handled;
+		}
+		return super.dispatchEvent(event);
+	}
+
+	@:noCompletion private function get_acceptFailures():Int {
+		var total:Int = acceptFailures;
+		#if (target.threaded && !js)
+		if (__spread != null) {
+			for (replica in __spread.replicas) {
+				total += replica.acceptFailures;
+			}
+		}
+		#end
+		return total;
+	}
+
+	@:noCompletion private function get_handshakeFailures():Int {
+		var total:Int = handshakeFailures;
+		#if (target.threaded && !js)
+		if (__spread != null) {
+			for (replica in __spread.replicas) {
+				total += replica.handshakeFailures;
+			}
+		}
+		#end
+		return total;
 	}
 
 	#if !nodejs
@@ -990,6 +1812,16 @@ class ServerSocket extends EventDispatcher {
 				return true;
 			}
 
+			#if (target.threaded && !js)
+			if (__spread != null) {
+				// Another runtime's from here, TLS handshake and all.
+				var peer = __admittedPeer;
+				__admittedPeer = null;
+				__handOff(sysSocket, peer);
+				return true;
+			}
+			#end
+
 			if (secure) {
 				// Defer the connect event: the peer is not authenticated (and
 				// no application bytes are readable) until TLS completes.
@@ -1043,11 +1875,17 @@ class ServerSocket extends EventDispatcher {
 	**/
 	@:noCompletion private function __admits(sysSocket:Socket):Bool {
 		var admitted:Bool = false;
+		__admittedPeer = null;
 		try {
 			// Null for a peer already gone (see __fromSocket), which the catch
 			// below never caught: reading through null is no exception on hxcpp.
 			var peer = sysSocket.peer();
 			admitted = peer != null && admit(crossbyte._internal.net.IPv6.compress(peer.host.toString()), peer.port);
+			if (admitted) {
+				// Kept for the hand-off to another runtime, which asks again
+				// otherwise.
+				__admittedPeer = peer;
+			}
 		} catch (_:Dynamic) {
 			admitted = false;
 		}
@@ -1086,6 +1924,18 @@ class ServerSocket extends EventDispatcher {
 		var message:String = "Could not accept a connection waiting on port " + localPort + ": " + Std.string(error)
 			+ ". The server is still listening, and takes it once the system will hand it over.";
 		crossbyte.utils.Logger.warn(message);
+		#if (target.threaded && !js)
+		var front:ServerSocket = __front;
+		if (front != null) {
+			// A replica accepting for itself, with reusePort: the application
+			// listens on the front, which is told on its own runtime.
+			var runtime:Null<CrossByte> = front.__cbInstance;
+			if (runtime != null) {
+				runtime.post(() -> front.dispatchEvent(new crossbyte.events.IOErrorEvent(crossbyte.events.IOErrorEvent.IO_ERROR, message)));
+			}
+			return;
+		}
+		#end
 		dispatchEvent(new crossbyte.events.IOErrorEvent(crossbyte.events.IOErrorEvent.IO_ERROR, message));
 	}
 
@@ -1094,6 +1944,7 @@ class ServerSocket extends EventDispatcher {
 
 		if (type == Event.CONNECT) {
 			__hasListener = true;
+			__refreshSharedConnect();
 			#if !nodejs
 			if (listening) {
 				__attachAcceptTick();
@@ -1104,6 +1955,10 @@ class ServerSocket extends EventDispatcher {
 
 	override public function removeEventListener(type:String, listener:Dynamic->Void):Void {
 		super.removeEventListener(type, listener);
+
+		if (type == Event.CONNECT) {
+			__refreshSharedConnect();
+		}
 
 		// Only once the last one goes. Removing any one used to stop the
 		// server accepting, though others were still listening for what it
@@ -1189,8 +2044,27 @@ class ServerSocket extends EventDispatcher {
 		allows, so the rest are left in the kernel's queue.
 	**/
 	@:noCompletion private function __handshakesFull():Bool {
+		#if (target.threaded && !js)
+		if (__spread != null || __shared != null) {
+			return __spreadFull();
+		}
+		#end
 		return secure && maxPendingHandshakes >= 0 && __pendingHandshakes.length >= maxPendingHandshakes;
 	}
+
+	#if (target.threaded && !js)
+	/**
+		On a spread server's listener -- the front's, or with `reusePort` a
+		replica's own: whether the handshakes under way on every runtime, and
+		on their way to one, reach the front's `maxPendingHandshakes`. If they
+		do, this listener is set aside until a runtime says one has ended.
+	**/
+	@:noCompletion private function __spreadFull():Bool {
+		var spread:ServerSpread = __spread != null ? __spread : __shared;
+		var front:ServerSocket = __front != null ? __front : this;
+		return front.__tracksHandshakes() && spread.parkIfFull(front.maxPendingHandshakes, this);
+	}
+	#end
 
 	/** The socket connections are accepted from. **/
 	@:noCompletion private function __listenerSocket():Socket {
@@ -1204,6 +2078,18 @@ class ServerSocket extends EventDispatcher {
 		on every pass -- a POLL loop spinning until a handshake finished.
 	**/
 	@:noCompletion private function __syncListenerWatch():Void {
+		#if (target.threaded && !js)
+		if (__front != null) {
+			// A replica's handshakes are counted by the front, and this is
+			// called wherever they change, so this is where the front hears
+			// of it. Only a replica that listens for itself, with reusePort,
+			// has a listener to keep in the poll set.
+			__publishPending();
+			if (__listenerSocket() == null) {
+				return;
+			}
+		}
+		#end
 		if (__acceptRuntime != null && !__closed && listening && !__handshakesFull()) {
 			__watchListener(__acceptRuntime);
 		} else {
@@ -1259,13 +2145,17 @@ class ServerSocket extends EventDispatcher {
 		done, without saying how many are under way. `handshakeTimeout`
 		still bounds each, and `handshakeFailures` still counts the ones that
 		fail or run out of time.
+
+		On a server spread over `runtimes`, every runtime's together, with
+		those accepted and on their way to one.
 	**/
 	public function pendingHandshakeCount():Int {
-		#if nodejs
-		return 0;
-		#else
-		return __pendingHandshakes == null ? 0 : __pendingHandshakes.length;
+		#if (target.threaded && !js)
+		if (__spread != null) {
+			return __tracksHandshakes() ? __spread.inFlight : 0;
+		}
 		#end
+		return __localPendingCount();
 	}
 
 	/**
@@ -1299,13 +2189,27 @@ class ServerSocket extends EventDispatcher {
 			return;
 		}
 
+		#if (target.threaded && !js)
+		if (__front != null) {
+			__stopReplica();
+			return;
+		}
+		#end
+
 		#if !nodejs
 		__dropPendingHandshakes();
 		__detachAcceptTick();
 		#end
+		#if (target.threaded && !js)
+		if (__spread != null) {
+			__spread.stop();
+		}
+		#end
 
 		try {
-			__serverSocket.close();
+			if (__serverSocket != null) {
+				__serverSocket.close();
+			}
 		} catch (_:Dynamic) {
 			// The listener may already be gone; releasing it is best-effort.
 		}

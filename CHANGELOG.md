@@ -240,6 +240,20 @@ entry below says how:
   and a dial throws for a negative timeout.
 
 ### Added
+- One `ServerSocket` can serve its connections on several runtimes, so a
+  server uses more than one core: `runtimes` takes runtimes made with
+  `CrossByte.make(POLL)`, or `runtimeCount` makes them. The listener stays
+  on its runtime and hands each connection it accepts, before its TLS
+  handshake, to the runtime `selectRuntime` names -- a game server sends a
+  player to the runtime that owns their match -- or to the next in turn,
+  passing over one that has exited. From then on the connection is that
+  runtime's: polled, timed and announced there, its `connect` listener
+  run there. `admit`, `maxPendingHandshakes` and `handshakeFailures` hold
+  for the server as a whole. On Linux, `reusePort` gives each runtime a
+  listener of its own on the port instead (`SO_REUSEPORT`), the kernel
+  sharing connections out; refused on every other system. Natively, on the
+  jvm, hl, neko and the interpreter (where the runtimes take turns); on
+  Node, whose runtimes share one thread, refused.
 - `HTTPServerConfig.http2MaxRequestBodyBuffer`: what one HTTP/2 connection
   holds of request bodies at once, across all its streams -- 4 MB
   (`DEFAULT_HTTP2_REQUEST_BODY_BUFFER`) unless changed, `0` for no limit,
