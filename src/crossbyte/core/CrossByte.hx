@@ -388,15 +388,22 @@ final class CrossByte extends EventDispatcher {
 
 	/**
 	 * How far past its deadline the last frame ended, in seconds. A few
-	 * hundred microseconds is the clock's own overshoot; more is a frame
-	 * whose work outran its tick, and the next frame starts that much short.
-	 * Zero for a host-driven runtime, whose frames the host schedules.
+	 * hundred microseconds is the clock's own overshoot, on Windows up to
+	 * a millisecond or two, since a wait there ends on the system timer's
+	 * tick; more is a frame whose work outran its tick, and the next frame
+	 * starts that much short. Zero for a host-driven runtime, whose frames
+	 * the host schedules.
 	 */
 	public var loopLag(get, never):Float;
 
 	/**
 	 * How many frames have run past their deadline with no time left to
-	 * wait, since the runtime started.
+	 * wait, since the runtime started: frames whose work, timers, the
+	 * tick, socket handlers, posted callbacks, took all the time they had.
+	 * A frame that ends late because a wait did is late, which `loopLag`
+	 * says, but not an overrun: the `POLL` loop waits in poll until its
+	 * deadline, and on Windows that wait ends on the system timer's tick,
+	 * up to a millisecond or two past it.
 	 */
 	public var frameOverruns(get, never):Int;
 
@@ -2049,7 +2056,13 @@ final class CrossByte extends EventDispatcher {
 	private #if final inline #end function __wait(frameStartTime:Float):Void {
 #if js
 		#else
-		var overran:Bool = Timer.stamp() >= __frameDeadline;
+		// Whether the frame's work took all the time it had: where its work
+		// reached from where it began, rather than where the clock is now.
+		// The POLL loop comes here from a wait in poll, which on Windows ends
+		// on the system timer's tick, up to a millisecond or two past the
+		// deadline it was given, and every frame with nothing to do was
+		// counted as one whose work had outrun its tick.
+		var overran:Bool = frameStartTime + __cpuTime >= __frameDeadline;
 		#if precision_tick
 		var minSleep = 0.001;
 
