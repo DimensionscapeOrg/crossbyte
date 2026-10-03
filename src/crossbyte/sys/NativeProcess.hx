@@ -27,11 +27,42 @@ import js.node.child_process.ChildProcess as ChildProcessObject;
 #elseif (sys && target.threaded && !eval)
 import sys.io.Process;
 import sys.thread.Deque;
+import sys.thread.Lock;
+import sys.thread.Mutex;
 import sys.thread.Thread;
 #end
 
-/** Launches and monitors a native operating-system process. */
+#if !nodejs
+/**
+	What a reader thread hands the runtime: a typed message, where it was an
+	anonymous object the runtime read back with eight `Reflect.field` calls.
+**/
+private enum ProcessOutput {
+	Chunk(stream:String, text:String, isError:Bool);
+	Closed(stream:String);
+	Exited(exitCode:Int, pid:Int);
+}
+#end
+
+/**
+	Launches and monitors a native operating-system process.
+
+	A child's output is read as it comes and handed to the runtime, which
+	dispatches it. Natively, on the jvm, hl and neko at most
+	`MAX_OUTPUT_AHEAD` bytes of it are held ahead of the runtime, for each
+	process: past that the readers stop reading, and a child that goes on
+	writing waits on its pipe until the runtime has caught up. It used to be
+	read as fast as the child wrote, whether or not the runtime dispatched any
+	of it, and held without limit -- a chatty child of a busy server held its
+	whole output in this process.
+**/
 class NativeProcess extends EventDispatcher {
+	/**
+		How much of a child's output is held ahead of the runtime before the
+		readers wait for it: 256 KB, in the 4 KB pieces they read.
+	**/
+	public static inline var MAX_OUTPUT_AHEAD:Int = MAX_CHUNKS_AHEAD * OUTPUT_BUFFER_SIZE;
+
 	/**
 		Whether this build can start a process: natively, on the jvm, hl,
 		neko and Node.
@@ -87,6 +118,15 @@ class NativeProcess extends EventDispatcher {
 	#end
 
 	@:noCompletion private static inline var OUTPUT_BUFFER_SIZE:Int = 4096;
+	@:noCompletion private static inline var MAX_CHUNKS_AHEAD:Int = 64;
+
+	#if (sys && target.threaded && !eval && !nodejs)
+	// Pieces of output the readers have sent and the runtime has not yet
+	// dispatched, under __flowLock; __flowWake lets a waiting reader go.
+	@:noCompletion private var __chunksAhead:Int = 0;
+	@:noCompletion private var __flowLock:Mutex = null;
+	@:noCompletion private var __flowWake:Lock = null;
+	#end
 	@:noCompletion private static inline var STREAM_STDOUT:String = "stdout";
 	@:noCompletion private static inline var STREAM_STDERR:String = "stderr";
 
@@ -141,6 +181,12 @@ class NativeProcess extends EventDispatcher {
 		}
 		#end
 
+		#if (sys && target.threaded && !eval)
+		__chunksAhead = 0;
+		__flowLock = new Mutex();
+		__flowWake = new Lock();
+		#end
+
 		__worker = new Worker();
 		__worker.addEventListener(ThreadEvent.PROGRESS, __onWorkerProgress);
 		__worker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
@@ -192,7 +238,7 @@ class NativeProcess extends EventDispatcher {
 	}
 
 	#if !nodejs
-	@:noCompletion private function __execute(info:Dynamic):Void {
+	@:noCompletion private function __execute(info:NativeProcessStartupInfo):Void {
 		#if (sys && target.threaded && !eval)
 		// The child, held here rather than read from the field each time: the
 		// runtime clears the field when it dispatches EXIT, which the
@@ -233,7 +279,7 @@ class NativeProcess extends EventDispatcher {
 				process.close();
 			} catch (_:Dynamic) {}
 
-			__worker.sendComplete({exitCode: __exitCode, pid: __pid});
+			__worker.sendComplete(Exited(__exitCode, __pid));
 			if (__afterCompleteForTest != null) {
 				__afterCompleteForTest();
 			}
@@ -260,7 +306,7 @@ class NativeProcess extends EventDispatcher {
 		}
 
 		if (stream == null) {
-			__worker.sendProgress({stream: streamName, isClose: true});
+			__worker.sendProgress(Closed(streamName));
 			return;
 		}
 
@@ -291,11 +337,8 @@ class NativeProcess extends EventDispatcher {
 				var length:Int = carried + bytesRead;
 				var whole:Int = __wholeCharacters(buffer, length);
 				if (whole > 0 && __worker != null) {
-					__worker.sendProgress({
-						stream: streamName,
-						isError: streamName == STREAM_STDERR,
-						text: buffer.getString(0, whole)
-					});
+					__worker.sendProgress(Chunk(streamName, buffer.getString(0, whole), streamName == STREAM_STDERR));
+					__awaitRoom();
 				}
 				carried = length - whole;
 				if (carried > 0) {
@@ -311,16 +354,75 @@ class NativeProcess extends EventDispatcher {
 		// Output that ends inside a character ends there: what there is of it
 		// goes as it is.
 		if (carried > 0 && __worker != null) {
-			__worker.sendProgress({
-				stream: streamName,
-				isError: streamName == STREAM_STDERR,
-				text: buffer.getString(0, carried)
-			});
+			__worker.sendProgress(Chunk(streamName, buffer.getString(0, carried), streamName == STREAM_STDERR));
 		}
 
 		if (__worker != null) {
-			__worker.sendProgress({stream: streamName, isClose: true});
+			__worker.sendProgress(Closed(streamName));
 		}
+	}
+
+	/**
+		On a reader's thread, after it has sent a piece: counts it, and waits
+		while `MAX_CHUNKS_AHEAD` are with the runtime undispatched. Each wait is
+		short, so a reader stops waiting once the process is exited.
+	**/
+	@:noCompletion private function __awaitRoom():Void {
+		#if (sys && target.threaded && !eval)
+		var flow:Mutex = __flowLock;
+		var wake:Lock = __flowWake;
+		if (flow == null || wake == null) {
+			return;
+		}
+		flow.acquire();
+		__chunksAhead++;
+		var full:Bool = __chunksAhead >= MAX_CHUNKS_AHEAD;
+		flow.release();
+		while (full && __running && !__runtimeGone()) {
+			wake.wait(0.05);
+			flow.acquire();
+			full = __chunksAhead >= MAX_CHUNKS_AHEAD;
+			flow.release();
+		}
+		#end
+	}
+
+	/**
+		Whether the runtime that dispatches this process's output has exited,
+		so nothing will ever make room: the readers then read on, as they did
+		before, rather than wait for good.
+	**/
+	@:noCompletion private function __runtimeGone():Bool {
+		var worker:Worker = __worker;
+		if (worker == null) {
+			return true;
+		}
+		var runtime:crossbyte.core.CrossByte = @:privateAccess worker.__runtime;
+		return runtime == null || @:privateAccess runtime.__postClosed;
+	}
+
+	/**
+		On the runtime's thread, as a piece is dispatched: lets the readers go
+		on once the runtime has caught up below the limit.
+	**/
+	@:noCompletion private function __chunkDispatched():Void {
+		#if (sys && target.threaded && !eval)
+		var flow:Mutex = __flowLock;
+		if (flow == null) {
+			return;
+		}
+		flow.acquire();
+		var wasFull:Bool = __chunksAhead >= MAX_CHUNKS_AHEAD;
+		if (__chunksAhead > 0) {
+			__chunksAhead--;
+		}
+		flow.release();
+		if (wasFull) {
+			// Once for each reader that may be waiting.
+			__flowWake.release();
+			__flowWake.release();
+		}
+		#end
 	}
 
 	/**
@@ -455,30 +557,31 @@ class NativeProcess extends EventDispatcher {
 
 	#if !nodejs
 	@:noCompletion private function __onWorkerProgress(event:ThreadEvent):Void {
-		var payload = event.message;
-		if (payload == null) {
+		var output:Null<ProcessOutput> = event.message;
+		if (output == null) {
 			return;
 		}
 
-		var stream:Null<String> = Reflect.field(payload, "stream");
-
-		if (Reflect.field(payload, "isClose") == true) {
-			__emitClose(stream);
-			return;
+		switch (output) {
+			case Chunk(stream, text, isError):
+				__chunkDispatched();
+				__emitData(stream, text == null ? "" : text, isError);
+			case Closed(stream):
+				__emitClose(stream);
+			case Exited(_, _):
 		}
-
-		var text:Null<String> = Reflect.field(payload, "text");
-		__emitData(stream, text == null ? "" : text, Reflect.field(payload, "isError") == true);
 	}
 
 	@:noCompletion private function __onWorkerComplete(event:ThreadEvent):Void {
 		__running = false;
-		var payload = event.message;
-		if (payload != null && Reflect.field(payload, "pid") != null) {
-			__pid = cast Reflect.field(payload, "pid");
-		}
-		if (payload != null && Reflect.field(payload, "exitCode") != null) {
-			__exitCode = cast Reflect.field(payload, "exitCode");
+		var output:Null<ProcessOutput> = event.message;
+		if (output != null) {
+			switch (output) {
+				case Exited(exitCode, pid):
+					__pid = pid;
+					__exitCode = exitCode;
+				default:
+			}
 		}
 
 		__emitExit();
