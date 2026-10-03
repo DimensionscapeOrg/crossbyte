@@ -283,17 +283,33 @@ class ProcessStats {
 	#if (sys && !windows)
 	static var __ticksPerSecond:Float = 100;
 
+	/**
+		A /proc file's text. Not `File.getContent`, which reads as many bytes
+		as the file's size says, and a /proc file says it has none.
+	**/
+	static function __proc(path:String):String {
+		var input = sys.io.File.read(path, false);
+		try {
+			var text:String = input.readAll().toString();
+			input.close();
+			return text;
+		} catch (error:Dynamic) {
+			input.close();
+			throw error;
+		}
+	}
+
 	static function __readLinux(s:ProcessStats):Void {
 		try {
 			// Fields 14 and 15 of /proc/self/stat, counted after the command,
 			// which is in parentheses and may hold spaces.
-			var stat:String = sys.io.File.getContent("/proc/self/stat");
+			var stat:String = __proc("/proc/self/stat");
 			var fields = stat.substr(stat.lastIndexOf(")") + 2).split(" ");
 			s.user = Std.parseFloat(fields[11]) / __ticksPerSecond;
 			s.kernel = Std.parseFloat(fields[12]) / __ticksPerSecond;
 		} catch (_:Dynamic) {}
 		try {
-			for (line in sys.io.File.getContent("/proc/self/status").split("\n")) {
+			for (line in __proc("/proc/self/status").split("\n")) {
 				if (StringTools.startsWith(line, "VmRSS:")) {
 					s.rss = __kilobytes(line);
 				} else if (StringTools.startsWith(line, "RssAnon:")) {
