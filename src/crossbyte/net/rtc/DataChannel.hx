@@ -81,7 +81,7 @@ class DataChannel {
 
 	/**
 		How many times a message may be sent again before it is given up on,
-		or null for a channel that tries until it arrives.
+		or -1 for a channel that tries until it arrives.
 
 		0 sends each message once. What a game's state channel wants: a
 		position that arrives late is worth less than the next one, and
@@ -90,14 +90,17 @@ class DataChannel {
 		Honoured only when the peer said it understands partial reliability;
 		otherwise messages are reliable, as RFC 8831 has it.
 	**/
-	public var maxRetransmits(default, null):Null<Int>;
+	public var maxRetransmits(default, null):Int = -1;
 
 	/**
 		How long, in milliseconds, a message is tried for before it is given
-		up on, whether or not it was ever sent, or null for no limit. RFC
+		up on, whether or not it was ever sent, or -1 for no limit. RFC
 		3758's timed reliability, a browser's `maxPacketLifeTime`.
+
+		Where the WebRTC API answers null, these answer -1: an `Int`, which a
+		native build holds as a number rather than as an object to unbox.
 	**/
-	public var maxPacketLifeTime(default, null):Null<Int>;
+	public var maxPacketLifeTime(default, null):Int = -1;
 
 	/** Whether the channel has been acknowledged and can carry messages. **/
 	public var open(default, null):Bool = false;
@@ -148,8 +151,8 @@ class DataChannel {
 	@:noCompletion private var __onClosed:DataChannel->Void;
 
 	@:allow(crossbyte.net.rtc)
-	private function new(transfer:SctpDataTransfer, id:Int, label:String, ordered:Bool, protocol:String, ?maxRetransmits:Int,
-			?maxPacketLifeTime:Int) {
+	private function new(transfer:SctpDataTransfer, id:Int, label:String, ordered:Bool, protocol:String, maxRetransmits:Int = -1,
+			maxPacketLifeTime:Int = -1) {
 		this.__transfer = transfer;
 		this.id = id;
 		this.label = label != null ? label : "";
@@ -160,8 +163,8 @@ class DataChannel {
 		this.opened = new Future<DataChannel>();
 
 		// The transfer's terms: a count, and seconds rather than milliseconds.
-		__retransmits = maxRetransmits != null ? maxRetransmits : -1;
-		__lifetime = maxPacketLifeTime != null ? maxPacketLifeTime / 1000 : -1;
+		__retransmits = maxRetransmits;
+		__lifetime = maxPacketLifeTime >= 0 ? maxPacketLifeTime / 1000 : -1;
 	}
 
 	@:noCompletion private var __retransmits:Int = -1;

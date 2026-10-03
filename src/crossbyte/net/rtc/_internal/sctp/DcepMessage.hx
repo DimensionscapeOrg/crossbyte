@@ -87,19 +87,19 @@ class DcepMessage {
 
 	/**
 		How many times a message may be sent again before it is given up on,
-		for a channel of that type; null for one that is not.
+		for a channel of that type; -1 for one that is not.
 	**/
-	public var maxRetransmits(get, never):Null<Int>;
+	public var maxRetransmits(get, never):Int;
 
-	private function get_maxRetransmits():Null<Int> {
-		return (channelType & ~UNORDERED_FLAG) == PARTIAL_RETRANSMIT ? __parameter() : null;
+	private function get_maxRetransmits():Int {
+		return (channelType & ~UNORDERED_FLAG) == PARTIAL_RETRANSMIT ? __parameter() : -1;
 	}
 
-	/** How long, in milliseconds, a message is tried for, for a channel of that type; null otherwise. **/
-	public var maxPacketLifeTime(get, never):Null<Int>;
+	/** How long, in milliseconds, a message is tried for, for a channel of that type; -1 otherwise. **/
+	public var maxPacketLifeTime(get, never):Int;
 
-	private function get_maxPacketLifeTime():Null<Int> {
-		return (channelType & ~UNORDERED_FLAG) == PARTIAL_TIMED ? __parameter() : null;
+	private function get_maxPacketLifeTime():Int {
+		return (channelType & ~UNORDERED_FLAG) == PARTIAL_TIMED ? __parameter() : -1;
 	}
 
 	/** The reliability parameter, which is unsigned on the wire: past an Int's range is as good as no limit. **/
@@ -113,15 +113,15 @@ class DcepMessage {
 		types, which is what a channel for game state wants: a position that
 		arrives late is worth less than the next one.
 	**/
-	public static function open(label:String, ordered:Bool = true, protocol:String = "", ?maxRetransmits:Int,
-			?maxPacketLifeTime:Int):DcepMessage {
+	public static function open(label:String, ordered:Bool = true, protocol:String = "", maxRetransmits:Int = -1,
+			maxPacketLifeTime:Int = -1):DcepMessage {
 		var type:Int = RELIABLE;
 		var reliability:Int = 0;
 
-		if (maxRetransmits != null) {
+		if (maxRetransmits >= 0) {
 			type = PARTIAL_RETRANSMIT;
 			reliability = maxRetransmits;
-		} else if (maxPacketLifeTime != null) {
+		} else if (maxPacketLifeTime >= 0) {
 			type = PARTIAL_TIMED;
 			reliability = maxPacketLifeTime;
 		}
