@@ -265,8 +265,29 @@ entry below says how:
   for the limit it did not set.
 - `DataChannelSet.transfer` is gone from its public surface: send on a
   `DataChannel`.
+- Code that keeps "no algorithm" in a `CompressionAlgorithm` types it
+  `Null<CompressionAlgorithm>`; `CompressionAlgorithm.fromString` answers
+  that type.
+- A `TaskPool.submit` task's result is `Any`: cast it to read from it.
+- `Vector.sort` takes a comparator or nothing; `Vector.concat` takes
+  vectors, wrap an array or an item in a `Vector` first.
+- `EnumUtil.getValue` is an `Array<Dynamic>`; `getNameValuePair` and the
+  `KeyValuePair`s of `ListedMap`, `OrderedMap` and `Object.entries()` are
+  classes, so code that builds one from another anonymous type, rather than
+  a literal, constructs it instead.
+- A listener added for a typed event-type constant must take that event or
+  one it extends: `addEventListener(ProgressEvent.SOCKET_DATA, (e:Event) ->
+  ...)` compiles, `(e:IOErrorEvent) -> ...` no longer does; the same for a
+  `ServerSocket`'s listeners. Read `UncaughtErrorEvent.origin` through a type
+  test and a cast.
 
 ### Added
+- `GlobalTimer.setTimeout` and `setInterval` take a `Void->Void` function by
+  an overload of their own, which calls it directly; the ActionScript form,
+  any function with arguments, is unchanged.
+- `TypedWorker<In, Out, Progress>`: a `Worker` whose run message, progress
+  and result have types, with `onProgress` and `onComplete` handlers that
+  receive them typed. `Worker` is `TypedWorker<Dynamic, Dynamic, Dynamic>`.
 - A load and churn harness, `ci/load.hxml` (`tests/load`), run by hand as
   the soak is: a reliable-UDP game server at 30 or 60 ticks a second with
   its clients in other processes; HTTP/1.1, HTTP/2 and WebSocket clients
@@ -1606,6 +1627,107 @@ entry below says how:
   is unread, where each frame copied all the unread input into a new buffer,
   so a reader a megabyte behind paid for the megabyte with every frame: CPU
   per megabyte received, 766-875 ms before, 8-12 ms now.
+- The event-type constants are typed: `Event.CLOSE` is an
+  `EventType<Event>`, `ProgressEvent.SOCKET_DATA` an
+  `EventType<ProgressEvent>`, and so on for `Event`, `FileListEvent`,
+  `IOErrorEvent`, `ProgressEvent`, `ServerSocketConnectEvent`, `ThreadEvent`
+  and `TickEvent`. A listener of the wrong event is refused where it is
+  added; as `String`s they let `addEventListener` take the type from the
+  listener, so any listener fit. A listener of a supertype, `Event->Void`,
+  still fits. `TaskEvent`'s stay `String`s, since a task's event carries its
+  own result type. `ServerSocket.addEventListener` and `removeEventListener`
+  check their listener against the type as every other dispatcher does,
+  where they took `Dynamic->Void`.
+- `UncaughtErrorEvent.origin` is `Any`, where it was `Dynamic`.
+- `crossbyte.Object` drops `@:generic`, which did nothing. `values()` and
+  `entries()` no longer make a closure, and `entries()` an anonymous object
+  per field. `Event.target`'s doc says how to read it typed.
+- `ListedMap.KeyValuePair` is a class, built from a `{key, value}` literal as
+  before and fitting where a `{key, value}` structure is asked for;
+  `OrderedMap.keyValuePairs()` and `Object.entries()` answer them.
+  `EnumUtil.getValue` is an `Array<Dynamic>`, where it was `Dynamic`, and
+  `EnumUtil.getNameValuePair` an `EnumNameValue` class.
+  `WeightedGraph.Edge`, what `getNeighbors` answers, is public.
+- `Vector`'s callbacks are `VectorCallback`s: any function of none to three
+  of `(item, index, vector)`, or an untyped `Function` as before. `sort` takes
+  an optional `(T, T) -> Int`, where it took `Dynamic` and threw for a value
+  that was not a function; `concat` takes vectors, as ActionScript's does,
+  where it took anything.
+- `Vector`'s `every`, `filter`, `forEach`, `map` and `some` call a callback
+  whose type says how many arguments it takes directly, where each call went
+  through `Reflect.callMethod` with an argument array: 12 ns an item
+  natively, where it cost 61 to 68, and 5 to 6 on Node, where it cost 12 to
+  15.
+- `SwitchTable.make` looks keys up typed when they are all `Int`s or all
+  `String`s, and makes each handler written as a function literal once
+  rather than on every dispatch: 71 to 77 ns a dispatch of sixteen `Int`
+  keys natively, where it cost 130 to 147. What reaches `otherwise` is
+  unchanged, except on JavaScript, where a key now matches a case only when
+  it is the same value: the `String` `"1"` matched the case `1` there, and
+  nowhere else.
+- On the jvm, `File.modificationDate` reads one attribute: 20 us, where
+  `FileSystem.stat`, which first asks for attributes Windows refuses with an
+  exception, took 108 to 138.
+- `Logger`'s JSON records are written out directly, and always as `level`,
+  `message`, `time`, `category` and then the fields, where an anonymous
+  object went through `haxe.Json`, which wrote the keys in whatever order
+  the target's reflection gave: 0.83 to 0.90 us a record natively, where it
+  cost 0.97 to 1.09, and 0.24 to 0.45 on the jvm, where it cost 0.66 to
+  0.71.
+- A child process's output is held at most `NativeProcess.MAX_OUTPUT_AHEAD`
+  (256 KB) ahead of the runtime: past that the readers stop reading, and a
+  child that goes on writing waits on its pipe until the runtime has
+  dispatched what it holds. It was read as fast as the child wrote and
+  queued without limit, so a chatty child of a busy server held its whole
+  output in the server. Its messages to the runtime are typed, where they
+  were anonymous objects read back by reflection.
+- A `Worker` delivers a backlog without moving it: each turn's share of
+  queued messages was spliced off the front of the queue, moving everything
+  behind it. A million queued messages are delivered in 0.05 to 0.08 s
+  natively, where they took 0.6 to 0.7.
+- `TaskPool.submit` returns a `Task<Any>`, where it was `Task<Dynamic>`.
+- A `TaskPool` lets go of a finished task in constant time, where it searched
+  its list of tasks in flight and shifted everything after it: a burst cost
+  the square of its size. Natively, without a `Mutex` and a `Lock` made per
+  task, a task costs 2.1 to 2.2 us of wall time in bursts of 100,000, where
+  it cost 7.0 to 7.9, and 2.2 in bursts of 1,000, where it cost 4.3 to 4.8;
+  on the jvm 0.46 to 0.55 us in bursts of 100,000, where it cost 4.2 to 4.7.
+- A `Void->Void` timer is called directly, without a closure made around it
+  when it is armed or a boxed handle for each run: 82 to 133 ns a fire and
+  re-arm, against 89 to 151, natively.
+- An event reaches its listeners for half of what it cost natively: each
+  listener's entry is a class, where a dispatch read its anonymous fields by
+  name, twice a listener. A tick with 1,000 listeners costs 4.2 to 5.3 us
+  natively, where it cost 11.3 to 12.2.
+- `FlexSocket` is an abstract over `sys.net.Socket`, which every TLS socket
+  it holds extends, rather than over `EitherType`, which converted it from
+  `Dynamic` on every call. On the jvm an accepted socket is constructed
+  directly rather than through reflection, a received datagram's address
+  is read without a checked cast per byte, and the std socket overrides set
+  a `Host`'s fields through checked access rather than `untyped`.
+- A socket that would block says so without an exception. The native
+  transfer threw for it, the standard `sys.net` socket caught that and
+  threw `Blocked`, and `Socket.flush` caught that in turn: three exceptions
+  each time a slow peer's full window refused a flush, on every pass until
+  it read, and two to end every pass that read a UDP socket dry. Natively a
+  flush refused by a peer that stopped reading costs 0.38 us a socket a
+  pass, where it cost 5.5 to 5.8 (64 such peers, three interleaved runs); a
+  datagram received one a pass 9.7 to 9.9 us, where it cost 11.2 to 11.5.
+  `sys.net.Socket` and `UdpSocket` keep their standard behaviour, throwing
+  `Blocked` once rather than twice natively; CrossByte's own read and write
+  loops use internal transfers that answer -1. Every spelling of "would
+  block" a TLS layer uses is recognised in a flush, where a bare string
+  closed the connection.
+- `CompressionAlgorithm` is an `Int` underneath, where it was a boxed
+  `Null<Int>`. `fromString` answers `Null<CompressionAlgorithm>`, and a
+  token nobody knows, converted where an algorithm is asked for, throws an
+  `ArgumentError`, where it was null.
+- An empty `ByteArray`, every one `ByteArray.fromBytes` makes, per
+  datagram and per frame, no longer allocates a buffer only for it to be
+  replaced; and `ByteArrayOutput.reserve` grows as writing does, where each
+  reserve that did not fit took a chunk of exactly its size, so a codec
+  reserving per value made a chunk and a copy per value: 10,000 reserved
+  ints and 1,000 varints took 11,000 chunks.
 - On eval HTTP/2 works, and the HTTP/1.1 client keeps connections for the
   next request to their origin, as on every other target with threads.
   Both were off there because eval raised a reset connection's error past
@@ -2630,6 +2752,14 @@ entry below says how:
   sessions counted twice, and two HTTP handlers on two threads reading one
   socket, which left clients with empty answers. It is now recognised by
   the order it was added in.
+- On Windows a server's listen queue holds as many connections as its
+  backlog asks, up to 65535, where it held 200: Windows grants 200 to any
+  larger backlog asked as a number, the default's included, and refused
+  every connection arriving while 200 waited, the refusals the load pass
+  saw under a connection storm. `listen()` asks as `SOMAXCONN_HINT`
+  natively, on HashLink and on neko: with nothing accepting, 300 connects
+  all wait now, where the 201st was refused after 2 s of retrying. The jvm
+  and the interpreter cannot ask that way, and still get 200.
 - On the jvm, neko, HashLink and the interpreter, two runtimes reading
   sockets at once no longer hand one client's bytes to another client's
   connection. The socket read buffer is shared per thread, as it already

@@ -147,11 +147,13 @@ private class Adjacency<T> {
 }
 
 /**
- * Edge class representing an edge in the weighted graph.
+ * An edge of a `WeightedGraph`: the node it leads to, and its weight; what
+ * `getNeighbors` answers. It was private, so the edges a public method
+ * returned could not be named by the code that received them.
  *
  * @param T The type of the node.
  */
-private class Edge<T> {
+class Edge<T> {
 	public var to:T;
 	public var weight:Float;
 

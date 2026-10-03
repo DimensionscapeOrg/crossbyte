@@ -1,0 +1,15 @@
+# Node, A (baseline export/baseline/src) and B (src). From the repository root:
+#   haxe tests/perf/core/build-node.hxml
+# then: node export/perf-core-node/a.js tick 1000 3   (and b.js)
+# Sockets, tasks and post are not run on Node: the scenarios pump in a loop
+# that never yields to Node's event loop.
+-lib hxnodejs
+-main PerfCore
+-cp tests/perf/core
+--each
+-cp export/baseline/src
+--js export/perf-core-node/a.js
+--next
+-cp src
+-D perf_new
+--js export/perf-core-node/b.js

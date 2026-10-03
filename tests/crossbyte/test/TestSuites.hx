@@ -52,6 +52,9 @@ class TestSuites {
 	public static function addEvents(runner:Runner):Void {
 		runner.addCase(new crossbyte.events.EventDispatcherTest());
 		runner.addCase(new crossbyte.events.EventsSupportTest());
+		// Also in PortableSuite: typed event-type constants refuse a listener
+		// of the wrong event at compile time.
+		runner.addCase(new crossbyte.events.EventTypesTest());
 	}
 
 	public static function addDataStructures(runner:Runner):Void {
@@ -71,6 +74,8 @@ class TestSuites {
 		runner.addCase(new crossbyte._internal.compression.CompressionRoundTripTest());
 		runner.addCase(new crossbyte._internal.compression.BrotliCodecTest());
 		runner.addCase(new crossbyte._internal.compression.CodecFormatsTest());
+		// Also in PortableSuite: typed pairs, callbacks and SwitchTable lookups.
+		runner.addCase(new crossbyte.ds.TypedShapesTest());
 	}
 
 	public static function addHttp(runner:Runner):Void {
@@ -193,6 +198,8 @@ class TestSuites {
 		// SQLite opens only natively.
 		runner.addCase(new crossbyte.db.SQLiteNativeTest());
 		#end
+		// The fixed-slot objects rows and documents are built as.
+		runner.addCase(new crossbyte._internal.AnonBuilderTest());
 	}
 
 	public static function addSystem(runner:Runner):Void {
@@ -412,6 +419,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.CongestionControlTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramAckDelayTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramSendQueueTest());
+		// Real sockets: a raw Bytes write, and a burst taken within one pass.
+		runner.addCase(new crossbyte.net.SocketPassTest());
 	}
 
 	/**
@@ -424,6 +433,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.SocketSelectThreadsTest());
 		// hl's TLS client, whose waits its collector can see past.
 		runner.addCase(new crossbyte._internal.socket.HlTlsSocketTest());
+		// The transfers that answer -1 for "would block" instead of throwing.
+		runner.addCase(new crossbyte.net.SysSocketTransferTest());
 	}
 
 	public static function addRPC(runner:Runner):Void {

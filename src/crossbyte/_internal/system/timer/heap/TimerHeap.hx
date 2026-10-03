@@ -64,11 +64,11 @@ class TimerHeap implements ITimerScheduler {
 	public function new() {}
 
 	public inline function setTimeout(delay:Float, callback:TimerHandle->Void):TimerHandle {
-		return createTimer(__now + delay, 0, callback);
+		return createTimer(__now + delay, 0, callback, null);
 	}
 
 	public inline function setTimeoutVoid(delay:Float, callback:Void->Void):TimerHandle {
-		return createTimer(__now + delay, 0, (handle:Int) -> callback());
+		return createTimer(__now + delay, 0, null, callback);
 	}
 
 	public inline function setInterval(delay:Float, interval:Float, callback:TimerHandle->Void):TimerHandle {
@@ -77,7 +77,7 @@ class TimerHeap implements ITimerScheduler {
 			throw "interval must be > 0";
 		}
 		#end
-		return createTimer(__now + delay, interval, callback);
+		return createTimer(__now + delay, interval, callback, null);
 	}
 
 	public inline function setIntervalVoid(delay:Float, interval:Float, callback:Void->Void):TimerHandle {
@@ -86,7 +86,7 @@ class TimerHeap implements ITimerScheduler {
 			throw "interval must be > 0";
 		}
 		#end
-		return createTimer(__now + delay, interval, (handle:TimerHandle) -> callback());
+		return createTimer(__now + delay, interval, null, callback);
 	}
 
 	public function clear(handle:TimerHandle, immediate:Bool = true):Bool {
@@ -285,7 +285,12 @@ class TimerHeap implements ITimerScheduler {
 				var i:Int = 0;
 				while (i < fires && node.enabled) {
 					try {
-						node.callback(new TimerHandle(node.id, gen));
+						var direct:Void->Void = node.voidCallback;
+						if (direct != null) {
+							direct();
+						} else {
+							node.callback(new TimerHandle(node.id, gen));
+						}
 					} catch (error:Dynamic) {
 						failed = true;
 						failure = error;
@@ -313,7 +318,12 @@ class TimerHeap implements ITimerScheduler {
 				}
 				#else
 				try {
-					node.callback(new TimerHandle(node.id, gen));
+					var direct:Void->Void = node.voidCallback;
+					if (direct != null) {
+						direct();
+					} else {
+						node.callback(new TimerHandle(node.id, gen));
+					}
 				} catch (error:Dynamic) {
 					failed = true;
 					failure = error;
@@ -405,7 +415,7 @@ class TimerHeap implements ITimerScheduler {
 		#end
 	}
 
-	private inline function createTimer(absoluteTime:Float, interval:Float, callback:TimerHandle->Void):TimerHandle {
+	private inline function createTimer(absoluteTime:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void):TimerHandle {
 		var id:Int;
 		if (free.length > 0) {
 			id = free.pop();
@@ -419,7 +429,7 @@ class TimerHeap implements ITimerScheduler {
 			nodes.push(null);
 			gens.push(0);
 		}
-		var n:TimerNode = new TimerNode(id, absoluteTime, interval, callback);
+		var n:TimerNode = new TimerNode(id, absoluteTime, interval, callback, voidCallback);
 		n.armPass = __pass;
 		nodes[id] = n;
 		queue.enqueue(n);

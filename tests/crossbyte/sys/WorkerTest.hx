@@ -304,6 +304,67 @@ class WorkerTest extends utest.Test {
 		#end
 	}
 
+	/**
+		A worker whose messages have types: what `doWork` is handed, what it
+		reports and what it completes with. Did not compile before: there was
+		no such worker.
+	**/
+	public function testATypedWorkerHandsOverTypedMessages():Void {
+		var worker = new TypedWorker<String, Int, Float>();
+		var fractions:Array<Float> = [];
+		var size:Int = -1;
+		worker.onProgress(fraction -> fractions.push(fraction)).onComplete(length -> size = length);
+		worker.doWork = path -> {
+			worker.sendProgress(0.5);
+			worker.sendComplete(path.length);
+		};
+		worker.run("data.bin");
+		pumpUntil(() -> worker.state != WorkerState.RUNNING);
+
+		Assert.equals("0.5", fractions.join(","));
+		Assert.equals(8, size);
+		Assert.equals(8, worker.result);
+		Assert.notNull(crossbyte.ds.TypeCheck.errorOf(worker.sendProgress("half")), "a String was taken as a Float progress");
+		// A Worker is the untyped one.
+		Assert.isTrue(Std.isOfType(new Worker(), TypedWorker));
+	}
+
+	/**
+		A backlog far larger than one turn's share is delivered in order and
+		whole. Each turn's share was spliced off the front of the queue,
+		moving everything behind it.
+	**/
+	public function testALargeBacklogIsDeliveredInOrder():Void {
+		#if target.threaded
+		var worker = new Worker();
+		var received:Array<Int> = [];
+		var sent:Bool = false;
+		var outOfOrder:Bool = false;
+		worker.addEventListener(ThreadEvent.PROGRESS, (event:ThreadEvent) -> {
+			var value:Int = event.message;
+			if (value != received.length) {
+				outOfOrder = true;
+			}
+			received.push(value);
+		});
+		worker.doWork = _ -> {
+			for (i in 0...20000) {
+				worker.sendProgress(i);
+			}
+			sent = true;
+		};
+		worker.run();
+		waitFor(() -> sent);
+		pumpUntil(() -> received.length >= 20000, 20.0);
+		worker.cancel();
+
+		Assert.equals(20000, received.length);
+		Assert.isFalse(outOfOrder, "the backlog arrived out of order");
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testDeliveryPerTickIsBounded():Void {
 		#if target.threaded
 		var previous:Int = Worker.maxMessagesPerTick;

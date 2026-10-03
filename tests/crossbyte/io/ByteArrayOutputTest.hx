@@ -75,10 +75,15 @@ class ByteArrayOutputTest extends utest.Test {
 		output.writeByte(0x11);
 		output.reserve(4);
 
+		// The chunk reserve() took, which is at least what it asked for: the
+		// room in it, not the total, is what validateSize answers against.
+		var room:Int = output.length - 1;
+		Assert.isTrue(room >= 4);
 		Assert.isTrue(output.validateSize(4));
-		Assert.isFalse(output.validateSize(5));
-		Assert.isTrue(output.validateSizeAt(2, 2));
-		Assert.isFalse(output.validateSizeAt(3, 2));
+		Assert.isTrue(output.validateSize(room));
+		Assert.isFalse(output.validateSize(room + 1));
+		Assert.isTrue(output.validateSizeAt(2, room - 2));
+		Assert.isFalse(output.validateSizeAt(3, room - 2));
 	}
 
 	public function testBytesWrittenTracksUsedBytesAcrossChunks():Void {
@@ -106,9 +111,10 @@ class ByteArrayOutputTest extends utest.Test {
 		output.writeInt(0x22334455);
 		Assert.equals(5, output.bytesWritten);
 
-		// One that does not fit still grows, and still starts a new chunk.
+		// One that does not fit still grows, and still starts a new chunk: of
+		// at least what it asked for.
 		output.reserve(32);
-		Assert.equals(48, output.length, "a reserve that does not fit should allocate");
+		Assert.isTrue(output.length >= 48, "a reserve that does not fit should allocate");
 
 		output.writeInt(0x66778899);
 		Assert.equals(9, output.bytesWritten);
@@ -212,6 +218,45 @@ class ByteArrayOutputTest extends utest.Test {
 		Assert.floatEquals(-2.25, input.readDouble());
 		Assert.isTrue(input.readBoolean());
 		Assert.equals("tail", input.readUTFBytes(4));
+		Assert.isTrue(input.eof());
+	}
+
+	/**
+		A reserve per value grows as a write does. Each reserve that did not
+		fit took a chunk of exactly its size, so a codec reserving before
+		every value, each varint and string writer here does, unless told
+		the room is reserved, made a chunk, and a copy, for each. 10,000
+		reserved ints took 10,000 chunks.
+	**/
+	@:access(crossbyte.io.ByteArrayDataOutput)
+	public function testReservingPerValueTakesFewChunks():Void {
+		var output = new ByteArrayOutput();
+		for (i in 0...10000) {
+			output.reserve(4);
+			output.writeInt(i);
+		}
+		for (i in 0...1000) {
+			output.writeVarUInt(i);
+		}
+
+		var data:crossbyte.io.ByteArrayOutput.ByteArrayDataOutput = cast output;
+		var chunks:Int = data.byteCache == null ? 1 : data.byteCache.length + 1;
+		Assert.isTrue(chunks <= 24, "10000 reserved ints and 1000 varints took " + chunks + " chunks");
+
+		var bytes:Bytes = output;
+		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
+		for (i in 0...10000) {
+			if (input.readInt() != i) {
+				Assert.fail("int " + i + " came back wrong");
+				return;
+			}
+		}
+		for (i in 0...1000) {
+			if (input.readVarUInt() != i) {
+				Assert.fail("varint " + i + " came back wrong");
+				return;
+			}
+		}
 		Assert.isTrue(input.eof());
 	}
 

@@ -363,7 +363,7 @@ class TaskPoolTest extends utest.Test {
 	private static function __retained(pool:TaskPool):Int {
 		#if target.threaded
 		@:privateAccess pool.__stateLock.acquire();
-		var count:Int = @:privateAccess pool.__retainedTasks.length;
+		var count:Int = @:privateAccess pool.__retained.length;
 		@:privateAccess pool.__stateLock.release();
 		return count;
 		#else
@@ -471,6 +471,47 @@ class TaskPoolTest extends utest.Test {
 		Assert.isFalse(task.cancel());
 		Assert.notEquals(TaskState.CANCELLED, task.state);
 		pool.shutdown();
+		#end
+	}
+
+	/**
+		A job with no result makes a `Task<Any>`: what its result is has to be
+		said with a cast. It was `Task<Dynamic>`, whose result anything could
+		be read from unchecked.
+	**/
+	public function testASubmittedJobsTaskIsTypedAny():Void {
+		var pool = makePool(1);
+		Assert.equals("crossbyte.sys.Task<Any>", crossbyte.ds.TypeCheck.typeOf(pool.submit(() -> {})));
+		var task = pool.submit(() -> {});
+		Assert.notNull(crossbyte.ds.TypeCheck.errorOf(task.result.length), "a field was read from an untyped result");
+		task.await();
+		Assert.isNull(task.result);
+		pool.shutdown();
+	}
+
+	/**
+		A burst lets go of its tasks in a time that grows with its size, not
+		with its square: each finished task was found in the pool's list with
+		Array.remove. Checked by what is left, and by the list's slots staying
+		consistent while tasks finish in any order.
+	**/
+	public function testABurstsTasksAreAllLetGo():Void {
+		#if target.threaded
+		var pool = makePool(4);
+		var tasks = [for (i in 0...2000) pool.submitResult(() -> i)];
+		for (task in tasks) {
+			task.await();
+		}
+		var runtime = crossbyte.core.CrossByte.current();
+		var deadline = haxe.Timer.stamp() + 10;
+		while (__retained(pool) > 0 && haxe.Timer.stamp() < deadline) {
+			runtime.pump(1 / 60, 0);
+			crossbyte.sys.System.sleep(0.001);
+		}
+		Assert.equals(0, __retained(pool), "tasks were still held after they finished");
+		pool.shutdown();
+		#else
+		Assert.pass();
 		#end
 	}
 

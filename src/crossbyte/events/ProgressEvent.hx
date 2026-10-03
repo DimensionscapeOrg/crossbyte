@@ -4,7 +4,7 @@ import crossbyte.events.Event;
 
 /** Event carrying `bytesLoaded` and `bytesTotal` progress counters. */
 class ProgressEvent extends Event {
-	public static inline var PROGRESS:String = "progress";
+	public static inline var PROGRESS:EventType<ProgressEvent> = "progress";
 
 	/**
 		A socket has data to read. On a `Socket`, on every target,
@@ -12,7 +12,7 @@ class ProgressEvent extends Event {
 		`bytesAvailable` is how many are unread in all, these and any left
 		from before. `bytesTotal` is 0.
 	**/
-	public static inline var SOCKET_DATA:String = "socketData";
+	public static inline var SOCKET_DATA:EventType<ProgressEvent> = "socketData";
 
 	/** The whole, where it is known; 0 for `SOCKET_DATA`. **/
 	public var bytesTotal:UInt = 0;

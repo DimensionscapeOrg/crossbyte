@@ -98,7 +98,7 @@ final class ListedMap<K:Dynamic, V> {
 		var idx:Null<Int> = __indices.get(key);
 		if (idx == null) {
 			__map.set(key, value);
-			var entry:KeyValuePair<K, V> = { key: key, value: value };
+			var entry:KeyValuePair<K, V> = new KeyValuePair(key, value);
 			__indices.set(key, __keyValuePairs.length);
 			__keyValuePairs.push(entry);
 			return true;
@@ -275,14 +275,25 @@ class ListedMapValueIterator<K:Dynamic, V> {
 }
 
 /**
- * Represents a simple key-value pair used within `ListedMap`.
+ * A key and its value, as `ListedMap` keeps them and `OrderedMap` hands them
+ * out.
  *
- * This inline structure allows for efficient key-value storage.
+ * A class, built from a literal as the structure it was: `{key: k, value: v}`
+ * still makes one. It was an anonymous structure, whose fields hxcpp reads by
+ * name, on every access to an entry and every step of an iteration. It still
+ * fits where `{key:K, value:V}` is asked for, so `for (k => v in ...)` and
+ * code typed against the structure are unchanged.
  *
  * @param K The type of the key.
  * @param V The type of the value.
  */
-typedef KeyValuePair<K, V> = {
-	key:K,
-	value:V
-};
+@:structInit
+final class KeyValuePair<K, V> {
+	public var key:K;
+	public var value:V;
+
+	public inline function new(key:K, value:V) {
+		this.key = key;
+		this.value = value;
+	}
+}

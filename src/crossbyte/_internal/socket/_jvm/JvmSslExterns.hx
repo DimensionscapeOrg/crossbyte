@@ -395,12 +395,12 @@ extern class SSLServerSocketFactory {
 	@:overload function createServerSocket(port:Int, backlog:Int, address:java.net.InetAddress):JNetServerSocket;
 }
 
-/** Haxe ships no extern for it; the buffer pool keeps one per thread. **/
+/** Haxe ships no extern for it; the buffer pool keeps one per thread. Typed by what it holds. **/
 @:native("java.lang.ThreadLocal")
-extern class JThreadLocal {
+extern class JThreadLocal<T> {
 	function new();
-	function get():Dynamic;
-	function set(value:Dynamic):Void;
+	function get():Null<T>;
+	function set(value:T):Void;
 }
 
 @:native("java.util.Base64")

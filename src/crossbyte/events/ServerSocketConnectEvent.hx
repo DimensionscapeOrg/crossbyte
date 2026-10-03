@@ -14,7 +14,7 @@ import crossbyte.net.Socket;
 	the Socket close() method.
 **/
 class ServerSocketConnectEvent extends Event {
-	public static inline var CONNECT:String = "connect";
+	public static inline var CONNECT:EventType<ServerSocketConnectEvent> = "connect";
 
 	public var socket:Socket;
 
