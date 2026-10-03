@@ -337,6 +337,14 @@ class RUDPHardeningTest extends utest.Test {
 		socket.__rackSentAt = -1;
 		socket.__rackRtt = 0;
 		socket.__minRtt = -1;
+		socket.__answerRtt = -1;
+		socket.__answerVariation = 0;
+		socket.__peerAckDelay = -1;
+		socket.__ackDelay = ReliableDatagramSocket.DEFAULT_ACK_DELAY;
+		socket.__ackHeld = false;
+		socket.__unacknowledged = 0;
+		socket.__newestArrivalAt = -1;
+		socket.__ackTimer = -1;
 		socket.__reorderingSeen = false;
 		socket.__lastTransmitAt = 0;
 		socket.__lastDeliveryAt = 0;
