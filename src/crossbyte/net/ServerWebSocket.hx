@@ -584,7 +584,7 @@ class ServerWebSocket extends ServerSocket {
 
 	@:noCompletion private function __trackClient(e:ServerSocketConnectEvent):Void {
 		var client:WebSocket = cast e.socket;
-		if (client == null || __clients.indexOf(client) >= 0) {
+		if (client == null || __tracks(client)) {
 			return;
 		}
 
@@ -600,17 +600,44 @@ class ServerWebSocket extends ServerSocket {
 			client.maxOutputBufferSize = maxOutputBufferSize;
 		}
 
+		@:privateAccess client.__serverSlot = __clients.length;
 		__clients.push(client);
 		if (__acceptedTotal != null) {
 			__acceptedTotal.inc();
 		}
 
 		client.addEventListener(Event.CLOSE, function(_) {
-			__clients.remove(client);
+			__untrack(client);
 			if (__closedTotal != null) {
 				__closedTotal.inc();
 			}
 		});
+	}
+
+	/**
+		Whether `client` is one of this server's open sessions: asked of the
+		place it was given in the list. Each connect searched the list for it,
+		and each close searched it again to take it out -- a pass over every
+		session a connection, at ten thousand sessions some 15,000 comparisons
+		for one to arrive and leave.
+	**/
+	@:noCompletion private inline function __tracks(client:WebSocket):Bool {
+		var slot:Int = @:privateAccess client.__serverSlot;
+		return slot >= 0 && slot < __clients.length && __clients[slot] == client;
+	}
+
+	/** Takes `client` out of the list, its place filled by the last. **/
+	@:noCompletion private function __untrack(client:WebSocket):Void {
+		if (!__tracks(client)) {
+			return;
+		}
+		var slot:Int = @:privateAccess client.__serverSlot;
+		var last:WebSocket = __clients.pop();
+		if (last != client) {
+			__clients[slot] = last;
+			@:privateAccess last.__serverSlot = slot;
+		}
+		@:privateAccess client.__serverSlot = -1;
 	}
 
 	override function __init():Void {
@@ -868,6 +895,9 @@ class ServerWebSocket extends ServerSocket {
 			try {
 				client.close();
 			} catch (_:Dynamic) {}
+		}
+		for (client in __clients) {
+			@:privateAccess client.__serverSlot = -1;
 		}
 		__clients = [];
 

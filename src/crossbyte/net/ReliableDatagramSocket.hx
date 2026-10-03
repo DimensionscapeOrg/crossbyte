@@ -56,6 +56,19 @@ import crossbyte._internal.net.IPv6;
 	small messages costs a few system calls rather than one each. `flush()`
 	sends what is gathered at once.
 
+	The acknowledgement of what arrives in order waits for something of this
+	side's to ride on, for up to `ackDelay` -- 25 ms unless changed -- or
+	until a second frame arrives, and then goes alone if nothing has taken it.
+	One that tells of a gap goes at once. The peer's round trip is measured
+	without the wait, which each acknowledgement states.
+
+	What the congestion window has not let out waits, up to
+	`maxOutputBufferSize` -- 256 KB unless changed. A session that would hold
+	more is ended at once with an `ioError` saying why, as a peer that has
+	stopped taking what it is sent would otherwise have this side hold all of
+	it; one `send` larger than the window waits whole, so a larger one needs
+	the limit raised, or set to zero for none.
+
 	A frame lost on the way is found from what arrives after it. The
 	receiver's acknowledgement names the frames it holds past a gap, and a
 	frame sent before one that arrived is sent again once it has had that
@@ -82,7 +95,7 @@ import crossbyte._internal.net.IPv6;
 	@event data Dispatched in `DATAGRAM` mode when a complete reliable payload is delivered.
 	@event socketData Dispatched in `STREAM` mode when additional ordered bytes are available.
 **/
-class ReliableDatagramSocket extends EventDispatcher implements IDataInput implements IDataOutput implements crossbyte.core._internal.PassFlush #if !nodejs implements crossbyte._internal.net.DatagramSender #end {
+class ReliableDatagramSocket extends EventDispatcher implements IDataInput implements IDataOutput implements crossbyte.core._internal.PassFlush implements crossbyte.net._internal.DatagramReceiver #if !nodejs implements crossbyte._internal.net.DatagramSender #end {
 	/**
 		A slot for whatever the application wants this connection to carry.
 
@@ -192,12 +205,32 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		How many bytes may wait for the window before `outputOverflowPolicy`
-		decides what happens. Zero, the default, means no limit.
+		decides what happens: `DEFAULT_MAX_OUTPUT_BUFFER_SIZE`, 256 KB,
+		unless changed. Zero means no limit.
 
 		What is waiting is visible as `bufferedAmount`; an application that
-		watches that never reaches this.
+		watches that never reaches this. Under the default `CLOSE` policy a
+		session past it is ended at once, with an `ioError` saying why, as a
+		TCP connection to a peer that has stopped reading would be ended: a
+		peer that cannot take what it is sent -- gone quiet, or on a path that
+		cannot carry it -- otherwise made this side hold everything sent to
+		it, without end. A server holding a thousand such sessions held 1.2
+		GB.
+
+		A healthy session holds next to nothing here: a game server sending
+		1,000 clients a snapshot every tick at 60 Hz, every fourth one
+		reliable, held nothing waiting in any session while it kept its tick,
+		and at most 18 KB in one when it was starved of processor time, so far
+		behind that inputs took half a second to be acknowledged. One `send`
+		larger than the window lets out at once waits here whole, so an
+		application that sends more than 256 KB in a burst -- a level, a file,
+		one large reliable message -- raises this, sets it to zero, or watches
+		`bufferedAmount` and waits.
 	**/
-	public var maxOutputBufferSize:Int = 0;
+	public var maxOutputBufferSize:Int = DEFAULT_MAX_OUTPUT_BUFFER_SIZE;
+
+	/** `maxOutputBufferSize` unless changed: 256 KB. **/
+	public static inline var DEFAULT_MAX_OUTPUT_BUFFER_SIZE:Int = 256 * 1024;
 
 	/** What to do when the queue exceeds `maxOutputBufferSize`. **/
 	public var outputOverflowPolicy:OutputOverflowPolicy = CLOSE;
@@ -251,8 +284,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		from the acknowledgement of each reliable frame sent only once -- one
 		sent again cannot say which copy was answered -- so it is -1 until the
 		first reliable message has been acknowledged, and it follows only as
-		often as reliable messages are sent. It includes however long the peer
-		takes to acknowledge, which is usually the rest of its tick.
+		often as reliable messages are sent. A peer on 1.0 or later says how
+		long it held each acknowledgement it sent alone (see `ackDelay`), and
+		that is taken off, as QUIC takes its ACK Delay off; what is left still
+		includes however long the peer's loop took to read the frame. From an
+		older peer it includes all of it, which is usually the rest of its
+		tick.
 
 		For a round trip between two applications, rather than between two
 		transports, measure one with messages of their own; `PeerClock` does
@@ -269,11 +306,107 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		How long a reliable frame is waited for before it is sent again, in
-		seconds: `roundTripTime` plus four times `roundTripVariation`, held
-		between 0.2 and 10. One second until a round trip is measured, and
-		doubled whenever a frame has to be sent again.
+		seconds: the round trip and four times its variation, plus the longest
+		the peer said it holds an acknowledgement (its `ackDelay`), held
+		between 0.2 and 10. The round trip here is the one answers have
+		actually taken, the peer's holds included, which is `roundTripTime`
+		from a peer that holds none. One second until a round trip is
+		measured, and doubled whenever a frame has to be sent again.
 	**/
 	public var retransmitTimeout(get, never):Float;
+
+	/** `ackDelay` unless changed: 25 milliseconds, QUIC's `max_ack_delay`. **/
+	public static inline var DEFAULT_ACK_DELAY:Float = 0.025;
+
+	/** The longest `ackDelay` there is, in seconds: half a second. **/
+	public static inline var MAX_ACK_DELAY:Float = 0.5;
+
+	/**
+		How long, in seconds, this session may hold the acknowledgement of a
+		reliable message, waiting for something of its own to send that can
+		carry it -- 25 milliseconds unless changed, as QUIC's
+		`max_ack_delay` is. Zero acknowledges every pass in which a reliable
+		frame arrived, as every session did before 1.0. At most
+		`MAX_ACK_DELAY`.
+
+		A session acknowledged each reliable message in a datagram of its own
+		unless it happened to send something in the same pass, so a game's
+		session receiving an input a tick and sending a state a tick sent
+		half its datagrams for acknowledgements alone. Held, the
+		acknowledgement rides on the state when the tick sends it: at 500
+		sessions and 30 Hz a server sent and read half the datagrams, and
+		spent a third less CPU.
+
+		It is not held -- it goes when the pass ends, as it always did -- when
+		a frame arrives out of order or fills a gap, which the peer must hear
+		of at once to recover what was lost; when a second reliable frame
+		arrives before the first is acknowledged, so a bulk transfer keeps its
+		window open; and for the peer's close. An acknowledgement sent alone
+		says how long it was held, which the peer takes off the round trip it
+		measures, and the peer waits that much longer before sending anything
+		again. A peer from before 1.0 cannot be told, and is acknowledged
+		every pass whatever this says.
+
+		A session a server accepts or dials takes the server's `ackDelay`.
+		Set it before connecting, or at any point after: a connected session
+		tells its peer at once.
+
+		@throws RangeError If set below zero or above `MAX_ACK_DELAY`.
+	**/
+	public var ackDelay(get, set):Float;
+
+	@:noCompletion private var __ackDelay:Float = DEFAULT_ACK_DELAY;
+
+	@:noCompletion private inline function get_ackDelay():Float {
+		return __ackDelay;
+	}
+
+	@:noCompletion private function set_ackDelay(value:Float):Float {
+		if (!(value >= 0) || value > MAX_ACK_DELAY) {
+			throw new RangeError('An acknowledgement delay is 0 to $MAX_ACK_DELAY seconds.');
+		}
+		var changed:Bool = value != __ackDelay;
+		__ackDelay = value;
+		// One already held goes at once rather than waiting out the old value.
+		if (value == 0 && __ackHeld) {
+			__sendAck();
+		}
+		// The peer waits for acknowledgements by what it was last told, and a
+		// keepalive, which would tell it, goes only from a quiet session.
+		if (changed && __connected && !__closed && !__closing) {
+			__sendHandshake();
+		}
+		return value;
+	}
+
+	/**
+		The longest the peer said it holds an acknowledgement, in its
+		HANDSHAKE; -1 for a peer from before 1.0, which says nothing, holds
+		none, and is never sent an acknowledgement that says how long it was
+		held, nor has one held for it.
+	**/
+	@:noCompletion private var __peerAckDelay:Float = -1;
+
+	// An acknowledgement owed and allowed to wait -- for a frame of this
+	// side's to carry it, or for `__ackTimer` -- and, for the one owed, how
+	// many reliable frames it covers that no acknowledgement has, and when
+	// the newest of them arrived.
+	@:noCompletion private var __ackHeld:Bool = false;
+	@:noCompletion private var __unacknowledged:Int = 0;
+	@:noCompletion private var __newestArrivalAt:Float = -1;
+	@:noCompletion private var __ackTimer:Int = -1;
+	@:noCompletion private var __onAckTimerCallback:Void->Void = null;
+
+	/** Reliable frames that make an acknowledgement go at once rather than wait. **/
+	@:noCompletion private static inline var ACK_EVERY:Int = 2;
+
+	/**
+		How long an acknowledgement must have waited before one that goes
+		with a frame of this side's goes as an ACK of its own, saying so,
+		rather than in the frame's header, which cannot say: less than this,
+		and the round trip the peer measures from it is as good as exact.
+	**/
+	@:noCompletion private static inline var ACK_HELD_NOTABLY:Float = 0.001;
 
 	/**
 		The fastest round trip measured, in seconds: the path with nothing
@@ -1611,6 +1744,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		socket.__peerConnectionId = peerConnectionId;
 		socket.__keepAliveInterval = server.keepAliveInterval;
 		socket.__idleTimeout = server.idleTimeout;
+		socket.__ackDelay = server.ackDelay;
 		socket.__resetSequences();
 		socket.__beginHandshake();
 		return socket;
@@ -1671,6 +1805,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		socket.__remoteResponsePort = 0;
 		socket.__keepAliveInterval = server.keepAliveInterval;
 		socket.__idleTimeout = server.idleTimeout;
+		socket.__ackDelay = server.ackDelay;
 		socket.__resetSequences();
 		socket.__connectionId = socket.__newConnectionId();
 		if (remoteAddress == null) {
@@ -1720,11 +1855,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// challenge. A HANDSHAKE with no acknowledgement comes from a peer that
 		// is not connected -- a restarted one, drawn out by something the old
 		// session sent it.
-		if (__challengedAt >= 0 && (frame.ack != null || (frame.type != HANDSHAKE && frame.type != CONNECT))) {
+		if (__challengedAt >= 0 && (frame.hasAck || (frame.type != HANDSHAKE && frame.type != CONNECT))) {
 			__heardSinceChallenge = true;
 		}
-		if (frame.ack != null) {
-			__acceptAck(frame.ack);
+		if (frame.hasAck) {
+			__acceptAck(frame.ackValue);
 			// What it acknowledged was the last of a close this side was
 			// waiting on, and the session is over: nothing it carries is
 			// for anyone now.
@@ -1793,11 +1928,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				if (frame.bundles) {
 					__peerTakesBundles = true;
 				}
-				__onHandshake(frame.sequence, frame.ack != null);
+				__readAnnouncedDelay(frame.payload);
+				__onHandshake(frame.sequence, frame.hasAck);
 			case PACKET:
 				__acceptPacket(frame.sequence, frame.payload, frame.more);
 			case ACK:
-				__acceptAckFrame(frame.sequence, frame.payload);
+				__acceptAckFrame(frame.sequence, frame.payload, frame.ackDelay);
 			case FIN:
 				if (frame.graceful) {
 					__acceptFin(frame.sequence);
@@ -1922,7 +2058,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 		var now:Float = __clock();
-		__release(ackValue, now);
+		__release(ackValue, now, 0);
 		__detectLosses(now);
 		__drainQueue();
 	}
@@ -1935,8 +2071,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		acknowledgement is cumulative, so the frames it releases are the run
 		between the two, and that is the number of frames released rather
 		than the number still in flight.
+
+		@param heldFor How long the peer held this acknowledgement, which its
+		       round trip does not include; 0 for one that does not say.
 	**/
-	@:noCompletion private function __release(ackValue:Seq32, now:Float):Bool {
+	@:noCompletion private function __release(ackValue:Seq32, now:Float, heldFor:Float):Bool {
 		if (ackValue <= __windowBase || __outSequence < ackValue) {
 			return false;
 		}
@@ -1979,7 +2118,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// One measurement an acknowledgement, from the last frame sent of
 		// those it covers: the others waited behind it for the same answer.
 		if (newest >= 0) {
-			__sampleRoundTrip(now - newest);
+			__sampleRoundTrip(now - newest, heldFor);
 		}
 
 		// After the round trip it measured, so the policy reads it, and before
@@ -2006,15 +2145,19 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		From a peer that sends no selective acknowledgements, the third in a
 		row that moves nothing marks the frame it is waiting for as lost.
+
+		@param heldFor How long the peer says it held this acknowledgement, or
+		       -1 where it does not say.
 	**/
-	@:noCompletion private function __acceptAckFrame(ackValue:Seq32, sack:ByteArray):Void {
+	@:noCompletion private function __acceptAckFrame(ackValue:Seq32, sack:ByteArray, heldFor:Float = -1):Void {
 		var now:Float = __clock();
-		var progressed:Bool = __release(ackValue, now);
+		var held:Float = heldFor > 0 ? heldFor : 0;
+		var progressed:Bool = __release(ackValue, now, held);
 
 		if (sack != null && sack.length > 0) {
 			__peerSacks = true;
 			__dupAcks = 0;
-			__acceptSack(ackValue, sack, now);
+			__acceptSack(ackValue, sack, now, held);
 			__detectLosses(now);
 			// What the peer now holds has left the window: new frames can go
 			// out behind it, which keeps acknowledgements coming, and with
@@ -2048,7 +2191,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/** Marks what the peer's selective acknowledgement says it holds. **/
-	@:noCompletion private function __acceptSack(ackValue:Seq32, sack:ByteArray, now:Float):Void {
+	@:noCompletion private function __acceptSack(ackValue:Seq32, sack:ByteArray, now:Float, heldFor:Float):Void {
 		var bytes:haxe.io.Bytes = sack;
 		var length:Int = sack.length < ReliableDatagramProtocol.SACK_BYTES ? sack.length : ReliableDatagramProtocol.SACK_BYTES;
 		var base:Seq32 = ackValue + 1;
@@ -2078,7 +2221,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 
 		if (newest >= 0) {
-			__sampleRoundTrip(now - newest);
+			__sampleRoundTrip(now - newest, heldFor);
 		}
 	}
 
@@ -2225,9 +2368,20 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
-		var wait:Float = 2 * __smoothedRtt;
+		// Twice the round trip answers have taken, holds included, as it was
+		// before the peer held any.
+		var wait:Float = 2 * __answerRtt;
 		if (wait < MIN_PROBE_TIMEOUT) {
 			wait = MIN_PROBE_TIMEOUT;
+		}
+		// And the peer's hold, twice over, as QUIC's probe timeout adds the
+		// peer's max_ack_delay: a peer holding its answer is not a tail lost,
+		// and holds it to the first pass of its loop after that long, not to
+		// the instant -- where the answers that came back quickly, as in a
+		// burst acknowledged every second frame, leave nothing in the round
+		// trip above to cover it.
+		if (__peerAckDelay > 0) {
+			wait += 2 * __peerAckDelay;
 		}
 		var quietSince:Float = __lastDeliveryAt > __lastTransmitAt ? __lastDeliveryAt : __lastTransmitAt;
 		if (now - quietSince < wait) {
@@ -2261,10 +2415,28 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		seconds for no reason, and on a path slower than that it declared loss
 		that had not happened and sent the frame again, which is how a
 		congested link is made worse.
+
+		`heldFor` is how long the peer says it held the acknowledgement, and
+		comes off the sample for `roundTripTime`, as RFC 9002 takes ACK Delay
+		off -- from the first sample too, which RFC 9002 leaves as it is: with
+		every acknowledgement of a quiet session held, the first would
+		otherwise start the round trip at the hold. A hold as long as the
+		sample or longer, which no peer could have, is ignored.
+
+		The timers are kept by the samples as they came, holds and all, in
+		`__answerRtt`: how long an answer actually takes is what a frame is
+		waited for. A peer holds an acknowledgement until the first pass of
+		its loop after its `ackDelay`, which on a loop at 30 Hz is up to 33
+		milliseconds, not 25, and on one slower longer still.
 	**/
-	@:noCompletion private function __sampleRoundTrip(sample:Float):Void {
-		if (sample <= 0) {
+	@:noCompletion private function __sampleRoundTrip(raw:Float, heldFor:Float = 0):Void {
+		if (raw <= 0) {
 			return;
+		}
+
+		var sample:Float = raw;
+		if (heldFor > 0 && raw - heldFor > 0) {
+			sample = raw - heldFor;
 		}
 
 		if (__minRtt < 0 || sample < __minRtt) {
@@ -2285,7 +2457,39 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__smoothedRtt = 0.875 * __smoothedRtt + 0.125 * sample;
 		}
 
-		__setRto(__smoothedRtt + 4 * __rttVariation);
+		if (__answerRtt < 0) {
+			__answerRtt = raw;
+			__answerVariation = raw / 2;
+		} else {
+			var answerDifference:Float = __answerRtt - raw;
+			if (answerDifference < 0) {
+				answerDifference = -answerDifference;
+			}
+			__answerVariation = 0.75 * __answerVariation + 0.25 * answerDifference;
+			__answerRtt = 0.875 * __answerRtt + 0.125 * raw;
+		}
+
+		__setRto(__baseRto());
+	}
+
+	/**
+		The round trip as answers have come back, the peer's holds included,
+		smoothed as `roundTripTime` is, and its variation: what the
+		retransmission timeout and the probe of a silent tail wait by. -1
+		until the first measurement.
+	**/
+	@:noCompletion private var __answerRtt:Float = -1;
+
+	@:noCompletion private var __answerVariation:Float = 0;
+
+	/**
+		The timeout a round trip measurement gives: the round trip answers
+		take and four times its variation, and however long the peer may hold
+		an acknowledgement -- a frame is not late for the time it was waited
+		on by design.
+	**/
+	@:noCompletion private inline function __baseRto():Float {
+		return __answerRtt + 4 * __answerVariation + (__peerAckDelay > 0 ? __peerAckDelay : 0);
 	}
 
 	@:noCompletion private function __setRto(value:Float):Void {
@@ -2293,7 +2497,16 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	@:noCompletion private function __acceptPacket(sequence:Seq32, payload:ByteArray, more:Bool = false):Void {
+		// Whether this arrival may have its acknowledgement held: the next
+		// in order, with nothing held past a gap before it. One out of order
+		// or a duplicate, or one that fills a gap, is acknowledged when the
+		// pass ends, as every arrival was: the peer is waiting to hear of it.
+		var inOrder:Bool = false;
 		if (sequence == __inSequence) {
+			inOrder = __inFrameCacheSize == 0;
+			// When the newest frame an acknowledgement covers arrived, which
+			// is what an ACK says it was held from.
+			__newestArrivalAt = __clock();
 			__inSequence++;
 			__deliverReliable(payload, more);
 			__drainBufferedPackets();
@@ -2305,7 +2518,62 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// have; there is then nobody to acknowledge to, and the send would
 		// fail and report an error about a socket the caller closed itself.
 		if (!__closed) {
+			if (inOrder) {
+				__ackLater();
+			} else {
+				__sendAck();
+			}
+		}
+	}
+
+	/**
+		Owes the acknowledgement of a reliable frame that arrived in order,
+		holding it for up to `ackDelay` for a frame of this side's to carry;
+		or at the pass's end, as `__sendAck` owes one, when it cannot wait.
+	**/
+	@:noCompletion private function __ackLater():Void {
+		__unacknowledged++;
+		if (__ackDelay <= 0 || __peerAckDelay < 0 || __closing || __unacknowledged >= ACK_EVERY || !__connected) {
 			__sendAck();
+			return;
+		}
+		if (__ackOwed && !__ackHeld) {
+			// Owed at the pass's end already.
+			return;
+		}
+		__ackOwed = true;
+		__ackHeld = true;
+		if (__ackTimer == -1) {
+			if (__onAckTimerCallback == null) {
+				__onAckTimerCallback = __onAckTimer;
+			}
+			__ackTimer = __timers().setTimeout(__ackDelay, __onAckTimerCallback);
+		}
+	}
+
+	/** A held acknowledgement's time is up: it goes when the pass ends. **/
+	@:noCompletion private function __onAckTimer():Void {
+		__ackTimer = -1;
+		if (__closed || !__ackOwed || !__ackHeld) {
+			return;
+		}
+		__ackHeld = false;
+		if (!__flushQueued) {
+			__queueFlush();
+		}
+	}
+
+	/**
+		The acknowledgement owed has gone, in an ACK or on a frame that
+		carried it: nothing is held, and nothing waits for the timer.
+	**/
+	@:noCompletion private function __ackSettled():Void {
+		__ackOwed = false;
+		__ackHeld = false;
+		__unacknowledged = 0;
+		if (__ackTimer != -1) {
+			__timers().clear(__ackTimer);
+			__ackTimer = -1;
 		}
 	}
 
@@ -2350,6 +2618,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	**/
 	@:noCompletion private function __finishByPeer():Void {
 		__ackOwed = true;
+		__ackHeld = false;
 		__sendBundle();
 		__dispose(true);
 	}
@@ -2466,15 +2735,33 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		return copy;
 	}
 
+	/**
+		Appends a frame's bytes to what a stream has not read, in place, as
+		`Socket` appends: the read part goes only once it is at least as long
+		as what is left, so no byte is moved more often than bytes are read.
+
+		Every frame copied everything still unread into a new buffer, so a
+		reader that waited for a whole message before reading paid for each
+		frame the whole of it so far: a 4 MB message took 2.4 s of CPU to
+		arrive, and takes 31-47 ms now.
+	**/
 	@:noCompletion private function __appendStreamPayload(payload:ByteArray):Void {
-		var nextInput:ByteArray = __createBuffer();
-		var remaining:UInt = __input.bytesAvailable;
-		if (remaining > 0) {
-			nextInput.writeBytes(__input, __input.position, remaining);
+		var readTo:Int = __input.position;
+		var unread:Int = __input.length - readTo;
+		if (unread <= 0) {
+			__input.clear();
+			readTo = 0;
+		} else if (readTo >= unread) {
+			// Moved down within the buffer: overlapping, and downwards, which
+			// every target copies safely.
+			var raw:haxe.io.Bytes = __input;
+			raw.blit(0, raw, readTo, unread);
+			__input.length = unread;
+			readTo = 0;
 		}
-		nextInput.writeBytes(payload, 0, payload.length);
-		nextInput.position = 0;
-		__input = nextInput;
+		__input.position = __input.length;
+		__input.writeBytes(payload, 0, payload.length);
+		__input.position = readTo;
 		dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, payload.length, 0));
 	}
 
@@ -2551,6 +2838,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__framesDelivered = 0;
 		__smoothedRtt = -1;
 		__rttVariation = 0;
+		__answerRtt = -1;
+		__answerVariation = 0;
 		__rto = INITIAL_RTO;
 		__inRecovery = false;
 		__dupAcks = 0;
@@ -2569,7 +2858,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// of this side's has finished with the peer's last acknowledgement.
 		__pendingLength = ReliableDatagramProtocol.BUNDLE_HEADER_SIZE;
 		__pendingCount = 0;
-		__ackOwed = false;
+		__ackSettled();
+		__newestArrivalAt = -1;
+		__peerAckDelay = -1;
 		__handshakeOwed = false;
 		__peerConfirmed = false;
 		__bundleHasAck = false;
@@ -2847,7 +3138,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
-		__transport.addEventListener(DatagramSocketDataEvent.DATA, __onTransportData);
+		// Handed each datagram directly, with no event made for it.
+		__transport.__setReceiver(this);
 		__transportListenerReady = true;
 	}
 
@@ -2914,7 +3206,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 
 		if (!delivery.isSequenced) {
-			__sendFrame(UNRELIABLE, 0, bytes, offset, length, false, null, false);
+			__sendFrame(UNRELIABLE, 0, bytes, offset, length, false, 0, false, false);
 			return;
 		}
 
@@ -2924,7 +3216,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		var channel:Int = delivery.channel;
 		var counter:Int = __sequencedOut[channel];
 		__sequencedOut[channel] = (counter + 1) & ReliableDatagramProtocol.SEQUENCED_COUNTER_MASK;
-		__sendFrame(SEQUENCED, ReliableDatagramProtocol.sequencedField(channel, counter), bytes, offset, length, false, null, false);
+		__sendFrame(SEQUENCED, ReliableDatagramProtocol.sequencedField(channel, counter), bytes, offset, length, false, 0, false, false);
 	}
 
 	/**
@@ -3007,19 +3299,19 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 	}
 
-	@:noCompletion private function __sendControl(type:ReliableDatagramFrameType, ?sequence:Seq32):Void {
+	@:noCompletion private function __sendControl(type:ReliableDatagramFrameType, sequence:Seq32 = 0):Void {
 		if (__remoteAddress == "" || __remotePort == 0 || __transport == null) {
 			return;
 		}
 
-		var controlSequence:Seq32 = sequence == null ? 0 : sequence;
-		var ack:Null<Seq32> = switch (type) {
+		// The acknowledgement, on whatever else a connected session sends.
+		var withAck:Bool = switch (type) {
 			case ACK, CONNECT:
-				null;
+				false;
 			default:
-				__currentAck();
+				__connected;
 		}
-		__sendFrame(type, controlSequence, null, 0, 0, false, ack, false);
+		__sendFrame(type, sequence, null, 0, 0, false, __inSequence, withAck, false);
 	}
 
 	@:noCompletion private function __sendHandshakeAttempt():Void {
@@ -3045,7 +3337,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (__remoteAddress == "" || __remotePort == 0 || __transport == null) {
 			return;
 		}
-		__sendFrame(CONNECT, __connectionId, __connectOut, 0, __connectOut == null ? 0 : __connectOut.length, false, null, false);
+		__sendFrame(CONNECT, __connectionId, __connectOut, 0, __connectOut == null ? 0 : __connectOut.length, false, 0, false, false);
 	}
 
 	/**
@@ -3059,21 +3351,42 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
-		if (__peerConnectionId == 0) {
-			__sendControl(HANDSHAKE, __firstSequence);
-			return;
-		}
-
+		// The peer's id, or 0 for none, and how long this side holds an
+		// acknowledgement, which also says to the peer that this side reads
+		// how long the peer held one; see `ReliableDatagramProtocol`.
 		if (__echoScratch == null) {
 			__echoScratch = new ByteArray();
-			__echoScratch.length = 4;
+			__echoScratch.length = ReliableDatagramProtocol.HANDSHAKE_PAYLOAD_SIZE;
 		}
 		var bytes:haxe.io.Bytes = __echoScratch;
 		bytes.set(0, __peerConnectionId >>> 24);
 		bytes.set(1, (__peerConnectionId >>> 16) & 0xFF);
 		bytes.set(2, (__peerConnectionId >>> 8) & 0xFF);
 		bytes.set(3, __peerConnectionId & 0xFF);
-		__sendFrame(HANDSHAKE, __firstSequence, __echoScratch, 0, 4, false, __currentAck(), false);
+		var units:Int = ReliableDatagramProtocol.delayUnits(__ackDelay);
+		bytes.set(4, units >> 8);
+		bytes.set(5, units & 0xFF);
+		__sendFrame(HANDSHAKE, __firstSequence, __echoScratch, 0, ReliableDatagramProtocol.HANDSHAKE_PAYLOAD_SIZE, false, __inSequence, __connected,
+			false);
+	}
+
+	/**
+		What a peer's HANDSHAKE says about how long it holds an
+		acknowledgement: its last two bytes, from a peer on 1.0 or later, and
+		nothing -- `__peerAckDelay` left at -1 -- from an older one.
+	**/
+	@:noCompletion private function __readAnnouncedDelay(payload:ByteArray):Void {
+		if (payload == null || payload.length < ReliableDatagramProtocol.HANDSHAKE_PAYLOAD_SIZE) {
+			return;
+		}
+		var bytes:haxe.io.Bytes = payload;
+		var units:Int = (bytes.get(4) << 8) | bytes.get(5);
+		var before:Float = __peerAckDelay;
+		__peerAckDelay = units * ReliableDatagramProtocol.ACK_DELAY_UNIT;
+		// The timeout counts the peer's hold; see `retransmitTimeout`.
+		if (__peerAckDelay != before && __smoothedRtt >= 0) {
+			__setRto(__baseRto());
+		}
 	}
 
 	/**
@@ -3110,8 +3423,14 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		or the graceful FIN that ends the sequence.
 	**/
 	@:noCompletion private inline function __transmit(sequence:Seq32, frame:OutstandingFrame, resend:Bool):Void {
-		__sendFrame(frame.fin ? FIN : PACKET, sequence, frame.payload, 0, frame.payload.length, resend, __currentAck(), frame.more, frame.fin);
+		__sendFrame(frame.fin ? FIN : PACKET, sequence, frame.payload, 0, frame.payload.length, resend, __inSequence, __connected, frame.more,
+			frame.fin);
 	}
+
+	// What the retransmission clock calls, made once: a closure was made for
+	// it each time the clock started, which is every time a session with
+	// nothing in flight sends again.
+	@:noCompletion private var __onRetransmitClock:Void->Void = null;
 
 	/** The one timer the session retransmits from, started on demand. **/
 	@:noCompletion private function __armRetransmitClock():Void {
@@ -3119,9 +3438,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
-		__retransmitHandle = __timers().setInterval(RETRANSMIT_TICK, RETRANSMIT_TICK, function() {
-			__checkRetransmits();
-		});
+		if (__onRetransmitClock == null) {
+			__onRetransmitClock = __checkRetransmits;
+		}
+		__retransmitHandle = __timers().setInterval(RETRANSMIT_TICK, RETRANSMIT_TICK, __onRetransmitClock);
 	}
 
 	@:noCompletion private function __stopRetransmitClock():Void {
@@ -3149,7 +3469,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
-		if (!__outFrameCache.keys().hasNext()) {
+		// Nothing in flight: every frame sent is held from __outSequence until
+		// an acknowledgement passes it, so none is held exactly when the two
+		// meet. Asking the map made a copy of every key in it on hxcpp, and
+		// read the iterator it handed back by name, on every check.
+		if (__windowBase == __outSequence) {
 			__stopRetransmitClock();
 			return;
 		}
@@ -3237,6 +3561,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// and none, when a frame going out in the same bundle already carries it.
 	@:noCompletion private inline function __sendAck():Void {
 		__ackOwed = true;
+		__ackHeld = false;
 		if (!__flushQueued) {
 			__queueFlush();
 		}
@@ -3255,8 +3580,18 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		is written in place, so nothing is copied or allocated for it.
 	**/
 	@:noCompletion private function __sendFrame(type:ReliableDatagramFrameType, sequence:Seq32, payload:ByteArray, offset:Int, length:Int, resend:Bool,
-			ack:Null<Seq32>, more:Bool, graceful:Bool = false):Void {
-		var size:Int = ReliableDatagramProtocol.frameSize(payload == null ? 0 : length, ack != null);
+			ack:Int, hasAck:Bool, more:Bool, graceful:Bool = false):Void {
+		// An acknowledgement that has been waiting rides with this frame, as
+		// an ACK of its own ahead of it that says how long it waited: the
+		// frame's header would carry the value but not the wait, and the peer
+		// would count the wait as round trip. One owed since this pass began
+		// goes in the header as it always did.
+		if (__ackOwed && type != ACK && __peerAckDelay >= 0 && __inFrameCacheSize == 0 && __newestArrivalAt >= 0
+			&& __clock() - __newestArrivalAt >= ACK_HELD_NOTABLY) {
+			__sendAckFrame();
+		}
+
+		var size:Int = ReliableDatagramProtocol.frameSize(payload == null ? 0 : length, hasAck);
 		if (__pendingCount > 0
 			&& __pendingLength + ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE + size > ReliableDatagramProtocol.BUNDLE_LIMIT) {
 			__sendBundle();
@@ -3264,14 +3599,15 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		var entry:Int = __pendingLength;
 		var at:Int = entry + ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE;
-		var written:Int = ReliableDatagramProtocol.encodeInto(__scratch, type, sequence, payload, offset, length, resend, ack, more, at, graceful);
+		var written:Int = ReliableDatagramProtocol.encodeInto(__scratch, type, sequence, payload, offset, length, resend, ack, hasAck, more, at,
+			graceful);
 		var bytes:haxe.io.Bytes = __scratch;
 		bytes.set(entry, written >> 8);
 		bytes.set(entry + 1, written & 0xFF);
 		__pendingLength = at + written;
 		__pendingCount++;
 
-		if (ack != null) {
+		if (hasAck) {
 			__bundleHasAck = true;
 			__bundleAck = ack;
 		}
@@ -3323,18 +3659,19 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 
 		if (__ackOwed) {
-			__ackOwed = false;
-			if (!__closed) {
-				if (__inFrameCacheSize > 0) {
-					// Frames are held past a gap, so the acknowledgement says
-					// which, and goes on its own even when a frame going out
-					// carries the cumulative value: that one has no room for
-					// the map.
-					var length:Int = __writeSack();
-					__sendFrame(ACK, __inSequence, __sackScratch, 0, length, false, null, false);
-				} else if (!(__bundleHasAck && __bundleAck == (__inSequence : Int))) {
-					__sendFrame(ACK, __inSequence, null, 0, 0, false, null, false);
-				}
+			if (__closed) {
+				__ackSettled();
+			} else if (__ackHeld && __pendingCount == 0) {
+				// Held, and nothing of this side's goes to carry it: it waits
+				// for something that will, or for its timer.
+			} else if (__inFrameCacheSize > 0 || !(__bundleHasAck && __bundleAck == (__inSequence : Int))) {
+				// Frames held past a gap make the acknowledgement say which,
+				// and it goes on its own even when a frame going out carries
+				// the cumulative value: that one has no room for the map.
+				__sendAckFrame();
+			} else {
+				// A frame going out carries it.
+				__ackSettled();
 			}
 		}
 
@@ -3375,16 +3712,43 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		Writes the map of frames held past the gap into `__sackScratch`, and
-		says how many bytes of it matter.
+		Sends the acknowledgement owed, as an ACK of its own: with the map of
+		frames held past a gap when there are any, and, to a peer that reads
+		it, how long since the newest frame it acknowledges arrived. Whatever
+		was held for it is done with.
 	**/
-	@:noCompletion private function __writeSack():Int {
+	@:noCompletion private function __sendAckFrame():Void {
+		__ackSettled();
+		var withDelay:Bool = __peerAckDelay >= 0 && __newestArrivalAt >= 0;
+		var length:Int = 0;
+		if (withDelay || __inFrameCacheSize > 0) {
+			length = __writeAckPayload(withDelay);
+		}
+		__sendFrame(ACK, __inSequence, length > 0 ? __sackScratch : null, 0, length, false, 0, false, false, withDelay);
+	}
+
+	/**
+		Writes an ACK's payload into `__sackScratch` -- its delay, if
+		`withDelay`, then the map of frames held past the gap -- and says how
+		many bytes of it matter.
+	**/
+	@:noCompletion private function __writeAckPayload(withDelay:Bool):Int {
 		if (__sackScratch == null) {
 			__sackScratch = new ByteArray();
-			__sackScratch.length = ReliableDatagramProtocol.SACK_BYTES;
+			__sackScratch.length = 2 + ReliableDatagramProtocol.SACK_BYTES;
 		}
 		var bytes:haxe.io.Bytes = __sackScratch;
-		bytes.fill(0, ReliableDatagramProtocol.SACK_BYTES, 0);
+		var at:Int = 0;
+		if (withDelay) {
+			var units:Int = ReliableDatagramProtocol.delayUnits(__clock() - __newestArrivalAt);
+			bytes.set(0, units >> 8);
+			bytes.set(1, units & 0xFF);
+			at = 2;
+		}
+		if (__inFrameCacheSize == 0) {
+			return at;
+		}
+		bytes.fill(at, ReliableDatagramProtocol.SACK_BYTES, 0);
 
 		var base:Int = (__inSequence : Int) + 1;
 		var used:Int = 0;
@@ -3395,12 +3759,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				continue;
 			}
 			var index:Int = offset >> 3;
-			bytes.set(index, bytes.get(index) | (1 << (offset & 7)));
+			bytes.set(at + index, bytes.get(at + index) | (1 << (offset & 7)));
 			if (index + 1 > used) {
 				used = index + 1;
 			}
 		}
-		return used;
+		return at + used;
 	}
 
 	#if !nodejs
@@ -3467,16 +3831,14 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__relay.sendTo(__scratch, __remoteAddress, __remotePort, offset, length);
 	}
 
-	@:noCompletion private inline function __currentAck():Null<Seq32> {
-		return __connected ? __inSequence : null;
-	}
-
 	@:noCompletion private function __teardownTransportListener():Void {
 		if (!__transportListenerReady || __transport == null) {
 			return;
 		}
 
-		__transport.removeEventListener(DatagramSocketDataEvent.DATA, __onTransportData);
+		if (__transport.__receiver == this) {
+			__transport.__setReceiver(null);
+		}
 		__transportListenerReady = false;
 	}
 
@@ -3498,23 +3860,47 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	@:noCompletion private function __onTransportData(e:DatagramSocketDataEvent):Void {
-		if (ReliableDatagramProtocol.isBundle(e.data)) {
+		__receiveDatagram(e.data, e.srcAddress, e.srcPort);
+	}
+
+	/**
+		Each datagram this session's own transport reads, handed over
+		directly; see `DatagramReceiver`. A session a server accepted or
+		dialled is handed its datagrams by the server instead.
+	**/
+	@:noCompletion public function __receiveDatagram(data:ByteArray, address:String, port:Int):Void {
+		if (ReliableDatagramProtocol.isBundle(data)) {
 			// Only from the peer as already known: it sends bundles once it
 			// has heard from this side, so there is no port left to learn.
-			if (__matchesRemoteEndpoint(e, null)) {
-				__acceptBundle(e.data);
+			if (__matchesRemoteEndpoint(address, port, null)) {
+				__acceptBundle(data);
 			}
 			return;
 		}
 
-		var frame = ReliableDatagramProtocol.decode(e.data);
+		// Into the frame kept for it, and taking the datagram's own buffer for
+		// its payload: the datagram was made for this read alone.
+		var frame = ReliableDatagramProtocol.decodeInto(data, 0, data.length, true, __decoded());
 		// Before the endpoint check, which learns a reply port from the first
 		// HANDSHAKE it sees: one answering an earlier attempt must not teach it.
-		if (frame == null || (frame.type == HANDSHAKE && __answersAnotherAttempt(frame)) || !__matchesRemoteEndpoint(e, frame)) {
+		if (frame == null || (frame.type == HANDSHAKE && __answersAnotherAttempt(frame)) || !__matchesRemoteEndpoint(address, port, frame)) {
 			return;
 		}
 
 		__acceptFrame(frame);
+	}
+
+	// The frame each arrival is decoded into. Nothing holds a decoded frame
+	// past the call that takes it -- a frame held past a gap is made anew --
+	// so one serves every arrival, where each had a frame, a payload buffer
+	// and a boxed acknowledgement of its own.
+	@:noCompletion private var __decodedFrame:ReliableDatagramFrame = null;
+
+	@:noCompletion private inline function __decoded():ReliableDatagramFrame {
+		if (__decodedFrame == null) {
+			__decodedFrame = new ReliableDatagramFrame(ACK, 0, null, false);
+		}
+		return __decodedFrame;
 	}
 
 	/**
@@ -3537,7 +3923,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			if (length < 0) {
 				return;
 			}
-			var frame = ReliableDatagramProtocol.decodeRange(data, at + ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE, length);
+			var frame = ReliableDatagramProtocol.decodeInto(data, at + ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE, length, false, __decoded());
 			at += ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE + length;
 			if (frame != null) {
 				__acceptFrame(frame);
@@ -3545,17 +3931,17 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 	}
 
-	@:noCompletion private function __matchesRemoteEndpoint(e:DatagramSocketDataEvent, frame:ReliableDatagramFrame):Bool {
-		if (e.srcAddress != __remoteAddress) {
+	@:noCompletion private function __matchesRemoteEndpoint(address:String, port:Int, frame:ReliableDatagramFrame):Bool {
+		if (address != __remoteAddress) {
 			return false;
 		}
 
-		if (e.srcPort == __remotePort || (__remoteResponsePort > 0 && e.srcPort == __remoteResponsePort)) {
+		if (port == __remotePort || (__remoteResponsePort > 0 && port == __remoteResponsePort)) {
 			return true;
 		}
 
 		if (frame != null && !__incoming && !__connected && frame.type == HANDSHAKE) {
-			__remoteResponsePort = e.srcPort;
+			__remoteResponsePort = port;
 			return true;
 		}
 

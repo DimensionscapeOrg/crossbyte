@@ -103,8 +103,10 @@ class SctpDataChunk {
 
 	/** Wraps this as a chunk the packet layer can write. **/
 	public function toChunk():SctpChunk {
-		var value = new ByteArray();
+		// Made at its size rather than grown from empty, a copy a growth.
+		var value = new ByteArray(HEADER_LENGTH + payload.length);
 		value.endian = Endian.BIG_ENDIAN;
+		value.position = 0;
 		value.writeInt(tsn);
 		value.writeShort(streamId);
 		value.writeShort(streamSequence);

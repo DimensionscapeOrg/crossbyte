@@ -133,27 +133,45 @@ class Rendezvous {
 		}
 
 		var keyHash:Int = hash(key);
-		var ranked:Array<{node:String, score:Int}> = [];
+		var total:Int = __nodes.length;
+		var limit:Int = count < total ? count : total;
 
-		for (i in 0...__nodes.length) {
-			ranked.push({node: __nodes[i], score: weigh(keyHash, __hashes[i])});
-		}
+		// The best `limit` so far, best first -- where each is in the
+		// membership, and its score -- kept by insertion: a look at the worst
+		// of them for most nodes. Every node was made an anonymous structure
+		// and all of them sorted, by a closure reading each by name.
+		var bestAt:Array<Int> = [];
+		var bestScore:Array<Int> = [];
+		var held:Int = 0;
 
-		ranked.sort(function(a, b):Int {
-			if (a.score != b.score) {
-				return b.score - a.score > 0 ? 1 : -1;
+		for (i in 0...total) {
+			var score:Int = weigh(keyHash, __hashes[i]);
+			var name:String = __nodes[i];
+
+			if (held == limit && !ranksAbove(score, name, bestScore[held - 1], __nodes[bestAt[held - 1]])) {
+				continue;
 			}
 
-			return a.node < b.node ? 1 : (a.node > b.node ? -1 : 0);
-		});
-
-		var out:Array<String> = [];
-
-		for (i in 0...(count < ranked.length ? count : ranked.length)) {
-			out.push(ranked[i].node);
+			var at:Int = held < limit ? held++ : held - 1;
+			while (at > 0 && ranksAbove(score, name, bestScore[at - 1], __nodes[bestAt[at - 1]])) {
+				bestAt[at] = bestAt[at - 1];
+				bestScore[at] = bestScore[at - 1];
+				at--;
+			}
+			bestAt[at] = i;
+			bestScore[at] = score;
 		}
 
-		return out;
+		return [for (j in 0...held) __nodes[bestAt[j]]];
+	}
+
+	/**
+		Whether a node scoring `score` ranks above one scoring `otherScore`:
+		the higher score, and between equal ones the later name, as `owner`
+		breaks a tie.
+	**/
+	private static inline function ranksAbove(score:Int, name:String, otherScore:Int, otherName:String):Bool {
+		return score > otherScore || (score == otherScore && name > otherName);
 	}
 
 	private function get_length():Int {
@@ -170,9 +188,47 @@ class Rendezvous {
 		a `Float` holds exactly before `| 0` can wrap them, so js and the
 		static targets disagree -- and two nodes that disagree about a hash
 		disagree about who owns a key, which is the one thing this may not do.
+
+		Of the string's UTF-8 bytes, as `Crc32.make(Bytes.ofString(value))`
+		gives it, by a table rather than a bit at a time, and for an ASCII
+		string from its characters, without making the bytes: a key is hashed
+		on every lookup.
 	**/
-	private static inline function hash(value:String):Int {
-		return Crc32.make(Bytes.ofString(value));
+	private static function hash(value:String):Int {
+		var table:Array<Int> = crcTable();
+		var crc:Int = 0xFFFFFFFF;
+
+		for (i in 0...value.length) {
+			var code:Int = StringTools.fastCodeAt(value, i);
+			if (code >= 0x80) {
+				// Encoded as each target encodes it, which is what the
+				// table's answer has to equal.
+				return Crc32.make(Bytes.ofString(value));
+			}
+			crc = (crc >>> 8) ^ table[(crc ^ code) & 0xFF];
+		}
+
+		return crc ^ 0xFFFFFFFF;
+	}
+
+	private static var __crcTable:Array<Int> = null;
+
+	/** CRC-32's table, IEEE 802.3's reflected polynomial, as `Crc32` uses. **/
+	private static function crcTable():Array<Int> {
+		var table:Array<Int> = __crcTable;
+		if (table != null) {
+			return table;
+		}
+
+		table = [];
+		for (n in 0...256) {
+			var c:Int = n;
+			for (_ in 0...8) {
+				c = (c & 1) != 0 ? (c >>> 1) ^ 0xEDB88320 : c >>> 1;
+			}
+			table.push(c);
+		}
+		return __crcTable = table;
 	}
 
 	/**

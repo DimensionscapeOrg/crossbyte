@@ -1,5 +1,6 @@
 package crossbyte.cluster;
 
+import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
 import crossbyte.events.Event;
@@ -19,6 +20,10 @@ import crossbyte.net.Socket;
 	somewhere bounded to put what could not be sent while it was away.
 	`LocalConnection` is this shape for two processes on one machine; this is
 	its remote sibling.
+
+	What is sent in one pass of the runtime's loop goes when the pass ends,
+	in one write, as a `NetConnection`'s does; sent from another thread, or
+	with no runtime running, it goes at once.
 
 	It is a link to one peer and knows nothing about who that peer is. Which
 	nodes to connect to is `Membership`'s answer, and what to send them is
@@ -48,7 +53,7 @@ import crossbyte.net.Socket;
 	and against what state, is the caller's to decide, which is why `onUp`
 	exists.
 **/
-class NodeChannel {
+class NodeChannel implements crossbyte.core._internal.PassFlush {
 	/** How long after a failed attempt the first retry goes out. **/
 	public static inline var MIN_RETRY:Float = 0.25;
 
@@ -94,6 +99,16 @@ class NodeChannel {
 	private var __queue:Array<ByteArray> = [];
 	private var __queueAt:Int = 0;
 	private var __queuedBytes:Int = 0;
+	// A message's length, big-endian, as `FrameCodec` frames it: written
+	// ahead of the message itself, which was copied into a frame of its own
+	// first.
+	private var __header:ByteArray = null;
+	// Whether the runtime will flush this pass's messages when it ends, and
+	// the messages written in the pass until it has: if the link drops
+	// first, they never went, and wait for it with the rest.
+	private var __passQueued:Bool = false;
+	private var __inPass:Array<ByteArray> = [];
+	private var __inPassCount:Int = 0;
 
 	/** A link this end opens, and reopens for as long as it is not closed. **/
 	public static function dial(host:String, port:Int, maxMessageSize:Int = FrameCodec.DEFAULT_MAX_FRAME):NodeChannel {
@@ -170,10 +185,9 @@ class NodeChannel {
 		and a caller passing another clock -- `crossbyte.Timer.stamp()`, the
 		runtime's uptime, which on Linux native, jvm and eval is far behind
 		-- was always before the retry: a link that dropped once never came
-		back. `now` is not read; it is kept so that callers passing it still
-		build.
+		back.
 	**/
-	public function poll(?now:Float):Void {
+	public function poll():Void {
 		if (__closed || __up || !__dials || __retryAt < 0 || haxe.Timer.stamp() < __retryAt) {
 			return;
 		}
@@ -203,6 +217,22 @@ class NodeChannel {
 		__queue = [];
 		__queueAt = 0;
 		__queuedBytes = 0;
+		__forgetPass();
+	}
+
+	/** The runtime's call at the end of a pass: what the pass wrote goes now. **/
+	@:noCompletion public function __flushPass():Void {
+		__passQueued = false;
+		if (__inPassCount == 0 || __socket == null) {
+			return;
+		}
+
+		try {
+			__socket.flush();
+			__forgetPass();
+		} catch (e:Dynamic) {
+			__scheduleRetry(Std.string(e));
+		}
 	}
 
 	// ------------------------------------------------------------------
@@ -297,14 +327,77 @@ class NodeChannel {
 
 	private function __write(payload:ByteArray):Void {
 		try {
-			__socket.writeBytes(FrameCodec.encode(payload));
+			var length:Int = payload == null ? 0 : payload.length;
+			if (__header == null) {
+				__header = new ByteArray();
+				__header.length = 4;
+			}
+			var header:haxe.io.Bytes = __header;
+			header.set(0, length >>> 24);
+			header.set(1, (length >>> 16) & 0xFF);
+			header.set(2, (length >>> 8) & 0xFF);
+			header.set(3, length & 0xFF);
+			__socket.writeBytes(__header, 0, 4);
+			if (length > 0) {
+				__socket.writeBytes(payload, 0, length);
+			}
+
+			if (__holdForPass()) {
+				__inPass[__inPassCount++] = payload;
+				return;
+			}
 			__socket.flush();
 		} catch (e:Dynamic) {
-			// It did not go, so it waits with everything else.
+			// It did not go, so it waits with everything else, behind what
+			// the pass wrote before it.
+			__requeuePass();
 			__queue.push(payload);
 			__queuedBytes += payload == null ? 0 : payload.length;
 			__scheduleRetry(Std.string(e));
 		}
+	}
+
+	/**
+		Whether what is written now can wait for the pass to end: on the
+		runtime's own thread, while it runs. A socket whose limit throws is
+		flushed at once, so the throw still reaches `send`.
+	**/
+	private function __holdForPass():Bool {
+		if (__passQueued) {
+			return true;
+		}
+		var runtime:CrossByte = @:privateAccess __socket.__runtime();
+		if (runtime == null || @:privateAccess runtime.__didExit || CrossByte.__currentOrNull() != runtime) {
+			return false;
+		}
+		if (__socket.outputOverflowPolicy == THROW && __socket.maxOutputBufferSize > 0) {
+			return false;
+		}
+		__passQueued = true;
+		@:privateAccess runtime.__queuePassFlush(this);
+		return true;
+	}
+
+	/**
+		What this pass wrote had not gone when the link failed: it waits for
+		the link, after whatever already waits, as a message that failed to
+		go always did.
+	**/
+	private function __requeuePass():Void {
+		for (i in 0...__inPassCount) {
+			var payload:ByteArray = __inPass[i];
+			__queue.push(payload);
+			__queuedBytes += payload == null ? 0 : payload.length;
+		}
+		__forgetPass();
+	}
+
+	/** The pass's messages have gone, or will not be held: let go of them. **/
+	private function __forgetPass():Void {
+		for (i in 0...__inPassCount) {
+			__inPass[i] = null;
+		}
+		__inPassCount = 0;
 	}
 
 	private function __flushQueue():Void {
@@ -363,9 +456,16 @@ class NodeChannel {
 	}
 
 	private function __scheduleRetry(reason:String):Void {
+		var requeued:Bool = __inPassCount > 0;
+		__requeuePass();
 		__drop(reason);
 
 		if (__socket != null) {
+			// What the pass wrote waits for the next link, so it does not
+			// also leave on this one as it closes.
+			if (requeued) {
+				@:privateAccess __socket.__discardOnClose = true;
+			}
 			try {
 				__socket.close();
 			} catch (_:Dynamic) {}

@@ -53,7 +53,7 @@ import sys.net.Host;
 	       handshake. A session this server dials, with `connect` or
 	       `connectRelayed`, dispatches `Event.CONNECT` itself instead.
 **/
-class ReliableDatagramServerSocket extends EventDispatcher {
+class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.net._internal.DatagramReceiver {
 	/**
 		Indicates whether reliable UDP server sockets are supported by the current target.
 	**/
@@ -97,6 +97,23 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		accepts or dials, in seconds, as `keepAliveInterval` is.
 	**/
 	public var idleTimeout:Float = ReliableDatagramSocket.DEFAULT_IDLE_TIMEOUT;
+
+	/**
+		`ReliableDatagramSocket.ackDelay` for each session this server
+		accepts or dials, in seconds -- 25 milliseconds unless changed -- as
+		`keepAliveInterval` is.
+
+		@throws RangeError If set below zero or above
+		        `ReliableDatagramSocket.MAX_ACK_DELAY`.
+	**/
+	public var ackDelay(default, set):Float = ReliableDatagramSocket.DEFAULT_ACK_DELAY;
+
+	@:noCompletion private function set_ackDelay(value:Float):Float {
+		if (!(value >= 0) || value > ReliableDatagramSocket.MAX_ACK_DELAY) {
+			throw new RangeError('An acknowledgement delay is 0 to ${ReliableDatagramSocket.MAX_ACK_DELAY} seconds.');
+		}
+		return ackDelay = value;
+	}
 
 	@:noCompletion private var __closed:Bool = false;
 
@@ -383,7 +400,9 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		__closed = true;
 		listening = false;
 		try {
-			__socket.removeEventListener(DatagramSocketDataEvent.DATA, __onData);
+			if (__socket.__receiver == this) {
+				__socket.__setReceiver(null);
+			}
 		} catch (_:Dynamic) {}
 
 		__settleStun(null, "The server socket closed before the STUN server replied.");
@@ -402,6 +421,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			__dialling = null;
 		}
 		__connections = new StringMap();
+		__byHost = new StringMap();
 		__pending = new StringMap();
 		__pendingCount = 0;
 
@@ -450,7 +470,8 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		}
 
 		listening = true;
-		__socket.addEventListener(DatagramSocketDataEvent.DATA, __onData);
+		// Handed each datagram directly, with no event made for it.
+		__socket.__setReceiver(this);
 		__socket.receive();
 	}
 
@@ -559,7 +580,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		var socket = ReliableDatagramSocket.__createDialed(__socket, resolved, port, this, socketMode, timeoutMs, outgoing,
 			congestionControlFor(resolved, port));
-		__connections.set(key, socket);
+		__file(resolved, port, socket);
 		return socket;
 	}
 
@@ -624,7 +645,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 				return;
 			}
 
-			__connections.set(key, socket);
+			__file(resolved, port, socket);
 			socket.__beginDialled(resolved, congestion);
 		});
 
@@ -1182,7 +1203,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		var socket = ReliableDatagramSocket.__createDialed(__socket, address, port, this, socketMode, timeoutMs, outgoing,
 			congestionControlFor(address, port), relay);
-		__connections.set(key, socket);
+		__file(address, port, socket);
 		return socket;
 	}
 
@@ -1370,15 +1391,58 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		return address + ":" + port;
 	}
 
+	// The sessions again, by address and then by port: what a datagram is
+	// matched by, with no key built for it. `__connections`, by the joined
+	// key, is what everything else reads; the two change together, through
+	// `__file` and `__unfile`.
+	@:noCompletion private var __byHost:StringMap<haxe.ds.IntMap<ReliableDatagramSocket>> = new StringMap();
+
+	/** Files `socket` under its endpoint, in both maps. **/
+	@:noCompletion private function __file(address:String, port:Int, socket:ReliableDatagramSocket):Void {
+		__connections.set(__endpointKey(address, port), socket);
+		var ports = __byHost.get(address);
+		if (ports == null) {
+			ports = new haxe.ds.IntMap();
+			__byHost.set(address, ports);
+		}
+		ports.set(port, socket);
+	}
+
+	/** Takes whatever is filed under an endpoint out of both maps. **/
+	@:noCompletion private function __unfile(address:String, port:Int):Void {
+		__connections.remove(__endpointKey(address, port));
+		var ports = __byHost.get(address);
+		if (ports != null && ports.remove(port) && !ports.iterator().hasNext()) {
+			__byHost.remove(address);
+		}
+	}
+
+	/** The session filed under an endpoint, found without building its key. **/
+	@:noCompletion private inline function __sessionAt(address:String, port:Int):Null<ReliableDatagramSocket> {
+		var ports = __byHost.get(address);
+		return ports != null ? ports.get(port) : null;
+	}
+
 	@:noCompletion private function __onData(e:DatagramSocketDataEvent):Void {
-		var data:ByteArray = e.data;
+		__receiveDatagram(e.data, e.srcAddress, e.srcPort);
+	}
+
+	/**
+		Every datagram the socket reads, handed over directly; see
+		`DatagramReceiver`.
+	**/
+	@:noCompletion public function __receiveDatagram(data:ByteArray, address:String, port:Int):Void {
+		// The datagram is the sessions' to take its payload from, unless a
+		// hook of the application's has seen it, which may have kept it.
+		var owned:Bool = true;
 
 		// First, whatever the application routes itself.
 		if (onDatagram != null) {
 			var taken:Bool = true;
+			owned = false;
 
 			try {
-				taken = onDatagram(data, e.srcAddress, e.srcPort);
+				taken = onDatagram(data, address, port);
 			} catch (_:Dynamic) {}
 
 			if (taken) {
@@ -1408,7 +1472,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 					// The relay's: its answers, and what it forwards as Data
 					// indications. Before the agent, which used to take every
 					// STUN message there was, the relay's answers included.
-					if (relay != null && relay.receive(data, e.srcAddress, e.srcPort, haxe.Timer.stamp(), message)) {
+					if (relay != null && relay.receive(data, address, port, haxe.Timer.stamp(), message)) {
 						return;
 					}
 
@@ -1416,21 +1480,27 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 					// own. It reports whether it did, so everything else falls
 					// through to the sessions rather than being swallowed by a
 					// component that had no use for it.
-					if (__ice != null && __ice.receive(data, e.srcAddress, e.srcPort, haxe.Timer.stamp(), null, message)) {
+					if (__ice != null && __ice.receive(data, address, port, haxe.Timer.stamp(), null, message)) {
 						return;
 					}
 				}
+				owned = false;
 			} else if (first >= 0x40 && first <= 0x7F && relay != null) {
-				if (relay.receive(data, e.srcAddress, e.srcPort, haxe.Timer.stamp())) {
+				if (relay.receive(data, address, port, haxe.Timer.stamp())) {
 					return;
 				}
+				owned = false;
 			}
 
 			data.position = 0;
 		}
 
-		__handleDatagram(data, e.srcAddress, e.srcPort, null);
+		__handleDatagram(data, address, port, null, owned);
 	}
+
+	// The frame each datagram is decoded into; see
+	// `ReliableDatagramSocket.__decodedFrame`.
+	@:noCompletion private var __decodedFrame:ReliableDatagramFrame = null;
 
 	/**
 		A datagram for the sessions: from the socket, or unwrapped from the
@@ -1438,10 +1508,11 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		@param via The relay it came through, which a session it opens answers
 		through; null for one straight off the socket.
+		@param owned Whether `data` was made for this datagram and nobody
+		else has it, so a frame may take it for its payload.
 	**/
-	@:noCompletion private function __handleDatagram(data:ByteArray, address:String, port:Int, via:Null<TurnClient>):Void {
-		var key:String = __endpointKey(address, port);
-		var connection:ReliableDatagramSocket = __connections.get(key);
+	@:noCompletion private function __handleDatagram(data:ByteArray, address:String, port:Int, via:Null<TurnClient>, owned:Bool = false):Void {
+		var connection:ReliableDatagramSocket = __sessionAt(address, port);
 
 		// Several frames at once, and only ever from a session already here:
 		// a peer bundles once it has heard this side, so a bundle from an
@@ -1456,7 +1527,10 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			return;
 		}
 
-		var frame = ReliableDatagramProtocol.decode(data);
+		if (__decodedFrame == null) {
+			__decodedFrame = new ReliableDatagramFrame(ACK, 0, null, false);
+		}
+		var frame = ReliableDatagramProtocol.decodeInto(data, 0, data.length, owned, __decodedFrame);
 		if (frame == null) {
 			return;
 		}
@@ -1524,8 +1598,8 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		// somewhere nothing but the relay reaches.
 		connection = ReliableDatagramSocket.__createAccepted(__socket, address, port, this, socketMode, payload, congestion, frame.sequence, via);
 		connection.__peerTakesBundles = frame.bundles;
-		__connections.set(key, connection);
-		__pending.set(key, true);
+		__file(address, port, connection);
+		__pending.set(__endpointKey(address, port), true);
 		__pendingCount++;
 	}
 
@@ -1590,7 +1664,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			__resetScratch.length = ReliableDatagramProtocol.HEADER_SIZE;
 		}
 
-		var length:Int = ReliableDatagramProtocol.encodeInto(__resetScratch, ReliableDatagramFrameType.FIN, 0, null, 0, 0, false, null, false);
+		var length:Int = ReliableDatagramProtocol.encodeInto(__resetScratch, ReliableDatagramFrameType.FIN, 0, null, 0, 0, false, 0, false, false);
 		try {
 			// Back the way it came: a frame from a peer only the relay reaches
 			// is answered through the relay.
@@ -1604,7 +1678,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 	@:noCompletion private function __onSocketClosed(socket:ReliableDatagramSocket):Void {
 		var key:String = __endpointKey(socket.remoteAddress, socket.remotePort);
-		__connections.remove(key);
+		__unfile(socket.remoteAddress, socket.remotePort);
 		__releasePending(key);
 		// One closed while its peer's name was looked up was filed only
 		// here; its answer, when it comes, finds it gone.

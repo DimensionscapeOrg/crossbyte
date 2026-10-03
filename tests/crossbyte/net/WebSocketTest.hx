@@ -95,7 +95,7 @@ class WebSocketTest extends utest.Test {
 	public function testMaskedBinaryFrameDispatchesPayload():Void {
 		var ws = openParser();
 		var received:ByteArray = null;
-		ws.onmessage = e -> received = e.data;
+		ws.onmessage = e -> received = e.message;
 
 		ws.__input = maskedFrame(0x02, Bytes.ofString("hello"));
 		ws.__onData();
@@ -127,7 +127,7 @@ class WebSocketTest extends utest.Test {
 		ws.__connected = true;
 		ws.__tls = false;
 		var received:String = null;
-		ws.onmessage = e -> received = e.data.readUTFBytes(e.data.length);
+		ws.onmessage = e -> received = e.message.readUTFBytes(e.message.length);
 
 		var frame = maskedFrame(0x01, Bytes.ofString("hello"));
 		peer.output.writeBytes(frame, 0, frame.length);
@@ -181,7 +181,7 @@ class WebSocketTest extends utest.Test {
 				copies++;
 				buffer = ws.__input;
 			}
-			if (!carries(e.data, messages, size)) {
+			if (!carries(e.message, messages, size)) {
 				wrong++;
 			}
 			messages++;
@@ -226,7 +226,7 @@ class WebSocketTest extends utest.Test {
 		var messages:Int = 0;
 		var wrong:Int = 0;
 		ws.onmessage = e -> {
-			if (!carries(e.data, 0, size)) {
+			if (!carries(e.message, 0, size)) {
 				wrong++;
 			}
 			messages++;
@@ -339,7 +339,7 @@ class WebSocketTest extends utest.Test {
 		var received:ByteArray = null;
 		ws.onmessage = e -> {
 			calls++;
-			received = e.data;
+			received = e.message;
 		};
 
 		var first = maskedFrame(0x01, Bytes.ofString("hel"), false);
@@ -374,7 +374,7 @@ class WebSocketTest extends utest.Test {
 	public function testExtendedPayloadLength126DispatchesPayload():Void {
 		var ws = openParser();
 		var received:ByteArray = null;
-		ws.onmessage = e -> received = e.data;
+		ws.onmessage = e -> received = e.message;
 
 		var payload = Bytes.alloc(130);
 		for (i in 0...payload.length) {
@@ -393,7 +393,7 @@ class WebSocketTest extends utest.Test {
 	public function testExtendedPayloadLength127DispatchesMaxPayload():Void {
 		var ws = openParser();
 		var received:ByteArray = null;
-		ws.onmessage = e -> received = e.data;
+		ws.onmessage = e -> received = e.message;
 
 		var payload = Bytes.alloc(InternalWebSocket.MAX_PAYLOAD);
 		payload.set(0, 0x41);
@@ -522,7 +522,7 @@ class WebSocketTest extends utest.Test {
 		ws.onclose = _ -> {};
 
 		var received:ByteArray = null;
-		ws.onmessage = e -> received = e.data;
+		ws.onmessage = e -> received = e.message;
 
 		var response = [
 			"HTTP/1.1 101 Switching Protocols",
@@ -548,7 +548,7 @@ class WebSocketTest extends utest.Test {
 		var opened = 0;
 		ws.onopen = _ -> opened++;
 		var received:ByteArray = null;
-		ws.onmessage = e -> received = e.data;
+		ws.onmessage = e -> received = e.message;
 
 		var response = [
 			"HTTP/1.1 101 Switching Protocols",

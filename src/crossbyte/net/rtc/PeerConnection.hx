@@ -914,12 +914,16 @@ class PeerConnection {
 		@param maxRetransmits How many times a message may be sent again
 		before it is given up on -- 0 sends each once -- for a channel that
 		would rather lose a message than wait for it, as a game's state
-		channel does. See `DataChannel.maxRetransmits`.
+		channel does. See `DataChannel.maxRetransmits`. -1, unless given, for
+		no limit.
 		@param maxPacketLifeTime Milliseconds a message is tried for, the other
-		way to say the same. One or the other, not both.
+		way to say the same; -1, unless given, for no limit. One or the other,
+		not both.
+		@throws ArgumentError For both limits, or for one past 65535 or below
+		-1.
 	**/
-	public function createDataChannel(label:String, ordered:Bool = true, protocol:String = "", ?maxRetransmits:Int,
-			?maxPacketLifeTime:Int):DataChannel {
+	public function createDataChannel(label:String, ordered:Bool = true, protocol:String = "", maxRetransmits:Int = -1,
+			maxPacketLifeTime:Int = -1):DataChannel {
 		if (!connected || __channels == null) {
 			throw new ArgumentError("This connection is not ready yet. Wait on `ready` before creating channels.");
 		}
@@ -1057,6 +1061,15 @@ class PeerConnection {
 		__closed = true;
 		connected = false;
 		closeReason = reason;
+
+		// What this pass sent goes ahead of the ABORT, as it did when each
+		// send went at once: it waits for the pass to end otherwise, and the
+		// association is gone by then.
+		if (__transfer != null && notifyPeer) {
+			try {
+				__transfer.__flushPass();
+			} catch (_:Dynamic) {}
+		}
 
 		// The channels first, so an application tearing down what it keeps per
 		// channel hears about each before it hears the connection has gone.
@@ -1981,6 +1994,9 @@ class PeerConnection {
 
 		__transfer = new SctpDataTransfer(__association);
 		__transfer.peerMaxMessageSize = __peerMaxMessageSize;
+		// What a pass sends goes when it ends, together: this runs on the
+		// connection's runtime, from what arrived or from its tick.
+		__transfer.runtime = CrossByte.__currentOrNull();
 		// RFC 8832: the DTLS client takes the even streams. Two peers that
 		// disagreed about which of them that is would collide on every channel
 		// they opened at the same moment.

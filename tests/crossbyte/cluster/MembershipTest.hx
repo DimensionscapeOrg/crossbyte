@@ -100,6 +100,93 @@ class MembershipTest extends utest.Test {
 		Assert.isFalse(alive.forget("a"), "forgetting an unknown node reported success");
 	}
 
+	/**
+		`now` left out, or negative, asks the membership's clock. It was a
+		`?now:Float`: a `Null<Float>`, which a native build makes an object
+		of on every heartbeat that passes one.
+	**/
+	public function testANegativeNowAsksTheClock():Void {
+		var now:Float = 100;
+		var alive = new Membership(5, 1024, function():Float return now);
+
+		alive.heard("a", -1);
+		Assert.equals(100.0, alive.lastHeardFrom("a"), "a negative time was taken as the time");
+		alive.heard("b", 99);
+		Assert.equals(99.0, alive.lastHeardFrom("b"));
+
+		now = 103;
+		Assert.equals(0, alive.sweep(-1));
+		now = 104;
+		Assert.equals(1, alive.sweep(-1), "the sweep did not ask the clock");
+		Assert.isTrue(alive.has("a"));
+		Assert.isFalse(alive.has("b"));
+	}
+
+	/**
+		A node that leaves is reported once, and counted once, when what is
+		told of another leaving forgets it first. The sweep found both and
+		then dropped each: the second a second time, reported again, and
+		counted off `length` again.
+	**/
+	public function testALeaveThatForgetsAnotherIsReportedOnce():Void {
+		var now:Float = 0;
+		var alive = new Membership(5, 1024, function():Float return now);
+		var left:Array<String> = [];
+		alive.onLeave = function(node:String):Void {
+			left.push(node);
+			// "a" and "b" are a pair: one gone takes the other with it.
+			if (node == "a") {
+				alive.forget("b");
+			} else if (node == "b") {
+				alive.forget("a");
+			}
+		};
+		alive.heard("a");
+		alive.heard("b");
+		alive.heard("c");
+
+		now = 10;
+		alive.sweep();
+		left.sort(Reflect.compare);
+		Assert.equals("a,b,c", left.join(","), "left: " + left.join(","));
+		Assert.equals(0, alive.length);
+		Assert.equals(0, alive.alive().length);
+
+		// And what remains still works.
+		Assert.isTrue(alive.heard("d"));
+		Assert.equals(1, alive.length);
+	}
+
+	/** Many nodes, some leaving, the rest kept, each where it was. **/
+	public function testASweepOfManyKeepsTheRest():Void {
+		var now:Float = 0;
+		var alive = new Membership(5, 0, function():Float return now);
+		for (i in 0...100) {
+			alive.heard("n" + i);
+		}
+		now = 4;
+		for (i in 0...100) {
+			if (i % 3 == 0) {
+				alive.heard("n" + i);
+			}
+		}
+		now = 6;
+		Assert.equals(66, alive.sweep());
+		Assert.equals(34, alive.length);
+		for (i in 0...100) {
+			Assert.equals(i % 3 == 0, alive.has("n" + i));
+			if (i % 3 == 0) {
+				Assert.equals(4.0, alive.lastHeardFrom("n" + i));
+			}
+		}
+		var names = alive.alive();
+		Assert.equals(34, names.length);
+		alive.clear();
+		Assert.equals(0, alive.length);
+		Assert.isFalse(alive.has("n0"));
+		Assert.isTrue(alive.heard("n0"));
+	}
+
 	/** A membership with no timeout is a mistake, not a configuration. **/
 	public function testATimeoutIsRequired():Void {
 		Assert.raises(function():Void {

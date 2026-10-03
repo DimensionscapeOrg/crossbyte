@@ -25,7 +25,7 @@ class WebSocketFrameTest extends utest.Test {
 	public function testServerAcceptsMaskedFrame():Void {
 		var ws = serverParser();
 		var received:ByteArray = null;
-		ws.onmessage = e -> received = e.data;
+		ws.onmessage = e -> received = e.message;
 
 		ws.__input = maskedFrame(0x02, Bytes.ofString("hello"));
 		ws.__onData();
@@ -195,7 +195,7 @@ class WebSocketFrameTest extends utest.Test {
 	public function testValidTextFrameDispatches():Void {
 		var ws = clientParser();
 		var received:ByteArray = null;
-		ws.onmessage = e -> received = e.data;
+		ws.onmessage = e -> received = e.message;
 
 		// "héllo" contains a 2-byte UTF-8 sequence (0xC3 0xA9).
 		ws.__input = unmaskedFrame(0x01, Bytes.ofString("héllo"));
