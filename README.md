@@ -314,6 +314,45 @@ It reports the best of several samples per case; the numbers compare shapes of
 code on one machine in one sitting and are not comparable across machines. CI
 runs it so it cannot rot, and ignores the numbers.
 
+### Load and churn
+
+`tests/load` runs CrossByte the way a server and a game server run it, for
+minutes, at scale, with the clients in other processes, and reports what the
+server costs and whether what it holds comes back down once the clients have
+gone. Build it natively for the machine you are on, then run a scenario:
+
+```sh
+haxe ci/load.hxml
+./export/load/LoadMain game  --clients 1000 --hz 60 --seconds 600
+./export/load/LoadMain churn --plan 50:300,200:300,1000:300,0:120
+./export/load/LoadMain idle  --clients 10000 --seconds 120
+```
+
+- `game`: a reliable-UDP game server ticking at `--hz`, sending every client
+  a 100-400 byte snapshot each tick (sequenced, every fourth reliable) and
+  taking an input from each every tick. Reports processor time per tick, tick
+  time, input-to-acknowledgement latency, lost snapshots and retransmissions,
+  and memory per session.
+- `churn`: HTTP/1.1 keep-alive, HTTP/2 and WebSocket clients, half over TLS,
+  connecting, doing a few requests and leaving, at each concurrency of
+  `--plan` (`concurrency:seconds,...`; end with a `0:` phase to watch memory
+  come back). Its default clients are `tests/load/churn-client.js` and need
+  Node 18 or later, whose TLS connections resume their sessions as browsers'
+  do; `--client native` uses CrossByte's own clients instead, which do not
+  resume and speak HTTP/2 in clear only.
+- `idle`: that many WebSocket connections held open and quiet: memory per
+  connection, and what holding them costs of a core.
+
+Each prints `LOAD {json}` lines, a window every `--report` seconds, then a
+summary, and exits 0 when every client saw what it should have. On Linux,
+raise the descriptor limit before a large idle run (`ulimit -n 65536`). To run
+on crossbyte-libuv's backend, build with that library as its README says
+(`-lib crossbyte-libuv -D crossbyte_libuv_native`, plus `LIBUV_INCLUDE`,
+`LIBUV_LIB` and `LIBUV_STATIC` on Windows) and pass `--libuv`.
+`ci/load-jvm.hxml` builds the game server for the jvm; give it `--bots` with
+the native executable so only the server is the jvm's. Like the soak, CI does
+not run any of this: the numbers are for reading, not gating.
+
 ## CI
 
 The repository CI covers:
