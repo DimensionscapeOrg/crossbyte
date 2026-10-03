@@ -1,0 +1,9 @@
+# The same server with hxcpp's sampling profiler (wall-clock stacks).
+# haxe tests/perf/http/perf-http-prof.hxml --cpp export/perf-http/prof
+-cp tests/perf/http
+-cp src
+-D windows
+-D HXCPP_M64
+-D HXCPP_STACK_TRACE
+-D HXCPP_PROFILER
+-main PerfHttpServer

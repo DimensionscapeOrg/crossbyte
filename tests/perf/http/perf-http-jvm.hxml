@@ -1,0 +1,9 @@
+# The same server on the jvm: haxe tests/perf/http/perf-http-jvm.hxml, then
+# runner.js --exe export/perf-http/jvm/PerfHttpServer.jar (runner.js runs a
+# .jar through java). CPU is the runtime thread's (ThreadMXBean), since
+# Sys.cpuTime is wall time there.
+-cp tests/perf/http
+-cp src
+-lib hxjava
+-main PerfHttpServer
+--jvm export/perf-http/jvm/PerfHttpServer.jar
