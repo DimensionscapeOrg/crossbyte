@@ -227,9 +227,17 @@ class SwitchTable {
 	 * a typed Int constant makes the JVM backend emit a numeric fast path
 	 * (`Jvm.toInt`) that throws on non-numeric keys; routing both operands
 	 * through Dynamic keeps it on the general equality path.
+	 *
+	 * On JavaScript strictly: Haxe writes `==` between two Dynamics as
+	 * JavaScript's loose equality, so the String "1" matched the case `1`
+	 * there and nowhere else.
 	 */
 	@:noCompletion public static function __matches(key:Dynamic, caseValue:Dynamic):Bool {
+		#if js
+		return js.Syntax.strictEq(key, caseValue) || (key == null && caseValue == null);
+		#else
 		return key == caseValue;
+		#end
 	}
 
 	/**
