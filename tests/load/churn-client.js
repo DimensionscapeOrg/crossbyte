@@ -5,9 +5,10 @@
 //
 //   node churn-client.js --http P --https P --ws P --wss P
 //     [--plan 50:300,200:300,1000:300,0:120] [--procs 4] [--think 10]
-//     [--tls-share 0.5] [--kinds h1,h2,ws] [--report 10] [--ips 16]
+//     [--tls-share 0.5] [--kinds h1,h2,ws] [--report 10] [--ips 16] [--ops 5:50]
+//     [--resume 0]
 //
-// A session connects, does 5 to 50 requests or messages with up to --think ms
+// A session connects, does --ops (5 to 50) requests or messages with up to --think ms
 // between them, leaves politely, `Connection: close` on its last request, a
 // GOAWAY, a close frame answered, and is replaced. --plan is
 // concurrency:seconds, phase after phase. Source addresses rotate over
@@ -27,7 +28,7 @@ const { fork } = require('child_process');
 function parseArgs() {
   const a = {
     http: 0, https: 0, ws: 0, wss: 0, plan: '50:300,200:300,1000:300,0:120', procs: 4, think: 10,
-    'tls-share': 0.5, kinds: 'h1,h2,ws', report: 10, ips: 16, worker: -1, timeout: 15000
+    'tls-share': 0.5, kinds: 'h1,h2,ws', report: 10, ips: 16, worker: -1, timeout: 15000, ops: '5:50', resume: 1
   };
   const v = process.argv.slice(2);
   for (let i = 0; i < v.length; i++) {
@@ -37,6 +38,8 @@ function parseArgs() {
   }
   a.phases = String(a.plan).split(',').map((p) => { const [c, s] = p.split(':'); return { concurrency: +c, seconds: +s }; });
   a.kindList = String(a.kinds).split(',');
+  [a.opsMin, a.opsMax] = String(a.ops).split(':').map(Number);
+  if (!(a.opsMax >= a.opsMin)) a.opsMax = a.opsMin;
   return a;
 }
 const a = parseArgs();
@@ -171,7 +174,7 @@ function worker(index) {
   async function runSession() {
     const kind = a.kindList[Math.floor(Math.random() * a.kindList.length)];
     const secure = Math.random() < a['tls-share'];
-    const ops = 5 + Math.floor(Math.random() * 46);
+    const ops = a.opsMin + Math.floor(Math.random() * (a.opsMax - a.opsMin + 1));
     const name = kind + (secure ? 's' : '');
     if (kind === 'h1') await h1Session(name, secure, ops);
     else if (kind === 'h2') await h2Session(name, secure, ops);
@@ -182,7 +185,7 @@ function worker(index) {
   function connectTls(port, name, alpn) {
     const options = {
       port, host: '127.0.0.1', localAddress: localAddress(), rejectUnauthorized: false,
-      session: tlsSessions[name], servername: 'localhost'
+      session: a.resume ? tlsSessions[name] : undefined, servername: 'localhost'
     };
     if (alpn) options.ALPNProtocols = alpn;
     const socket = tls.connect(options);

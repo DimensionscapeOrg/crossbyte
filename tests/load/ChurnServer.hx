@@ -31,11 +31,15 @@ import haxe.Timer;
 	```
 	LoadMain churn [--plan 50:300,200:300,1000:300,0:120] [--client node|native]
 	               [--procs 4] [--think 10] [--tls-share 0.5] [--report 10]
+	               [--kinds h1,h2,ws] [--ops 5:50] [--access-log] [--no-resume]
 	               [--cert file --key file]
 	```
 
 	`--plan` is concurrency:seconds, phase after phase; a last phase at 0
 	is the server left idle, to see whether what churn took comes back.
+	`--ops` is how many requests or messages a connection makes before it
+	leaves, `min:max`; a large one measures the server's throughput rather
+	than its connection churn.
 	`--client node` runs `tests/load/churn-client.js` (Node 18 or later),
 	whose TLS connections resume their sessions as browsers do; `native`
 	runs `LoadMain churn-bots`, CrossByte's own clients, which cannot
@@ -142,7 +146,9 @@ class ChurnServer {
 			// Every second, whatever the server's window: a client's lines
 			// arrive a report late, and a second late is close enough.
 			"--report", "1",
-			"--kinds", args.string("kinds", "h1,h2,ws")
+			"--kinds", args.string("kinds", "h1,h2,ws"),
+			"--ops", args.string("ops", "5:50"),
+			"--resume", args.flag("no-resume") ? "0" : "1"
 		];
 		if (client == "node") {
 			children.spawn("node", "node", [args.string("script", __defaultScript())].concat(common));

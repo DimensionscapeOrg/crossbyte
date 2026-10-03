@@ -315,10 +315,28 @@ class ProcessStats {
 class Report {
 	public static inline var PREFIX:String = "LOAD ";
 
+	/**
+		Where `--out` asked for the records to be written too: a run whose
+		standard output is a console, whose cost is what is being measured,
+		still leaves them somewhere to be read.
+	**/
+	static var file:Null<sys.io.FileOutput> = null;
+
+	public static function open(path:Null<String>):Void {
+		if (path != null) {
+			file = sys.io.File.write(path, false);
+		}
+	}
+
 	/** One line, flushed at once: a parent reads it from a pipe. **/
 	public static function emit(record:Dynamic):Void {
-		Sys.stdout().writeString(PREFIX + Json.stringify(record) + "\n");
+		var line:String = PREFIX + Json.stringify(record) + "\n";
+		Sys.stdout().writeString(line);
 		Sys.stdout().flush();
+		if (file != null) {
+			file.writeString(line);
+			file.flush();
+		}
 	}
 
 	public static function say(line:String):Void {
