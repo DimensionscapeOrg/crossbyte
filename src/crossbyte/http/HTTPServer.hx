@@ -5,7 +5,6 @@ package crossbyte.http;
 
 import haxe.io.Path;
 import haxe.ds.ObjectMap;
-import crossbyte.events.HTTPStatusEvent;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.events.TickEvent;
 import crossbyte.net.ServerSocket;
@@ -71,6 +70,9 @@ class HTTPServer extends ServerSocket {
 	// __sweepWith, made once and handed to every writer and HTTP/2 connection.
 	@:noCompletion private final __sweepHook:({}, Null<Float->Void>) -> Void;
 
+	// this_onResponse, made once and handed to every handler.
+	@:noCompletion private final __responseHook:(HTTPRequestHandler, Int) -> Void;
+
 	/**
 		Makes the server and starts it listening on the configuration's
 		address and port.
@@ -92,6 +94,7 @@ class HTTPServer extends ServerSocket {
 		__config = config;
 		__pumps = new ObjectMap();
 		__sweepHook = __sweepWith;
+		__responseHook = this_onResponse;
 		// A replica, made by a server spread over runtimes for one of them:
 		// it is handed connections, and has no listener, certificate or
 		// metrics of its own.
@@ -536,7 +539,7 @@ class HTTPServer extends ServerSocket {
 		// The same per-response hook as HTTP/1.1, so HTTP/2 responses are counted
 		// and timed. They were not, so a server serving browsers over h2
 		// reported almost nothing.
-		var handler:H2ConnectionHandler = new H2ConnectionHandler(socket, __config, php, buffered, this_onResponse, __sweepHook);
+		var handler:H2ConnectionHandler = new H2ConnectionHandler(socket, __config, php, buffered, __responseHook, __sweepHook);
 		__activeHttp2.set(socket, handler);
 		__armReceiveSweep();
 
@@ -545,16 +548,14 @@ class HTTPServer extends ServerSocket {
 	}
 
 	@:noCompletion private function __serveHttp1(socket:CBSocket, buffered:ByteArray = null, counted:Bool = false):Void {
-		var e = {socket: socket};
-
 		if (!counted && !__claimConnection()) {
 			Logger.error('Connection refused: concurrency limit ${__maxConnections}');
 			try {
-				e.socket.writeUTFBytes('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
-				e.socket.flush();
+				socket.writeUTFBytes('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+				socket.flush();
 			} catch (_:Dynamic) {}
 			try
-				e.socket.close()
+				socket.close()
 			catch (_:Dynamic) {}
 			return;
 		}
@@ -563,22 +564,21 @@ class HTTPServer extends ServerSocket {
 		// it is written to, so a per-connection limit is only reachable from
 		// the server that accepted it.
 		if (__config.maxOutputBufferSize > 0) {
-			e.socket.maxOutputBufferSize = __config.maxOutputBufferSize;
-			e.socket.outputOverflowPolicy = __config.outputOverflowPolicy;
+			socket.maxOutputBufferSize = __config.maxOutputBufferSize;
+			socket.outputOverflowPolicy = __config.outputOverflowPolicy;
 		}
 
 		// Its writer made here, so a body it pumps out reaches the sweep.
-		var handler:HTTPRequestHandler = new HTTPRequestHandler(e.socket, __config, php, new HTTP1ResponseWriter(e.socket, __sweepHook));
-		__active.set(e.socket, handler);
+		var handler:HTTPRequestHandler = new HTTPRequestHandler(socket, __config, php, new HTTP1ResponseWriter(socket, __sweepHook));
+		__active.set(socket, handler);
 		__armReceiveSweep();
 
-		// A closure rather than the bare method: the response hook needs
-		// the handler for its per-request start stamp, and the event only
-		// carries the status.
-		handler.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, e -> this_onResponse(e, handler));
+		// Told each response directly, as the handler's hook: it listened for
+		// the status event, which made one for every response.
+		handler.__onResponded = __responseHook;
 
-		e.socket.addEventListener("close", (_) -> cleanupSocket(e.socket));
-		e.socket.addEventListener("error", (_) -> cleanupSocket(e.socket));
+		socket.addEventListener("close", (_) -> cleanupSocket(socket));
+		socket.addEventListener("error", (_) -> cleanupSocket(socket));
 
 		// Fed last, so the handler is fully wired before the request it was
 		// chosen for reaches it.
@@ -771,8 +771,8 @@ class HTTPServer extends ServerSocket {
 		}
 	}
 
-	private function this_onResponse(e:HTTPStatusEvent, handler:HTTPRequestHandler):Void {
-		__recordResponse(e);
+	private function this_onResponse(handler:HTTPRequestHandler, status:Int):Void {
+		__recordResponse(status);
 
 		// Observed per response, at response time. The old cleanup-time
 		// observation billed a request for the whole connection's life,
@@ -884,7 +884,7 @@ class HTTPServer extends ServerSocket {
 	}
 	#end
 
-	@:noCompletion private function __recordResponse(e:HTTPStatusEvent):Void {
+	@:noCompletion private function __recordResponse(status:Int):Void {
 		if (__requestsTotal == null) {
 			return;
 		}
@@ -896,7 +896,7 @@ class HTTPServer extends ServerSocket {
 		// Each class's counter is looked up once and kept. Looking it up per
 		// response built a label map, sorted it into a key and took the
 		// registry's lock, on top of the counter's own, for every response.
-		var index:Int = Std.int(e.status / 100);
+		var index:Int = Std.int(status / 100);
 		var counter:Null<crossbyte.metrics.Counter> = (index >= 0 && index < 10) ? __statusCounters[index] : null;
 		if (counter == null) {
 			counter = __config.metrics.counter(__requestsTotal.name, ["status" => index + "xx"]);
