@@ -25,6 +25,10 @@ class HTTPStreamingTest extends utest.Test {
 	private static inline var HELD_PIECES:Int = 48;
 	private static inline var HELD_CAP:Int = 32 * 1024 * 1024;
 
+	// What the last __serveHeld saw while it waited, for a precondition that
+	// fails: whether the server answered at all, and what it held.
+	private static var __heldSaw:String = "";
+
 	public function testLargeFileStreamsWithBoundedBuffer(async:Async):Void {
 		__serveFixture(async, LARGE_SIZE, "GET /large.bin HTTP/1.1\r\nHost: localhost\r\n\r\n", function(result):Void {
 			Assert.equals(200, result.status);
@@ -341,7 +345,7 @@ class HTTPStreamingTest extends utest.Test {
 				var open:Int = server.activeConnections;
 				try client.close() catch (_:Dynamic) {}
 				try server.close() catch (_:Dynamic) {}
-				Assert.isTrue(parked, "the responses never stalled, so this shows nothing");
+				Assert.isTrue(parked, "the responses never stalled, so this shows nothing" + __heldSaw);
 				Assert.equals(0, open, "responses their client took none of were held with both timeouts off");
 				async.done();
 			});
@@ -362,7 +366,7 @@ class HTTPStreamingTest extends utest.Test {
 				__readRaw(client, false, function(whole:Int, closed:Bool):Void {
 					try client.close() catch (_:Dynamic) {}
 					try server.close() catch (_:Dynamic) {}
-					Assert.isTrue(parked, "the responses never waited on their client, so this shows nothing");
+					Assert.isTrue(parked, "the responses never waited on their client, so this shows nothing" + __heldSaw);
 					Assert.equals(HELD_PIECES, whole, "the responses were cut off");
 					async.done();
 				});
@@ -380,7 +384,7 @@ class HTTPStreamingTest extends utest.Test {
 			__readRaw(client, true, function(whole:Int, closed:Bool):Void {
 				try client.close() catch (_:Dynamic) {}
 				try server.close() catch (_:Dynamic) {}
-				Assert.isTrue(parked, "the responses never waited on their client, so this shows nothing");
+				Assert.isTrue(parked, "the responses never waited on their client, so this shows nothing" + __heldSaw);
 				Assert.equals(HELD_PIECES, whole, "the responses were cut off by the close");
 				Assert.isTrue(closed, "the connection was not closed after the response");
 				async.done();
@@ -400,7 +404,7 @@ class HTTPStreamingTest extends utest.Test {
 				HTTPTestSupport.pumpWallUntilAsync(() -> drained, 3.0, function(_):Void {
 					try client.close() catch (_:Dynamic) {}
 					try server.close() catch (_:Dynamic) {}
-					Assert.isTrue(parked, "the responses never waited on their client, so this shows nothing");
+					Assert.isTrue(parked, "the responses never waited on their client, so this shows nothing" + __heldSaw);
 					Assert.equals(HELD_PIECES, whole, "the responses were cut off by the drain");
 					Assert.isTrue(closed, "the drain did not close the connection");
 					Assert.isTrue(drained, "the drain did not finish once the responses had gone");
@@ -450,10 +454,17 @@ class HTTPStreamingTest extends utest.Test {
 
 		var pending:Int = -1;
 		var still:Int = 0;
+		var samples:Int = 0;
+		var started:Float = haxe.Timer.stamp();
+		var handled:Float = -1;
 		HTTPTestSupport.pumpWallUntilAsync(function():Bool {
 			if (handler == null) {
 				return false;
 			}
+			if (handled < 0) {
+				handled = haxe.Timer.stamp() - started;
+			}
+			samples++;
 			var now:Int = handler.__origin.outputBufferLength;
 			if (now > 0 && now == pending) {
 				still++;
@@ -462,7 +473,11 @@ class HTTPStreamingTest extends utest.Test {
 				pending = now;
 			}
 			return still >= 50;
-		}, 10.0, parked -> then(server, client, parked));
+		}, 10.0, function(parked:Bool):Void {
+			__heldSaw = " (first request handled after " + (handled < 0 ? "never" : Std.string(Math.round(handled * 1000)) + " ms")
+				+ "; " + samples + " samples, last held " + pending + " bytes, " + still + " unchanged)";
+			then(server, client, parked);
+		});
 	}
 
 	/**
