@@ -37,6 +37,7 @@ import crossbyte._internal.php.PHPResponse;
 import crossbyte._internal.php.PHPTimeout;
 import crossbyte._internal.http.Http;
 import crossbyte._internal.http.RewriteEngine;
+import crossbyte._internal.http.FileFacts;
 import crossbyte._internal.http.HTTP1ResponseWriter;
 import crossbyte._internal.http.HTTPResponseWriter;
 
@@ -153,6 +154,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 	// made and dispatched an event for every response whether or not anyone
 	// else listened, and under HTTP/2 a listener and its closure per stream.
 	@:noCompletion private var __onResponded:Null<(HTTPRequestHandler, Int) -> Void> = null;
+	// What the resolver found at a request's own path; see RewriteEngine.decide.
+	@:noCompletion private final __seen:FileSeen = new FileSeen();
 	@:noCompletion private var __scanA:Int = -1;
 	@:noCompletion private var __scanB:Int = -1;
 	@:noCompletion private var __scanC:Int = -1;
@@ -1239,7 +1242,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		var decision:Decision = RewriteEngine.decide(__config, __requestPath, __queryString, __method, __headers);
+		__seen.path = null;
+		var decision:Decision = RewriteEngine.decide(__config, __requestPath, __queryString, __method, __headers, __seen);
 
 		// A path the configuration keeps back is answered as one that is not
 		// there. Asked of the path a file would be served under, so a rewrite
@@ -1253,7 +1257,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		__filePath = __nativePathFor(__requestPath);
-		var target:Null<String> = decision != null ? __nativePathFor(served) : __filePath;
+		var target:Null<String> = (decision != null && served != __requestPath) ? __nativePathFor(served) : __filePath;
 		if (__filePath == null || target == null) {
 			__sendNotFound();
 			return;
@@ -1273,7 +1277,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 				// served.
 				__handlePost(target);
 			} else if (decision.isStatic) {
-				__serveFile(target, __method == "HEAD");
+				__serveFile(target, __method == "HEAD", decision.facts);
 			} else {
 				__sendMethodNotAllowed();
 			}
@@ -1283,7 +1287,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (__method == "POST") {
 			__handlePost(__filePath);
 		} else {
-			__serveFile(__filePath, __method == "HEAD");
+			// What the resolver found at this path, when it looked: nothing,
+			// usually, which is answered without asking again.
+			__serveFile(__filePath, __method == "HEAD", __seen.path == __requestPath ? __seen.facts : null);
 		}
 	}
 
@@ -1368,7 +1374,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return file.nativePath != path;
 	}
 
-	@:noCompletion private function __serveFile(filePath:String, headOnly:Bool = false):Void {
+	/**
+		@param facts What is at `filePath`, found already (`FileFacts`), or
+		       null to ask here. Asked once, where it was asked seven times:
+		       the resolver's exists and isDirectory, then `File`'s exists,
+		       isDirectory (exists again, then the type), size and
+		       modification date.
+	**/
+	@:noCompletion private function __serveFile(filePath:String, headOnly:Bool = false, ?facts:FileFacts):Void {
 		var file:File = new File(filePath);
 		if (__rewrittenByFile(file, filePath)) {
 			__sendNotFound();
@@ -1380,14 +1393,24 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		if (!file.exists) {
+		// Null where only `File` can say -- the targets without one call for
+		// it, or a file too large to describe -- and asked of `File` below.
+		var known:Null<FileFacts> = null;
+		if (FileFacts.FAST) {
+			known = facts != null ? facts : FileFacts.of(file.nativePath);
+			if (!known.known) {
+				known = null;
+			}
+		}
+
+		if (known != null ? !known.exists : !file.exists) {
 			// Keeps the connection: a routine 404 -- a page fetching a
 			// missing favicon -- must not cost the client a new handshake.
 			__sendNotFound();
 			return;
 		}
 
-		if (file.isDirectory) {
+		if (known != null ? known.directory : file.isDirectory) {
 			var indexFile:String = __findIndexFile(file);
 			if (indexFile != null) {
 				__serveFile(indexFile, headOnly);
@@ -1431,13 +1454,23 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// catch-all, and on HTTP/2 a reset stream. It replaces this handler's
 		// own check, an open, seek and read of every file it served.
 		var total:Int;
-		try {
-			total = file.size;
-		} catch (error:crossbyte.errors.IOError) {
-			// Its message says which: too large, or not readable at all.
-			Logger.error('Refusing to serve ${file.nativePath}: ${error.message}');
-			__sendErrorResponse(500, "Internal Server Error");
-			return;
+		if (known != null) {
+			if (known.size > 2147483647.0) {
+				// As File.size refuses one.
+				Logger.error('Refusing to serve ${file.nativePath}: it is larger than 2 GB, which File.size, an Int, cannot state.');
+				__sendErrorResponse(500, "Internal Server Error");
+				return;
+			}
+			total = Std.int(known.size);
+		} else {
+			try {
+				total = file.size;
+			} catch (error:crossbyte.errors.IOError) {
+				// Its message says which: too large, or not readable at all.
+				Logger.error('Refusing to serve ${file.nativePath}: ${error.message}');
+				__sendErrorResponse(500, "Internal Server Error");
+				return;
+			}
 		}
 
 		if (total < 0) {
@@ -1446,7 +1479,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		var lastModifiedTime:Float = file.modificationDate.getTime();
+		var lastModifiedTime:Float = known != null ? known.modified : file.modificationDate.getTime();
 		var lastModHeader:URLRequestHeader = new URLRequestHeader("Last-Modified", __toHttpDate(lastModifiedTime));
 		var mimeType:String = __getMimeType(file.nativePath);
 
@@ -1518,8 +1551,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 					return;
 				}
 
-				file.load();
-				__dispatchResponseBytes(200, "OK", baseHeaders, mimeType, file.data, false);
+				__dispatchResponseBytes(200, "OK", baseHeaders, mimeType, __keptFile(file, total, lastModifiedTime), false);
 			}
 		}
 	}
@@ -1650,10 +1682,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 			if (sibling == null) {
 				continue;
 			}
-			var size:Int = -1;
-			try {
-				size = sibling.size;
-			} catch (_:Dynamic) {}
+			var size:Int = __siblingSize;
+			if (size < 0) {
+				try {
+					size = sibling.size;
+				} catch (_:Dynamic) {}
+			}
 			if (size < 0) {
 				continue;
 			}
@@ -1680,6 +1714,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		server may send and it is not older than the file; null otherwise. The
 		blacklist and whitelist hold for it as for any file.
 	**/
+	// The size __precompressedSibling found, or -1 to ask the File.
+	@:noCompletion private var __siblingSize:Int = -1;
+
 	@:noCompletion private function __precompressedSibling(file:File, algorithm:CompressionAlgorithm, modified:Float):Null<File> {
 		var suffix:Null<String> = switch (algorithm) {
 			case CompressionAlgorithm.BROTLI: ".br";
@@ -1693,6 +1730,19 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var path:String = file.nativePath + suffix;
 		if (__keptBack(path)) {
 			return null;
+		}
+
+		// One call, its size with it (see FileFacts): it was exists and
+		// isDirectory, then the File's modification date and size. A sibling
+		// too large to describe in one is as good as none.
+		__siblingSize = -1;
+		if (FileFacts.FAST) {
+			var facts:FileFacts = FileFacts.of(path, false);
+			if (!facts.servable || facts.modified < modified || facts.size > 2147483647.0) {
+				return null;
+			}
+			__siblingSize = Std.int(facts.size);
+			return new File(path);
 		}
 
 		try {
@@ -2293,6 +2343,32 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__finishResponse();
 	}
 
+
+	/**
+		`file`'s bytes, `total` of them, last modified at `modified`: from
+		`HTTPServerConfig.fileCacheSize`'s kept files while the file is as it
+		was, and read and kept otherwise. Not kept: a file modified in the last
+		two seconds (see `fileCacheSize`) or larger than streaming starts at.
+
+		A kept body is shared, read by every response it answers and changed
+		by none; each gets a ByteArray of its own over it.
+	**/
+	@:noCompletion private function __keptFile(file:File, total:Int, modified:Float):ByteArray {
+		var kept:crossbyte._internal.http.KeptBodies = @:privateAccess __config.__keptFiles;
+		// time of day: a file's modification time is one.
+		var settled:Bool = kept.budget > 0 && total <= STREAM_THRESHOLD && modified < (Sys.time() - 2) * 1000;
+		if (settled) {
+			var body:Null<haxe.io.Bytes> = kept.get(0, file.nativePath, total, modified);
+			if (body != null) {
+				return ByteArrayData.fromBytes(body);
+			}
+		}
+		file.load();
+		if (settled && file.data.length == total) {
+			kept.put(0, file.nativePath, total, modified, file.data);
+		}
+		return file.data;
+	}
 
 	@:noCompletion private function __findIndexFile(directory:File):Null<String> {
 		for (index in __config.directoryIndex) {
@@ -3477,7 +3553,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __getMimeType(filePath:String):String {
-		final ext = filePath.split('.').pop().toLowerCase();
+		var dot:Int = filePath.lastIndexOf(".");
+		final ext = HttpSyntax.lowerAscii(dot < 0 ? filePath : filePath.substr(dot + 1));
 		var mimeType:String = switch (ext) {
 			case "html", "htm": "text/html; charset=utf-8";
 			case "css": "text/css; charset=utf-8";
@@ -3604,8 +3681,18 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return __isWithinRoot(root, full) ? full : null;
 	}
 
+	// The root's normal form, kept with the root it was made from: one object,
+	// so a thread reading it sees a pair that belongs together. It was made
+	// again for every path, twice a request.
+	@:noCompletion private static var __containedRoot:Null<ContainedRoot> = null;
+
 	@:noCompletion private static function __isWithinRoot(rootPath:String, fullPath:String):Bool {
-		var rootNorm:String = __normalizeContainmentPath(rootPath);
+		var kept:Null<ContainedRoot> = __containedRoot;
+		if (kept == null || kept.root != rootPath) {
+			kept = new ContainedRoot(rootPath, __normalizeContainmentPath(rootPath));
+			__containedRoot = kept;
+		}
+		var rootNorm:String = kept.normalized;
 		var fullNorm:String = __normalizeContainmentPath(fullPath);
 		if (fullNorm == rootNorm) {
 			return true;
@@ -4656,6 +4743,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return buf;
 		}
 		return buf + safeName + ": " + __sanitizeHeaderValue(value) + "\r\n";
+	}
+}
+
+/** A document root and its normal form for the containment check. */
+private final class ContainedRoot {
+	public final root:String;
+	public final normalized:String;
+
+	public function new(root:String, normalized:String) {
+		this.root = root;
+		this.normalized = normalized;
 	}
 }
 
