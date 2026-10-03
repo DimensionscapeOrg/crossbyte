@@ -249,12 +249,13 @@ class ServerSocket extends EventDispatcher {
 		`handshakeFailures`, `pendingHandshakeCount()` and the counts of the
 		servers built on this one are the sums across them.
 
-		On the jvm, hl and neko, as natively, each runtime is a thread of its
-		own and they run at once. On the interpreter they take turns, so it
-		serves correctly and no faster. On Node every runtime shares the one
-		thread there is, so there is nothing to spread over: setting this
-		throws `IllegalOperationError`, and several processes -- Node's
-		`cluster` -- are the way to use more cores there.
+		On the jvm and hl, as natively, each runtime is a thread of its own
+		and they run at once. neko's do too, but contend for its allocator,
+		so a server there gains little past two. On the interpreter they
+		take turns, so it serves correctly and no faster. On Node every
+		runtime shares the one thread there is, so there is nothing to spread
+		over: setting this throws `IllegalOperationError`, and several
+		processes -- Node's `cluster` -- are the way to use more cores there.
 
 		@throws ArgumentError When the list holds `null`, or a runtime twice.
 		@throws IllegalOperationError When the server is already listening,

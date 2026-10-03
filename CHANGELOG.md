@@ -252,8 +252,9 @@ entry below says how:
   for the server as a whole. On Linux, `reusePort` gives each runtime a
   listener of its own on the port instead (`SO_REUSEPORT`), the kernel
   sharing connections out; refused on every other system. Natively, on the
-  jvm, hl, neko and the interpreter (where the runtimes take turns); on
-  Node, whose runtimes share one thread, refused.
+  jvm, hl, neko (whose threads contend for its allocator) and the
+  interpreter (where the runtimes take turns); on Node, whose runtimes share
+  one thread, refused.
 - `ServerWebSocket` takes `runtimes`, `runtimeCount`, `selectRuntime` and
   `reusePort` too: each session's TLS handshake, upgrade, messages and close
   run on the runtime it was handed to, and the `upgrade` hook is asked

@@ -247,10 +247,13 @@ itself. macOS and the BSDs take the option without sharing anything out, and
 Windows has nothing like it; setting it there throws.
 
 **Where it works.** Natively and on the jvm each runtime is a thread and they
-run at once. hl and neko run them on threads too. On the interpreter the
-runtimes take turns, so a spread server is served correctly and no faster.
-On Node every runtime shares one thread, so a spread server is refused; run
-several processes there (Node's `cluster`).
+run at once. neko's threads run at once too but contend for its allocator:
+the server above, on neko, answered 1.4 times as many requests on two
+runtimes as on one, and no more on four. hl runs them on threads as well. On
+the interpreter the runtimes take turns -- two busy threads take twice as
+long as one -- so a spread server is served correctly and no faster. On Node
+every runtime shares one thread, so a spread server is refused; run several
+processes there (Node's `cluster`).
 
 **When several processes are better.** Every runtime in a process shares one
 garbage collector, and a collection stops all of them at once: at high
