@@ -254,6 +254,18 @@ entry below says how:
   `SchemaMigrator.MigrationReport`, are classes: object literals with their
   fields still make them, but a value built as another anonymous structure
   no longer passes for one.
+- MongoDB options are classes: an options object built as an anonymous
+  structure in a variable, parsed from JSON, or shared between `find` and
+  `count`, has to be written as a literal at the call or copied into the
+  class (`var o:MongoFindOptions = {limit: 5}`). A `hint` is a name, a
+  `BsonDocument` or an object of keys -- not a number; a `collation` is a
+  literal of `MongoCollation`'s fields with `locale`, or a
+  `MongoCollation`, not a `BsonDocument`; a write concern's `w` is an
+  `Int` or a `String`. Code that built a `MongoWriteError` or an upserted
+  entry as an anonymous object builds it as a literal of the class, and
+  cannot assign its fields; code that made a `MongoCursor` or an
+  `ExtendedJsonParser` itself uses `MongoConnection` and
+  `ExtendedJson.parse`.
 
 ### Added
 - `SQLRow` and `executeEach` on `SQLiteStatement`, `MySQLStatement` and
@@ -1470,6 +1482,42 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- Encoding BSON asks each value what it is once -- on hxcpp its own type
+  code -- rather than through a chain of up to six `Std.isOfType` tests
+  for a number and seventeen, with a class name compared as text, for a
+  nested document. A 12-field document encodes 17-28% faster natively, and
+  a document for an insert 14-29%; the bytes are the same on every target.
+- On hxcpp a document the MongoDB driver or `Bson.decode` reads is made
+  with fixed slots, as an object literal is, once its shape -- its field
+  names -- has been met before at its depth, rather than with every field
+  in a hash map allocated beside it. A 101-document reply decodes 4-15%
+  faster, reading its fields 13-22% faster, each document holds 25% less
+  memory, and a find of 101 documents from a local server took 35-44%
+  less CPU. Documents of shapes never seen twice, of more than 64 fields
+  or with names over 32 bytes are made as before, so a server sending
+  ever-new shapes costs no more than it did.
+- The MongoDB driver writes its own command fields -- the command's name,
+  write concern, update and delete statements, cursor ids -- straight into
+  the message, typed, rather than boxing them or building a
+  `BsonDocument` per operation to be encoded again; `findOne` no longer
+  copies its options; a reply's numbers are typed with one test each;
+  update and delete collect write errors once, and only when there are
+  any; the server's `hello` is read once. None of it shows through a
+  loopback round trip's noise.
+- MongoDB's option bags -- `MongoFindOptions`, `MongoInsertOptions`,
+  `MongoUpdateOptions`, `MongoDeleteOptions`, `MongoAggregateOptions`,
+  `MongoCountOptions` -- and `MongoIndex` are classes (`@:structInit`),
+  every field optional as before, so an object literal at the call still
+  compiles and each option is read directly rather than by name. `hint` is
+  a `MongoHint`: an index's name, a `BsonDocument` of its keys, or an
+  object of one field, checked when it is made; `collation` is a
+  `MongoCollation` with MongoDB's collation fields, `locale` required,
+  written in MongoDB's order; a write concern's `w` is a `MongoW`, a count
+  or a tag. `MongoWriteError` and the entries of `MongoWriteResult.upserted`
+  (`MongoUpserted`) are classes with final fields.
+- `ExtendedJsonParser` is private to `ExtendedJson`, whose `parse` is its
+  only door, and `MongoCursor`'s constructor is private to
+  `MongoConnection`, which makes every cursor.
 - Inflating -- a compressed WebSocket message, a request body sent with a
   `Content-Encoding`, a compressed response to the native HTTP client,
   `ByteArray.uncompress` -- goes through zlib natively (hxcpp's own), on
