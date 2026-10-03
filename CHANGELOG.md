@@ -254,6 +254,24 @@ entry below says how:
   sharing connections out; refused on every other system. Natively, on the
   jvm, hl, neko and the interpreter (where the runtimes take turns); on
   Node, whose runtimes share one thread, refused.
+- `ServerWebSocket` takes `runtimes`, `runtimeCount`, `selectRuntime` and
+  `reusePort` too: each session's TLS handshake, upgrade, messages and close
+  run on the runtime it was handed to, and the `upgrade` hook is asked
+  there. `maxPendingHandshakes`, `pendingHandshakeCount()`,
+  `handshakeFailures`, `clientCount` and the published metrics count every
+  runtime's sessions; `drain()` sends each runtime's sessions their close
+  frame there and finishes once all have gone, exiting the runtimes
+  `runtimeCount` made; `close()` and `stopAccepting()` drop what is still
+  upgrading on every runtime.
+- `HTTPServerConfig.runtimes`, `runtimeCount` and `reusePort` spread an
+  `HTTPServer` the same way: each connection is served on its runtime, its
+  TLS handshake and its requests, HTTP/1.1 and HTTP/2, and the middleware,
+  routes and hooks run there, several at once, `HTTPServerConfig.runtimes`
+  says what that asks of them. `maxConnections` counts every runtime's
+  connections together; `rateLimiter` is given a lock as the server starts,
+  so one budget per client holds across them; the metrics count them all;
+  with PHP each runtime dials the backend with a bridge of its own; and
+  `drain()` drains every runtime's connections, finishing once each has.
 - `HTTPServerConfig.http2MaxRequestBodyBuffer`: what one HTTP/2 connection
   holds of request bodies at once, across all its streams, 4 MB
   (`DEFAULT_HTTP2_REQUEST_BODY_BUFFER`) unless changed, `0` for no limit,
@@ -2430,6 +2448,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `HTTPServer.drain()` called from another thread is handed to the
+  server's runtime, as `ServerWebSocket.drain()` already was, and finishes
+  there. It ran on the calling thread: it closed the runtime's connections
+  and put its wait on the runtime's tick from there, and with nothing to
+  wait for it called `onComplete` there, where the doc says the runtime's
+  thread.
 - A runtime woken from another thread as it exits no longer writes to a
   closed socket. Every hand-off wakes a POLL runtime by writing a byte to
   a socket it polls, a `post`, an `exit()`, a parent exiting its

@@ -26,6 +26,9 @@ import crossbyte.events.IOErrorEvent;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.net.Socket as CBSocket;
 import crossbyte.net._internal.RuntimeHandOff;
+#if (target.threaded && !js)
+import crossbyte.net._internal.ServerSpread;
+#end
 import crossbyte.io.ByteArray;
 #if !nodejs
 import sys.net.Host;
@@ -205,6 +208,17 @@ class ServerWebSocket extends ServerSocket {
 				peak = pending;
 			}
 		}
+		#if (target.threaded && !js)
+		// Spread: what each runtime last measured of its own sessions.
+		if (__spread != null) {
+			for (replica in __spread.replicas) {
+				var measured:Int = (cast replica : ServerWebSocket).__publishedMaxBuffer;
+				if (measured > peak) {
+					peak = measured;
+				}
+			}
+		}
+		#end
 		return peak;
 	}
 
@@ -213,8 +227,21 @@ class ServerWebSocket extends ServerSocket {
 		for (client in __clients) {
 			total += client.outputBufferLength;
 		}
+		#if (target.threaded && !js)
+		if (__spread != null) {
+			for (replica in __spread.replicas) {
+				total += (cast replica : ServerWebSocket).__publishedTotalBuffer;
+			}
+		}
+		#end
 		return total;
 	}
+
+	// On a replica: its sessions' unsent bytes as last measured, and when
+	// next to measure them; see __publishBufferStats.
+	@:noCompletion private var __publishedMaxBuffer:Int = 0;
+	@:noCompletion private var __publishedTotalBuffer:Int = 0;
+	@:noCompletion private var __bufferStatsDue:Float = 0.0;
 
 	@:noCompletion private var __webServerSocket:#if nodejs NodeServer #else FlexSocket #end;
 	#if nodejs
@@ -253,10 +280,13 @@ class ServerWebSocket extends ServerSocket {
 		// was installed, with verification left off as the constructor set
 		// it, so a server told to require client certificates let in a client
 		// that presented none, where Node asked and refused.
-		if (value != null) {
-			__webServerSocket.setCA(value.__native);
-		}
-		__webServerSocket.verifyCert = value != null;
+		__applyTls(function(socket:sys.net.Socket):Void {
+			var listener:FlexSocket = socket;
+			if (value != null) {
+				listener.setCA(value.__native);
+			}
+			listener.verifyCert = value != null;
+		});
 		#end
 
 		return certAuthority = value;
@@ -294,11 +324,24 @@ class ServerWebSocket extends ServerSocket {
 	/**
 		Client connections that have completed their handshake and not yet
 		closed. Maintained so `drain()` can shut them down deliberately.
+
+		On a server spread over `runtimes`, every runtime's together: each
+		keeps its own sessions, and this adds up what each has as it is
+		read, so a session that opened or closed on another thread a moment
+		ago may not be in it yet.
 	**/
 	public var clientCount(get, never):Int;
 
 	private function get_clientCount():Int {
-		return __clients.length;
+		var count:Int = __clients.length;
+		#if (target.threaded && !js)
+		if (__spread != null) {
+			for (replica in __spread.replicas) {
+				count += (cast replica : ServerWebSocket).__clients.length;
+			}
+		}
+		#end
+		return count;
 	}
 
 	/**
@@ -313,8 +356,20 @@ class ServerWebSocket extends ServerSocket {
 		counted in `handshakeFailures`, on a plain server too. One that
 		`upgrade` refused, or that `stopAccepting()`, `drain()` or `close()`
 		let go of, is not. Both used to stay at 0 on every `ServerWebSocket`.
+
+		On a server spread over `runtimes`, every runtime's together, with
+		those accepted and on their way to one.
 	**/
 	override public function pendingHandshakeCount():Int {
+		return super.pendingHandshakeCount();
+	}
+
+	/** Every session here is waited on for its upgrade, plain or secure. **/
+	@:noCompletion override private function __tracksHandshakes():Bool {
+		return true;
+	}
+
+	@:noCompletion override private function __localPendingCount():Int {
 		return __pendingUpgrades.length;
 	}
 
@@ -344,8 +399,10 @@ class ServerWebSocket extends ServerSocket {
 
 		// The server dispatches CONNECT to itself once a handshake
 		// completes, so it can observe its own connections without the
-		// WebSocket needing to know about a registry.
-		addEventListener(ServerSocketConnectEvent.CONNECT, __trackClient);
+		// WebSocket needing to know about a registry. Its own listener: on a
+		// server spread over runtimes it runs on each runtime's replica,
+		// which keeps that runtime's sessions.
+		__addOwnConnectListener(__trackClient);
 	}
 
 	/**
@@ -563,6 +620,15 @@ class ServerWebSocket extends ServerSocket {
 		// `cert`. See ServerSocket.__makeNodeServer, which this mirrors.
 		__webServerSocket = null;
 		#else
+		if (__front != null) {
+			// A replica, for one runtime of a spread server: it is handed its
+			// connections, so it opens no listener.
+			__webServerSocket = null;
+			__closed = false;
+			bound = false;
+			listening = false;
+			return;
+		}
 		__webServerSocket = new FlexSocket(secure);
 
 		if (secure) {
@@ -626,7 +692,7 @@ class ServerWebSocket extends ServerSocket {
 			bound = true;
 			#else
 			this.localAddress = localAddress;
-			__webServerSocket.bind(localAddress, localPort);
+			__bindListener(__webServerSocket, new Host(localAddress), localPort);
 
 			// Port 0 asks the operating system to choose. Report the port it
 			// actually assigned, matching ServerSocket: otherwise localPort
@@ -675,10 +741,19 @@ class ServerWebSocket extends ServerSocket {
 			return;
 		}
 
+		#if (target.threaded && !js)
+		if (__front != null) {
+			__stopReplica();
+			return;
+		}
+		#end
+
 		__detachTick();
 
 		try {
-			__webServerSocket.close();
+			if (__webServerSocket != null) {
+				__webServerSocket.close();
+			}
 		} catch (_:Dynamic) {
 			// Best-effort: the listener may already be gone.
 		}
@@ -687,6 +762,12 @@ class ServerWebSocket extends ServerSocket {
 		bound = false;
 		__listenerReleased = true;
 		__dropPendingUpgrades();
+		#if (target.threaded && !js)
+		// Each runtime drops the sessions still upgrading there.
+		if (__spread != null) {
+			__spread.stop();
+		}
+		#end
 	}
 
 	/**
@@ -746,6 +827,13 @@ class ServerWebSocket extends ServerSocket {
 
 		stopAccepting();
 
+		#if (target.threaded && !js)
+		if (__spread != null) {
+			__drainEachRuntime(timeoutSeconds, onComplete, closeCode);
+			return;
+		}
+		#end
+
 		var pending:Array<WebSocket> = __clients.copy();
 		for (client in pending) {
 			try {
@@ -787,10 +875,25 @@ class ServerWebSocket extends ServerSocket {
 			close();
 		} catch (_:Dynamic) {}
 
+		#if (target.threaded && !js)
+		// Runtimes made for this server have nothing left to serve.
+		if (__spread != null) {
+			__spread.exitOwned();
+		}
+		#end
+
 		if (onComplete != null) {
 			onComplete();
 		}
 	}
+
+	#if (target.threaded && !js)
+	/** A spread server's drain: each runtime drains its own sessions; see `__drainReplicas`. **/
+	@:noCompletion private function __drainEachRuntime(timeoutSeconds:Float, onComplete:Void->Void, closeCode:Int):Void {
+		__drainReplicas(timeoutSeconds, (replica, drained) -> (cast replica : ServerWebSocket).drain(timeoutSeconds, drained, closeCode),
+			() -> __finishDrain(onComplete));
+	}
+	#end
 
 	/**
 		Closes the socket and stops listening for connections, dropping any
@@ -808,6 +911,19 @@ class ServerWebSocket extends ServerSocket {
 		if (RuntimeHandOff.offThread(runtime) && runtime.post(__closeOnRuntime)) {
 			return;
 		}
+
+		#if (target.threaded && !js)
+		if (__front != null) {
+			// A replica: its share of the server stops, on its own runtime.
+			__stopReplica();
+			__closed = true;
+			return;
+		}
+		// Each runtime drops the sessions still upgrading there.
+		if (__spread != null) {
+			__spread.close();
+		}
+		#end
 
 		// stopAccepting() may already have released the listener as the
 		// first half of a graceful shutdown; closing again is not an error.
@@ -827,7 +943,9 @@ class ServerWebSocket extends ServerSocket {
 		// Before the listener, whose close can throw.
 		__dropPendingUpgrades();
 		try {
-			__webServerSocket.close();
+			if (__webServerSocket != null) {
+				__webServerSocket.close();
+			}
 		} catch (e:Dynamic) {
 			throw new CBError("The listening socket could not be closed: " + Std.string(e));
 		}
@@ -899,8 +1017,14 @@ class ServerWebSocket extends ServerSocket {
 		// Reaping an empty list costs one length check.
 		__attachTick();
 		#else
+		__checkSpread();
+		if (reusePort) {
+			__listenOnEachRuntime(backlog);
+			return;
+		}
 		__webServerSocket.listen(backlog);
 		listening = true;
+		__startSpread();
 		if (__hasListener) {
 			__attachTick();
 		}
@@ -951,6 +1075,11 @@ class ServerWebSocket extends ServerSocket {
 		// used afterwards: that shape mis-compiles (VerifyError) on the jvm target.
 		__reapStalledUpgrades();
 		__syncListenerWatch();
+		#if (target.threaded && !js)
+		if (__front != null && __metrics != null) {
+			__publishBufferStats();
+		}
+		#end
 	}
 
 	@:noCompletion override private function __onListenerReadable():Void {
@@ -980,6 +1109,16 @@ class ServerWebSocket extends ServerSocket {
 				continue;
 			}
 
+			#if (target.threaded && !js)
+			if (__spread != null) {
+				// Another runtime's from here: its TLS, its upgrade, its life.
+				var peer = __admittedPeer;
+				__admittedPeer = null;
+				__handOff(socket, peer);
+				continue;
+			}
+			#end
+
 			var accepted = __fromSockettoWebsocket(socket);
 
 			if (accepted != null) {
@@ -996,6 +1135,11 @@ class ServerWebSocket extends ServerSocket {
 
 	/** Its limit counts sessions still upgrading, TLS and HTTP together. **/
 	@:noCompletion override private function __handshakesFull():Bool {
+		#if (target.threaded && !js)
+		if (__spread != null || __shared != null) {
+			return __spreadFull();
+		}
+		#end
 		return maxPendingHandshakes >= 0 && __pendingUpgrades.length >= maxPendingHandshakes;
 	}
 
@@ -1010,10 +1154,16 @@ class ServerWebSocket extends ServerSocket {
 		noted on `this_onTick`.
 	**/
 	@:noCompletion private function __askAdmit(socket:FlexSocket):Bool {
+		__admittedPeer = null;
 		try {
 			// Null for a peer already gone; see ServerSocket.__fromSocket.
 			var peer = socket.peer();
-			return peer != null && admit(crossbyte._internal.net.IPv6.compress(peer.host.toString()), peer.port);
+			if (peer == null || !admit(crossbyte._internal.net.IPv6.compress(peer.host.toString()), peer.port)) {
+				return false;
+			}
+			// Kept for the hand-off to another runtime.
+			__admittedPeer = peer;
+			return true;
 		} catch (_:Dynamic) {
 			return false;
 		}
@@ -1065,6 +1215,95 @@ class ServerWebSocket extends ServerSocket {
 	@:noCompletion override private function __takeConnection():sys.net.Socket {
 		return __webServerSocket.accept();
 	}
+
+	/** A listener of this server's kind for one runtime, with `reusePort`. **/
+	@:noCompletion override private function __newListener():sys.net.Socket {
+		var listener:FlexSocket = new FlexSocket(secure);
+		if (secure) {
+			// As __init does; certAuthority, replayed below, may ask for more.
+			listener.verifyCert = false;
+		}
+		listener.setBlocking(false);
+		listener.setFastSend(true);
+		for (setting in __tlsReplay) {
+			setting(listener);
+		}
+		return listener;
+	}
+
+	@:noCompletion override private function __takeListener(listener:Null<sys.net.Socket>):Void {
+		__webServerSocket = listener;
+		bound = listener != null;
+	}
+
+	#if (target.threaded && !js)
+	@:noCompletion override private function __replicate():ServerSocket {
+		var replica:ServerWebSocket = new ServerWebSocket(secure);
+		var front:ServerWebSocket = this;
+		// The front's hook, as it stands when each request arrives: run on
+		// the runtime the session is on.
+		replica.upgrade = function(request:WebSocketRequest):Bool {
+			return front.upgrade(request);
+		};
+		replica.__takeSettings(this);
+		return replica;
+	}
+
+	/**
+		On a replica: the settings a session takes, as the front has them
+		now. Taken again as each session arrives, so a setting changed while
+		the server runs reaches the sessions after it, as on one runtime.
+	**/
+	@:noCompletion private function __takeSettings(front:ServerWebSocket):Void {
+		maxOutputBufferSize = front.maxOutputBufferSize;
+		pingInterval = front.pingInterval;
+		idleTimeout = front.idleTimeout;
+		perMessageDeflate = front.perMessageDeflate;
+		compressionThreshold = front.compressionThreshold;
+		handshakeTimeout = front.handshakeTimeout;
+		__metrics = front.__metrics;
+		__acceptedTotal = front.__acceptedTotal;
+		__closedTotal = front.__closedTotal;
+	}
+
+	/**
+		On a replica, on its runtime: a connection handed over becomes a
+		session of this runtime's, whose TLS handshake and upgrade run here.
+	**/
+	@:noCompletion override private function __adoptConnection(socket:sys.net.Socket, peer:{host:Host, port:Int}):Void {
+		__takeSettings(cast __front);
+		var accepted:WebSocket = __fromSockettoWebsocket(socket);
+		if (accepted != null) {
+			__pendingUpgrades.push({session: accepted, deadline: __upgradeDeadline(haxe.Timer.stamp())});
+		}
+		// Counted in flight as it was handed over; counted here now.
+		__publishPending(1);
+	}
+
+	@:noCompletion override private function __stopReplica():Void {
+		__dropPendingUpgrades();
+		__detachTick();
+		listening = false;
+		__releaseReplicaListener();
+		__publishPending();
+	}
+
+	/**
+		On a replica whose front publishes metrics: what its sessions hold
+		unsent, measured a few times a second on its own runtime, for the
+		front's gauges to add up. The front cannot walk another thread's
+		sessions.
+	**/
+	@:noCompletion private function __publishBufferStats():Void {
+		var now:Float = haxe.Timer.stamp();
+		if (now < __bufferStatsDue) {
+			return;
+		}
+		__bufferStatsDue = now + 0.25;
+		__publishedMaxBuffer = __maxOutputBuffer();
+		__publishedTotalBuffer = __totalOutputBuffer();
+	}
+	#end
 	#end
 
 	/**
@@ -1117,7 +1356,7 @@ class ServerWebSocket extends ServerSocket {
 		#if nodejs
 		__tlsSni.push({match: serverNameMatch, certificate: certificate, key: key});
 		#else
-		__webServerSocket.addSNICertificate(serverNameMatch, certificate.__native, key.__native);
+		__applyTls(socket -> (socket : FlexSocket).addSNICertificate(serverNameMatch, certificate.__native, key.__native));
 		#end
 		__hasCertificate = true;
 	}
@@ -1138,7 +1377,7 @@ class ServerWebSocket extends ServerSocket {
 		#if nodejs
 		__tlsAlpn = protocols;
 		#else
-		__webServerSocket.setALPN(protocols);
+		__applyTls(socket -> (socket : FlexSocket).setALPN(protocols));
 		#end
 	}
 
@@ -1162,7 +1401,7 @@ class ServerWebSocket extends ServerSocket {
 		__tlsCertificate = certificate;
 		__tlsKey = key;
 		#else
-		__webServerSocket.setCertificate(certificate.__native, key.__native);
+		__applyTls(socket -> (socket : FlexSocket).setCertificate(certificate.__native, key.__native));
 		#end
 		__hasCertificate = true;
 	}
