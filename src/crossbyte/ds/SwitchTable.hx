@@ -85,6 +85,28 @@ class SwitchTable {
 		// Jvm.toInt when any Int case exists), so emit an if-chain instead.
 		// Comparison and dispatch go through runtime helpers whose Dynamic
 		// parameters keep the backend on the general equality/call paths.
+		// A handler written as a function literal is made once, with the
+		// dispatcher, rather than each time its case is chosen: written into
+		// the dispatcher's body, every dispatch made a new closure of it.
+		var hoisted:Array<Expr> = [];
+		for (i in 0...handlers.length) {
+			switch (handlers[i].expr) {
+				case EFunction(_, _):
+					var name:String = "__switchHandler" + i;
+					hoisted.push(macro var $name = ${handlers[i]});
+					handlers[i] = macro $i{name};
+				default:
+			}
+		}
+		if (hasOtherwise) {
+			switch (otherwise.expr) {
+				case EFunction(_, _):
+					hoisted.push(macro var __switchOtherwise = ${otherwise});
+					otherwise = macro __switchOtherwise;
+				default:
+			}
+		}
+
 		var chain:Expr = hasOtherwise ? macro crossbyte.ds.SwitchTable.__callWithKey(${otherwise}, key, $i{"args"}) : macro crossbyte.ds.SwitchTable.__notFound(key);
 		var caseIndex:Int = keys.length - 1;
 		while (caseIndex >= 0) {
@@ -94,19 +116,110 @@ class SwitchTable {
 			caseIndex--;
 		}
 
+		// Keys all of one type -- every one an Int, or every one a String --
+		// are looked up typed first: a switch for literals, comparisons of
+		// that type for named constants. The chain above, a dynamic equality
+		// per case, cost 148 ns a dispatch of sixteen Int keys where a switch
+		// costs 8. A key of another type, or one no case names, still goes
+		// through the chain, so what matches and what reaches `otherwise` is
+		// what it always was; the jvm's mixed-key miscompile needs keys of
+		// both types, which never come here.
+		var typed:Null<Expr> = __typedLookup(keys, handlers);
+		var body:Expr = typed == null ? chain : macro {
+			var __switchDone:Bool = false;
+			${typed};
+			if (!__switchDone) {
+				${chain};
+			}
+		};
+
 		var funcArgs:Array<FunctionArg> = [
 			{name: "key", type: macro :Dynamic},
 			{name: "args", type: macro :haxe.Rest<Dynamic>, opt: false}
 		];
-		return {
+		var dispatcher:Expr = {
 			expr: EFunction(FAnonymous, {
 				args: funcArgs,
 				ret: macro :Void,
-				expr: chain
+				expr: body
 			}),
 			pos: Context.currentPos()
 		};
+		if (hoisted.length == 0) {
+			return dispatcher;
+		}
+		hoisted.push(dispatcher);
+		return macro $b{hoisted};
 	}
+
+	#if macro
+	/**
+		The typed lookup, when every key has one type: Int or String. Null
+		when they do not, or when a key cannot be typed here.
+	**/
+	private static function __typedLookup(keys:Array<Expr>, handlers:Array<Expr>):Null<Expr> {
+		var literals:Bool = true;
+		var kind:Null<String> = null;
+		for (key in keys) {
+			var keyKind:Null<String> = switch (key.expr) {
+				case EConst(CInt(_)): "Int";
+				case EConst(CString(_)): "String";
+				default:
+					literals = false;
+					try {
+						switch (haxe.macro.TypeTools.followWithAbstracts(Context.typeof(key))) {
+							case TAbstract(_.get() => {pack: [], name: "Int"}, _): "Int";
+							case TInst(_.get() => {pack: [], name: "String"}, _): "String";
+							default: null;
+						}
+					} catch (_:Dynamic) {
+						null;
+					}
+			}
+			if (keyKind == null || (kind != null && keyKind != kind)) {
+				return null;
+			}
+			kind = keyKind;
+		}
+		if (kind == null) {
+			return null;
+		}
+
+		var bodies:Array<Expr> = [
+			for (i in 0...keys.length)
+				macro {
+					__switchDone = true;
+					crossbyte.ds.SwitchTable.__call(${handlers[i]}, $i{"args"});
+				}
+		];
+		var subjectType:ComplexType = kind == "Int" ? macro :Int : macro :String;
+		var test:Expr = kind == "Int" ? macro Std.isOfType(key, Int) : macro Std.isOfType(key, String);
+
+		if (literals) {
+			var cases:Array<Case> = [for (i in 0...keys.length) {values: [keys[i]], expr: bodies[i]}];
+			var lookup:Expr = {expr: ESwitch(macro __switchKey, cases, macro {}), pos: Context.currentPos()};
+			return macro if (${test}) {
+				var __switchKey:$subjectType = key;
+				${lookup};
+			};
+		}
+
+		// Named constants: compared typed, in order, as the chain compares; as
+		// the underlying type, which an enum abstract's value may not convert
+		// to on its own.
+		var compared:Expr = macro {};
+		var i:Int = keys.length - 1;
+		while (i >= 0) {
+			var value:Expr = macro (cast ${keys[i]} : $subjectType);
+			compared = macro if (__switchKey == ${value}) ${bodies[i]} else ${compared};
+			i--;
+		}
+		return macro if (${test}) {
+			var __switchKey:$subjectType = key;
+			${compared};
+		};
+	}
+	#end
 
 	/**
 	 * Runtime key comparison for generated dispatchers. The Dynamic
