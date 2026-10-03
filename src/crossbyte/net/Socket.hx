@@ -1221,34 +1221,44 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				// TLS socket takes one record a write -- 16 KB -- so a single
 				// write a flush sent 16 KB a pass whatever room the kernel had,
 				// and left the rest to wait for the next.
+				//
+				// A full send buffer is -1 here, not an exception. It was thrown
+				// natively, caught and thrown again as Blocked, and caught again
+				// below: 6.2 us for every pass that found a slow peer's window
+				// still shut, where the refused send itself is a few hundred ns.
+				// A real failure still throws, to the catch below.
 				var pendingLength:Int = __output.length - __outputSent;
 				var bytesWritten:Int = 0;
-				try {
-					while (bytesWritten < pendingLength) {
-						var took:Int = __socket.output.writeBytes(__output, __outputSent + bytesWritten, pendingLength - bytesWritten);
-						if (took <= 0) {
-							break;
-						}
-						bytesWritten += took;
+				var refused:Bool = false;
+				while (bytesWritten < pendingLength) {
+					var took:Int = __tryWrite(__output, __outputSent + bytesWritten, pendingLength - bytesWritten);
+					if (took < 0) {
+						refused = true;
+						break;
 					}
-				} catch (e:Dynamic) {
-					// A block after some was taken is the kernel filling up:
-					// what was taken is kept and the rest waits. Anything else,
-					// or a block before anything was taken, is the flush's to
-					// handle below, as it always was.
-					if (bytesWritten == 0 || !(Std.isOfType(e, Error) && __isBlockedError(cast e))) {
-						throw e;
+					if (took == 0) {
+						break;
 					}
+					bytesWritten += took;
 				}
-				__retainPendingOutput(bytesWritten, pendingLength);
-				if (bytesWritten > 0) {
-					__bytesSent += bytesWritten;
-					__noteProgress();
+				if (refused && bytesWritten == 0) {
+					// Nothing taken: the retry waits for room in the writable
+					// queue, as the catch below arranges for the other targets.
+					flushFull = true;
+					__queueWrite();
+				} else {
+					// A refusal after some was taken is the kernel filling up:
+					// what was taken is kept and the rest waits.
+					__retainPendingOutput(bytesWritten, pendingLength);
+					if (bytesWritten > 0) {
+						__bytesSent += bytesWritten;
+						__noteProgress();
+					}
 				}
 				#end
 			} catch (e:Dynamic) {
 				var throwError = false;
-				if (Std.isOfType(e, Error) && __isBlockedError(cast e)) {
+				if (__isBlockedError(e)) {
 					flushFull = true;
 					// The same queue a partial write uses. This used to be
 					// Timer.delay(__tryFlush, 0): per-socket work routed
@@ -1633,6 +1643,25 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		__output.writeBytes(bytes, offset, length);
+		__queueWrite();
+	}
+
+	/**
+		Writes `length` bytes of `bytes` from `offset`, as `writeBytes` does,
+		from a plain `Bytes`: for CrossByte's own framers, which hold their
+		frames as `Bytes` and wrapped each in a new ByteArray to write it.
+		@throws IOError The socket is not open.
+		@throws RangeError The range is not within `bytes`.
+	**/
+	@:noCompletion public function __writeRawBytes(bytes:Bytes, offset:Int, length:Int):Void {
+		if (__socket == null) {
+			throw new IOError("Operation attempted on invalid socket.");
+		}
+		if (offset < 0 || length < 0 || offset > bytes.length || length > bytes.length - offset) {
+			throw new RangeError("The supplied index is out of bounds.");
+		}
+
+		@:privateAccess (__output : ByteArrayData).__writeRange(bytes, offset, length);
 		__queueWrite();
 	}
 
@@ -2584,7 +2613,16 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				var l:Int;
 
 				do {
-					l = __socket.input.readBytes(scratch, 0, scratch.length);
+					// Nothing waiting is -1 rather than an exception: the read
+					// that finds the socket dry ends every pass that fills the
+					// buffer, and every TLS pass that ends on a whole record.
+					l = __tryRead(scratch, 0, scratch.length);
+					if (l < 0) {
+						break;
+					}
+					if (l == 0) {
+						throw new Eof();
+					}
 
 					if (l > 0) {
 						__input.writeBytes(scratch, 0, l);
@@ -2727,6 +2765,29 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	#if !js
 	/**
+		The socket's read without an exception for "would block": -1 then, 0
+		at the end of the stream. Through the std override's own, except in
+		the macro context, where this class is typed against Haxe's std
+		socket and never runs.
+	**/
+	@:noCompletion private inline function __tryRead(buf:Bytes, pos:Int, len:Int):Int {
+		#if macro
+		return try __socket.input.readBytes(buf, pos, len) catch (_:Eof) 0;
+		#else
+		return @:privateAccess __socket.__tryRead(buf, pos, len);
+		#end
+	}
+
+	/** The socket's write as `__tryRead` reads: the bytes taken, or -1 for a full send buffer. **/
+	@:noCompletion private inline function __tryWrite(buf:Bytes, pos:Int, len:Int):Int {
+		#if macro
+		return __socket.output.writeBytes(buf, pos, len);
+		#else
+		return @:privateAccess __socket.__tryWrite(buf, pos, len);
+		#end
+	}
+
+	/**
 		Whether the attempt under way has run past `timeout`. A timeout of 0
 		or less is no deadline, as it was already on Node: natively it failed
 		every connect that took any time at all.
@@ -2802,7 +2863,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		that may block is recoverable; silently withheld payload is not.
 	**/
 	@:noCompletion private function __evalShouldKeepReading():Bool {
-		if (Std.isOfType(__socket, sys.ssl.Socket)) {
+		if (secure) {
 			return true;
 		}
 
@@ -3019,7 +3080,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	// against the socket it was read from, so a new connection, which is a
 	// new socket, reads it afresh; and only once connected, so an address
 	// asked for mid-connect is not the one kept.
-	@:noCompletion private var __peerOf:Dynamic = null;
+	@:noCompletion private var __peerOf:Null<SysSocket> = null;
 	@:noCompletion private var __peerAddress:String = null;
 	@:noCompletion private var __peerPort:Int = 0;
 
@@ -3058,21 +3119,24 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		return Std.isOfType(negotiated, String) ? negotiated : null;
 		#elseif cpp
 		// A plain TCP client reaches here too; sys.ssl.Socket extends
-		// sys.net.Socket, so the cast is only safe after the check.
-		return Std.isOfType(__socket, sys.ssl.Socket) ? AlpnSocket.negotiated(cast __socket) : null;
-		#elseif (java || jvm)
-		// Asked for dynamically rather than through the type. Naming
-		// JvmSslSocket here pulls its java.nio imports into the initialisation
-		// macro's context, where the java package is unreachable and the build
-		// fails on Buffer rather than on anything to do with ALPN. A plain
-		// client socket has no such method and answers null.
-		var holder:Dynamic = __socket;
-		var negotiated:Dynamic = try {
-			holder.getALPN();
+		// sys.net.Socket, so the cast is only safe for a secure one -- which
+		// `secure` says, without asking the socket's type each time.
+		return secure ? AlpnSocket.negotiated(cast __socket) : null;
+		#elseif ((java || jvm) && !macro)
+		// Through the type, kept from the macro context as
+		// registryHasBufferedInput is: naming JvmSslSocket pulls its java.nio
+		// imports into the initialisation macro's context, where the java
+		// package is unreachable. It was a dynamic call for that reason. A
+		// plain client socket is not one, and answers null.
+		var tls = Std.downcast(__socket, crossbyte._internal.socket._jvm.JvmSsl.JvmSslSocket);
+		if (tls == null) {
+			return null;
+		}
+		return try {
+			tls.getALPN();
 		} catch (e:Dynamic) {
 			null;
 		}
-		return Std.isOfType(negotiated, String) ? negotiated : null;
 		#else
 		return null;
 		#end

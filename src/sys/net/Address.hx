@@ -50,6 +50,8 @@ class Address {
 		// Neither target's Host has one, nor any other way to hold an IPv6
 		// address.
 		ipv6 = null;
+		#elseif (cpp || hxcpp)
+		ipv6 = @:privateAccess value.ipv6;
 		#else
 		ipv6 = Reflect.field(value, "ipv6");
 		#end
@@ -70,11 +72,20 @@ class Address {
 			raw.set(3, host & 0xFF);
 			ia = java.net.InetAddress.getByAddress(raw.getData());
 		}
+		// Through @:privateAccess, which the compiler checks, rather than
+		// untyped, which wrote an ipv6 field the jvm's Host does not have.
 		var resolved:Host = Type.createEmptyInstance(Host);
-		untyped resolved.ip = host;
-		untyped resolved.ipv6 = ipv6;
-		untyped resolved.host = ia.getHostAddress();
-		untyped resolved.wrapped = ia;
+		@:privateAccess resolved.ip = host;
+		@:privateAccess resolved.host = ia.getHostAddress();
+		@:privateAccess resolved.wrapped = ia;
+		return resolved;
+		#elseif (cpp || hxcpp)
+		// Per datagram from a new source. Checked by the compiler, where the
+		// untyped writes below are not.
+		var resolved:Host = Type.createEmptyInstance(Host);
+		@:privateAccess resolved.ip = host;
+		@:privateAccess resolved.ipv6 = ipv6;
+		@:privateAccess resolved.host = ipv6 == null ? NativeSocket.host_to_string(host) : NativeSocket.host_to_string_ipv6(ipv6);
 		return resolved;
 		#else
 		var resolved:Host = Type.createEmptyInstance(Host);

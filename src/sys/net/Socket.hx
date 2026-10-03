@@ -146,6 +146,38 @@ class Socket {
 	public var output(default, null):haxe.io.Output;
 	public var custom:Dynamic;
 
+	/**
+		Reads into `buf` without an exception for "would block": the bytes
+		read, -1 when nothing is waiting, 0 at the end of the stream; a
+		failure throws as `input.readBytes` does. For CrossByte's own read
+		loops. Here through `input`, the exception taken inside; the cpp and
+		jvm forms read without one.
+	**/
+	@:noCompletion private function __tryRead(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		try {
+			return input.readBytes(buf, pos, len);
+		} catch (_:haxe.io.Eof) {
+			return 0;
+		} catch (e:Dynamic) {
+			if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
+				return -1;
+			}
+			throw e;
+		}
+	}
+
+	/** Writes from `buf` as `__tryRead` reads: the bytes taken, or -1 for a full send buffer. **/
+	@:noCompletion private function __tryWrite(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		try {
+			return output.writeBytes(buf, pos, len);
+		} catch (e:Dynamic) {
+			if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
+				return -1;
+			}
+			throw e;
+		}
+	}
+
 	// socket_init is WSAStartup on Windows, and every call below fails
 	// without it -- @:keepInit keeps this even where nothing names the class.
 	static function __init__():Void {
@@ -500,6 +532,38 @@ class Socket {
 	public var output(default, null):haxe.io.Output;
 	public var custom:Dynamic;
 
+	/**
+		Reads into `buf` without an exception for "would block": the bytes
+		read, -1 when nothing is waiting, 0 at the end of the stream; a
+		failure throws as `input.readBytes` does. For CrossByte's own read
+		loops. Here through `input`, the exception taken inside; the cpp and
+		jvm forms read without one.
+	**/
+	@:noCompletion private function __tryRead(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		try {
+			return input.readBytes(buf, pos, len);
+		} catch (_:haxe.io.Eof) {
+			return 0;
+		} catch (e:Dynamic) {
+			if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
+				return -1;
+			}
+			throw e;
+		}
+	}
+
+	/** Writes from `buf` as `__tryRead` reads: the bytes taken, or -1 for a full send buffer. **/
+	@:noCompletion private function __tryWrite(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		try {
+			return output.writeBytes(buf, pos, len);
+		} catch (e:Dynamic) {
+			if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
+				return -1;
+			}
+			throw e;
+		}
+	}
+
 	public function new():Void {
 		init();
 	}
@@ -707,20 +771,28 @@ private class SocketInput extends haxe.io.Input {
 	}
 
 	public override function readBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
-		var r;
-		if (__s == null)
-			throw "Invalid handle";
-		try {
-			r = NativeSocket.socket_recv(__s, buf.getData(), pos, len);
-		} catch (e:Dynamic) {
-			if (e == "Blocking")
-				throw Blocked;
-			else
-				throw Custom(e);
-		}
+		var r:Int = tryReadBytes(buf, pos, len);
+		if (r < 0)
+			throw Blocked;
 		if (r == 0)
 			throw new haxe.io.Eof();
 		return r;
+	}
+
+	/**
+		`readBytes` without an exception for "would block": -1 when nothing is
+		waiting, 0 at the end of the stream. The native read used to throw for
+		it, and this caught that and threw `Blocked`: two exceptions, 4.3 us,
+		ending every pass that read a socket dry.
+	**/
+	public function tryReadBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		if (__s == null)
+			throw "Invalid handle";
+		return try {
+			NativeSocketAddress.tryRecv(__s, buf.getData(), pos, len);
+		} catch (e:Dynamic) {
+			throw Custom(e);
+		}
 	}
 
 	public override function close() {
@@ -751,12 +823,22 @@ private class SocketOutput extends haxe.io.Output {
 	}
 
 	public override function writeBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		var sent:Int = tryWriteBytes(buf, pos, len);
+		if (sent < 0)
+			throw Blocked;
+		return sent;
+	}
+
+	/**
+		`writeBytes` without an exception for a full send buffer: -1 then. A
+		peer that stopped reading used to cost two exceptions on every pass
+		that tried it again.
+	**/
+	public function tryWriteBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
 		return try {
-			NativeSocket.socket_send(__s, buf.getData(), pos, len);
+			NativeSocketAddress.trySend(__s, buf.getData(), pos, len);
 		} catch (e:Dynamic) {
-			if (e == "Blocking")
-				throw Blocked;
-			else if (e == "EOF")
+			if (e == "EOF")
 				throw new haxe.io.Eof();
 			else
 				throw Custom(e);
@@ -786,6 +868,57 @@ class Socket {
 
 	public function new():Void {
 		init();
+	}
+
+	/**
+		Reads into `buf` without an exception for "would block": the bytes
+		read, -1 when nothing is waiting, 0 at the end of the stream. A
+		failure throws as `input.readBytes` does. For CrossByte's own read
+		loops, which meet "would block" at the end of every pass.
+
+		A socket whose input is not this module's -- TLS, whose reads go
+		through its session -- is read through `input`, the exception taken
+		here; `crossbyte._internal.socket.AlpnSocket` reads its own without.
+	**/
+	@:noCompletion private function __tryRead(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		if (Std.isOfType(input, SocketInput)) {
+			return (cast input : SocketInput).tryReadBytes(buf, pos, len);
+		}
+		return __tryReadThrough(buf, pos, len);
+	}
+
+	/** Writes from `buf` as `__tryRead` reads: the bytes taken, or -1 for a full send buffer. **/
+	@:noCompletion private function __tryWrite(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		if (Std.isOfType(output, SocketOutput)) {
+			return (cast output : SocketOutput).tryWriteBytes(buf, pos, len);
+		}
+		return __tryWriteThrough(buf, pos, len);
+	}
+
+	@:noCompletion private function __tryReadThrough(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		try {
+			return input.readBytes(buf, pos, len);
+		} catch (_:haxe.io.Eof) {
+			return 0;
+		} catch (e:Dynamic) {
+			if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
+				return -1;
+			}
+			cpp.Lib.rethrow(e);
+			return 0;
+		}
+	}
+
+	@:noCompletion private function __tryWriteThrough(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		try {
+			return output.writeBytes(buf, pos, len);
+		} catch (e:Dynamic) {
+			if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
+				return -1;
+			}
+			cpp.Lib.rethrow(e);
+			return 0;
+		}
 	}
 
 	@:noCompletion function __createSocket(ipv6:Bool):Dynamic {
@@ -836,7 +969,7 @@ class Socket {
 	public function connect(host:Host, port:Int):Void {
 		try {
 			if (host.ip == 0 && host.host != "0.0.0.0") {
-				var ipv6:haxe.io.BytesData = Reflect.field(host, "ipv6");
+				var ipv6:haxe.io.BytesData = @:privateAccess host.ipv6;
 				if (ipv6 != null) {
 					close();
 					__s = __createSocket(true);
@@ -866,7 +999,7 @@ class Socket {
 
 	public function bind(host:Host, port:Int):Void {
 		if (host.ip == 0 && host.host != "0.0.0.0") {
-			var ipv6:haxe.io.BytesData = Reflect.field(host, "ipv6");
+			var ipv6:haxe.io.BytesData = @:privateAccess host.ipv6;
 			if (ipv6 != null) {
 				close();
 				__s = __createSocket(true);
@@ -888,7 +1021,7 @@ class Socket {
 	}
 
 	public function peer():{host:Host, port:Int} {
-		var a:Dynamic = NativeSocketAddress.peerInfo(__s);
+		var a:Array<Int> = NativeSocketAddress.peerInfo(__s);
 		if (a == null) {
 			return null;
 		}
@@ -896,7 +1029,7 @@ class Socket {
 	}
 
 	public function host():{host:Host, port:Int} {
-		var a:Dynamic = NativeSocketAddress.hostInfo(__s);
+		var a:Array<Int> = NativeSocketAddress.hostInfo(__s);
 		if (a == null) {
 			return null;
 		}
@@ -940,7 +1073,10 @@ class Socket {
 		};
 	}
 
-	private static function __hostFromNativeAddress(address:Dynamic):Host {
+	// The fields set through @:privateAccess rather than untyped, so the
+	// compiler checks they are there: untyped writes to a field that does
+	// not exist compile, and on some targets silently do nothing.
+	private static function __hostFromNativeAddress(address:Array<Int>):Host {
 		var host:Host = Type.createEmptyInstance(Host);
 
 		if (address.length > 2) {
@@ -949,14 +1085,14 @@ class Socket {
 				bytes.set(i, address[2 + i]);
 			}
 			var ipv6 = bytes.getData();
-			untyped host.ip = 0;
-			untyped host.ipv6 = ipv6;
-			untyped host.host = NativeSocket.host_to_string_ipv6(ipv6);
+			@:privateAccess host.ip = 0;
+			@:privateAccess host.ipv6 = ipv6;
+			@:privateAccess host.host = NativeSocket.host_to_string_ipv6(ipv6);
 		} else {
 			var ip:Int = address[0];
-			untyped host.ip = ip;
-			untyped host.ipv6 = null;
-			untyped host.host = NativeSocket.host_to_string(ip);
+			@:privateAccess host.ip = ip;
+			@:privateAccess host.ipv6 = null;
+			@:privateAccess host.host = NativeSocket.host_to_string(ip);
 		}
 
 		return host;
@@ -1384,6 +1520,38 @@ class Socket {
 	public var output(default, null):haxe.io.Output;
 	public var custom:Dynamic;
 
+	/**
+		Reads into `buf` without an exception for "would block": the bytes
+		read, -1 when nothing is waiting, 0 at the end of the stream; a
+		failure throws as `input.readBytes` does. For CrossByte's own read
+		loops. Here through `input`, the exception taken inside; the cpp and
+		jvm forms read without one.
+	**/
+	@:noCompletion private function __tryRead(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		try {
+			return input.readBytes(buf, pos, len);
+		} catch (_:haxe.io.Eof) {
+			return 0;
+		} catch (e:Dynamic) {
+			if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
+				return -1;
+			}
+			throw e;
+		}
+	}
+
+	/** Writes from `buf` as `__tryRead` reads: the bytes taken, or -1 for a full send buffer. **/
+	@:noCompletion private function __tryWrite(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		try {
+			return output.writeBytes(buf, pos, len);
+		} catch (e:Dynamic) {
+			if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
+				return -1;
+			}
+			throw e;
+		}
+	}
+
 	public var socket:NativeSocket;
 
 	public function new() {
@@ -1694,14 +1862,28 @@ private class SocketInput extends haxe.io.Input {
 	}
 
 	public override function readBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
-		if (channel == null)
-			throw "Invalid handle";
-
 		// Wrapped, not allocated. This used to allocate a buffer the size of the
 		// read and then copy every byte out of it into the caller's, on every
 		// read -- sixty-four kilobytes of each per chunk on the framework's own
 		// read path. The write side beside this has always wrapped; the two are
 		// now the same shape.
+		var n:Int = tryReadBytes(buf, pos, len);
+		if (n < 0)
+			throw Blocked;
+		if (n == 0)
+			throw new haxe.io.Eof();
+		return n;
+	}
+
+	/**
+		`readBytes` answering -1 for "would block" and 0 at the end of the
+		stream, without an exception: NIO says both by its return value, and
+		turning the first into a throw cost every read loop a 2.4 us exception
+		at the end of its pass.
+	**/
+	public function tryReadBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		if (channel == null)
+			throw "Invalid handle";
 		__awaitReadable();
 		var bb = ByteBuffer.wrap(buf.getData(), pos, len);
 		var n:Int = try {
@@ -1709,11 +1891,7 @@ private class SocketInput extends haxe.io.Input {
 		} catch (e:Dynamic) {
 			throw Custom(e);
 		}
-		if (n == 0)
-			throw Blocked;
-		if (n < 0)
-			throw new haxe.io.Eof();
-		return n;
+		return n == 0 ? -1 : (n < 0 ? 0 : n);
 	}
 
 	public override function close():Void {
@@ -1749,6 +1927,14 @@ private class SocketOutput extends haxe.io.Output {
 	}
 
 	public override function writeBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		var n:Int = tryWriteBytes(buf, pos, len);
+		if (n < 0)
+			throw Blocked;
+		return n;
+	}
+
+	/** `writeBytes` answering -1 for a full send buffer rather than throwing. **/
+	public function tryWriteBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
 		if (channel == null)
 			throw "Invalid handle";
 		var bb = ByteBuffer.wrap(buf.getData(), pos, len);
@@ -1757,9 +1943,7 @@ private class SocketOutput extends haxe.io.Output {
 		} catch (e:Dynamic) {
 			throw Custom(e);
 		}
-		if (n == 0)
-			throw Blocked;
-		return n;
+		return n == 0 ? -1 : n;
 	}
 
 	public override function close():Void {
@@ -1776,6 +1960,46 @@ class Socket {
 	public var input(default, null):haxe.io.Input;
 	public var output(default, null):haxe.io.Output;
 	public var custom:Dynamic;
+
+	/**
+		Reads into `buf` without an exception for "would block": the bytes
+		read, -1 when nothing is waiting, 0 at the end of the stream; a
+		failure throws as `input.readBytes` does. For CrossByte's own read
+		loops, which meet "would block" at the end of every pass. A socket
+		whose input is not this module's -- TLS -- is read through `input`.
+	**/
+	@:noCompletion private function __tryRead(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		var plain:SocketInput = Std.downcast(input, SocketInput);
+		if (plain != null) {
+			return plain.tryReadBytes(buf, pos, len);
+		}
+		try {
+			return input.readBytes(buf, pos, len);
+		} catch (_:haxe.io.Eof) {
+			return 0;
+		} catch (e:Dynamic) {
+			if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
+				return -1;
+			}
+			throw e;
+		}
+	}
+
+	/** Writes from `buf` as `__tryRead` reads: the bytes taken, or -1 for a full send buffer. **/
+	@:noCompletion private function __tryWrite(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		var plain:SocketOutput = Std.downcast(output, SocketOutput);
+		if (plain != null) {
+			return plain.tryWriteBytes(buf, pos, len);
+		}
+		try {
+			return output.writeBytes(buf, pos, len);
+		} catch (e:Dynamic) {
+			if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
+				return -1;
+			}
+			throw e;
+		}
+	}
 
 	// Holds either a SocketChannel (TCP) or a DatagramChannel (UDP) so that
 	// UdpSocket can reuse the registry/select() machinery. TCP-only members
@@ -1794,7 +2018,17 @@ class Socket {
 	// stopped. ServerSocket escaped it only by selecting before it accepts.
 	private var __blocking:Bool = true;
 
-	public function new():Void {
+	/**
+		A socket of its own channel; or, given `__accepted`, the socket
+		`accept` made for that one. Accepted sockets were made with
+		`Type.createEmptyInstance`, which on the jvm is a reflective
+		constructor lookup per connection.
+	**/
+	public function new(?__accepted:SocketChannel):Void {
+		if (__accepted != null) {
+			__init(__accepted);
+			return;
+		}
 		var ch = SocketChannel.open();
 		ch.configureBlocking(true);
 		this.channel = ch;
@@ -1849,7 +2083,7 @@ class Socket {
 		thread's is woken, and lets go on the select it returns from.
 	**/
 	@:noCompletion private static function __letGo(selector:Selector):Void {
-		var state:Null<SelectState> = cast __states.get();
+		var state:Null<SelectState> = __states.get();
 		try {
 			if (state != null && state.main == selector) {
 				selector.selectNow();
@@ -1954,9 +2188,7 @@ class Socket {
 		if (c == null)
 			throw Blocked;
 		c.configureBlocking(true);
-		var s:Socket = Type.createEmptyInstance(Socket);
-		s.__init(c);
-		return s;
+		return new Socket(c);
 	}
 
 	public function peer():{host:Host, port:Int} {
@@ -2082,7 +2314,7 @@ class Socket {
 		differently has its interest changed, and one no longer asked about
 		stops being watched the first time it turns up ready.
 	**/
-	@:noCompletion private static var __states:JThreadLocal = new JThreadLocal();
+	@:noCompletion private static var __states:JThreadLocal<SelectState> = new JThreadLocal();
 
 	// Which thread's select last asked about this socket, in which of its
 	// calls, and for what; see select.
@@ -2106,7 +2338,7 @@ class Socket {
 	@:noCompletion private var __lookRestore:Bool = false;
 
 	@:noCompletion private static function __state():SelectState {
-		var existing:Dynamic = __states.get();
+		var existing:Null<SelectState> = __states.get();
 
 		if (existing == null) {
 			var state:SelectState = new SelectState();
@@ -2240,7 +2472,7 @@ class Socket {
 		}
 		__selectArmed = -1;
 
-		var state:Null<SelectState> = cast __states.get();
+		var state:Null<SelectState> = __states.get();
 		if (state == null) {
 			return;
 		}
@@ -2660,12 +2892,12 @@ class Socket {
 	}
 }
 
-/** Haxe ships no extern for it, and only this module needs one. **/
+/** Haxe ships no extern for it. Typed by what it holds, as Java's is. **/
 @:native("java.lang.ThreadLocal")
-extern class JThreadLocal {
+extern class JThreadLocal<T> {
 	function new();
-	function get():Dynamic;
-	function set(value:Dynamic):Void;
+	function get():Null<T>;
+	function set(value:T):Void;
 }
 
 #else
@@ -2675,6 +2907,14 @@ class Socket {
 	public var input(default, null):haxe.io.Input;
 	public var output(default, null):haxe.io.Output;
 	public var custom:Dynamic;
+
+	@:noCompletion private function __tryRead(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
+	}
+
+	@:noCompletion private function __tryWrite(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
+	}
 
 	public function new() {
 		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
