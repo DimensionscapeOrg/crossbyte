@@ -86,9 +86,9 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 	public function writeHead(head:HTTPResponseHead):Void {
 		// One buffer, one string: `+=` made a new string of everything so far
 		// for every piece, some thirty a response.
-		var response:StringBuf = new StringBuf();
+		var response:HeadText = HeadText.begin();
 		response.add("HTTP/1.1 ");
-		response.add(head.statusCode);
+		response.addInt(head.statusCode);
 		response.add(" ");
 		response.add(head.statusMessage);
 		response.add(head.keepAlive ? KEEP_ALIVE_LINE : CLOSE_LINE);
@@ -109,12 +109,12 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 			response.add("Transfer-Encoding: chunked\r\n");
 		} else if (head.contentLength != null) {
 			response.add("Content-Length: ");
-			response.add(head.contentLength);
+			response.addInt(head.contentLength);
 			response.add("\r\n");
 		}
 
 		response.add("\r\n");
-		__socket.writeUTFBytes(response.toString());
+		__socket.writeUTFBytes(response.end());
 	}
 
 	public function writeBody(data:ByteArray, offset:Int, length:Int):Void {
@@ -155,5 +155,69 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 		if (__socket.connected) {
 			__socket.close();
 		}
+	}
+}
+
+/**
+	A response head's text as it is put together.
+
+	Natively an array of its pieces, kept from one head to the next and
+	joined once. A StringBuf there is an array of pieces of its own, which a
+	head grew seven times: 1.6 KB of the 3.6 KB an HTTP/1.1 GET allocated,
+	for a head of about 150 bytes. The array is one a thread, since a server
+	spread over runtimes writes heads on several at once, and nothing that
+	puts a head together can begin another before it ends.
+
+	Elsewhere a StringBuf, as before: the jvm's appends a number without
+	making a string of it, and gains nothing from the array.
+**/
+private abstract HeadText(#if cpp Array<String> #else StringBuf #end) {
+	#if cpp
+	private static final __pieces:sys.thread.Tls<Array<String>> = new sys.thread.Tls();
+	#end
+
+	private inline function new(text:#if cpp Array<String> #else StringBuf #end) {
+		this = text;
+	}
+
+	public static inline function begin():HeadText {
+		#if cpp
+		var pieces:Null<Array<String>> = __pieces.value;
+		if (pieces == null) {
+			pieces = [];
+			__pieces.value = pieces;
+		}
+		pieces.resize(0);
+		return new HeadText(pieces);
+		#else
+		return new HeadText(new StringBuf());
+		#end
+	}
+
+	public inline function add(piece:String):Void {
+		#if cpp
+		this.push(piece);
+		#else
+		this.add(piece);
+		#end
+	}
+
+	public inline function addInt(value:Int):Void {
+		#if cpp
+		this.push(Std.string(value));
+		#else
+		this.add(value);
+		#end
+	}
+
+	/** The text, the pieces let go of. **/
+	public inline function end():String {
+		#if cpp
+		var text:String = this.join("");
+		this.resize(0);
+		return text;
+		#else
+		return this.toString();
+		#end
 	}
 }
