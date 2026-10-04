@@ -443,6 +443,38 @@ class HTTPServerConfig {
 		half: the server's own time still has a limit.
 	**/
 	public var phpTimeout:Float;
+
+	/**
+		The most bytes a PHP script's response may take, its CGI header
+		block and its body together, as the script writes them, before the
+		server gives up on it and answers `502 Bad Gateway`. Defaults to
+		8 MiB; `0` or less removes the limit. Raise it for a script that
+		serves larger files, or serve those files as static ones.
+
+		Nothing bounded a response, which the server holds whole before it
+		answers, twice over for a moment as the body is taken from it,
+		so a script, or a backend that is not running PHP at all, chose how
+		much of the server's memory each request took.
+
+		The header block has limits of its own whatever this says: 64 KiB
+		and 100 lines, past which the response fails the same way.
+	**/
+	public var phpMaxResponseSize:Int = 8 * 1024 * 1024;
+
+	/**
+		How many requests a runtime has with its PHP backend at once, at
+		most, each holding a connection to it. Defaults to 64; `0` or less
+		removes the limit.
+
+		More wait their turn, in the order they came, each still under
+		`phpTimeout`: `504 Gateway Timeout` if it passes while waiting,
+		and past 1,024 waiting a request is refused at once: the PHP bridge
+		fails it as busy. Nothing bounded them: every request for a script
+		opened its own connection to the backend however many were already
+		waiting on it, and the `php-cgi -b` that `phpMode` 1 launches answers
+		one at a time.
+	**/
+	public var phpMaxExchanges:Int = 64;
 	public var corsAllowCredentials:Bool;
 	/**
 		Paths tried, in order, when resolving a request.

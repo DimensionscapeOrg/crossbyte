@@ -18,6 +18,22 @@ import haxe.io.Bytes;
  * only be exercised by standing up a real php-fpm.
  */
 class PHPExchange {
+	/**
+		Bytes a response may take by default, its CGI header block and body
+		together, as the script writes them, before the exchange fails: 8
+		MB. `HTTPServerConfig.phpMaxResponseSize` sets it.
+	**/
+	public static inline var DEFAULT_MAX_RESPONSE_SIZE:Int = 8 * 1024 * 1024;
+
+	/**
+		Bytes the CGI header block may take, up to the blank line ending it:
+		64 KB, the limit the server holds a request's header block to.
+	**/
+	public static inline var MAX_HEADER_BYTES:Int = 64 * 1024;
+
+	/** Lines the CGI header block may hold, `Status` among them. **/
+	public static inline var MAX_HEADER_FIELDS:Int = 100;
+
 	/** Resolved with the response, or rejected with why not. Exactly once. */
 	public final future:Future<PHPResponse> = new Future<PHPResponse>();
 
@@ -29,6 +45,9 @@ class PHPExchange {
 
 	private final timeoutSeconds:Float;
 
+	/** The most bytes the response may take; `0` or less for no limit. */
+	private final maxResponseSize:Int;
+
 	// Bytes that have arrived and not yet formed a whole record. FastCGI has no
 	// framing above the record header, so a partial record is normal and has to
 	// be carried until the rest of it turns up, which the blocking reader
@@ -38,19 +57,32 @@ class PHPExchange {
 	// FCGI_STDOUT content, accumulated across records.
 	private var stdout:ByteArray = new ByteArray();
 
+	// Where the blank line ending the header block starts in `stdout`, once
+	// it has arrived, and how far the search for it has looked.
+	private var headerEnd:Int = -1;
+	private var searchedTo:Int = 0;
+
 	private var finished:Bool = false;
 
-	public function new(timeoutSeconds:Float) {
+	public function new(timeoutSeconds:Float, maxResponseSize:Int = DEFAULT_MAX_RESPONSE_SIZE) {
 		this.timeoutSeconds = timeoutSeconds;
+		this.maxResponseSize = maxResponseSize;
 		this.deadline = timeoutSeconds > 0 ? haxe.Timer.stamp() + timeoutSeconds : 0;
 	}
 
 	/**
 	 * Feeds arriving bytes in, and returns `true` once `END_REQUEST` has landed
 	 * and the response is ready.
+	 *
+	 * A response past `maxResponseSize`, or whose header block runs past
+	 * `MAX_HEADER_BYTES` or `MAX_HEADER_FIELDS`, fails the exchange here, as it
+	 * arrives: this then returns false with `settled` set, and the caller lets
+	 * the connection go. Nothing bounded a response, so a script, or a
+	 * backend not running PHP at all, chose how much of the server's memory
+	 * it took.
 	 */
 	public function receive(chunk:Bytes, length:Int):Bool {
-		if (finished || length <= 0) {
+		if (finished || settled || length <= 0) {
 			return finished;
 		}
 
@@ -58,7 +90,16 @@ class PHPExchange {
 		pending.writeBytes(ByteArray.fromBytes(chunk), 0, length);
 
 		__parse();
-		return finished;
+		return finished && !settled;
+	}
+
+	/** Seconds left before the deadline, or `0` when there is none. A deadline passed is a sliver, never `0`. */
+	public function remaining():Float {
+		if (deadline <= 0) {
+			return 0;
+		}
+		var left:Float = deadline - haxe.Timer.stamp();
+		return left > 0.001 ? left : 0.001;
 	}
 
 	/** The parsed response. Only meaningful once `receive` has returned true. */
@@ -127,9 +168,16 @@ class PHPExchange {
 			}
 
 			if (type == STDOUT && contentLength > 0) {
+				if (maxResponseSize > 0 && stdout.length + contentLength > maxResponseSize) {
+					fail("PHP response exceeded " + maxResponseSize + " bytes");
+					return;
+				}
 				stdout.position = stdout.length;
 				pending.position = offset + HEADER_LENGTH;
 				pending.readBytes(stdout, stdout.length, contentLength);
+				if (headerEnd < 0 && !__findHeaderEnd()) {
+					return;
+				}
 			} else if (type == END_REQUEST) {
 				finished = true;
 				offset += record;
@@ -147,6 +195,44 @@ class PHPExchange {
 		if (offset > 0) {
 			__consume(offset);
 		}
+	}
+
+	/**
+		Looks for the end of the header block in what has arrived since the
+		last look, and holds the block to its limits: answers false, having
+		failed the exchange, for one past them. A look covers each byte once,
+		so a header block arriving a record at a time costs what it would
+		whole.
+	**/
+	private function __findHeaderEnd():Bool {
+		var raw:Bytes = stdout;
+		var from:Int = searchedTo > 3 ? searchedTo - 3 : 0;
+		var found:Int = __headerEnd(raw, stdout.length, from);
+		if (found < 0) {
+			searchedTo = stdout.length;
+			if (stdout.length > MAX_HEADER_BYTES) {
+				fail("PHP response header block exceeded " + MAX_HEADER_BYTES + " bytes");
+				return false;
+			}
+			return true;
+		}
+		headerEnd = found;
+		if (found > MAX_HEADER_BYTES) {
+			fail("PHP response header block exceeded " + MAX_HEADER_BYTES + " bytes");
+			return false;
+		}
+		// Its lines: one more than the line breaks inside it.
+		var lines:Int = 1;
+		for (i in 0...found) {
+			if (raw.get(i) == 10) {
+				lines++;
+			}
+		}
+		if (lines > MAX_HEADER_FIELDS) {
+			fail("PHP response header block had " + lines + " lines, more than the " + MAX_HEADER_FIELDS + " allowed");
+			return false;
+		}
+		return true;
 	}
 
 	private function __consume(count:Int):Void {
@@ -175,12 +261,17 @@ class PHPExchange {
 	 * `set-cookie`, which is joined with `"\n"` because a cookie carries commas
 	 * of its own. PHP sends one `Set-Cookie` line per cookie, and storing each
 	 * under its name kept only the last.
+	 *
+	 * The repeats of a field are gathered and joined once, at the end. Each
+	 * was added to the whole value so far, which is quadratic in the repeats:
+	 * 40,000 lines of one field held the runtime 5.6 s, measured.
 	 */
 	private function __toResponse():PHPResponse {
 		var raw:Bytes = stdout;
 		var total:Int = stdout.length;
-		var separator:Int = __headerEnd(raw, total);
+		var separator:Int = headerEnd >= 0 ? headerEnd : __headerEnd(raw, total, 0);
 		var headers:Map<String, String> = new Map();
+		var repeats:Null<Map<String, Array<String>>> = null;
 		var status:Int = 200;
 
 		if (separator < 0) {
@@ -197,11 +288,19 @@ class PHPExchange {
 			var name:String = line.substr(0, colon).toLowerCase();
 			var value:String = StringTools.trim(line.substr(colon + 1));
 
-			if (headers.exists(name)) {
-				var joiner:String = name == "set-cookie" ? "\n" : ", ";
-				headers.set(name, headers.get(name) + joiner + value);
-			} else {
+			var first:Null<String> = headers.get(name);
+			if (first == null) {
 				headers.set(name, value);
+			} else {
+				if (repeats == null) {
+					repeats = new Map();
+				}
+				var values:Null<Array<String>> = repeats.get(name);
+				if (values == null) {
+					values = [first];
+					repeats.set(name, values);
+				}
+				values.push(value);
 			}
 
 			if (name == "status") {
@@ -220,14 +319,20 @@ class PHPExchange {
 			}
 		}
 
+		if (repeats != null) {
+			for (name => values in repeats) {
+				headers.set(name, values.join(name == "set-cookie" ? "\n" : ", "));
+			}
+		}
+
 		var bodyStart:Int = separator + 4;
 		return {status: status, headers: headers, body: raw.sub(bodyStart, total - bodyStart)};
 	}
 
-	/** Where the blank line ending the header block starts, or `-1`. **/
-	private static function __headerEnd(data:Bytes, length:Int):Int {
+	/** Where the blank line ending the header block starts, looking from `from`, or `-1`. **/
+	private static function __headerEnd(data:Bytes, length:Int, from:Int):Int {
 		var last:Int = length - 4;
-		var i:Int = 0;
+		var i:Int = from;
 
 		while (i <= last) {
 			if (data.get(i + 3) != 10) {

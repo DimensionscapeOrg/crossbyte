@@ -343,6 +343,9 @@ entry below says how:
   `idleTimeout` for a long poll held longer than five minutes.
 - `OAuth.timeout = 0` means no deadline rather than failing at once, and a
   negative or `NaN` timeout throws an `ArgumentError`.
+- A PHP response past 8 MiB now fails with `502 Bad Gateway`: raise
+  `HTTPServerConfig.phpMaxResponseSize` for a script that serves larger
+  files.
 
 ### Added
 - `URLRequest.headTimeout`, `totalTimeout`, `maxBodySize`, `maxRedirects`
@@ -1609,6 +1612,18 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A PHP script's response is held to `HTTPServerConfig.phpMaxResponseSize`,
+  8 MiB by default, and its CGI header block to 64 KiB and 100 lines, as it
+  arrives: past either, the request is answered `502 Bad Gateway`. Nothing
+  bounded a response, which the server holds whole before it answers, so a
+  script, or a backend not running PHP at all, chose how much of the
+  server's memory each request took. And a runtime has
+  `HTTPServerConfig.phpMaxExchanges`, 64 by default, requests with its PHP
+  backend at once, each holding a connection: more wait their turn, within
+  `phpTimeout`, and past 1,024 waiting a request is refused at once as busy
+  (a `PHPBusy` failure). Every request opened a connection of its own,
+  however many were already waiting on a `php-cgi -b` that answers one at a
+  time.
 - Host names are looked up on four threads the process keeps for lookups,
   not on a thread started for each: ten thousand connects by name were ten
   thousand threads, with no cap, and nothing ended a wait that the system's
@@ -3196,6 +3211,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The PHP bridge joins a repeated response header once, at the end, where
+  it added each repeat to the whole value so far: 40,000 lines of one field
+  held the runtime 5.6 s. It reads a response a megabyte a pass at most and
+  has the loop poll again before it waits, where a backend sending fast was
+  read for as long as it sent, every other connection on the runtime
+  waiting. And it looks the backend up and connects to it within what is
+  left of the exchange's deadline, where neither had a bound and one
+  backend whose host dropped the connect held every exchange queued behind
+  it.
 - `OAuth.timeout = 0` is no deadline, as `0` is everywhere in CrossByte:
   the exchange waits as long as the client does on its own. It was a
   deadline of no time at all, which failed every exchange at once. A

@@ -150,7 +150,7 @@ class HTTPServer extends ServerSocket {
 				// dials the backend the front launched, or was told of.
 				mode = Connect(__config.phpAddress, __config.phpPort);
 			}
-			php = new PHPBridge(mode, docRoot, autoIndex, __config.phpTimeout);
+			php = new PHPBridge(mode, docRoot, autoIndex, __config.phpTimeout, __config.phpMaxResponseSize, __config.phpMaxExchanges);
 		}
 
 		if (replica) {
