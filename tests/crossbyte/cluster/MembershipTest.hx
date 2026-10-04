@@ -187,10 +187,67 @@ class MembershipTest extends utest.Test {
 		Assert.isTrue(alive.heard("n0"));
 	}
 
-	/** A membership with no timeout is a mistake, not a configuration. **/
-	public function testATimeoutIsRequired():Void {
-		Assert.raises(function():Void {
-			new Membership(0);
-		}, ArgumentError);
+	/**
+		A timeout of 0 is none, as it is everywhere in CrossByte: no node is
+		declared gone for being quiet, a process paused in a debugger, say,
+		and one leaves only when it is forgotten. It was refused.
+	**/
+	public function testATimeoutOfZeroIsNone():Void {
+		var now:Float = 0;
+		var alive = new Membership(0, 1024, function():Float return now);
+		var left:Array<String> = [];
+		alive.onLeave = node -> left.push(node);
+
+		alive.heard("a");
+		now = 1e9;
+		Assert.equals(0, alive.sweep(), "a node left a membership with no timeout");
+		Assert.isTrue(alive.has("a"));
+		Assert.equals(0.0, alive.timeout);
+
+		Assert.isTrue(alive.forget("a"));
+		Assert.equals("a", left.join(","));
+	}
+
+	/**
+		A timeout that is not a number of seconds is refused. NaN was taken,
+		and no node ever left: every comparison with it is false.
+	**/
+	public function testANegativeOrNaNTimeoutIsRefused():Void {
+		Assert.raises(() -> new Membership(-1), ArgumentError);
+		Assert.raises(() -> new Membership(Math.NaN), ArgumentError);
+	}
+
+	/** A negative bound was read as no bound at all, without a word. **/
+	public function testANegativeMaxNodesIsRefused():Void {
+		Assert.raises(() -> new Membership(5, -1), ArgumentError);
+		Assert.equals(0, new Membership(5, 0).maxNodes, "0 is no limit, and allowed");
+	}
+
+	/**
+		A name is bounded in length as the names are in number. `maxNodes`
+		held the count down, but each of the 1,024 names a peer made up
+		could be as long as it liked.
+	**/
+	public function testANameLongerThanTheBoundIsRefused():Void {
+		var alive = new Membership(5, 1024, function():Float return 0);
+		var longest:String = StringTools.lpad("", "n", Membership.MAX_NAME_LENGTH);
+
+		Assert.isFalse(alive.heard(longest + "n"), "a name past MAX_NAME_LENGTH was admitted");
+		Assert.equals(0, alive.length);
+		Assert.isTrue(alive.heard(longest), "a name of MAX_NAME_LENGTH was refused");
+		Assert.equals(1, alive.length);
+	}
+
+	/**
+		A time of NaN is refused rather than recorded. A node heard at NaN
+		could never be found quiet for long enough, and stayed for good.
+	**/
+	public function testATimeOfNaNIsRefused():Void {
+		var now:Float = 0;
+		var alive = new Membership(5, 1024, function():Float return now);
+
+		Assert.raises(() -> alive.heard("a", Math.NaN), ArgumentError);
+		Assert.isFalse(alive.has("a"));
+		Assert.raises(() -> alive.sweep(Math.NaN), ArgumentError);
 	}
 }
