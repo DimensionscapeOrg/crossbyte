@@ -1607,6 +1607,25 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- An `RPCSession` keeps the deadlines of the calls it makes under
+  `callTimeout` in one queue, in the order the calls were made, with one
+  timer for all of them, where each call armed a timer of its own, a
+  closure and a timer node a call, kept in order in the runtime's heap and
+  counted against the 524,288 timers a runtime holds at once. A call
+  answered leaves the queue at once, and each falls due when its own timer
+  would have; one made after `callTimeout` was lowered, which would fall
+  due before the calls ahead of it, still arms its own, as does one given
+  a deadline with `RPCResponse.timeout`. `handlerTimeout`'s deadlines, for
+  calls a handler answers later, are kept the same way. And the calls
+  waiting on their answers, past the first, are held in a ring indexed by
+  request id, where they were an `IntMap`, which natively made a node for
+  each; a call still waiting a ring's length of calls later moves to a map
+  of its own. Over an in-memory link, natively: a request and its answer
+  under `callTimeout` allocate 168 bytes, as one without a deadline does,
+  where they allocated 280, on the runtime lane 344 where 456; a call a
+  handler answers later under `handlerTimeout` 656 where 752; and sixteen
+  requests in flight at once 168 bytes each where 211. On the jvm a
+  request under `callTimeout` allocates 192 bytes where 287.
 - The runtime RPC lane tells a value's kind without allocating, where
   `Type.typeof` made an object for every `String` and `Bytes` it was
   asked about. The kinds are those `Type.typeof` gave, on every target,

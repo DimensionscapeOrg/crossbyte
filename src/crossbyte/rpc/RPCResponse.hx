@@ -2,6 +2,7 @@ package crossbyte.rpc;
 
 import crossbyte.Future;
 import crossbyte._internal.system.timer.TimerHandle;
+import crossbyte.rpc._internal.RPCDeadlines;
 
 @:allow(crossbyte.rpc.RPCCommands)
 @:allow(crossbyte.rpc.RPCSession)
@@ -39,8 +40,10 @@ class RPCResponse<T> extends Future<T> {
 	// whichever made it.
 	@:noCompletion private var __commands:Null<RPCCommands> = null;
 	@:noCompletion private var __session:Null<RPCSession<Dynamic, Dynamic>> = null;
-	// The deadline's timer, on the thread the call was made on;
-	// TimerHandle.INVALID while there is none.
+	// The deadline: TimerHandle.INVALID while there is none; the handle of a
+	// timer of its own, on the thread the call was made on; or, below
+	// INVALID, its place in its session's queue of the deadlines its
+	// `callTimeout` gives, see RPCDeadlines.
 	@:noCompletion private var __deadline:Int = TimerHandle.INVALID;
 
 	// The responder bound now, which `respond` replaces, under the future's
@@ -134,9 +137,10 @@ class RPCResponse<T> extends Future<T> {
 		an answer arriving after that is dropped. The connection is left as
 		it was: a slow answer is not a broken connection.
 
-		A call with no deadline costs nothing for having none. One with a
-		deadline holds a timer, on the thread the call was made on, until it
-		is answered. A call already complete is left as it is.
+		A call with no deadline costs nothing for having none. One given a
+		deadline here holds a timer, on the thread the call was made on, until
+		it is answered; the calls under a session's `callTimeout` share one
+		instead. A call already complete is left as it is.
 
 		```haxe
 		commands.join("lobby").timeout(2000).then(count -> trace(count), message -> trace(message));
@@ -157,9 +161,22 @@ class RPCResponse<T> extends Future<T> {
 	}
 
 	@:noCompletion private inline function __disarm():Void {
-		if (__deadline != TimerHandle.INVALID) {
-			Timer.clear(__deadline);
+		final deadline:Int = __deadline;
+		if (deadline != TimerHandle.INVALID) {
 			__deadline = TimerHandle.INVALID;
+			if (RPCDeadlines.isPlace(deadline)) {
+				__leaveQueue(deadline);
+			} else {
+				Timer.clear(deadline);
+			}
+		}
+	}
+
+	/** Leaves its place in its session's queue of deadlines. **/
+	@:noCompletion private function __leaveQueue(deadline:Int):Void {
+		final session:Null<RPCSession<Dynamic, Dynamic>> = __commands != null ? __commands.__session : __session;
+		if (session != null && session.__deadlines != null) {
+			session.__deadlines.leave(this, deadline);
 		}
 	}
 
