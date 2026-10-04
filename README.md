@@ -455,6 +455,23 @@ It reports the best of several samples per case; the numbers compare shapes of
 code on one machine in one sitting and are not comparable across machines. CI
 runs it so it cannot rot, and ignores the numbers.
 
+### Allocation budgets
+
+`tests/crossbyte/AllocationBudgetTest.hx` measures how many bytes each common
+operation allocates, an HTTP/1.1, HTTP/2 and TLS request, a WebSocket and a
+TCP echo, a reliable and a plain datagram, an RPC call, an event, a timer, a post
+and an idle frame, and fails when one passes its budget: what it measured when the
+budget was set, plus about a quarter. It runs in the native and jvm suites,
+the two targets with an allocation counter; `AllocationMeter` says how each is
+read. A failure names the operation, what it allocated in each of three runs,
+its budget and the figure the budget was set from. Natively the runs read the
+same to the byte, so a failure that repeats when the class runs alone
+(`-D gc_bisect`, `CB_ONLY=AllocationBudget`) is a path allocating more. To
+rebaseline after a deliberate change, run the class alone with
+`CB_ALLOC_REPORT=1` set, which prints every figure, natively on Windows and on
+Linux and on the jvm, and set the measured figures, the budgets and the date
+at the top of the class.
+
 ### Load and churn
 
 `tests/load` runs CrossByte the way a server and a game server run it, for
