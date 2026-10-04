@@ -167,6 +167,10 @@ class AsyncDatabaseTest extends utest.Test {
 		release();
 
 		Assert.equals(7, job.await());
+
+		// And Infinity, as no limit is also written.
+		db.queueTimeout = Math.POSITIVE_INFINITY;
+		Assert.equals(8, db.submit(_ -> 8).await());
 		db.shutdown();
 	}
 
