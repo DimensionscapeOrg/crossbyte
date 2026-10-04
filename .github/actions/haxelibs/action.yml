@@ -31,8 +31,8 @@ runs:
         trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
         list="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)/ci/haxelibs.txt"
         # haxelib prints the repository with a trailing separator, and on
-        # Windows with backslashes, which the cache action also accepts as
-        # forward slashes.
+        # Windows perhaps with backslashes; the cache action takes forward
+        # slashes there too.
         repo="$(haxelib config)"
         repo="${repo%$'\r'}"
         repo="${repo//\\//}"
@@ -90,7 +90,8 @@ runs:
           if haxelib path "$name:$version" > /dev/null 2>&1; then
             from="the cache"
           else
-            # A folder haxelib cannot read is not reinstalled over.
+            # A version folder haxelib could not read is removed, not
+            # installed over.
             rm -rf "$folder/$installed"
             if ! haxelib install "$name" "$version" --always --skip-dependencies; then
               echo "::error::$name $version is not in the haxelib cache, and lib.haxe.org did not supply it (haxelib's error is above). The cache holds what earlier runs installed: a version ci/haxelibs.txt names that none installed yet needs the registry."

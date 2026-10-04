@@ -63,10 +63,10 @@ waits for the registry.
 - **hxcpp** comes from the fork's git repository on GitHub, through
   `.github/actions/hxcpp`. `haxelib git` asks the registry only for a
   library's dependencies, and hxcpp has none.
-- **The step that fails is the step whose command failed**, and its error
-  annotation names the command. bash steps stop at the first command that
-  fails. pwsh steps do not stop at a failing native command, so each runs
-  one; and because the runner reports any failing pwsh step as exit code 1,
-  a step that runs a test or a sample prints the code in full: `0xC0000005`
-  is an access violation, `0xC0000409` a fail-fast abort, `0xC00000FD` a
-  stack overflow.
+- **The step that fails is the step whose command failed.** A step that
+  runs several commands names the one that failed in an error annotation.
+  bash steps stop at the first command that fails. pwsh steps do not stop
+  at a failing native command, so each runs one; and because the runner
+  reports any failing pwsh step as exit code 1, a step that runs a test or
+  a sample prints the code in full: `0xC0000005` is an access violation,
+  `0xC0000409` a fail-fast abort, `0xC00000FD` a stack overflow.

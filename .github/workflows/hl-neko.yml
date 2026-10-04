@@ -118,9 +118,12 @@ jobs:
       # every native at load and, on Windows, reports one it cannot find in a
       # dialog box, which on a runner nobody can dismiss, so the job would
       # sit there until it timed out. So the libraries the suite loads are
-      # checked for here, and a missing one fails the step by name.
+      # checked for here, and a missing one fails the step by name. The trap
+      # puts what failed, a throw below, or a cmdlet's error, on the run
+      # page as well as in the log.
       - name: Install HashLink ${{ env.HASHLINK_VERSION }}
         run: |
+          trap { Write-Host "::error::$_"; break }
           $zip = Join-Path $env:RUNNER_TEMP "hashlink.zip"
           $dest = Join-Path $env:RUNNER_TEMP "hashlink"
           Invoke-WebRequest -Uri "https://github.com/HaxeFoundation/hashlink/releases/download/$env:HASHLINK_TAG/hashlink-$env:HASHLINK_VERSION-win.zip" -OutFile $zip

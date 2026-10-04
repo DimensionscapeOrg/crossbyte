@@ -101,7 +101,7 @@ jobs:
             if [ "$(docker exec mongo-rs mongosh --quiet --eval 'db.hello().isWritablePrimary')" = "true" ]; then exit 0; fi
             sleep 1
           done
-          echo "The replica set member never became primary." >&2
+          echo "::error::The replica set member never became primary."
           exit 1
 
       # A server that takes TLS only, with a certificate from an authority of
@@ -127,7 +127,7 @@ jobs:
             if docker exec mongo-tls mongosh --quiet --tls --tlsCAFile /certs/ca.pem --host localhost --eval "db.adminCommand({ping: 1}).ok" >/dev/null 2>&1; then exit 0; fi
             sleep 1
           done
-          echo "The TLS server never answered." >&2
+          echo "::error::The TLS server never answered."
           docker logs mongo-tls >&2
           exit 1
 
