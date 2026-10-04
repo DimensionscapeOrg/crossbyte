@@ -1267,6 +1267,50 @@ class CollectionsTest extends utest.Test {
 	}
 
 	/**
+		The count bound is on unless asked off: 100,000 entries. A map made
+		with a ttl alone held whatever was put in it for as long as its ttl,
+		however fast that was.
+	**/
+	public function testAnExpiringMapIsBoundedByDefault():Void {
+		var map = new ExpiringMap<Int, Int>(3600);
+		var evicted:Int = 0;
+		map.onExpire = (key, value) -> evicted++;
+
+		for (i in 0...100001) {
+			map.set(i, i);
+		}
+
+		Assert.equals(100000, map.maxSize);
+		Assert.equals(100000, map.length, "the map held " + map.length + " entries by default");
+		Assert.equals(1, evicted);
+		Assert.isNull(map.get(0), "the entry closest to expiring survived the bound");
+
+		// 0 is no limit, asked for.
+		var unbounded = new ExpiringMap<Int, Int>(3600, 0);
+		for (i in 0...100001) {
+			unbounded.set(i, i);
+		}
+		Assert.equals(100001, unbounded.length);
+	}
+
+	/**
+		Bounds that are not bounds are refused: a negative `maxSize` read as
+		no limit at all; a ttl of NaN kept every entry for good, since no
+		time is at or past it; and a ttl of 0 threw a String.
+	**/
+	public function testAnExpiringMapRefusesBoundsThatAreNotBounds():Void {
+		Assert.raises(() -> new ExpiringMap<String, Int>(10, -1), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> new ExpiringMap<String, Int>(Math.NaN), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> new ExpiringMap<String, Int>(0), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> new ExpiringMap<String, Int>(-5), crossbyte.errors.ArgumentError);
+
+		var map = new ExpiringMap<String, Int>(10, 0, function():Float return 0);
+		map.set("a", 1);
+		Assert.raises(() -> map.sweep(Math.NaN), crossbyte.errors.ArgumentError);
+		Assert.equals(1, map.sweep(20.0));
+	}
+
+	/**
 		`length` leaves out what has expired and not been swept, as its
 		documentation says. It counted them until a read or a sweep dropped
 		them.

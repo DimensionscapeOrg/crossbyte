@@ -424,6 +424,66 @@ class UtilsTest extends utest.Test {
 		Assert.equals(20, again.length);
 	}
 
+	/**
+		A pool keeps 10,000 free objects unless told otherwise. It kept every
+		one released, so a burst left all of it behind, for the collector to
+		walk at every collection from then on.
+	**/
+	public function testAPoolKeepsTenThousandFreeByDefault():Void {
+		var pool = new ObjectPool<{id:Int}>(() -> {id: 0});
+		Assert.equals(10000, pool.maxFree);
+
+		var burst = [for (_ in 0...10050) pool.acquire()];
+		for (o in burst) {
+			pool.release(o);
+		}
+
+		Assert.equals(10000, pool.freeCount, "a burst of 10,050 left " + pool.freeCount + " behind");
+		Assert.equals(10000, pool.capacity);
+	}
+
+	/**
+		What is reserved is kept: a reservation past `maxFree` raises it, so
+		objects made in advance are not let go after their first use.
+	**/
+	public function testAReservationIsKeptPastTheDefault():Void {
+		var pool = new ObjectPool<{id:Int}>(() -> {id: 0}, null, 12000);
+		Assert.equals(12000, pool.maxFree);
+
+		var all = [for (_ in 0...12000) pool.acquire()];
+		Assert.equals(12000, pool.capacity, "objects were made past the reservation");
+		for (o in all) {
+			pool.release(o);
+		}
+		Assert.equals(12000, pool.freeCount);
+
+		pool.reserve(15000);
+		Assert.equals(15000, pool.maxFree);
+		Assert.equals(20000, pool.resizeCapacity(20000));
+		Assert.equals(20000, pool.maxFree);
+
+		// Lowered afterwards, it lets go of what is released past it; what
+		// is free already stays until it is taken.
+		pool.maxFree = 100;
+		var some = [for (_ in 0...200) pool.acquire()];
+		for (o in some) {
+			pool.release(o);
+		}
+		Assert.equals(19800, pool.freeCount);
+		Assert.equals(19800, pool.capacity);
+	}
+
+	/** A negative bound read as "keep nothing", without a word. **/
+	public function testANegativeMaxFreeIsRefused():Void {
+		var pool = new ObjectPool<{id:Int}>(() -> {id: 0});
+		Assert.raises(() -> pool.maxFree = -1, crossbyte.errors.ArgumentError);
+		Assert.equals(10000, pool.maxFree);
+		pool.maxFree = 0;
+		var o = pool.acquire();
+		pool.release(o);
+		Assert.equals(0, pool.freeCount, "maxFree 0 kept an object");
+	}
+
 	public function testObjectRecyclerCachesLocallyAndDrainsToPool():Void {
 		var pool:ObjectPool<PooledState> = new ObjectPool<PooledState>(
 			() -> {id: 1, state: "fresh"},
