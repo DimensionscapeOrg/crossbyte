@@ -3203,6 +3203,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `URLLoader.load` copies a request body of bytes as it begins, so what
+  goes out is the body as it was at the call. Natively and on the jvm it
+  was read later, on a load thread, and on Node handed to Node as a view
+  written once connected, and read again for a redirect that keeps it: a
+  datagram's `event.data` forwarded as a POST body from its listener went
+  out empty, or on Node as the next datagram's bytes over the first's,
+  and a body changed after `load` returned went out changed.
 - `HTTPRequestHandler.respondBytes` sends the body as it was at the call
   when the body is past `maxOutputBufferSize` too. Such a body goes out
   over later drains, and it went from the caller's own `ByteArray`: a
