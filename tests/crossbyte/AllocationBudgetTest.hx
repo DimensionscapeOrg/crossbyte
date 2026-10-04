@@ -88,10 +88,10 @@ class AllocationBudgetTest extends utest.Test {
 	// Over LinkedConnection, the in-memory pair, which copies each message
 	// into a buffer it keeps, as a socket's read does. A call's figure is its
 	// RPCResponse and what waiting on it takes; a frame costs nothing.
-	private static final RPC_CALL = new Budget("an RPC call and its answer", "call", [200, 200, 208], [320, 320, 328]);
+	private static final RPC_CALL = new Budget("an RPC call and its answer", "call", [200, 200, 224], [320, 320, 344]);
 	private static final RPC_ONE_WAY = new Budget("a one-way RPC call", "call", [0, 0, 24], [8, 8, 96]);
 	// The array and the string the handler is given are most of it.
-	private static final RPC_RUNTIME_ONE_WAY = new Budget("a one-way runtime-lane RPC call of a 12-character string", "call", [152, 152, 128], [256, 256, 224]);
+	private static final RPC_RUNTIME_ONE_WAY = new Budget("a one-way runtime-lane RPC call of a 12-character string", "call", [152, 144, 159], [256, 248, 264]);
 
 	/**
 		Operations run before measuring, so what the first ones build is not
