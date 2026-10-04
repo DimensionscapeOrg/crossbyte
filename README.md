@@ -275,7 +275,7 @@ What a server you call can cost you is bounded per request, on the
 
 | `URLRequest` | Default | Bounds |
 | --- | --- | --- |
-| `idleTimeout` | 30 s | time with nothing arriving, and the wait for a load thread, past `URLLoader.maxConcurrentLoads` |
+| `idleTimeout` | 30 s | time with nothing arriving, and, off JavaScript, the wait for a load thread past `URLLoader.maxConcurrentLoads` |
 | `headTimeout` | 300 s | the response's head, from the request having gone; bytes trickling in do not move it |
 | `totalTimeout` | none | the whole load, from `load()` to `COMPLETE` |
 | `maxBodySize` | 64 MB | the body on the wire; a larger `Content-Length` is refused before it is read |

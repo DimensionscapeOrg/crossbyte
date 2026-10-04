@@ -146,9 +146,9 @@ class URLRequest {
 		trickled a byte at a time, which resets `idleTimeout` with every byte,
 		is waited for for as long as it lasts.
 
-		Natively, on the jvm and the interpreter the loader's runtime ends the
-		load, as it delivers the load's events; on Node and in a browser the
-		platform's timers do.
+		Kept by the loader's runtime, which delivers the load's events, and
+		measured by the clock, `haxe.Timer.stamp()`: a runtime that is not
+		running ends nothing, as it delivers nothing.
 	**/
 	public var totalTimeout:Int = 0;
 

@@ -28,7 +28,8 @@ import haxe.io.Bytes;
  * native client makes: redirects are followed, dropping credentials when one
  * leaves the origin, `idleTimeout` is time without progress rather than a
  * deadline on the whole exchange, and `headTimeout` and `totalTimeout` are
- * deadlines nothing arriving moves, kept by the platform's timers.
+ * deadlines nothing arriving moves, kept by the runtime's timers and
+ * checked against the clock (see `Deadline`).
  */
 class JsHttpClient {
 	/** What a cancelled request reports, as the native client says it. */
