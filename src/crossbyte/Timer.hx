@@ -25,7 +25,17 @@ import sys.thread.Tls;
  * This design allows each CrossByte-managed thread to maintain its own isolated timing system.
  * For process-wide timeout/interval APIs backed by the primordial runtime,
  * consider using `crossbyte.utils.GlobalTimer` instead.
- * 
+ *
+ * **Handles.** A runtime numbers the timers it arms, so a handle is not given
+ * again until 2^31 timers have been armed on that runtime, ten hours at
+ * sixty thousand a second, and then only past handles still live. A handle
+ * kept after its timer fired or was cleared stays inert: `clear` answers
+ * false and touches nothing else.
+ *
+ * **Delays.** A delay or interval of NaN is refused with an `ArgumentError`.
+ * A negative delay counts as zero: the timer fires at the runtime's next
+ * frame. An infinite one never fires, and its timer is held until cleared.
+ *
  * @see crossbyte.utils.GlobalTimer
  */
 @:allow(crossbyte.core.CrossByte)

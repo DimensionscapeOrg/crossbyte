@@ -1,8 +1,8 @@
 package crossbyte._internal.system.timer.wheel;
 
 import crossbyte._internal.system.timer.heap.TimerHeap;
+import crossbyte.errors.IllegalOperationError;
 import haxe.Timer as HxTimer;
-import haxe.ds.Vector;
 
 /**
  * Timing wheel scheduler: an alternative to `TimerHeap` for runtimes that
@@ -98,7 +98,6 @@ class TimerWheel implements ITimerScheduler {
 	/** The bucket at the cursor still holds timers a budget stopped short of. */
 	@:noCompletion private var __partial:Bool = false;
 	@:noCompletion private var __cutShort:Bool = false;
-	@:noCompletion private var __size:Int = 0;
 
 	// The current pass's limits, kept here so the bucket walk can check them.
 	@:noCompletion private var __fired:Int = 0;
@@ -106,13 +105,10 @@ class TimerWheel implements ITimerScheduler {
 	@:noCompletion private var __maxFires:Int = 0;
 	@:noCompletion private var __deadline:Float = 0;
 
-	@:noCompletion private var nodes:Array<WheelNode> = [];
-
-	// Each slot's generation, and the free slots, the first `__freeCount` of
-	// `free`: vectors, so the jvm boxes neither; see the heap.
-	@:noCompletion private var gens:Vector<Int> = new Vector<Int>(16);
-	@:noCompletion private var free:Vector<Int> = new Vector<Int>(16);
-	@:noCompletion private var __freeCount:Int = 0;
+	// The live timers by handle, and the next handle to give; see the heap.
+	@:noCompletion private final __table:TimerTable<WheelNode> = new TimerTable<WheelNode>();
+	@:noCompletion private var __nextHandle:Int = 0;
+	@:noCompletion private var __handlesWrapped:Bool = false;
 
 	// Nodes whose timers are done, for the next ones armed, up to the heap's
 	// `SPARE_LIMIT`; see there.
@@ -126,11 +122,11 @@ class TimerWheel implements ITimerScheduler {
 	}
 
 	private inline function get_size():Int {
-		return __size;
+		return __table.size;
 	}
 
 	private inline function get_isEmpty():Bool {
-		return __size == 0;
+		return __table.size == 0;
 	}
 
 	public inline function get_time():Float {
@@ -141,30 +137,24 @@ class TimerWheel implements ITimerScheduler {
 		return __cutShort;
 	}
 
+	// Delays, intervals and times are checked as the heap checks them.
+
 	public inline function setTimeout(delay:Float, callback:TimerHandle->Void):TimerHandle {
-		return __create(__now + delay, 0, callback, null);
+		return __create(__now + TimerHeap.checkDelay(delay), 0, callback, null);
 	}
 
 	public inline function setTimeoutVoid(delay:Float, callback:Void->Void):TimerHandle {
-		return __create(__now + delay, 0, null, callback);
+		return __create(__now + TimerHeap.checkDelay(delay), 0, null, callback);
 	}
 
 	public inline function setInterval(delay:Float, interval:Float, callback:TimerHandle->Void):TimerHandle {
-		#if debug
-		if (interval <= 0) {
-			throw "interval must be > 0";
-		}
-		#end
-		return __create(__now + delay, interval, callback, null);
+		TimerHeap.checkInterval(interval);
+		return __create(__now + TimerHeap.checkDelay(delay), interval, callback, null);
 	}
 
 	public inline function setIntervalVoid(delay:Float, interval:Float, callback:Void->Void):TimerHandle {
-		#if debug
-		if (interval <= 0) {
-			throw "interval must be > 0";
-		}
-		#end
-		return __create(__now + delay, interval, null, callback);
+		TimerHeap.checkInterval(interval);
+		return __create(__now + TimerHeap.checkDelay(delay), interval, null, callback);
 	}
 
 	public inline function schedule(time:Float, callback:TimerHandle->Void):TimerHandle {
@@ -176,19 +166,18 @@ class TimerWheel implements ITimerScheduler {
 	}
 
 	public function clear(handle:TimerHandle, immediate:Bool = true):Bool {
-		if (!isActive(handle)) {
+		var node:Null<WheelNode> = __table.get(handle);
+		if (node == null) {
 			return false;
 		}
 
-		var node:WheelNode = nodes[handle.id()];
-
 		if (immediate) {
 			__unlink(node);
-			__freeSlot(node);
+			__retire(node);
 		} else if (node.pausedAt != null) {
-			// Not linked anywhere, so no tick will ever reach it to free the
-			// slot. Free it now or it leaks, the same case the heap calls out.
-			__freeSlot(node);
+			// Not linked anywhere, so no tick will ever reach it to retire it.
+			// Retire it now or it stays live, the case the heap calls out.
+			__retire(node);
 		} else {
 			node.enabled = false;
 		}
@@ -197,16 +186,16 @@ class TimerWheel implements ITimerScheduler {
 	}
 
 	public inline function isActive(handle:TimerHandle):Bool {
-		var id:Int = handle.id();
-		return id >= 0 && id < nodes.length && nodes[id] != null && gens[id] == handle.gen();
+		return __table.get(handle) != null;
 	}
 
 	public function reschedule(handle:TimerHandle, time:Float):Bool {
-		if (!isActive(handle)) {
+		TimerHeap.checkTime(time);
+		var node:Null<WheelNode> = __table.get(handle);
+		if (node == null) {
 			return false;
 		}
 
-		var node:WheelNode = nodes[handle.id()];
 		node.time = time;
 
 		if (node.firing) {
@@ -225,20 +214,21 @@ class TimerWheel implements ITimerScheduler {
 	}
 
 	public function delay(handle:TimerHandle, dt:Float):Bool {
-		if (dt < 0 || !isActive(handle)) {
+		TimerHeap.checkTime(dt);
+		var node:Null<WheelNode> = __table.get(handle);
+		if (dt < 0 || node == null) {
 			return false;
 		}
 
-		var node:WheelNode = nodes[handle.id()];
 		return reschedule(handle, node.time + dt);
 	}
 
 	public function setEnabled(handle:TimerHandle, enabled:Bool, policy:ResumePolicy = KeepPhase, time:Float = 0.0):Bool {
-		if (!isActive(handle)) {
+		TimerHeap.checkTime(time);
+		var node:Null<WheelNode> = __table.get(handle);
+		if (node == null) {
 			return false;
 		}
-
-		var node:WheelNode = nodes[handle.id()];
 
 		if (node.enabled == enabled) {
 			return true;
@@ -437,7 +427,7 @@ class TimerWheel implements ITimerScheduler {
 			__unlinkFrom(index, node);
 
 			if (!node.enabled) {
-				__freeSlot(node);
+				__retire(node);
 				continue;
 			}
 
@@ -457,12 +447,12 @@ class TimerWheel implements ITimerScheduler {
 					// Boxed once per timer; see TimerNode.handleBox.
 					var box:Dynamic = node.handleBox;
 					if (box == null) {
-						box = node.handleBox = (new TimerHandle(node.id, gens[node.id]) : Int);
+						box = node.handleBox = node.handle;
 					}
 					var withHandle:Dynamic->Void = cast node.callback;
 					withHandle(box);
 					#else
-					node.callback(new TimerHandle(node.id, gens[node.id]));
+					node.callback(node.handle);
 					#end
 				}
 			} catch (error:Dynamic) {
@@ -472,10 +462,10 @@ class TimerWheel implements ITimerScheduler {
 			__fired++;
 			node.firing = false;
 
-			if (nodes[node.id] != node) {
-				// Freed by its own callback, and done with now: a node is not
-				// reused while its callback runs, so the slot cannot hold this
-				// one for another timer.
+			if (node.handle == TimerHandle.INVALID) {
+				// Cleared by its own callback, and done with now: a node is not
+				// reused while its callback runs, so it cannot be carrying
+				// another timer by now.
 				__recycle(node);
 			} else if (node.rearmed) {
 				__link(node);
@@ -485,7 +475,7 @@ class TimerWheel implements ITimerScheduler {
 			} else if (node.enabled || node.pausedAt == null) {
 				// A one-shot that has run, or one cleared lazily from its own
 				// callback. One that paused itself stays live, to be resumed.
-				__freeSlot(node);
+				__retire(node);
 			}
 
 			if (failed) {
@@ -532,46 +522,34 @@ class TimerWheel implements ITimerScheduler {
 	}
 
 	@:noCompletion private function __create(time:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void):TimerHandle {
-		var id:Int;
+		if (__table.size >= TimerHandle.MAX_TIMERS) {
+			throw new IllegalOperationError("This runtime's timers are full: " + TimerHandle.MAX_TIMERS + " are already alive on it.");
+		}
 
-		if (__freeCount > 0) {
-			id = free[--__freeCount];
-		} else {
-			id = nodes.length;
-			if (id >= TimerHandle.MAX_TIMERS) {
-				// Past this the id no longer fits its handle; see the heap.
-				throw "TimerWheel full: " + TimerHandle.MAX_TIMERS + " timers are already alive on this runtime";
+		// Counted up, and past any still live once the count starts again;
+		// see the heap.
+		var handle:Int = __nextHandle;
+		if (__handlesWrapped) {
+			while (__table.get(handle) != null) {
+				handle = (handle + 1) & TimerHandle.MAX_HANDLE;
 			}
-			if (id >= gens.length) {
-				__growSlots();
-			}
-			nodes.push(null);
-			gens[id] = 0;
+		}
+		__nextHandle = (handle + 1) & TimerHandle.MAX_HANDLE;
+		if (__nextHandle == 0) {
+			__handlesWrapped = true;
 		}
 
 		var node:WheelNode;
 		if (__spare.length > 0) {
 			node = __spare.pop();
-			node.rearm(id, time, interval, callback, voidCallback);
+			node.rearm(handle, time, interval, callback, voidCallback);
 		} else {
-			node = new WheelNode(id, time, interval, callback, voidCallback);
+			node = new WheelNode(handle, time, interval, callback, voidCallback);
 		}
-		nodes[id] = node;
-		__size++;
+		__table.add(handle, node);
 		__link(node);
 
-		return new TimerHandle(id, gens[id]);
-	}
-
-	// Doubles the generation and free tables; see the heap.
-	@:noCompletion private function __growSlots():Void {
-		var capacity:Int = gens.length << 1;
-		var grownGens:Vector<Int> = new Vector<Int>(capacity);
-		Vector.blit(gens, 0, grownGens, 0, gens.length);
-		gens = grownGens;
-		var grownFree:Vector<Int> = new Vector<Int>(capacity);
-		Vector.blit(free, 0, grownFree, 0, __freeCount);
-		free = grownFree;
+		return handle;
 	}
 
 	@:noCompletion private function __link(node:WheelNode):Void {
@@ -651,19 +629,15 @@ class TimerWheel implements ITimerScheduler {
 		node.next = null;
 	}
 
-	// Frees a timer's slot. Its node goes to the spares at once, unless its
-	// callback is running: then once that returns.
-	@:noCompletion private inline function __freeSlot(node:WheelNode):Void {
-		var id:Int = node.id;
-		if (nodes[id] != null) {
-			__size--;
-		}
-
-		nodes[id] = null;
-		gens[id] = (gens[id] + 1) & TimerHandle.GEN_MASK;
-		free[__freeCount++] = id;
-		if (!node.firing) {
-			__recycle(node);
+	// Ends a timer, so its handle reads as cleared from now on. Its node goes
+	// to the spares at once, unless its callback is running: then once that
+	// returns. One already ended is left alone; see the heap.
+	@:noCompletion private inline function __retire(node:WheelNode):Void {
+		if (__table.remove(node.handle)) {
+			node.handle = TimerHandle.INVALID;
+			if (!node.firing) {
+				__recycle(node);
+			}
 		}
 	}
 
@@ -680,7 +654,8 @@ class TimerWheel implements ITimerScheduler {
 // Declared in the order hxcpp lays the fields out, as TimerNode is: the two
 // Ints share a word, and the Bools another.
 private class WheelNode {
-	public var id:Int;
+	/** Its timer's handle, `TimerHandle.INVALID` once that is over; see TimerNode. */
+	public var handle:Int;
 
 	/** Ring slot holding this node, or -1 when it is in overflow or detached. */
 	public var bucket:Int = -1;
@@ -707,8 +682,8 @@ private class WheelNode {
 	public var handleBox:Dynamic = null;
 	#end
 
-	public inline function new(id:Int, time:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void) {
-		this.id = id;
+	public inline function new(handle:Int, time:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void) {
+		this.handle = handle;
 		this.time = time;
 		this.interval = interval;
 		this.callback = callback;
@@ -716,8 +691,8 @@ private class WheelNode {
 	}
 
 	/** Carries a new timer; see TimerNode.rearm. */
-	public inline function rearm(id:Int, time:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void):Void {
-		this.id = id;
+	public inline function rearm(handle:Int, time:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void):Void {
+		this.handle = handle;
 		this.time = time;
 		this.interval = interval;
 		this.callback = callback;
