@@ -1574,6 +1574,17 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A timer's node is reused for the next timer armed once its timer is done,
+  where every `setTimeout` and `setInterval` made one: 80 bytes natively,
+  and on the jvm 72 with the slot's generation and number boxed, which was
+  everything arming and clearing a timeout allocated. Reliable UDP arms one
+  for every acknowledgement it holds, so a server allocated one per message
+  per session. A timeout armed and cleared, or armed and fired, now
+  allocates nothing natively or on the jvm. Up to 4,096 done nodes are
+  kept per runtime, so a burst of timers pins no more than that, under a
+  third of a megabyte natively. Handles are unchanged: a handle names a
+  slot and its generation, never a node, so a cleared handle stays inert
+  whatever its node carries next.
 - A WebSocket text message is written into its frame without being encoded
   into a buffer of its own first, natively when the string is held a byte a
   character and on the jvm when it is ASCII and no longer than 256

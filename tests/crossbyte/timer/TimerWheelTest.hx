@@ -281,6 +281,99 @@ class TimerWheelTest extends utest.Test {
 		Assert.equals(1, wheel.size);
 	}
 
+	// The wheel reuses a done timer's node as the heap does; these are the
+	// heap's cases for it.
+
+	public function testAClearedHandleCannotReachTheTimerItsNodeNowCarries():Void {
+		var wheel = new TimerWheel();
+		var stale = wheel.setTimeoutVoid(0.010, () -> Assert.fail("a cleared timer fired"));
+		var node:Dynamic = @:privateAccess wheel.nodes[stale.id()];
+		Assert.isTrue(wheel.clear(stale));
+		Assert.isFalse(wheel.clear(stale), "a handle cleared twice was cleared twice");
+
+		var fired = 0;
+		var next = wheel.setTimeoutVoid(0.010, () -> fired++);
+		Assert.equals(node, @:privateAccess wheel.nodes[next.id()], "the cleared timer's node was not reused");
+		Assert.isFalse(wheel.isActive(stale));
+		Assert.isFalse(wheel.clear(stale), "a stale handle cleared the timer its node now carries");
+		Assert.isFalse(wheel.reschedule(stale, 5.0));
+		Assert.isFalse(wheel.setEnabled(stale, false));
+
+		for (_ in 0...3) {
+			wheel.advanceTime(0.010);
+		}
+		Assert.equals(1, fired, "the timer on the reused node did not fire");
+		Assert.isTrue(wheel.isEmpty);
+	}
+
+	public function testATimerClearingItselfAndArmingAnotherFromItsCallback():Void {
+		var wheel = new TimerWheel();
+		var first = 0;
+		var second = 0;
+		var secondHandle:TimerHandle = TimerHandle.INVALID;
+		var handle:TimerHandle = TimerHandle.INVALID;
+		handle = wheel.setInterval(0.010, 0.010, h -> {
+			first++;
+			var firing:Dynamic = @:privateAccess wheel.nodes[h.id()];
+			wheel.clear(h);
+			secondHandle = wheel.setTimeoutVoid(0.020, () -> second++);
+			Assert.isTrue(@:privateAccess wheel.nodes[secondHandle.id()] != firing, "a timer armed in a callback was given the node still firing");
+		});
+
+		wheel.advanceTime(0.010);
+		Assert.equals(1, first);
+		Assert.isFalse(wheel.isActive(handle));
+		Assert.isTrue(wheel.isActive(secondHandle), "the timer armed in the callback was settled as the one that fired");
+		for (_ in 0...4) {
+			wheel.advanceTime(0.010);
+		}
+		Assert.equals(1, first, "the cleared interval fired again");
+		Assert.equals(1, second);
+		Assert.isTrue(wheel.isEmpty);
+	}
+
+	public function testAnIntervalRearmsOnItsOwnNode():Void {
+		var wheel = new TimerWheel();
+		var fired = 0;
+		var handle = wheel.setIntervalVoid(0.010, 0.010, () -> fired++);
+		var node:Dynamic = @:privateAccess wheel.nodes[handle.id()];
+		for (_ in 0...5) {
+			wheel.advanceTime(0.010);
+		}
+		Assert.equals(5, fired);
+		Assert.equals(node, @:privateAccess wheel.nodes[handle.id()]);
+		Assert.equals(0, @:privateAccess wheel.__spare.length, "an interval re-arming gave up its node");
+	}
+
+	public function testATimeoutArmedInsideAnotherTimersCallback():Void {
+		var wheel = new TimerWheel();
+		var order:Array<String> = [];
+		wheel.setTimeoutVoid(0.010, () -> {
+			order.push("outer");
+			wheel.setTimeoutVoid(0.005, () -> order.push("inner"));
+		});
+		wheel.advanceTime(0.010);
+		Assert.same(["outer"], order);
+		Assert.equals(1, @:privateAccess wheel.__spare.length, "the one-shot that ran was not kept for reuse");
+		wheel.advanceTime(0.010);
+		Assert.same(["outer", "inner"], order);
+		Assert.isTrue(wheel.isEmpty);
+	}
+
+	public function testABurstOfTimersLeavesAtMostTheLimitSpare():Void {
+		var wheel = new TimerWheel();
+		var handles:Array<TimerHandle> = [];
+		for (_ in 0...10000) {
+			handles.push(wheel.setTimeoutVoid(0.050, () -> {}));
+		}
+		for (handle in handles) {
+			wheel.clear(handle);
+		}
+		Assert.equals(TimerHeap.SPARE_LIMIT, @:privateAccess wheel.__spare.length, "a burst pinned its nodes");
+		Assert.isNull(@:privateAccess wheel.__spare[0].voidCallback, "a spare node kept its cleared timer's callback");
+		Assert.isTrue(wheel.isEmpty);
+	}
+
 	public function testATimerRescheduledFromItsCallbackAfterANestedPass():Void {
 		// A pass run from inside a callback cleared which timer was firing:
 		// the callback's reschedule afterwards linked the timer into a bucket

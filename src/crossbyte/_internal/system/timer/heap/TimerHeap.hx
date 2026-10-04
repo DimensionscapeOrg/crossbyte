@@ -1,6 +1,7 @@
 package crossbyte._internal.system.timer.heap;
 
 import haxe.Timer as HxTimer;
+import haxe.ds.Vector;
 
 class TimerHeap implements ITimerScheduler {
 	/**
@@ -12,6 +13,24 @@ class TimerHeap implements ITimerScheduler {
 	 */
 	private static inline var DUE_EPSILON:Float = 1e-9;
 
+	/**
+	 * Most nodes kept for reuse once their timers are done.
+	 *
+	 * A node was made for every timer armed, 80 bytes natively, all of what
+	 * arming and clearing a timeout allocated, and reliable UDP arms one per
+	 * acknowledgement it holds, so a server allocated one per message per
+	 * session. A done node now waits here for the next timer. The bound is
+	 * what a burst can pin: a hundred thousand timers armed and cleared once
+	 * leave 4,096 nodes behind, under a third of a megabyte natively, not
+	 * all of them. It covers the churn of a few thousand sessions a frame; a
+	 * runtime arming more at once than that allocates for the rest, as
+	 * every timer did.
+	 */
+	public static inline var SPARE_LIMIT:Int = 4096;
+
+	/** Slots the generation and free tables start with; they double from there. **/
+	private static inline var INITIAL_SLOTS:Int = 16;
+
 	public var size(get, never):Int;
 	public var isEmpty(get, never):Bool;
 	public var time(get, never):Float;
@@ -20,8 +39,17 @@ class TimerHeap implements ITimerScheduler {
 
 	private final queue:TimerQueue = new TimerQueue();
 	private var nodes:Array<TimerNode> = [];
-	private var gens:Array<Int> = [];
-	private var free:Array<Int> = [];
+
+	// Each slot's generation, and the slots free for reuse, the first
+	// `__freeCount` of `free`. Vectors rather than Array<Int>: on the jvm an
+	// Array<Int> holds its numbers boxed, and freeing a slot allocated an
+	// Integer for its new generation and one for its id.
+	private var gens:Vector<Int> = new Vector<Int>(INITIAL_SLOTS);
+	private var free:Vector<Int> = new Vector<Int>(INITIAL_SLOTS);
+	private var __freeCount:Int = 0;
+
+	// Nodes whose timers are done, for the next timers armed; see SPARE_LIMIT.
+	private var __spare:Array<TimerNode> = [];
 
 	private var __now:Float = 0.0;
 
@@ -91,11 +119,11 @@ class TimerHeap implements ITimerScheduler {
 		var node:TimerNode = nodes[handle.id()];
 		if (immediate) {
 			queue.remove(node);
-			freeSlot(node.id);
+			freeSlot(node);
 		} else if (node.pausedAt != null) {
 			// A paused timer is not in the queue, so advanceTime will never
 			// dequeue it to free the slot. Free it now or the slot leaks.
-			freeSlot(node.id);
+			freeSlot(node);
 		} else {
 			node.enabled = false;
 		}
@@ -256,12 +284,15 @@ class TimerHeap implements ITimerScheduler {
 			var node:TimerNode = top;
 
 			if (!node.enabled) {
-				freeSlot(node.id);
+				freeSlot(node);
 			} else if (node.armPass == __pass) {
-				__deferred.push(node);
+				// Once: one paused and resumed during the pass can come due
+				// again in it, and is already held.
+				if (!node.held) {
+					node.held = true;
+					__deferred.push(node);
+				}
 			} else {
-				var gen:Int = gens[node.id];
-
 				// Each callback is contained. A timer that throws is settled
 				// exactly as if it had returned, a recurring one re-armed, a
 				// one-shot freed, and only then is the failure passed on.
@@ -284,12 +315,7 @@ class TimerHeap implements ITimerScheduler {
 				var i:Int = 0;
 				while (i < fires && node.enabled) {
 					try {
-						var direct:Void->Void = node.voidCallback;
-						if (direct != null) {
-							direct();
-						} else {
-							node.callback(new TimerHandle(node.id, gen));
-						}
+						__call(node);
 					} catch (error:Dynamic) {
 						failed = true;
 						failure = error;
@@ -299,37 +325,33 @@ class TimerHeap implements ITimerScheduler {
 					// Stop if the callback cleared or re-armed this timer through
 					// its handle, or threw: the rest of the burst is not owed to
 					// a callback that has just failed.
-					if (failed || node.rearmed || gens[node.id] != gen || nodes[node.id] != node) {
+					if (failed || node.rearmed || nodes[node.id] != node) {
 						break;
 					}
 				}
 				node.firing = false;
 
-				if (gens[node.id] != gen || nodes[node.id] != node) {
-					// freed by the callback; nothing to do
+				if (nodes[node.id] != node) {
+					// Freed by the callback, and done with now.
+					__recycle(node);
 				} else if (node.rearmed) {
 					queue.enqueue(node);
 				} else if (node.enabled && node.interval > 0) {
 					node.time += i * node.interval;
 					queue.enqueue(node);
 				} else if (node.enabled || node.pausedAt == null) {
-					freeSlot(node.id);
+					freeSlot(node);
 				}
 				#else
 				try {
-					var direct:Void->Void = node.voidCallback;
-					if (direct != null) {
-						direct();
-					} else {
-						node.callback(new TimerHandle(node.id, gen));
-					}
+					__call(node);
 				} catch (error:Dynamic) {
 					failed = true;
 					failure = error;
 				}
 				fired++;
 				node.firing = false;
-				__settle(node, gen);
+				__settle(node);
 				#end
 
 				if (failed) {
@@ -344,6 +366,17 @@ class TimerHeap implements ITimerScheduler {
 			__readmit();
 		}
 		return fired;
+	}
+
+	// Runs a timer's callback: a Void->Void one directly, one taking its
+	// handle with the handle.
+	private inline function __call(node:TimerNode):Void {
+		var direct:Void->Void = node.voidCallback;
+		if (direct != null) {
+			direct();
+		} else {
+			node.callback(new TimerHandle(node.id, gens[node.id]));
+		}
 	}
 
 	/**
@@ -370,11 +403,15 @@ class TimerHeap implements ITimerScheduler {
 
 	// Puts a timer whose callback has just returned where it belongs next.
 	// The callback may have cleared, rescheduled or paused it through its own
-	// handle: if clear() freed the slot the generation no longer matches (or
-	// the slot was reused), so it must not be re-enqueued or freed again.
-	private inline function __settle(node:TimerNode, gen:Int):Void {
-		if (gens[node.id] != gen || nodes[node.id] != node) {
-			// already freed/replaced by the callback; nothing to do
+	// handle. One it cleared has lost its slot already, so it is not
+	// re-enqueued or freed again: no longer its slot's node, it is done. A
+	// node is not reused while its callback runs, so the slot cannot be
+	// holding this same node for some other timer.
+	private inline function __settle(node:TimerNode):Void {
+		if (nodes[node.id] != node) {
+			// Freed by its own callback, which has returned: nothing refers
+			// to the node now.
+			__recycle(node);
 		} else if (node.rearmed) {
 			// Given a new time by its own callback, which stands as given.
 			queue.enqueue(node);
@@ -384,21 +421,25 @@ class TimerHeap implements ITimerScheduler {
 		} else if (node.enabled || node.pausedAt == null) {
 			// A one-shot that has run, or a timer cleared lazily from its own
 			// callback. One that paused itself stays live, to be resumed.
-			freeSlot(node.id);
+			freeSlot(node);
 		}
 	}
 
 	// Returns what a pass held back to the queue, for the next pass.
 	private function __readmit():Void {
 		for (node in __deferred) {
-			if (nodes[node.id] == node && node.heapIndex < 0 && node.pausedAt == null) {
+			node.held = false;
+			if (nodes[node.id] != node) {
+				// Cleared while held back: its slot went then, the node now.
+				__recycle(node);
+			} else if (node.heapIndex < 0 && !node.firing && node.pausedAt == null) {
 				if (node.enabled) {
 					queue.enqueue(node);
 				} else {
 					// Cleared lazily while held back. No pass dequeues it to
 					// free its slot, which stayed taken, and its handle live,
 					// for as long as the scheduler ran.
-					freeSlot(node.id);
+					freeSlot(node);
 				}
 			}
 		}
@@ -423,8 +464,8 @@ class TimerHeap implements ITimerScheduler {
 
 	private inline function createTimer(absoluteTime:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void):TimerHandle {
 		var id:Int;
-		if (free.length > 0) {
-			id = free.pop();
+		if (__freeCount > 0) {
+			id = free[--__freeCount];
 		} else {
 			id = nodes.length;
 			if (id >= TimerHandle.MAX_TIMERS) {
@@ -432,20 +473,57 @@ class TimerHeap implements ITimerScheduler {
 				// would name some other timer.
 				throw "TimerHeap full: " + TimerHandle.MAX_TIMERS + " timers are already alive on this runtime";
 			}
+			if (id >= gens.length) {
+				__growSlots();
+			}
 			nodes.push(null);
-			gens.push(0);
+			gens[id] = 0;
 		}
-		var n:TimerNode = new TimerNode(id, absoluteTime, interval, callback, voidCallback);
+		var n:TimerNode;
+		if (__spare.length > 0) {
+			n = __spare.pop();
+			n.rearm(id, absoluteTime, interval, callback, voidCallback);
+		} else {
+			n = new TimerNode(id, absoluteTime, interval, callback, voidCallback);
+		}
 		n.armPass = __pass;
 		nodes[id] = n;
 		queue.enqueue(n);
 		return new TimerHandle(id, gens[id]);
 	}
 
-	private inline function freeSlot(id:Int):Void {
+	// Frees a timer's slot, so its handle reads as cleared from now on. Its
+	// node goes to the spares at once unless a callback is running for it or
+	// a pass holds it back: then once that is over.
+	private inline function freeSlot(node:TimerNode):Void {
+		var id:Int = node.id;
 		nodes[id] = null;
 		gens[id] = (gens[id] + 1) & TimerHandle.GEN_MASK;
-		free.push(id);
+		free[__freeCount++] = id;
+		if (!node.firing && !node.held) {
+			__recycle(node);
+		}
+	}
+
+	// A node no slot, heap, pass or callback refers to any more, kept for
+	// the next timer while there is room; see SPARE_LIMIT.
+	private inline function __recycle(node:TimerNode):Void {
+		node.release();
+		if (__spare.length < SPARE_LIMIT) {
+			__spare.push(node);
+		}
+	}
+
+	// Doubles the generation and free tables, which always have room for
+	// every slot: a slot is in `free` at most once.
+	private function __growSlots():Void {
+		var capacity:Int = gens.length << 1;
+		var grownGens:Vector<Int> = new Vector<Int>(capacity);
+		Vector.blit(gens, 0, grownGens, 0, gens.length);
+		gens = grownGens;
+		var grownFree:Vector<Int> = new Vector<Int>(capacity);
+		Vector.blit(free, 0, grownFree, 0, __freeCount);
+		free = grownFree;
 	}
 
 	private inline function isLive(handle:TimerHandle):Bool {
