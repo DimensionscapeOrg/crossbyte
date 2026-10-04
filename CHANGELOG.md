@@ -341,6 +341,8 @@ entry below says how:
   minutes, of its request. Raise `URLLoader.maxConcurrentLoads` or
   `idleTimeout` for many slow loads at once, and `headTimeout` with
   `idleTimeout` for a long poll held longer than five minutes.
+- `OAuth.timeout = 0` means no deadline rather than failing at once, and a
+  negative or `NaN` timeout throws an `ArgumentError`.
 
 ### Added
 - `URLRequest.headTimeout`, `totalTimeout`, `maxBodySize`, `maxRedirects`
@@ -3194,6 +3196,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `OAuth.timeout = 0` is no deadline, as `0` is everywhere in CrossByte:
+  the exchange waits as long as the client does on its own. It was a
+  deadline of no time at all, which failed every exchange at once. A
+  negative or `NaN` timeout is refused with an `ArgumentError` where it is
+  set, where `NaN` was taken and reached the client's idle timeout as
+  whatever `Std.int` made of it; `Math.POSITIVE_INFINITY` is no deadline
+  too. And an exchange's deadline, once it has run, is no longer cleared
+  again as the exchange settles, which could clear a timer armed since in
+  its place.
 - Natively, a process whose threads end as it exits, a server spread
   over runtimes, which exits them after `drain()`, is one, no longer
   hangs there on Windows, nor crashes there when built with stack traces
