@@ -219,6 +219,10 @@ class StunMessage {
 		receiver that re-encodes a message to verify it would reject perfectly
 		valid traffic from anyone whose padding it did not happen to match.
 		Null for a message built locally, which has no received bytes to check.
+
+		The very bytes `decode` was handed, not a copy: a datagram's, valid
+		only as long as they are, during the call that handed the datagram
+		over. A message kept longer holds its own, through `__keep()`.
 	**/
 	public var raw(default, null):Null<ByteArray>;
 
@@ -226,6 +230,17 @@ class StunMessage {
 		this.type = type;
 		this.transactionId = transactionId;
 		this.attributes = attributes != null ? attributes : [];
+	}
+
+	/**
+		This message, kept past the call that decoded it: `raw` is the bytes
+		it was decoded from, which a socket hands out valid only during that
+		call, so a message remembered for later, an answer, holds a copy
+		of them instead.
+	**/
+	@:noCompletion public function __keep():StunMessage {
+		raw = crossbyte.events._internal.Arrivals.copyOf(raw);
+		return this;
 	}
 
 	/** A binding request with a fresh transaction, ready to send. */
