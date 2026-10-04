@@ -1596,6 +1596,11 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- Pausing and resuming a timer, `Timer.pause`, `Timer.resume`,
+  allocates nothing, where the pair allocated 24 bytes natively and on the
+  jvm: the time a timer was paused at was a boxed `Float`, and on the jvm
+  the time and the policy were boxed again by the defaults they passed
+  through.
 - `CrossByte.post` says its queue has no depth limit, and why: a limit
   would refuse work only the runtime's own thread may do, or make a
   runtime posting to itself wait for itself. A waiting callback costs

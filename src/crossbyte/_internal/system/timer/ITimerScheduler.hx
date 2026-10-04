@@ -25,6 +25,15 @@ interface ITimerScheduler {
 	public function reschedule(handle:TimerHandle, time:Float):Bool;
 	public function delay(handle:TimerHandle, dt:Float):Bool;
 	public function setEnabled(handle:TimerHandle, enabled:Bool, policy:ResumePolicy = ResumePolicy.KeepPhase, time:Float = 0.0):Bool;
+
+	/**
+		`setEnabled` with every argument given: what `crossbyte.Timer`'s
+		`pause` and `resume` call. On the jvm an argument with a default is an
+		object, so a pause boxed the time it passed on, and a resume the time
+		and the policy.
+	**/
+	public function setEnabledBy(handle:TimerHandle, enabled:Bool, policy:ResumePolicy, time:Float):Bool;
+
 	public function nextDue():Null<Float>;
 
 	/**

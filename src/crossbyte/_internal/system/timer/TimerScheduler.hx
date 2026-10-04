@@ -195,8 +195,10 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	 * @param time Optional override time.
 	 * @return `true` if updated successfully.
 	 */
-	public function setEnabled(handle:Int, enabled:Bool, policy:Int = 0, time:Float = 0.0):Bool {
-		return this.setEnabled(handle, enabled, policy, time);
+	public inline function setEnabled(handle:Int, enabled:Bool, policy:Int = 0, time:Float = 0.0):Bool {
+		// Inline, and on to the form with every argument given, so the jvm
+		// boxes neither default; see ITimerScheduler.setEnabledBy.
+		return this.setEnabledBy(handle, enabled, policy, time);
 	}
 
 	/**
@@ -206,7 +208,7 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	 * @return `true` if paused.
 	 */
 	public inline function pause(handle:Int):Bool {
-		return this.setEnabled(handle, false);
+		return this.setEnabledBy(handle, false, ResumePolicy.KeepPhase, 0.0);
 	}
 
 	/**
@@ -218,7 +220,7 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	 * @return `true` if resumed.
 	 */
 	public inline function resume(handle:Int, time:Float = 0.0, policy:Int = 0):Bool {
-		return this.setEnabled(handle, true, policy, time);
+		return this.setEnabledBy(handle, true, policy, time);
 	}
 
 	/**

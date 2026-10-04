@@ -52,7 +52,14 @@ class TimerNode {
 	 */
 	public var armPass:Int = 0;
 
-	public var pausedAt:Null<Float> = null;
+	/**
+	 * The scheduler's time when the timer was paused, or NaN while it is not
+	 * paused; see `isPaused`. It was a `Null<Float>`, which natively and on
+	 * the jvm is a boxed number: every pause allocated one. No timer's time
+	 * is NaN, since the schedulers refuse it.
+	 */
+	public var pausedAt:Float = Math.NaN;
+
 	public var callback:TimerHandle->Void;
 
 	/**
@@ -83,6 +90,11 @@ class TimerNode {
 		this.voidCallback = voidCallback;
 	}
 
+	/** Whether the timer is paused: `pausedAt` holds a time, not NaN. **/
+	public inline function isPaused():Bool {
+		return pausedAt == pausedAt;
+	}
+
 	/**
 	 * Makes a node that carried a timer before carry a new one: everything a
 	 * new node starts with. Taken from a scheduler's spares only, which hold
@@ -95,7 +107,7 @@ class TimerNode {
 		this.callback = callback;
 		this.voidCallback = voidCallback;
 		enabled = true;
-		pausedAt = null;
+		pausedAt = Math.NaN;
 		heapIndex = -1;
 		armPass = 0;
 		firing = false;
@@ -114,7 +126,7 @@ class TimerNode {
 	public inline function release():Void {
 		callback = null;
 		voidCallback = null;
-		pausedAt = null;
+		pausedAt = Math.NaN;
 		#if cpp
 		handleBox = null;
 		#end

@@ -174,7 +174,7 @@ class TimerWheel implements ITimerScheduler {
 		if (immediate) {
 			__unlink(node);
 			__retire(node);
-		} else if (node.pausedAt != null) {
+		} else if (node.isPaused()) {
 			// Not linked anywhere, so no tick will ever reach it to retire it.
 			// Retire it now or it stays live, the case the heap calls out.
 			__retire(node);
@@ -206,7 +206,7 @@ class TimerWheel implements ITimerScheduler {
 		}
 
 		__unlink(node);
-		if (node.enabled && node.pausedAt == null) {
+		if (node.enabled && !node.isPaused()) {
 			__link(node);
 		}
 
@@ -224,6 +224,10 @@ class TimerWheel implements ITimerScheduler {
 	}
 
 	public function setEnabled(handle:TimerHandle, enabled:Bool, policy:ResumePolicy = KeepPhase, time:Float = 0.0):Bool {
+		return setEnabledBy(handle, enabled, policy, time);
+	}
+
+	public function setEnabledBy(handle:TimerHandle, enabled:Bool, policy:ResumePolicy, time:Float):Bool {
 		TimerHeap.checkTime(time);
 		var node:Null<WheelNode> = __table.get(handle);
 		if (node == null) {
@@ -247,16 +251,16 @@ class TimerWheel implements ITimerScheduler {
 
 		switch (policy) {
 			case KeepPhase:
-				if (node.pausedAt != null) {
+				if (node.isPaused()) {
 					var paused:Float = t - node.pausedAt;
 					if (paused != 0.0) {
 						node.time += paused;
 					}
-					node.pausedAt = null;
+					node.pausedAt = Math.NaN;
 				}
 			case FromNow:
 				node.time = (node.interval > 0) ? (t + node.interval) : t;
-				node.pausedAt = null;
+				node.pausedAt = Math.NaN;
 		}
 
 		if (node.firing) {
@@ -472,7 +476,7 @@ class TimerWheel implements ITimerScheduler {
 			} else if (node.enabled && node.interval > 0) {
 				node.time += node.interval;
 				__link(node);
-			} else if (node.enabled || node.pausedAt == null) {
+			} else if (node.enabled || !node.isPaused()) {
 				// A one-shot that has run, or one cleared lazily from its own
 				// callback. One that paused itself stays live, to be resumed.
 				__retire(node);
@@ -670,7 +674,9 @@ private class WheelNode {
 	/** Whether that callback gave it a new time itself. */
 	public var rearmed:Bool = false;
 
-	public var pausedAt:Null<Float> = null;
+	/** NaN while not paused; see TimerNode.pausedAt. */
+	public var pausedAt:Float = Math.NaN;
+
 	public var callback:TimerHandle->Void;
 	public var voidCallback:Void->Void;
 
@@ -690,6 +696,11 @@ private class WheelNode {
 		this.voidCallback = voidCallback;
 	}
 
+	/** Whether the timer is paused; see TimerNode.isPaused. */
+	public inline function isPaused():Bool {
+		return pausedAt == pausedAt;
+	}
+
 	/** Carries a new timer; see TimerNode.rearm. */
 	public inline function rearm(handle:Int, time:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void):Void {
 		this.handle = handle;
@@ -698,7 +709,7 @@ private class WheelNode {
 		this.callback = callback;
 		this.voidCallback = voidCallback;
 		enabled = true;
-		pausedAt = null;
+		pausedAt = Math.NaN;
 		bucket = -1;
 		prev = null;
 		next = null;
@@ -713,7 +724,7 @@ private class WheelNode {
 	public inline function release():Void {
 		callback = null;
 		voidCallback = null;
-		pausedAt = null;
+		pausedAt = Math.NaN;
 		prev = null;
 		next = null;
 		#if cpp
