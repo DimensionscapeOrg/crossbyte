@@ -146,7 +146,23 @@ class RPCCommandMacro {
 			injectPing(newFields, Context.currentPos());
 		}
 		injectResponseHandler(newFields, responseMethods, allSent, ancestorField(ancestors, "__rpc_handle_response") != null);
+		newFields.push(fingerprintField(allSent.map(RPCOps.opOf)));
 		return fields.concat(newFields);
+	}
+
+	/** `__rpc_fingerprint`, answering the fingerprint of `ops`, worked out here. **/
+	public static function fingerprintField(ops:Array<Int>):Field {
+		return {
+			name: "__rpc_fingerprint",
+			access: [APublic, AOverride],
+			meta: [{name: ":noCompletion", params: [], pos: Context.currentPos()}],
+			kind: FFun({
+				args: [],
+				ret: macro :Int,
+				expr: macro return $v{RPCOps.fingerprint(ops)}
+			}),
+			pos: Context.currentPos()
+		};
 	}
 
 	/** The commands classes this one extends, nearest first, up to RPCCommands. **/

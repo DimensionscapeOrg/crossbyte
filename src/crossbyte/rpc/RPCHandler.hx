@@ -92,6 +92,15 @@ abstract class RPCHandler {
 	abstract public function dispatch(op:Int, input:ByteArrayInput, requestId:Int):Void;
 
 	/**
+		The fingerprint of the methods this handler answers, `RPCOps.fingerprint`
+		of their ops: what a session's hello says it answers. Generated with a
+		generated `dispatch`; 0 for one written by hand, which says nothing.
+	**/
+	@:noCompletion public function __rpc_fingerprint():Int {
+		return 0;
+	}
+
+	/**
 		Called before each inbound call, before its arguments are read, with
 		the method's name, the request's id, 0 for a one-way call, and
 		the bytes its arguments take. Return `null` to let the call run, or an
