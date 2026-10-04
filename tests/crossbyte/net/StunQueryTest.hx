@@ -283,6 +283,45 @@ class StunQueryTest extends utest.Test {
 		}
 	}
 
+	/**
+		The answer is kept, and with it the bytes it was decoded from,
+		`raw`, which its integrity is checked against. Those arrive as a
+		datagram's payload, valid only during the call that handed it over,
+		and the answer held them by reference: once the socket had handed
+		the next datagram over in the same bytes, the kept answer's
+		FINGERPRINT checked against whatever that was.
+	**/
+	public function testAKeptAnswerKeepsTheBytesItWasDecodedFrom():Void {
+		if (unsupported()) return;
+
+		var query = new StunQuery(0, 3000);
+		var datagram = fingerprinted(new StunMessage(StunMessage.BINDING_SUCCESS, query.request.transactionId,
+			[StunMessage.xorMappedAddress("198.51.100.42", 51234)]), false);
+
+		switch (query.interpret(datagram)) {
+			case ANSWERED(_):
+			case other:
+				Assert.fail("a sound answer was not taken: " + other);
+				return;
+		}
+
+		// The payload's call is over: the socket hands the next datagram
+		// over in the same bytes, or under the check kills them.
+		var length:Int = datagram.length;
+		datagram.position = 0;
+		for (_ in 0...length) {
+			datagram.writeByte(0x5A);
+		}
+		crossbyte.events._internal.Arrivals.kill(datagram);
+
+		var answer = query.answer;
+		Assert.notNull(answer);
+		if (answer != null) {
+			Assert.equals(length, answer.raw.length, "the kept answer's bytes went with the datagram's");
+			Assert.isTrue(answer.verifyFingerprint(), "the kept answer no longer checks against the bytes it came in");
+		}
+	}
+
 	/** A request can carry more: a CHANGE-REQUEST, for RFC 5780's questions. **/
 	public function testARequestCarriesWhatItIsGiven():Void {
 		if (unsupported()) return;
