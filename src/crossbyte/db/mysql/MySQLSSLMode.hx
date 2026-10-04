@@ -11,7 +11,8 @@ import crossbyte.errors.ArgumentError;
  *   whose certificate it is. That protects the session, and the password
  *   `caching_sha2_password` sends in full authentication, against anyone
  *   listening, not against anyone in the middle. MySQL generates a
- *   self-signed certificate by default, which nothing could verify.
+ *   self-signed certificate by default, which nothing could verify. It is
+ *   the default for a remote server too; `MySQLConfig.sslMode` says why.
  * - `REQUIRED`: as `PREFERRED`, and fails against a server without TLS.
  * - `VERIFY_CA`: as `REQUIRED`, and the certificate must chain to one in
  *   `MySQLConfig.sslCa`.

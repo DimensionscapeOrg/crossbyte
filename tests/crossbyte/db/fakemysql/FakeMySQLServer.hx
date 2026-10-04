@@ -119,6 +119,12 @@ class FakeMySQLServer {
 	public var greetingDelay:Float = 0;
 
 	/**
+		When above 0, seconds between the bytes of the greeting, sent one at a
+		time: a server that answers, just, inside any one read's timeout.
+	**/
+	public var greetingTrickle:Float = 0;
+
+	/**
 	 * When not 0, a packet longer than this many bytes stops its session
 	 * reading as soon as the packet's header arrives, a server that takes
 	 * no more of what it is sent, for write timeouts, and the session
@@ -876,6 +882,28 @@ class FakeMySQLSession {
 		out.addByte(0);
 		out.addString(server.plugin);
 		out.addByte(0);
+
+		if (server.greetingTrickle > 0) {
+			var payload:Bytes = out.getBytes();
+			var packet:Bytes = Bytes.alloc(4 + payload.length);
+			packet.set(0, payload.length & 0xFF);
+			packet.set(1, (payload.length >> 8) & 0xFF);
+			packet.set(2, (payload.length >> 16) & 0xFF);
+			packet.set(3, 0);
+			packet.blit(4, payload, 0, payload.length);
+
+			for (i in 0...packet.length) {
+				if (__closed) {
+					return;
+				}
+
+				__write(packet.sub(i, 1));
+				crossbyte.sys.System.sleep(server.greetingTrickle);
+			}
+
+			return;
+		}
+
 		send(0, out.getBytes());
 	}
 

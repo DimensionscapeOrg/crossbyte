@@ -22,6 +22,21 @@ import sys.db.Mysql;
  * MySQL connection wrapper. On cpp it drives the client hxcpp bundles
  * directly, and reads the session state the server reports after every
  * statement; elsewhere it runs on Haxe's `sys.db.Mysql`.
+ *
+ * **What a server can send.** The native client takes the server's answers
+ * as untrusted, since under the default `sslMode` whoever answers in the
+ * server's place writes them. A result has from 1 to 65,535 columns, counted
+ * before anything is allocated; every length is checked against the packet
+ * it is in; and an answer no server sends, a count or length past those,
+ * a column without a name, a row that does not match its columns, a
+ * request for a file of the client's, fails the statement with a
+ * `MySQLError` of code 2027 (`CR_MALFORMED_PACKET`) and closes the
+ * connection, which cannot be followed past it. Each of those ended the
+ * process, or allocated a gigabyte, from a packet of a few bytes. What the
+ * client holds is then what the server sends: `request()` reads a result
+ * whole, so a result without end is held without end, where
+ * `MySQLStatement` reads rows as they are asked for. Other targets use
+ * their own clients, which these bounds are not.
  */
 class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransactionalConnection {
 	// The client character sets MySQL accepts that the escaping here is safe
@@ -145,6 +160,16 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	public function open(cfg:MySQLConfig):Void {
 		var charset:String = null;
 
+		__checkSeconds("connectTimeout", cfg.connectTimeout);
+		__checkSeconds("readTimeout", cfg.readTimeout);
+		__checkSeconds("writeTimeout", cfg.writeTimeout);
+
+		for (timing in [cfg.keepAliveIdle, cfg.keepAliveInterval, cfg.keepAliveCount]) {
+			if (timing != null && timing < 0) {
+				throw new ArgumentError('A MySQLConfig keepalive timing must not be negative ($timing); 0 is the system\'s own.');
+			}
+		}
+
 		if (cfg.charset != null && cfg.charset != "") {
 			charset = cfg.charset.toLowerCase();
 
@@ -238,6 +263,17 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		}
 
 		__dispatch(SQLEvent.OPEN);
+	}
+
+	/**
+		A timeout of `MySQLConfig`, unset or a number of seconds, 0 for no
+		limit, or an `ArgumentError`. NaN reached the native client as no
+		limit at all, and a negative one as the old 50 seconds or five hours.
+	**/
+	@:noCompletion private static function __checkSeconds(setting:String, value:Null<Float>):Void {
+		if (value != null && (Math.isNaN(value) || value < 0)) {
+			throw new ArgumentError('MySQLConfig.$setting is a number of seconds, 0 for none: $value is not one.');
+		}
 	}
 
 	/**

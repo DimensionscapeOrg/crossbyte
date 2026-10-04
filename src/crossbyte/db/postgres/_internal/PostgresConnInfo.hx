@@ -37,19 +37,36 @@ class PostgresConnInfo {
 
 		var connectTimeout:Int = cfg.connectTimeout != null ? cfg.connectTimeout : 5;
 
+		// 0 is no limit, as libpq reads an absent connect_timeout; a negative
+		// one was taken for the same without a word.
+		if (connectTimeout < 0) {
+			throw new ArgumentError('PostgresConfig.connectTimeout must not be negative ($connectTimeout); 0 is no limit.');
+		}
+
 		if (connectTimeout > 0) {
 			__add(out, "connect_timeout", Std.string(connectTimeout));
 		}
 
-		__addCount(out, "keepalives_idle", "keepAliveIdle", cfg.keepAliveIdle);
-		__addCount(out, "keepalives_interval", "keepAliveInterval", cfg.keepAliveInterval);
-		__addCount(out, "keepalives_count", "keepAliveCount", cfg.keepAliveCount);
+		var extra:Map<String, String> = cfg.connectionParameters;
+
+		// Keepalive is on with MySQL's timings unless turned off: libpq
+		// turns it on by default but leaves the timings to the system, two
+		// hours before the first probe on Linux and Windows, which is how long
+		// a connection to a host gone silent looked alive, and held the
+		// worker waiting on it. A keyword the caller passes itself in
+		// connectionParameters is theirs.
+		if (cfg.keepAlive == false) {
+			__addDefault(out, extra, "keepalives", "0");
+		} else {
+			__addCount(out, extra, "keepalives_idle", "keepAliveIdle", cfg.keepAliveIdle, DEFAULT_KEEPALIVE_IDLE);
+			__addCount(out, extra, "keepalives_interval", "keepAliveInterval", cfg.keepAliveInterval, DEFAULT_KEEPALIVE_INTERVAL);
+			__addCount(out, extra, "keepalives_count", "keepAliveCount", cfg.keepAliveCount, DEFAULT_KEEPALIVE_COUNT);
+		}
 
 		if (cfg.tcpUserTimeout != null) {
 			__add(out, "tcp_user_timeout", __millis("tcpUserTimeout", cfg.tcpUserTimeout));
 		}
 
-		var extra:Map<String, String> = cfg.connectionParameters;
 		var options:Array<String> = [];
 
 		if (extra != null && extra.get("options") != null && extra.get("options") != "") {
@@ -122,16 +139,39 @@ class PostgresConnInfo {
 		out.addChar(" ".code);
 	}
 
-	@:noCompletion private static function __addCount(out:StringBuf, keyword:String, setting:String, value:Null<Int>):Void {
-		if (value == null) {
-			return;
-		}
+	/** Idle seconds before the first keepalive probe, unless set. **/
+	public static inline var DEFAULT_KEEPALIVE_IDLE:Int = 60;
 
-		if (value < 0) {
+	/** Seconds between unanswered probes, unless set. **/
+	public static inline var DEFAULT_KEEPALIVE_INTERVAL:Int = 10;
+
+	/** Unanswered probes before the connection is dropped, unless set. **/
+	public static inline var DEFAULT_KEEPALIVE_COUNT:Int = 6;
+
+	/**
+		A count setting: its value, or `fallback` when unset, left out
+		altogether when the caller names the keyword in `extra`.
+	**/
+	@:noCompletion private static function __addCount(out:StringBuf, extra:Map<String, String>, keyword:String, setting:String, value:Null<Int>,
+			fallback:Int):Void {
+		if (value != null && value < 0) {
 			throw new ArgumentError('PostgresConfig.$setting must not be negative.');
 		}
 
-		__add(out, keyword, Std.string(value));
+		if (value == null && extra != null && extra.exists(keyword)) {
+			return;
+		}
+
+		__add(out, keyword, Std.string(value == null ? fallback : value));
+	}
+
+	/** `keyword` = `value`, unless the caller names the keyword in `extra`. **/
+	@:noCompletion private static function __addDefault(out:StringBuf, extra:Map<String, String>, keyword:String, value:String):Void {
+		if (extra != null && extra.exists(keyword)) {
+			return;
+		}
+
+		__add(out, keyword, value);
 	}
 
 	/**

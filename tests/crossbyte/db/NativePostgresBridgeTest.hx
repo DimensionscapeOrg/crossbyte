@@ -340,6 +340,31 @@ class NativePostgresBridgeTest extends utest.Test {
 		}
 	}
 
+	/**
+		A connection made with no keepalive settings reaches libpq with
+		MySQL's timings, 60/10/6. libpq turns keepalive on but left the
+		timings to the system, two hours before the first probe, so a
+		query waiting on a host gone silent held its worker that long.
+	**/
+	public function testKeepAliveReachesLibpqWithTimingsByDefault():Void {
+		var connection = __open(__config("localhost"));
+		var rows = connection.requestParams("fake:conninfo", []).rows;
+		connection.close();
+
+		var conninfo:String = rows[0][0].toString();
+
+		for (expected in ["keepalives_idle='60'", "keepalives_interval='10'", "keepalives_count='6'"]) {
+			Assert.isTrue(conninfo.indexOf(expected) >= 0, 'missing $expected in $conninfo');
+		}
+
+		var config = __config("localhost");
+		config.keepAlive = false;
+		connection = __open(config);
+		conninfo = connection.requestParams("fake:conninfo", []).rows[0][0].toString();
+		connection.close();
+		Assert.isTrue(conninfo.indexOf("keepalives='0'") >= 0, conninfo);
+	}
+
 	public function testACommitTheServerTurnedIntoARollbackThrows():Void {
 		// After a statement fails inside a transaction, PostgreSQL answers the
 		// COMMIT with success and the tag ROLLBACK, discarding everything. Only

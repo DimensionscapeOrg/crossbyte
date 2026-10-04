@@ -115,6 +115,36 @@ class MySQLNativeWireTest extends utest.Test {
 		Assert.isTrue(message.indexOf("Timed out") >= 0, message);
 	}
 
+	public function testAGreetingSentAByteAtATimeIsBoundedByTheConnectTimeout():Void {
+		// Each read of the handshake waited the whole connect timeout again,
+		// so a server that sent its greeting a byte at a time, each inside
+		// it, held open() for as long as it went on: here 0.25 s a byte, some
+		// 80 bytes, under a 1 s connectTimeout, and then logged in.
+		__server.greetingTrickle = 0.25;
+		__server.start();
+		var config:MySQLConfig = __config();
+		config.connectTimeout = 1.0;
+		var started:Float = haxe.Timer.stamp();
+		var error:Null<IOError> = null;
+		var connection:MySQLConnection = new MySQLConnection();
+
+		try {
+			connection.open(config);
+		} catch (e:IOError) {
+			error = e;
+		}
+
+		var took:Float = haxe.Timer.stamp() - started;
+
+		if (error == null) {
+			connection.close();
+		}
+
+		Assert.isTrue(took < 4.0, 'open() took ${took}s under a 1 s connectTimeout');
+		Require.notNull(error);
+		Assert.isTrue(error.message.indexOf("Timed out") >= 0, error.message);
+	}
+
 	public function testAConnectNobodyAnswersTimesOut():Void {
 		// connect() itself had no limit: to a host that drops the SYN it
 		// waited for as long as the system resent it, 21 seconds on Windows
