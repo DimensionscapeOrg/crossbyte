@@ -75,7 +75,7 @@ class AllocationBudgetTest extends utest.Test {
 	private static final EVENT = new Budget("an event dispatched to a listener", "dispatch", [0, 0, 0], [8, 8, 8]);
 	private static final TIMER = new Budget("a timeout armed and cleared", "timer", [80, 80, 72], [168, 168, 160]);
 	private static final INTERVAL = new Budget("an interval timer firing and re-arming", "firing", [0, 0, 112], [8, 8, 208]);
-	private static final POST = new Budget("a callback posted to the runtime and run", "post", [104, 104, 184], [200, 200, 296]);
+	private static final POST = new Budget("a callback posted to the runtime and run", "post", [0, 0, 112], [8, 8, 208]);
 	private static final IDLE_TICK = new Budget("a runtime frame with nothing to do", "frame", [0, 0, 112], [8, 8, 208]);
 	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [1848, 1848, 5048], [2376, 2376, 6376]);
 	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [8612, 8612, 12212], [10832, 10832, 15336]);

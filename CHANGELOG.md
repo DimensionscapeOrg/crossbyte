@@ -1570,6 +1570,11 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `CrossByte.post` keeps the array a batch of callbacks ran from for the
+  next batch, where each batch was a new array: a callback posted and run
+  allocated 104 bytes natively and allocates none, and on the jvm 184,
+  now 88, the frame that runs it, alone. A batch of more than 1,024 lets
+  its array go rather than keep a burst's size.
 - An HTTP/1.1 response's head is put together natively from an array of
   its pieces kept from one response to the next, and joined once. A
   `StringBuf` there is an array of pieces of its own, which grew seven
