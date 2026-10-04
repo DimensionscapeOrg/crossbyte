@@ -209,7 +209,9 @@ class AsyncDatabase<T> {
 		var submitted:Float = haxe.Timer.stamp();
 		#if target.threaded
 		var deadlines:QueueDeadlines = __deadlines;
-		var waiting:Null<QueuedJob> = waitLimit > 0 ? new QueuedJob(submitted, waitLimit) : null;
+		// Infinity is no limit too, and is not watched: a job due never would
+		// start the watch's thread and end it again, on every submit.
+		var waiting:Null<QueuedJob> = waitLimit > 0 && waitLimit < Math.POSITIVE_INFINITY ? new QueuedJob(submitted, waitLimit) : null;
 		#end
 
 		var task:Task<R> = workers.submitResult(function():R {
