@@ -77,13 +77,13 @@ class AllocationBudgetTest extends utest.Test {
 	private static final INTERVAL = new Budget("an interval timer firing and re-arming", "firing", [0, 0, 112], [8, 8, 208]);
 	private static final POST = new Budget("a callback posted to the runtime and run", "post", [0, 0, 112], [8, 8, 208]);
 	private static final IDLE_TICK = new Budget("a runtime frame with nothing to do", "frame", [0, 0, 112], [8, 8, 208]);
-	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [1720, 1720, 5048], [2216, 2216, 6376]);
-	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [8484, 8484, 12212], [10672, 10672, 15336]);
-	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3600, 3584, 3312], [4568, 4544, 4208]);
-	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [1720, 1720, 11920], [2216, 2216, 14968]);
+	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [1640, 1640, 5048], [2120, 2120, 6376]);
+	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [8404, 8404, 12212], [10576, 10576, 15336]);
+	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3520, 3504, 3312], [4464, 4448, 4208]);
+	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [1640, 1640, 11920], [2120, 2120, 14968]);
 	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [1576, 1576, 2960], [2040, 2040, 3768]);
 	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [1216, 1216, 2832], [1584, 1584, 3608]);
-	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [80, 80, 1216], [168, 168, 1584]);
+	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 1216], [8, 8, 1584]);
 	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [344, 344, 1224], [496, 496, 1600]);
 	// LinkedConnection, the in-memory pair these run over, copies each
 	// message it carries into a ByteArray of its own, where a socket's read

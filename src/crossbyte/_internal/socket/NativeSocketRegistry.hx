@@ -10,6 +10,7 @@ import sys.net.Socket;
 import crossbyte.ds.DenseSet;
 
 @:access(crossbyte.ds.DenseSet)
+@:access(crossbyte.ds.Stack)
 final class NativeSocketRegistry {
 	@:noCompletion private var __set:DenseSet<Socket>;
 	@:noCompletion private var __poll:PollBackend;
@@ -178,11 +179,19 @@ final class NativeSocketRegistry {
 			__writableQueue = __writableSwap;
 			__writableSwap = draining;
 
-			draining.forEach(__onFlushSocket);
+			// Walked here, not handed to forEach: the method handed over was a
+			// closure made for every pass that had something to flush.
+			var flushing:Array<Null<Socket>> = draining.__items;
+			for (i in 0...draining.__top) {
+				__onFlushSocket((flushing[i] : Socket));
+			}
 			draining.clear();
 		}
 		if (!__deregisterQueue.isEmpty) {
-			__deregisterQueue.forEach(__onDeregisterSocket);
+			var leaving:Array<Null<Socket>> = __deregisterQueue.__items;
+			for (i in 0...__deregisterQueue.__top) {
+				__onDeregisterSocket((leaving[i] : Socket));
+			}
 			__deregisterQueue.clear(true);
 			__isDirty = true;
 		}
