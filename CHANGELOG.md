@@ -1570,6 +1570,12 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A `Socket`'s read, and a `WebSocket`'s, copies what arrived into its
+  input from the thread's read buffer as it is, where a `ByteArray` was
+  made around the buffer for every read: 64 bytes natively a read, and on
+  the jvm 40. A TCP echo allocated 208 bytes natively a round trip and
+  allocates 80; an HTTP/1.1 GET 1,848, now 1,720; an HTTP/2 GET 3,728,
+  now 3,600; a WebSocket echo 1,704, now 1,576.
 - `CrossByte.post` keeps the array a batch of callbacks ran from for the
   next batch, where each batch was a new array: a callback posted and run
   allocated 104 bytes natively and allocates none, and on the jvm 184,
