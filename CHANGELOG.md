@@ -3203,6 +3203,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `File.data` after `save(bytes)` is a copy of what was saved, read from
+  position 0, as its doc says it is what was saved. It was the caller's
+  `ByteArray` itself: one reused after saving, or a datagram's
+  `event.data` saved from its listener, changed `data` into bytes that
+  were never saved, empty, in the datagram's case.
 - An `SQLiteStatement` executed on an asynchronous connection binds the
   bytes its parameters held when `execute()` was called. Their map was
   copied but the bytes were not, and the worker bound them later: a blob

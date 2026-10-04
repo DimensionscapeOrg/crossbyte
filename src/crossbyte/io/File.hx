@@ -117,8 +117,9 @@ final class File extends EventDispatcher {
 
 		A load starts by unsetting it, so a load that fails, `load()`
 		throwing its `IOError`, `loadAsync()` dispatching `ioError`, or one
-		cancelled leaves no data from an earlier one. `save()` sets it to what
-		it saved.
+		cancelled leaves no data from an earlier one. `save()` sets it to a
+		copy of what it saved, read from position 0: the `ByteArray` given to
+		`save()` is the caller's again once it returns.
 
 		@throws IllegalOperationError If the `load()` method was not called
 									  successfully, an exception is thrown
@@ -2141,9 +2142,11 @@ final class File extends EventDispatcher {
 	}
 
 	/**
-		Saves the data parameter passed to the location of the file.
+		Saves the data parameter passed to the location of the file, written
+		before this returns, and keeps a copy of it as `data`.
 
 		@param data The bytes to write: all `length` of them, whatever its `position`.
+		       The caller's again once this returns, to change or reuse.
 		@param overwrite Whether to replace a file already there.
 		@throws ArgumentError `data` is null.
 		@throws IOError A file is there and `overwrite` is false (3002), or the file cannot be written.
@@ -2166,7 +2169,15 @@ final class File extends EventDispatcher {
 			throw __ioError('Could not write "$__path": ${Std.string(e)}', 0);
 		}
 
-		this.__data = data;
+		// What was saved, kept as a copy, read from the start as a load would
+		// read it back: `data` is the caller's again once this returns. It
+		// was kept itself, so a buffer reused after saving, or a payload a
+		// listener was handed for its call alone, saved as it arrived,
+		// changed `data` into something that was never saved.
+		var saved = ByteArray.fromBytes((data : haxe.io.Bytes).sub(0, data.length));
+		saved.endian = data.endian;
+		saved.objectEncoding = data.objectEncoding;
+		this.__data = saved;
 	}
 
 	/**
