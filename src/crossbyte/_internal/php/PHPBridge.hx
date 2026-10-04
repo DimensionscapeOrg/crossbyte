@@ -94,6 +94,10 @@ class PHPBridge {
 	**/
 	public static inline var READ_BUDGET:Int = 1024 * 1024;
 
+	// This bridge's budget: `READ_BUDGET`, unless a test asks for less, so a
+	// pass can be made to stop at it whatever the system's socket buffers hold.
+	@:noCompletion private var __readBudget:Int = READ_BUDGET;
+
 	// Launch mode spawns php-cgi. Node has no sys.io.Process, so it uses
 	// CrossByte's own NativeProcess, the portable subprocess API this
 	// framework already ships, rather than a second bespoke wrapper. Both
@@ -817,7 +821,7 @@ class PHPBridge {
 	private function __drain(entry:Outbound):Bool {
 		var taken:Int = 0;
 		while (true) {
-			if (taken >= READ_BUDGET) {
+			if (taken >= __readBudget) {
 				if (entry.runtime != null) {
 					@:privateAccess entry.runtime.__noteMoreToRead();
 				}

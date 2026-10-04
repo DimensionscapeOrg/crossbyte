@@ -533,13 +533,18 @@ class PHPExchangeTest extends utest.Test {
 	}
 
 	/**
-		A pass reads `READ_BUDGET` bytes of a response at most, and tells the
+		A pass reads its budget of a response at most, and tells the
 		loop there is more. A backend sending fast was read for as long as it
 		sent, the whole runtime waiting.
 	**/
 	public function testAPassReadsTheBudgetAndLeavesTheRest():Void {
 		var backend = new BlockingBackend();
 		var bridge = new PHPBridge(PHPMode.Connect("127.0.0.1", backend.port), "", ["index.php"], 20);
+		// A budget small enough that what the system's buffers hold at once
+		// is more than it, wherever this runs: Linux's loopback took the
+		// answer a little at a time, and no pass met a budget of a megabyte
+		// (CI, 2026-10-04). The bytes are the same four megabytes.
+		@:privateAccess bridge.__readBudget = 16 * 1024;
 		var future = bridge.execute(__request());
 		var peer = backend.accept();
 		__readRequest(peer);
