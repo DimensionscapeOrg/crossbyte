@@ -4,7 +4,12 @@ package crossbyte._internal.system.timer;
 // word, and the Bools sit beside `armPass`, so the node carries no padding.
 @:structInit
 class TimerNode {
-	public var id:Int;
+	/**
+	 * The handle of the timer it carries, and `TimerHandle.INVALID` once that
+	 * timer is cleared or done: whether a node is still its timer's is read
+	 * from here.
+	 */
+	public var handle:Int;
 
 	/**
 	 * Where this node sits in the scheduler's heap, or -1 when it is not in
@@ -21,11 +26,11 @@ class TimerNode {
 	/**
 	 * Whether its callback is running. A node is reused once its timer is
 	 * done, and one whose callback is still running is not done whatever the
-	 * callback does to it: clearing itself frees the timer's slot, but the
-	 * node waits for the callback to return before it can carry another
-	 * timer. Kept on the node rather than in one field of the scheduler, so a
-	 * callback that runs a pass of its own, a nested pump, does not lose
-	 * track of the one that called it.
+	 * callback does to it: clearing itself ends the timer, but the node waits
+	 * for the callback to return before it can carry another timer. Kept on
+	 * the node rather than in one field of the scheduler, so a callback that
+	 * runs a pass of its own, a nested pump, does not lose track of the
+	 * one that called it.
 	 */
 	public var firing:Bool = false;
 
@@ -55,7 +60,7 @@ class TimerNode {
 	 * for one that takes its handle. It used to be wrapped in a closure that
 	 * took the handle and dropped it: a closure made per timer armed, two
 	 * dynamic calls per fire, and the handle boxed for each, an allocation
-	 * once a reused slot's generation put it past hxcpp's small-int cache.
+	 * once handles were past hxcpp's small-int cache.
 	 */
 	public var voidCallback:Void->Void;
 
@@ -63,15 +68,15 @@ class TimerNode {
 	/**
 	 * The handle as hxcpp passes it to a callback that takes one, boxed once
 	 * for the timer rather than once per fire: a closure is called with its
-	 * arguments boxed, and a handle is past the small-int cache from a slot's
-	 * first reuse on, so an interval taking its handle allocated every time
+	 * arguments boxed, and a handle is past the small-int cache from the
+	 * 256th timer on, so an interval taking its handle allocated every time
 	 * it fired. Null until the first fire.
 	 */
 	public var handleBox:Dynamic = null;
 	#end
 
-	public inline function new(id:Int, time:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void) {
-		this.id = id;
+	public inline function new(handle:Int, time:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void) {
+		this.handle = handle;
 		this.time = time;
 		this.interval = interval;
 		this.callback = callback;
@@ -83,8 +88,8 @@ class TimerNode {
 	 * new node starts with. Taken from a scheduler's spares only, which hold
 	 * nodes no list, heap or pass refers to any more.
 	 */
-	public inline function rearm(id:Int, time:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void):Void {
-		this.id = id;
+	public inline function rearm(handle:Int, time:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void):Void {
+		this.handle = handle;
 		this.time = time;
 		this.interval = interval;
 		this.callback = callback;

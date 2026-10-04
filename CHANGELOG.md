@@ -1591,9 +1591,9 @@ entry below says how:
 - Natively a timer callback that takes its handle, `Timer.setInterval(1,
   1, handle -> ...)`, is given the handle boxed once per timer, where
   every fire boxed it anew: hxcpp passes a closure its arguments boxed,
-  and a handle is past the small-int cache once its slot has been reused,
-  so such an interval allocated 24 bytes each time it fired. It allocates
-  nothing now. Other targets did not box it.
+  and a handle is past the small-int cache from a runtime's 256th timer
+  on, so such an interval allocated 24 bytes each time it fired. It
+  allocates nothing now. Other targets did not box it.
 - A timer's node is reused for the next timer armed once its timer is done,
   where every `setTimeout` and `setInterval` made one: 80 bytes natively,
   and on the jvm 72 with the slot's generation and number boxed, which was
@@ -1602,9 +1602,8 @@ entry below says how:
   per session. A timeout armed and cleared, or armed and fired, now
   allocates nothing natively or on the jvm. Up to 4,096 done nodes are
   kept per runtime, so a burst of timers pins no more than that, under a
-  third of a megabyte natively. Handles are unchanged: a handle names a
-  slot and its generation, never a node, so a cleared handle stays inert
-  whatever its node carries next.
+  third of a megabyte natively. A handle is a number, never a node, so a
+  cleared handle stays inert whatever its node carries next.
 - A WebSocket text message is written into its frame without being encoded
   into a buffer of its own first, natively when the string is held a byte a
   character and on the jvm when it is ASCII and no longer than 256
@@ -3166,6 +3165,22 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A timer handle kept after its timer has fired or been cleared no longer
+  names another timer later. A handle was a slot and a twelve-bit count of
+  that slot's reuses, and slots were reused the most recently freed first,
+  so under churn the same handle came round again after 4,096 timers, a
+  fraction of a second on a busy server, and a stale `Timer.clear`
+  cancelled whichever timer held it then: another connection's idle
+  timeout or heartbeat. A runtime now numbers the timers it arms, and gives
+  a number again only after 2^31 timers, never while a timer still holds
+  it. A runtime with 524,288 timers alive refuses the next with an
+  `IllegalOperationError`, where it threw a string.
+- A NaN delay, interval or time is refused with an `ArgumentError`. One
+  NaN timer on the default heap scheduler stopped every timer on its
+  runtime: NaN compares false with every due time, so at the top of the
+  heap it read as never due, and nothing behind it fired. A negative delay
+  counts as zero, the next frame, and an infinite one never fires, as
+  `crossbyte.Timer` now says.
 - A timer whose callback runs a frame of its own, `pump`, or
   `HostApplication.advance`, called from inside it, and then resumes
   itself through its handle is no longer lost. Which timer's callback was

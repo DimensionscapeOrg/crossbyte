@@ -287,13 +287,13 @@ class TimerWheelTest extends utest.Test {
 	public function testAClearedHandleCannotReachTheTimerItsNodeNowCarries():Void {
 		var wheel = new TimerWheel();
 		var stale = wheel.setTimeoutVoid(0.010, () -> Assert.fail("a cleared timer fired"));
-		var node:Dynamic = @:privateAccess wheel.nodes[stale.id()];
+		var node:Dynamic = @:privateAccess wheel.__table.get(stale);
 		Assert.isTrue(wheel.clear(stale));
 		Assert.isFalse(wheel.clear(stale), "a handle cleared twice was cleared twice");
 
 		var fired = 0;
 		var next = wheel.setTimeoutVoid(0.010, () -> fired++);
-		Assert.equals(node, @:privateAccess wheel.nodes[next.id()], "the cleared timer's node was not reused");
+		Assert.equals(node, @:privateAccess wheel.__table.get(next), "the cleared timer's node was not reused");
 		Assert.isFalse(wheel.isActive(stale));
 		Assert.isFalse(wheel.clear(stale), "a stale handle cleared the timer its node now carries");
 		Assert.isFalse(wheel.reschedule(stale, 5.0));
@@ -314,10 +314,10 @@ class TimerWheelTest extends utest.Test {
 		var handle:TimerHandle = TimerHandle.INVALID;
 		handle = wheel.setInterval(0.010, 0.010, h -> {
 			first++;
-			var firing:Dynamic = @:privateAccess wheel.nodes[h.id()];
+			var firing:Dynamic = @:privateAccess wheel.__table.get(h);
 			wheel.clear(h);
 			secondHandle = wheel.setTimeoutVoid(0.020, () -> second++);
-			Assert.isTrue(@:privateAccess wheel.nodes[secondHandle.id()] != firing, "a timer armed in a callback was given the node still firing");
+			Assert.isTrue(@:privateAccess wheel.__table.get(secondHandle) != firing, "a timer armed in a callback was given the node still firing");
 		});
 
 		wheel.advanceTime(0.010);
@@ -336,12 +336,12 @@ class TimerWheelTest extends utest.Test {
 		var wheel = new TimerWheel();
 		var fired = 0;
 		var handle = wheel.setIntervalVoid(0.010, 0.010, () -> fired++);
-		var node:Dynamic = @:privateAccess wheel.nodes[handle.id()];
+		var node:Dynamic = @:privateAccess wheel.__table.get(handle);
 		for (_ in 0...5) {
 			wheel.advanceTime(0.010);
 		}
 		Assert.equals(5, fired);
-		Assert.equals(node, @:privateAccess wheel.nodes[handle.id()]);
+		Assert.equals(node, @:privateAccess wheel.__table.get(handle));
 		Assert.equals(0, @:privateAccess wheel.__spare.length, "an interval re-arming gave up its node");
 	}
 
@@ -417,6 +417,50 @@ class TimerWheelTest extends utest.Test {
 		var next:TimerHandle = wheel.setTimeout(0.010, h -> seen.push(h));
 		wheel.advanceTime(0.010);
 		Assert.equals((next : Int), seen[3], "a reused node passed the handle of the timer before");
+	}
+
+	public function testAHandleKeptAcrossThousandsOfTimersStaysCleared():Void {
+		// See the heap's: a handle was a slot and a twelve-bit generation.
+		var wheel = new TimerWheel();
+		var kept = wheel.setTimeoutVoid(0.010, () -> Assert.fail("a cleared timer fired"));
+		Assert.isTrue(wheel.clear(kept));
+		for (_ in 0...4095) {
+			wheel.clear(wheel.setTimeoutVoid(0.010, () -> {}));
+		}
+		var fired = 0;
+		var other = wheel.setTimeoutVoid(0.010, () -> fired++);
+		Assert.isFalse(wheel.clear(kept), "a handle cleared 4,095 timers ago cleared the timer armed since");
+		wheel.advanceTime(0.020);
+		Assert.equals(1, fired);
+		Assert.isFalse(wheel.isActive(other));
+	}
+
+	public function testANaNDelayIsRefusedAndAnInfiniteOneNeverFires():Void {
+		var wheel = new TimerWheel();
+		var fired = 0;
+		var refused = 0;
+		for (attempt in [() -> wheel.setTimeoutVoid(Math.NaN, () -> {}), () -> wheel.setIntervalVoid(1.0, Math.NaN, () -> {})]) {
+			try {
+				attempt();
+			} catch (e:crossbyte.errors.ArgumentError) {
+				refused++;
+			}
+		}
+		Assert.equals(2, refused);
+		var live = wheel.setTimeoutVoid(0.010, () -> fired++);
+		try {
+			wheel.reschedule(live, Math.NaN);
+			Assert.fail("a NaN time was taken");
+		} catch (e:crossbyte.errors.ArgumentError) {}
+		wheel.setTimeoutVoid(-1.0, () -> fired++);
+		var forever = wheel.setTimeoutVoid(Math.POSITIVE_INFINITY, () -> Assert.fail("an infinite delay fired"));
+		for (_ in 0...300) {
+			wheel.advanceTime(0.010);
+		}
+		Assert.equals(2, fired);
+		Assert.isTrue(wheel.isActive(forever));
+		Assert.isTrue(wheel.clear(forever));
+		Assert.isTrue(wheel.isEmpty);
 	}
 
 	public function testSizeTracksLiveTimers():Void {

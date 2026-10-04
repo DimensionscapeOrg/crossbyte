@@ -13,6 +13,12 @@ import crossbyte.core.TimerStrategy;
  *
  * The default implementation is based on a min-heap, but future variants like
  * timer wheels can be plugged in by implementing `ITimerScheduler`.
+ *
+ * Both schedulers number the timers they arm, so a handle is not given again
+ * until 2^31 timers have been armed, and a cleared one stays inert (see
+ * `TimerHandle`). Both refuse a NaN delay, interval or time with an
+ * `ArgumentError`; a negative delay counts as zero, and an infinite one never
+ * fires, its timer held until cleared.
  */
 @:forward(startTime, onError)
 abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler {

@@ -109,15 +109,13 @@ class TimerHeapTest extends utest.Test {
 		Assert.isTrue(heap.clear(oldHandle));
 		Assert.isFalse(heap.isActive(oldHandle));
 
-		// The freed slot is reused (LIFO) by the next create; the new handle
-		// occupies the same id but a bumped generation, so the old handle must
-		// no longer validate (no ABA aliasing).
+		// The next timer takes what the cleared one left, and gets a handle of
+		// its own: the old one must no longer validate (no ABA aliasing).
 		var newHandle = heap.setTimeout(1.0, _ -> {});
 		Assert.isFalse(heap.isActive(oldHandle));
 		Assert.isTrue(heap.isActive(newHandle));
 
-		// Exercise the slot well past the old 8-bit (256) wrap boundary to
-		// confirm the widened generation field never aliases back to oldHandle.
+		// Well past where an 8-bit generation once wrapped back to oldHandle.
 		var last = newHandle;
 		for (i in 0...600) {
 			Assert.isTrue(heap.clear(last));
@@ -276,19 +274,154 @@ class TimerHeapTest extends utest.Test {
 	}
 
 	public function testAHandleIsNeverNegative():Void {
-		// The generation's top bit was the sign bit: from a slot's 2048th
-		// reuse every handle was negative, and one could equal INVALID.
+		// A handle once carried a generation whose top bit was the sign bit,
+		// so one could equal INVALID. Handles count up to MAX_HANDLE and start
+		// again at zero, here from just short of the end.
 		var heap = new TimerHeap();
-		var negative = 0;
-		for (_ in 0...(1 << TimerHandle.GEN_BITS)) {
+		@:privateAccess heap.__nextHandle = TimerHandle.MAX_HANDLE - 2;
+		var seen:Array<Int> = [];
+		for (_ in 0...6) {
 			var handle = heap.setTimeoutVoid(1.0, () -> {});
-			if ((handle : Int) < 0) {
-				negative++;
-			}
+			seen.push(handle);
 			heap.clear(handle);
 		}
-		Assert.equals(0, negative);
-		Assert.isTrue((new TimerHandle(TimerHandle.ID_MASK, TimerHandle.GEN_MASK) : Int) != (TimerHandle.INVALID : Int));
+		Assert.same([TimerHandle.MAX_HANDLE - 2, TimerHandle.MAX_HANDLE - 1, TimerHandle.MAX_HANDLE, 0, 1, 2], seen);
+	}
+
+	// A handle a timer was given is never given again while it could still be
+	// held: the count runs to 2^31 before it repeats. It was a slot and a
+	// twelve-bit generation, slots reused the most recently freed first, so
+	// a handle kept after its timer was cleared named whichever timer had
+	// that slot 4,096 reuses later, and clearing it cancelled that timer.
+
+	public function testAHandleKeptAcrossThousandsOfTimersStaysCleared():Void {
+		for (reuses in [4095, 2 * 4096 - 1, 5000]) {
+			var heap = new TimerHeap();
+			var kept = heap.setTimeoutVoid(1.0, () -> Assert.fail("a cleared timer fired"));
+			Assert.isTrue(heap.clear(kept));
+			for (_ in 0...reuses) {
+				heap.clear(heap.setTimeoutVoid(1.0, () -> {}));
+			}
+
+			var fired = 0;
+			var other = heap.setTimeoutVoid(1.0, () -> fired++);
+			Assert.isTrue((other : Int) != (kept : Int), "a handle was given twice, after " + reuses + " timers");
+			Assert.isFalse(heap.clear(kept), "a handle cleared " + reuses + " timers ago cleared the timer armed since");
+			Assert.isTrue(heap.isActive(other));
+			heap.advanceTime(1.0);
+			Assert.equals(1, fired, "the timer armed last did not fire after " + reuses + " timers");
+		}
+	}
+
+	public function testTimersArmedTogetherDoNotCrowdTheTable():Void {
+		// Handles are counted, so timers armed together have consecutive
+		// handles. Placed by their low bits, 10,000 long-lived ones filled one
+		// solid run of the table, and each later handle whose place fell
+		// inside it walked the run: arming and clearing a timer went from
+		// 0.11 to 2.6 microseconds. The longest run of taken places says it
+		// without a clock.
+		var heap = new TimerHeap();
+		for (i in 0...10000) {
+			heap.setTimeoutVoid(1000.0 + i, () -> {});
+		}
+		var longest = 0;
+		for (round in 0...4) {
+			for (_ in 0...8192) {
+				heap.clear(heap.setTimeoutVoid(10.0, () -> {}));
+			}
+			for (_ in 0...512) {
+				heap.setTimeoutVoid(5.0, () -> {});
+			}
+			var keys:haxe.ds.Vector<Int> = @:privateAccess heap.__table.__keys;
+			var run = 0;
+			// Twice round, so a run across the end is counted whole.
+			for (i in 0...keys.length * 2) {
+				if (keys[i % keys.length] != TimerHandle.INVALID) {
+					run++;
+					if (run > longest) {
+						longest = run;
+					}
+				} else {
+					run = 0;
+				}
+			}
+			heap.advanceTime(5.0);
+		}
+		Assert.equals(10000, heap.size);
+		Assert.isTrue(longest < 100, 'a run of $longest taken places');
+	}
+
+	public function testHandlesStartingAgainPassOneStillHeld():Void {
+		// Once the count has run out it starts again at zero, and a timer
+		// armed back then may still hold a handle it comes to.
+		var heap = new TimerHeap();
+		var fired = 0;
+		var old = heap.setTimeoutVoid(5.0, () -> fired++);
+		Assert.equals(0, (old : Int));
+		@:privateAccess heap.__nextHandle = TimerHandle.MAX_HANDLE;
+		var last = heap.setTimeoutVoid(1.0, () -> {});
+		var next = heap.setTimeoutVoid(1.0, () -> {});
+		Assert.equals(TimerHandle.MAX_HANDLE, (last : Int));
+		Assert.equals(1, (next : Int), "the count started again on a handle still held");
+		Assert.isTrue(heap.isActive(old));
+		heap.advanceTime(5.0);
+		Assert.equals(1, fired);
+	}
+
+	public function testANaNDelayIsRefusedAndStopsNothing():Void {
+		// One NaN due time stopped every timer on the heap: it compares false
+		// with every other, and at the root read as never due.
+		var heap = new TimerHeap();
+		var fired = 0;
+		for (i in 0...20) {
+			heap.setTimeoutVoid(0.1 + i * 0.01, () -> fired++);
+		}
+		var refused = 0;
+		for (attempt in [() -> heap.setTimeoutVoid(Math.NaN, () -> {}), () -> heap.setTimeout(Math.NaN, _ -> {}),
+			() -> heap.setIntervalVoid(Math.NaN, 1.0, () -> {}), () -> heap.setIntervalVoid(1.0, Math.NaN, () -> {}),
+			() -> heap.scheduleVoid(Math.NaN, () -> {})]) {
+			try {
+				attempt();
+			} catch (e:crossbyte.errors.ArgumentError) {
+				refused++;
+			}
+		}
+		Assert.equals(5, refused, "a NaN delay, interval or time was taken");
+
+		var live = heap.setTimeoutVoid(0.2, () -> fired++);
+		for (move in [() -> heap.reschedule(live, Math.NaN), () -> heap.delay(live, Math.NaN), () -> heap.setEnabled(live, false, KeepPhase, Math.NaN)]) {
+			try {
+				move();
+				Assert.fail("a NaN time was taken");
+			} catch (e:crossbyte.errors.ArgumentError) {}
+		}
+
+		for (i in 0...20) {
+			heap.setTimeoutVoid(0.3 + i * 0.01, () -> fired++);
+		}
+		heap.advanceTime(1.0);
+		Assert.equals(41, fired, "timers armed around a NaN did not all fire");
+		Assert.isTrue(heap.isEmpty);
+	}
+
+	public function testNegativeAndInfiniteDelays():Void {
+		// Negative counts as zero: due at the next pass. Infinite is never
+		// due, and its timer is held until cleared.
+		var heap = new TimerHeap();
+		var soon = 0;
+		var never = 0;
+		heap.setTimeoutVoid(-5.0, () -> soon++);
+		heap.setTimeoutVoid(Math.NEGATIVE_INFINITY, () -> soon++);
+		var forever = heap.setTimeoutVoid(Math.POSITIVE_INFINITY, () -> never++);
+		heap.advanceTime(0);
+		Assert.equals(2, soon);
+		for (_ in 0...10) {
+			heap.advanceTime(1e9);
+		}
+		Assert.equals(0, never);
+		Assert.isTrue(heap.isActive(forever));
+		Assert.isTrue(heap.clear(forever));
+		Assert.isTrue(heap.isEmpty);
 	}
 
 	public function testATimerIsDueWhenTheClockReachesItByAnyPath():Void {
@@ -314,10 +447,9 @@ class TimerHeapTest extends utest.Test {
 		while (haxe.Timer.stamp() < end) {}
 	}
 
-	// A done timer's node carries the next timer armed. A handle names a slot
-	// and the slot's generation, never a node, so what a cleared handle can
-	// reach is decided by the slot alone: these hold whichever node a timer
-	// is given.
+	// A done timer's node carries the next timer armed. A handle is a number
+	// given once, never a node, so what a cleared handle can reach does not
+	// depend on which node a timer is given: these hold whichever it is.
 
 	public function testClearingAHandleTwiceClearsNothingElse():Void {
 		var heap = new TimerHeap();
@@ -336,12 +468,12 @@ class TimerHeapTest extends utest.Test {
 	public function testAClearedHandleCannotReachTheTimerItsNodeNowCarries():Void {
 		var heap = new TimerHeap();
 		var stale = heap.setTimeoutVoid(1.0, () -> Assert.fail("a cleared timer fired"));
-		var node = @:privateAccess heap.nodes[stale.id()];
+		var node = @:privateAccess heap.__table.get(stale);
 		Assert.isTrue(heap.clear(stale));
 
 		var fired = 0;
 		var next = heap.setTimeoutVoid(1.0, () -> fired++);
-		Assert.equals(node, @:privateAccess heap.nodes[next.id()], "the cleared timer's node was not reused");
+		Assert.equals(node, @:privateAccess heap.__table.get(next), "the cleared timer's node was not reused");
 
 		Assert.isFalse(heap.isActive(stale));
 		Assert.isFalse(heap.clear(stale), "a stale handle cleared the timer its node now carries");
@@ -366,10 +498,10 @@ class TimerHeapTest extends utest.Test {
 		var handle:TimerHandle = TimerHandle.INVALID;
 		handle = heap.setInterval(1.0, 1.0, h -> {
 			first++;
-			firstNode = @:privateAccess heap.nodes[h.id()];
+			firstNode = @:privateAccess heap.__table.get(h);
 			heap.clear(h);
 			secondHandle = heap.setTimeoutVoid(2.0, () -> second++);
-			Assert.isTrue(@:privateAccess heap.nodes[secondHandle.id()] != firstNode, "a timer armed in a callback was given the node still firing");
+			Assert.isTrue(@:privateAccess heap.__table.get(secondHandle) != firstNode, "a timer armed in a callback was given the node still firing");
 		});
 
 		heap.advanceTime(1.0);
@@ -388,14 +520,14 @@ class TimerHeapTest extends utest.Test {
 		var heap = new TimerHeap();
 		var fired = 0;
 		var handle = heap.setIntervalVoid(1.0, 1.0, () -> fired++);
-		var node = @:privateAccess heap.nodes[handle.id()];
+		var node = @:privateAccess heap.__table.get(handle);
 
 		for (_ in 0...5) {
 			heap.advanceTime(1.0);
 		}
 		Assert.equals(5, fired);
 		Assert.isTrue(heap.isActive(handle));
-		Assert.equals(node, @:privateAccess heap.nodes[handle.id()]);
+		Assert.equals(node, @:privateAccess heap.__table.get(handle));
 		Assert.equals(0, @:privateAccess heap.__spare.length, "an interval re-arming gave up its node");
 	}
 
@@ -406,7 +538,7 @@ class TimerHeapTest extends utest.Test {
 			order.push("outer");
 			heap.setTimeoutVoid(0.5, () -> order.push("inner"));
 		});
-		var outerNode = @:privateAccess heap.nodes[outer.id()];
+		var outerNode = @:privateAccess heap.__table.get(outer);
 
 		heap.advanceTime(1.0);
 		Assert.same(["outer"], order);
@@ -458,7 +590,11 @@ class TimerHeapTest extends utest.Test {
 		// slot, and its handle read as live for as long as the heap ran.
 		var heap = new TimerHeap();
 		var held:TimerHandle = TimerHandle.INVALID;
-		heap.setTimeoutVoid(1.0, () -> held = heap.scheduleVoid(1.2, () -> Assert.fail("a cleared timer fired")));
+		heap.setTimeoutVoid(1.0, () -> {
+			// Due before the timer below fires, so this pass reaches it first.
+			held = heap.setTimeoutVoid(0, () -> Assert.fail("a cleared timer fired"));
+			heap.reschedule(held, 1.2);
+		});
 		heap.setTimeoutVoid(1.5, () -> Assert.isTrue(heap.clear(held, false)));
 
 		heap.advanceTime(2.0);
