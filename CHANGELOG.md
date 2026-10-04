@@ -1574,6 +1574,18 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- Host names are looked up on four threads the process keeps for lookups,
+  not on a thread started for each: ten thousand connects by name were ten
+  thousand threads, with no cap, and nothing ended a wait that the system's
+  lookup did not. A caller now waits 30 seconds for its answer at most and
+  is then told the lookup timed out; the system call, which cannot be
+  stopped, carries on on its thread, and at most four can be held so. 256
+  names at most wait for a thread, and one asked for past them fails at
+  once. Callers asking for a name already being looked up share the lookup,
+  and an answer is kept for 30 seconds, a failure for 5, for 256 names at
+  most: a burst of connects to one host costs one lookup, and a host that
+  moves is found within half a minute. For every socket's connect by name,
+  datagram sends and dials, and STUN servers.
 - A WebSocket text message is written into its frame without being encoded
   into a buffer of its own first, natively when the string is held a byte a
   character and on the jvm when it is ASCII and no longer than 256
