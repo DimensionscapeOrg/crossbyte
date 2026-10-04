@@ -247,6 +247,66 @@ class HTTPStreamingTest extends utest.Test {
 		});
 	}
 
+	public function testABodyPastTheOutputBufferIsWhatRespondBytesWasHanded(async:Async):Void {
+		// respondBytes's body is the caller's again once it returns. Past the
+		// output cap the body goes out over later drains, and it went from
+		// the caller's own ByteArray: what was sent after the first burst was
+		// whatever its bytes had become, here, all '!'. A cap of 64 KB keeps
+		// it cheap: a burst of 64 KB goes in the call, the other 960 KB later.
+		var size:Int = 1024 * 1024 + 13;
+		var body = new ByteArray();
+		for (i in 0...size) {
+			body.writeByte(__textAt(i));
+		}
+
+		var handler:HTTPRequestHandler = null;
+		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.maxOutputBufferSize = 64 * 1024;
+		config.middleware.push(function(h:HTTPRequestHandler, next:?Dynamic->Void):Void {
+			handler = h;
+			h.respondBytes(200, "application/octet-stream", body);
+			// Reused at once, as a caller may: for the next response, or
+			// because it was a payload valid only during this call.
+			(body : haxe.io.Bytes).fill(0, size, "!".code);
+		});
+		var server = new HTTPServer(config);
+		var client = new Socket();
+		var received = new ByteArray();
+		var closeSeen = false;
+		client.addEventListener(Event.CONNECT, _ -> {
+			client.writeUTFBytes("GET /bytes HTTP/1.1\r\nHost: localhost\r\n\r\n");
+			client.flush();
+		});
+		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
+			if (client.bytesAvailable > 0) {
+				client.readBytes(received, received.length);
+			}
+		});
+		client.addEventListener(Event.CLOSE, _ -> closeSeen = true);
+
+		HTTPTestSupport.connectThen(client, server, function():Void {
+			HTTPTestSupport.pumpUntilAsync(() -> closeSeen || __responseComplete(received, false), 15.0, function(_):Void {
+				var result = __parseResponse(received, handler != null ? handler.__streamPeakBuffered : -1);
+				try client.close() catch (_:Dynamic) {}
+				try server.close() catch (_:Dynamic) {}
+
+				Assert.equals(200, result.status);
+				Assert.equals(Std.string(size), result.headers.get("content-length"));
+				Assert.equals(size, result.body.length, "the body was cut off");
+				var changed:Int = 0;
+				for (i in 0...result.body.length) {
+					if (result.body[i] != __textAt(i)) {
+						changed++;
+					}
+				}
+				Assert.equals(0, changed, changed + " of " + size + " bytes went out as the caller's ByteArray became after respondBytes returned");
+				// Streamed, not written whole: the case this is about.
+				Assert.isTrue(result.peak > 0, "the body was not streamed from memory");
+				async.done();
+			});
+		});
+	}
+
 	#if (cpp || neko || hl || jvm)
 	public function testAStalledDownloadIsEndedWithBothTimeoutsOff(async:Async):Void {
 		// requestTimeout and keepAliveTimeout at 0 set no deadline for what

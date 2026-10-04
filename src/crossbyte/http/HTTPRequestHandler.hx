@@ -2122,8 +2122,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * @param open The head of a response whose body follows through `write`
 	 *        with no length yet known: see `beginResponse`.
 	 * @param callersData `data` is the caller's, who may change it after
-	 *        this returns (`respondBytes`): the writer copies it. Every other
-	 *        body here is made for the response, or kept and never changed.
+	 *        this returns (`respondBytes`): the writer copies it, and a body
+	 *        past the output cap is streamed from a copy. Every other body
+	 *        here is made for the response, or kept and never changed.
 	 */
 	@:noCompletion private function __dispatchResponseBytes(statusCode:Int, statusMessage:String, headers:Array<URLRequestHeader>, contentType:String,
 			data:ByteArray, headOnly:Bool = false, ?contentLength:Int, open:Bool = false, mayEncode:Bool = true, callersData:Bool = false):Void {
@@ -2332,7 +2333,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 			if (!__origin.connected) {
 				return;
 			}
-			__streamBytes = responseData;
+			// The caller's bytes are the caller's again once respondBytes
+			// returns, and these go out over drains to come: streamed from a
+			// copy of them, made only here. It streamed the caller's own
+			// ByteArray, and sent whatever its bytes had become, a body
+			// reused for the next response, or a payload valid only during
+			// the listener call that answered with it.
+			__streamBytes = (callersData && responseData == data) ? ByteArray.fromBytes((responseData : haxe.io.Bytes).sub(0, bodyLength)) : responseData;
 			__streamOffset = 0;
 			__beginStreamedBody(bodyLength);
 			return;
@@ -2428,6 +2435,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * `respond`, with a body of bytes: an image, an archive, anything that
 	 * is not text. Sent as given; `respond` could only send a String, as
 	 * UTF-8.
+	 *
+	 * `body` is the caller's again once this returns, to change or reuse:
+	 * what is sent is its bytes as they were at the call, including a body
+	 * past `maxOutputBufferSize`, which goes out over later drains.
 	 */
 	public function respondBytes(statusCode:Int, contentType:String, body:ByteArray, ?headers:Array<URLRequestHeader>, ?statusMessage:String):Void {
 		var reason:String = (statusMessage == null) ? __statusMessage(statusCode) : statusMessage;

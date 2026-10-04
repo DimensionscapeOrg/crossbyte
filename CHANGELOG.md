@@ -3154,6 +3154,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `HTTPRequestHandler.respondBytes` sends the body as it was at the call
+  when the body is past `maxOutputBufferSize` too. Such a body goes out
+  over later drains, and it went from the caller's own `ByteArray`: a
+  body changed or reused after `respondBytes` returned, for the next
+  response, or a payload valid only during the listener call that
+  answered with it, went out as its later bytes after the first burst.
+  It is now streamed from a copy, made only past the cap; below it the
+  writer's one copy is unchanged.
 - `NodeChannel.send` copies the message before it returns, as every other
   send does. It held the caller's `ByteArray`, queued while the link was
   down, and until the pass ended while it was up, to take back if the
