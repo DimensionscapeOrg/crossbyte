@@ -140,7 +140,9 @@ final class SocketRegistry {
 			__set.remove(s);
 		}
 	}
-	public #if final inline #end function update(timeout:Float = 0):Void {
+	// No default for `timeout`: on the jvm an argument with one is an
+	// object, boxed by every call, and this is called every frame.
+	public #if final inline #end function update(timeout:Float):Void {
 		__moreToRead = false;
 		if (!__writableQueue.isEmpty) {
 			// Swapped before draining: a socket that is still blocked

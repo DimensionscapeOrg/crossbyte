@@ -74,17 +74,17 @@ class AllocationBudgetTest extends utest.Test {
 	//                                                                           measured                budget
 	private static final EVENT = new Budget("an event dispatched to a listener", "dispatch", [0, 0, 0], [8, 8, 8]);
 	private static final TIMER = new Budget("a timeout armed and cleared", "timer", [80, 80, 72], [168, 168, 160]);
-	private static final INTERVAL = new Budget("an interval timer firing and re-arming", "firing", [0, 0, 112], [8, 8, 208]);
-	private static final POST = new Budget("a callback posted to the runtime and run", "post", [0, 0, 112], [8, 8, 208]);
-	private static final IDLE_TICK = new Budget("a runtime frame with nothing to do", "frame", [0, 0, 112], [8, 8, 208]);
-	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [1640, 1640, 5048], [2120, 2120, 6376]);
-	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [8404, 8404, 12212], [10576, 10576, 15336]);
-	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3520, 3504, 3312], [4464, 4448, 4208]);
-	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [1640, 1640, 11920], [2120, 2120, 14968]);
-	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [1576, 1576, 2960], [2040, 2040, 3768]);
-	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [1216, 1216, 2832], [1584, 1584, 3608]);
-	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 1216], [8, 8, 1584]);
-	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [344, 344, 1224], [496, 496, 1600]);
+	private static final INTERVAL = new Budget("an interval timer firing and re-arming", "firing", [0, 0, 0], [8, 8, 8]);
+	private static final POST = new Budget("a callback posted to the runtime and run", "post", [0, 0, 0], [8, 8, 8]);
+	private static final IDLE_TICK = new Budget("a runtime frame with nothing to do", "frame", [0, 0, 0], [8, 8, 8]);
+	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [1640, 1640, 4640], [2120, 2120, 5864]);
+	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [8404, 8404, 11800], [10576, 10576, 14816]);
+	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3520, 3504, 3008], [4464, 4448, 3824]);
+	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [1640, 1640, 11216], [2120, 2120, 14088]);
+	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [1576, 1576, 2656], [2040, 2040, 3384]);
+	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [1216, 1216, 2496], [1584, 1584, 3184]);
+	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 912], [8, 8, 1208]);
+	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [344, 344, 1112], [496, 496, 1456]);
 	// LinkedConnection, the in-memory pair these run over, copies each
 	// message it carries into a ByteArray of its own, where a socket's read
 	// would not: about a third of a call's figure natively, and half of a
@@ -577,9 +577,9 @@ class AllocationBudgetTest extends utest.Test {
 		thread's runtime by a first frame: what the case makes, sockets,
 		servers, timers, is its, and nothing else is. The suite's runtime is
 		not idle by the time a case runs: in the full jvm suite a frame of it
-		allocated 597 bytes, where an empty one's allocates 88 to 112, since
-		other cases left sockets on it to poll. `__finish` ends it, which hands
-		the thread back to the suite's.
+		allocated 597 bytes, where an empty one's allocated a sixth of that,
+		since other cases left sockets on it to poll. `__finish` ends it,
+		which hands the thread back to the suite's.
 	**/
 	private static function __start():CrossByte {
 		__runtime = new CrossByte(false, DEFAULT, true);

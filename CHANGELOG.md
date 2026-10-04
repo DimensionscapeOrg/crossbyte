@@ -326,6 +326,10 @@ entry below says how:
   longer passes as one, build it from a literal.
 - A `Dynamic` value no longer converts to a `URL` on its own: cast it,
   `(value : String)`, or build `new URL(value)`.
+- `CrossByte.pump` is two inline overloads: every call compiles as it did,
+  but `pump` is not a value any more, `var step = runtime.pump` and a
+  call through `Dynamic` do not compile or find it. Wrap it,
+  `(delta) -> runtime.pump(delta)`.
 
 ### Added
 - `SequenceRing.remove(sequence)` and `SequenceRing.writeBits(from, out, at,
@@ -1570,6 +1574,15 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- On the jvm a runtime frame boxes nothing. An argument with a default is
+  an object there, and the frame passed three, `pump`'s socket timeout,
+  the registry's poll timeout and the timers' limits, so a frame with
+  nothing to do allocated 88 to 112 bytes, and every frame of a busy
+  one as much. `pump` is two inline overloads now, `pump(delta)` and
+  `pump(delta, socketTimeout)`, over one frame. An idle frame, a timer
+  firing and a posted callback allocate nothing on the jvm; an HTTP/1.1
+  GET 4,888 bytes, now 4,632; a TCP echo 1,136, now 912. Natively nothing
+  was boxed, and nothing changed.
 - The socket registry walks the sockets it flushes, and those it lets go,
   itself, where it handed each list a method to call: the method became a
   closure every pass with something to flush, 32 bytes natively. A TCP

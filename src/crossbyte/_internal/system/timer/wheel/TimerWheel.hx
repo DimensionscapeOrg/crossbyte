@@ -316,6 +316,11 @@ class TimerWheel implements ITimerScheduler {
 	 * partway through is finished first by the next call.
 	 */
 	public function advanceTime(dt:Float, maxFires:Int = 0x7FFFFFFF, budget:Float = 0.0):Int {
+		return advanceBy(dt, maxFires, budget);
+	}
+
+	/** `advanceTime` with every argument given: see `ITimerScheduler.advanceBy`. **/
+	public function advanceBy(dt:Float, maxFires:Int, budget:Float):Int {
 		__now += dt;
 		__cutShort = false;
 		__fired = 0;

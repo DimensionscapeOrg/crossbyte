@@ -35,6 +35,13 @@ interface ITimerScheduler {
 	**/
 	public function advanceTime(dt:Float, maxFires:Int = 0x7FFFFFFF, budget:Float = 0.0):Int;
 
+	/**
+		`advanceTime` with every argument given: what the runtime calls each
+		frame. On the jvm an argument with a default is an object, so the
+		frame boxed `maxFires` and `budget` every time it advanced the timers.
+	**/
+	public function advanceBy(dt:Float, maxFires:Int, budget:Float):Int;
+
 	/** Whether the last `advanceTime` stopped with timers still due. **/
 	public var cutShort(get, never):Bool;
 

@@ -236,7 +236,12 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	 * @return The number of timers fired.
 	 */
 	public inline function advanceTime(dt:Float, maxFires:Int = 0x7FFFFFFF, budget:Float = 0.0):Int {
-		return this.advanceTime(dt, maxFires, budget);
+		return this.advanceBy(dt, maxFires, budget);
+	}
+
+	/** `advanceTime` with every argument given, boxing none on the jvm. **/
+	public inline function advanceBy(dt:Float, maxFires:Int, budget:Float):Int {
+		return this.advanceBy(dt, maxFires, budget);
 	}
 
 	/**

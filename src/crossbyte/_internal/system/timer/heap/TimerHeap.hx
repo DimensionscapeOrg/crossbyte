@@ -231,6 +231,11 @@ class TimerHeap implements ITimerScheduler {
 	 *        zero or less for no limit. Checked every few fires.
 	 */
 	public function advanceTime(dt:Float, maxFires:Int = 0x7FFFFFFF, budget:Float = 0.0):Int {
+		return advanceBy(dt, maxFires, budget);
+	}
+
+	/** `advanceTime` with every argument given: see `ITimerScheduler.advanceBy`. **/
+	public function advanceBy(dt:Float, maxFires:Int, budget:Float):Int {
 		__now += dt;
 		__pass = (__pass + 1) | 0;
 		__cutShort = false;
