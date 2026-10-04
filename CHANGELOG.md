@@ -1574,6 +1574,13 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A request body with a `Content-Length` is held in no more than that
+  length. It was grown by writing, half as much again as each write
+  needed, so a POST of 4 KB was held in 6,177 bytes. It still grows as
+  bytes arrive, a declared length alone allocates nothing, but stops
+  at the declared length: a POST of 4 KB allocates 6,352 bytes natively,
+  where it allocated 8,404, and 9,064 on the jvm, where it allocated
+  11,120. A chunked body grows as before.
 - On the jvm the socket registry's select answers into arrays the registry
   keeps. Through `sys.net.Socket.select` every frame with a socket on it
   made two empty arrays to ask with, three to answer in, their storage and

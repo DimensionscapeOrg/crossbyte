@@ -1423,6 +1423,29 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	/**
+		Makes room for `capacity` bytes without making any more of them
+		readable, for a writer that knows how much is coming: growing as it
+		goes, the buffer ends up to half as much again as what was written.
+		What is readable, and where, does not change.
+	**/
+	@:noCompletion public function __reserve(capacity:Int):Void {
+		if (capacity <= __length) {
+			return;
+		}
+		var bytes = Bytes.alloc(capacity);
+		var cacheLength = length;
+
+		if (__length > 0) {
+			length = __length;
+			bytes.blit(0, this, 0, __length);
+			length = cacheLength;
+		}
+
+		__setData(bytes);
+		length = cacheLength;
+	}
+
+	/**
 		Writes `length` bytes of `bytes` from `offset` at the position, as
 		`writeBytes` does, from a plain `Bytes` with no ByteArray made around
 		it. The range is the caller's to have checked.
