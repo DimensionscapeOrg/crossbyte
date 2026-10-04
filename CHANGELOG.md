@@ -3135,6 +3135,23 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Natively, a process whose threads end as it exits, a server spread
+  over runtimes, which exits them after `drain()`, is one, no longer
+  hangs there on Windows, nor crashes there when built with stack traces
+  (`-debug`, `HXCPP_STACK_TRACE`). Each thread hxcpp starts removes its
+  root from the collector as it ends, and once `main` had returned the
+  main thread could already have destroyed the set it removes it from,
+  among the static destructors: the removal faulted holding the
+  collector's root lock, Windows let that thread end, and the next one to
+  end waited on the lock while holding the loader lock, which the
+  process's exit waits for. With stack traces the thread also left a
+  destroyed map, and that fault ended the process. The multicore sample
+  hung so about once in 600 runs under load, and this is the likeliest
+  cause of its one CI failure, which ended at the same point with no
+  verdict printed. Fixed in the hxcpp fork (`fix/thread-exit-root-set`).
+  The sample now flushes its verdict as it prints it and says on stderr
+  why it exits with 1, and CI prints a failing run's exit code in full,
+  which the step reported as 1 whatever it was.
 - On HashLink a spread `HTTPServer` or `ServerWebSocket` no longer answers
   wrongly. The front of a spread server publishes the application's
   `connect` listeners to its runtimes, leaving out the one the class

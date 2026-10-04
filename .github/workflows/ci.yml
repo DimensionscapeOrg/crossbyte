@@ -847,9 +847,17 @@ jobs:
       # One listener spread over several runtimes: sixteen requests at once,
       # answered by more than one runtime, then a drain that exits them. Exits
       # 1 if a request goes unanswered or a single runtime answered them all.
+      #
+      # The exit code is said in full: the step reports any non-zero code a
+      # native command ends with as 1, so a process that crashed on its way
+      # out (0xC0000005) read the same as one whose checks failed.
       - name: Run multicore sample
         working-directory: export/multicore
-        run: .\MulticoreSample.exe
+        run: |
+          .\MulticoreSample.exe
+          if ($LASTEXITCODE -ne 0) {
+            throw ("MulticoreSample.exe exited with code {0} (0x{0:X8})" -f $LASTEXITCODE)
+          }
 
       - name: Run simple application sample
         working-directory: export/simple-application
