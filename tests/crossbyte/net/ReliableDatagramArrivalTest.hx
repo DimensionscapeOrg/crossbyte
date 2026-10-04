@@ -419,6 +419,58 @@ class ReliableDatagramArrivalTest extends utest.Test {
 	}
 
 	/**
+		A payload made for one message, not the session's own, here a
+		message whose first fragment arrived inside another message's call,
+		so it is put back together in a buffer of its own, handed out in
+		the session's reused event, is emptied once its call returns, and
+		its storage let go: the event does not go on holding it until the
+		next message, which could be a whole `maxMessageSize`.
+	**/
+	public function testAMessageOfItsOwnHandedOutInTheReusedEventIsLetGo():Void {
+		var link = Link.make();
+		if (link == null) return;
+
+		// Room for every frame at once: nothing acknowledges them here.
+		link.sender.__congestion.window = CongestionControl.MAX_WINDOW;
+		// The first message fragmented too, so its call has the session's
+		// own buffer out.
+		link.sender.send(numbered(3000));
+		var first = link.sender.take();
+		link.sender.send(numbered(40000));
+		var large = link.sender.take();
+		Assert.isTrue(large.length > 2, "the large message was not fragmented");
+
+		var kept:Array<ByteArray> = [];
+		var lengths:Array<Int> = [];
+		link.receiver.addEventListener(DatagramSocketDataEvent.DATA, e -> {
+			kept.push(e.data);
+			lengths.push(e.data.length);
+			if (lengths.length == 1) {
+				// The large message's first fragment, inside this call: put
+				// back together in a buffer of its own, the session's out.
+				link.deliver([large[0]]);
+			}
+		});
+		link.deliver(first);
+		link.deliver(large.slice(1));
+
+		Assert.same([3000, 40000], lengths, "the messages were not delivered whole");
+		Assert.equals(-1, link.received.length == 2 ? wrongByte(link.received[1], 40000) : -3, "the large message was not itself");
+		#if crossbyte_check_events
+		Assert.equals(0, kept[1].length, "a message kept past its call was left alive");
+		#elseif crossbyte_fresh_events
+		Assert.equals(40000, kept[1].length);
+		#else
+		Assert.isTrue(kept[1] != link.receiver.__assemblyKept, "the large message was put back together in the session's own buffer, so this shows nothing");
+		Assert.equals(0, kept[1].length, "a message of its own kept past its call still read whole");
+		var event = link.receiver.__arrivalEvent;
+		var held:Int = event == null || event.data == null ? 0 : capacityOf(event.data);
+		Assert.isTrue(held <= crossbyte.events._internal.Arrivals.KEEP, 'the session went on holding $held bytes of a message whose call had returned');
+		#end
+		link.close();
+	}
+
+	/**
 		A listener that throws lets go of what it was handed: the next message
 		is right, and goes through the session's own event and buffer again.
 	**/

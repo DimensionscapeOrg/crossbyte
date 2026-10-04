@@ -168,13 +168,26 @@ class Arrivals {
 	}
 
 	/**
-		`kill(payload)` under `-D crossbyte_check_events`, and nothing
-		otherwise: for a payload this side made for one arrival, once the
-		outermost call that handed it out has returned.
+		For a payload this side made for one arrival, not one it reuses,
+		once the outermost call that handed it out has returned: released,
+		emptied as a reused one is (`release`: length and position 0, its
+		storage let go past `KEEP`), since an event that is reused may still
+		refer to it, and its docs say what it was handed reads empty after
+		its call; under `-D crossbyte_check_events` killed; under
+		`-D crossbyte_fresh_events` left as it is, as before 1.0.
+
+		Released it did nothing, so a session's reused event went on holding
+		the last payload made for it alone: a WebSocket message inflated from
+		permessage-deflate, up to a megabyte, for as long as its peer was
+		quiet.
 	**/
 	public static inline function done(payload:Null<ByteArray>):Void {
 		#if crossbyte_check_events
 		kill(payload);
+		#elseif !crossbyte_fresh_events
+		if (payload != null) {
+			release(payload);
+		}
 		#end
 	}
 
