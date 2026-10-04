@@ -701,6 +701,39 @@ Content-Length: ${body.length}
 		fixture.done.wait(6.0);
 	}
 
+	/**
+		Progress the runtime has not yet told is folded into the latest. The
+		client reports it per chunk, so 5,000 chunks arriving while the
+		runtime was busy queued 5,000 messages, and 5,000 events followed;
+		measured, about 300,000 were queued in two seconds for one load.
+	**/
+	public function testProgressNotYetToldIsFoldedIntoTheLatest():Void {
+		var chunks:StringBuf = new StringBuf();
+		for (_ in 0...5000) {
+			chunks.add("a\r\n0123456789\r\n");
+		}
+		chunks.add("0\r\n\r\n");
+		var fixture = serveRequests(_ -> "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n" + chunks.toString(), 1);
+		var request = new URLRequest('http://127.0.0.1:${fixture.port}/chunks');
+		request.idleTimeout = 5000;
+		var loader = new URLLoader();
+		var progress:Array<Int> = [];
+		var done:Bool = false;
+		loader.addEventListener(ProgressEvent.PROGRESS, (event:ProgressEvent) -> progress.push(Std.int(event.bytesLoaded)));
+		loader.addEventListener(Event.COMPLETE, _ -> done = true);
+		loader.addEventListener(IOErrorEvent.IO_ERROR, _ -> done = true);
+		loader.load(request);
+
+		// The runtime busy, not pumped, while the whole body arrives.
+		fixture.waitDone();
+		crossbyte.sys.System.sleep(0.5);
+		pumpUntil(() -> done, 5.0);
+
+		Assert.isTrue(done, "the load never ended");
+		Assert.isTrue(progress.length < 50, progress.length + " progress events told for 5,000 chunks the runtime was too busy to hear");
+		Assert.equals(50000, progress.length > 0 ? progress[progress.length - 1] : -1, "the last progress told is not the whole body");
+	}
+
 	/** A deadline the load meets changes nothing: the load completes, once. **/
 	public function testALoadWithinItsTotalTimeoutCompletes():Void {
 		var fixture = serveRequests(_ -> response(200, "OK", ["Content-Length: 5"], "hello"), 1);
