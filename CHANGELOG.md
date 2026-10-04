@@ -3203,6 +3203,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `TypedWorker.run` (and `Worker.run`) hands the work a copy of a message
+  of bytes, made before it returns. The work read the caller's own bytes
+  on its thread later, as whatever they had become, a datagram's
+  `event.data` handed to a worker from its listener read empty or as the
+  next datagram, while the caller's thread could be writing them.
 - `File.data` after `save(bytes)` is a copy of what was saved, read from
   position 0, as its doc says it is what was saved. It was the caller's
   `ByteArray` itself: one reused after saving, or a datagram's

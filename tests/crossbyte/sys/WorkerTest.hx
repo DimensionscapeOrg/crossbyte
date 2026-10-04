@@ -405,6 +405,53 @@ class WorkerTest extends utest.Test {
 		#end
 	}
 
+	/**
+		Bytes handed to `run` are the caller's again once it returns: the work
+		reads them on its thread later, and is handed what they were at the
+		call, not what the caller wrote over them next, as it would over a
+		payload a listener was handed for its call alone.
+	**/
+	public function testBytesHandedToRunAreWhatTheyWereAtTheCall():Void {
+		var worker = new TypedWorker<crossbyte.io.ByteArray, String, Dynamic>();
+		var plain = new TypedWorker<haxe.io.Bytes, String, Dynamic>();
+		var read:String = null;
+		var readPlain:String = null;
+		worker.doWork = message -> {
+			// Long enough for the caller to have moved on.
+			#if target.threaded
+			crossbyte.sys.System.sleep(0.1);
+			#end
+			worker.sendComplete(message.position + ":" + message.readUTFBytes(message.bytesAvailable));
+		};
+		plain.doWork = message -> {
+			#if target.threaded
+			crossbyte.sys.System.sleep(0.1);
+			#end
+			plain.sendComplete(message.toString());
+		};
+		worker.onComplete(text -> read = text);
+		plain.onComplete(text -> readPlain = text);
+
+		var buffer = new crossbyte.io.ByteArray();
+		buffer.writeUTFBytes("xxwhat it was at the call");
+		buffer.position = 2;
+		worker.run(buffer);
+		// Reused at once, as the socket reuses its payload for the next arrival.
+		buffer.position = 0;
+		buffer.writeUTFBytes("CHANGED, and longer than it was");
+		var bytes = haxe.io.Bytes.ofString("plain bytes as given");
+		plain.run(bytes);
+		bytes.fill(0, bytes.length, "!".code);
+
+		pumpUntil(() -> read != null && readPlain != null);
+		#if target.threaded
+		Assert.equals("2:what it was at the call", read, "the work read the bytes as the caller changed them after run returned");
+		Assert.equals("plain bytes as given", readPlain, "the work read plain bytes as the caller changed them after run returned");
+		#else
+		Assert.pass();
+		#end
+	}
+
 	private static function waitFor(done:Void->Bool, timeoutSeconds:Float = 2.0):Void {
 		#if target.threaded
 		var deadline = haxe.Timer.stamp() + timeoutSeconds;
