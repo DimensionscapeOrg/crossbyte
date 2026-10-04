@@ -77,14 +77,14 @@ class AllocationBudgetTest extends utest.Test {
 	private static final INTERVAL = new Budget("an interval timer firing and re-arming", "firing", [0, 0, 0], [8, 8, 8]);
 	private static final POST = new Budget("a callback posted to the runtime and run", "post", [0, 0, 0], [8, 8, 8]);
 	private static final IDLE_TICK = new Budget("a runtime frame with nothing to do", "frame", [0, 0, 0], [8, 8, 8]);
-	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [1640, 1640, 4640], [2120, 2120, 5864]);
-	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [8404, 8404, 11800], [10576, 10576, 14816]);
-	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3520, 3504, 3008], [4464, 4448, 3824]);
-	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [1640, 1640, 11216], [2120, 2120, 14088]);
-	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [1576, 1576, 2656], [2040, 2040, 3384]);
-	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [1216, 1216, 2496], [1584, 1584, 3184]);
-	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 912], [8, 8, 1208]);
-	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [344, 344, 1112], [496, 496, 1456]);
+	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [1640, 1640, 4088], [2120, 2120, 5176]);
+	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [8404, 8404, 11196], [10576, 10576, 14064]);
+	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3520, 3504, 2591], [4464, 4448, 3304]);
+	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [1640, 1640, 10592], [2120, 2120, 13304]);
+	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [1576, 1576, 2080], [2040, 2040, 2664]);
+	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [1216, 1216, 1632], [1584, 1584, 2104]);
+	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 336], [8, 8, 488]);
+	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [344, 344, 824], [496, 496, 1096]);
 	// LinkedConnection, the in-memory pair these run over, copies each
 	// message it carries into a ByteArray of its own, where a socket's read
 	// would not: about a third of a call's figure natively, and half of a
@@ -92,8 +92,13 @@ class AllocationBudgetTest extends utest.Test {
 	private static final RPC_CALL = new Budget("an RPC call and its answer", "call", [920, 920, 592], [1216, 1216, 808]);
 	private static final RPC_ONE_WAY = new Budget("a one-way RPC call", "call", [392, 392, 264], [560, 560, 400]);
 
-	/** Operations run before measuring, so what the first ones build is not counted. **/
-	private static inline var WARM:Int = #if jvm 6000 #else 300 #end;
+	/**
+		Operations run before measuring, so what the first ones build is not
+		counted. On the jvm, enough for the compiler to have finished with
+		the path: after 6,000 Temurin 8's first run of a GET still read a
+		fifth above the two after it.
+	**/
+	private static inline var WARM:Int = #if jvm 12000 #else 300 #end;
 
 	/** Operations run before measuring a path the jvm compiles late. **/
 	private static inline var WARM_CHEAP:Int = #if jvm 30000 #else 2000 #end;

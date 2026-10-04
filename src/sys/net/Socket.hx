@@ -2578,7 +2578,19 @@ class Socket {
 		var resRead:Array<Socket> = [];
 		var resWrite:Array<Socket> = [];
 		var resOthers:Array<Socket> = [];
+		__selectInto(read, write, others, timeout == null ? -1.0 : timeout, resRead, resWrite, resOthers);
+		return {read: resRead, write: resWrite, others: resOthers};
+	}
 
+	/**
+		`select`, its answer added to arrays the caller keeps, emptied by
+		the caller, and its timeout a plain number, a negative one
+		polling: what a runtime's socket registry calls each frame. Through
+		`select` a frame made three arrays, their storage and the object
+		holding them, and boxed the timeout.
+	**/
+	@:noCompletion public static function __selectInto(read:Array<Socket>, write:Array<Socket>, others:Array<Socket>, timeout:Float,
+			resRead:Array<Socket>, resWrite:Array<Socket>, resOthers:Array<Socket>):Void {
 		var state = __state();
 		// Never 0, which a socket no call has asked about yet reads as.
 		var pass:Int = ++state.pass;
@@ -2607,7 +2619,7 @@ class Socket {
 			}
 		}
 
-		var polling:Bool = timeout == null || timeout <= 0;
+		var polling:Bool = timeout <= 0;
 		var look:Bool = polling && asked.length == 1;
 		var selector:Selector = look ? state.probeSelector() : state.mainSelector();
 		var transients = state.transients;
@@ -2715,8 +2727,6 @@ class Socket {
 		// holding every socket of its last call, each with its buffers and
 		// userData: 40 closed connections of 64 KB survived five collections.
 		asked.resize(0);
-
-		return {read: resRead, write: resWrite, others: resOthers};
 	}
 
 	/** Records that `s` is asked about for `ops` in this call. **/

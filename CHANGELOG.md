@@ -1574,6 +1574,15 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- On the jvm the socket registry's select answers into arrays the registry
+  keeps. Through `sys.net.Socket.select` every frame with a socket on it
+  made two empty arrays to ask with, three to answer in, their storage and
+  the object holding them, and boxed its timeout: 200 to 250 bytes a frame,
+  idle or not. A TCP echo allocated 912 bytes a round trip on the jvm and
+  allocates 336; an HTTP/1.1 GET 4,680, now 4,104; an HTTP/2 GET 2,984,
+  now 2,408; a WebSocket echo 2,656, now 2,080; a reliable UDP message
+  2,464, now 1,632; a datagram 1,112, now 824. `select` itself answers in
+  new arrays, as before.
 - On the jvm a runtime frame boxes nothing. An argument with a default is
   an object there, and the frame passed three, `pump`'s socket timeout,
   the registry's poll timeout and the timers' limits, so a frame with
