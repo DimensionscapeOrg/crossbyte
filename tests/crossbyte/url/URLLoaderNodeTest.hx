@@ -433,6 +433,168 @@ class URLLoaderNodeTest extends utest.Test {
 	}
 
 	/** Records what `loader` dispatches into `events`, as "COMPLETE <data>" or "IO_ERROR <text>". */
+	/**
+		A head trickled a byte at a time ends at the request's `headTimeout`;
+		each byte reset Node's idle timeout, and nothing else bounded it.
+	**/
+	public function testATrickledHeadEndsAtItsDeadline(async:Async):Void {
+		var head:String = "HTTP/1.1 200 OK\r\nX-Slow: " + StringTools.rpad("", "s", 60) + "\r\nContent-Length: 2\r\n\r\nok";
+		serveTrickled("", head, 50, (port, close) -> {
+			var started:Float = haxe.Timer.stamp();
+			loadWith('http://127.0.0.1:$port/slow-head', request -> {
+				request.idleTimeout = 2000;
+				request.headTimeout = 600;
+			}, outcome -> {
+				var took:Float = haxe.Timer.stamp() - started;
+				close();
+				Assert.equals("error The response head did not arrive within 600 ms of the request", outcome);
+				Assert.isTrue(took >= 0.5 && took < 2.5, 'a 0.6 s head deadline ended the load after $took s');
+				async.done();
+			});
+		});
+	}
+
+	/** A body trickled a byte at a time ends at the request's `totalTimeout`. **/
+	public function testATrickledBodyEndsAtTheTotalTimeout(async:Async):Void {
+		serveTrickled("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n", StringTools.rpad("", "t", 100), 50, (port, close) -> {
+			var started:Float = haxe.Timer.stamp();
+			loadWith('http://127.0.0.1:$port/slow-body', request -> {
+				request.idleTimeout = 2000;
+				request.headTimeout = 300;
+				request.totalTimeout = 700;
+			}, outcome -> {
+				var took:Float = haxe.Timer.stamp() - started;
+				close();
+				Assert.equals("error The load did not complete within 700 ms", outcome);
+				Assert.isTrue(took >= 0.6 && took < 3.0, 'a 0.7 s deadline ended the load after $took s');
+				async.done();
+			});
+		});
+	}
+
+	/**
+		A body past the request's `maxBodySize` is refused, declared or as it
+		grows. Node's client held a body to nothing at all, where the native
+		one held it to 64 MB.
+	**/
+	public function testTheBodyLimitHolds(async:Async):Void {
+		serveWith((request:Dynamic, body:js.node.Buffer, response:Dynamic) -> {
+			var big:String = StringTools.rpad("", "b", 5000);
+			if (Std.string(request.url) == "/declared") {
+				response.writeHead(200, {"Content-Type": "text/plain", "Content-Length": "5000"});
+				response.end(big);
+				return;
+			}
+			// No length given: Node's server sends it chunked.
+			response.writeHead(200, {"Content-Type": "text/plain"});
+			response.write(big.substr(0, 2500));
+			response.end(big.substr(2500));
+		}, (port, close) -> {
+			loadWith('http://127.0.0.1:$port/declared', request -> request.maxBodySize = 1024, declared -> {
+				loadWith('http://127.0.0.1:$port/chunked', request -> request.maxBodySize = 1024, chunked -> {
+					loadWith('http://127.0.0.1:$port/declared', _ -> {}, unlimited -> {
+						close();
+						// Cut short in the messages: a body taken is 5,000 bytes.
+						Assert.isTrue(declared == "error Response declared 5000 bytes, more than the 1024 allowed",
+							"a declared length past the limit was not refused: " + declared.substr(0, 60));
+						Assert.isTrue(chunked == "error Response body exceeded 1024 bytes", "a body growing past the limit was not refused: " + chunked.substr(0, 60));
+						Assert.isTrue(unlimited == "ok " + StringTools.rpad("", "b", 5000), "the default limit refused 5,000 bytes: " + unlimited.substr(0, 60));
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
+	/** The request's own redirect limit, as natively. **/
+	public function testTheRedirectLimitIsTheRequests(async:Async):Void {
+		serveWith((request:Dynamic, body:js.node.Buffer, response:Dynamic) -> {
+			var hop:Int = Std.parseInt(Std.string(request.url).substr(4));
+			if (hop >= 3) {
+				response.writeHead(200, {"Content-Type": "text/plain"});
+				response.end("done");
+				return;
+			}
+			response.writeHead(302, {"Location": "/hop" + (hop + 1)});
+			response.end();
+		}, (port, close) -> {
+			loadWith('http://127.0.0.1:$port/hop0', request -> request.maxRedirects = 2, limited -> {
+				loadWith('http://127.0.0.1:$port/hop0', _ -> {}, open -> {
+					close();
+					Assert.equals("error Exceeded the number of allowed redirects", limited);
+					Assert.equals("ok done", open);
+					async.done();
+				});
+			});
+		});
+	}
+
+	/**
+		The request's `maxResponseHeaderSize` is Node's limit on a response's
+		header section. Node held it to its own 16 KB, a quarter of what the
+		native client takes, so a 32 KB section loaded natively and failed
+		here.
+	**/
+	public function testTheHeaderLimitIsTheRequests(async:Async):Void {
+		serveWith((request:Dynamic, body:js.node.Buffer, response:Dynamic) -> {
+			response.writeHead(200, {"Content-Type": "text/plain", "X-Padding": StringTools.rpad("", "p", 32 * 1024)});
+			response.end("padded");
+		}, (port, close) -> {
+			loadWith('http://127.0.0.1:$port/', _ -> {}, roomy -> {
+				loadWith('http://127.0.0.1:$port/', request -> request.maxResponseHeaderSize = 8 * 1024, tight -> {
+					close();
+					Assert.equals("ok padded", roomy, "a 32 KB header section failed under the 64 KB default");
+					Assert.isTrue(StringTools.startsWith(tight, "error "), "a 32 KB header section passed an 8 KB limit: " + tight);
+					async.done();
+				});
+			});
+		});
+	}
+
+	/**
+		A raw server: takes a connection, and once the request has arrived
+		writes `prompt`, then `trickled` a byte every `gapMs` milliseconds.
+	**/
+	private static function serveTrickled(prompt:String, trickled:String, gapMs:Int, then:(port:Int, close:Void->Void) -> Void):Void {
+		var sockets:Array<Dynamic> = [];
+		var timers:Array<Dynamic> = [];
+		var server:Dynamic = js.Lib.require("net").createServer(function(socket:Dynamic):Void {
+			sockets.push(socket);
+			socket.on("error", (_:Dynamic) -> {});
+			var begun:Bool = false;
+			socket.on("data", function(_:Dynamic):Void {
+				if (begun) {
+					return;
+				}
+				begun = true;
+				if (prompt.length > 0) {
+					socket.write(prompt);
+				}
+				var at:Int = 0;
+				var timer:Dynamic = null;
+				timer = js.Node.setInterval(function():Void {
+					if (at >= trickled.length || socket.destroyed) {
+						js.Node.clearInterval(timer);
+						return;
+					}
+					socket.write(trickled.charAt(at++));
+				}, gapMs);
+				timers.push(timer);
+			});
+		});
+		server.listen(0, "127.0.0.1", function():Void {
+			then(server.address().port, () -> {
+				for (timer in timers) {
+					js.Node.clearInterval(timer);
+				}
+				for (socket in sockets) {
+					socket.destroy();
+				}
+				server.close();
+			});
+		});
+	}
+
 	private static function listen(loader:URLLoader, events:Array<String>):Void {
 		loader.addEventListener(Event.COMPLETE, _ -> events.push("COMPLETE " + Std.string(loader.data)));
 		loader.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> events.push("IO_ERROR " + event.text));

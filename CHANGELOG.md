@@ -330,8 +330,34 @@ entry below says how:
   but `pump` is not a value any more, `var step = runtime.pump` and a
   call through `Dynamic` do not compile or find it. Wrap it,
   `(delta) -> runtime.pump(delta)`.
+- `Http.MAX_REDIRECTS`, `MAX_BODY_SIZE`, `MAX_CHUNKED_BODY_SIZE`,
+  `MAX_DECOMPRESSED_BODY_SIZE` and `MAX_RESPONSE_HEADER_BYTES` are gone: set
+  `maxRedirects`, `maxBodySize`, `maxDecompressedSize` and
+  `maxResponseHeaderSize` on each `URLRequest` instead. A custom
+  `HTTPBackend` reads them, and `headTimeout`, from its
+  `HTTPRequestContext`.
+- A load now fails once it has waited its `idleTimeout` for a thread, and a
+  response's head must arrive within `URLRequest.headTimeout`, five
+  minutes, of its request. Raise `URLLoader.maxConcurrentLoads` or
+  `idleTimeout` for many slow loads at once, and `headTimeout` with
+  `idleTimeout` for a long poll held longer than five minutes.
 
 ### Added
+- `URLRequest.headTimeout`, `totalTimeout`, `maxBodySize`, `maxRedirects`
+  and `maxResponseHeaderSize`, on every target, and the same in
+  `HTTPRequestContext` but `totalTimeout`, which the loader keeps. No
+  request was bounded in time: an idle timeout is reset by every byte, so a
+  body trickled a byte every 700 ms ran its full 5.6 s, and one that kept
+  trickling would have run for as long as it did. `headTimeout`, five
+  minutes by default, is a deadline on each response's head, counted from
+  its request having gone; `totalTimeout`, none by default, is one on the
+  whole load, from `load()` to `COMPLETE`, at which the request is
+  cancelled where it stands. The limits were process-wide statics of the
+  native client that one caller changed for every request in the process,
+  and Node held a body to nothing and a header section to its own 16 KB;
+  each is the request's own now, with the defaults the native client had:
+  64 MB, 10 redirects, 64 KB. Over HTTP/2 the deadline and the limits hold
+  as over HTTP/1.1, the header section counted as HPACK counts it.
 - `SequenceRing.remove(sequence)` and `SequenceRing.writeBits(from, out, at,
   byteCount)`, which make the ring a receive window as well as a history:
   what arrived past a gap is filed by sequence, taken out as the gap fills,
@@ -1536,6 +1562,13 @@ entry below says how:
 - accepted `wss://` sessions now run the deferred, timeout-guarded TLS handshake the client path already used; previously a server-side handshake happened implicitly on first read with no bound, so a peer that completed TCP then stalled mid-TLS held the socket indefinitely
 
 ### Removed
+- `Http.MAX_REDIRECTS`, `MAX_BODY_SIZE`, `MAX_CHUNKED_BODY_SIZE`,
+  `MAX_DECOMPRESSED_BODY_SIZE` and `MAX_RESPONSE_HEADER_BYTES`, statics of
+  the native HTTP client that one caller changed for every request in the
+  process. Each limit is the request's own now, `URLRequest.maxRedirects`,
+  `maxBodySize`, one limit whatever the framing, `maxDecompressedSize` and
+  `maxResponseHeaderSize`: with the same default; `MAX_CONTENT_CODINGS`
+  is a constant.
 - `URL`'s implicit conversion from any `Dynamic`, which compiled whatever was
   assigned and failed at run time if it was not a String; a `String` still
   converts. And the `ResponseEncodingDecision` typedef, a helper of
@@ -1586,6 +1619,20 @@ entry below says how:
   most: a burst of connects to one host costs one lookup, and a host that
   moves is found within half a minute. For every socket's connect by name,
   datagram sends and dials, and STUN servers.
+- The HTTP client looks a host's name up on those threads too, within the
+  request's idle timeout, and a cancel ends the wait. It was looked up
+  inside the connect on the load's own thread, where a wedged resolver held
+  the load, over HTTP/2, every request waiting on that connect, for as
+  long as it stayed wedged, and a cancel could not reach it.
+- A load waiting for one of `URLLoader.maxConcurrentLoads`' threads waits
+  its request's `idleTimeout` at most, and then fails with an `IO_ERROR`
+  saying so. It waited for as long as the loads ahead of it took, which
+  nothing bounded: measured, 3.0 s past its own limit of 500 ms.
+- A response body of a declared length, or a chunk of a chunked one, is
+  read into room that grows as it arrives, from 64 KB. It was allocated
+  whole from the header, so a response declaring 64 MB cost 64 MB before a
+  byte of it came, on each of the loader's threads. A body cut short of its
+  length says so, "expected 5000 bytes, got 100", where it said "Eof".
 - A WebSocket text message is written into its frame without being encoded
   into a buffer of its own first, natively when the string is held a byte a
   character and on the jvm when it is ASCII and no longer than 256

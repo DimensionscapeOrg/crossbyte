@@ -104,6 +104,44 @@ final class HTTPRequestContext {
 	 */
 	public var maxDecompressedSize:Int = 64 * 1024 * 1024;
 
+	/**
+	 * The most bytes a response body may take as it arrives, before any
+	 * decoding, before the request fails; `<= 0` removes the limit. A backend
+	 * refuses a declared length past it before reading the body, and stops
+	 * reading one that grows past it. Absent means 64 MB, the built-in
+	 * client's default. See `URLRequest.maxBodySize`.
+	 */
+	public var maxBodySize:Int = 64 * 1024 * 1024;
+
+	/**
+	 * Redirects a backend that follows them follows before the request fails
+	 * with "Exceeded the number of allowed redirects"; `0` or less follows
+	 * none. Absent means 10, the built-in client's default. See
+	 * `URLRequest.maxRedirects`.
+	 */
+	public var maxRedirects:Int = 10;
+
+	/**
+	 * The most bytes a response's header section may take, interim (1xx)
+	 * responses included, before the request fails; `<= 0` removes the
+	 * limit. Absent means 64 KB, the built-in client's default. See
+	 * `URLRequest.maxResponseHeaderSize`.
+	 */
+	public var maxResponseHeaderSize:Int = 64 * 1024;
+
+	/**
+	 * Milliseconds the response's head, its status and header fields, after
+	 * any 1xx, has to arrive once the request has been sent, on each hop,
+	 * before the request fails; `0` or less is no deadline. Unlike `timeout`,
+	 * bytes arriving do not move it. Absent means five minutes, the built-in
+	 * client's default. See `URLRequest.headTimeout`.
+	 *
+	 * `URLRequest.totalTimeout`, the whole request's deadline, is not here:
+	 * the loader keeps it, and a request past it is cancelled through
+	 * `cancelToken`.
+	 */
+	public var headTimeout:Int = 300000;
+
 	#if !(js && !nodejs)
 	/**
 	 * The TLS an `https` request asks for, or absent for the defaults: see

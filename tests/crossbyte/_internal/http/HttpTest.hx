@@ -682,9 +682,6 @@ class HttpTest extends utest.Test {
 		// A megabyte of zeros is about a kilobyte on the wire, so
 		// Content-Length and the chunked ceiling both see a small response.
 		// Neither of them describes what it becomes.
-		var previous:Int = Http.MAX_DECOMPRESSED_BODY_SIZE;
-		Http.MAX_DECOMPRESSED_BODY_SIZE = 64 * 1024;
-
 		try {
 			var encoded = new ByteArray();
 			encoded.length = 1024 * 1024;
@@ -692,6 +689,7 @@ class HttpTest extends utest.Test {
 
 			var fixture = serveOnceWithBody("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: " + encoded.length + "\r\n\r\n", encoded);
 			var http = new Http('http://127.0.0.1:${fixture.port}/bomb');
+			http.maxDecompressedSize = 64 * 1024;
 			var completed:Bytes = null;
 			var failure:String = null;
 
@@ -707,8 +705,6 @@ class HttpTest extends utest.Test {
 		} catch (e:Dynamic) {
 			Assert.fail("bomb test failed: " + Std.string(e));
 		}
-
-		Http.MAX_DECOMPRESSED_BODY_SIZE = previous;
 	}
 
 	public function testABrotliBombIsAbandonedRatherThanDecoded():Void {
@@ -716,9 +712,6 @@ class HttpTest extends utest.Test {
 		// actually sends. Brotli decodes through a ported codec that returns
 		// everything at once, so the ceiling had to go down into the function
 		// every decoded byte passes through rather than measuring the result.
-		var previous:Int = Http.MAX_DECOMPRESSED_BODY_SIZE;
-		Http.MAX_DECOMPRESSED_BODY_SIZE = 16 * 1024;
-
 		try {
 			var encoded = new ByteArray();
 			encoded.length = 128 * 1024;
@@ -726,6 +719,7 @@ class HttpTest extends utest.Test {
 
 			var fixture = serveOnceWithBody("HTTP/1.1 200 OK\r\nContent-Encoding: br\r\nContent-Length: " + encoded.length + "\r\n\r\n", encoded);
 			var http = new Http('http://127.0.0.1:${fixture.port}/brbomb');
+			http.maxDecompressedSize = 16 * 1024;
 			var completed:Bytes = null;
 			var failure:String = null;
 
@@ -741,8 +735,6 @@ class HttpTest extends utest.Test {
 		} catch (e:Dynamic) {
 			Assert.fail("brotli bomb test failed: " + Std.string(e));
 		}
-
-		Http.MAX_DECOMPRESSED_BODY_SIZE = previous;
 	}
 
 	public function testStackedContentCodingsAreRefused():Void {
@@ -909,6 +901,51 @@ class HttpTest extends utest.Test {
 		Assert.isTrue(fixture.request.indexOf("ok=false") >= 0);
 	}
 
+	/**
+		Takes one request and answers `prompt` at once, then `trickled` a byte
+		every `gap` seconds, each byte enough to reset an idle timeout,
+		stopping when the client goes, and then waits for it to.
+	**/
+	private static function serveTrickled(prompt:String, trickled:String, gap:Float):OneShotHttpServer {
+		var fixture = new OneShotHttpServer();
+		Thread.create(() -> {
+			var server = new SysSocket();
+			var peer:SysSocket = null;
+			try {
+				server.bind(new Host("127.0.0.1"), 0);
+				server.listen(1);
+				fixture.port = server.host().port;
+				fixture.ready.release();
+
+				peer = server.accept();
+				peer.setTimeout(6.0);
+				fixture.request = readRequest(peer);
+				if (prompt.length > 0) {
+					peer.output.writeString(prompt);
+					peer.output.flush();
+				}
+				for (i in 0...trickled.length) {
+					System.sleep(gap);
+					peer.output.writeString(trickled.charAt(i));
+					peer.output.flush();
+				}
+				fixture.ended = __awaitClientGoing(peer);
+			} catch (e:Dynamic) {
+				// The client went mid-trickle: what this waits for.
+				fixture.ended = "the client went";
+			}
+
+			closeQuietly(peer);
+			closeQuietly(server);
+			fixture.done.release();
+		});
+
+		if (!fixture.ready.wait(2.0)) {
+			Assert.fail("Timed out waiting for HTTP fixture server");
+		}
+		return fixture;
+	}
+
 	private static function serveOnce(response:String, address:String = "127.0.0.1"):OneShotHttpServer {
 		var fixture = new OneShotHttpServer();
 		Thread.create(() -> {
@@ -1049,7 +1086,7 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testTenRedirectsEndingInAResponseSucceed():Void {
-		// MAX_REDIRECTS is ten; ten followed and then answered is within it.
+		// maxRedirects is ten; ten followed and then answered is within it.
 		// The old check read the count alone and reported this as too many.
 		var responses:Array<String> = [for (i in 0...10) 'HTTP/1.1 302 Found\r\nLocation: /hop${i + 1}\r\nContent-Length: 0\r\n\r\n'];
 		responses.push("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndone");
@@ -1081,6 +1118,206 @@ class HttpTest extends utest.Test {
 
 		Require.notNull(failure);
 		Assert.isTrue(failure.indexOf("redirects") >= 0, failure);
+	}
+
+	// ------------------------------------------------------ the request's own limits
+
+	/**
+		A request's redirect limit is its own. It was `Http.MAX_REDIRECTS`, a
+		static every request in the process shared, so a library lowering it
+		for its own calls lowered it for everyone's.
+	**/
+	public function testTheRedirectLimitIsTheRequests():Void {
+		var three:Array<String> = [for (i in 0...3) 'HTTP/1.1 302 Found\r\nLocation: /hop${i + 1}\r\nContent-Length: 0\r\n\r\n'];
+
+		var limited = serveMany(three.copy());
+		var strict = new Http('http://127.0.0.1:${limited.port}/hop0');
+		strict.maxRedirects = 2;
+		var refused:String = null;
+		strict.onComplete = data -> Assert.fail("a third redirect was followed past a limit of two");
+		strict.onError = (message, ?data) -> refused = message;
+		strict.load();
+		limited.waitDone();
+		Assert.isTrue(refused != null && refused.indexOf("redirects") >= 0, "a limit of two let three through: " + refused);
+
+		var responses:Array<String> = three.copy();
+		responses.push("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndone");
+		var open = serveMany(responses);
+		var lenient = new Http('http://127.0.0.1:${open.port}/hop0');
+		var completed:Bytes = null;
+		lenient.onComplete = data -> completed = data;
+		lenient.onError = (message, ?data) -> Assert.fail("three redirects failed under the default limit: " + message);
+		lenient.load();
+		open.waitDone();
+		Assert.equals("done", completed == null ? null : completed.toString());
+
+		// None at all fails at the first, where followRedirects = false would
+		// hand it back.
+		var none = serveMany([three[0]]);
+		var never = new Http('http://127.0.0.1:${none.port}/hop0');
+		never.maxRedirects = 0;
+		var failure:String = null;
+		never.onError = (message, ?data) -> failure = message;
+		never.load();
+		none.waitDone();
+		Assert.isTrue(failure != null && failure.indexOf("redirects") >= 0, "a limit of none followed a redirect: " + failure);
+	}
+
+	/** A header section past the request's own limit is refused; the default takes it. **/
+	public function testTheHeaderLimitIsTheRequests():Void {
+		var big:String = "HTTP/1.1 200 OK\r\nX-Padding: " + StringTools.rpad("", "p", 2000) + "\r\nContent-Length: 2\r\n\r\nok";
+
+		var tight = serveOnce(big);
+		var http = new Http('http://127.0.0.1:${tight.port}/big-head');
+		http.maxResponseHeaderSize = 1024;
+		var failure:String = null;
+		http.onComplete = data -> Assert.fail("a 2 KB header section passed a 1 KB limit");
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		tight.waitDone();
+		Assert.isTrue(failure != null && failure.indexOf("1024") >= 0, "the refusal does not name the limit: " + failure);
+
+		var roomy = serveOnce(big);
+		var other = new Http('http://127.0.0.1:${roomy.port}/big-head');
+		var completed:Bytes = null;
+		other.onComplete = data -> completed = data;
+		other.onError = (message, ?data) -> Assert.fail("a 2 KB header section failed under the default limit: " + message);
+		other.load();
+		roomy.waitDone();
+		Assert.equals("ok", completed == null ? null : completed.toString());
+	}
+
+	/**
+		A body's room grows as it arrives. It was allocated whole from the
+		`Content-Length`: and a chunk's whole from its size line, before a
+		byte of it came, so a response declaring 16 MB and sending a hundred
+		bytes cost 16 MB, on each of the loader's threads.
+	**/
+	public function testABodyIsNotAllocatedBeforeItArrives():Void {
+		var declared:Int = 16 * 1024 * 1024;
+		var fixed = serveOnce('HTTP/1.1 200 OK\r\nContent-Length: $declared\r\n\r\n' + StringTools.rpad("", "x", 100));
+		var http = new RoomWatcher('http://127.0.0.1:${fixed.port}/promised');
+		var failure:String = null;
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixed.waitDone();
+		Assert.isTrue(failure != null && failure.indexOf("got 100") >= 0, "a cut-short body was not reported as one: " + failure);
+		Assert.isTrue(http.largest <= 64 * 1024, 'a body that sent 100 bytes of a promised $declared was given ${http.largest} bytes of room');
+
+		var chunked = serveOnce("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1000000\r\n" + StringTools.rpad("", "x", 100));
+		var chunk = new RoomWatcher('http://127.0.0.1:${chunked.port}/chunk');
+		var chunkFailure:String = null;
+		chunk.onError = (message, ?data) -> chunkFailure = message;
+		chunk.load();
+		chunked.waitDone();
+		Assert.notNull(chunkFailure, "a cut-short chunk completed");
+		Assert.isTrue(chunk.largest <= 64 * 1024, 'a chunk that sent 100 bytes of a promised 16 MB was given ${chunk.largest} bytes of room');
+
+		// And a body larger than the first room still arrives whole, through
+		// the room growing.
+		var body:String = [for (i in 0...80000) String.fromCharCode(97 + i % 26)].join("");
+		var whole = serveOnce('HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\n\r\n' + body);
+		var grown = new RoomWatcher('http://127.0.0.1:${whole.port}/whole');
+		var completed:Bytes = null;
+		grown.onComplete = data -> completed = data;
+		grown.onError = (message, ?data) -> Assert.fail("a body past the first room failed: " + message);
+		grown.load();
+		whole.waitDone();
+		Assert.isTrue(completed != null && completed.toString() == body, "a body past the first room did not arrive whole");
+	}
+
+	// ------------------------------------------------------ deadlines
+
+	/**
+		A head trickled a byte at a time is given up at the head's deadline.
+		Each byte reset the idle timeout, so a server sending its head this
+		way held the request, and the loader's thread, for as long as it
+		cared to: here five seconds, against a deadline of 0.6.
+	**/
+	public function testATrickledHeadEndsAtItsDeadline():Void {
+		var head:String = "HTTP/1.1 200 OK\r\nX-Slow: " + StringTools.rpad("", "s", 60) + "\r\nContent-Length: 2\r\n\r\nok";
+		var fixture = serveTrickled("", head, 0.05);
+		var http = new Http('http://127.0.0.1:${fixture.port}/slow-head', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 2000);
+		http.headTimeout = 600;
+		var completed:Bytes = null;
+		var failure:String = null;
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> failure = message;
+
+		var started:Float = haxe.Timer.stamp();
+		http.load();
+		var took:Float = haxe.Timer.stamp() - started;
+		fixture.waitDone();
+
+		Assert.isNull(completed, "a head trickled for five seconds completed under a 0.6 s deadline");
+		Assert.isTrue(failure != null && failure.indexOf("did not arrive within 600 ms") >= 0, "the failure does not name the head's deadline: " + failure);
+		Assert.isTrue(took >= 0.5 && took < 2.5, 'a 0.6 s head deadline ended the request after $took s');
+	}
+
+	/** The head's deadline stops with the head: a body trickling after it is the idle timeout's. **/
+	public function testTheHeadDeadlineDoesNotCountTheBody():Void {
+		var fixture = serveTrickled("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 16\r\n\r\n", "abcdefghijklmnop", 0.05);
+		var http = new Http('http://127.0.0.1:${fixture.port}/slow-body', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 2000);
+		http.headTimeout = 300;
+		var completed:Bytes = null;
+		var failure:String = null;
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixture.waitDone();
+
+		Assert.isNull(failure, "a body arriving after the head was held to the head's deadline: " + failure);
+		Assert.equals("abcdefghijklmnop", completed == null ? null : completed.toString());
+	}
+
+	/**
+		A name is looked up through the resolver's threads, so the wait ends
+		at the idle timeout, or a cancel, though the system's lookup does not.
+		It was made inside the connect, on the load's thread, where a wedged
+		resolver held the load for as long as it stayed wedged, and a cancel
+		could not reach it.
+	**/
+	public function testALookupThatNeverAnswersEndsTheLoad():Void {
+		var saved:String->Host = crossbyte._internal.net.Resolver.__system;
+		var gate = new Lock();
+		crossbyte._internal.net.Resolver.__system = name -> {
+			if (StringTools.endsWith(name, ".test")) {
+				gate.wait(10.0);
+				throw "let go";
+			}
+			return new Host(name);
+		};
+		try {
+			var http = new Http('http://crossbyte-${Std.random(0x3FFFFFFF)}.test:9/', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 400);
+			var failure:String = null;
+			http.onError = (message, ?data) -> failure = message;
+			var started:Float = haxe.Timer.stamp();
+			http.load();
+			var took:Float = haxe.Timer.stamp() - started;
+			Assert.isTrue(failure != null && failure.indexOf("timed out") >= 0, "a lookup that never answered did not end at the idle timeout: " + failure);
+			Assert.isTrue(took < 3.0, 'a 0.4 s idle timeout let a wedged lookup hold the load $took s');
+
+			// With no idle limit, a cancel is what ends it.
+			var cancelled = new Http('http://crossbyte-${Std.random(0x3FFFFFFF)}.test:9/', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 0);
+			var reason:String = null;
+			cancelled.onError = (message, ?data) -> reason = message;
+			var token = cancelled.cancelToken;
+			Thread.create(() -> {
+				System.sleep(0.2);
+				token.cancel();
+			});
+			var began:Float = haxe.Timer.stamp();
+			cancelled.load();
+			var waited:Float = haxe.Timer.stamp() - began;
+			Assert.equals("Request cancelled", reason);
+			Assert.isTrue(waited < 3.0, 'a lookup cancelled after 0.2 s held the load $waited s');
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		for (_ in 0...4) {
+			gate.release();
+		}
+		crossbyte._internal.net.Resolver.__system = saved;
 	}
 
 	public function testURLVariablesAreSentAsAForm():Void {
@@ -1207,11 +1444,10 @@ class HttpTest extends utest.Test {
 	public function testADeclaredLengthPastTheCapIsRefusedBeforeReading():Void {
 		// The body was allocated whole from the header, before a byte arrived:
 		// one response declaring 2000000000 bytes cost two gigabytes.
-		var saved:Int = Http.MAX_BODY_SIZE;
-		Http.MAX_BODY_SIZE = 1024;
 		try {
 			var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 5000\r\n\r\n" + StringTools.rpad("", "x", 5000));
 			var http = new Http('http://127.0.0.1:${fixture.port}/big');
+			http.maxBodySize = 1024;
 			var completed:Bytes = null;
 			var failure:String = null;
 			http.onComplete = data -> completed = data;
@@ -1225,15 +1461,13 @@ class HttpTest extends utest.Test {
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
-		Http.MAX_BODY_SIZE = saved;
 	}
 
 	public function testACloseDelimitedBodyPastTheCapIsRefused():Void {
-		var saved:Int = Http.MAX_BODY_SIZE;
-		Http.MAX_BODY_SIZE = 1024;
 		try {
 			var fixture = serveOnce("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n" + StringTools.rpad("", "x", 5000));
 			var http = new Http('http://127.0.0.1:${fixture.port}/endless');
+			http.maxBodySize = 1024;
 			var completed:Bytes = null;
 			var failure:String = null;
 			http.onComplete = data -> completed = data;
@@ -1247,7 +1481,6 @@ class HttpTest extends utest.Test {
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
-		Http.MAX_BODY_SIZE = saved;
 	}
 
 	public function testAResetInACloseDelimitedBodyIsAnError():Void {
@@ -2042,6 +2275,22 @@ private class FakeHTTP2Backend implements HTTPBackend {
 		context.onProgress(0, bytes.length);
 		context.onProgress(bytes.length, bytes.length);
 		context.onComplete(bytes);
+	}
+}
+
+/** Notes the largest room a request makes for a body, which is every allocation it makes for one. **/
+private class RoomWatcher extends Http {
+	public var largest:Int = 0;
+
+	public function new(url:String) {
+		super(url);
+	}
+
+	override private function __room(length:Int):Bytes {
+		if (length > largest) {
+			largest = length;
+		}
+		return super.__room(length);
 	}
 }
 

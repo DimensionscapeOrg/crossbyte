@@ -29,52 +29,37 @@ import sys.thread.Mutex;
  * @author Christopher Speciale
  */
 class Http {
-	public static var MAX_REDIRECTS:Int = 10;
+	/**
+		Redirects a request follows before it fails, unless it says otherwise:
+		`URLRequest.maxRedirects`'s default.
+	**/
+	public static inline var DEFAULT_MAX_REDIRECTS:Int = 10;
 
 	/**
-	 * Maximum number of bytes the chunked response decoder will accumulate before
-	 * aborting. Guards against an unbounded `Transfer-Encoding: chunked` response
-	 * exhausting memory. Defaults to 64 MB; set to `<= 0` to disable the cap.
-	 */
-	public static var MAX_CHUNKED_BODY_SIZE:Int = 64 * 1024 * 1024;
+		Bytes a response body may take on the wire, unless the request says
+		otherwise: `URLRequest.maxBodySize`'s default, 64 MB.
+	**/
+	public static inline var DEFAULT_MAX_BODY_SIZE:Int = 64 * 1024 * 1024;
 
 	/**
-	 * Maximum number of bytes a response body framed by `Content-Length`, or by
-	 * the connection closing, may declare or deliver, and, over HTTP/2, what
-	 * a response's DATA frames may deliver. Defaults to 64 MB; set to `<= 0`
-	 * to disable. `MAX_CHUNKED_BODY_SIZE` is the same bound for a chunked
-	 * body.
-	 *
-	 * A declared length is checked before anything is allocated for it. The
-	 * body used to be allocated whole from the header, so one response saying
-	 * `Content-Length: 2000000000` cost two gigabytes before a byte arrived.
-	 */
-	public static var MAX_BODY_SIZE:Int = 64 * 1024 * 1024;
+		Bytes a response body may decode to, unless the request says
+		otherwise: `URLRequest.maxDecompressedSize`'s default, 64 MB.
+	**/
+	public static inline var DEFAULT_MAX_DECOMPRESSED_SIZE:Int = 64 * 1024 * 1024;
 
 	/**
-	 * Maximum number of bytes a decoded response body may reach before the
-	 * download is abandoned. Defaults to 64 MB; set to `<= 0` to disable.
-	 *
-	 * MAX_CHUNKED_BODY_SIZE bounds what arrives on the wire, which is not the
-	 * same number: compression ratios have no ceiling, and a megabyte of
-	 * zeros returns as roughly a gigabyte. A server choosing what to send is
-	 * choosing how much memory this client spends, unless something says
-	 * otherwise.
-	 */
-	public static var MAX_DECOMPRESSED_BODY_SIZE:Int = 64 * 1024 * 1024;
+		Bytes a response's header section may take, unless the request says
+		otherwise: `URLRequest.maxResponseHeaderSize`'s default, 64 KB, the
+		limit the server holds a request's header block to.
+	**/
+	public static inline var DEFAULT_MAX_RESPONSE_HEADER_SIZE:Int = 64 * 1024;
 
 	/**
-	 * Bytes a response's header section may take, its status line, its
-	 * header lines, and any informational (1xx) responses ahead of it, and,
-	 * separately, the trailers after a chunked body. Defaults to 64 KB, the
-	 * limit the server holds a request's header block to; `<= 0` disables it.
-	 *
-	 * Nothing bounded it. The client read header lines for as long as a
-	 * server sent them, a single line for as long as it went without ending,
-	 * and 1xx responses for as long as they kept coming, so the server chose
-	 * how much memory and time the client spent before a byte of the body.
-	 */
-	public static var MAX_RESPONSE_HEADER_BYTES:Int = 64 * 1024;
+		Milliseconds a response's head has to arrive once its request has
+		gone, unless the request says otherwise: `URLRequest.headTimeout`'s
+		default, five minutes, as Node's own `fetch` waits for headers.
+	**/
+	public static inline var DEFAULT_HEAD_TIMEOUT:Int = 300000;
 
 	/**
 	 * Bytes one chunk-size line may take, extensions included. A size is
@@ -84,14 +69,23 @@ class Http {
 	private static inline var MAX_CHUNK_LINE:Int = 4096;
 
 	/**
-	 * Content codings one response may stack. Defaults to 2.
+		Bytes of a body allocated before any of it has arrived, at most. A body
+		of a declared length, or a chunk of one, is read into room that grows
+		with what arrives, by doubling, up to its length: allocated whole from
+		the header, one response declaring 64 MB cost 64 MB before a byte of it
+		came, on each of `URLLoader`'s threads.
+	**/
+	private static inline var FIRST_ROOM:Int = 64 * 1024;
+
+	/**
+	 * Content codings one response may stack: 2.
 	 *
 	 * They multiply: each pass expands what the one before it produced, so
 	 * `gzip, gzip, gzip` is three ratios on top of each other. Real responses
 	 * carry one, and two leaves room for a proxy that added its own over what
 	 * the origin sent.
 	 */
-	public static var MAX_CONTENT_CODINGS:Int = 2;
+	public static inline var MAX_CONTENT_CODINGS:Int = 2;
 
 	/**
 	 * Returns `true` when adding `incoming` bytes to an already-accumulated
@@ -125,10 +119,47 @@ class Http {
 
 	/**
 		The most bytes this response may decode to; `<= 0` removes the limit.
-		`MAX_DECOMPRESSED_BODY_SIZE` unless the request says otherwise:
 		`URLRequest.maxDecompressedSize` sets it, per load.
 	**/
-	public var maxDecompressedSize:Int = MAX_DECOMPRESSED_BODY_SIZE;
+	public var maxDecompressedSize:Int = DEFAULT_MAX_DECOMPRESSED_SIZE;
+
+	/**
+		The most bytes a response body may take as it arrives, declared by
+		its `Content-Length`, in chunks, or until the connection closes; `<= 0`
+		removes the limit. A declared length past it is refused before a byte
+		of the body is read. `URLRequest.maxBodySize` sets it, per load.
+	**/
+	public var maxBodySize:Int = DEFAULT_MAX_BODY_SIZE;
+
+	/**
+		Redirects followed before the request fails; `0` or less follows none,
+		failing at the first. `URLRequest.maxRedirects` sets it, per load.
+	**/
+	public var maxRedirects:Int = DEFAULT_MAX_REDIRECTS;
+
+	/**
+		Bytes a response's header section may take, its status line, its
+		header lines, and any informational (1xx) responses ahead of it, and,
+		separately, the trailers after a chunked body; `<= 0` removes the
+		limit. `URLRequest.maxResponseHeaderSize` sets it, per load.
+
+		Nothing bounded it once. The client read header lines for as long as a
+		server sent them, a single line for as long as it went without ending,
+		and 1xx responses for as long as they kept coming, so the server chose
+		how much memory and time the client spent before a byte of the body.
+	**/
+	public var maxResponseHeaderSize:Int = DEFAULT_MAX_RESPONSE_HEADER_SIZE;
+
+	/**
+		Milliseconds each response's head, its status line and header
+		fields, after any 1xx, has to arrive once its request has gone;
+		`0` or less is no deadline. `URLRequest.headTimeout` sets it, per
+		load.
+
+		Bytes trickled in reset an idle timeout, so a server sending its head
+		a byte at a time held the request for as long as it liked.
+	**/
+	public var headTimeout:Int = DEFAULT_HEAD_TIMEOUT;
 
 	/**
 		The TLS an `https` request asks for, or null for the defaults:
@@ -294,11 +325,12 @@ class Http {
 		var redirects:Array<String> = [__url];
 		var origin:String = __originOf(__url);
 		var credentialsDropped:Bool = false;
+		var allowed:Int = maxRedirects > 0 ? maxRedirects : 0;
 
 		__tryRequest();
 
 		if (__followRedirects) {
-			while (__connected && __isRedirect(__status) && (redirects.length - 1) < MAX_REDIRECTS) {
+			while (__connected && __isRedirect(__status) && (redirects.length - 1) < allowed) {
 				if (__responseHeaders.exists(HEADER_LOCATION)) {
 					var location:String = __responseHeaders.get(HEADER_LOCATION);
 
@@ -370,7 +402,7 @@ class Http {
 			// Only when the budget ran out on a redirect. This tested the count
 			// alone, so ten redirects ending in a 200, a full budget, spent
 			// and done with, were reported as too many.
-			if (__connected && __isRedirect(__status) && (redirects.length - 1) >= MAX_REDIRECTS) {
+			if (__connected && __isRedirect(__status) && (redirects.length - 1) >= allowed) {
 				__close();
 				__fail("Exceeded the number of allowed redirects");
 				return;
@@ -675,6 +707,10 @@ class Http {
 				__redirect = true;
 			},
 			maxDecompressedSize: maxDecompressedSize,
+			maxBodySize: maxBodySize,
+			maxRedirects: maxRedirects,
+			maxResponseHeaderSize: maxResponseHeaderSize,
+			headTimeout: headTimeout,
 			tls: tls,
 			onProgress: onProgress,
 			onError: onError,
@@ -750,14 +786,26 @@ class Http {
 
 				case "fixed":
 					var total:Int = contentLength;
-					if (MAX_BODY_SIZE > 0 && total > MAX_BODY_SIZE) {
-						throw "Response declared " + total + " bytes, more than the " + MAX_BODY_SIZE + " allowed";
+					if (maxBodySize > 0 && total > maxBodySize) {
+						throw "Response declared " + total + " bytes, more than the " + maxBodySize + " allowed";
 					}
-					data = Bytes.alloc(total);
+					// Room for what has arrived, grown as more does: see
+					// FIRST_ROOM.
+					data = __room(total < FIRST_ROOM ? total : FIRST_ROOM);
 					var offset:Int = 0;
 
 					while (offset < total) {
-						var n:Int = __readInto(data, offset, total - offset);
+						if (offset == data.length) {
+							data = __grown(data, total);
+						}
+						var n:Int;
+						try {
+							n = __readInto(data, offset, data.length - offset);
+						} catch (_:haxe.io.Eof) {
+							// Said below as what it is: a body cut short of
+							// its length, which read as "Eof".
+							n = 0;
+						}
 						if (n <= 0) {
 							break;
 						}
@@ -775,6 +823,7 @@ class Http {
 
 				case "chunked":
 					var buffer:BytesBuffer = new BytesBuffer();
+					var piece:Null<Bytes> = null;
 					while (true) {
 						var sizeLine:String = __readLine(MAX_CHUNK_LINE);
 						if (sizeLine == null) {
@@ -794,7 +843,7 @@ class Http {
 						// as 16, and past seven digits it answered differently on
 						// each target, on Node with a number too large for an
 						// Int, which walked past every check. 0xFFFFFFF is already
-						// far beyond MAX_CHUNKED_BODY_SIZE.
+						// far beyond the default maxBodySize.
 						var chunkSize:Int = IntParse.hex(hexStr, 0xFFFFFFF);
 						if (chunkSize < 0) {
 							throw "Invalid chunk size: " + hexStr;
@@ -804,7 +853,7 @@ class Http {
 							// Trailers are a header section of their own, held to
 							// the same limit; they were read for as long as the
 							// server sent them.
-							var budget:Int = MAX_RESPONSE_HEADER_BYTES > 0 ? MAX_RESPONSE_HEADER_BYTES : 0x7FFFFFFF;
+							var budget:Int = maxResponseHeaderSize > 0 ? maxResponseHeaderSize : 0x7FFFFFFF;
 							var trailer:String = "";
 							do {
 								trailer = __readLine(budget);
@@ -813,7 +862,7 @@ class Http {
 								}
 								budget -= __lineBytes + 1;
 								if (budget < 0) {
-									throw new LineTooLong(MAX_RESPONSE_HEADER_BYTES);
+									throw new LineTooLong(maxResponseHeaderSize);
 								}
 
 								trailer = StringTools.trim(trailer);
@@ -821,14 +870,25 @@ class Http {
 							break;
 						}
 
-						if (exceedsChunkedBodyLimit(buffer.length, chunkSize, MAX_CHUNKED_BODY_SIZE)) {
-							throw "Chunked response exceeded maximum size of " + MAX_CHUNKED_BODY_SIZE + " bytes";
+						if (exceedsChunkedBodyLimit(buffer.length, chunkSize, maxBodySize)) {
+							throw "Chunked response exceeded maximum size of " + maxBodySize + " bytes";
 						}
 
-						var chunk:Bytes = __readExact(chunkSize);
-						if (chunk == null || chunk.length != chunkSize)
-							throw "Truncated chunk";
-						buffer.add(chunk);
+						// Read as it arrives, a piece at a time, rather than into
+						// room for the whole chunk: a chunk's size is the server's
+						// to say, and the room was allocated before a byte of it.
+						if (piece == null) {
+							piece = __room(FIRST_ROOM);
+						}
+						var left:Int = chunkSize;
+						while (left > 0) {
+							var n:Int = __readInto(piece, 0, left < piece.length ? left : piece.length);
+							if (n <= 0) {
+								throw "Truncated chunk";
+							}
+							buffer.addBytes(piece, 0, n);
+							left -= n;
+						}
 
 						bytesLoaded += chunkSize;
 						onProgress(bytesLoaded, bytesTotalForProgress);
@@ -858,8 +918,8 @@ class Http {
 						}
 						if (n <= 0)
 							break;
-						if (MAX_BODY_SIZE > 0 && buffer.length + n > MAX_BODY_SIZE) {
-							throw "Response body exceeded " + MAX_BODY_SIZE + " bytes";
+						if (maxBodySize > 0 && buffer.length + n > maxBodySize) {
+							throw "Response body exceeded " + maxBodySize + " bytes";
 						}
 						buffer.addBytes(b, 0, n);
 						bytesLoaded += n;
@@ -935,14 +995,14 @@ class Http {
 
 	/**
 	 * Undoes a response's content codings, within `MAX_CONTENT_CODINGS` and
-	 * `limit`: `MAX_DECOMPRESSED_BODY_SIZE` unless given. Throws the
+	 * `limit`: `DEFAULT_MAX_DECOMPRESSED_SIZE` unless given. Throws the
 	 * coding's name, a `String`, for one this build cannot decode, and an
 	 * exception for a body past the limits. Shared with the HTTP/2 backend,
 	 * which did not decode at all.
 	 */
 	@:noCompletion public static function decodeResponseBody(data:Bytes, header:Null<String>, ?limit:Int):Bytes {
 		if (limit == null) {
-			limit = MAX_DECOMPRESSED_BODY_SIZE;
+			limit = DEFAULT_MAX_DECOMPRESSED_SIZE;
 		}
 		if (data == null || data.length == 0) {
 			return data;
@@ -983,7 +1043,7 @@ class Http {
 			return data;
 		}
 
-		if (MAX_CONTENT_CODINGS > 0 && encodings.length > MAX_CONTENT_CODINGS) {
+		if (encodings.length > MAX_CONTENT_CODINGS) {
 			throw new haxe.Exception("Response stacked " + encodings.length + " content codings, more than the " + MAX_CONTENT_CODINGS + " allowed");
 		}
 
@@ -1063,7 +1123,14 @@ class Http {
 			if (hopTls != null) {
 				hopTls.configure(socket);
 			}
-			socket.connect(__url.host, __url.port);
+			// The name through the resolver's threads, and the wait here: the
+			// system's lookup ran on this thread inside the connect, where
+			// nothing bounded it, a wedged resolver held the load for as long
+			// as it stayed wedged, and a cancel could not reach it. The wait
+			// ends at the idle timeout, the resolver's own limit, or a cancel;
+			// the host keeps the name, so TLS still asks for it and checks it.
+			var address:sys.net.Host = crossbyte._internal.net.Resolver.lookup(__url.host, __idleSeconds(__timeout), cancelToken);
+			socket.connectHost(address, __url.port);
 			__connected = true;
 		} catch (e:Dynamic) {
 			__close();
@@ -1207,18 +1274,60 @@ class Http {
 		__close();
 	}
 
+	/**
+		Reads the response's head, within `headTimeout` from now: the request
+		has just gone. Its reads are held to the deadline as well as to the
+		idle timeout, so a server trickling its head a byte at a time, which
+		resets an idle timeout with each byte, is given up at the deadline.
+	**/
 	private function __handleResponse():Void {
 		if (!__connected) {
 			return;
 		}
 
+		__headDeadline = headTimeout > 0 ? haxe.Timer.stamp() + headTimeout / 1000.0 : 0;
+		try {
+			__readHead();
+		} catch (e:Dynamic) {
+			__endHead();
+			throw e;
+		}
+		__endHead();
+	}
+
+	/** The head is read, or given up on: its reads go back to the idle timeout. **/
+	private function __endHead():Void {
+		__headDeadline = 0;
+		if (__clamped) {
+			__clamped = false;
+			if (__socket != null) {
+				try {
+					__socket.setTimeout(__idleSeconds(__timeout));
+				} catch (_:Dynamic) {}
+			}
+		}
+	}
+
+	/**
+		Whether the head's deadline has passed: by the clock, or near enough
+		to it that a read cut short by it, which the system may end a few
+		milliseconds early, is the deadline's doing.
+	**/
+	private function __headTimedOut():Bool {
+		return __headDeadline > 0 && haxe.Timer.stamp() >= __headDeadline - HEAD_DEADLINE_GRACE;
+	}
+
+	/** How close to the head's deadline a failed read still counts as the deadline. **/
+	private static inline var HEAD_DEADLINE_GRACE:Float = 0.05;
+
+	private function __readHead():Void {
 		var line:String = '';
 		var first:Bool = true;
 		// What the section may still take. Interim responses count against it
 		// too: a server sending 1xx after 1xx held the client in this loop for
 		// as long as it liked, and the socket's idle timeout never fired,
 		// since the bytes kept coming.
-		var budget:Int = MAX_RESPONSE_HEADER_BYTES > 0 ? MAX_RESPONSE_HEADER_BYTES : 0x7FFFFFFF;
+		var budget:Int = maxResponseHeaderSize > 0 ? maxResponseHeaderSize : 0x7FFFFFFF;
 		// Repeats of one field, joined once the block ends. Appending each to
 		// the whole value so far was quadratic in the repeats, and the server
 		// chooses how many there are.
@@ -1228,12 +1337,20 @@ class Http {
 				line = __readLine(budget);
 				budget -= __lineBytes + 1;
 				if (budget < 0) {
-					throw new LineTooLong(MAX_RESPONSE_HEADER_BYTES);
+					throw new LineTooLong(maxResponseHeaderSize);
 				}
 			} catch (e:Dynamic) {
 				if (Std.isOfType(e, LineTooLong)) {
 					__close();
-					__fail("Response header section exceeded " + MAX_RESPONSE_HEADER_BYTES + " bytes");
+					__fail("Response header section exceeded " + maxResponseHeaderSize + " bytes");
+					return;
+				}
+				if (__headTimedOut()) {
+					// Before the retry below: a kept connection whose server
+					// takes the request and trickles, or holds, its answer is
+					// not one that had closed.
+					__close();
+					__fail("The response head did not arrive within " + headTimeout + " ms of the request");
 					return;
 				}
 				if (first && __reusedSocket) {
@@ -1366,12 +1483,40 @@ class Http {
 	private static inline var READ_AHEAD:Int = 16 * 1024;
 
 	/**
+		When the head being read must be in by, a `haxe.Timer.stamp()`, or `0`
+		while no head is being read under a deadline.
+	**/
+	private var __headDeadline:Float = 0;
+
+	/** Whether the socket's timeout has been cut short of the idle timeout for the head's deadline. **/
+	private var __clamped:Bool = false;
+
+	/**
 		Reads ahead into `__in`: what the socket has, at least a byte. Throws
 		`Eof` at the end of the stream, as a socket's input does.
+
+		While a head is read under its deadline, the read is held to what is
+		left of it as well: the socket's timeout is cut to that once it is
+		shorter than the idle timeout, a call to set it per read, made only
+		in the deadline's last stretch, and a deadline already past is not
+		read at all.
 	**/
 	private function __fill():Void {
 		if (__in == null) {
 			__in = Bytes.alloc(READ_AHEAD);
+		}
+		if (__headDeadline > 0) {
+			var left:Float = __headDeadline - haxe.Timer.stamp();
+			if (left <= 0) {
+				throw new HeadTimedOut();
+			}
+			var idle:Float = __idleSeconds(__timeout);
+			if (idle <= 0 || left < idle) {
+				// Never under a millisecond, which a socket would read as no
+				// timeout at all.
+				__socket.setTimeout(left < 0.001 ? 0.001 : left);
+				__clamped = true;
+			}
 		}
 		var n:Int = __socket.input.readBytes(__in, 0, READ_AHEAD);
 		if (n <= 0) {
@@ -1395,6 +1540,18 @@ class Http {
 			return n;
 		}
 		return __socket.input.readBytes(target, offset, length);
+	}
+
+	/** `data`, full, in room twice its length, or `total` if that is less. */
+	private function __grown(data:Bytes, total:Int):Bytes {
+		var grown:Bytes = __room(data.length > (total >> 1) ? total : data.length << 1);
+		grown.blit(0, data, 0, data.length);
+		return grown;
+	}
+
+	/** Room for `length` bytes of a body: every allocation the body makes, which a test watches. */
+	private function __room(length:Int):Bytes {
+		return Bytes.alloc(length);
 	}
 
 	/** `count` bytes, or `Eof` before they have all arrived, as `Input.read`. */
@@ -1827,6 +1984,13 @@ class Http {
 private class LineTooLong extends haxe.Exception {
 	public function new(limit:Int) {
 		super("A line of the response ran past its " + limit + " byte limit");
+	}
+}
+
+/** The head's deadline passed before a read could be made. */
+private class HeadTimedOut extends haxe.Exception {
+	public function new() {
+		super("The response head's deadline has passed");
 	}
 }
 #end
