@@ -89,7 +89,7 @@ CrossByte currently includes:
   - PostgreSQL: natively through libpq, loaded at run time, with bound parameters, statement and connect timeouts and `cancel()`; on php through PDO; no other target
   - MongoDB, through its wire protocol (OP_MSG, SCRAM, TLS, cursors, transactions) on hxcpp, the jvm, the interpreter, hl and neko; not on JavaScript, which cannot block
   - `ConnectionPool` and `AsyncDatabase` keep those blocking drivers off the runtime's thread, and bound the wait: `AsyncDatabase` fails a job still queued after `queueTimeout` (30 s), at the deadline, though every worker is busy, and refuses one past `maxQueued` (100,000); 0 is no limit for either, and for the pool's `acquireTimeout`
-  - every client keeps TCP keepalive on with MySQL's timings (a probe after 60 idle seconds, then every 10, dropped after 6), so a database host gone silent, a partition, a crash, is found in about two minutes rather than hours or never: natively everywhere, on the jvm with the timings from Java 11; the interpreter, hl and neko cannot set it (`MongoConfig.keepAlive` says what each target can)
+  - natively the MySQL, PostgreSQL and MongoDB clients keep TCP keepalive on with MySQL's timings (a probe after 60 idle seconds, then every 10, dropped after 6), so a database host gone silent, a partition, a crash, is found in about two minutes rather than hours or never; MongoDB's does on the jvm too, with the timings from Java 11, and cannot on the interpreter, hl and neko (`MongoConfig.keepAlive` says what each target can)
 
 ## Timers
 
