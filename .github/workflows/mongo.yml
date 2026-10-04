@@ -1,6 +1,10 @@
 name: CrossByte MongoDB
 run-name: CrossByte MongoDB | ${{ github.event_name }} | ${{ github.ref_name }}
 
+# utest and hxjava come through .github/actions/haxelibs, from a cache or
+# GitHub, so this job does not depend on lib.haxe.org. ci.yml's header says
+# how a failure reads.
+
 on:
   push:
   pull_request:
@@ -71,22 +75,14 @@ jobs:
           distribution: temurin
           java-version: "8"
 
-      - name: Install Haxe dependencies
-        run: |
-          haxelib install utest --quiet
-          haxelib install hxjava --quiet
-          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
-          # The native externs include their Build.xml through
-          # ${haxelib:crossbyte}, so hxcpp has to be able to resolve this
-          # repository by name.
-          haxelib dev crossbyte "$GITHUB_WORKSPACE"
+      - name: Install Haxe libraries
+        uses: ./.github/actions/haxelibs
 
-      - name: Bootstrap hxcpp tools
-        run: |
-          set -euo pipefail
-          HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
-          (cd "$HXCPP_DIR/tools/run" && haxe compile.hxml)
-          (cd "$HXCPP_DIR/tools/hxcpp" && haxe compile.hxml)
+      - name: Install hxcpp
+        uses: ./.github/actions/hxcpp
+        with:
+          repository: ${{ env.HXCPP_REPO }}
+          ref: ${{ env.HXCPP_REF }}
 
       # A one-member replica set, for transactions, which a standalone server
       # refuses. Its member is named as the container knows itself; the tests
@@ -94,6 +90,7 @@ jobs:
       - name: Start a replica set member
         run: |
           set -euo pipefail
+          trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
           docker run -d --name mongo-rs -p 27018:27017 mongo:7 --replSet rs0 --bind_ip_all
           for i in $(seq 1 60); do
             if docker exec mongo-rs mongosh --quiet --eval "db.adminCommand({ping: 1}).ok" >/dev/null 2>&1; then break; fi
@@ -104,7 +101,7 @@ jobs:
             if [ "$(docker exec mongo-rs mongosh --quiet --eval 'db.hello().isWritablePrimary')" = "true" ]; then exit 0; fi
             sleep 1
           done
-          echo "The replica set member never became primary." >&2
+          echo "::error::The replica set member never became primary."
           exit 1
 
       # A server that takes TLS only, with a certificate from an authority of
@@ -112,6 +109,7 @@ jobs:
       - name: Start a server requiring TLS
         run: |
           set -euo pipefail
+          trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
           mkdir -p export/mongo-certs
           cd export/mongo-certs
           openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=CrossByte Test CA" \
@@ -129,7 +127,7 @@ jobs:
             if docker exec mongo-tls mongosh --quiet --tls --tlsCAFile /certs/ca.pem --host localhost --eval "db.adminCommand({ping: 1}).ok" >/dev/null 2>&1; then exit 0; fi
             sleep 1
           done
-          echo "The TLS server never answered." >&2
+          echo "::error::The TLS server never answered."
           docker logs mongo-tls >&2
           exit 1
 

@@ -8,6 +8,10 @@ run-name: CrossByte hl and neko | ${{ github.event_name }} | ${{ github.ref_name
 # it wherever a runtime can be had: neko arrives with Haxe; HashLink comes
 # from its release zip on Windows and is built from the same tag on Linux,
 # since its releases carry no Linux binary.
+#
+# utest comes through .github/actions/haxelibs, from a cache or GitHub, so
+# these jobs do not depend on lib.haxe.org. ci.yml's header says how a
+# failure reads.
 
 on:
   push:
@@ -60,14 +64,27 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Install test dependencies
-        run: haxelib install utest --quiet
+      - name: Install Haxe libraries
+        uses: ./.github/actions/haxelibs
 
       - name: Build neko suite
         run: haxe ci/neko-tests.hxml
 
       - name: Run neko suite
+        if: runner.os != 'Windows'
         run: neko export/neko/CrossByteTests.n
+
+      # Not from Git Bash on Windows, which keeps eight bits of a Windows exit
+      # code and maps the rest: an access violation reads 139, a fail-fast
+      # abort or a stack overflow 127, and an exit code of 256 reads 0. pwsh
+      # sees the code whole, and a pwsh step reports any failure as 1, so the
+      # step prints it.
+      - name: Run neko suite
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          neko export/neko/CrossByteTests.n
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::neko export/neko/CrossByteTests.n exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
 
   hl-windows:
     name: Core | HashLink (Windows)
@@ -75,6 +92,9 @@ jobs:
     timeout-minutes: 25
     defaults:
       run:
+        # As in ci.yml's Native Smoke: a pwsh step does not stop at a native
+        # command that fails, so each step runs at most one, as its last
+        # command, and the suite's exit code is checked and printed in full.
         shell: pwsh
 
     steps:
@@ -86,8 +106,8 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Install test dependencies
-        run: haxelib install utest --quiet
+      - name: Install Haxe libraries
+        uses: ./.github/actions/haxelibs
 
       # Compiling needs no HashLink, so this says whether the suite builds
       # for hl even when the runtime below cannot be had.
@@ -98,9 +118,12 @@ jobs:
       # every native at load and, on Windows, reports one it cannot find in a
       # dialog box, which on a runner nobody can dismiss, so the job would
       # sit there until it timed out. So the libraries the suite loads are
-      # checked for here, and a missing one fails the step by name.
+      # checked for here, and a missing one fails the step by name. The trap
+      # puts what failed, a throw below, or a cmdlet's error, on the run
+      # page as well as in the log.
       - name: Install HashLink ${{ env.HASHLINK_VERSION }}
         run: |
+          trap { Write-Host "::error::$_"; break }
           $zip = Join-Path $env:RUNNER_TEMP "hashlink.zip"
           $dest = Join-Path $env:RUNNER_TEMP "hashlink"
           Invoke-WebRequest -Uri "https://github.com/HaxeFoundation/hashlink/releases/download/$env:HASHLINK_TAG/hashlink-$env:HASHLINK_VERSION-win.zip" -OutFile $zip
@@ -120,9 +143,7 @@ jobs:
       - name: Run hl suite
         run: |
           hl export/hl/CrossByteTests.hl
-          if ($LASTEXITCODE -ne 0) {
-            throw "hl suite failed (exit $LASTEXITCODE)"
-          }
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::hl export/hl/CrossByteTests.hl exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
 
   hl-linux:
     name: Core | HashLink (Linux)
@@ -141,8 +162,8 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Install test dependencies
-        run: haxelib install utest --quiet
+      - name: Install Haxe libraries
+        uses: ./.github/actions/haxelibs
 
       - name: Build hl suite
         run: haxe ci/hl-tests.hxml
@@ -154,6 +175,7 @@ jobs:
       - name: Build HashLink ${{ env.HASHLINK_TAG }}
         run: |
           set -euo pipefail
+          trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libmbedtls-dev libpng-dev libturbojpeg0-dev libvorbis-dev \
