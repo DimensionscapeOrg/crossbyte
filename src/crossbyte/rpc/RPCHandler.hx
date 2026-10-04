@@ -4,9 +4,9 @@ package crossbyte.rpc;
 // Node and in a browser.
 
 import crossbyte.Future;
+import crossbyte.rpc._internal.RPCFrame;
 import crossbyte.rpc._internal.RPCWire;
 import crossbyte.io.ByteArrayInput;
-import crossbyte.io.ByteArrayOutput;
 
 /**
 	`RPCHandler` is the inbound implementation surface for CrossByte RPC sessions.
@@ -26,11 +26,12 @@ import crossbyte.io.ByteArrayOutput;
 	connection up. Throw an `RPCError` for a failure the caller should see: its
 	message is the caller's answer. Anything else reaches the caller as
 	`RPCError.INTERNAL_MESSAGE`, and `RPCSession.onHandlerError` is told what
-	it was. Only a frame that cannot be read, too long, for no known method,
-	or with arguments that do not decode, ends the connection, since nothing
-	after it could be trusted to line up. A handler that writes its own
-	`dispatch` decodes and calls in one place, so whatever that throws still
-	ends the connection.
+	it was. A call this side cannot take, for a method it has not got, or
+	whose arguments do not read, is answered saying so if it is a request,
+	and dropped if it is one-way, and the connection carries on: see
+	`RPCSession.onUnreadableFrame`. Only a frame too long to trust ends it. A
+	handler that writes its own `dispatch` decodes and calls in one place, so
+	whatever that throws still ends the connection.
 
 	A method can answer later: declared to return `Future<T>` instead of `T`,
 	its caller is answered once the future completes, at once if it has, on
@@ -91,6 +92,15 @@ abstract class RPCHandler {
 	abstract public function dispatch(op:Int, input:ByteArrayInput, requestId:Int):Void;
 
 	/**
+		The fingerprint of the methods this handler answers, `RPCOps.fingerprint`
+		of their ops: what a session's hello says it answers. Generated with a
+		generated `dispatch`; 0 for one written by hand, which says nothing.
+	**/
+	@:noCompletion public function __rpc_fingerprint():Int {
+		return 0;
+	}
+
+	/**
 		Called before each inbound call, before its arguments are read, with
 		the method's name, the request's id, 0 for a one-way call, and
 		the bytes its arguments take. Return `null` to let the call run, or an
@@ -141,6 +151,31 @@ abstract class RPCHandler {
 		final session = this_session;
 		if (session != null) {
 			session.__callFailed(op, method, requestId, error, true);
+		}
+	}
+
+	/**
+		A call, from the generated dispatch, for an op this handler has no
+		method for: a request is answered `RPCError.UNKNOWN_METHOD_MESSAGE`,
+		a one-way call dropped, and `RPCSession.onUnreadableFrame` told. It
+		threw, and the connection ended.
+	**/
+	@:noCompletion private function __rpc_unknown(op:Int, requestId:Int):Void {
+		final session = this_session;
+		if (session != null) {
+			session.__unknownCall(op, requestId);
+		}
+	}
+
+	/**
+		A call whose arguments did not read, from its generated decoder: a
+		request is answered `RPCError.UNREADABLE_MESSAGE`, a one-way call
+		dropped, and `RPCSession.onUnreadableFrame` told.
+	**/
+	@:noCompletion private function __rpc_unreadable(op:Int, requestId:Int, error:Dynamic):Void {
+		final session = this_session;
+		if (session != null) {
+			session.__unreadableCall(op, requestId, false, error);
 		}
 	}
 
@@ -206,13 +241,13 @@ abstract class RPCHandler {
 		session.__settleOnThisThread(future, settle);
 	}
 
-	/** Sends the answer the generated code has framed, on the calling session. **/
-	@:noCompletion private inline function __rpc_answer(framed:ByteArrayOutput):Void {
-		this_session.__sendAnswer(framed);
+	/** The frame an answer to `requestId` is written into, begun: `session`'s, the one the call came from. **/
+	@:noCompletion private inline function __rpc_frame(session:RPCSession<Dynamic, Dynamic>, room:Int, op:Int, requestId:Int):RPCFrame {
+		return session.__takeFrame(room, RPCWire.FLAG_RESPONSE, op, requestId);
 	}
 
-	/** Sends an answer framed later, on the session its call came from. **/
-	@:noCompletion private inline function __rpc_answerOn(session:RPCSession<Dynamic, Dynamic>, framed:ByteArrayOutput):Void {
+	/** Sends the answer the generated code has framed, on the session it was framed for. **/
+	@:noCompletion private inline function __rpc_answerOn(session:RPCSession<Dynamic, Dynamic>, framed:RPCFrame):Void {
 		session.__sendAnswer(framed);
 	}
 

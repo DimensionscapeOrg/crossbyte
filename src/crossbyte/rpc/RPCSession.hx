@@ -24,7 +24,9 @@ import crossbyte.net.NetConnection;
 import crossbyte.net.NetConnectionBase;
 import crossbyte.events.EventDispatcher;
 import crossbyte.io.ByteArrayInput;
-import crossbyte.io.ByteArrayOutput;
+import crossbyte.rpc._internal.RPCDeadlines;
+import crossbyte.rpc._internal.RPCFrame;
+import crossbyte.rpc._internal.RPCPendingCalls;
 import crossbyte.rpc._internal.RPCWire;
 import crossbyte.rpc._internal.RPCRuntimeCodec;
 import haxe.ds.IntMap;
@@ -92,10 +94,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private var __runtimeRequestIdSeed:Int = 0;
 	@:noCompletion private var __runtimePendingResponseId:Int = 0;
 	@:noCompletion private var __runtimePendingResponse:RPCResponse<Dynamic> = null;
-	@:noCompletion private var __runtimePendingResponses:Null<IntMap<RPCResponse<Dynamic>>> = null;
-	// How many entries the two maps above hold. Asking a map whether it is
-	// empty meant iterating it, and natively that copies every value first:
-	// done on every runtime-lane call, so each call cost as much as the calls
+	@:noCompletion private var __runtimePendingResponses:Null<RPCPendingCalls> = null;
+	// How many handlers `__runtimeHandlers` holds, and how many calls
+	// `__runtimePendingResponses` does. Asking a map whether it is empty
+	// meant iterating it, and natively that copies every value first: done
+	// on every runtime-lane call, so each call cost as much as the calls
 	// still waiting.
 	@:noCompletion private var __runtimeHandlerCount:Int = 0;
 	@:noCompletion private var __runtimePendingCount:Int = 0;
@@ -123,8 +126,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		call waits for as long as the connection lasts. A call can have a
 		deadline of its own instead; see `RPCResponse.timeout`.
 
-		Read as each call is made. A call with no deadline arms nothing; one
-		with a deadline holds a timer until it is answered.
+		Read as each call is made. A call with no deadline arms nothing. The
+		calls given this one wait in a queue, in the order they were made, and
+		one timer serves them all; a call answered leaves it at once. One
+		made after it was lowered, which would fall due before the calls
+		ahead of it, holds a timer of its own until it is answered.
 	**/
 	public var callTimeout:Int = 0;
 
@@ -139,7 +145,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		connection lasts.
 
 		Both lanes, and only calls answered later: a method answering at once
-		has answered before any deadline could pass.
+		has answered before any deadline could pass. Their deadlines wait in a
+		queue, as `callTimeout`'s do, with one timer for all of them.
 	**/
 	public var handlerTimeout:Int = 0;
 
@@ -177,6 +184,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	// another peer, as a listening LocalConnection does, must not hand that
 	// peer the last one's answers.
 	@:noCompletion private var __epoch:Int = 0;
+	// The buffer every frame this session sends is written in, made with the
+	// first; see __takeFrame. Always null under crossbyte_check_events and
+	// crossbyte_fresh_events, which frame each send in a buffer of its own.
+	@:noCompletion private var __frame:Null<RPCFrame> = null;
 	#if (cpp || neko || hl || java || jvm || eval)
 	@:noCompletion private static final __threadTokens:sys.thread.Tls<{}> = new sys.thread.Tls();
 	#end
@@ -301,6 +312,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		// ready, for a heartbeat started before it was.
 		(connection : NetConnectionBase).__observeClose(__connectionEnded);
 		(connection : NetConnectionBase).__observeReady(__connectionReady);
+		// Connected already, as an accepted connection is: hello now. One not
+		// yet says it as it becomes ready.
+		if (__isUp) {
+			__sendHello();
+		}
 	}
 
 	/** The shortest wait before a session made by `dial` dials again, in seconds. **/
@@ -329,6 +345,134 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	@:noCompletion private inline function get_up():Bool {
 		return __isUp && !__ended && __connection.connected;
+	}
+
+	/** The RPC protocol version a session of this build speaks, which its hello declares: 1 for 1.0. **/
+	public static inline final PROTOCOL_VERSION:Int = RPCWire.VERSION;
+
+	/**
+		The protocol version the peer's hello declared: 1 for a peer of 1.0.
+
+		Every session says hello as its connection starts, at once on one
+		connected already, or as one becomes ready, a frame of its own sent
+		ahead of its calls and never waited for. A peer from before 1.0 sends
+		none, and its version stays 0, as it is until a hello arrives. Back to
+		0 as the connection ends: a session made by `dial` hears a hello from
+		each connection, and a listening `LocalConnection` from each peer.
+	**/
+	public var peerVersion(default, null):Int = 0;
+
+	/**
+		The capabilities the peer's hello declared, a bit each. None are
+		defined in 1.0, so 0. A feature added after 1.0, a flag, a kind of
+		frame or of value, compression, is to be used towards a peer only
+		once its hello has declared it.
+	**/
+	public var peerCapabilities(default, null):Int = 0;
+
+	/**
+		A fingerprint of the methods this session's commands call: their ops
+		(see `RPCOps`), hashed in order, so that two sides built from the same
+		methods with the same signatures have the same one. 0 with no
+		commands. Its hello sends it, as `peerCallsFingerprint` on the other
+		side.
+	**/
+	public var callsFingerprint(get, never):Int;
+
+	/**
+		A fingerprint of the methods this session's handler answers, as
+		`callsFingerprint` is of what it calls. 0 with no handler, or one with
+		a hand-written `dispatch`.
+	**/
+	public var answersFingerprint(get, never):Int;
+
+	/** The peer's `callsFingerprint`, from its hello: 0 until one arrives. **/
+	public var peerCallsFingerprint(default, null):Int = 0;
+
+	/** The peer's `answersFingerprint`, from its hello: 0 until one arrives. **/
+	public var peerAnswersFingerprint(default, null):Int = 0;
+
+	/**
+		Called when the peer's hello arrives, once a connection, with
+		`peerVersion`, `peerCapabilities` and the peer's fingerprints set.
+
+		The fingerprints are for a log line: two that differ say the sides
+		were built from different methods, one has a method more, or a
+		signature changed, not that any call will fail, and nothing is
+		refused for it. A call for a method the other side has not got is
+		answered `RPCError.UNKNOWN_METHOD_MESSAGE` whatever the fingerprints
+		say.
+
+		```haxe
+		// Given session:RPCSession<ChatCommands>.
+		session.onHello = () -> {
+			if (session.peerAnswersFingerprint != session.callsFingerprint) {
+				trace('the peer was built from other methods than these commands call');
+			}
+		};
+		```
+	**/
+	public dynamic function onHello():Void {}
+
+	@:noCompletion private function get_callsFingerprint():Int {
+		return __commands != null ? __commands.__rpc_fingerprint() : 0;
+	}
+
+	@:noCompletion private function get_answersFingerprint():Int {
+		return __handler != null ? __handler.__rpc_fingerprint() : 0;
+	}
+
+	/**
+		Says hello: a response frame under request id 0, which answers no call,
+		a session from before 1.0 passes over it, as it does a pong, with
+		this side's protocol version, capabilities and fingerprints. Sent and
+		never waited for: a call made next goes right behind it. A send that
+		throws here is the connection's to report, not the start's.
+	**/
+	@:noCompletion private function __sendHello():Void {
+		final framed:RPCFrame = __takeFrame(HELLO_ROOM, RPCWire.FLAG_RESPONSE, RPCWire.HELLO_OP, 0);
+		framed.putVarUInt(0);
+		framed.putVarUInt(RPCWire.VERSION);
+		framed.putVarUInt(RPCWire.CAPABILITIES);
+		framed.putInt(callsFingerprint);
+		framed.putInt(answersFingerprint);
+		try {
+			__connection.send(framed.finish());
+		} catch (_:Dynamic) {}
+		__sent(framed);
+	}
+
+	/** A hello's frame at its longest: its length, flags and op, an id, the version and capabilities, two fingerprints. **/
+	@:noCompletion private static inline final HELLO_ROOM:Int = 4 + 5 + 1 + 5 + 5 + 4 + 4;
+
+	/**
+		The peer's hello, in a frame ending at `frameEnd`: what this version
+		knows of it is read, and what a later one appends passed over.
+	**/
+	@:noCompletion private function __helloArrived(input:ByteArrayInput, frameEnd:Int):Void {
+		var version:Int = 0;
+		var capabilities:Int = 0;
+		var calls:Int = 0;
+		var answers:Int = 0;
+		try {
+			version = input.readVarUInt();
+			capabilities = input.readVarUInt();
+			calls = input.readInt();
+			answers = input.readInt();
+			RPCWire.requireWithin(input, frameEnd);
+		} catch (error:Dynamic) {
+			__passedOver(RPCWire.HELLO_OP, 0, "a hello that could not be read: " + Std.string(error));
+			return;
+		}
+		peerVersion = version;
+		peerCapabilities = capabilities;
+		peerCallsFingerprint = calls;
+		peerAnswersFingerprint = answers;
+		try {
+			onHello();
+		} catch (error:Dynamic) {
+			Logger.error("RPCSession.onHello threw: " + Std.string(error));
+		}
 	}
 
 	// Whether the connection has been ready since it last ended, from the
@@ -471,6 +615,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		__isUp = false;
 		__ended = true;
 		__endReason = reason;
+		// The peer that said hello has gone; the next says its own.
+		peerVersion = 0;
+		peerCapabilities = 0;
+		peerCallsFingerprint = 0;
+		peerAnswersFingerprint = 0;
 		// `| 0` so it wraps on JavaScript as it does elsewhere.
 		__epoch = (__epoch + 1) | 0;
 		// Stopped, not forgotten: `start()` still stands, for a connection
@@ -619,10 +768,32 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		response.__session = cast this;
 		__trackRuntimeResponse(requestId, cast response);
 		if (callTimeout > 0) {
-			response.__arm(callTimeout);
+			__queueDeadline(cast response, callTimeout);
 		}
 		__sendRequestFrame(response, framed);
 		return response;
+	}
+
+	// The deadlines of the calls this session makes under `callTimeout`, made
+	// with the first; see RPCDeadlines.
+	@:noCompletion private var __deadlines:Null<RPCDeadlines> = null;
+	// And of those its handler answers later under `handlerTimeout`.
+	@:noCompletion private var __handlerDeadlines:Null<HandlerDeadlines> = null;
+
+	/**
+		Gives `response` the session's deadline, `milliseconds` from now, in
+		the queue one timer keeps for all of them; one that would fall before
+		the last queued, `callTimeout` lowered between calls, arms its own.
+		Each call armed a timer of its own: a closure and a timer node a call.
+	**/
+	@:noCompletion private function __queueDeadline(response:RPCResponse<Dynamic>, milliseconds:Int):Void {
+		var queue:Null<RPCDeadlines> = __deadlines;
+		if (queue == null) {
+			queue = __deadlines = new RPCDeadlines();
+		}
+		if (!queue.add(response, milliseconds, Timer.getTime())) {
+			response.__arm(milliseconds);
+		}
 	}
 
 	@:noCompletion private inline function __hasRuntimeHandlers():Bool {
@@ -661,8 +832,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private static function __noData(input:ByteArrayInput):Void {}
 
 	/*
-		A delivery, read here whatever the session has bound; a frame nothing
-		here can read ends the connection.
+		A delivery, read here whatever the session has bound. A frame whose
+		length cannot be trusted ends the connection, since nothing after it
+		would line up; and so does a send that throws while a frame is
+		answered, and anything a hand-written dispatch throws.
 
 		The handler is bound to this session for as long as its calls run,
 		a field write per call, and put back as it was once the delivery
@@ -702,6 +875,15 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		up. Now any runtime call is answered as the runtime lane answers, and
 		a request with nothing to answer it is answered
 		`RPCError.NO_HANDLER_MESSAGE`.
+
+		Every frame carries its length, so one this session cannot read is
+		passed over, and the next is read where it begins: a call for a
+		method it has not got, or whose arguments do not read, a request
+		answered saying so, an answer that does not read, and a frame of a
+		kind it does not know. Each is told to `onUnreadableFrame`. They
+		ended the connection, so in a rolling deploy a client calling a
+		method its server did not have yet was disconnected. Only a length
+		that cannot be trusted still ends it.
 	**/
 	@:noCompletion private inline function __readFrames(input:ByteArrayInput):Void {
 		final maxLength:Int = maxFrameLength;
@@ -725,27 +907,56 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			if ((flags & RPCWire.FLAG_RUNTIME) != 0) {
 				__dispatchRuntimeFrame(flags, op, input, frameEnd);
 			} else if (flags == 0 || flags == RPCWire.FLAG_REQUEST) {
-				final requestId:Int = flags == 0 ? 0 : input.readVarUInt();
+				var requestId:Int = 0;
+				var readable:Bool = true;
+				if (flags != 0) {
+					// Within the frame, or the frame is passed over: one too
+					// short for its id took it from the next.
+					try {
+						requestId = input.readVarUInt();
+						readable = input.position <= frameEnd;
+					} catch (_:Dynamic) {
+						readable = false;
+					}
+				}
 				final handler = __handler;
-				if (requestId == 0 && op == RPCWire.PING_OP) {
+				if (!readable) {
+					__passedOver(op, 0, UNREADABLE_ID);
+				} else if (requestId == 0 && op == RPCWire.PING_OP) {
 					__pinged();
 				} else if (handler != null) {
 					handler.this_session = cast this;
 					handler.this_frameEnd = frameEnd;
 					handler.dispatch(op, input, requestId);
-				} else if (requestId != 0) {
-					__sendCompiledError(op, requestId, RPCError.NO_HANDLER_MESSAGE);
+				} else {
+					if (requestId != 0) {
+						__sendCompiledError(op, requestId, RPCError.NO_HANDLER_MESSAGE);
+					}
+					__passedOver(op, requestId, "nothing answers calls on this connection");
 				}
 			} else if (flags == RPCWire.FLAG_RESPONSE || flags == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
-				// Id 0 answers no call: a pong.
-				final requestId:Int = input.readVarUInt();
-				final commands = __commands;
-				if (requestId != 0 && commands != null) {
-					commands.__frameEnd = frameEnd;
-					commands.__rpc_handle_response(op, requestId, input, flags != RPCWire.FLAG_RESPONSE);
+				var requestId:Int = 0;
+				var readable:Bool = true;
+				try {
+					requestId = input.readVarUInt();
+					readable = input.position <= frameEnd;
+				} catch (_:Dynamic) {
+					readable = false;
 				}
+				final commands = __commands;
+				if (!readable) {
+					__passedOver(op, 0, UNREADABLE_ID);
+				} else if (requestId != 0) {
+					if (commands != null) {
+						commands.__frameEnd = frameEnd;
+						commands.__rpc_handle_response(op, requestId, input, flags != RPCWire.FLAG_RESPONSE);
+					}
+				} else if (op == RPCWire.HELLO_OP && flags == RPCWire.FLAG_RESPONSE) {
+					__helloArrived(input, frameEnd);
+				}
+				// Otherwise id 0, which answers no call: a pong.
 			} else {
-				throw "Invalid RPC frame flags " + flags;
+				__passedOver(op, 0, "a frame of a kind this session does not know, flags 0x" + StringTools.hex(flags & 0xFF, 2));
 			}
 
 			input.position = frameEnd;
@@ -755,6 +966,80 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (now >= 0.0) {
 			__connection.inTimestamp = now;
 		}
+	}
+
+	/** What `onUnreadableFrame` is told of a frame too short for its request id. **/
+	@:noCompletion private static inline final UNREADABLE_ID:String = "a frame whose request id could not be read";
+
+	/**
+		Told of each frame this session could not read and passed over, the
+		connection staying up: a call for a method it has not got, from a
+		peer built from another version of the contract, or after a method
+		was added, as in a rolling deploy, or for an op no runtime handler
+		is registered under, or reaching a session with nothing to answer
+		calls; a call whose arguments did not read; an answer whose value did
+		not read; and a frame of a kind it does not know. `requestId` is a
+		call's id, 0 for a one-way call, and for a frame that is not a call,
+		and `reason` says which it was.
+
+		A request among them has been answered by then, with
+		`RPCError.UNKNOWN_METHOD_MESSAGE`, `RPCError.UNREADABLE_MESSAGE` or
+		`RPCError.NO_HANDLER_MESSAGE`, and the call an unreadable answer was
+		for has failed; a one-way call has been dropped. They ended the
+		connection, where only a frame whose length cannot be trusted does
+		now.
+
+		Does nothing unless set: a server can count them, and close a peer
+		that sends too many. What it throws is ignored.
+	**/
+	public dynamic function onUnreadableFrame(op:Int, requestId:Int, reason:String):Void {}
+
+	/** Tells `onUnreadableFrame` of a frame passed over. **/
+	@:noCompletion private function __passedOver(op:Int, requestId:Int, reason:String):Void {
+		try {
+			onUnreadableFrame(op, requestId, reason);
+		} catch (_:Dynamic) {}
+	}
+
+	/**
+		A compiled call for a method the handler has not got: a request is
+		answered `RPCError.UNKNOWN_METHOD_MESSAGE`, a one-way call dropped. It
+		was thrown, and ended the connection.
+	**/
+	@:noCompletion private function __unknownCall(op:Int, requestId:Int):Void {
+		if (requestId != 0) {
+			__sendCompiledError(op, requestId, RPCError.UNKNOWN_METHOD_MESSAGE);
+		}
+		__passedOver(op, requestId, "no method answers op 0x" + StringTools.hex(op, 8));
+	}
+
+	/**
+		A call, on either lane, whose arguments did not read: a request is
+		answered `RPCError.UNREADABLE_MESSAGE`, a one-way call dropped.
+	**/
+	@:noCompletion private function __unreadableCall(op:Int, requestId:Int, runtime:Bool, error:Dynamic):Void {
+		if (requestId != 0) {
+			if (runtime) {
+				__sendRuntimeError(op, requestId, RPCError.UNREADABLE_MESSAGE);
+			} else {
+				__sendCompiledError(op, requestId, RPCError.UNREADABLE_MESSAGE);
+			}
+		}
+		__passedOver(op, requestId, "the call's arguments could not be read: " + Std.string(error));
+	}
+
+	/**
+		An answer, on either lane, whose value did not read: `response`, the
+		call it answers if one waits, fails saying so, with what failed as
+		its cause, not an `RPCError`, since it was this side's reading that
+		failed and not the other side refusing.
+	**/
+	@:noCompletion private function __unreadableAnswer(op:Int, requestId:Int, response:Null<RPCResponse<Dynamic>>, error:Dynamic):Void {
+		final message:String = "RPC answer could not be read: " + Std.string(error);
+		if (response != null) {
+			response.__fail(message, error);
+		}
+		__passedOver(op, requestId, message);
 	}
 
 	/**
@@ -781,41 +1066,68 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	**/
 	@:noCompletion private function __dispatchRuntimeFrame(flags:Int, op:Int, input:ByteArrayInput, frameEnd:Int):Void {
 		final runtimeFlags:Int = flags & ~RPCWire.FLAG_RUNTIME;
-		if (runtimeFlags == 0 || runtimeFlags == RPCWire.FLAG_REQUEST) {
-			final requestId:Int = runtimeFlags == 0 ? 0 : input.readVarUInt();
+		final call:Bool = runtimeFlags == 0 || runtimeFlags == RPCWire.FLAG_REQUEST;
+		if (!call && runtimeFlags != RPCWire.FLAG_RESPONSE && runtimeFlags != (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
+			__passedOver(op, 0, "a runtime frame of a kind this session does not know, flags 0x" + StringTools.hex(flags & 0xFF, 2));
+			return;
+		}
+		var requestId:Int = 0;
+		if (runtimeFlags != 0) {
+			var readable:Bool = true;
+			try {
+				requestId = input.readVarUInt();
+				readable = input.position <= frameEnd;
+			} catch (_:Dynamic) {
+				readable = false;
+			}
+			if (!readable) {
+				__passedOver(op, 0, UNREADABLE_ID);
+				return;
+			}
+		}
+		if (call) {
 			// Asked before the arguments are read, so a call refused for its
 			// size costs nothing to refuse. Refused, the frame is passed over.
 			if (beforeRuntimeCall != null && !__admitRuntimeCall(op, requestId, frameEnd - input.position)) {
 				return;
 			}
-			final args = RPCRuntimeCodec.readArgs(input, frameEnd);
-			RPCWire.requireWithin(input, frameEnd);
+			// A value of a kind this side does not know makes a call it cannot
+			// read, not a connection that has to end: a later release can add
+			// kinds of value without disconnecting this one.
+			var args:Array<Dynamic> = null;
+			try {
+				args = RPCRuntimeCodec.readArgs(input, frameEnd);
+				RPCWire.requireWithin(input, frameEnd);
+			} catch (error:Dynamic) {
+				__unreadableCall(op, requestId, true, error);
+				return;
+			}
 			__invokeRuntime(op, args, requestId);
 			return;
 		}
-		if (runtimeFlags == RPCWire.FLAG_RESPONSE) {
-			final requestId:Int = input.readVarUInt();
-			final value:Dynamic = RPCRuntimeCodec.readValue(input, frameEnd);
+		final failed:Bool = runtimeFlags != RPCWire.FLAG_RESPONSE;
+		var value:Dynamic = null;
+		try {
+			value = failed ? input.readVarUTF() : RPCRuntimeCodec.readValue(input, frameEnd);
 			RPCWire.requireWithin(input, frameEnd);
+		} catch (error:Dynamic) {
+			__unreadableAnswer(op, requestId, __takeRuntimeResponse(requestId), error);
+			return;
+		}
+		if (failed) {
+			__rejectRuntimeResponse(op, requestId, value);
+		} else {
 			__resolveRuntimeResponse(op, requestId, value);
-			return;
 		}
-		if (runtimeFlags == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
-			final requestId:Int = input.readVarUInt();
-			final message:String = input.readVarUTF();
-			RPCWire.requireWithin(input, frameEnd);
-			__rejectRuntimeResponse(op, requestId, message);
-			return;
-		}
-		throw "Invalid runtime RPC flags";
 	}
 
 	@:noCompletion private function __invokeRuntime(op:Int, args:Array<Dynamic>, requestId:Int):Void {
 		final handler = (__runtimeHandlers != null) ? __runtimeHandlers.get(op) : null;
 		if (handler == null) {
 			if (requestId != 0) {
-				__sendRuntimeError(op, requestId, "Unsupported runtime RPC op: " + op);
+				__sendRuntimeError(op, requestId, RPCError.UNKNOWN_METHOD_MESSAGE);
 			}
+			__passedOver(op, requestId, "no runtime handler is registered for op " + op);
 			return;
 		}
 		if (__atCallLimit()) {
@@ -917,19 +1229,82 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	/**
+		A frame to write at most `room` bytes into, begun with its flags, op
+		and request id: this session's buffer, or, when that one is being
+		written or sent still, as when a handler calls or answers from inside
+		a send that delivers at once, a fresh one. Every frame taken goes
+		back through `__sent`, sent or not.
+
+		Each frame was a `ByteArrayOutput` of its own, a call's and its
+		answer's alike: most of what a call allocated.
+	**/
+	@:noCompletion private inline function __takeFrame(room:Int, flags:Int, op:Int, requestId:Int):RPCFrame {
+		var frame:Null<RPCFrame> = __frame;
+		if (frame == null || frame.busy) {
+			frame = __newFrame(room);
+		}
+		frame.busy = true;
+		frame.begin(room, flags, op, requestId);
+		return frame;
+	}
+
+	/** A frame for `__takeFrame` when the session's is in use or there is none; the first is kept. **/
+	@:noCompletion private function __newFrame(room:Int):RPCFrame {
+		final frame = new RPCFrame(room);
+		#if !(crossbyte_check_events || crossbyte_fresh_events)
+		if (__frame == null && frame.capacity <= RPCFrame.KEEP_LIMIT) {
+			__frame = frame;
+		}
+		#end
+		return frame;
+	}
+
+	/**
+		Gives back a frame `__takeFrame` gave, once it has been sent or will
+		not be: `send` has copied what it keeps, so it is this session's to
+		write the next frame in. A buffer grown past `RPCFrame.KEEP_LIMIT` is
+		let go. Under `-D crossbyte_check_events` it is poisoned instead, so
+		a transport that kept it sends garbage.
+	**/
+	@:noCompletion private inline function __sent(frame:RPCFrame):Void {
+		#if crossbyte_check_events
+		frame.poison();
+		#end
+		frame.busy = false;
+		if (frame.capacity > RPCFrame.KEEP_LIMIT && frame == __frame) {
+			__frame = null;
+		}
+	}
+
+	/** Sends `frame` and gives it back, whether the send returns or throws. **/
+	@:noCompletion private inline function __sendFrame(frame:RPCFrame):Void {
+		try {
+			__connection.send(frame);
+		} catch (error:Dynamic) {
+			__sent(frame);
+			throw error;
+		}
+		__sent(frame);
+	}
+
+	/**
 		Sends a compiled call's answer, framed by the handler's generated code.
 		One over `maxFrameLength` throws, which the call it answers takes for
 		the handler failing: its caller is answered `RPCError.INTERNAL_MESSAGE`
 		and `onHandlerError` is told.
 	**/
-	@:noCompletion private inline function __sendAnswer(framed:ByteArrayOutput):Void {
+	@:noCompletion private inline function __sendAnswer(framed:RPCFrame):Void {
 		if (__oversized(framed)) {
-			throw new ArgumentError(__oversizedMessage("RPC answer", framed));
+			final message:String = __oversizedMessage("RPC answer", framed);
+			__sent(framed);
+			throw new ArgumentError(message);
 		}
 		// An answer for a connection that has ended, its handler closed it,
 		// has nobody to go to.
-		if (!__ended) {
-			__connection.send(framed);
+		if (__ended) {
+			__sent(framed);
+		} else {
+			__sendFrame(framed);
 		}
 	}
 
@@ -951,7 +1326,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		its response waiting; over local IPC it was reported to `onError`, and
 		the response waited for good.
 	**/
-	@:noCompletion private function __sendRequestFrame<T>(response:RPCResponse<T>, framed:ByteArrayOutput):Void {
+	@:noCompletion private function __sendRequestFrame<T>(response:RPCResponse<T>, framed:RPCFrame):Void {
 		var message:Null<String> = null;
 		var cause:Dynamic = null;
 		if (__oversized(framed)) {
@@ -968,6 +1343,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 				cause = error;
 			}
 		}
+		__sent(framed);
 		if (message != null) {
 			// Out of where it waits first, as a deadline takes it.
 			if (response.__commands != null) {
@@ -986,22 +1362,26 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 		@throws ArgumentError When the call is over `maxFrameLength`.
 	**/
-	@:noCompletion private function __sendCallFrame(framed:ByteArrayOutput):Void {
+	@:noCompletion private function __sendCallFrame(framed:RPCFrame):Void {
 		if (__oversized(framed)) {
-			throw new ArgumentError(__oversizedMessage("RPC call", framed));
+			final message:String = __oversizedMessage("RPC call", framed);
+			__sent(framed);
+			throw new ArgumentError(message);
 		}
-		if (!__ended) {
-			__connection.send(framed);
+		if (__ended) {
+			__sent(framed);
+		} else {
+			__sendFrame(framed);
 		}
 	}
 
-	/** Whether `framed`, its 4-byte length first, holds more than `maxFrameLength`. **/
-	@:noCompletion private inline function __oversized(framed:ByteArrayOutput):Bool {
-		return maxFrameLength > 0 && framed.bytesWritten - 4 > maxFrameLength;
+	/** Whether `framed`, finished, holds more than `maxFrameLength` after its 4-byte length. **/
+	@:noCompletion private inline function __oversized(framed:RPCFrame):Bool {
+		return maxFrameLength > 0 && framed.payloadLength > maxFrameLength;
 	}
 
-	@:noCompletion private function __oversizedMessage(what:String, framed:ByteArrayOutput):String {
-		return what + " of " + (framed.bytesWritten - 4) + " bytes is over the " + maxFrameLength + "-byte RPC frame limit";
+	@:noCompletion private function __oversizedMessage(what:String, framed:RPCFrame):String {
+		return what + " of " + framed.payloadLength + " bytes is over the " + maxFrameLength + "-byte RPC frame limit";
 	}
 
 	/** Answers a compiled request with an error; nothing, once the connection has ended. **/
@@ -1009,25 +1389,32 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (__ended) {
 			return;
 		}
-		var framed:ByteArrayOutput = __errorFrame(RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR, op, requestId, message);
-		if (__oversized(framed)) {
-			// A message too long to send, an RPCError's, is not the caller's
-			// to see in part.
-			framed = __errorFrame(RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR, op, requestId, RPCError.INTERNAL_MESSAGE);
-		}
-		__connection.send(framed);
+		__sendError(RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR, op, requestId, message);
 	}
 
-	@:noCompletion private static function __errorFrame(flags:Int, op:Int, requestId:Int, message:String):ByteArrayOutput {
-		final framed:ByteArrayOutput = new ByteArrayOutput(RPCWire.MIN_PAYLOAD_LEN + 8);
-		framed.writeInt(0);
-		framed.writeByte(flags);
-		framed.writeInt(op);
-		framed.writeVarUInt(requestId);
-		framed.writeVarUTF(message);
-		framed.writeIntAt(0, framed.bytesWritten - 4);
-		framed.flush();
-		return framed;
+	/**
+		Frames and sends an error answer. A message too long to send, an
+		`RPCError`'s, is not the caller's to see in part, and is answered
+		`RPCError.INTERNAL_MESSAGE` instead.
+	**/
+	@:noCompletion private function __sendError(flags:Int, op:Int, requestId:Int, message:String):Void {
+		var framed:RPCFrame = __errorFrame(flags, op, requestId, message);
+		if (__oversized(framed)) {
+			__sent(framed);
+			framed = __errorFrame(flags, op, requestId, RPCError.INTERNAL_MESSAGE);
+		}
+		__sendFrame(framed);
+	}
+
+	@:noCompletion private function __errorFrame(flags:Int, op:Int, requestId:Int, message:String):RPCFrame {
+		final framed:RPCFrame = __takeFrame(4 + RPCWire.MIN_PAYLOAD_LEN + 5 + 5 + message.length * 3, flags, op, requestId);
+		// Its id even when it is 0, which no answer has: an error answer was
+		// always framed so.
+		if (requestId == 0) {
+			framed.putVarUInt(0);
+		}
+		framed.putString(message);
+		return framed.finish();
 	}
 
 	@:noCompletion private inline function __afterRuntimeCall(op:Int, requestId:Int, failure:Null<haxe.Exception>):Void {
@@ -1166,36 +1553,46 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		} catch (_:Dynamic) {}
 	}
 
-	/** A runtime call's frame: a request with `requestId`, or a one-way call when it is 0. **/
-	@:noCompletion private static function __runtimeFrame(op:Int, requestId:Int, args:Array<Dynamic>):ByteArrayOutput {
-		final framed = new ByteArrayOutput(RPCWire.MIN_PAYLOAD_LEN + 8);
-		framed.writeInt(0);
-		framed.writeByte(RPCWire.FLAG_RUNTIME | (requestId != 0 ? RPCWire.FLAG_REQUEST : 0));
-		framed.writeInt(op);
-		if (requestId != 0) {
-			framed.writeVarUInt(requestId);
+	/**
+		A runtime call's frame: a request with `requestId`, or a one-way call
+		when it is 0.
+
+		@throws String When an argument is of a type the runtime lane does not
+		carry; nothing is held for it.
+	**/
+	@:noCompletion private function __runtimeFrame(op:Int, requestId:Int, args:Array<Dynamic>):RPCFrame {
+		final framed:RPCFrame = __takeFrame(RUNTIME_ROOM, RPCWire.FLAG_RUNTIME | (requestId != 0 ? RPCWire.FLAG_REQUEST : 0), op, requestId);
+		try {
+			RPCRuntimeCodec.writeArgs(framed, args);
+		} catch (error:Dynamic) {
+			__sent(framed);
+			throw error;
 		}
-		RPCRuntimeCodec.writeArgs(framed, args);
-		framed.writeIntAt(0, framed.bytesWritten - 4);
-		framed.flush();
-		return framed;
+		return framed.finish();
 	}
+
+	/** Room a runtime frame is begun with: it grows as its values are written. **/
+	@:noCompletion private static inline final RUNTIME_ROOM:Int = 64;
 
 	/** One over `maxFrameLength` throws, as `__sendAnswer` does. **/
 	@:noCompletion private function __sendRuntimeResponse(op:Int, requestId:Int, value:Dynamic):Void {
-		final framed = new ByteArrayOutput(RPCWire.MIN_PAYLOAD_LEN + 8);
-		framed.writeInt(0);
-		framed.writeByte(RPCWire.FLAG_RUNTIME | RPCWire.FLAG_RESPONSE);
-		framed.writeInt(op);
-		framed.writeVarUInt(requestId);
-		RPCRuntimeCodec.writeValue(framed, value);
-		framed.writeIntAt(0, framed.bytesWritten - 4);
-		framed.flush();
-		if (__oversized(framed)) {
-			throw new ArgumentError(__oversizedMessage("RPC answer", framed));
+		final framed:RPCFrame = __takeFrame(RUNTIME_ROOM, RPCWire.FLAG_RUNTIME | RPCWire.FLAG_RESPONSE, op, requestId);
+		try {
+			RPCRuntimeCodec.writeValue(framed, value);
+		} catch (error:Dynamic) {
+			__sent(framed);
+			throw error;
 		}
-		if (!__ended) {
-			__connection.send(framed);
+		framed.finish();
+		if (__oversized(framed)) {
+			final message:String = __oversizedMessage("RPC answer", framed);
+			__sent(framed);
+			throw new ArgumentError(message);
+		}
+		if (__ended) {
+			__sent(framed);
+		} else {
+			__sendFrame(framed);
 		}
 	}
 
@@ -1203,12 +1600,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (__ended) {
 			return;
 		}
-		final flags:Int = RPCWire.FLAG_RUNTIME | RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR;
-		var framed:ByteArrayOutput = __errorFrame(flags, op, requestId, message);
-		if (__oversized(framed)) {
-			framed = __errorFrame(flags, op, requestId, RPCError.INTERNAL_MESSAGE);
-		}
-		__connection.send(framed);
+		__sendError(RPCWire.FLAG_RUNTIME | RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR, op, requestId, message);
 	}
 
 	@:noCompletion private function __trackRuntimeResponse(requestId:Int, response:RPCResponse<Dynamic>):Void {
@@ -1217,12 +1609,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			__runtimePendingResponse = response;
 		} else {
 			if (__runtimePendingResponses == null) {
-				__runtimePendingResponses = new IntMap();
+				__runtimePendingResponses = new RPCPendingCalls();
 			}
-			if (!__runtimePendingResponses.exists(requestId)) {
-				__runtimePendingCount++;
-			}
-			__runtimePendingResponses.set(requestId, response);
+			// An id nothing waits under: see __nextRuntimeRequestId.
+			__runtimePendingResponses.put(requestId, response);
+			__runtimePendingCount++;
 		}
 		// A call waiting can only start the session reading.
 		if (__readState != READ_ON) {
@@ -1278,9 +1669,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			__runtimePendingResponse = null;
 			__runtimePendingResponseId = 0;
 		} else if (__runtimePendingResponses != null) {
-			response = __runtimePendingResponses.get(requestId);
+			response = __runtimePendingResponses.take(requestId);
 			if (response != null) {
-				__runtimePendingResponses.remove(requestId);
 				__runtimePendingCount--;
 			}
 		}
@@ -1301,7 +1691,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 				__runtimeRequestIdSeed = 1;
 			}
 		} while ((__runtimeRequestIdSeed == __runtimePendingResponseId)
-			|| (__runtimePendingResponses != null && __runtimePendingResponses.exists(__runtimeRequestIdSeed)));
+			|| (__runtimePendingResponses != null && __runtimePendingResponses.has(__runtimeRequestIdSeed)));
 
 		return __runtimeRequestIdSeed;
 	}
@@ -1319,13 +1709,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			__runtimePendingResponseId = 0;
 			pending.__fail(message, cause);
 		}
-		final map = __runtimePendingResponses;
-		if (map != null) {
+		final waiting = __runtimePendingResponses;
+		if (waiting != null) {
 			__runtimePendingResponses = null;
 			__runtimePendingCount = 0;
-			for (response in map) {
-				response.__fail(message, cause);
-			}
+			waiting.failAll(message, cause);
 		}
 	}
 
@@ -1342,6 +1730,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	 * decide by, and a gateway could not tell a backend gone from a refusal.
 	 */
 	@:noCompletion private function __failAllPending(message:String, ?cause:Dynamic):Void {
+		// Every call it holds fails here, so the queue is let go of first.
+		if (__deadlines != null) {
+			__deadlines.clear();
+		}
 		if (__commands != null) {
 			__commands.__failAllPending(message, cause);
 		}
@@ -1410,6 +1802,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			__ended = false;
 			__endReason = null;
 		}
+		// Ahead of anything onUp sends.
+		__sendHello();
 		__redialDelay = MIN_REDIAL;
 		if (__active && !__hasHeartbeat) {
 			__resumeHeartbeat();
@@ -1487,24 +1881,29 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			__timedOut(now - heard);
 			return;
 		}
-		if (now - __connection.outTimestamp >= __intervalSec) {
+		// An interval less a millisecond: the beat after a ping is an interval
+		// after it, and the clock's rounding put that a hair short, 2.8 - 1.8
+		// is 0.99999999999999978, so a ping went every other beat. A session
+		// pinging at 45 seconds against a 90-second timeout heard its pongs 90
+		// seconds apart, and could time out a healthy peer.
+		if (now - __connection.outTimestamp >= __intervalSec - BEAT_SLACK) {
 			__sendPing();
 		}
 	}
 
+	/** How much short of an interval since the last send still owes a ping; see `__onHeartbeat`. **/
+	@:noCompletion private static inline final BEAT_SLACK:Float = 0.001;
+
 	/** A ping: a one-way frame for `ping`, with no arguments. **/
 	@:noCompletion private function __sendPing():Void {
-		final framed:ByteArrayOutput = new ByteArrayOutput(RPCWire.MIN_PAYLOAD_LEN + 4);
-		framed.writeInt(RPCWire.MIN_PAYLOAD_LEN);
-		framed.writeByte(0);
-		framed.writeInt(RPCWire.PING_OP);
-		framed.flush();
+		final framed:RPCFrame = __takeFrame(RPCWire.MIN_PAYLOAD_LEN + 4, 0, RPCWire.PING_OP, 0).finish();
 		try {
 			__connection.send(framed);
 		} catch (_:Dynamic) {
 			// A connection that can take nothing more says so as it ends,
 			// which stops this. A beat does not throw out of the tick.
 		}
+		__sent(framed);
 	}
 
 	/**
@@ -1517,13 +1916,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (__ended) {
 			return;
 		}
-		final framed:ByteArrayOutput = new ByteArrayOutput(RPCWire.MIN_PAYLOAD_LEN + 5);
-		framed.writeInt(RPCWire.MIN_PAYLOAD_LEN + 1);
-		framed.writeByte(RPCWire.FLAG_RESPONSE);
-		framed.writeInt(RPCWire.PING_OP);
-		framed.writeVarUInt(0);
-		framed.flush();
-		__connection.send(framed);
+		final framed:RPCFrame = __takeFrame(RPCWire.MIN_PAYLOAD_LEN + 5, RPCWire.FLAG_RESPONSE, RPCWire.PING_OP, 0);
+		// Request id 0, which answers no call.
+		framed.putVarUInt(0);
+		__sendFrame(framed.finish());
 	}
 
 	/**
@@ -1576,17 +1972,34 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 @:access(crossbyte.rpc.RPCSession)
 @:access(crossbyte.Future)
 private class HandlerDeadline<T> {
+	/** `timer` while the deadline is in its session's `HandlerDeadlines`. **/
+	public static inline final QUEUED:Int = -2;
+
 	final session:RPCSession<Dynamic, Dynamic>;
 	final future:Future<T>;
 	final settle:Future<T>->Void;
 	var settled:Bool = false;
+	// A timer of its own, QUEUED while its session's queue holds it instead,
+	// or TimerHandle.INVALID once neither does.
 	var timer:Int = TimerHandle.INVALID;
+	// Its place in that queue, and when it falls due there.
+	public var previous:Null<HandlerDeadline<Dynamic>> = null;
+	public var next:Null<HandlerDeadline<Dynamic>> = null;
+	public var due:Float = 0.0;
 
 	public function new(session:RPCSession<Dynamic, Dynamic>, future:Future<T>, settle:Future<T>->Void, milliseconds:Int) {
 		this.session = session;
 		this.future = future;
 		this.settle = settle;
-		timer = Timer.setTimeout(milliseconds / 1000, expire);
+		var queue:Null<HandlerDeadlines> = session.__handlerDeadlines;
+		if (queue == null) {
+			queue = session.__handlerDeadlines = new HandlerDeadlines();
+		}
+		if (queue.add(cast this, milliseconds)) {
+			timer = QUEUED;
+		} else {
+			timer = Timer.setTimeout(milliseconds / 1000, expire);
+		}
 	}
 
 	/** The future has completed. **/
@@ -1595,15 +2008,17 @@ private class HandlerDeadline<T> {
 			return;
 		}
 		settled = true;
-		if (timer != TimerHandle.INVALID) {
+		if (timer == QUEUED) {
+			session.__handlerDeadlines.remove(cast this);
+		} else if (timer != TimerHandle.INVALID) {
 			Timer.clear(timer);
-			timer = TimerHandle.INVALID;
 		}
+		timer = TimerHandle.INVALID;
 		session.__callsWaiting--;
 		settle(future);
 	}
 
-	function expire():Void {
+	public function expire():Void {
 		timer = TimerHandle.INVALID;
 		if (settled) {
 			return;
@@ -1611,6 +2026,103 @@ private class HandlerDeadline<T> {
 		settled = true;
 		session.__callsWaiting--;
 		settle(RPCSession.__handlerTimedOut());
+	}
+}
+
+/**
+	A session's `handlerTimeout` deadlines, in the order their calls came,
+	which, with one timeout for all of them, is the order they fall due,
+	and one timer for them all, set for the first. Each armed a timer of its
+	own: a closure and a timer node a call. A call settled leaves the list
+	at once.
+
+	The timer, when it fires, answers for the calls that are due, at the
+	time a timer of their own would have fired, and is set for the next. A
+	deadline that would fall before the last one, `handlerTimeout`
+	lowered between calls, is not queued, and arms its own.
+**/
+@:access(crossbyte.rpc.RPCSession)
+private class HandlerDeadlines {
+	/** How much past its time the scheduler still counts a timer due: theirs, so these fall due with it. **/
+	static inline final DUE_EPSILON:Float = 1e-9;
+
+	var first:Null<HandlerDeadline<Dynamic>> = null;
+	var last:Null<HandlerDeadline<Dynamic>> = null;
+	var timer:Int = TimerHandle.INVALID;
+	var firing:Bool = false;
+	final fire:Void->Void;
+
+	public function new() {
+		fire = fired;
+	}
+
+	/** Queues `deadline`, `milliseconds` from now; `false`, queuing nothing, when it would fall before the last. **/
+	public function add(deadline:HandlerDeadline<Dynamic>, milliseconds:Int):Bool {
+		final now:Float = Timer.getTime();
+		final due:Float = now + milliseconds / 1000;
+		final tail:Null<HandlerDeadline<Dynamic>> = last;
+		if (tail != null && due < tail.due) {
+			return false;
+		}
+		deadline.due = due;
+		deadline.previous = tail;
+		if (tail != null) {
+			tail.next = deadline;
+		} else {
+			first = deadline;
+		}
+		last = deadline;
+		if (timer == TimerHandle.INVALID && !firing) {
+			timer = Timer.setTimeout(due - now, fire);
+		}
+		return true;
+	}
+
+	public function remove(deadline:HandlerDeadline<Dynamic>):Void {
+		final previous = deadline.previous;
+		final next = deadline.next;
+		if (previous != null) {
+			previous.next = next;
+		} else {
+			first = next;
+		}
+		if (next != null) {
+			next.previous = previous;
+		} else {
+			last = previous;
+		}
+		deadline.previous = null;
+		deadline.next = null;
+	}
+
+	/** The timer: every call that is due is answered for, and the timer is set for the next. **/
+	function fired():Void {
+		timer = TimerHandle.INVALID;
+		firing = true;
+		final now:Float = Timer.getTime();
+		var failed:Bool = false;
+		var failure:Dynamic = null;
+		while (first != null && first.due <= now + DUE_EPSILON) {
+			final deadline = first;
+			remove(deadline);
+			try {
+				deadline.expire();
+			} catch (error:Dynamic) {
+				// The rest are still answered for, and the timer set again,
+				// before the scheduler hears of it.
+				if (!failed) {
+					failed = true;
+					failure = error;
+				}
+			}
+		}
+		firing = false;
+		if (first != null && timer == TimerHandle.INVALID) {
+			timer = Timer.setTimeout(first.due - Timer.getTime(), fire);
+		}
+		if (failed) {
+			throw failure;
+		}
 	}
 }
 

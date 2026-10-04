@@ -3,7 +3,7 @@ package crossbyte.rpc._internal;
 import crossbyte.utils.Hash;
 #if macro
 import crossbyte.rpc._internal.RPCContractMacroTools;
-import haxe.macro.ComplexTypeTools;
+import crossbyte.rpc._internal.RPCKinds;
 import haxe.macro.Context;
 import haxe.macro.Expr;
 import haxe.macro.Type;
@@ -11,56 +11,9 @@ import haxe.macro.Type;
 using haxe.macro.Tools;
 
 class RPCCommandMacro {
-	private static function initWriters():Map<String, (Expr, Expr) -> Expr> {
-		var m = new Map<String, (Expr, Expr) -> Expr>();
-
-		m.set("Int", function(out, v) return macro {
-			$out.reserve(4);
-			$out.writeInt($v);
-		});
-		m.set("Bool", function(out, v) return macro {
-			$out.reserve(1);
-			$out.writeByte($v ? 1 : 0);
-		});
-		m.set("Float", function(out, v) return macro {
-			$out.reserve(8);
-			$out.writeDouble($v);
-		});
-		m.set("String", function(out, v) return macro {
-			$out.writeVarUTF($v);
-		});
-		m.set("haxe.io.Bytes", function(out, v) return macro {
-			$out.writeVarUInt($v.length);
-			$out.reserve($v.length);
-			$out.writeBytes($v, 0, $v.length);
-		});
-
-		return m;
-	}
-
-	// Each reads from `inp`, in a frame that ends at `end`.
-	private static function initReaders():Map<String, (Expr, Expr) -> Expr> {
-		var m = new Map<String, (Expr, Expr) -> Expr>();
-		m.set("Int", (inp, end) -> macro $inp.readInt());
-		m.set("Bool", (inp, end) -> macro($inp.readByte() != 0));
-		m.set("Float", (inp, end) -> macro $inp.readDouble());
-		m.set("String", (inp, end) -> macro $inp.readVarUTF());
-		m.set("haxe.io.Bytes", (inp, end) -> macro {
-			var __len:Int = $inp.readVarUInt();
-			crossbyte.rpc._internal.RPCWire.requireRoom($inp, $end, __len);
-			var __bytes = haxe.io.Bytes.alloc(__len);
-			$inp.readBytes(__bytes, 0, __len);
-			__bytes;
-		});
-		return m;
-	}
-
-	private static final TYPE_WRITERS:Map<String, (Expr, Expr) -> Expr> = initWriters();
-	private static final TYPE_READERS:Map<String, (Expr, Expr) -> Expr> = initReaders();
-
 	// On a generated __rpc_handle_response(), for a commands class that
-	// extends this one: the name of every method this class sends, and the
-	// name and type of every response it reads.
+	// extends this one: the signature of every method this class sends (see
+	// RPCOps), and the name, arguments and answer of every response it reads.
 	static inline final COMMANDS_META:String = ":rpcCommands";
 	static inline final RESPONDS_META:String = ":rpcResponds";
 
@@ -70,7 +23,8 @@ class RPCCommandMacro {
 		var responseMethods:Array<ResponseMethod> = [];
 		// The commands classes between this one and RPCCommands, nearest first.
 		final ancestors = commandsAncestors();
-		final sentNames = new Array<String>();
+		// The signature of each method this class sends.
+		final sent = new Array<String>();
 		final contractMethods = RPCContractMacroTools.getContractMethods(":rpcContract");
 		final manualRpcFields = fields.filter(field -> field.name != "new" && field.meta != null && field.meta.filter(m -> m.name == ":rpc").length > 0);
 
@@ -93,7 +47,7 @@ class RPCCommandMacro {
 				if (ancestorField(ancestors, method.name) != null) {
 					continue;
 				}
-				sentNames.push(method.name);
+				sent.push(RPCContractMacroTools.signatureOf(method.name, method.args, method.responseType, method.pos));
 				if (hasFieldNamed(fields, method.name) || hasFieldNamed(fields, "meta_" + method.name)) {
 					Context.error("RPC commands class already declares '" + method.name + "'; remove the manual declaration when using @:rpcContract(...).", method.pos);
 				}
@@ -121,13 +75,14 @@ class RPCCommandMacro {
 					responseMethods.push({
 						name: method.name,
 						op: method.op,
+						args: method.args,
 						responseType: method.responseType,
 						pos: method.pos
 					});
 				}
 			}
 
-			return finish(fields, newFields, responseMethods, sentNames, ancestors);
+			return finish(fields, newFields, responseMethods, sent, ancestors);
 		}
 
 
@@ -135,11 +90,14 @@ class RPCCommandMacro {
 			if (field.name != "new" && field.meta != null && field.meta.filter(m -> m.name == ":rpc").length > 0) {
 				switch (field.kind) {
 					case FFun(method):
-						sentNames.push(field.name);
 						var metaName = "meta_" + field.name;
 						var retType = method.ret != null ? method.ret : macro :Void;
 						var responseType = responsePayloadType(retType, field.pos);
-						var opCode:Int = Hash.fnv1a32(haxe.io.Bytes.ofString(field.name));
+						// Its signature's hash: its name, and the kinds of its
+						// arguments and its answer.
+						final signature:String = RPCContractMacroTools.signatureOf(field.name, method.args, responseType, field.pos);
+						sent.push(signature);
+						var opCode:Int = RPCOps.opOf(signature);
 
 						field.kind = createWrapperFunction(field, metaName, method.args, retType, responseType, opCode).kind;
 						newFields.push(createMetaFunction(metaName, field.name, method.args, field.pos, opCode));
@@ -148,6 +106,7 @@ class RPCCommandMacro {
 							responseMethods.push({
 								name: field.name,
 								op: opCode,
+								args: method.args,
 								responseType: responseType,
 								pos: field.pos
 							});
@@ -158,7 +117,7 @@ class RPCCommandMacro {
 			}
 		}
 
-		return finish(fields, newFields, responseMethods, sentNames, ancestors);
+		return finish(fields, newFields, responseMethods, sent, ancestors);
 	}
 
 	/**
@@ -168,11 +127,14 @@ class RPCCommandMacro {
 		again, which Haxe refused in a subclass, so no commands class could
 		extend another.
 	**/
-	private static function finish(fields:Array<Field>, newFields:Array<Field>, responseMethods:Array<ResponseMethod>, sentNames:Array<String>,
+	private static function finish(fields:Array<Field>, newFields:Array<Field>, responseMethods:Array<ResponseMethod>, sent:Array<String>,
 			ancestors:Array<ClassType>):Array<Field> {
-		final inheritedSent = inheritedNames(ancestors, COMMANDS_META);
-		final allSent = sentNames.concat([for (name in inheritedSent) if (sentNames.indexOf(name) < 0) name]);
-		RPCContractMacroTools.requireDistinctOps([for (name in allSent) {name: name, pos: Context.currentPos()}], true);
+		final sentNames = sent.map(nameIn);
+		final allSent = sent.concat([for (signature in inheritedNames(ancestors, COMMANDS_META)) if (sentNames.indexOf(nameIn(signature)) < 0) signature]);
+		RPCContractMacroTools.requireDistinctOps([
+			for (signature in allSent)
+				{name: nameIn(signature), op: RPCOps.opOf(signature), pos: Context.currentPos()}
+		], true);
 
 		for (inherited in inheritedResponses(ancestors)) {
 			if (!Lambda.exists(responseMethods, method -> method.name == inherited.name)) {
@@ -184,7 +146,23 @@ class RPCCommandMacro {
 			injectPing(newFields, Context.currentPos());
 		}
 		injectResponseHandler(newFields, responseMethods, allSent, ancestorField(ancestors, "__rpc_handle_response") != null);
+		newFields.push(fingerprintField(allSent.map(RPCOps.opOf)));
 		return fields.concat(newFields);
+	}
+
+	/** `__rpc_fingerprint`, answering the fingerprint of `ops`, worked out here. **/
+	public static function fingerprintField(ops:Array<Int>):Field {
+		return {
+			name: "__rpc_fingerprint",
+			access: [APublic, AOverride],
+			meta: [{name: ":noCompletion", params: [], pos: Context.currentPos()}],
+			kind: FFun({
+				args: [],
+				ret: macro :Int,
+				expr: macro return $v{RPCOps.fingerprint(ops)}
+			}),
+			pos: Context.currentPos()
+		};
 	}
 
 	/** The commands classes this one extends, nearest first, up to RPCCommands. **/
@@ -213,7 +191,13 @@ class RPCCommandMacro {
 		return null;
 	}
 
-	/** The names the nearest ancestor's response reader recorded under `meta`. **/
+	/** The method a signature names: what comes before its arguments. **/
+	private static function nameIn(signature:String):String {
+		final at:Int = signature.indexOf("(");
+		return at < 0 ? signature : signature.substr(0, at);
+	}
+
+	/** The strings the nearest ancestor's response reader recorded under `meta`. **/
 	private static function inheritedNames(ancestors:Array<ClassType>, meta:String):Array<String> {
 		final reader = ancestorField(ancestors, "__rpc_handle_response");
 		final names = new Array<String>();
@@ -250,7 +234,8 @@ class RPCCommandMacro {
 					case EFunction(FNamed(name, _), fn) if (fn.ret != null):
 						responses.push({
 							name: name,
-							op: RPCOps.opOf(name),
+							op: RPCContractMacroTools.opOfMethod(name, fn.args, fn.ret, param.pos),
+							args: fn.args,
 							responseType: fn.ret,
 							pos: param.pos
 						});
@@ -263,71 +248,67 @@ class RPCCommandMacro {
 
 	/**
 		A response as a commands class extending this one reads it: a function
-		expression, never typed, returning the response's type written out in
-		full. That class reads it in its own module, which need not import, nor
-		see the typedefs of, this one's.
+		expression, never typed, taking the call's arguments and returning the
+		response's type, every type written out in full, the arguments are
+		in its op. That class reads it in its own module, which need not
+		import, nor see the typedefs of, this one's.
 	**/
 	private static function responseSignature(method:ResponseMethod):Expr {
 		return {
-			expr: EFunction(FNamed(method.name, false), {args: [], ret: RPCContractMacroTools.fullType(method.responseType, method.pos), expr: null}),
+			expr: EFunction(FNamed(method.name, false), {
+				args: [
+					for (arg in method.args)
+						({
+							name: arg.name,
+							opt: arg.opt,
+							type: RPCContractMacroTools.fullType(arg.type, method.pos),
+							value: null,
+							meta: []
+						} : FunctionArg)
+				],
+				ret: RPCContractMacroTools.fullType(method.responseType, method.pos),
+				expr: null
+			}),
 			pos: method.pos
 		};
 	}
 
 	private static function createMetaFunction(metaName:String, commandName:String, args:Array<FunctionArg>, errPos:Position, opCode:Int):Field {
-		var statements:Array<Expr> = [];
-		// Made the size the frame will be: its length, flags and op, the
-		// request id at its longest, each fixed-size argument's bytes, and for
-		// a string or bytes what its length allows. It was made nine bytes
-		// long, and each argument's reserve() then added a chunk of its own,
-		// which flush() joined: a one-way call of three numbers cost 203 ns
-		// from stub to handler, and costs 73.
-		// The length, flags and op (RPCWire.MIN_PAYLOAD_LEN, 5), a varint id.
-		var fixed:Int = 4 + 5 + 5;
-		var sized:Expr = macro 0;
+		// Begun with room for the most the frame can hold: its length, flags
+		// and op, the request id at its longest, each fixed-size argument's
+		// bytes, and for a string or bytes what its length allows. Sized from
+		// the arguments before anything is framed, which is where a value that
+		// cannot be sent, a null String, is refused.
+		var fixed:Int = FRAME_HEAD;
+		var sized:Null<Expr> = null;
+		final writes:Array<Expr> = [];
 		for (a in args) {
-			var ct:ComplexType = a.type;
-			if (ct == null) {
-				continue;
+			if (a.type == null) {
+				Context.error("RPC arg '" + a.name + "' must have an explicit type.", errPos);
 			}
-			if (a.opt || isNullWrapped(ct)) {
-				fixed += 1;
+			final kind = argKind(a, errPos);
+			final optional:Bool = argOptional(a, errPos);
+			final name:Expr = macro $i{a.name};
+			final size:Int = RPCKinds.size(kind, optional);
+			if (size >= 0) {
+				fixed += size;
+			} else {
+				final room:Expr = RPCKinds.room(kind, optional, name);
+				sized = sized == null ? room : macro $sized + $room;
 			}
-			var name:Expr = macro $i{a.name};
-			switch (typeKey(unwrapNull(ct), errPos)) {
-				case "Int":
-					fixed += 4;
-				case "Bool":
-					fixed += 1;
-				case "Float":
-					fixed += 8;
-				case "String":
-					// UTF-8 is at most three bytes a UTF-16 unit; a varint length.
-					sized = macro $sized + ($name == null ? 0 : $name.length * 3) + 5;
-				default:
-					sized = macro $sized + ($name == null ? 0 : $name.length) + 5;
-			}
+			writes.push(RPCKinds.write(kind, optional, macro framed, name));
 		}
-		statements.push(macro var framed:crossbyte.io.ByteArrayOutput = new crossbyte.io.ByteArrayOutput($v{fixed} + $sized));
-		statements.push(macro framed.writeInt(0));
-		statements.push(macro {
-			framed.writeByte(requestId != 0 ? crossbyte.rpc._internal.RPCWire.FLAG_REQUEST : 0);
-			framed.writeInt($v{opCode});
-			if (requestId != 0) {
-				framed.writeVarUInt(requestId);
-			}
-		});
-
-		for (i in 0...args.length) {
-			statements.push(writerForArg(args[i], errPos));
-		}
-
-		statements.push(macro framed.writeIntAt(0, framed.bytesWritten - 4));
-		statements.push(macro framed.flush());
-		statements.push(macro framed);
+		final room:Expr = sized == null ? macro $v{fixed} : macro $v{fixed} + $sized;
 
 		// The frame, which the stub hands to RPCCommands to send: one place
-		// decides what becomes of a call that cannot go.
+		// decides what becomes of a call that cannot go. It is its session's,
+		// written over by its next frame once this one is sent.
+		final statements:Array<Expr> = [macro var framed:crossbyte.rpc._internal.RPCFrame = this.__startFrame($room, $v{opCode}, requestId)];
+		for (write in writes) {
+			statements.push(write);
+		}
+		statements.push(macro return framed.finish());
+
 		return {
 			name: metaName,
 			doc: "Auto-generated RPC meta for " + commandName,
@@ -336,11 +317,35 @@ class RPCCommandMacro {
 				args: [
 					{name: "requestId", type: macro :Int}
 				].concat(args),
-				expr: macro return $b{statements},
-				ret: macro :crossbyte.io.ByteArrayOutput
+				expr: macro $b{statements},
+				ret: macro :crossbyte.rpc._internal.RPCFrame
 			}),
 			pos: Context.currentPos()
 		};
+	}
+
+	/** A frame's length, flags and op (`RPCWire.MIN_PAYLOAD_LEN`), and a varint request id at its longest. **/
+	static inline final FRAME_HEAD:Int = 4 + 5 + 5;
+
+	/** The kind of an argument's value, or an error naming it. **/
+	private static function argKind(a:FunctionArg, errPos:Position):RPCKind {
+		final base = RPCKinds.unwrapNull(a.type);
+		final kind = RPCKinds.of(base, errPos);
+		if (kind == null) {
+			Context.error("Unsupported RPC arg type for '" + a.name + "': " + RPCKinds.nameOf(base, errPos), errPos);
+		}
+		return kind;
+	}
+
+	/**
+		Whether an argument may be absent, and so goes after a byte saying
+		whether it is there: one that is optional, or whose type is `Null<T>`
+		however it is named, as the handler's side decides it. Named through a
+		typedef, a `Null<T>` went with no such byte, and a null could not be
+		sent.
+	**/
+	private static inline function argOptional(a:FunctionArg, pos:Position):Bool {
+		return a.opt || RPCContractMacroTools.isNullable(a.type, pos);
 	}
 
 	private static function createWrapperFunction(field:Field, metaName:String, args:Array<FunctionArg>, retType:ComplexType,
@@ -353,7 +358,7 @@ class RPCCommandMacro {
 			// throws with nothing left waiting for good.
 			macro {
 				var __requestId:Int = this.__nextRequestId();
-				var __framed:crossbyte.io.ByteArrayOutput = $i{metaName}($a{[macro __requestId].concat(argExprs)});
+				var __framed:crossbyte.rpc._internal.RPCFrame = $i{metaName}($a{[macro __requestId].concat(argExprs)});
 				var response:$retType = this.__createResponse($v{opCode}, __requestId);
 				this.__sendRequest(response, __framed);
 				return response;
@@ -373,66 +378,60 @@ class RPCCommandMacro {
 		};
 	}
 
-	private static function writerForArg(a:FunctionArg, errPos:Position):Expr {
-		var ct:ComplexType = a.type;
-		if (ct == null) {
-			Context.error("RPC arg '" + a.name + "' must have an explicit type.", errPos);
-		}
-
-		var isOpt = a.opt || isNullWrapped(ct);
-		var base = unwrapNull(ct);
-		var key = typeKey(base, errPos);
-
-		var fn = TYPE_WRITERS.get(key);
-		if (fn == null) {
-			Context.error("Unsupported RPC arg type for '" + a.name + "': " + key, errPos);
-		}
-
-		var valueExpr:Expr = macro $i{a.name};
-		var writeValue:Expr = fn(macro framed, valueExpr);
-
-		return isOpt ? macro {
-			framed.reserve(1);
-			if ($valueExpr == null) {
-				framed.writeByte(0);
-			} else {
-				framed.writeByte(1);
-				$writeValue;
-			}
-		} : writeValue;
-	}
-
 	private static function readerForType(ct:ComplexType, errPos:Position):Expr {
 		// On the type, as the handler's side decides it, and not on how
 		// `ct` is written: through a typedef, `Null<T>` read no presence byte.
 		var isOpt = RPCContractMacroTools.isNullable(ct, errPos);
-		var base = unwrapNull(ct);
-		var key = typeKey(base, errPos);
-		var fn = TYPE_READERS.get(key);
-		if (fn == null) {
-			Context.error("Unsupported RPC response type: " + key, errPos);
+		var base = RPCKinds.unwrapNull(ct);
+		var kind = RPCKinds.of(base, errPos);
+		if (kind == null) {
+			Context.error("Unsupported RPC response type: " + RPCKinds.nameOf(base, errPos), errPos);
 		}
+		return RPCKinds.read(kind, isOpt, macro input, macro this.__frameEnd);
+	}
 
-		var read = fn(macro input, macro this.__frameEnd);
-		return isOpt ? macro(input.readByte() != 0 ? $read : null) : read;
+	/** What a response's local holds before its value has been read. **/
+	private static function zeroForType(ct:ComplexType, pos:Position):Expr {
+		final kind = RPCKinds.of(RPCKinds.unwrapNull(ct), pos);
+		return kind == null ? macro null : RPCKinds.zero(kind, RPCContractMacroTools.isNullable(ct, pos));
 	}
 
 	private static function injectResponseHandler(newFields:Array<Field>, methods:Array<ResponseMethod>, sent:Array<String>, overridesInherited:Bool):Void {
+		// An error answer's message, read whole and within its frame; one that
+		// does not read fails its call, and the connection carries on.
+		final readMessage:Expr = macro {
+			var message:String = null;
+			try {
+				message = input.readVarUTF();
+				crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
+			} catch (__error:Dynamic) {
+				this.__rejectUnreadableResponse(op, requestId, __error);
+				return;
+			}
+			this.__rejectResponse(op, requestId, message);
+		};
 		var cases:Array<Case> = [];
 		for (method in methods) {
 			var read = readerForType(method.responseType, method.pos);
+			final type:ComplexType = method.responseType;
+			final zero:Expr = zeroForType(type, method.pos);
 			cases.push({
 				values: [macro $v{method.op}],
 				expr: macro {
 					// Read whole and within the frame before the caller is
-					// answered with it.
+					// answered with it: an answer that does not read fails its
+					// call, where it ended the connection.
 					if (failed) {
-						var message = input.readVarUTF();
-						crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
-						this.__rejectResponse(op, requestId, message);
+						$readMessage;
 					} else {
-						var value = $read;
-						crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
+						var value:$type = $zero;
+						try {
+							value = $read;
+							crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
+						} catch (__error:Dynamic) {
+							this.__rejectUnreadableResponse(op, requestId, __error);
+							return;
+						}
 						this.__resolveResponse(op, requestId, value);
 					}
 					return;
@@ -442,9 +441,7 @@ class RPCCommandMacro {
 
 		var defaultExpr:Expr = macro {
 			if (failed) {
-				var message = input.readVarUTF();
-				crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
-				this.__rejectResponse(op, requestId, message);
+				$readMessage;
 			} else {
 				this.__rejectUnknownResponse(requestId, op);
 			}
@@ -518,51 +515,6 @@ class RPCCommandMacro {
 		}
 	}
 
-	private static inline function isNullWrapped(ct:ComplexType):Bool {
-		return switch (ct) {
-			case TPath({name: "Null", params: _}): true;
-			case _: false;
-		}
-	}
-
-	private static inline function unwrapNull(ct:ComplexType):ComplexType {
-		return switch (ct) {
-			case TPath({name: "Null", params: [TPType(inner)]}): inner;
-			case _: ct;
-		}
-	}
-
-	private static function typeKey(ct:ComplexType, pos:Position):String {
-		try {
-			return resolvedTypeKey(Context.resolveType(ct, pos));
-		} catch (_:Dynamic) {
-			return switch (ct) {
-				case TPath(tp):
-					var pack:String = tp.pack.length > 0 ? tp.pack.join(".") + "." : "";
-					pack + tp.name;
-				case _:
-					ComplexTypeTools.toString(ct);
-			}
-		}
-	}
-
-	private static function resolvedTypeKey(type:Type):String {
-		return switch (Context.follow(type)) {
-			case TAbstract(t, _):
-				pathKey(t.get().pack, t.get().name);
-			case TInst(t, _):
-				pathKey(t.get().pack, t.get().name);
-			case TType(t, _):
-				pathKey(t.get().pack, t.get().name);
-			case _:
-				Std.string(type);
-		}
-	}
-
-	private static inline function pathKey(pack:Array<String>, name:String):String {
-		return (pack.length > 0 ? pack.join(".") + "." : "") + name;
-	}
-
 	private static function hasFieldNamed(fields:Array<Field>, name:String):Bool {
 		for (field in fields) {
 			if (field.name == name) {
@@ -601,6 +553,7 @@ class RPCCommandMacro {
 private typedef ResponseMethod = {
 	name:String,
 	op:Int,
+	args:Array<FunctionArg>,
 	responseType:ComplexType,
 	pos:Position
 }

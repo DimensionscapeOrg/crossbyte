@@ -369,6 +369,27 @@ entry below says how:
 - A MySQL `connectTimeout` of 0 is no limit natively, where it bounded
   each handshake read at 50 seconds; NaN and negative MySQL timeouts, and
   a negative Postgres `connectTimeout`, throw an `ArgumentError`.
+- An `INetConnection` of your own copies what its `send` is given before
+  keeping any of it, to queue it, say: an `RPCSession` writes its next
+  frame over the one it sent as soon as `send` returns. Every transport
+  CrossByte ships copies. `-D crossbyte_check_events` poisons each frame
+  once it is sent, so a connection that keeps one sends garbage its tests
+  will see; `-D crossbyte_fresh_events` frames each in a buffer of its own,
+  as before.
+- A null `String` or `Bytes` argument to a compiled RPC call, where the
+  argument is neither optional nor `Null<T>`, throws an `ArgumentError`
+  natively too, where a null `String` went as an empty one: pass `""`, or
+  declare the argument `?name` or `Null<String>` to send null.
+- Both ends of a compiled RPC connection are built with 1.0: a compiled
+  call's op is the hash of its method's signature, where it was the hash of
+  its name, so a peer on 1.0.0-rc.1 finds none of a 1.0 peer's methods, nor
+  it the rc.1 peer's. The runtime lane and the heartbeat are unchanged. A
+  hand-written `dispatch` compares against `Hash.fnv1a32` of each method's
+  signature, the RPC guide's "What names a call", where it compared
+  against that of its name.
+- A runtime-lane request for a number nobody registered is answered
+  `RPCError.UNKNOWN_METHOD_MESSAGE`, where it was answered "Unsupported
+  runtime RPC op: " and the number: compare an error with the constant.
 
 ### Added
 - `ByteArray.maxObjectValues`: the most values one object read may make,
@@ -403,6 +424,18 @@ entry below says how:
   each is the request's own now, with the defaults the native client had:
   64 MB, 10 redirects, 64 KB. Over HTTP/2 the deadline and the limits hold
   as over HTTP/1.1, the header section counted as HPACK counts it.
+- An RPC hello: every `RPCSession` says hello as its connection starts,
+  at once on one up already, or as one becomes ready, with its protocol
+  version, `RPCSession.PROTOCOL_VERSION` (1), its capabilities (none in
+  1.0), and fingerprints of the methods its commands call and its handler
+  answers. Nothing waits for it, so it adds no round trip. The peer's sets
+  `peerVersion`, `peerCapabilities`, `peerCallsFingerprint` and
+  `peerAnswersFingerprint`, and calls `onHello`; a session's own are
+  `callsFingerprint` and `answersFingerprint`. A peer from before 1.0 says
+  none, and its version is 0. The hello is a response frame under request
+  id 0, as a pong is, which a session from before 1.0 passes over. A
+  feature added after 1.0 is to be used towards a peer only once its hello
+  has declared it, so later releases keep talking to this one.
 - `SequenceRing.remove(sequence)` and `SequenceRing.writeBits(from, out, at,
   byteCount)`, which make the ring a receive window as well as a history:
   what arrived past a gap is filed by sequence, taken out as the gap fills,
@@ -1773,6 +1806,87 @@ entry below says how:
   and `resizeCapacity` raise `maxFree` to what they reserve, so objects
   made in advance are kept. A negative `maxFree` throws an
   `ArgumentError`.
+- An `RPCSession` keeps the deadlines of the calls it makes under
+  `callTimeout` in one queue, in the order the calls were made, with one
+  timer for all of them, where each call armed a timer of its own, a
+  closure and a timer node a call, kept in order in the runtime's heap and
+  counted against the 524,288 timers a runtime holds at once. A call
+  answered leaves the queue at once, and each falls due when its own timer
+  would have; one made after `callTimeout` was lowered, which would fall
+  due before the calls ahead of it, still arms its own, as does one given
+  a deadline with `RPCResponse.timeout`. `handlerTimeout`'s deadlines, for
+  calls a handler answers later, are kept the same way. And the calls
+  waiting on their answers, past the first, are held in a ring indexed by
+  request id, where they were an `IntMap`, which natively made a node for
+  each; a call still waiting a ring's length of calls later moves to a map
+  of its own. Over an in-memory link, natively: a request and its answer
+  under `callTimeout` take 141 ns and allocate 168 bytes, as one without a
+  deadline does, where they took 164 ns and allocated 280, on the
+  runtime lane 258 ns and 344 bytes, where 294 and 456; a call a handler
+  answers later under `handlerTimeout` 258 ns and 656 bytes, where 295
+  and 752; and sixteen requests in flight at once 117 ns and 168 bytes
+  each, where 130 and 211. On the jvm a request under `callTimeout`
+  allocates 192 bytes, where it allocated 287.
+- The runtime RPC lane tells a value's kind without allocating, where
+  `Type.typeof` made an object for every `String` and `Bytes` it was
+  asked about. The kinds are those `Type.typeof` gave, on every target,
+  JavaScript, the jvm and HashLink still send a whole `Float` as an `Int`.
+  Natively a one-way runtime call of a 12-character string allocates 152
+  bytes, where it allocated 208, and takes 135 ns, where it took 147; on
+  the jvm, whose compiler already left the object out, 128 bytes as
+  before. Its frame is not sized before it is written: it is the
+  session's buffer, which grows only for a frame larger than any it has
+  held, so a pass over the arguments to size them would only add to each
+  call.
+- An `RPCSession` answers or passes over a frame it cannot read, and its
+  connection carries on, where the connection ended and every call waiting
+  on it failed, so in a rolling deploy a client calling a method its
+  server did not have yet was disconnected. A request for a method the
+  handler has not got, on either lane, is answered
+  `RPCError.UNKNOWN_METHOD_MESSAGE`; one whose arguments do not read,
+  they ran past their frame, or named more than it holds,
+  `RPCError.UNREADABLE_MESSAGE`; a one-way call of either kind is dropped.
+  An answer that does not read fails the call it answers, and a frame of a
+  kind the session does not know is passed over, a runtime value of a kind
+  it does not know among them, so a later release can add kinds without
+  disconnecting this one. `RPCSession.onUnreadableFrame` is told of each.
+  Only a frame whose length cannot be trusted ends the connection now, and,
+  as before, whatever a hand-written `dispatch` throws.
+- A compiled RPC call is named on the wire by the hash of its method's
+  signature, its name, and the kinds of its arguments and of its answer,
+  where it was the hash of its name alone. A client and a server built
+  from two versions of a method read each other's bytes as their own:
+  `(x:Int, y:Int)` sent to `(v:Float)` ran the handler on a `Float` made of
+  two `Int`s, arguments reordered were read in the new order, and an `Int`
+  answer read as a `Bool` was its first byte. Now such a call finds no
+  method. A kind names a layout, not a type, so renaming an argument or a
+  typedef changes no op; renaming the method, reordering, retyping, adding
+  or removing an argument, or letting one be absent does. A one-way call
+  reaches a method that answers, as before, and `ping` keeps its op. An
+  argument whose type is a typedef of `Null<T>` carries the byte saying
+  whether it is there, as one written `Null<T>` does, where it went bare
+  and could not be null. The format is in the RPC guide, under "What names
+  a call".
+- An `RPCSession` writes every frame it sends, calls and answers, error
+  answers, pings and pongs, on both lanes, in one buffer it keeps, begun
+  with room for the whole frame, where each was a `ByteArrayOutput` of its
+  own grown as it was written. `INetConnection.send` says that what it is
+  given is valid only during the call, which every transport CrossByte
+  ships already honours: each copies what it keeps. A call made from inside
+  a send that delivers at once, a handler calling back, is framed in a
+  buffer of its own, and a buffer grown past 16 KB is let go once its frame
+  is sent. A string goes into the frame as its UTF-8, natively when it is
+  held a byte a character and on the jvm when it is ASCII and at most 256
+  characters, where it was encoded into a `Bytes` first. Over an in-memory
+  link, natively: a one-way call of three numbers takes 46 ns and
+  allocates nothing, where it took 83 ns and allocated 208 bytes; one of a
+  12-character string 54 ns and 24 bytes, the string the handler is given,
+  where 110 ns and 384; a request and its answer 133 ns and 168 bytes,
+  where 233 ns and 544; the runtime lane's one-way call 163 ns and 368
+  bytes, where 293 ns and 1,008. Over TCP a one-way call costs 453 to 469
+  ns of CPU in all, where it cost 500 to 531. Under `-D crossbyte_check_events`
+  each frame is a buffer of its own, poisoned once sent, and under
+  `-D crossbyte_fresh_events` a buffer of its own left as it is.
 - A WebSocket text message is written into its frame without being encoded
   into a buffer of its own first, natively when the string is held a byte a
   character and on the jvm when it is ASCII and no longer than 256
@@ -3436,6 +3550,21 @@ entry below says how:
   none and still not keep out a man in the middle, which only
   `VERIFY_CA` and `VERIFY_IDENTITY` do, `MySQLConfig.sslMode` has the
   trade-off.
+- A compiled RPC call with a null `String` or `Bytes` argument, where the
+  argument is neither optional nor `Null<T>`, throws an `ArgumentError`
+  before anything is framed, on every target; natively a null `Bytes`
+  crashed the process and a null `String` went as an empty one, and on the
+  interpreter and the jvm either threw a null access. A handler's answer
+  of such a type that is null fails its call as a throw does: the caller
+  is answered `RPCError.INTERNAL_MESSAGE`, and `onHandlerError` is told.
+- An `RPCSession`'s heartbeat pings on every beat that nothing else has
+  been sent for an interval before, where the clock's rounding put the
+  beat after a ping a hair short of the interval, 2.8 s less 1.8 s is
+  0.99999999999999978 s, and the ping waited for the beat after: a ping
+  every other beat, about one in five lost in a test pumped a tenth of a
+  second at a time. With the defaults, 45 seconds between pings against a
+  90-second timeout, a session could hear its peer's pongs 90 seconds
+  apart and time out a peer that was answering.
 - Natively, a process whose threads end as it exits, a server spread
   over runtimes, which exits them after `drain()`, is one, no longer
   hangs there on Windows, nor crashes there when built with stack traces

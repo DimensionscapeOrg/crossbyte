@@ -94,7 +94,7 @@ class RPCSharedHandlerTest extends utest.Test {
 
 		link.server.send(frameOf(out -> {
 			out.writeByte(RPCWire.FLAG_RESPONSE);
-			out.writeInt(opOf("balance"));
+			out.writeInt(opOf("balance():i32"));
 			out.writeVarUInt(waiting.requestId);
 			out.writeInt(12345);
 		}));
@@ -113,7 +113,7 @@ class RPCSharedHandlerTest extends utest.Test {
 
 		link.server.send(frameOf(out -> {
 			out.writeByte(RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR);
-			out.writeInt(opOf("balance"));
+			out.writeInt(opOf("balance():i32"));
 			out.writeVarUInt(waiting.requestId);
 			out.writeVarUTF("No balance.");
 		}));
@@ -151,8 +151,9 @@ class RPCSharedHandlerTest extends utest.Test {
 		return frame;
 	}
 
-	private static inline function opOf(method:String):Int {
-		return Hash.fnv1a32(Bytes.ofString(method));
+	/** The op of a method's signature; see `RPCOps`. **/
+	private static inline function opOf(signature:String):Int {
+		return crossbyte.rpc._internal.RPCOps.opOf(signature);
 	}
 }
 

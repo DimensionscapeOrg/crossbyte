@@ -1,6 +1,7 @@
 package crossbyte.rpc._internal;
 
 #if macro
+import crossbyte.rpc._internal.RPCKinds;
 import crossbyte.utils.Hash;
 import haxe.macro.ComplexTypeTools;
 import haxe.macro.Context;
@@ -147,7 +148,7 @@ class RPCContractMacroTools {
 		final declaredIn = new Map<String, String>();
 		final signatures = new Map<String, String>();
 		collectContractMethods(type, typeParams != null ? typeParams : [], concrete != null ? concrete : [], methods, declaredIn, signatures);
-		requireDistinctOps([for (method in methods) {name: method.name, pos: method.pos}], true);
+		requireDistinctOps([for (method in methods) {name: method.name, op: method.op, pos: method.pos}], true);
 		return methods;
 	}
 
@@ -176,19 +177,21 @@ class RPCContractMacroTools {
 					if (retType == null) {
 						retType = macro :Void;
 					}
+					final methodArgs:Array<FunctionArg> = args.map(arg -> ({
+						name: arg.name,
+						opt: arg.opt,
+						type: fullComplexType(arg.t),
+						value: null,
+						meta: []
+					} : FunctionArg));
+					final responseType = responsePayloadType(retType, field.pos);
 					methods.push({
 						name: field.name,
 						pos: field.pos,
-						args: args.map(arg -> {
-							name: arg.name,
-							opt: arg.opt,
-							type: fullComplexType(arg.t),
-							value: null,
-							meta: []
-						}),
+						args: methodArgs,
 						ret: retType,
-						responseType: responsePayloadType(retType, field.pos),
-						op: RPCOps.opOf(field.name)
+						responseType: responseType,
+						op: opOfMethod(field.name, methodArgs, responseType, field.pos)
 					});
 				case _:
 					Context.error("RPC contract field '" + field.name + "' must be a function.", field.pos);
@@ -277,23 +280,59 @@ class RPCContractMacroTools {
 		}
 	}
 
-	public static function requireDistinctOps(methods:Array<{name:String, pos:Position}>, includePing:Bool):Void {
-		final names = [for (method in methods) method.name];
+	public static function requireDistinctOps(methods:Array<{name:String, op:Int, pos:Position}>, includePing:Bool):Void {
+		final byOp:Map<Int, String> = new Map();
 		if (includePing) {
-			names.push("ping");
+			byOp.set(RPCOps.opOf("ping"), "ping");
 		}
-		final clash = RPCOps.firstClash(names);
-		if (clash == null) {
-			return;
-		}
-		var at = Context.currentPos();
 		for (method in methods) {
-			if (method.name == clash[1] || method.name == clash[0]) {
-				at = method.pos;
+			final other:Null<String> = byOp.get(method.op);
+			if (other == null) {
+				byOp.set(method.op, method.name);
+			} else if (other != method.name) {
+				Context.error("RPC methods '" + other + "' and '" + method.name
+					+ "' would share an op on the wire: an op is the hash of a method's signature, and theirs hash alike. Rename one.", method.pos);
 			}
 		}
-		Context.error("RPC methods '" + clash[0] + "' and '" + clash[1]
-			+ "' would share an op on the wire: an op is the hash of a method's name, and theirs hash alike. Rename one.", at);
+	}
+
+	/**
+		The op of a compiled method: the hash of its signature (see `RPCOps`),
+		or of `ping`'s name alone. `answer` is the type it is answered with,
+		`T`, for a method answering with `Future<T>`, or `null` for a
+		one-way method.
+	**/
+	public static function opOfMethod(name:String, args:Array<FunctionArg>, answer:Null<ComplexType>, pos:Position):Int {
+		if (name == "ping") {
+			return RPCOps.opOf("ping");
+		}
+		return RPCOps.opOf(signatureOf(name, args, answer, pos));
+	}
+
+	/** A compiled method's signature, as `RPCOps` describes it. **/
+	public static function signatureOf(name:String, args:Array<FunctionArg>, answer:Null<ComplexType>, pos:Position):String {
+		final kinds = new Array<String>();
+		if (args != null) {
+			for (arg in args) {
+				kinds.push(tokenOf(arg.type, arg.opt || isNullable(arg.type, pos), pos));
+			}
+		}
+		final answerToken:Null<String> = answer == null ? null : tokenOf(answer, isNullable(answer, pos), pos);
+		return RPCOps.signature(name, kinds, answerToken);
+	}
+
+	/**
+		The token of a value of type `ct` in a signature. A type the lane does
+		not carry is named for itself, and refused, naming the method, where
+		its reader or writer is made.
+	**/
+	static function tokenOf(ct:ComplexType, optional:Bool, pos:Position):String {
+		if (ct == null) {
+			return "?";
+		}
+		final base = RPCKinds.unwrapNull(ct);
+		final kind = RPCKinds.of(base, pos);
+		return kind != null ? RPCKinds.token(kind, optional) : (optional ? "?" : "") + RPCKinds.nameOf(base, pos);
 	}
 
 	static function exprToTypePath(expr:Expr):String {
