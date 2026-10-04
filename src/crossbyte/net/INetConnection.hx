@@ -30,7 +30,14 @@ interface INetConnection {
 	public var inTimestamp(default, null):Float;
 	/** Timestamp of the most recent outbound payload, in CrossByte uptime seconds. */
 	public var outTimestamp(default, null):Float;
-	/** Called when incoming data is available. */
+	/**
+		Called when incoming data is available.
+
+		What it is handed is the application's to keep, unlike an event's
+		payload: over TCP and WebSocket the connection's own input, read
+		from as bytes arrive, and over reliable UDP and local IPC a message
+		of its own.
+	**/
 	public var onData(get, set):ByteArrayInput->Void;
 	/**
 		Called once, when the connection is over, however it ended, closed

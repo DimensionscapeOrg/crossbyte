@@ -435,6 +435,10 @@ class TestSuites {
 		// Real sockets whose frames go through memory, so reordering, loss and
 		// duplication happen when a case says rather than when a network does.
 		runner.addCase(new crossbyte.net.ReliableDatagramDeliveryTest());
+		// Every datagram through the transport's own delivery, in one buffer:
+		// what a session keeps past a datagram's call is a copy. Also in
+		// PortableSuite, for Node's datagrams.
+		runner.addCase(new crossbyte.net.ReliableDatagramArrivalTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramCoalescingTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramLossRecoveryTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramCloseTest());

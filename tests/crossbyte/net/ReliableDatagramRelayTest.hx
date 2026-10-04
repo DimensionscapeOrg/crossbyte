@@ -123,6 +123,79 @@ class ReliableDatagramRelayTest extends utest.Test {
 	}
 
 	/**
+		A message larger than a frame, through the relay and echoed back from
+		inside the listener: each fragment arrives in what the relay client
+		unwrapped for that one datagram, valid only during its call, so the
+		message is put back together from copies, and the echo, which the
+		session keeps until it is acknowledged, from a copy too.
+	**/
+	public function testAMessageLargerThanAFrameIsEchoedThroughTheRelay():Void {
+		if (unsupported()) return;
+
+		var relay = new FakeTurnRelaySocket();
+		var alice = new ReliableDatagramServerSocket();
+		var bob = new ReliableDatagramServerSocket();
+
+		try {
+			relay.start();
+			alice.bind(0, "127.0.0.2");
+			alice.listen();
+			bob.bind(0, "127.0.0.3");
+			bob.listen();
+
+			if (!__allocate([alice, bob], relay, true)) {
+				Assert.fail("the relay never lent both addresses");
+				__closeAll(relay, [alice, bob]);
+				return;
+			}
+
+			var aliceRelayed = Require.notNull(alice.relayedCandidate);
+			var bobRelayed = Require.notNull(bob.relayedCandidate);
+			bob.permitRelayedPeer(aliceRelayed.address);
+
+			var accepted:ReliableDatagramSocket = null;
+			bob.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, function(e:ReliableDatagramSocketConnectEvent):Void {
+				accepted = e.socket;
+				// Straight back, from inside the listener.
+				accepted.addEventListener(DatagramSocketDataEvent.DATA, d -> accepted.send(d.data));
+			});
+
+			var session = alice.connectRelayed(bobRelayed.address, bobRelayed.port);
+			var echoes:Array<ByteArray> = [];
+			session.addEventListener(DatagramSocketDataEvent.DATA, d -> echoes.push(cast(d.clone(), DatagramSocketDataEvent).data));
+			pumpUntil(() -> session.connected && accepted != null && accepted.connected, 8.0);
+			Assert.isTrue(session.connected, "the session through the relay never connected");
+
+			var large = new ByteArray();
+			for (i in 0...4000) {
+				large.writeByte((i * 3 + 1) & 0xFF);
+			}
+			session.send(large);
+			session.send(bytesOf("small, after it"));
+			pumpUntil(() -> echoes.length >= 2, 8.0);
+
+			Assert.equals(2, echoes.length, "not every message came back through the relay");
+			if (echoes.length == 2) {
+				var echoed:ByteArray = echoes[0];
+				Assert.equals(4000, echoed.length);
+				var wrong:Int = -1;
+				for (i in 0...echoed.length) {
+					if (echoed[i] != ((i * 3 + 1) & 0xFF)) {
+						wrong = i;
+						break;
+					}
+				}
+				Assert.equals(-1, wrong, "the message came back through the relay as other bytes");
+				Assert.equals("small, after it", textOf(echoes[1]));
+			}
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		__closeAll(relay, [alice, bob]);
+	}
+
+	/**
 		One side reaching the relay over TLS, as a network that lets out only
 		what looks like HTTPS needs. TurnStream refused a TLS relay while a
 		client Socket could not start TLS; the relay's certificate is checked

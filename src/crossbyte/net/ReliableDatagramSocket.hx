@@ -16,6 +16,7 @@ import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.ProgressEvent;
+import crossbyte.events._internal.Arrivals;
 import crossbyte.io.ByteArray;
 import crossbyte.io.Endian;
 import crossbyte.io.IDataInput;
@@ -774,10 +775,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// frames held.
 	@:noCompletion private var __inFrameCache:SequenceRing<ReliableDatagramFrame>;
 
-	// The fragments of a reliable message still arriving, and their total.
-	// Joined once when the last arrives, rather than appended to a buffer
-	// that grows, and copies, as it goes.
-	@:noCompletion private var __fragments:Array<ByteArray> = [];
+	// The reliable message still arriving in fragments, null between
+	// messages, and how much of it has come: each fragment is copied in as it
+	// arrives, since what carried it is valid only during the call that
+	// handed it over. Holding the fragments themselves until the last one,
+	// and joining them then, held the datagrams' own bytes past their call.
+	@:noCompletion private var __assembly:ByteArray = null;
 	@:noCompletion private var __fragmentBytes:Int = 0;
 
 	// The newest counter delivered on each sequenced channel, -1 for none,
@@ -1745,7 +1748,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// Before the handshake, whose first answer goes back the way the
 		// CONNECT came.
 		socket.__relay = relay;
-		socket.connectPayload = payload;
+		// A copy: `payload` is the CONNECT's, the datagram's own bytes, valid
+		// only during the call that handed it over. Kept as it was, a pending
+		// session's connectPayload read as whatever arrived next.
+		socket.connectPayload = Arrivals.copyOf(payload);
+		if (socket.connectPayload != null) {
+			socket.connectPayload.position = 0;
+		}
 		socket.__mode = mode;
 		socket.__server = server;
 		socket.__transport = transport;
@@ -1931,9 +1940,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				}
 				// The first one a dialled peer sends, kept as the server keeps
 				// an accepted session's. Held only at a size the protocol can
-				// send, as the server holds it.
+				// send, as the server holds it; and copied, since the frame's
+				// payload is the datagram's, which is valid only during this
+				// call, kept as it was, it read as the next datagram.
 				if (connectPayload == null && frame.payload.length <= ReliableDatagramProtocol.MAX_PAYLOAD_SIZE) {
-					connectPayload = frame.payload;
+					connectPayload = Arrivals.copyOf(frame.payload);
+					connectPayload.position = 0;
 				}
 			case HANDSHAKE:
 				if (frame.bundles) {
@@ -2002,7 +2014,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		it is a message, or part of one when `more` says another follows.
 
 		A message of one frame, nearly every message, is delivered as it
-		came, with no copy. Fragments are held until the last and joined once.
+		came, with no copy. A fragment is copied into the message being put
+		back together as it arrives, which is delivered whole once the last
+		is in: what carried each fragment is valid only during the call that
+		handed it over, and the fragments were held as they came, the
+		datagrams' own bytes, until the last arrived.
 	**/
 	@:noCompletion private function __deliverReliable(payload:ByteArray, more:Bool):Void {
 		if (__mode == STREAM) {
@@ -2019,7 +2035,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (limit > 0 && length > limit - __fragmentBytes) {
 			var message:String = 'A reliable message from the peer passed the $limit byte maxMessageSize before it ended; '
 				+ 'the session was closed rather than hold more of it.';
-			__fragments.resize(0);
+			__assembly = null;
 			__fragmentBytes = 0;
 			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
 				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
@@ -2030,27 +2046,34 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
-		if (__fragments.length == 0 && !more) {
+		if (__assembly == null && !more) {
 			__dispatchPayload(payload);
 			return;
 		}
 
-		__fragments.push(payload);
-		__fragmentBytes += payload.length;
+		if (__assembly == null) {
+			__assembly = new ByteArray();
+		}
+		var assembly:ByteArray = __assembly;
+		if (length > 0) {
+			assembly.position = __fragmentBytes;
+			assembly.writeBytes(payload, 0, length);
+		}
+		__fragmentBytes += length;
 		if (more) {
 			return;
 		}
 
-		var whole:ByteArray = new ByteArray();
-		whole.length = __fragmentBytes;
-		var at:Int = 0;
-		for (fragment in __fragments) {
-			(whole : haxe.io.Bytes).blit(at, fragment, 0, fragment.length);
-			at += fragment.length;
-		}
-		__fragments.resize(0);
+		__assembly = null;
 		__fragmentBytes = 0;
-		__dispatchPayload(whole);
+		// Made for this message: once handed out, it is done with.
+		try {
+			__dispatchPayload(assembly);
+		} catch (e:Dynamic) {
+			Arrivals.done(assembly);
+			Arrivals.rethrow(e);
+		}
+		Arrivals.done(assembly);
 	}
 
 	@:noCompletion private static function __filled(size:Int, value:Int):Vector<Int> {
@@ -2669,8 +2692,14 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		return __inSequence + DELIVERY_WINDOW;
 	}
 
+	/**
+		Holds a frame that arrived past a gap until the gap fills, with a
+		copy of its payload: the frame's own is the datagram's, valid only
+		during the call that handed it over, and the frame was held with it,
+		so it was delivered as whatever arrived on the socket last.
+	**/
 	@:noCompletion private function __cacheFrame(sequence:Seq32, payload:ByteArray, more:Bool = false):Void {
-		__holdFrame(sequence, new ReliableDatagramFrame(PACKET, sequence, payload, false, null, more));
+		__holdFrame(sequence, new ReliableDatagramFrame(PACKET, sequence, Arrivals.copyOf(payload), false, null, more));
 	}
 
 	// Every insert into the out-of-order cache runs through here, and every
@@ -2781,7 +2810,14 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__input.position = __input.length;
 		__input.writeBytes(payload, 0, payload.length);
 		__input.position = readTo;
-		dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, payload.length, 0));
+		var event = new ProgressEvent(ProgressEvent.SOCKET_DATA, payload.length, 0);
+		try {
+			dispatchEvent(event);
+		} catch (e:Dynamic) {
+			Arrivals.doneWith(event);
+			Arrivals.rethrow(e);
+		}
+		Arrivals.doneWith(event);
 	}
 
 	@:noCompletion private function __createBuffer():ByteArray {
@@ -2809,14 +2845,14 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
-		dispatchEvent(new DatagramSocketDataEvent(
-			DatagramSocketDataEvent.DATA,
-			__remoteAddress,
-			__remotePort,
-			localAddress,
-			localPort,
-			payload
-		));
+		var event = new DatagramSocketDataEvent(DatagramSocketDataEvent.DATA, __remoteAddress, __remotePort, localAddress, localPort, payload);
+		try {
+			dispatchEvent(event);
+		} catch (e:Dynamic) {
+			Arrivals.doneWith(event);
+			Arrivals.rethrow(e);
+		}
+		Arrivals.doneWith(event);
 	}
 
 	@:noCompletion private function __dispatchTimeoutError():Void {
@@ -2846,7 +2882,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__outFrameCache = new IntMap();
 		__inFrameCache = new SequenceRing(IN_FRAME_SLOTS);
 		__inFrameCacheSize = 0;
-		__fragments.resize(0);
+		__assembly = null;
 		__fragmentBytes = 0;
 		__sequencedIn = null;
 		__sequencedOut = null;
@@ -2919,7 +2955,15 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				__finishByPeer();
 				return;
 			}
-			__deliverReliable(frame.payload, frame.more);
+			// The copy held for it, handed out now as an arrival's is.
+			var payload:ByteArray = frame.payload;
+			try {
+				__deliverReliable(payload, frame.more);
+			} catch (e:Dynamic) {
+				Arrivals.done(payload);
+				Arrivals.rethrow(e);
+			}
+			Arrivals.done(payload);
 		}
 	}
 
@@ -3865,6 +3909,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		return outstanding - __sackedCount >= Std.int(__congestion.window) || outstanding >= DELIVERY_WINDOW;
 	}
 
+	/** For tests: a datagram handed over as the transport hands one, from an event made for it. **/
 	@:noCompletion private function __onTransportData(e:DatagramSocketDataEvent):Void {
 		__receiveDatagram(e.data, e.srcAddress, e.srcPort);
 	}
@@ -3885,7 +3930,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 
 		// Into the frame kept for it, and taking the datagram's own buffer for
-		// its payload: the datagram was made for this read alone.
+		// its payload: nobody else reads the datagram during this call, and
+		// whatever keeps the payload past it copies it.
 		var frame = ReliableDatagramProtocol.decodeInto(data, 0, data.length, true, __decoded());
 		// Before the endpoint check, which learns a reply port from the first
 		// HANDSHAKE it sees: one answering an earlier attempt must not teach it.
@@ -3932,7 +3978,16 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			var frame = ReliableDatagramProtocol.decodeInto(data, at + ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE, length, false, __decoded());
 			at += ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE + length;
 			if (frame != null) {
-				__acceptFrame(frame);
+				// Copied out of the bundle for this frame, and done with once
+				// the frame has been taken: whatever keeps it has copied it.
+				var payload:ByteArray = frame.payload;
+				try {
+					__acceptFrame(frame);
+				} catch (e:Dynamic) {
+					Arrivals.done(payload);
+					Arrivals.rethrow(e);
+				}
+				Arrivals.done(payload);
 			}
 		}
 	}

@@ -89,6 +89,9 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.WebSocketDeflateTest());
 		runner.addCase(new crossbyte.net.SocketOutputTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramLifecycleTest());
+		// What a session keeps past a datagram's call is a copy, with
+		// Node's datagram socket underneath.
+		runner.addCase(new crossbyte.net.ReliableDatagramArrivalTest());
 		// And what a datagram listener is handed, sends back and keeps.
 		runner.addCase(new crossbyte.net.DatagramArrivalTest());
 		runner.addCase(new crossbyte.net.NodeListenerFailureTest());
