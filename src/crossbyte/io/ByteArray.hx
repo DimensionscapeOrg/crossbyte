@@ -37,8 +37,8 @@ import format.amf3.Writer as AMF3Writer;
 import crossbyte._internal.serial.BoundedAMF.BoundedAMFReader;
 import crossbyte._internal.serial.BoundedAMF.BoundedAMF3Reader;
 #end
+import crossbyte._internal.serial.BoundedJson;
 import crossbyte._internal.serial.BoundedUnserializer;
-import crossbyte._internal.serial.JsonNesting;
 import crossbyte.errors.IOError;
 
 /**
@@ -103,6 +103,28 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		class.
 	**/
 	public static var defaultObjectEncoding(get, set):ObjectEncoding;
+
+	/**
+		The most values one object read may make: every element, member,
+		name and key, and each null of a run, in any encoding. `readObject`
+		refuses an object holding more with an `IOError`, a socket's too,
+		which reads through a ByteArray, and `SharedObject` and
+		`SharedChannel` refuse one as they read it. 1,000,000 unless changed;
+		zero or less is no limit.
+
+		A bound on bytes does not bound this. An HXSF array can hold a run of
+		nulls in a few bytes, and `au100000000h`, twelve of them, made an
+		array of 100,000,000 slots, 800 MB natively, from any peer that could
+		send an object. Every other value costs at least a byte, so a frame
+		of 1 MB holds a million at most.
+
+		It is one setting for the whole process, read as each object is: a
+		program reading larger objects of its own, from files it wrote,
+		raises it for every reader, its peers' included. Held, a million
+		values is 4 to 8 MB natively as numbers in an array and about 50 MB
+		as small objects or strings, and on the jvm up to 65 MB.
+	**/
+	public static var maxObjectValues(get, set):Int;
 
 	/**
 		The number of bytes of data available for reading from the current
@@ -403,17 +425,21 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		their own framing.
 
 		@return The deserialized object.
-		@throws EOFError There is not sufficient data available to read. For
-				`HXSF` and `JSON`, `position` is left where it was, so the
-				read can be tried again once the rest has arrived.
+		@throws EOFError There is not sufficient data available to read.
+				`position` is left where it was, so the read can be tried
+				again once the rest has arrived, in `AMF0` and `AMF3` too,
+				which threw a `haxe.io.Eof` of their own.
 		@throws RangeError An `HXSF` or `JSON` object declares 2^31 bytes or
 				more, which no ByteArray holds.
 		@throws IOError The object nests values within values more than 256
 				levels deep (128 in `AMF0` or `AMF3`, whose levels take more
-				stack). It is refused before reading it could exhaust the
-				stack: a peer's object, read through a socket's `readObject`,
-				nested a few thousand deep ended the process. Its bytes are
-				consumed.
+				stack), or holds more values than `maxObjectValues` allows,
+				or is malformed in a way that would read the same bytes for
+				ever. It is refused before reading it could exhaust the
+				stack or memory: a peer's object, read through a socket's
+				`readObject`, nested a few thousand deep ended the process,
+				and twelve bytes of HXSF made an array of 800 MB. An `HXSF`
+				or `JSON` object's bytes are consumed.
 	**/
 	public inline function readObject():Dynamic {
 		return this.readObject();
@@ -747,6 +773,14 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		return ByteArrayData.defaultObjectEncoding = value;
 	}
 
+	@:noCompletion private inline static function get_maxObjectValues():Int {
+		return BoundedUnserializer.maxValues;
+	}
+
+	@:noCompletion private inline static function set_maxObjectValues(value:Int):Int {
+		return BoundedUnserializer.maxValues = value;
+	}
+
 	@:noCompletion private inline function get_endian():Endian {
 		return this.endian;
 	}
@@ -1047,17 +1081,29 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	public function readObject():Dynamic {
 		switch (objectEncoding) {
 			#if format
+			// An object that runs out is an EOFError, position left alone, as
+			// one in HXSF or JSON is; it was the reader's own haxe.io.Eof.
 			case AMF0:
 				var input = new BytesInput(this, position);
 				var reader = new BoundedAMFReader(input);
-				var data = unwrapAMFValue(reader.read());
+				var data:Dynamic;
+				try {
+					data = unwrapAMFValue(reader.read());
+				} catch (_:haxe.io.Eof) {
+					throw new EOFError();
+				}
 				position = input.position;
 				return data;
 
 			case AMF3:
 				var input = new BytesInput(this, position);
 				var reader = new BoundedAMF3Reader(input);
-				var data = unwrapAMF3Value(reader.read());
+				var data:Dynamic;
+				try {
+					data = unwrapAMF3Value(reader.read());
+				} catch (_:haxe.io.Eof) {
+					throw new EOFError();
+				}
 				position = input.position;
 				return data;
 			#end
@@ -1069,11 +1115,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 				return BoundedUnserializer.run(__readObjectText());
 
 			case JSON:
-				var text:String = __readObjectText();
-				if (!JsonNesting.within(text, BoundedUnserializer.LIMIT)) {
-					throw new IOError('nested more than ${BoundedUnserializer.LIMIT} levels deep');
-				}
-				return Json.parse(text);
+				return BoundedJson.parse(__readObjectText());
 
 			default:
 				throw new Exception(__unsupportedEncoding(objectEncoding));

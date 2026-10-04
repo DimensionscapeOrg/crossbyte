@@ -58,4 +58,57 @@ class JsonNesting {
 		}
 		return true;
 	}
+
+	/**
+		How many values `json` holds, objects, arrays, strings, names
+		included, and the numbers, `true`, `false` and `null`, counted
+		where each starts, without parsing; or `limit + 1` as soon as it is
+		past `limit`. One pass, allocating nothing.
+
+		What the parser makes of the text is no more than this: it makes a
+		value only where one starts.
+	**/
+	public static function values(json:String, limit:Int):Int {
+		if (json == null) {
+			return 0;
+		}
+		var count:Int = 0;
+		var inString:Bool = false;
+		var inWord:Bool = false;
+		var i:Int = 0;
+		var length:Int = json.length;
+		while (i < length) {
+			var code:Int = StringTools.fastCodeAt(json, i);
+			if (inString) {
+				if (code == "\\".code) {
+					i++;
+				} else if (code == '"'.code) {
+					inString = false;
+				}
+			} else {
+				switch (code) {
+					case '"'.code:
+						inString = true;
+						inWord = false;
+						count++;
+					case "{".code | "[".code:
+						inWord = false;
+						count++;
+					case "}".code | "]".code | ",".code | ":".code | " ".code | "\t".code | "\n".code | "\r".code:
+						inWord = false;
+					default:
+						// A number or a literal: one value however long.
+						if (!inWord) {
+							inWord = true;
+							count++;
+						}
+				}
+				if (count > limit) {
+					return count;
+				}
+			}
+			i++;
+		}
+		return count;
+	}
 }
