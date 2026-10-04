@@ -3211,6 +3211,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Natively, on the jvm and the interpreter, a load's progress that its
+  runtime has not yet told is folded into the latest, where a message was
+  queued for each: the client reports progress per read and per chunk, so
+  a body arriving faster than the runtime drained, or while it was busy,
+  queued messages without bound, about 300,000 in two seconds for one
+  load, measured, and then dispatched every one.
 - The PHP bridge joins a repeated response header once, at the end, where
   it added each repeat to the whole value so far: 40,000 lines of one field
   held the runtime 5.6 s. It reads a response a megabyte a pass at most and

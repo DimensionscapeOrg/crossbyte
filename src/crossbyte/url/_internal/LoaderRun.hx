@@ -259,10 +259,26 @@ class LoaderRun {
 		}
 	}
 
-	/** Queues `message` for the loader, posting a drain when it starts a batch. */
+	/**
+		Queues `message` for the loader, posting a drain when it starts a
+		batch.
+
+		Progress takes the place of progress not yet told: only the latest
+		is worth telling, and the client reports it per read and per chunk,
+		so a body arriving faster than the runtime drains, or while it is
+		busy, queued a message for each, without bound: about 300,000 in
+		two seconds for one load, measured. Nothing else is folded.
+	**/
 	private function __send(message:LoaderMessage):Void {
 		__acquire();
 		if (__abandoned) {
+			__release();
+			return;
+		}
+		var last:Int = __outbox.length - 1;
+		if (last >= 0 && __isProgress(message) && __isProgress(__outbox[last])) {
+			// Not yet told, and a drain is posted for it already.
+			__outbox[last] = message;
 			__release();
 			return;
 		}
@@ -309,6 +325,13 @@ class LoaderRun {
 
 		if (more) {
 			__runtime.post(__drain);
+		}
+	}
+
+	private static inline function __isProgress(message:LoaderMessage):Bool {
+		return switch (message) {
+			case Progress(_, _): true;
+			default: false;
 		}
 	}
 
