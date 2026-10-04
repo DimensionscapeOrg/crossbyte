@@ -693,7 +693,24 @@ final class CrossByte extends EventDispatcher {
 		        `DEFAULT` or `POLL`, whose frames are its own; or on a
 		        `CUSTOM` runtime from any thread but its own.
 	**/
-	public function pump(delta:Float, socketTimeout:Float = 0.0):Void {
+	overload extern public inline function pump(delta:Float, socketTimeout:Float):Void {
+		__pump(delta, socketTimeout);
+	}
+
+	/**
+		Runs one frame of this runtime, looking at the sockets without
+		waiting: `pump(delta, 0)`.
+
+		@throws IllegalOperationError As `pump(delta, socketTimeout)` does.
+	**/
+	overload extern public inline function pump(delta:Float):Void {
+		__pump(delta, 0.0);
+	}
+
+	// The frame both `pump`s run. They were one function with
+	// `socketTimeout = 0.0`, and on the jvm an argument with a default is an
+	// object: every frame a host pumped boxed its timeout.
+	@:noCompletion public function __pump(delta:Float, socketTimeout:Float):Void {
 		if (!__usesHostLoop) {
 			// A custom loop body's frame. Its loop bound the thread and
 			// dispatched INIT before calling the body, and finishes the exit
@@ -766,7 +783,7 @@ final class CrossByte extends EventDispatcher {
 		}
 	}
 
-	@:noCompletion private function __stepHost(delta:Float, socketTimeout:Float = 0.0):Void {
+	@:noCompletion private function __stepHost(delta:Float, socketTimeout:Float):Void {
 		if (delta < 0) {
 			delta = 0;
 		}
@@ -1248,7 +1265,7 @@ final class CrossByte extends EventDispatcher {
 	 * What it leaves fires next frame and is counted by `timerBacklog`.
 	 */
 	@:noCompletion private inline function __advanceTimers(dt:Float):Void {
-		__timer.advanceTime(dt, 0x7FFFFFFF, __tickInterval);
+		__timer.advanceBy(dt, 0x7FFFFFFF, __tickInterval);
 		if (__timer.cutShort) {
 			__timerOverruns++;
 		}
@@ -1924,7 +1941,7 @@ final class CrossByte extends EventDispatcher {
 			return;
 		}
 		#if !js
-		__socketRegistry.update();
+		__socketRegistry.update(0);
 		__flushHeld();
 		// A socket that stopped with its share of the pass taken is read
 		// again at once while the frame has time left, rather than at the
@@ -1932,7 +1949,7 @@ final class CrossByte extends EventDispatcher {
 		// frame, a socket at the default 12 ticks a second would be read a
 		// megabyte every 84 ms however fast its data came.
 		while ((__socketRegistry.__moreToRead || __flushesWaiting()) && Timer.stamp() < __frameDeadline && __getRunning()) {
-			__socketRegistry.update();
+			__socketRegistry.update(0);
 			if (__hasPosted) {
 				__runPosted();
 			}
