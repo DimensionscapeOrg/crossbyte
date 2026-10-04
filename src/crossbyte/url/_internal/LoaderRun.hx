@@ -267,7 +267,9 @@ class LoaderRun {
 		is worth telling, and the client reports it per read and per chunk,
 		so a body arriving faster than the runtime drains, or while it is
 		busy, queued a message for each, without bound: about 300,000 in
-		two seconds for one load, measured. Nothing else is folded.
+		two seconds for one load, measured. Nothing else is folded, nor the
+		first report of a body, at nothing loaded, which is where a listener
+		learns its total before any of it.
 	**/
 	private function __send(message:LoaderMessage):Void {
 		__acquire();
@@ -276,7 +278,7 @@ class LoaderRun {
 			return;
 		}
 		var last:Int = __outbox.length - 1;
-		if (last >= 0 && __isProgress(message) && __isProgress(__outbox[last])) {
+		if (last >= 0 && __isProgress(message) && __isLaterProgress(__outbox[last])) {
 			// Not yet told, and a drain is posted for it already.
 			__outbox[last] = message;
 			__release();
@@ -331,6 +333,14 @@ class LoaderRun {
 	private static inline function __isProgress(message:LoaderMessage):Bool {
 		return switch (message) {
 			case Progress(_, _): true;
+			default: false;
+		}
+	}
+
+	/** Progress past the first report, which says nothing has loaded yet. **/
+	private static inline function __isLaterProgress(message:LoaderMessage):Bool {
+		return switch (message) {
+			case Progress(loaded, _): loaded > 0;
 			default: false;
 		}
 	}

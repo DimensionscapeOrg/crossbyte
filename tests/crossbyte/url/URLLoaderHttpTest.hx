@@ -731,6 +731,9 @@ Content-Length: ${body.length}
 
 		Assert.isTrue(done, "the load never ended");
 		Assert.isTrue(progress.length < 50, progress.length + " progress events told for 5,000 chunks the runtime was too busy to hear");
+		// The first report, at nothing loaded, is kept: where a listener
+		// learns the total before any of the body.
+		Assert.equals(0, progress.length > 0 ? progress[0] : -1, "the first progress told is not the body's start");
 		Assert.equals(50000, progress.length > 0 ? progress[progress.length - 1] : -1, "the last progress told is not the whole body");
 	}
 
