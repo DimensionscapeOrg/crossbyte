@@ -9,6 +9,7 @@ package crossbyte.db.mongodb;
 // runs everywhere.
 #if !js
 import crossbyte._internal.socket.FlexSocket;
+import crossbyte.db._internal.SocketKeepAlive;
 import crossbyte.db.ITransactionalConnection;
 import crossbyte.db.mongodb.MongoConfig.MongoWriteConcern;
 import crossbyte.db.mongodb.MongoError.MongoWriteError;
@@ -968,6 +969,14 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			}
 
 			__connectSocket(socket, host, peer);
+
+			// With no keepalive and no socket timeout, the default, a read
+			// waiting on a server that went silent, a partition, a host
+			// that died, waited for good. Best effort, as setFastSend is:
+			// a target without the option connects as before.
+			if (settings.keepAlive) {
+				SocketKeepAlive.enable(socket, settings.keepAliveIdle, settings.keepAliveInterval, settings.keepAliveCount);
+			}
 
 			if (settings.tls) {
 				__boundNextWait(socket, peer);

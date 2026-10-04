@@ -1589,6 +1589,23 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- MongoDB and PostgreSQL connections keep TCP keepalive on with MySQL's
+  timings, a probe after 60 idle seconds, then one every 10, and the
+  connection dropped after 6 unanswered, so a server that has gone
+  silent, a partition or a host that died without closing, is found in
+  about two minutes and the worker waiting on it let go. MongoDB's client
+  set no keepalive and, with no socket timeout by default, waited on such
+  a server for good; Postgres's libpq turned keepalive on but left its
+  timings to the system, two hours before the first probe. `keepAlive`,
+  `keepAliveIdle`, `keepAliveInterval` and `keepAliveCount` are new on
+  `MongoConfig`, and `keepAlive` on `PostgresConfig`, as on `MySQLConfig`;
+  0 for a timing is the system's own. Natively MongoDB's timings are set
+  on every system; on the jvm keepalive is turned on and its timings need
+  Java 11; the interpreter, hl and neko have no such option. A command
+  sent to a host that has just vanished waits instead for the system to
+  stop retransmitting it, about fifteen minutes on Linux, which Postgres's
+  `tcpUserTimeout` bounds. A MongoDB `connectTimeout` or `socketTimeout`
+  of NaN, which read as no limit, throws an `ArgumentError`.
 - `AsyncDatabase` bounds its queue by default. A job waits at most
   `queueTimeout`, now 30 seconds, for a worker, and fails at that
   deadline with an `IllegalOperationError`, at once, on a thread of the
