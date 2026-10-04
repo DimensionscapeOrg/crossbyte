@@ -466,6 +466,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.rpc.RPCFrameTest());
 		runner.addCase(new crossbyte.rpc.RPCSignatureTest());
 		runner.addCase(new crossbyte.rpc.RPCHelloTest());
+		runner.addCase(new crossbyte.rpc.RPCRuntimeCodecTest());
 		// Real sockets pumped until something happens, which Node cannot do,
 		// so not in the portable suite.
 		runner.addCase(new crossbyte.rpc.RPCConnectionEndTest());

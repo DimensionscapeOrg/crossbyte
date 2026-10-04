@@ -1607,6 +1607,17 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- The runtime RPC lane tells a value's kind without allocating, where
+  `Type.typeof` made an object for every `String` and `Bytes` it was
+  asked about. The kinds are those `Type.typeof` gave, on every target,
+  JavaScript, the jvm and HashLink still send a whole `Float` as an `Int`.
+  Natively a one-way runtime call of a 12-character string allocates 152
+  bytes, where it allocated 208, and takes 135 ns, where it took 147; on
+  the jvm, whose compiler already left the object out, 128 bytes as
+  before. Its frame is not sized before it is written: it is the
+  session's buffer, which grows only for a frame larger than any it has
+  held, so a pass over the arguments to size them would only add to each
+  call.
 - An `RPCSession` answers or passes over a frame it cannot read, and its
   connection carries on, where the connection ended and every call waiting
   on it failed, so in a rolling deploy a client calling a method its

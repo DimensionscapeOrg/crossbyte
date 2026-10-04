@@ -90,6 +90,8 @@ class AllocationBudgetTest extends utest.Test {
 	// RPCResponse and what waiting on it takes; a frame costs nothing.
 	private static final RPC_CALL = new Budget("an RPC call and its answer", "call", [200, 200, 208], [320, 320, 328]);
 	private static final RPC_ONE_WAY = new Budget("a one-way RPC call", "call", [0, 0, 24], [8, 8, 96]);
+	// The array and the string the handler is given are most of it.
+	private static final RPC_RUNTIME_ONE_WAY = new Budget("a one-way runtime-lane RPC call of a 12-character string", "call", [152, 152, 128], [256, 256, 224]);
 
 	/**
 		Operations run before measuring, so what the first ones build is not
@@ -489,6 +491,24 @@ class AllocationBudgetTest extends utest.Test {
 		__warm(op, WARM_CHEAP);
 		__within(RPC_ONE_WAY, AllocationMeter.measure(op, 20000));
 		Assert.isTrue(handler.moves > 0);
+	}
+
+	public function testAOneWayRuntimeRpcCall():Void {
+		// The arguments' array is the caller's, made once: what is counted is
+		// the lane's, the array and the string the handler is given among it.
+		var link = LinkedConnection.pair();
+		var serverSession = new RPCSession(link.server);
+		var clientSession = new RPCSession(link.client);
+		var heard:Array<Int> = [0];
+		serverSession.register(7, args -> {
+			heard[0]++;
+			return null;
+		});
+		var args:Array<Dynamic> = ["hello, world"];
+		var op = () -> clientSession.call(7, args);
+		__warm(op, WARM_CHEAP);
+		__within(RPC_RUNTIME_ONE_WAY, AllocationMeter.measure(op, 20000));
+		Assert.isTrue(heard[0] > 0);
 	}
 
 	// ---------------------------------------------------------------------
