@@ -2,6 +2,7 @@ package crossbyte.events;
 
 import crossbyte.events._internal.Arrivals;
 import crossbyte.io.ByteArray;
+import crossbyte.io.ByteArray.ByteArrayData;
 import crossbyte.io.Endian;
 import haxe.io.Bytes;
 import utest.Assert;
@@ -155,16 +156,34 @@ class ArrivalsTest extends utest.Test {
 		Assert.equals("", message.text, "text read after the call came from somewhere other than the dead message");
 	}
 
-	public function testDoneKillsOnlyUnderTheCheck():Void {
+	/**
+		A payload made for one arrival, done with: killed under the check,
+		left alone under `crossbyte_fresh_events`, and released emptied, with
+		storage past `KEEP` let go, whatever still refers to it, such as a
+		reused event, holds nothing once its call has returned.
+	**/
+	public function testDoneIsWhatEachModeSays():Void {
 		var payload = bytesOf([7, 8, 9]);
 		var event = new DatagramSocketDataEvent(DatagramSocketDataEvent.DATA, "10.0.0.1", 1, "10.0.0.2", 2, payload);
+		var large = new ByteArray();
+		large.length = Arrivals.KEEP * 4;
 		Arrivals.done(payload);
 		Arrivals.doneWith(event);
+		Arrivals.done(large);
+		Arrivals.done(null);
 		#if crossbyte_check_events
 		Assert.equals(0, payload.length);
 		Assert.isNull(event.srcAddress);
-		#else
+		#elseif crossbyte_fresh_events
 		Assert.same([7, 8, 9], valuesOf(payload));
+		Assert.equals("10.0.0.1", event.srcAddress);
+		Assert.equals(Arrivals.KEEP * 4, large.length);
+		#else
+		Assert.equals(0, payload.length, "a payload done with still read whole");
+		Assert.equals(0, payload.position);
+		Assert.equals(0, large.length);
+		Assert.isTrue(@:privateAccess (large : ByteArrayData).__length <= Arrivals.KEEP, "a large payload done with kept its storage");
+		// The event is not one this side reuses: left as it is.
 		Assert.equals("10.0.0.1", event.srcAddress);
 		#end
 	}
