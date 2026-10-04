@@ -304,6 +304,9 @@ final class SocketRegistry {
 		// is reported in the exception set on Windows and never becomes
 		// writable.
 		var watching:Bool = __writeSnapshot.length > 0;
+		#if ((java || jvm) && !macro)
+		__selectKept(wait, watching);
+		#else
 		var write:Array<Socket> = watching ? __writeSnapshot.copy() : [];
 		var others:Array<Socket> = watching ? __writeSnapshot.copy() : [];
 
@@ -333,7 +336,72 @@ final class SocketRegistry {
 				}
 			}
 		}
+		#end
 	}
+
+	#if ((java || jvm) && !macro)
+	// What select found ready, in arrays this registry keeps, and whether
+	// they are being walked: a handler that pumps the runtime from inside
+	// the walk gets arrays of its own, as every select did.
+	@:noCompletion private var __readyRead:Array<Socket> = [];
+	@:noCompletion private var __readyWrite:Array<Socket> = [];
+	@:noCompletion private var __readyOthers:Array<Socket> = [];
+	@:noCompletion private var __walkingReady:Bool = false;
+
+	/**
+		The jvm's select, answered into this registry's own arrays. Through
+		`Socket.select` every frame made two empty arrays to ask with, three
+		to answer in, their storage, the object holding them and a boxed
+		timeout: 200 to 250 bytes a frame with a socket on it, idle or not.
+	**/
+	@:noCompletion private function __selectKept(wait:Float, watching:Bool):Void {
+		var nested:Bool = __walkingReady;
+		var read:Array<Socket> = nested ? [] : __readyRead;
+		var write:Array<Socket> = nested ? [] : __readyWrite;
+		var others:Array<Socket> = nested ? [] : __readyOthers;
+		read.resize(0);
+		write.resize(0);
+		others.resize(0);
+
+		var asked:Null<Array<Socket>> = watching ? __writeSnapshot : null;
+		if (wait > 0) {
+			var waitStart:Float = haxe.Timer.stamp();
+			@:privateAccess Socket.__selectInto(__selectBuffer, asked, asked, wait, read, write, others);
+			__waited += haxe.Timer.stamp() - waitStart;
+		} else {
+			@:privateAccess Socket.__selectInto(__selectBuffer, asked, asked, -1.0, read, write, others);
+		}
+
+		__walkingReady = true;
+		try {
+			for (s in read) {
+				__dispatchReadable(s);
+			}
+			if (watching) {
+				for (s in write) {
+					__dispatchWritable(s);
+				}
+				for (s in others) {
+					// Once, when it is in both.
+					if (write.indexOf(s) < 0) {
+						__dispatchWritable(s);
+					}
+				}
+			}
+		} catch (error:Dynamic) {
+			__walkingReady = nested;
+			read.resize(0);
+			write.resize(0);
+			others.resize(0);
+			throw error;
+		}
+		__walkingReady = nested;
+		// Let go of, so the sockets of the last pass are not held by it.
+		read.resize(0);
+		write.resize(0);
+		others.resize(0);
+	}
+	#end
 	#end
 
 	@:noCompletion private inline function __dispatchReadable(s:Socket):Void {
