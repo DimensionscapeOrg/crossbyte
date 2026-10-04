@@ -1596,6 +1596,11 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `CrossByte.post` says its queue has no depth limit, and why: a limit
+  would refuse work only the runtime's own thread may do, or make a
+  runtime posting to itself wait for itself. A waiting callback costs
+  about 32 bytes natively. A producer a peer can drive bounds what it
+  hands over, reading `postQueueDepth`.
 - Natively a timer callback that takes its handle, `Timer.setInterval(1,
   1, handle -> ...)`, is given the handle boxed once per timer, where
   every fire boxed it anew: hxcpp passes a closure its arguments boxed,

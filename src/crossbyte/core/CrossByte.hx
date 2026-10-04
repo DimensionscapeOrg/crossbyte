@@ -418,7 +418,8 @@ final class CrossByte extends EventDispatcher {
 
 	/**
 	 * Callbacks posted to this runtime that have not run yet. Readable from
-	 * any thread.
+	 * any thread. The queue has no limit of its own; `post` says why, and
+	 * that a producer a peer can drive bounds itself by this.
 	 */
 	public var postQueueDepth(get, never):Int;
 
@@ -886,6 +887,21 @@ final class CrossByte extends EventDispatcher {
 		Callbacks run in the order they were posted. What throws is reported
 		like any other callback's failure, logged, and dispatched as
 		`UncaughtErrorEvent.UNCAUGHT_ERROR`: and does not stop the rest.
+
+		The queue has no depth limit: a runtime takes every callback posted
+		to it until it exits, and `postQueueDepth` says how many wait. A
+		limit would have to refuse a callback or make its caller wait, and
+		either breaks what `post` is for. Callers hand a runtime work only its
+		own thread may do, close a socket, deliver an RPC answer, arm a
+		timer, so a refused callback is work lost, or done on a thread that
+		must not do it; and a caller made to wait deadlocks when it is the
+		runtime posting to itself, or two runtimes posting to each other. A
+		waiting callback costs its closure and a slot, about 32 bytes
+		natively and 20 on the jvm for one holding a number: 32 MB for a
+		million. Where a peer's traffic can make something post faster than
+		the runtime runs what it is given, connections handed to a runtime
+		that is busy, the bound belongs to that producer, which knows what
+		it can refuse or send elsewhere, and can read `postQueueDepth`.
 
 		@return Whether the callback was taken. False once the runtime has
 		        exited, when it would never run: that used to be dropped
