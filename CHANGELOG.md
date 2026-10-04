@@ -330,6 +330,11 @@ entry below says how:
   but `pump` is not a value any more, `var step = runtime.pump` and a
   call through `Dynamic` do not compile or find it. Wrap it,
   `(delta) -> runtime.pump(delta)`.
+- An `ExpiringMap` holds 100,000 entries and an `ObjectPool` keeps 10,000
+  free objects unless told otherwise: pass `maxSize` 0, or set `maxFree`
+  to `0x7FFFFFFF`, for no bound, as before. A negative `maxSize` or
+  `maxFree`, and an `ExpiringMap` `ttl` that is not a positive number,
+  throw an `ArgumentError`.
 
 ### Added
 - `SequenceRing.remove(sequence)` and `SequenceRing.writeBits(from, out, at,
@@ -1574,6 +1579,22 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `ExpiringMap` holds at most 100,000 entries unless given another
+  `maxSize`, where it held whatever was put in it for as long as its
+  `ttl`: the map built for sessions and tokens, what a peer makes a
+  server keep, had its count bound off unless asked. Past the bound the
+  entry closest to expiring goes, as before. An entry costs about 250
+  bytes natively and 80 on the jvm besides its key and value, so the
+  default holds some 25 MB natively. A negative `maxSize`, which read as
+  no limit, and a `ttl` of NaN, which kept every entry for good, throw an
+  `ArgumentError`, as a `ttl` of 0 now does where it threw a String; so
+  does `sweep(NaN)`, which swept nothing.
+- `ObjectPool` keeps at most 10,000 free objects unless `maxFree` is set,
+  where it kept every object released: a burst stayed in memory for good,
+  and in every collection's walk. `reserve`, the constructor's `length`
+  and `resizeCapacity` raise `maxFree` to what they reserve, so objects
+  made in advance are kept. A negative `maxFree` throws an
+  `ArgumentError`.
 - A WebSocket text message is written into its frame without being encoded
   into a buffer of its own first, natively when the string is held a byte a
   character and on the jvm when it is ASCII and no longer than 256

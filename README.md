@@ -80,6 +80,7 @@ CrossByte currently includes:
   - secure random bytes natively, on the jvm, on Node, in a browser and on PHP; not on the interpreter, neko or HashLink
 - workers, task pools, and `NativeProcess`, which starts a child process and reads its output natively, on the jvm, HashLink, Neko and Node; not on the interpreter, whose process calls hold every thread while they wait, nor in a browser
 - data structures and utility packages
+  - `ExpiringMap`, for what a server keeps on a peer's behalf, sessions, tokens, pending handshakes, bounded by time (`ttl`) and by count (`maxSize`, 100,000 unless set), and `ObjectPool`, which keeps 10,000 free objects unless `maxFree` says otherwise, so a burst does not stay in memory for good
 - database surfaces for:
   - SQLite, natively, its statements prepared once and their parameters bound
   - every SQL driver's statements take `parameters` as `SQLValue`s, and read a result row by row and column by column with `executeEach` and `SQLRow`

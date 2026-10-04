@@ -1,6 +1,7 @@
 package crossbyte.utils;
 
 import crossbyte.ds.Stack;
+import crossbyte.errors.ArgumentError;
 
 /**
  * ObjectPool is a generic object pool class.
@@ -14,9 +15,14 @@ import crossbyte.ds.Stack;
  * next two `acquire`s handed one object to two owners. `release` answers
  * `false` for what it refused.
  *
- * **Bursts.** Every object released is kept for the next `acquire`, so a
- * burst of a hundred thousand leaves a hundred thousand behind for good.
- * `maxFree` bounds what is kept; past it, a released object is let go.
+ * **Bursts.** An object released is kept for the next `acquire` while fewer
+ * than `maxFree` are free, 10,000 unless set, and let go past that. It
+ * kept every one, so a burst of a hundred thousand left a hundred thousand
+ * behind for good: memory the collector could never take back, and more for
+ * it to walk at every collection, which on a native build is what a pause
+ * lasts in proportion to. A reservation, `reserve`, the constructor's
+ * `length`, `resizeCapacity`, raises `maxFree` to what it reserves, so the
+ * objects asked for in advance are not let go after their first use.
  *
  * @param T The type of objects to be pooled.
  */
@@ -41,11 +47,20 @@ final class ObjectPool<T:{}> {
 	public var resetFunction:T->Void;
 
 	/**
-	 * The most free objects the pool keeps. A release past it is let go
-	 * rather than kept, and no longer counts toward `capacity`. Unbounded
-	 * unless set.
+	 * The most free objects the pool keeps: 10,000 unless set, and raised to
+	 * what `reserve`, the constructor's `length` or `resizeCapacity` reserve.
+	 * A release past it is let go rather than kept, and no longer counts
+	 * toward `capacity`. `0` keeps nothing; `0x7FFFFFFF` keeps every object
+	 * released, as the pool did before it had a default.
+	 *
+	 * What it bounds is memory held between bursts: at most `maxFree`
+	 * objects, of whatever size `objectFactory` makes them, stay behind after
+	 * the busiest moment. Set it to the most a quiet period should keep; a
+	 * pool of large buffers wants it far lower.
+	 *
+	 * @throws ArgumentError When set below zero.
 	 */
-	public var maxFree:Int = 0x7FFFFFFF;
+	public var maxFree(default, set):Int = 10000;
 
 	/** 
 	 * Objects currently free. 
@@ -74,12 +89,21 @@ final class ObjectPool<T:{}> {
 		return __created - __free.length;
 	}
 
+	@:noCompletion private function set_maxFree(value:Int):Int {
+		if (value < 0) {
+			throw new ArgumentError('ObjectPool.maxFree must not be negative ($value).');
+		}
+
+		return maxFree = value;
+	}
+
 	/**
 	 * Creates a new object pool.
 	 *
 	 * @param objectFactory The function to create new instances of the pooled objects.
 	 * @param resetFunction Optional The function used to reset our object.
-	 * @param length Optional initial size of the pool.
+	 * @param length Optional initial size of the pool: that many objects are
+	 *        made at once, and `maxFree` is raised to keep them if it is lower.
 	 */
 	public inline function new(objectFactory:Void->T, ?resetFunction:T->Void, ?length:Int) {
 		this.objectFactory = objectFactory;
@@ -148,13 +172,18 @@ final class ObjectPool<T:{}> {
 	}
 
 	/**
-	 * Ensure at least n free objects are available
-	 * 
-	 * @param length 
+	 * Ensure at least n free objects are available, and that the pool keeps
+	 * that many: `maxFree` is raised to `length` if it is lower.
+	 *
+	 * @param length
 	 */
 	public inline function reserve(length:Int):Void {
+		if (length > maxFree) {
+			maxFree = length;
+		}
+
 		var need:Int = length - __free.length;
-		while (need > 0) {
+while (need > 0) {
 			__free.push(objectFactory());
 			__created++;
 			need--;
@@ -164,6 +193,7 @@ final class ObjectPool<T:{}> {
 	/**
 	 * Set total logical capacity (inUse + free) to `target`.
 	 * Never shrinks below current `inUse`. Returns the new capacity.
+	 * `maxFree` is raised to the free objects this leaves, if it is lower.
 	 *
 	 * @param target 
 	 * @return Int
@@ -194,6 +224,11 @@ final class ObjectPool<T:{}> {
 				__created--;
 			}
 		}
+
+		if (__free.length > maxFree) {
+			maxFree = __free.length;
+		}
+
 		return inUseNow + __free.length;
 	}
 }
