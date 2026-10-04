@@ -369,13 +369,23 @@ class TimerHeap implements ITimerScheduler {
 	}
 
 	// Runs a timer's callback: a Void->Void one directly, one taking its
-	// handle with the handle.
+	// handle with the handle. Natively the handle goes boxed once per timer;
+	// see TimerNode.handleBox.
 	private inline function __call(node:TimerNode):Void {
 		var direct:Void->Void = node.voidCallback;
 		if (direct != null) {
 			direct();
 		} else {
+			#if cpp
+			var box:Dynamic = node.handleBox;
+			if (box == null) {
+				box = node.handleBox = (new TimerHandle(node.id, gens[node.id]) : Int);
+			}
+			var withHandle:Dynamic->Void = cast node.callback;
+			withHandle(box);
+			#else
 			node.callback(new TimerHandle(node.id, gens[node.id]));
+			#end
 		}
 	}
 

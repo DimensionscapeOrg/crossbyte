@@ -401,6 +401,24 @@ class TimerWheelTest extends utest.Test {
 		Assert.isTrue(wheel.isEmpty);
 	}
 
+	public function testACallbackTakingItsHandleIsGivenItsOwnEachTime():Void {
+		var wheel = new TimerWheel();
+		for (_ in 0...300) {
+			wheel.clear(wheel.setTimeoutVoid(0.010, () -> {}));
+		}
+		var seen:Array<Int> = [];
+		var handle:TimerHandle = wheel.setInterval(0.010, 0.010, h -> seen.push(h));
+		for (_ in 0...3) {
+			wheel.advanceTime(0.010);
+		}
+		Assert.same([(handle : Int), (handle : Int), (handle : Int)], seen);
+		wheel.clear(handle);
+
+		var next:TimerHandle = wheel.setTimeout(0.010, h -> seen.push(h));
+		wheel.advanceTime(0.010);
+		Assert.equals((next : Int), seen[3], "a reused node passed the handle of the timer before");
+	}
+
 	public function testSizeTracksLiveTimers():Void {
 		var wheel = new TimerWheel();
 		Assert.isTrue(wheel.isEmpty);
