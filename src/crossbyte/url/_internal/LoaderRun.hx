@@ -50,11 +50,31 @@ class LoaderRun {
 	private var __drainPosted:Bool = false;
 	private var __abandoned:Bool = false;
 
+	// The body, taken when the load began: a copy of bytes, which are the
+	// caller's again once `load` has returned, a datagram's payload handed
+	// on from its listener, say, which the socket empties as the listener
+	// returns. They were read here on a pool thread, later, and went out as
+	// whatever they had become: empty, or another datagram.
+	private final __body:Dynamic;
+
 	public function new(loader:URLLoader, runtime:CrossByte, request:URLRequest, token:HTTPCancelToken) {
 		__loader = loader;
 		__runtime = runtime;
 		__request = request;
 		__token = token;
+		__body = takeBody(request.data);
+	}
+
+	/**
+		`data` as a request takes it at `load`: bytes copied, from 0 to their
+		`length`; anything else as it is. On the caller's thread.
+	**/
+	private static function takeBody(data:Dynamic):Dynamic {
+		if (data != null && Std.isOfType(data, Bytes)) {
+			var bytes:Bytes = cast data;
+			return bytes.sub(0, bytes.length);
+		}
+		return data;
 	}
 
 	/** Drops whatever this load still has to say. On the loader's runtime. */
@@ -89,17 +109,18 @@ class LoaderRun {
 			// of text or bytes, typed from here on, or a form's fields.
 			var bodyData:Null<crossbyte.http.HTTPRequestBody> = null;
 
-			if (request.data != null) {
-				if (Std.isOfType(request.data, haxe.io.Bytes) || Std.isOfType(request.data, String)) {
-					bodyData = Std.isOfType(request.data, String) ? crossbyte.http.HTTPRequestBody.fromString(cast request.data) : crossbyte.http.HTTPRequestBody.fromBytes(cast request.data);
+			var data:Dynamic = __body;
+			if (data != null) {
+				if (Std.isOfType(data, haxe.io.Bytes) || Std.isOfType(data, String)) {
+					bodyData = Std.isOfType(data, String) ? crossbyte.http.HTTPRequestBody.fromString(cast data) : crossbyte.http.HTTPRequestBody.fromBytes(cast data);
 					contentType = (request.contentType != null) ? request.contentType : "application/octet-stream";
-				} else if (Reflect.isObject(request.data)) {
-					requestData = request.data;
+				} else if (Reflect.isObject(data)) {
+					requestData = data;
 					if (request.contentType != null) {
 						contentType = request.contentType;
 					}
 				} else {
-					bodyData = crossbyte.http.HTTPRequestBody.fromString(Std.string(request.data));
+					bodyData = crossbyte.http.HTTPRequestBody.fromString(Std.string(data));
 					contentType = (request.contentType != null) ? request.contentType : "text/plain; charset=utf-8";
 				}
 			}
