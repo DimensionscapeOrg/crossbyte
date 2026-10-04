@@ -340,6 +340,11 @@ entry below says how:
   leave needs a timeout above 0. A negative or NaN timeout, a negative
   `maxNodes`, and a negative `connectTimeoutMs` or stop-pending hint,
   throw an `ArgumentError`.
+- `AsyncDatabase.queueTimeout` is a `Float`, 30 seconds unless set, and a
+  job still queued then fails; set 0 where `null` meant no limit.
+  `maxQueued` is 100,000 unless set: set 0, or more, for a batch that
+  submits more than that at once. A `ConnectionPool` `acquireTimeout` of 0
+  waits without limit, where it failed at once.
 
 ### Added
 - `SequenceRing.remove(sequence)` and `SequenceRing.writeBits(from, out, at,
@@ -1584,6 +1589,22 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `AsyncDatabase` bounds its queue by default. A job waits at most
+  `queueTimeout`, now 30 seconds, for a worker, and fails at that
+  deadline with an `IllegalOperationError`, at once, on a thread of the
+  database's own: it failed only when a worker reached it, which with
+  every worker held by a database that had stopped answering was never.
+  And `maxQueued`, now 100,000, refuses a job past that many waiting. Both
+  were off unless set. 0 is no limit for either, and NaN or a negative
+  value throws an `ArgumentError`, as it does for `acquireTimeout`;
+  `queueTimeout` is a `Float`, not a `Null<Float>`. The watch costs about
+  0.7 microseconds a job natively and 0.3 on the jvm, measured on jobs
+  that do nothing, 100,000 queued at once.
+- `ConnectionPool` reads an `acquireTimeout` of 0, for the pool or for one
+  `acquire`, as no limit: the caller waits until a connection comes free
+  or the pool closes, where it failed at once. NaN, which waited for ever
+  once the pool was saturated, and a negative timeout for one call, which
+  failed at once, throw an `ArgumentError`, as a negative default did.
 - A `Membership` timeout of 0 is none, as 0 is everywhere in CrossByte:
   no node leaves for being quiet, only by `forget`. It was refused. A
   negative or NaN timeout, a negative `maxNodes` (which read as no limit)
