@@ -497,6 +497,13 @@ final class CrossByte extends EventDispatcher {
 	// tick, and a runtime nobody posts to pays a field read.
 	@:noCompletion private var __posted:Null<Array<Void->Void>> = null;
 	@:noCompletion private var __hasPosted:Bool = false;
+	// The array the last batch ran from, emptied, which the next batch is
+	// posted into: each batch was a new array, 104 bytes natively for every
+	// callback handed over on its own. The runtime's thread alone touches it.
+	@:noCompletion private var __postedSpare:Null<Array<Void->Void>> = null;
+	// The longest batch whose array is kept: a burst's is let go rather than
+	// held at its size for good.
+	@:noCompletion private static inline var POSTED_SPARE_LIMIT:Int = 1024;
 
 	// Set as the runtime finishes: a post after that would never run, and is
 	// refused instead.
@@ -927,7 +934,8 @@ final class CrossByte extends EventDispatcher {
 		__postLock.acquire();
 		#end
 		final batch = __posted;
-		__posted = null;
+		__posted = __postedSpare;
+		__postedSpare = null;
 		__hasPosted = false;
 		#if target.threaded
 		__postLock.release();
@@ -942,6 +950,11 @@ final class CrossByte extends EventDispatcher {
 			} catch (error:Dynamic) {
 				__uncaught(error, UncaughtErrorEvent.POSTED);
 			}
+		}
+		// Kept for a batch to come, unless a burst made it large.
+		if (batch.length <= POSTED_SPARE_LIMIT) {
+			batch.resize(0);
+			__postedSpare = batch;
 		}
 	}
 
