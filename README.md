@@ -308,6 +308,12 @@ timeout, and a cancel ends the wait at once). An answer is kept for 30 s, a
 failure for 5, and callers asking for a name already being looked up share
 the lookup.
 
+**PHP.** `HTTPServerConfig.phpMaxResponseSize` (8 MiB) bounds a script's
+response, whose CGI header block is held to 64 KiB and 100 lines besides,
+and `phpMaxExchanges` (64) the requests a runtime has with its PHP backend
+at once; more wait their turn within `phpTimeout`, and past 1,024 waiting
+a request is refused.
+
 ## Extensions
 
 CrossByte's extension story is intentional: features that benefit from native backends or external platform libraries can live in sibling haxelibs instead of bloating the core.
