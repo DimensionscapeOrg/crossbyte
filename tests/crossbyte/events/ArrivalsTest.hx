@@ -4,6 +4,7 @@ import crossbyte.events._internal.Arrivals;
 import crossbyte.io.ByteArray;
 import crossbyte.io.ByteArray.ByteArrayData;
 import crossbyte.io.Endian;
+import crossbyte.net.ObjectEncoding;
 import haxe.io.Bytes;
 import utest.Assert;
 
@@ -186,6 +187,61 @@ class ArrivalsTest extends utest.Test {
 		// The event is not one this side reuses: left as it is.
 		Assert.equals("10.0.0.1", event.srcAddress);
 		#end
+	}
+
+	/**
+		Every way a reused payload is filled for the next arrival takes back
+		everything a listener can leave on a `ByteArray`, its position, its
+		length and the storage it grew, its byte order, its object encoding,
+		so the next arrival reads as one in a `ByteArray` made for it
+		would. Those are all a `ByteArray` carries besides its bytes; every
+		reused payload is filled through `reset`.
+	**/
+	public function testEveryFillStartsAsAByteArrayMadeForTheArrival():Void {
+		var arrived = Bytes.ofString("abcdefgh");
+		var fresh:ByteArray = ByteArray.fromBytes(Bytes.ofString("abcdefgh"));
+		var fills:Array<{name:String, fill:ByteArray->Void}> = [
+			{name: "refill", fill: payload -> Arrivals.refill(payload, arrived, 0, arrived.length)},
+			{
+				name: "sized",
+				fill: payload -> {
+					Arrivals.sized(payload, arrived.length);
+					(payload : Bytes).blit(0, arrived, 0, arrived.length);
+				}
+			},
+			{
+				name: "reset",
+				fill: payload -> {
+					Arrivals.reset(payload);
+					payload.writeBytes(arrived, 0, arrived.length);
+					payload.position = 0;
+				}
+			},
+			#if js
+			{name: "refillView", fill: payload -> Arrivals.refillView(payload, new js.lib.Uint8Array(arrived.getData(), 0, arrived.length))},
+			#end
+		];
+		for (way in fills) {
+			var payload = new ByteArray();
+			way.fill(payload);
+			// What a listener might leave behind.
+			payload.position = 5;
+			payload.endian = payload.endian == Endian.BIG_ENDIAN ? Endian.LITTLE_ENDIAN : Endian.BIG_ENDIAN;
+			payload.objectEncoding = payload.objectEncoding == ObjectEncoding.JSON ? ObjectEncoding.HXSF : ObjectEncoding.JSON;
+			payload.length = Arrivals.KEEP * 3;
+			Arrivals.release(payload);
+
+			way.fill(payload);
+			Assert.equals(fresh.position, payload.position, way.name + " left the position a listener set");
+			Assert.equals(fresh.length, payload.length, way.name + " left the length");
+			Assert.equals(fresh.endian, payload.endian, way.name + " left the byte order a listener set");
+			Assert.equals(fresh.objectEncoding, payload.objectEncoding, way.name + " left the object encoding a listener set");
+			Assert.same(valuesOf(fresh), valuesOf(payload), way.name + " filled other bytes");
+			Assert.isTrue(@:privateAccess (payload : ByteArrayData).__length <= Arrivals.KEEP, way.name + " kept storage a listener grew");
+			// And read as one made for it reads.
+			Assert.equals(fresh.readUnsignedInt(), payload.readUnsignedInt(), way.name + " read another number than a fresh payload");
+			fresh.position = 0;
+		}
 	}
 
 	public function testACopyIsItsOwn():Void {
