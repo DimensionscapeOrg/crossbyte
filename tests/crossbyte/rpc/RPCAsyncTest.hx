@@ -218,6 +218,8 @@ class RPCAsyncTest extends utest.Test {
 		// handed to the session's runtime and sent at its next tick, from its
 		// own thread.
 		#if (cpp || jvm || hl || neko || eval)
+		// Marked first: each session sends a hello as it is made, from here.
+		ThreadNotingConnection.markThisThread();
 		var client = new ThreadNotingConnection();
 		var server = new ThreadNotingConnection();
 		client.peer = server;
@@ -226,7 +228,6 @@ class RPCAsyncTest extends utest.Test {
 		var commands = new LaterCommands();
 		var serverSession = new RPCSession(server, null, handler);
 		var clientSession = new RPCSession<LaterCommands>(client, commands);
-		ThreadNotingConnection.markThisThread();
 
 		var response = commands.lookup("ada");
 		var completer = handler.waiting.get("ada");

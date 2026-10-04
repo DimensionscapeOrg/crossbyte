@@ -63,6 +63,8 @@ class LoopbackConnection implements INetConnection {
 		}
 
 		outTimestamp = uptime();
+		// Copied before anything keeps it: what `send` is handed is valid only
+		// for the call, and the session writes its next frame over it.
 		var copy = new ByteArray();
 		copy.writeBytes(data, 0, data.length);
 		copy.position = 0;

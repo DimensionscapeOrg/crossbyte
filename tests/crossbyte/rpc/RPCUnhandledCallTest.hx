@@ -24,7 +24,7 @@ class RPCUnhandledCallTest extends utest.Test {
 
 		var runtime:RPCResponse<Dynamic> = fixture.client.request(100, ["hello"]);
 		Assert.isTrue(runtime.completed, "the runtime call was never answered");
-		Assert.stringContains("Unsupported runtime RPC op", runtime.error);
+		Assert.equals(RPCError.UNKNOWN_METHOD_MESSAGE, runtime.error);
 		fixture.client.call(101, ["one-way"]);
 
 		Assert.same([], fixture.serverEnded, "a runtime call ended the connection");
@@ -121,13 +121,17 @@ class RPCUnhandledCallTest extends utest.Test {
 		Assert.isTrue(fixture.serverEnded.length > 0, "a frame past the reader's limit was read");
 	}
 
-	public function testAFrameWithFlagsNoFrameHasEndsTheConnection():Void {
+	public function testAFrameWithFlagsNoFrameHasIsPassedOver():Void {
 		// Flags that are neither a call nor an answer, an error that answers
-		// nothing, were taken for a one-way call, and the method ran.
+		// nothing, were taken for a one-way call, and the method ran; then
+		// they ended the connection. A kind of frame a later release adds is
+		// passed over, the session told.
 		var fixture = new Fixture();
+		var passed:Array<String> = [];
+		fixture.server.onUnreadableFrame = (op, requestId, reason) -> passed.push(reason);
 		var payload = new crossbyte.io.ByteArrayOutput(32);
 		payload.writeByte(RPCWire.FLAG_ERROR);
-		payload.writeInt(crossbyte.rpc._internal.RPCOps.opOf("notice"));
+		payload.writeInt(crossbyte.rpc._internal.RPCOps.opOf("notice(utf8)"));
 		payload.writeVarUTF("text");
 		var frame = new ByteArray();
 		frame.writeInt(payload.bytesWritten);
@@ -135,7 +139,38 @@ class RPCUnhandledCallTest extends utest.Test {
 		frame.position = 0;
 		fixture.link.client.send(frame);
 		Assert.equals(0, fixture.handler.notices, "a frame that is neither a call nor an answer ran a method");
-		Assert.isTrue(fixture.serverEnded.length > 0, "a frame that is neither a call nor an answer was taken");
+		Assert.same([], fixture.serverEnded, "a frame that is neither a call nor an answer ended the connection");
+		Assert.same(["a frame of a kind this session does not know, flags 0x04"], passed);
+		Assert.equals(1, fixture.commands.join("lobby").result, "the connection did not answer after it");
+	}
+
+	public function testACallForAMethodThisSideHasNotGotIsAnsweredAndTheConnectionStays():Void {
+		// A rolling deploy: a client built with a method its server does not
+		// have yet. The request is answered saying so and the one-way call is
+		// dropped, the server told of both; they ended the connection, and
+		// every call waiting on it failed.
+		var fixture = new Fixture();
+		var passed:Array<String> = [];
+		fixture.server.onUnreadableFrame = (op, requestId, reason) -> passed.push(requestId + " " + reason);
+		var newer = new NewerCommands();
+		var link = LinkedConnection.pair();
+		var client = new RPCSession<NewerCommands>(link.client, newer);
+		var server = new RPCSession(link.server, null, fixture.handler);
+		server.onUnreadableFrame = fixture.server.onUnreadableFrame;
+		var ended = endingOf(link.server);
+
+		var asked = newer.trade("sword");
+		newer.wave();
+
+		Assert.isTrue(asked.completed, "a call for a method the server has not got was left waiting");
+		Assert.equals(RPCError.UNKNOWN_METHOD_MESSAGE, asked.error);
+		Assert.isTrue(Std.isOfType(asked.cause, RPCError), "not answered as the server's refusal: " + asked.cause);
+		Assert.isFalse(ended.value, "a call for a method the server has not got ended the connection");
+		Assert.equals(2, passed.length);
+		Assert.stringContains(asked.requestId + " no method answers op 0x", passed[0]);
+		Assert.stringContains("0 no method answers op 0x", passed[1]);
+		// The methods both have still work.
+		Assert.equals(1, newer.join("lobby").result);
 	}
 
 	/** Whether `connection` has been closed or has failed. **/
@@ -175,6 +210,17 @@ private class UnhandledCommands extends RPCCommands {
 	@:rpc public function drop(blob:Bytes):Void {}
 
 	@:rpc public function blob(size:Int):RPCResponse<Bytes> {}
+}
+
+/** A client built after the server: two methods the server has not got. **/
+private class NewerCommands extends RPCCommands {
+	public function new() {}
+
+	@:rpc public function join(room:String):RPCResponse<Int> {}
+
+	@:rpc public function trade(item:String):RPCResponse<Int> {}
+
+	@:rpc public function wave():Void {}
 }
 
 private class UnhandledHandler extends RPCHandler {

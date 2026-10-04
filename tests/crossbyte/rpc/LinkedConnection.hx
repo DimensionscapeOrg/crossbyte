@@ -39,6 +39,12 @@ class LinkedConnection implements INetConnection {
 
 	public var peer:LinkedConnection;
 	@:noCompletion private var __pendingInputs:Array<ByteArray> = [];
+	// What a read is handed, reused from one read to the next as a socket's
+	// input is; a read arriving while one is being read, a call answered
+	// at once, whose answer calls again, gets a copy of its own. Each read
+	// was a ByteArray of its own, which every RPC allocation budget counted.
+	@:noCompletion private var __input:ByteArray = new ByteArray();
+	@:noCompletion private var __reading:Bool = false;
 
 	@:noCompletion private var __readEnabled:Bool = false;
 	@:noCompletion private var __onData:ByteArrayInput->Void = input -> {};
@@ -103,17 +109,38 @@ class LinkedConnection implements INetConnection {
 
 	@:noCompletion private function receive(data:ByteArray):Void {
 		inTimestamp = Timer.getTime();
-		var copy = new ByteArray();
-		copy.writeBytes(data, 0, data.length);
-		copy.position = 0;
 		if (bufferInbound) {
-			__pendingInputs.push(copy);
+			__pendingInputs.push(copyOf(data));
 			return;
 		}
 		if (!__readEnabled) {
 			return;
 		}
-		__onData(copy);
+		if (__reading) {
+			__onData(copyOf(data));
+			return;
+		}
+		// Copied, as a socket copies what it is sent: `data` is the sender's,
+		// for the length of its send only.
+		final input = __input;
+		input.clear();
+		input.writeBytes(data, 0, data.length);
+		input.position = 0;
+		__reading = true;
+		try {
+			__onData(input);
+		} catch (error:Dynamic) {
+			__reading = false;
+			throw error;
+		}
+		__reading = false;
+	}
+
+	private static function copyOf(data:ByteArray):ByteArray {
+		var copy = new ByteArray();
+		copy.writeBytes(data, 0, data.length);
+		copy.position = 0;
+		return copy;
 	}
 
 	/** Hands everything buffered to the session in one read, as a socket would. **/

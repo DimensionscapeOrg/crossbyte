@@ -211,6 +211,31 @@ class RPCHeartbeatTest extends utest.Test {
 		Assert.equals(1, handler.pinged, "the handler's ping was not told");
 	}
 
+	public function testAPingGoesOnEveryBeatWhateverTheClockRoundsTo():Void {
+		// The beat after a ping is an interval after it, which the clock's
+		// rounding put a hair short, 2.8 - 1.8 is 0.99999999999999978, and
+		// the ping waited for the next beat: a ping every other beat, and a
+		// peer's pongs heard twice the interval apart.
+		var link = LinkedConnection.pair();
+		var client = new RPCSession<QuietCommands>(link.client, new QuietCommands());
+		client.heartbeatInterval = 1000;
+		client.heartbeatTimeout = 1000000;
+		client.start();
+		var runtime = CrossByte.current();
+		// A tenth of a second at a time, which no binary fraction is.
+		for (_ in 0...10) {
+			runtime.pump(0.1, 0);
+		}
+		var before = link.client.sent;
+		for (_ in 0...300) {
+			runtime.pump(0.1, 0);
+		}
+		var pings = link.client.sent - before;
+		client.stop();
+
+		Assert.isTrue(pings >= 29, 'pinged $pings times in 30 beats');
+	}
+
 	public function testAHeartbeatLogsNothing():Void {
 		// It logged five lines at INFO for every session on every beat.
 		var logged:Array<String> = [];

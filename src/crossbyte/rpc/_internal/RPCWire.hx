@@ -20,6 +20,38 @@ class RPCWire {
 	**/
 	public static inline final PING_OP:Int = 0x165DF089;
 
+	/**
+		The op of the hello, `RPCOps.opOf("rpc:hello")`: a response frame
+		under request id 0, which answers no call, so a session from before
+		1.0 passes over it, as it does a pong, that each session sends as
+		its connection starts:
+
+		```
+		varuint version        VERSION
+		varuint capabilities   CAPABILITIES
+		i32     calls          the fingerprint of the methods its commands call
+		i32     answers        the fingerprint of the methods its handler answers
+		```
+
+		A later version appends to it and changes none of it, and a reader
+		takes what it knows and passes over the rest, as the frame's length
+		lets it.
+	**/
+	public static inline final HELLO_OP:Int = 0xADD0D102;
+
+	/** The protocol a session of this build speaks, in its hello: 1 for 1.0. **/
+	public static inline final VERSION:Int = 1;
+
+	/**
+		The capabilities a session of this build declares in its hello, a bit
+		each: none, in 1.0. A later release that adds a flag, a kind of frame,
+		a kind of runtime value or compression gives it a bit, sets the bit in
+		its own hello, and uses the feature towards a peer only once that
+		peer's hello has set it; a peer that sent no hello, from before 1.0,
+		has none.
+	**/
+	public static inline final CAPABILITIES:Int = 0;
+
 	/** Where a frame being read ends when nothing has said: nowhere. **/
 	public static inline final NO_FRAME_END:Int = 0x7FFFFFFF;
 

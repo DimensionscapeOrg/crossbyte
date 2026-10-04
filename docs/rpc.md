@@ -17,6 +17,14 @@ RPC runs on every target CrossByte builds for, JavaScript included: the
 portable test suite runs it on Node and in a browser. What carries it is the
 `NetConnection` a session is given, so it goes wherever one does.
 
+A session writes every frame it sends, calls, answers, pings, in one
+buffer of its own, and hands it to its connection's `send`, which copies what
+it keeps before it returns: framing a call allocates nothing. Every transport
+CrossByte ships copies. An `INetConnection` of your own must as well, since the
+buffer holds the session's next frame as soon as `send` returns; built with
+`-D crossbyte_check_events`, a session poisons each frame once it is sent, so
+a connection that kept one sends garbage its tests will see.
+
 Every example on this page is typechecked by `node ci/doc-examples.js`, which
 CI runs, in the order it appears: a later example uses what an earlier one
 declared.
@@ -170,12 +178,17 @@ on the wire:
 | `haxe.io.Bytes` | a length, then the bytes |
 
 An argument that may be absent, `?value:Int`, or `value:Null<Int>`, costs
-one more byte to say whether it is there. A return type is any of these, or
+one more byte to say whether it is there. One that may not cannot be null: a
+call with a null `String` or `Bytes` there throws an `ArgumentError` before
+anything is sent, and a handler answering null where its type is not
+`Null<T>` fails the call as a throw does. A return type is any of these, or
 `Void`. Anything else fails the build, naming the method.
 
 Because nothing on the wire names a field, the two ends must agree on each
 method exactly: its name, its arguments in order, and their types. Build both
-from one contract and they do.
+from one contract and they do. If they do not, a client and a server built
+from two versions of a method, the call finds no method, rather than one end
+reading the other's bytes as its own; see "What names a call", below.
 
 ## Contracts or `@:rpc` methods
 
@@ -262,11 +275,33 @@ session.onHandlerError = (op, method, error) -> {
 A one-way call has nobody to answer, so whatever it throws, `RPCError` or not,
 goes to `onHandlerError`.
 
-What does end a connection is a frame that cannot be read: longer than the
-session's `maxFrameLength` (8 MiB unless set), for a method this side's handler
-does not have, or with arguments that do not decode or that run past the end
-of the frame. Nothing after such a frame could be trusted to line up, so the
-session closes the connection, and every call still waiting on it fails.
+A call this side cannot take is answered or passed over, and the connection
+carries on. A request for a method its handler has not got, from a peer
+built from another version of the contract, or one calling a method added
+since, as in a rolling deploy, is answered `RPCError.UNKNOWN_METHOD_MESSAGE`,
+and one whose arguments do not read, they run past the end of their frame,
+or name more than it holds, `RPCError.UNREADABLE_MESSAGE`; a one-way call of
+either kind is dropped. An answer that does not read fails the call it
+answers, and a frame of a kind the session does not know is passed over. Every
+frame carries its length, so the next is read where it begins. The session's
+`onUnreadableFrame` is told of each, and does nothing unless set; a server can
+count them, and close a peer that sends too many:
+
+```haxe
+// Given session:RPCSession<ChatCommands>.
+var unreadable = 0;
+session.onUnreadableFrame = (op, requestId, reason) -> {
+	trace('passed over a frame for op $op: $reason');
+	if (++unreadable > 100) {
+		session.close();
+	}
+};
+```
+
+What does end a connection is a frame whose length cannot be trusted: shorter
+than any frame, or longer than the session's `maxFrameLength` (8 MiB unless
+set). Nothing after it would line up, so the session closes the connection,
+and every call still waiting on it fails.
 
 A frame too long is caught before it is sent as well: a request over the
 sending session's `maxFrameLength` fails at once with an `ArgumentError` as its
@@ -480,10 +515,36 @@ class LobbyCommands extends PresenceCommands {
 
 Hooks overridden in a shared base handler apply to every handler built on it.
 
-Each call is identified on the wire by a 32-bit hash of its method's name.
-Two names that hash alike would be one call, so a surface that has both,
-however they came to be in it, fails the build and names them. It also
-means renaming a method changes the call: rename it on both ends together.
+### What names a call
+
+Each call is named on the wire by its *op*, a 32-bit hash, FNV-1a, as
+`crossbyte.utils.Hash.fnv1a32` computes it, of its method's signature: the
+method's name, the kinds of its arguments in order and, for a request, of its
+answer.
+
+```
+signature := name "(" [ kind ("," kind)* ] ")" [ ":" kind ]
+kind      := [ "?" ] ( "i32" | "bool" | "f64" | "utf8" | "bytes" )
+```
+
+`i32` is an `Int`, `bool` a `Bool`, `f64` a `Float`, `utf8` a `String` and
+`bytes` a `haxe.io.Bytes`, and `?` one that may be absent, `Null<T>` or an
+optional argument. `join(room:String):Int` is `join(utf8):i32`;
+`say(room:String, text:String):Void` is `say(utf8,utf8)`. A one-way call's
+signature has no answer, and a method that is answered takes one-way calls
+too: it runs, and its answer goes nowhere. `ping` is the hash of its name
+alone.
+
+A kind names a layout, not a type, so renaming an argument, or a typedef,
+changes nothing: `(position:Coordinate)`, with `typedef Coordinate = Float`,
+is `(f64)`. Renaming the method, reordering arguments of different kinds,
+retyping one, adding or removing one, or letting one be absent changes the
+op, and a peer built from the other version answers the call as one for a
+method it does not have. Swapping two arguments of the same kind changes
+nothing on the wire, and so not the op: rename the method too.
+
+Two signatures that hash alike would be one call, so a surface that has both,
+however they came to be in it, fails the build and names them.
 
 ## The runtime lane
 
@@ -510,9 +571,12 @@ session.call(LOG, ["one-way", 2, true]);
 
 Values on this lane carry a tag each, so an array can mix them: `null`,
 `Bool`, `Int`, `Float`, `String` and `haxe.io.Bytes`. A request to a number
-nobody registered is answered with an error, by any session, whether or not
-it has runtime handlers, and a one-way call to one is dropped. `deregister`
-removes a handler.
+nobody registered is answered `RPCError.UNKNOWN_METHOD_MESSAGE`, by any
+session, whether or not it has runtime handlers, and a one-way call to one
+is dropped. A value whose tag the receiving side does not know makes a call it
+cannot read, answered `RPCError.UNREADABLE_MESSAGE`, rather than a connection
+it ends: a later release can add kinds of value. `deregister` removes a
+handler.
 
 A runtime handler fails the way a compiled one does, an `RPCError`'s message
 is the answer, anything else is `INTERNAL_MESSAGE` and goes to
@@ -530,7 +594,7 @@ session.afterRuntimeCall = (op, requestId, error) -> {
 ```
 
 The two lanes share a connection without seeing each other: a runtime number
-and a compiled method's hash never collide.
+and a compiled method's op never collide.
 
 ## Sessions, heartbeats and pending calls
 
@@ -561,9 +625,10 @@ connection.onClose = reason -> trace('connection closed: $reason');
 
 A call waiting on an answer fails as soon as none can come: when the
 connection closes or a transport error stops its reads, when the session is
-stopped, when the heartbeat gives up on the peer, and when the connection is
-ended over a frame that cannot be read. Its `RPCResponse` fails with a message
-saying which, so nothing waits for good on a peer that has gone.
+stopped, when the heartbeat gives up on the peer, when the connection is ended
+over a frame whose length cannot be trusted, and when its answer does not
+read. Its `RPCResponse` fails with a message saying which, so nothing waits for
+good on a peer that has gone.
 
 A call that cannot go at all fails as it is made: on a connection that has
 ended, with the `Reason` it ended with as its `cause`; when the transport's
@@ -578,6 +643,37 @@ can tell a peer that has gone from a peer that said no. Over a WebSocket the
 `Reason` is `Code` with the code and reason the peer closed with, 1001 for
 a server going away, 1008 for one refusing by policy, and `Closed` when the
 connection ended with no code known.
+
+### Hello
+
+Every session says hello as its connection starts, at once on a connection
+that is up already, as an accepted one is, or as one becomes ready, with the
+protocol version it speaks (`RPCSession.PROTOCOL_VERSION`, 1), the
+capabilities it has (none are defined in 1.0), and a fingerprint of the
+methods its commands call and one of those its handler answers. The hello goes
+out ahead of the session's calls and nothing waits for it, so it costs no
+round trip. The peer's sets `peerVersion`, `peerCapabilities`,
+`peerCallsFingerprint` and `peerAnswersFingerprint`, and `onHello` is called;
+they go back to 0 as the connection ends, and a session made by `dial` hears
+a hello from each connection. A peer from before 1.0 says no hello, and its
+version stays 0. The hello is a response frame under request id 0, as a pong
+is, which a session from before 1.0 passes over.
+
+Two sides built from the same methods, with the same signatures, have the same
+fingerprints. They are for a log line, and never refuse anything:
+
+```haxe
+// Given session:RPCSession<ChatCommands>.
+session.onHello = () -> {
+	if (session.peerAnswersFingerprint != session.callsFingerprint) {
+		trace('the server was built from other methods than these commands call');
+	}
+};
+```
+
+A feature added after 1.0, a new kind of frame or of value, compression,
+is used towards a peer only once its hello has declared it, so that a 1.0
+session and a later one keep understanding each other.
 
 ## A client that comes back
 
@@ -630,14 +726,21 @@ joining.catchError(message -> {
 ```
 
 `timeout(0)` leaves a call no deadline. A call without one arms nothing and
-costs nothing for it; one with a deadline holds a timer until it is answered.
+costs nothing for it. The calls under `callTimeout` fall due in the order they
+were made, so they wait in one queue a session, with one timer for all of them,
+and a call answered leaves it at once: a deadline costs a call no allocation,
+and no timer of its own, of which a runtime holds at most 524,288 at once. A
+call given its own with `timeout` holds a timer of its own until it is
+answered, as does one made after `callTimeout` was lowered, which would fall due
+before the calls ahead of it.
 
 A handler can be held to one as well. `handlerTimeout` is how long a call its
 handler answers with a `Future` may wait for that future: past it the caller is
 answered `RPCError.TIMEOUT_MESSAGE`, `onHandlerError` and `afterCall` are told
 with an `RPCTimeoutError`, and the call gives up its place among the
 `maxCallsWaiting`. Without it, a future that never completes holds that place
-for as long as the connection lasts.
+for as long as the connection lasts. These deadlines wait in a queue of their
+own, as `callTimeout`'s do.
 
 ```haxe
 // Given session:RPCSession<ChatCommands>.

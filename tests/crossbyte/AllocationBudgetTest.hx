@@ -88,12 +88,13 @@ class AllocationBudgetTest extends utest.Test {
 	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [1112, 1112, 1535], [1456, 1456, 1984]);
 	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 336], [8, 8, 488]);
 	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [344, 344, 824], [496, 496, 1096]);
-	// LinkedConnection, the in-memory pair these run over, copies each
-	// message it carries into a ByteArray of its own, where a socket's read
-	// would not: about a third of a call's figure natively, and half of a
-	// one-way call's.
-	private static final RPC_CALL = new Budget("an RPC call and its answer", "call", [920, 920, 592], [1216, 1216, 808]);
-	private static final RPC_ONE_WAY = new Budget("a one-way RPC call", "call", [392, 392, 264], [560, 560, 400]);
+	// Over LinkedConnection, the in-memory pair, which copies each message
+	// into a buffer it keeps, as a socket's read does. A call's figure is its
+	// RPCResponse and what waiting on it takes; a frame costs nothing.
+	private static final RPC_CALL = new Budget("an RPC call and its answer", "call", [200, 200, 224], [320, 320, 344]);
+	private static final RPC_ONE_WAY = new Budget("a one-way RPC call", "call", [0, 0, 24], [8, 8, 96]);
+	// The array and the string the handler is given are most of it.
+	private static final RPC_RUNTIME_ONE_WAY = new Budget("a one-way runtime-lane RPC call of a 12-character string", "call", [152, 144, 159], [256, 248, 264]);
 
 	/**
 		Operations run before measuring, so what the first ones build is not
@@ -565,6 +566,39 @@ class AllocationBudgetTest extends utest.Test {
 		Assert.isTrue(answered > 0);
 	}
 
+	/**
+		A deadline from the session's `callTimeout` costs a call nothing: the
+		calls under it share one queue and one timer. Each armed a timer of
+		its own, 112 bytes natively and 95 on the jvm, which a budget a
+		quarter over a call's figure would not have caught coming back.
+	**/
+	public function testAnRpcCallsDeadlineAllocatesNothing():Void {
+		var without:AllocationReading = __rpcCallUnder(0);
+		var under:AllocationReading = __rpcCallUnder(30000);
+		__report("an RPC call and its answer, without a deadline", without);
+		__report("an RPC call and its answer, under callTimeout", under);
+		Assert.isTrue(under.perOperation - without.perOperation <= 16,
+			"a call under callTimeout allocated " + under + ", where one without allocated " + without);
+	}
+
+	private static function __rpcCallUnder(callTimeout:Int):AllocationReading {
+		var link = LinkedConnection.pair();
+		var commands = new BudgetCommands();
+		var clientSession = new RPCSession<BudgetCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, new BudgetHandler());
+		clientSession.callTimeout = callTimeout;
+		var answered:Int = 0;
+		var op = () -> {
+			var response = commands.add(answered, 1);
+			if (!response.completed) {
+				throw "the call was not answered";
+			}
+			answered = response.result;
+		};
+		__warm(op, WARM_CHEAP);
+		return AllocationMeter.measure(op, 20000);
+	}
+
 	public function testAOneWayRpcCall():Void {
 		var link = LinkedConnection.pair();
 		var commands = new BudgetCommands();
@@ -575,6 +609,24 @@ class AllocationBudgetTest extends utest.Test {
 		__warm(op, WARM_CHEAP);
 		__within(RPC_ONE_WAY, AllocationMeter.measure(op, 20000));
 		Assert.isTrue(handler.moves > 0);
+	}
+
+	public function testAOneWayRuntimeRpcCall():Void {
+		// The arguments' array is the caller's, made once: what is counted is
+		// the lane's, the array and the string the handler is given among it.
+		var link = LinkedConnection.pair();
+		var serverSession = new RPCSession(link.server);
+		var clientSession = new RPCSession(link.client);
+		var heard:Array<Int> = [0];
+		serverSession.register(7, args -> {
+			heard[0]++;
+			return null;
+		});
+		var args:Array<Dynamic> = ["hello, world"];
+		var op = () -> clientSession.call(7, args);
+		__warm(op, WARM_CHEAP);
+		__within(RPC_RUNTIME_ONE_WAY, AllocationMeter.measure(op, 20000));
+		Assert.isTrue(heard[0] > 0);
 	}
 
 	// ---------------------------------------------------------------------

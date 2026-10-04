@@ -29,3 +29,7 @@ haxe cpp.hxml
 The sample uses an in-memory loopback `INetConnection` so it focuses on the RPC
 surface itself. The same command/handler pattern can be bound to real
 `NetConnection` transports in application code.
+
+A connection of your own copies what its `send` is given before it keeps it,
+as the loopback does: a session writes every frame in one buffer, which is
+valid only for the length of the send.

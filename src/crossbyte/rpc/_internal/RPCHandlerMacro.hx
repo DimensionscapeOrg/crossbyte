@@ -2,7 +2,7 @@ package crossbyte.rpc._internal;
 
 #if macro
 import crossbyte.rpc._internal.RPCContractMacroTools;
-import haxe.macro.ComplexTypeTools;
+import crossbyte.rpc._internal.RPCKinds;
 import haxe.macro.Context;
 import haxe.macro.Expr;
 import haxe.macro.Type;
@@ -21,50 +21,8 @@ class RPCHandlerMacro {
 	// that is really there.
 	static inline final DISPATCHED_META:String = ":rpcDispatched";
 
-	// Each reads from `inp`, in a frame that ends at `end`.
-	static function initReaders():Map<String, (Expr, Expr) -> Expr> {
-		var m = new Map<String, (Expr, Expr) -> Expr>();
-		m.set("Int", (inp, end) -> macro $inp.readInt());
-		m.set("Bool", (inp, end) -> macro($inp.readByte() != 0));
-		m.set("Float", (inp, end) -> macro $inp.readDouble());
-		m.set("String", (inp, end) -> macro $inp.readVarUTF());
-		m.set("haxe.io.Bytes", (inp, end) -> macro {
-			var __len:Int = $inp.readVarUInt();
-			crossbyte.rpc._internal.RPCWire.requireRoom($inp, $end, __len);
-			var __bytes = haxe.io.Bytes.alloc(__len);
-			$inp.readBytes(__bytes, 0, __len);
-			__bytes;
-		});
-		return m;
-	}
-
-	static function initWriters():Map<String, (Expr, Expr) -> Expr> {
-		var m = new Map<String, (Expr, Expr) -> Expr>();
-		m.set("Int", function(out, v) return macro {
-			$out.reserve(4);
-			$out.writeInt($v);
-		});
-		m.set("Bool", function(out, v) return macro {
-			$out.reserve(1);
-			$out.writeByte($v ? 1 : 0);
-		});
-		m.set("Float", function(out, v) return macro {
-			$out.reserve(8);
-			$out.writeDouble($v);
-		});
-		m.set("String", function(out, v) return macro {
-			$out.writeVarUTF($v);
-		});
-		m.set("haxe.io.Bytes", function(out, v) return macro {
-			$out.writeVarUInt($v.length);
-			$out.reserve($v.length);
-			$out.writeBytes($v, 0, $v.length);
-		});
-		return m;
-	}
-
-	static final TYPE_READERS = initReaders();
-	static final TYPE_WRITERS = initWriters();
+	/** A frame's length, flags and op (`RPCWire.MIN_PAYLOAD_LEN`), and a varint request id at its longest. **/
+	static inline final FRAME_HEAD:Int = 4 + 5 + 5;
 
 	public static function build():Array<Field> {
 		var fields = Context.getBuildFields();
@@ -192,7 +150,7 @@ class RPCHandlerMacro {
 								pos: f.pos,
 								args: fn.args,
 								ret: fn.ret != null ? fn.ret : macro :Void,
-								op: RPCOps.opOf(f.name)
+								op: RPCContractMacroTools.opOfMethod(f.name, fn.args, answerOf(fn.ret, f.pos), f.pos)
 							});
 						default:
 							Context.error("Field " + f.name + " is @:rpc but not a function", f.pos);
@@ -230,11 +188,22 @@ class RPCHandlerMacro {
 			}
 		}
 
-		var n = methods.length;
-		if (n == 0) {
+		if (methods.length == 0) {
 			return fields;
 		}
-		RPCContractMacroTools.requireDistinctOps([for (method in methods) {name: method.name, pos: method.pos}], true);
+		// The ops dispatch answers, each a method's: its own, and for a method
+		// with an answer also the op of a one-way call to it, which has none
+		// in its signature, run as ever, its answer sent nowhere.
+		final entries = new Array<DispatchEntry>();
+		for (method in methods) {
+			entries.push({op: method.op, method: method});
+			final oneWay:Int = method.name == "ping" ? method.op : RPCContractMacroTools.opOfMethod(method.name, method.args, null, method.pos);
+			if (oneWay != method.op) {
+				entries.push({op: oneWay, method: method});
+			}
+		}
+		final n:Int = entries.length;
+		RPCContractMacroTools.requireDistinctOps([for (entry in entries) {name: entry.method.name, op: entry.op, pos: entry.method.pos}], true);
 
 		final tag = classTag();
 		// Hooks cost a handler nothing unless it, or a handler it extends,
@@ -247,7 +216,8 @@ class RPCHandlerMacro {
 		}
 
 		var newFields:Array<Field> = [];
-		final usePerfectHash = (n > DIRECT_SWITCH_MAX_METHODS);
+		// By how many methods, as it was before a method could have two ops.
+		final usePerfectHash = (methods.length > DIRECT_SWITCH_MAX_METHODS);
 
 		if (usePerfectHash) {
 			var mVal = n;
@@ -278,7 +248,7 @@ class RPCHandlerMacro {
 
 			var buckets = [for (_ in 0...mVal) new Array<Int>()];
 			for (i in 0...n) {
-				buckets[h1(methods[i].op)].push(i);
+				buckets[h1(entries[i].op)].push(i);
 			}
 			buckets.sort((a, b) -> b.length - a.length);
 
@@ -305,14 +275,14 @@ class RPCHandlerMacro {
 					continue;
 				}
 
-				var b = h1(methods[bucket[0]].op);
+				var b = h1(entries[bucket[0]].op);
 				var d = 0;
 				while (true) {
 					var ok = true;
 					var slots = new Array<Int>();
 
 					for (id in bucket) {
-						var slot = h2(methods[id].op, d);
+						var slot = h2(entries[id].op, d);
 						if (used[slot] || slots.indexOf(slot) != -1) {
 							ok = false;
 							break;
@@ -327,7 +297,6 @@ class RPCHandlerMacro {
 							var slot = slots[i];
 							used[slot] = true;
 							T[slot] = id;
-							methods[id].idx = id;
 						}
 						break;
 					}
@@ -341,7 +310,7 @@ class RPCHandlerMacro {
 
 			newFields.push(makeIntArray("RPC_G", G));
 			newFields.push(makeIntArray("RPC_T", T));
-			newFields.push(makeIntArray("RPC_OPS", methods.map(method -> method.op)));
+			newFields.push(makeIntArray("RPC_OPS", entries.map(entry -> entry.op)));
 
 			newFields.push({
 				name: "RPC_M",
@@ -358,11 +327,14 @@ class RPCHandlerMacro {
 			});
 		}
 
-		for (i in 0...n) {
-			newFields.push(makeDecoder(methods[i], tag, callsBefore, callsAfter));
+		for (method in methods) {
+			newFields.push(makeDecoder(method, tag, callsBefore, callsAfter));
 		}
 
-		newFields.push(makeDispatcher(methods, usePerfectHash, tag, inheritedDispatch != null));
+		newFields.push(makeDispatcher(methods, entries, usePerfectHash, tag, inheritedDispatch != null));
+		// What a hello says this handler answers: each method by its own op,
+		// as a commands class calls it, `ping` aside.
+		newFields.push(RPCCommandMacro.fingerprintField([for (method in methods) if (method.name != "ping") method.op]));
 
 		return fields.concat(newFields);
 	}
@@ -384,7 +356,9 @@ class RPCHandlerMacro {
 	static function makeDecoder(m:MethodInfo, tag:String, callsBefore:Bool, callsAfter:Bool):Field {
 		var stmts:Array<Expr> = [];
 		var paramExprs:Array<Expr> = [];
+		final reads:Array<Expr> = [];
 
+		// Each argument a local, read into below.
 		for (i in 0...m.args.length) {
 			var a = m.args[i];
 			if (a.type == null) {
@@ -392,19 +366,22 @@ class RPCHandlerMacro {
 			}
 
 			var local = "__a" + i;
-			var read = readerForArg(a, m.pos);
 			stmts.push({
 				expr: EVars([
 					{
 						name: local,
 						type: localTypeForArg(a),
-						expr: read
+						expr: zeroForArg(a, m.pos)
 					}
 				]),
 				pos: m.pos
 			});
+			reads.push(macro $i{local} = $e{readerForArg(a, m.pos)});
 			paramExprs.push({expr: EConst(CIdent(local)), pos: m.pos});
 		}
+		// Read whole and within the frame, or the frame is not sound: what an
+		// argument read past its end came from the frame after it.
+		reads.push(macro crossbyte.rpc._internal.RPCWire.requireWithin(input, this.this_frameEnd));
 
 		var callTarget:Expr = {expr: EConst(CIdent(m.name)), pos: m.pos};
 		var callExpr:Expr = {expr: ECall(callTarget, paramExprs), pos: m.pos};
@@ -412,17 +389,26 @@ class RPCHandlerMacro {
 		final op:Expr = macro $v{m.op};
 		final name:Expr = macro $v{m.name};
 
+		// Arguments that do not read are a call this side cannot take, not a
+		// connection that has to end: the frame carries its length, so the next
+		// begins where it says. A request is answered so. They ended the
+		// connection, and every call still waiting on it failed.
+		stmts.push(macro var __read:Bool = false);
+		stmts.push(macro try {
+			$b{reads};
+			__read = true;
+		} catch (__error:Dynamic) {
+			this.__rpc_unreadable($op, requestId, __error);
+		});
+		final run:Array<Expr> = [];
+
 		final later:Null<ComplexType> = futurePayload(m.ret, m.pos);
 		if (later != null) {
-			stmts.push(macro crossbyte.rpc._internal.RPCWire.requireWithin(input, this.this_frameEnd));
-			stmts.push(laterCall(m, later, callExpr, callsAfter));
+			run.push(laterCall(m, later, callExpr, callsAfter));
 		} else if (isVoid(m.ret)) {
 			callStmts.push(callExpr);
 		} else {
-			var key = typeKey(m.ret, m.pos);
-			if (!TYPE_WRITERS.exists(key)) {
-				Context.error("Unsupported RPC response return type " + key + " for '" + m.name + "'", m.pos);
-			}
+			requireAnswerKind(m.ret, m);
 			callStmts.push({
 				expr: EVars([{name: "__result", type: m.ret, expr: callExpr}]),
 				pos: m.pos
@@ -436,32 +422,29 @@ class RPCHandlerMacro {
 		}
 
 		if (later == null) {
-			// Read whole and within the frame, or the frame is not sound: what an
-			// argument read past its end came from the frame after it.
-			stmts.push(macro crossbyte.rpc._internal.RPCWire.requireWithin(input, this.this_frameEnd));
-
 			// The arguments are read above, outside this: a frame that does not
-			// decode is the peer's fault, and ends the connection. What the method
-			// throws once they have, or its answer failing to encode, is this
-			// side's, and becomes an error answer instead; see `__rpc_fail`.
+			// decode is the peer's, and is answered so. What the method throws
+			// once they have, or its answer failing to encode, is this side's,
+			// and becomes an error answer instead; see `__rpc_fail`.
 			var guarded:Expr = {expr: EBlock(callStmts), pos: m.pos};
 			if (callsAfter) {
-				stmts.push(macro var __failure:Null<haxe.Exception> = null);
-				stmts.push(macro try $e{guarded} catch (__error:haxe.Exception) {
+				run.push(macro var __failure:Null<haxe.Exception> = null);
+				run.push(macro try $e{guarded} catch (__error:haxe.Exception) {
 					__failure = __error;
 					this.__rpc_fail($op, $name, requestId, __error);
 				});
-				stmts.push(macro try {
+				run.push(macro try {
 					this.afterCall($name, requestId, __failure);
 				} catch (__error:haxe.Exception) {
 					this.__rpc_report($op, $name, __error);
 				});
 			} else {
-				stmts.push(macro try $e{guarded} catch (__error:haxe.Exception) {
+				run.push(macro try $e{guarded} catch (__error:haxe.Exception) {
 					this.__rpc_fail($op, $name, requestId, __error);
 				});
 			}
 		}
+		stmts.push(macro if (__read) $b{run});
 
 		var body:Expr = {expr: EBlock(stmts), pos: m.pos};
 
@@ -520,10 +503,7 @@ class RPCHandlerMacro {
 		before its `result`, and the answer sent would be the stale one.
 	**/
 	static function laterCall(m:MethodInfo, payload:ComplexType, callExpr:Expr, callsAfter:Bool):Expr {
-		final key = typeKey(payload, m.pos);
-		if (!TYPE_WRITERS.exists(key)) {
-			Context.error("Unsupported RPC response return type " + key + " for '" + m.name + "'", m.pos);
-		}
+		requireAnswerKind(payload, m);
 		final op:Expr = macro $v{m.op};
 		final name:Expr = macro $v{m.name};
 		final futureType:ComplexType = TPath({pack: ["crossbyte"], name: "Future", params: [TPType(payload)]});
@@ -570,6 +550,18 @@ class RPCHandlerMacro {
 	}
 
 	/**
+		What a method returning `ret` is answered with, for its signature:
+		`null` for `Void`, which is one-way, and `T` for a future of `T`.
+	**/
+	static function answerOf(ret:Null<ComplexType>, pos:Position):Null<ComplexType> {
+		if (ret == null || isVoid(ret)) {
+			return null;
+		}
+		final later:Null<ComplexType> = futurePayload(ret, pos);
+		return later != null ? later : ret;
+	}
+
+	/**
 		`T` when `ct` is `crossbyte.Future<T>`, or a future of its own such as
 		`RPCResponse<T>`: a method returning one answers later, with a `T`.
 		Resolving the type path types no method.
@@ -601,7 +593,7 @@ class RPCHandlerMacro {
 		return false;
 	}
 
-	static function makeDispatcher(methods:Array<MethodInfo>, usePerfectHash:Bool, tag:String, overridesInherited:Bool):Field {
+	static function makeDispatcher(methods:Array<MethodInfo>, entries:Array<DispatchEntry>, usePerfectHash:Bool, tag:String, overridesInherited:Bool):Field {
 		// Never inline: it is reached through RPCHandler's abstract dispatch()
 		// in any case, and a subclass must be able to override it.
 		final access:Array<Access> = overridesInherited ? [APublic, AOverride] : [APublic];
@@ -618,7 +610,7 @@ class RPCHandlerMacro {
 			for (method in methods) {
 				final fname = decoderName(tag, method.name);
 				cases.push({
-					values: [macro $v{method.op}],
+					values: [for (entry in entries) if (entry.method == method) macro $v{entry.op}],
 					expr: macro {
 						this.$fname(input, requestId);
 					}
@@ -637,7 +629,8 @@ class RPCHandlerMacro {
 						{name: "requestId", type: macro :Int}
 					],
 					expr: {
-						expr: ESwitch(macro op, cases, macro throw "Unknown RPC op"),
+						// A method this handler has not got: answered so, not thrown.
+						expr: ESwitch(macro op, cases, macro this.__rpc_unknown(op, requestId)),
 						pos: Context.currentPos()
 					}
 				}),
@@ -646,8 +639,8 @@ class RPCHandlerMacro {
 		}
 
 		var cases = new Array<Case>();
-		for (i in 0...methods.length) {
-			var fname = decoderName(tag, methods[i].name);
+		for (i in 0...entries.length) {
+			var fname = decoderName(tag, entries[i].method.name);
 			cases.push({
 				values: [macro $v{i}],
 				expr: macro {
@@ -656,7 +649,7 @@ class RPCHandlerMacro {
 				}
 			});
 		}
-		var defaultExpr:Expr = macro throw "Unknown RPC index";
+		var defaultExpr:Expr = macro this.__rpc_unknown(op, requestId);
 
 		var switchExpr:Expr = {
 			expr: ESwitch(macro id, cases, defaultExpr),
@@ -690,7 +683,8 @@ class RPCHandlerMacro {
 			})(op, d);
 			var id = RPC_T[idx];
 			if (id < 0 || RPC_OPS[id] != op) {
-				throw "Unknown RPC op";
+				this.__rpc_unknown(op, requestId);
+				return;
 			}
 
 			$e{switchExpr};
@@ -768,7 +762,7 @@ class RPCHandlerMacro {
 									} : FunctionArg)
 							],
 							ret: fn.ret != null ? fn.ret : macro :Void,
-							op: RPCOps.opOf(name)
+							op: RPCContractMacroTools.opOfMethod(name, fn.args, answerOf(fn.ret, param.pos), param.pos)
 						});
 					default:
 				}
@@ -861,16 +855,32 @@ class RPCHandlerMacro {
 
 	static function readerForArg(a:FunctionArg, pos:Position):Expr {
 		var ct = a.type;
-		var isOpt = a.opt || isNullWrapped(ct);
+		// Through a typedef too, as the commands side decides it.
+		var isOpt = a.opt || RPCContractMacroTools.isNullable(ct, pos);
 		var base = unwrapNull(ct);
-		var key = typeKey(base, pos);
-		var reader = TYPE_READERS.get(key);
-		if (reader == null) {
-			Context.error("Unsupported RPC arg type " + key + " for '" + a.name + "'", pos);
+		var kind = RPCKinds.of(base, pos);
+		if (kind == null) {
+			Context.error("Unsupported RPC arg type " + RPCKinds.nameOf(base, pos) + " for '" + a.name + "'", pos);
 		}
+		return RPCKinds.read(kind, isOpt, macro input, macro this.this_frameEnd);
+	}
 
-		var read = reader(macro input, macro this.this_frameEnd);
-		return isOpt ? macro(input.readByte() != 0 ? $read : null) : read;
+	/** What an argument's local holds until it has been read. **/
+	static function zeroForArg(a:FunctionArg, pos:Position):Expr {
+		final kind = RPCKinds.of(unwrapNull(a.type), pos);
+		if (kind == null) {
+			// Refused, naming the method, where its reader is made.
+			return macro null;
+		}
+		return RPCKinds.zero(kind, a.opt || RPCContractMacroTools.isNullable(a.type, pos));
+	}
+
+	/** Fails the build unless an answer of type `ret` can be sent. **/
+	static function requireAnswerKind(ret:ComplexType, m:MethodInfo):Void {
+		final base = unwrapNull(ret);
+		if (RPCKinds.of(base, m.pos) == null) {
+			Context.error("Unsupported RPC response return type " + RPCKinds.nameOf(base, m.pos) + " for '" + m.name + "'", m.pos);
+		}
 	}
 
 	static function localTypeForArg(a:FunctionArg):ComplexType {
@@ -883,46 +893,27 @@ class RPCHandlerMacro {
 		later.
 	**/
 	static function sendResponseExpr(op:Int, requestId:Expr, value:Expr, ret:ComplexType, pos:Position, ?session:Expr):Expr {
-		var key = typeKey(ret, pos);
-		var writer = TYPE_WRITERS.get(key);
-		var writeValue = writer(macro framed, value);
 		// A `Null<T>` answer says first whether it is there, as its caller
 		// reads it. It was written bare: the caller read the answer's first
 		// byte as the presence byte, misread the rest, and ended the
 		// connection, and a null String could not be written at all.
-		if (RPCContractMacroTools.isNullable(ret, pos)) {
-			final present:Expr = writeValue;
-			writeValue = macro {
-				framed.reserve(1);
-				if ($value == null) {
-					framed.writeByte(0);
-				} else {
-					framed.writeByte(1);
-					$present;
-				}
-			};
-		}
-		final send:Expr = session == null ? macro this.__rpc_answer(framed) : macro this.__rpc_answerOn($session, framed);
-		// Made the size the answer will be, as a call's frame is (see
-		// RPCCommandMacro): the length, flags and op, a varint id, a presence
-		// byte, and the value.
-		final sized:Expr = switch (typeKey(unwrapNull(ret), pos)) {
-			case "Int": macro 4;
-			case "Bool": macro 1;
-			case "Float": macro 8;
-			case "String": macro($value == null ? 0 : $value.length * 3) + 5;
-			default: macro($value == null ? 0 : $value.length) + 5;
-		}
+		final optional:Bool = RPCContractMacroTools.isNullable(ret, pos);
+		final kind = RPCKinds.of(unwrapNull(ret), pos);
+		// Begun with room for the most the answer can hold, as a call's frame
+		// is (see RPCCommandMacro): the length, flags and op, a varint id, and
+		// the value, sized first, which is where one that cannot be sent is
+		// refused, as the method failing.
+		final size:Int = RPCKinds.size(kind, optional);
+		final room:Expr = size >= 0 ? macro $v{FRAME_HEAD + size} : macro $v{FRAME_HEAD} + $e{RPCKinds.room(kind, optional, value)};
+		final writeValue:Expr = RPCKinds.write(kind, optional, macro framed, value);
+		// On the session whose call is running, or on the one a call answered
+		// later came from.
+		final on:Expr = session == null ? macro this.this_session : session;
 		return macro {
-			var framed:crossbyte.io.ByteArrayOutput = new crossbyte.io.ByteArrayOutput(4 + 5 + 5 + 1 + $sized);
-			framed.writeInt(0);
-			framed.writeByte(crossbyte.rpc._internal.RPCWire.FLAG_RESPONSE);
-			framed.writeInt($v{op});
-			framed.writeVarUInt($requestId);
+			var __on:crossbyte.rpc.RPCSession<Dynamic, Dynamic> = $on;
+			var framed:crossbyte.rpc._internal.RPCFrame = this.__rpc_frame(__on, $room, $v{op}, $requestId);
 			$writeValue;
-			framed.writeIntAt(0, framed.bytesWritten - 4);
-			framed.flush();
-			$send;
+			this.__rpc_answerOn(__on, framed.finish());
 		};
 	}
 
@@ -948,33 +939,6 @@ class RPCHandlerMacro {
 		return switch (Context.follow(Context.resolveType(ct, Context.currentPos()))) {
 			case TAbstract(typeRef, _) if (typeRef.get().name == "Void"): true;
 			case _: false;
-		}
-	}
-
-	static function typeKey(ct:ComplexType, pos:Position):String {
-		try {
-			return resolvedTypeKey(Context.resolveType(ct, pos));
-		} catch (_:Dynamic) {
-			return switch (ct) {
-				case TPath(tp):
-					var pack:String = tp.pack.length > 0 ? tp.pack.join(".") + "." : "";
-					pack + tp.name;
-				case _:
-					ComplexTypeTools.toString(ct);
-			}
-		}
-	}
-
-	static function resolvedTypeKey(type:Type):String {
-		return switch (Context.follow(type)) {
-			case TAbstract(t, _):
-				pathKey(t.get().pack, t.get().name);
-			case TInst(t, _):
-				pathKey(t.get().pack, t.get().name);
-			case TType(t, _):
-				pathKey(t.get().pack, t.get().name);
-			case _:
-				Std.string(type);
 		}
 	}
 
@@ -1044,6 +1008,12 @@ class RPCHandlerMacro {
 			pos: pos
 		});
 	}
+}
+
+/** An op a generated dispatch answers, and the method it calls. **/
+private typedef DispatchEntry = {
+	op:Int,
+	method:MethodInfo
 }
 
 private typedef MethodInfo = {

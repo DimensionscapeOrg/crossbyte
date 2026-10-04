@@ -51,7 +51,22 @@ interface INetConnection {
 	public var onReady(get, set):Void->Void;
 	/** Exposes the concrete transport wrapper for transport-specific escapes. */
 	public function expose():Transport;
-	/** Sends a payload over the active transport. */
+	/**
+		Sends `data`, all of its `length` bytes, over the active transport.
+
+		`data` is valid only during the call: the caller may write over it, or
+		reuse its storage, as soon as this returns. `RPCSession` does, writing
+		every frame it sends in one buffer. A transport that keeps bytes to
+		send later, queued behind a slow peer, gathered for the end of the
+		runtime's pass, held for a retransmission, copies them before it
+		returns, as every transport CrossByte ships does; keeping `data`
+		itself would send whatever was written over it next.
+
+		`-D crossbyte_check_events` poisons each RPC frame as soon as this
+		returns, so a transport that kept one sends garbage that a test sees;
+		`-D crossbyte_fresh_events` frames each in a buffer of its own, as
+		before 1.0, for a transport that cannot yet copy.
+	**/
 	public function send(data:ByteArray):Void;
 	/**
 		Closes the connection; `onClose` is told `Reason.Closed` if it had
