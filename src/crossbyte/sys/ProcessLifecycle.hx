@@ -1,6 +1,7 @@
 package crossbyte.sys;
 
 import crossbyte.core.CrossByte;
+import crossbyte.errors.ArgumentError;
 import crossbyte.events.TickEvent;
 import crossbyte.utils.LogLevel;
 import crossbyte.utils.Logger;
@@ -290,12 +291,20 @@ final class ProcessLifecycle {
 	 * @param serviceName The name the service is registered under. Ignored by
 	 *        Windows for a single-service process, but it is what appears in
 	 *        the service's own error reporting, so pass the real one.
-	 * @param connectTimeoutMs How long to wait for the handshake to settle.
-	 *        Reaching it means neither outcome was reported, which should not
-	 *        happen; it is a bound, not a delay, and both outcomes normally
-	 *        arrive in a few milliseconds.
+	 * @param connectTimeoutMs How long to wait for the handshake to settle,
+	 *        5000 by default, or 0 for no limit. Reaching it means neither
+	 *        outcome was reported, which should not happen; it is a bound,
+	 *        not a delay, and both outcomes normally arrive in a few
+	 *        milliseconds. It was read as "do not wait" at 0, so a real
+	 *        service could be reported as a console run.
+	 * @throws ArgumentError For a negative `connectTimeoutMs`, on every
+	 *         target.
 	 */
 	public static function installServiceControl(serviceName:String, connectTimeoutMs:Int = 5000):Bool {
+		if (connectTimeoutMs < 0) {
+			throw new ArgumentError('installServiceControl connectTimeoutMs must not be negative ($connectTimeoutMs); 0 is no limit.');
+		}
+
 		installDefaultHandlers();
 
 		#if cpp
@@ -304,7 +313,7 @@ final class ProcessLifecycle {
 		// Polled here rather than waited on in native code: a Haxe thread
 		// parked inside a Win32 wait is a thread hxcpp's collector cannot see
 		// stop, which would block collection for every other thread.
-		var deadline:Float = haxe.Timer.stamp() + connectTimeoutMs / 1000;
+		var deadline:Float = connectTimeoutMs == 0 ? Math.POSITIVE_INFINITY : haxe.Timer.stamp() + connectTimeoutMs / 1000;
 		while (NativeServiceControl.attachState() == NativeServiceControl.PENDING && haxe.Timer.stamp() < deadline) {
 			crossbyte._internal.system.Sleep.sleep(0.002);
 		}
@@ -326,9 +335,19 @@ final class ProcessLifecycle {
 	 * `waitHintMs` before treating the process as hung. Call it repeatedly
 	 * from a drain that outlasts the default 30-second hint.
 	 *
+	 * The SCM takes no hint without a limit, so 0 is the default hint, 30
+	 * seconds, rather than none: the one place in CrossByte where 0 is not
+	 * "no limit", because the system has no such thing to ask for.
+	 *
 	 * A no-op when not running as a service.
+	 *
+	 * @throws ArgumentError For a negative `waitHintMs`, on every target.
 	 */
 	public static function reportServiceStopPending(waitHintMs:Int = 30000):Void {
+		if (waitHintMs < 0) {
+			throw new ArgumentError('reportServiceStopPending waitHintMs must not be negative ($waitHintMs).');
+		}
+
 		#if cpp
 		NativeServiceControl.reportStopPending(waitHintMs);
 		#end

@@ -430,6 +430,60 @@ class ConnectionPoolTest extends utest.Test {
 		Assert.raises(() -> new ConnectionPool({factory: null}), ArgumentError);
 		Assert.raises(() -> new ConnectionPool({factory: () -> new FakeConnection(0), maxSize: 0}), ArgumentError);
 		Assert.raises(() -> new ConnectionPool({factory: () -> new FakeConnection(0), acquireTimeout: -1}), ArgumentError);
+		// NaN was taken, and a saturated pool then waited for ever.
+		Assert.raises(() -> new ConnectionPool({factory: () -> new FakeConnection(0), acquireTimeout: Math.NaN}), ArgumentError);
+	}
+
+	/**
+		A timeout given to one call is checked as the default is. NaN waited
+		for ever once the pool was saturated, and a negative one failed at
+		once; here the pool has room, so the call returned a connection.
+	**/
+	public function testANaNOrNegativeTimeoutForOneCallIsRefused():Void {
+		var pool = makePool(3);
+
+		Assert.raises(() -> pool.acquire(Math.NaN), ArgumentError);
+		Assert.raises(() -> pool.acquire(-1), ArgumentError);
+		Assert.raises(() -> pool.withConnection(connection -> connection.id, Math.NaN), ArgumentError);
+		Assert.equals(0, pool.inUse(), "a refused call took a connection");
+		pool.close();
+	}
+
+	/**
+		An acquire timeout of 0 is none: a caller waits until a connection
+		comes free, as 0 means everywhere in CrossByte. It failed at once.
+	**/
+	public function testAnAcquireTimeoutOfZeroWaitsUntilAConnectionComesFree():Void {
+		#if target.threaded
+		var pool = makePool(1, null, 0);
+		var held = pool.acquire();
+
+		sys.thread.Thread.create(function():Void {
+			crossbyte.sys.System.sleep(0.3);
+			pool.release(held);
+		});
+
+		var started:Float = haxe.Timer.stamp();
+		var next = pool.acquire();
+		Assert.isTrue(haxe.Timer.stamp() - started >= 0.2, "the acquire did not wait for the release");
+		Assert.equals(held.id, next.id);
+
+		// And for one call, over a default that would have given up.
+		var bounded = makePool(1, null, 0.05);
+		var only = bounded.acquire();
+
+		sys.thread.Thread.create(function():Void {
+			crossbyte.sys.System.sleep(0.3);
+			bounded.release(only);
+		});
+
+		Assert.equals(only.id, bounded.acquire(0).id);
+		pool.release(next);
+		pool.close();
+		bounded.close();
+		#else
+		Assert.pass();
+		#end
 	}
 
 	public function testNullFromFactoryIsRejected():Void {

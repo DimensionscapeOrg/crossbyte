@@ -80,12 +80,16 @@ CrossByte currently includes:
   - secure random bytes natively, on the jvm, on Node, in a browser and on PHP; not on the interpreter, neko or HashLink
 - workers, task pools, and `NativeProcess`, which starts a child process and reads its output natively, on the jvm, HashLink, Neko and Node; not on the interpreter, whose process calls hold every thread while they wait, nor in a browser
 - data structures and utility packages
+  - `ExpiringMap`, for what a server keeps on a peer's behalf, sessions, tokens, pending handshakes, bounded by time (`ttl`) and by count (`maxSize`, 100,000 unless set), and `ObjectPool`, which keeps 10,000 free objects unless `maxFree` says otherwise, so a burst does not stay in memory for good
 - database surfaces for:
   - SQLite, natively, its statements prepared once and their parameters bound
   - every SQL driver's statements take `parameters` as `SQLValue`s, and read a result row by row and column by column with `executeEach` and `SQLRow`
   - MySQL and MariaDB: natively through hxcpp's bundled client, which logs in with `caching_sha2_password` or `mysql_native_password`, uses TLS when the server offers it (`MySQLConfig.sslMode`), bounds its waits and can `cancel()` a statement; on the jvm through Connector/J on the class path, without the TLS or limit settings
+    - natively the client takes the server's answers as untrusted, since whoever answers in the server's place writes them, and refuses one no server sends, a column count or a length that would otherwise have it allocate gigabytes or write out of bounds, with error 2027 (`MySQLConnection` lists what it bounds). `sslMode` stays `PREFERRED`, as in MySQL's own clients, which encrypts without checking whose certificate it is: across a network you do not trust, use `VERIFY_IDENTITY` with `sslCa` (`MySQLConfig.sslMode` says why insisting on TLS alone would not keep out a man in the middle)
   - PostgreSQL: natively through libpq, loaded at run time, with bound parameters, statement and connect timeouts and `cancel()`; on php through PDO; no other target
   - MongoDB, through its wire protocol (OP_MSG, SCRAM, TLS, cursors, transactions) on hxcpp, the jvm, the interpreter, hl and neko; not on JavaScript, which cannot block
+  - `ConnectionPool` and `AsyncDatabase` keep those blocking drivers off the runtime's thread, and bound the wait: `AsyncDatabase` fails a job still queued after `queueTimeout` (30 s), at the deadline, though every worker is busy, and refuses one past `maxQueued` (100,000); 0 is no limit for either, and for the pool's `acquireTimeout`
+  - natively the MySQL, PostgreSQL and MongoDB clients keep TCP keepalive on with MySQL's timings (a probe after 60 idle seconds, then every 10, dropped after 6), so a database host gone silent, a partition, a crash, is found in about two minutes rather than hours or never; MongoDB's does on the jvm too, with the timings from Java 11, and cannot on the interpreter, hl and neko (`MongoConfig.keepAlive` says what each target can)
 
 ## Timers
 

@@ -10,7 +10,9 @@ import utest.Assert;
  */
 class PostgresConnInfoTest extends utest.Test {
 	public function testDefaultsAreWhatTheDriverAlwaysSent():Void {
-		Assert.equals("host='127.0.0.1' port='5432' dbname='postgres' connect_timeout='5'", PostgresConnInfo.build({}));
+		// And keepalive's timings, which libpq left to the system.
+		Assert.equals("host='127.0.0.1' port='5432' dbname='postgres' connect_timeout='5' keepalives_idle='60' keepalives_interval='10' keepalives_count='6'",
+			PostgresConnInfo.build({}));
 	}
 
 	public function testAValueCannotEndItsQuotesEarly():Void {
@@ -59,10 +61,38 @@ class PostgresConnInfoTest extends utest.Test {
 		Assert.isTrue(conninfo.indexOf("keepalives_interval='5'") >= 0, conninfo);
 		Assert.isTrue(conninfo.indexOf("keepalives_count='3'") >= 0, conninfo);
 		Assert.isTrue(conninfo.indexOf("tcp_user_timeout='10000'") >= 0, conninfo);
-		// Unset stays unset: a keyword an older libpq does not know fails the
-		// connection, so nothing is sent that was not asked for.
-		Assert.equals(-1, PostgresConnInfo.build({}).indexOf("keepalives"));
+		// tcp_user_timeout stays unset unless asked for: libpq before 12 does
+		// not know it, and a keyword it does not know fails the connection.
 		Assert.equals(-1, PostgresConnInfo.build({}).indexOf("tcp_user_timeout"));
+	}
+
+	/**
+		Keepalive has MySQL's timings unless told otherwise. libpq turns it on
+		but leaves the timings to the system, two hours before the first
+		probe, so a pooled connection to a host gone silent held its worker
+		that long. keepalives_* are libpq 9.0's, as old as anything that loads.
+	**/
+	public function testKeepAliveHasTimingsByDefault():Void {
+		var conninfo:String = PostgresConnInfo.build({});
+
+		Assert.isTrue(conninfo.indexOf("keepalives_idle='60'") >= 0, conninfo);
+		Assert.isTrue(conninfo.indexOf("keepalives_interval='10'") >= 0, conninfo);
+		Assert.isTrue(conninfo.indexOf("keepalives_count='6'") >= 0, conninfo);
+		Assert.equals(-1, conninfo.indexOf("keepalives='0'"));
+
+		// 0 is the system's own, passed on as libpq reads it.
+		Assert.isTrue(PostgresConnInfo.build({keepAliveIdle: 0}).indexOf("keepalives_idle='0'") >= 0);
+
+		// Off when asked, with no timings.
+		var off:String = PostgresConnInfo.build({keepAlive: false});
+		Assert.isTrue(off.indexOf("keepalives='0'") >= 0, off);
+		Assert.equals(-1, off.indexOf("keepalives_idle"));
+
+		// A keyword the caller passes itself is theirs, and not sent twice.
+		var own:String = PostgresConnInfo.build({connectionParameters: ["keepalives_idle" => "300"]});
+		Assert.equals(own.indexOf("keepalives_idle="), own.lastIndexOf("keepalives_idle="), own);
+		Assert.isTrue(own.indexOf("keepalives_idle='300'") >= 0, own);
+		Assert.isTrue(own.indexOf("keepalives_interval='10'") >= 0, own);
 	}
 
 	public function testNegativeLimitsAreRefused():Void {
@@ -70,6 +100,9 @@ class PostgresConnInfoTest extends utest.Test {
 		Assert.raises(() -> PostgresConnInfo.build({tcpUserTimeout: -0.5}));
 		Assert.raises(() -> PostgresConnInfo.build({keepAliveIdle: -1}));
 		Assert.raises(() -> PostgresConnInfo.build({statementTimeout: Math.NaN}));
+		// It was taken for no limit, without a word; 0 is that, asked for.
+		Assert.raises(() -> PostgresConnInfo.build({connectTimeout: -1}), crossbyte.errors.ArgumentError);
+		Assert.equals(-1, PostgresConnInfo.build({connectTimeout: 0}).indexOf("connect_timeout"));
 	}
 
 	public function testParametersAreSortedAndTheirKeywordsChecked():Void {

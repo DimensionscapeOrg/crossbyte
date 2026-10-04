@@ -1,5 +1,7 @@
 package crossbyte.ds;
 
+import crossbyte.errors.ArgumentError;
+
 /**
 	A map whose entries stop being there after a while.
 
@@ -12,7 +14,8 @@ package crossbyte.ds;
 	Bounded twice, and both matter. `ttl` bounds how long an entry stays;
 	`maxSize` bounds how many there are, because time alone is not a bound
 	when whoever is filling it can fill it faster than it drains. Reaching
-	`maxSize` evicts whatever is closest to expiring.
+	`maxSize` evicts whatever is closest to expiring. Both bounds are on by
+	default: `maxSize` is 100,000 unless given.
 
 	Expiry is not a timer. Nothing happens on its own: `sweep` does the work
 	and a server calls it from its tick. Reading a single expired entry still
@@ -49,7 +52,27 @@ final class ExpiringMap<K:Dynamic, V> {
 	/** How long an entry lives from the moment it is set or touched. **/
 	public var ttl(default, null):Float;
 
-	/** The most entries held at once, or zero for no limit. **/
+	/**
+		The most entries held at once: 100,000 unless the constructor was
+		given another, and zero for no limit.
+
+		A map like this holds what a peer makes it hold, a session for each
+		login, a token for each handshake, and holding one for every peer
+		that ever asked is how such a store outlives the process's memory. It
+		was unbounded unless told otherwise. 100,000 is `RateLimiter`'s bound
+		on the clients it tracks.
+
+		What it costs a peer to fill: one entry, an object of its own, a
+		place in the map's index, and its key and value, for each `set` of
+		a new key; besides the key and value, about 250 bytes natively and 80
+		on the jvm (measured with String keys and Int values), so the default
+		bound holds some 25 MB natively. Past the bound the entry closest to
+		expiring goes, with `onExpire`, to make room: so a peer that sets keys
+		faster than they expire bounds the map's memory but evicts the
+		entries of everyone else. Rate-limit whatever lets a peer add one
+		(`RateLimiter`), and size this for the most that should be live at
+		once.
+	**/
 	public var maxSize(default, null):Int;
 
 	/**
@@ -73,18 +96,27 @@ final class ExpiringMap<K:Dynamic, V> {
 	private var __clock:Void->Float;
 
 	/**
-		@param ttl How long an entry lives, in seconds.
-		@param maxSize The most entries to hold at once; zero for no limit.
+		@param ttl How long an entry lives, in seconds: more than zero.
+		@param maxSize The most entries to hold at once: 100,000 when left
+		       out; zero for no limit, which is only safe when nothing a peer
+		       sends can add an entry.
 		@param clock Where the time comes from. Supply one in a test rather
 		       than sleeping.
+		@throws ArgumentError For a `ttl` that is not a positive number,
+		        zero, negative or NaN, which would keep every entry for good,
+		        and a negative `maxSize`, which read as no limit.
 	**/
-	public function new(ttl:Float, maxSize:Int = 0, ?clock:Void->Float) {
-		if (ttl <= 0) {
-			throw "ExpiringMap needs a positive ttl";
+	public function new(ttl:Float, maxSize:Int = 100000, ?clock:Void->Float) {
+		if (Math.isNaN(ttl) || ttl <= 0) {
+			throw new ArgumentError('ExpiringMap needs a positive ttl, not $ttl.');
+		}
+
+		if (maxSize < 0) {
+			throw new ArgumentError('ExpiringMap maxSize must not be negative ($maxSize); 0 is no limit.');
 		}
 
 		this.ttl = ttl;
-		this.maxSize = maxSize < 0 ? 0 : maxSize;
+		this.maxSize = maxSize;
 		this.__clock = clock == null ? function():Float return haxe.Timer.stamp() : clock;
 		this.__entries = new Map();
 	}
@@ -196,10 +228,19 @@ final class ExpiringMap<K:Dynamic, V> {
 		so calling it every tick costs what has actually expired since the
 		last one.
 
+		@param now When, by the clock the map was made with; left out, it
+		       asks that clock.
 		@return How many went.
+		@throws ArgumentError For a `now` of NaN, which no deadline is at or
+		        past: it swept nothing, without a word.
 	**/
 	public function sweep(?now:Float):Int {
 		var at:Float = now == null ? __clock() : now;
+
+		if (Math.isNaN(at)) {
+			throw new ArgumentError("ExpiringMap.sweep was given a time of NaN.");
+		}
+
 		var dropped:Int = 0;
 
 		while (__first != null && at >= __first.deadline) {

@@ -91,9 +91,44 @@ typedef MongoConfig = {
 		aggregation may legitimately run for minutes; bound a single
 		operation with its `maxTimeMS` option instead, which the server
 		enforces. Not applied on the interpreter, which fails an expired
-		socket timeout by aborting the process.
+		socket timeout by aborting the process. A server that has stopped
+		answering altogether is found by `keepAlive` instead.
 	**/
 	@:optional var socketTimeout:Float;
+
+	/**
+		TCP keepalive, on unless set `false`, so a connection to a server that
+		has vanished, a partition, a host that died without closing, is
+		noticed instead of waited on: about two minutes with the timings
+		below. With no keepalive and no `socketTimeout`, the default, a read
+		waiting on such a server waited for ever, holding the connection and
+		whatever worker was using it.
+
+		Keepalive probes only a connection with nothing unacknowledged in
+		flight: a command sent to a host that has just vanished waits instead
+		for the system to give up retransmitting it, about fifteen minutes on
+		Linux.
+
+		Natively it is set on every system, the count from Windows 10 (1703)
+		on. On the jvm keepalive is turned on everywhere, but its timings need
+		Java 11 or later: on Java 8 the system's apply, two hours before the
+		first probe. The interpreter, hl and neko have no such option, and
+		connect without it.
+	**/
+	@:optional var keepAlive:Bool;
+
+	/** Idle seconds before the first keepalive probe: 60 when unset, 0 for the system's own. **/
+	@:optional var keepAliveIdle:Int;
+
+	/** Seconds between unanswered probes: 10 when unset, 0 for the system's own. **/
+	@:optional var keepAliveInterval:Int;
+
+	/**
+		Unanswered probes before the connection is dropped: 6 when unset, 0
+		for the system's own. Windows before 10 (1703) fixes the count at 10
+		and ignores this.
+	**/
+	@:optional var keepAliveCount:Int;
 
 	/** A name the server records in its log and in `currentOp` for this client. **/
 	@:optional var appName:String;

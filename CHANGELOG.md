@@ -351,6 +351,24 @@ entry below says how:
 - A PHP response past 8 MiB now fails with `502 Bad Gateway`: raise
   `HTTPServerConfig.phpMaxResponseSize` for a script that serves larger
   files.
+- An `ExpiringMap` holds 100,000 entries and an `ObjectPool` keeps 10,000
+  free objects unless told otherwise: pass `maxSize` 0, or set `maxFree`
+  to `0x7FFFFFFF`, for no bound, as before. A negative `maxSize` or
+  `maxFree`, and an `ExpiringMap` `ttl` that is not a positive number,
+  throw an `ArgumentError`.
+- A `Membership` timeout of 0, and `installServiceControl`'s
+  `connectTimeoutMs` of 0, are no limit: a membership whose nodes should
+  leave needs a timeout above 0. A negative or NaN timeout, a negative
+  `maxNodes`, and a negative `connectTimeoutMs` or stop-pending hint,
+  throw an `ArgumentError`.
+- `AsyncDatabase.queueTimeout` is a `Float`, 30 seconds unless set, and a
+  job still queued then fails; set 0 where `null` meant no limit.
+  `maxQueued` is 100,000 unless set: set 0, or more, for a batch that
+  submits more than that at once. A `ConnectionPool` `acquireTimeout` of 0
+  waits without limit, where it failed at once.
+- A MySQL `connectTimeout` of 0 is no limit natively, where it bounded
+  each handshake read at 50 seconds; NaN and negative MySQL timeouts, and
+  a negative Postgres `connectTimeout`, throw an `ArgumentError`.
 
 ### Added
 - `ByteArray.maxObjectValues`: the most values one object read may make,
@@ -1698,6 +1716,63 @@ entry below says how:
   whole from the header, so a response declaring 64 MB cost 64 MB before a
   byte of it came, on each of the loader's threads. A body cut short of its
   length says so, "expected 5000 bytes, got 100", where it said "Eof".
+- MongoDB and PostgreSQL connections keep TCP keepalive on with MySQL's
+  timings, a probe after 60 idle seconds, then one every 10, and the
+  connection dropped after 6 unanswered, so a server that has gone
+  silent, a partition or a host that died without closing, is found in
+  about two minutes and the worker waiting on it let go. MongoDB's client
+  set no keepalive and, with no socket timeout by default, waited on such
+  a server for good; Postgres's libpq turned keepalive on but left its
+  timings to the system, two hours before the first probe. `keepAlive`,
+  `keepAliveIdle`, `keepAliveInterval` and `keepAliveCount` are new on
+  `MongoConfig`, and `keepAlive` on `PostgresConfig`, as on `MySQLConfig`;
+  0 for a timing is the system's own. Natively MongoDB's timings are set
+  on every system; on the jvm keepalive is turned on and its timings need
+  Java 11; the interpreter, hl and neko have no such option. A command
+  sent to a host that has just vanished waits instead for the system to
+  stop retransmitting it, about fifteen minutes on Linux, which Postgres's
+  `tcpUserTimeout` bounds. A MongoDB `connectTimeout` or `socketTimeout`
+  of NaN, which read as no limit, throws an `ArgumentError`.
+- `AsyncDatabase` bounds its queue by default. A job waits at most
+  `queueTimeout`, now 30 seconds, for a worker, and fails at that
+  deadline with an `IllegalOperationError`, at once, on a thread of the
+  database's own: it failed only when a worker reached it, which with
+  every worker held by a database that had stopped answering was never.
+  And `maxQueued`, now 100,000, refuses a job past that many waiting. Both
+  were off unless set. 0 is no limit for either, and NaN or a negative
+  value throws an `ArgumentError`, as it does for `acquireTimeout`;
+  `queueTimeout` is a `Float`, not a `Null<Float>`. The watch costs about
+  0.7 microseconds a job natively and 0.3 on the jvm, measured on jobs
+  that do nothing, 100,000 queued at once.
+- `ConnectionPool` reads an `acquireTimeout` of 0, for the pool or for one
+  `acquire`, as no limit: the caller waits until a connection comes free
+  or the pool closes, where it failed at once. NaN, which waited for ever
+  once the pool was saturated, and a negative timeout for one call, which
+  failed at once, throw an `ArgumentError`, as a negative default did.
+- A `Membership` timeout of 0 is none, as 0 is everywhere in CrossByte:
+  no node leaves for being quiet, only by `forget`. It was refused. A
+  negative or NaN timeout, a negative `maxNodes` (which read as no limit)
+  and a time of NaN given to `heard` or `sweep` throw an `ArgumentError`:
+  NaN made a node that never left. A name longer than
+  `Membership.MAX_NAME_LENGTH`, 255 characters, is refused as one past
+  `maxNodes` is, since the number of names a peer could make up was
+  bounded but not their length.
+- `ExpiringMap` holds at most 100,000 entries unless given another
+  `maxSize`, where it held whatever was put in it for as long as its
+  `ttl`: the map built for sessions and tokens, what a peer makes a
+  server keep, had its count bound off unless asked. Past the bound the
+  entry closest to expiring goes, as before. An entry costs about 250
+  bytes natively and 80 on the jvm besides its key and value, so the
+  default holds some 25 MB natively. A negative `maxSize`, which read as
+  no limit, and a `ttl` of NaN, which kept every entry for good, throw an
+  `ArgumentError`, as a `ttl` of 0 now does where it threw a String; so
+  does `sweep(NaN)`, which swept nothing.
+- `ObjectPool` keeps at most 10,000 free objects unless `maxFree` is set,
+  where it kept every object released: a burst stayed in memory for good,
+  and in every collection's walk. `reserve`, the constructor's `length`
+  and `resizeCapacity` raise `maxFree` to what they reserve, so objects
+  made in advance are kept. A negative `maxFree` throws an
+  `ArgumentError`.
 - A WebSocket text message is written into its frame without being encoded
   into a buffer of its own first, natively when the string is held a byte a
   character and on the jvm when it is ASCII and no longer than 256
@@ -3322,6 +3397,45 @@ entry below says how:
   too. And an exchange's deadline, once it has run, is no longer cleared
   again as the exchange settles, which could clear a timer armed since in
   its place.
+- A MySQL `connectTimeout` is one deadline for the whole of `open()`
+  natively, the connect, TLS, the greeting and the login. Each read of
+  the handshake waited the whole timeout again, so a server that answered
+  a byte at a time held `open()` for as long as it went on: a greeting
+  trickled at 0.25 s a byte took 20.8 s under a 1 s timeout, and then
+  logged in. It now fails at the deadline with error 2013. A
+  `connectTimeout` of 0 is no limit, where it meant 50 seconds for each
+  read of the handshake. Fixed in the hxcpp fork
+  (`fix/mysql-hostile-counts`). On every target `open()` refuses a NaN or
+  negative `connectTimeout`, `readTimeout` or `writeTimeout` and a
+  negative keepalive timing with an `ArgumentError`, as Postgres refuses a
+  negative `connectTimeout`: each was taken for no limit, or for the old
+  defaults.
+- `ProcessLifecycle.installServiceControl(name, 0)` waits for its
+  handshake with the Service Control Manager to settle, 0 being no limit,
+  where it did not wait at all: the handshake was still pending when it
+  answered, so a process the SCM had started could report itself a
+  console run. A negative `connectTimeoutMs`, and a negative hint to
+  `reportServiceStopPending`, throw an `ArgumentError`; a hint of 0 is
+  the SCM's default of 30 seconds, there being no hint without a limit.
+- The native MySQL client no longer lets one packet from the server end
+  the process. A result header's column count sized an allocation before
+  any column arrived, with no bound and no check: nine bytes, from the
+  server, or from whoever answers in its place, which the default
+  `sslMode`, `PREFERRED`, does not rule out, since it checks no
+  certificate, asked for 150 GB and wrote to the NULL that came back,
+  and four bytes allocated 1.2 GB. A column or row length near 2^31, a
+  column without a name, an empty packet among the rows and a request
+  for a file of the client's (`0xFB`) ended the process too, and an error
+  cut short at its SQLSTATE was reported with the state of a success,
+  "00000". A result now has 1 to 65,535 columns, checked before anything
+  is allocated; every length is checked against its packet; and an
+  answer no server sends fails the statement with error 2027
+  (`CR_MALFORMED_PACKET`) and closes the connection. Fixed in the hxcpp
+  fork (`fix/mysql-hostile-counts`). `PREFERRED` stays the default, as in
+  MySQL's own clients: insisting on TLS would refuse servers that offer
+  none and still not keep out a man in the middle, which only
+  `VERIFY_CA` and `VERIFY_IDENTITY` do, `MySQLConfig.sslMode` has the
+  trade-off.
 - Natively, a process whose threads end as it exits, a server spread
   over runtimes, which exits them after `drain()`, is one, no longer
   hangs there on Windows, nor crashes there when built with stack traces

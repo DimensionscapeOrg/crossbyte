@@ -179,6 +179,9 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.mongodb.MongoWireTest());
 		runner.addCase(new crossbyte.db.mongodb.MongoCrudTest());
 		runner.addCase(new crossbyte.db.mongodb.MongoTransactionTest());
+		// TCP keepalive on the clients' sockets, and a server gone silent as a
+		// partitioned host does (Linux, through DeadPeerProbe).
+		runner.addCase(new crossbyte.db.DatabaseKeepAliveTest());
 		runner.addCase(new crossbyte.db.MySQLDriverTest());
 		runner.addCase(new crossbyte.db.SQLiteDriverTest());
 		runner.addCase(new crossbyte.db.ItemClassTest());
@@ -187,19 +190,25 @@ class TestSuites {
 		// its stand-in by NativePostgresBridgeTest below.
 		runner.addCase(new crossbyte.db.TransactionFailureTest());
 		#end
+		#if target.threaded
+		// Where the worker pool has threads, and so a queue to bound: every
+		// target but JavaScript.
+		runner.addCase(new crossbyte.db.AsyncDatabaseTest());
+		#end
 		#if cpp
 		// Against a libpq stand-in built beside the test binary, so the
 		// bridge's threading and its GC-free zones are checked without a
 		// server.
 		runner.addCase(new crossbyte.db.NativePostgresBridgeTest());
-		// Where the worker pool has threads, and so a queue to bound.
-		runner.addCase(new crossbyte.db.AsyncDatabaseTest());
 		// The native MySQL client against a server that logs every byte it
 		// is sent (fakemysql/FakeMySQLServer), so no database is needed.
 		runner.addCase(new crossbyte.db.MySQLNativeWireTest());
 		runner.addCase(new crossbyte.db.MySQLNativeResultTest());
 		runner.addCase(new crossbyte.db.MySQLNativeSessionTest());
 		runner.addCase(new crossbyte.db.MySQLNativeAuthTest());
+		// Answers no MySQL server sends, counts and lengths a hostile one, or
+		// whoever answers in its place, can put in a packet.
+		runner.addCase(new crossbyte.db.MySQLNativeHostileTest());
 		// SQLite opens only natively.
 		runner.addCase(new crossbyte.db.SQLiteNativeTest());
 		#end

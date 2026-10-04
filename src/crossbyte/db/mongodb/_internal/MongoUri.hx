@@ -27,6 +27,10 @@ class MongoSettings {
 	public var tlsAllowInvalidCertificates:Bool = false;
 	public var connectTimeout:Float = 10.0;
 	public var socketTimeout:Float = 0.0;
+	public var keepAlive:Bool = true;
+	public var keepAliveIdle:Int = 60;
+	public var keepAliveInterval:Int = 10;
+	public var keepAliveCount:Int = 6;
 	public var appName:Null<String> = null;
 	public var writeConcern:Null<MongoWriteConcern> = null;
 	public var directConnection:Bool = false;
@@ -142,6 +146,22 @@ class MongoUri {
 			out.socketTimeout = config.socketTimeout;
 		}
 
+		if (config.keepAlive != null) {
+			out.keepAlive = config.keepAlive;
+		}
+
+		if (config.keepAliveIdle != null) {
+			out.keepAliveIdle = config.keepAliveIdle;
+		}
+
+		if (config.keepAliveInterval != null) {
+			out.keepAliveInterval = config.keepAliveInterval;
+		}
+
+		if (config.keepAliveCount != null) {
+			out.keepAliveCount = config.keepAliveCount;
+		}
+
 		if (config.appName != null) {
 			out.appName = config.appName;
 		}
@@ -164,8 +184,15 @@ class MongoUri {
 			}
 		}
 
-		if (out.connectTimeout < 0 || out.socketTimeout < 0) {
-			throw new ArgumentError("A timeout cannot be negative.");
+		// NaN as well: it compares false with everything, so a NaN connect
+		// timeout was no limit at all and a NaN socket timeout reached the
+		// socket as given.
+		if (Math.isNaN(out.connectTimeout) || Math.isNaN(out.socketTimeout) || out.connectTimeout < 0 || out.socketTimeout < 0) {
+			throw new ArgumentError("A timeout cannot be negative, or NaN; 0 is no limit.");
+		}
+
+		if (out.keepAliveIdle < 0 || out.keepAliveInterval < 0 || out.keepAliveCount < 0) {
+			throw new ArgumentError("A keepalive timing cannot be negative; 0 is the system's own.");
 		}
 
 		if ((out.tlsCAFile != null || out.tlsCertificateKeyFile != null) && !out.tls) {

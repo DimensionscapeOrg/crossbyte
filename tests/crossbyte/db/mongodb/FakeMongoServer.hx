@@ -255,6 +255,24 @@ class FakeMongoServer {
 		__script(command, bytes);
 	}
 
+	/**
+		Hands the connection to `handler` instead of answering the next
+		`command`, on the thread serving it, and closes the connection once
+		`handler` returns: for a server that does something no script here
+		does, such as falling silent the way a partitioned host does.
+	**/
+	public function handleNext(command:String, handler:Socket->Void):Void {
+		__script(command, new FakeMongoHandler(handler));
+	}
+
+	/** Whether `stop()` has been called: for a handler that waits. **/
+	public function stopping():Bool {
+		__lock.acquire();
+		var value:Bool = __stopping;
+		__lock.release();
+		return value;
+	}
+
 	/** The documents stored in `namespace`, `database.collection`. **/
 	public function documents(namespace:String):Array<BsonDocument> {
 		__lock.acquire();
@@ -401,6 +419,11 @@ class FakeMongoServer {
 				var script:Dynamic = __takeScript(command);
 
 				if (Std.isOfType(script, String) && script == "close") {
+					break;
+				}
+
+				if (Std.isOfType(script, FakeMongoHandler)) {
+					(script : FakeMongoHandler).handler(client);
 					break;
 				}
 
@@ -1443,6 +1466,15 @@ class FakeMongoServer {
 
 	@:noCompletion private static function __int(v:Dynamic):Int {
 		return v == null ? 0 : Std.int(__asFloat(v));
+	}
+}
+
+/** A script that hands the connection to a test's own code. **/
+private class FakeMongoHandler {
+	public var handler(default, null):Socket->Void;
+
+	public function new(handler:Socket->Void) {
+		this.handler = handler;
 	}
 }
 #end

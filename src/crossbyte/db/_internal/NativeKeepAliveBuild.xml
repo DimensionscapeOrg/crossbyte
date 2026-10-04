@@ -1,0 +1,15 @@
+<xml>
+	<pragma once="true"/>
+
+	<files id="crossbyte-db-keepalive-native">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${this_dir}"/>
+		<file name="${this_dir}/NativeKeepAlive.cpp">
+			<depend name="${this_dir}/NativeKeepAlive.h"/>
+		</file>
+	</files>
+
+	<target id="haxe">
+		<files id="crossbyte-db-keepalive-native"/>
+	</target>
+</xml>

@@ -58,8 +58,8 @@ typedef ConnectionPoolOptions<T> = {
 	@:optional var maxSize:Int;
 
 	/**
-	 * Default seconds `acquire()` waits for a connection before throwing.
-	 * Defaults to 10.
+	 * Default seconds `acquire()` waits for a connection before throwing:
+	 * 10 when unset, or 0 for no limit. NaN and negatives are refused.
 	 */
 	@:optional var acquireTimeout:Float;
 
@@ -120,7 +120,16 @@ class ConnectionPool<T> {
 	public var maxSize(default, null):Int;
 
 	/**
-	 * Seconds `acquire()` waits by default before giving up.
+	 * Seconds `acquire()` waits by default before giving up: 10 unless the
+	 * options set it, and 0 for no limit, which waits until a connection
+	 * comes free or the pool closes. 0 used to fail at once, against the
+	 * rule everywhere else in CrossByte that 0 is no deadline.
+	 *
+	 * What it bounds is the wait for a connection to come free. Opening a
+	 * new one (`factory`) and checking an idle one (`validate`) run once a
+	 * connection is the caller's to make, and take as long as the driver's
+	 * own limits let them: its connect timeout, and its read timeout or
+	 * keepalive for a server that stops answering.
 	 */
 	public var acquireTimeout(default, null):Float;
 
@@ -178,10 +187,7 @@ class ConnectionPool<T> {
 			throw new ArgumentError("ConnectionPool maxSize must be at least 1.");
 		}
 
-		acquireTimeout = (options.acquireTimeout == null) ? 10.0 : options.acquireTimeout;
-		if (acquireTimeout < 0) {
-			throw new ArgumentError("ConnectionPool acquireTimeout must not be negative.");
-		}
+		acquireTimeout = __checkTimeout((options.acquireTimeout == null) ? 10.0 : options.acquireTimeout);
 
 		__factory = options.factory;
 		__close = options.close;
@@ -272,14 +278,18 @@ class ConnectionPool<T> {
 	 *
 	 * Blocks the calling thread; use from a worker, not the tick loop.
 	 *
-	 * @param timeoutSeconds Overrides `acquireTimeout` for this call.
+	 * @param timeoutSeconds Overrides `acquireTimeout` for this call: 0 for
+	 *        no limit.
+	 * @throws ArgumentError For a `timeoutSeconds` that is NaN or negative.
+	 *         NaN waited for ever, and a negative one failed at once.
 	 * @throws IllegalOperationError When the pool is closed, or no
 	 *         connection becomes available before the timeout.
 	 */
 	public function acquire(?timeoutSeconds:Float):T {
-		var timeout:Float = (timeoutSeconds == null) ? acquireTimeout : timeoutSeconds;
+		var timeout:Float = (timeoutSeconds == null) ? acquireTimeout : __checkTimeout(timeoutSeconds);
 		var started:Float = haxe.Timer.stamp();
-		var deadline:Float = started + timeout;
+		// 0 is no limit: a deadline that is never reached.
+		var deadline:Float = timeout == 0 ? Math.POSITIVE_INFINITY : started + timeout;
 
 		while (true) {
 			var candidate:Null<T> = __tryTake(true);
@@ -325,6 +335,15 @@ class ConnectionPool<T> {
 			crossbyte._internal.system.Sleep.sleep(0.001);
 			#end
 		}
+	}
+
+	/** A timeout as given, or an `ArgumentError` for one that is not a number of seconds. **/
+	@:noCompletion private static function __checkTimeout(seconds:Float):Float {
+		if (Math.isNaN(seconds) || seconds < 0) {
+			throw new ArgumentError('ConnectionPool acquire timeout is a number of seconds, 0 for none: $seconds is not one.');
+		}
+
+		return seconds;
 	}
 
 	#if target.threaded
@@ -495,6 +514,9 @@ class ConnectionPool<T> {
 	 * Runs `body` with a pooled connection, always returning it afterwards,
 	 * including when `body` throws, in which case the exception
 	 * propagates unchanged.
+	 *
+	 * @param timeoutSeconds As for `acquire`: `acquireTimeout` when left
+	 *        out, 0 for no limit.
 	 */
 	public function withConnection<R>(body:T->R, ?timeoutSeconds:Float):R {
 		var connection:T = acquire(timeoutSeconds);
