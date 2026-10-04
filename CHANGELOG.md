@@ -3135,6 +3135,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An `RPCSession`'s heartbeat pings on every beat that nothing else has
+  been sent for an interval before, where the clock's rounding put the
+  beat after a ping a hair short of the interval, 2.8 s less 1.8 s is
+  0.99999999999999978 s, and the ping waited for the beat after: a ping
+  every other beat, about one in five lost in a test pumped a tenth of a
+  second at a time. With the defaults, 45 seconds between pings against a
+  90-second timeout, a session could hear its peer's pongs 90 seconds
+  apart and time out a peer that was answering.
 - Natively, a process whose threads end as it exits, a server spread
   over runtimes, which exits them after `drain()`, is one, no longer
   hangs there on Windows, nor crashes there when built with stack traces
