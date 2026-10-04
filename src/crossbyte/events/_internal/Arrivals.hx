@@ -56,6 +56,34 @@ class Arrivals {
 	static var __nothing:Null<haxe.io.Bytes> = null;
 
 	/**
+		Takes back everything a listener can leave on a reused payload, so
+		the next arrival starts as a `ByteArray` made for it would: empty
+		(`length` 0), read from `position` 0, in `ByteArray.defaultEndian`
+		and `ByteArray.defaultObjectEncoding`. Its storage is kept, to be
+		filled; storage a listener grew, or swapped in by compressing it, is
+		what `release` lets go of past `KEEP`.
+
+		Those four are all a `ByteArray` carries besides its bytes. Every
+		reused payload is filled through this, `refill`, `refillView`,
+		`sized`, and the buffers a session puts a message together in, and
+		an owner that reads in an order of its own (a socket's `endian`, a
+		session's `objectEncoding`) sets it after.
+
+		It reset position, length and the object encoding only: the byte
+		order a `TurnClient.onData` or `DtlsTransport.onMessage` handler set
+		for one arrival was the next one's, and a reliable server's `admit`
+		read a CONNECT's payload in whatever order the last message a session
+		dispatched from the same buffer was read in.
+	**/
+	public static function reset(payload:ByteArray):Void {
+		var data:ByteArrayData = payload;
+		payload.length = 0;
+		data.position = 0;
+		data.endian = ByteArrayData.defaultEndian;
+		data.objectEncoding = ByteArrayData.defaultObjectEncoding;
+	}
+
+	/**
 		Fills `payload` with `length` bytes of `bytes` from `offset`, for an
 		arrival: what it held is gone, its storage is used again when it is
 		large enough, and it is read from position 0. Storage too small grows
@@ -63,9 +91,7 @@ class Arrivals {
 	**/
 	public static function refill(payload:ByteArray, bytes:haxe.io.Bytes, offset:Int, length:Int):Void {
 		var data:ByteArrayData = payload;
-		payload.length = 0;
-		data.position = 0;
-		data.objectEncoding = ByteArrayData.defaultObjectEncoding;
+		reset(payload);
 		__room(data, length, true);
 		data.__writeRange(bytes, offset, length);
 		data.position = 0;
@@ -75,9 +101,7 @@ class Arrivals {
 	/** `refill`, from a view of bytes: Node's `Buffer` a datagram arrives in, copied in once. **/
 	public static function refillView(payload:ByteArray, view:js.lib.Uint8Array):Void {
 		var data:ByteArrayData = payload;
-		payload.length = 0;
-		data.position = 0;
-		data.objectEncoding = ByteArrayData.defaultObjectEncoding;
+		reset(payload);
 		__room(data, view.length, true);
 		@:privateAccess data.__appendView(view);
 		data.position = 0;
@@ -92,9 +116,7 @@ class Arrivals {
 	**/
 	public static function sized(payload:ByteArray, length:Int):Void {
 		var data:ByteArrayData = payload;
-		payload.length = 0;
-		data.position = 0;
-		data.objectEncoding = ByteArrayData.defaultObjectEncoding;
+		reset(payload);
 		__room(data, length, true);
 		@:privateAccess data.__resize(length, 0);
 	}

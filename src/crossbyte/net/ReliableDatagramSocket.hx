@@ -2116,8 +2116,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (assembly == null) {
 			assembly = __assemblyKept = new ByteArray();
 		} else {
-			assembly.length = 0;
-			assembly.position = 0;
+			// All a listener left on it taken back (see Arrivals.reset).
+			Arrivals.reset(assembly);
 		}
 		return assembly;
 	}

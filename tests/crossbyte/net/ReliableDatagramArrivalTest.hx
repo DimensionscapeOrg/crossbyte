@@ -535,8 +535,13 @@ class ReliableDatagramArrivalTest extends utest.Test {
 				looked++;
 				return false;
 			};
+			var orders:Array<String> = [];
 			server.admit = (address, port, payload) -> {
+				orders.push((payload.endian == Endian.BIG_ENDIAN ? "big" : "little") + "/" + payload.objectEncoding + "/" + payload.position);
 				payloads.push(payload.readUTFBytes(payload.length));
+				// What a hook might leave behind on the payload it was handed.
+				payload.endian = payload.endian == Endian.BIG_ENDIAN ? Endian.LITTLE_ENDIAN : Endian.BIG_ENDIAN;
+				payload.objectEncoding = ObjectEncoding.JSON;
 				return true;
 			};
 
@@ -545,6 +550,10 @@ class ReliableDatagramArrivalTest extends utest.Test {
 
 			Assert.equals(2, looked, "the application did not see each datagram first");
 			Assert.same(["first token", "second, longer token"], payloads);
+			// Each in the order and encoding a payload made for it has, whatever
+			// the hook before it left on the server's one buffer.
+			var start:String = (ByteArray.defaultEndian == Endian.BIG_ENDIAN ? "big" : "little") + "/" + ByteArray.defaultObjectEncoding + "/0";
+			Assert.same([start, start], orders, "a CONNECT's payload kept what the hook before it left: " + orders.join(", "));
 			var first = server.__sessionAt("127.0.0.1", 40011);
 			Require.notNull(first, "the first CONNECT opened no session");
 			Assert.equals("first token", first.connectPayload.toString(), "a session's connectPayload was the server's copy");

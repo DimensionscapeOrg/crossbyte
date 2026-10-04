@@ -2020,17 +2020,18 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			if (message == null) {
 				message = __messageKept = new ByteArray();
 			} else {
-				message.length = 0;
+				// All a listener left on it taken back: position, length,
+				// byte order and object encoding, as a ByteArray made for the
+				// message has them. The object encoding was kept, so after
+				// one listener read a JSON message every message read JSON.
+				Arrivals.reset(message);
 			}
 		} else {
 			message = new ByteArray();
 		}
-		message.position = 0;
+		// The frame's own fields are big-endian; the session reads the
+		// message in its own byte order once it is whole.
 		message.endian = BIG_ENDIAN;
-		// As a ByteArray made for the message would read objects. The
-		// session's own buffer kept whatever a listener had set, so after one
-		// listener read a JSON message every message read JSON.
-		message.objectEncoding = ByteArray.defaultObjectEncoding;
 		return message;
 	}
 
