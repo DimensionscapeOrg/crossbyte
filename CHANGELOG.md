@@ -1614,7 +1614,11 @@ entry below says how:
   the runtime is handed the next arrival in objects of its own. Once its
   call returns a payload is emptied, length and position 0, and storage it
   grew past 16 KB is let go: what reuse holds for a connection is at most
-  that and the event, and for a 100-byte message about 300 bytes. A
+  that and its events. Measured over 1,000 connections, a WebSocket
+  connection holds about 390 bytes more for it natively (170 on the jvm)
+  and a reliable UDP session about 90 (100), so 4 MB and 1 MB at 10,000;
+  at worst, each connection's last message just under 16 KB, 16 KB more
+  each. A
   100-byte datagram sent and received allocates nothing natively, where it
   allocated 344 bytes, and 592 bytes on the jvm, where it allocated 824; a
   200-byte reliable UDP message delivered and acknowledged 504 bytes
