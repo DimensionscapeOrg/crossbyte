@@ -9,9 +9,9 @@ run-name: CrossByte hl and neko | ${{ github.event_name }} | ${{ github.ref_name
 # from its release zip on Windows and is built from the same tag on Linux,
 # since its releases carry no Linux binary.
 #
-# utest comes through .github/actions/haxelibs, from a cache, so an outage of
-# lib.haxe.org does not stop these jobs. ci.yml's header says how a failure
-# reads.
+# utest comes through .github/actions/haxelibs, from a cache or GitHub, so
+# these jobs do not depend on lib.haxe.org. ci.yml's header says how a
+# failure reads.
 
 on:
   push:

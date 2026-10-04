@@ -1,21 +1,31 @@
 name: Haxe libraries
 description: >-
-  Installs the libraries ci/haxelibs.txt lists, at its exact versions, from a
-  cache, and asks lib.haxe.org only for what the cache does not hold.
+  Installs the libraries ci/haxelibs.txt lists, each at its pinned version and
+  commit, from a cache, else from GitHub, else from lib.haxe.org.
 
 # On 2026-10-04 lib.haxe.org's API lost its database, every job failed at its
 # first `haxelib install`, and main stayed red for hours over nothing in the
-# code. A cache alone would not have helped: `haxelib install` asks the
-# registry about a version even when that version is installed already. So
-# this installs from the registry only a version the restored cache lacks.
+# code. A cache alone could not have helped for long: it is filled from
+# somewhere, and `haxelib install` asks the registry about a version even
+# when that version is installed already.
 #
-# The cache holds each library's folder in the haxelib repository setup-haxe
-# made: its version folders and its .current, so restoring it is
-# installing it. The key names every version on the list. When no cache has
-# that key, the newest one saved for an older list is restored instead, and
-# only what changed goes to the registry. (A cache is restored only into the
-# folders it was saved from, so a list that adds or drops a library goes to
-# the registry for all of them, once.)
+# So each library comes, in this order, from:
+# 1. The cache. It holds each library's folder in the haxelib repository
+#    setup-haxe made, so restoring it is installing it. The key names every
+#    version and commit on the list; when no cache has that key, the newest
+#    one saved for an older list is restored, and only what changed is
+#    installed. (A cache is restored only into the folders it was saved
+#    from, so a list that adds or drops a library installs all of them,
+#    once.)
+# 2. GitHub, at the pinned commit, through `haxelib git`, which asks the
+#    registry nothing for a library without dependencies. GitHub comes first
+#    because every job depends on it already: the checkout, setup-haxe and
+#    hxcpp all come from there: so it adds no new way to fail, where the
+#    registry would; and a commit is exact.
+# 3. lib.haxe.org, only if GitHub could not supply the commit: a repository
+#    moved or rewritten: with a warning saying so. The pinned commits were
+#    checked to be the registry's releases (ci/haxelibs.txt says how), so
+#    either source gives the same library.
 #
 # Every step runs in bash, Git Bash on Windows, and names a command that
 # fails.
@@ -40,16 +50,19 @@ runs:
         key="haxelibs-v1-$RUNNER_OS-$RUNNER_ARCH"
         paths=""
         # A Windows checkout ends each line with CR LF.
-        while read -r name version extra || [ -n "$name" ]; do
+        while read -r name version source commit extra || [ -n "$name" ]; do
           name="${name%$'\r'}"
-          version="${version%$'\r'}"
+          commit="${commit%$'\r'}"
           extra="${extra%$'\r'}"
           case "$name" in ''|'#'*) continue ;; esac
-          if [ -z "$version" ] || [ -n "$extra" ]; then
-            echo "::error file=ci/haxelibs.txt::Expected a name and a version, found: $name $version $extra"
+          case "$commit" in
+            *[!0-9a-f]*|'') commit="" ;;
+          esac
+          if [ -z "$version" ] || [ -z "$source" ] || [ "${#commit}" -ne 40 ] || [ -n "$extra" ]; then
+            echo "::error file=ci/haxelibs.txt::Expected a name, a version, a repository and a 40-digit commit, found: $name $version $source ${commit:-(no commit)} $extra"
             exit 1
           fi
-          key="$key-$name-$version"
+          key="$key-$name-$version-${commit:0:8}"
           paths="$paths$repo/$name"$'\n'
         done < "$list"
         echo "Repository: $repo"
@@ -80,35 +93,61 @@ runs:
       run: |
         set -euo pipefail
         trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
-        while read -r name version extra || [ -n "$name" ]; do
+        # haxelib git checks out with this machine's git settings, which on a
+        # Windows runner turn every LF into CR LF; these keep each file as
+        # the repository holds it.
+        export GIT_CONFIG_COUNT=2
+        export GIT_CONFIG_KEY_0=core.autocrlf GIT_CONFIG_VALUE_0=false
+        export GIT_CONFIG_KEY_1=core.eol GIT_CONFIG_VALUE_1=lf
+
+        # The version haxelib resolves the library to, from `haxelib path`.
+        resolved() {
+          { haxelib path "$name" 2> /dev/null || true; } | tr -d '\r' | sed -n "s/^-D $name=//p"
+        }
+        # Whether $name $version is installed as pinned: from GitHub at
+        # $commit (haxelib's "git" version), or from the registry.
+        held() {
+          [ "$(resolved)" = "$version" ] || return 1
+          if [ "$(cat "$REPO/$name/.current" 2> /dev/null)" = git ]; then
+            [ "$(git -C "$REPO/$name/git" rev-parse HEAD 2> /dev/null)" = "$commit" ]
+          else
+            [ -d "$REPO/$name/${version//./,}" ]
+          fi
+        }
+
+        while read -r name version source commit extra || [ -n "$name" ]; do
           name="${name%$'\r'}"
-          version="${version%$'\r'}"
+          commit="${commit%$'\r'}"
           case "$name" in ''|'#'*) continue ;; esac
-          folder="$REPO/$name"
-          # haxelib keeps version 1.13.2 in a folder named 1,13,2.
-          installed="${version//./,}"
-          if haxelib path "$name:$version" > /dev/null 2>&1; then
+          if held; then
             from="the cache"
           else
-            # A version folder haxelib could not read is removed, not
-            # installed over.
-            rm -rf "$folder/$installed"
-            if ! haxelib install "$name" "$version" --always --skip-dependencies; then
-              echo "::error::$name $version is not in the haxelib cache, and lib.haxe.org did not supply it (haxelib's error is above). The cache holds what earlier runs installed: a version ci/haxelibs.txt names that none installed yet needs the registry."
-              exit 1
+            # Whatever an older list's cache left of it goes first: haxelib
+            # git over an installed library updates it rather than cloning.
+            rm -rf "$REPO/$name"
+            if haxelib git "$name" "$source" "$commit" && held; then
+              from="GitHub, $source at ${commit:0:10}"
+            else
+              got="$(resolved)"
+              echo "::warning::$source at $commit did not install, or is not $name $version (haxelib resolves ${got:-nothing}); trying lib.haxe.org."
+              rm -rf "$REPO/$name"
+              if haxelib install "$name" "$version" --always --skip-dependencies && held; then
+                from="lib.haxe.org"
+              else
+                echo "::error::$name $version is not in the haxelib cache, and neither $source at $commit nor lib.haxe.org supplied it (their errors are above)."
+                exit 1
+              fi
             fi
-            from="lib.haxe.org"
           fi
-          # Current, whatever the restored .current named: a cache saved for
-          # an older list names that list's version.
-          printf '%s' "$version" > "$folder/.current"
-          for entry in "$folder"/*; do
-            if [ -d "$entry" ] && [ "${entry##*/}" != "$installed" ]; then
+          # Only the current install stays: a cache saved for an older list
+          # may hold another version beside it.
+          current="$(cat "$REPO/$name/.current")"
+          for entry in "$REPO/$name"/*; do
+            if [ -d "$entry" ] && [ "${entry##*/}" != "${current//./,}" ]; then
               echo "Removing $name ${entry##*/}, which ci/haxelibs.txt does not list."
               rm -rf "$entry"
             fi
           done
-          haxelib path "$name:$version" > /dev/null
           echo "$name $version: from $from"
         done < "$LIST"
 

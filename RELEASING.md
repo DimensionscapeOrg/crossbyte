@@ -50,16 +50,18 @@ waits for the registry.
 
 ## CI
 
-- **Libraries from lib.haxe.org** are listed, each with an exact version,
-  in `ci/haxelibs.txt`. `.github/actions/haxelibs` installs them from a
-  cache keyed on that list, and asks the registry only for a version the
-  cache does not hold, so CI keeps running while lib.haxe.org is down (as
-  it was on 2026-10-04, when every job failed at its first install). To
-  change a version, edit the list while the registry is up: the next run on
-  each OS installs that one version from the registry, and every run after
-  takes it from the cache. Adding or dropping a library goes to the
-  registry for all of them, once. GitHub drops a cache unused for seven
-  days, so a quiet week also means one run that needs the registry.
+- **The Haxe libraries CI uses** (utest, hxjava, hxnodejs, dox) are listed
+  in `ci/haxelibs.txt`, each with its exact version, its GitHub repository
+  and the commit of that version. `.github/actions/haxelibs` installs them
+  from a cache keyed on that list; on a miss, from GitHub at the commit
+  (`haxelib git`); and only if GitHub cannot supply the commit, from
+  lib.haxe.org. So CI does not need the registry: on 2026-10-04 its API was
+  down for most of the day, and every job failed at its first install. To
+  change a version, find the commit of that release and check that it is
+  the registry's release (ci/haxelibs.txt says how each was checked), then
+  edit the list: the next run on each OS installs that one library, and
+  every run after takes it from the cache. Adding or dropping a library
+  installs all of them, once. GitHub drops a cache unused for seven days.
 - **hxcpp** comes from the fork's git repository on GitHub, through
   `.github/actions/hxcpp`. `haxelib git` asks the registry only for a
   library's dependencies, and hxcpp has none.

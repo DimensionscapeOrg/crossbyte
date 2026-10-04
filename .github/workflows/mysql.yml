@@ -10,9 +10,9 @@ run-name: CrossByte MySQL | ${{ github.event_name }} | ${{ github.ref_name }}
 # It builds against the hxcpp fork's production branch, as ci.yml does, so it
 # needs the fork's MySQL client work (branch fix/mysql-client) merged there.
 #
-# utest comes through .github/actions/haxelibs, from a cache, so an outage of
-# lib.haxe.org does not stop this job. ci.yml's header says how a failure
-# reads.
+# utest comes through .github/actions/haxelibs, from a cache or GitHub, so
+# this job does not depend on lib.haxe.org. ci.yml's header says how a
+# failure reads.
 
 on:
   push:

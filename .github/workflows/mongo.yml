@@ -1,9 +1,9 @@
 name: CrossByte MongoDB
 run-name: CrossByte MongoDB | ${{ github.event_name }} | ${{ github.ref_name }}
 
-# utest and hxjava come through .github/actions/haxelibs, from a cache, so an
-# outage of lib.haxe.org does not stop this job. ci.yml's header says how a
-# failure reads.
+# utest and hxjava come through .github/actions/haxelibs, from a cache or
+# GitHub, so this job does not depend on lib.haxe.org. ci.yml's header says
+# how a failure reads.
 
 on:
   push:

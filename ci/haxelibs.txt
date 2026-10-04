@@ -1,16 +1,30 @@
-# The libraries CI installs from lib.haxe.org: a name and an exact version
-# on each line. .github/actions/haxelibs installs them from a cache keyed on
-# this list, and asks the registry only for a version the cache does not
-# hold: after this list changes, or once the cache has expired, so CI
-# keeps running while lib.haxe.org is down. RELEASING.md has more.
+# The Haxe libraries CI installs: a name, the exact version, the GitHub
+# repository it comes from, and the commit of that version there.
+# .github/actions/haxelibs installs them from a cache keyed on this list, and
+# on a cache miss from GitHub at that commit (haxelib git), so CI needs
+# nothing from lib.haxe.org. The registry is a second source, asked only if
+# GitHub cannot supply a commit. RELEASING.md has more.
 #
 # Every job that needs one of them installs all four, so the jobs share one
-# cache. Dependencies are not followed: a library that needs another lists
-# both here, so that every version stays exact.
+# cache. Dependencies are not followed, and none of the four has any: a
+# library that needs another lists both here.
 #
-# These are the versions CI installed before they were pinned (2026-10-04),
-# and the versions a local checkout is developed against.
-utest 1.13.2
-hxjava 4.2.0
-hxnodejs 12.2.0
-dox 1.6.0
+# Each commit was checked, file by file by git blob hash, against the
+# registry's release of that version (2026-10-04):
+# - utest 1.13.2: tag 1.13.2. All 59 files of the release identical.
+# - hxjava 4.2.0: tag 4.2.0, with its submodule build-tool/base. The
+#   release's files identical, lib/hxjava-std.jar (what --jvm reads) among
+#   them, but for haxelib.json's url (it named waneck/hxjava then) and two
+#   jars the release had built into jar-tool/out, which only `haxelib run
+#   hxjava` uses, for the Java source target's build.
+# - hxnodejs 12.2.0: the commit "Haxelib release 12.2.0", which has no tag.
+#   All 114 files of the release identical.
+# - dox 1.6.0: tag 1.6.0. run.n, which `haxelib run dox` runs, and every
+#   binary identical; the text files identical but for line endings (the
+#   release was zipped with CR LF). The release's run.js, a Node build, is
+#   not in the repository, and nothing runs it. Building dox would need
+#   hxargs, hxparse, hxtemplo and markdown; running it needs none of them.
+utest     1.13.2  https://github.com/haxe-utest/utest         6fcfec9964d4e876308f3d335a86034c39ff330d
+hxjava    4.2.0   https://github.com/HaxeFoundation/hxjava    f8c7dc6c56f4bf8f5912b4844a1b55ab094ee0cf
+hxnodejs  12.2.0  https://github.com/HaxeFoundation/hxnodejs  c9450595b2337587bcdaeacf159019531925f25d
+dox       1.6.0   https://github.com/HaxeFoundation/dox       aeb7f9dff43772a7c61ae9b190d3648edaf29f77
