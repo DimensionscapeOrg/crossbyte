@@ -1574,6 +1574,11 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A reliable UDP message is copied for sending into a buffer of exactly its
+  length, where writing grew the copy half as much again: a 200-byte
+  message, delivered and acknowledged, allocates 1,112 bytes natively,
+  where it allocated 1,216, and about 1,520 on the jvm, where it
+  allocated 1,610.
 - A request body with a `Content-Length` is held in no more than that
   length. It was grown by writing, half as much again as each write
   needed, so a POST of 4 KB was held in 6,177 bytes. It still grows as

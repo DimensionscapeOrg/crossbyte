@@ -2746,6 +2746,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	@:noCompletion private static function __copyRange(bytes:ByteArray, offset:Int, length:Int):ByteArray {
 		var copy:ByteArray = new ByteArray();
+		// Room for exactly what is copied: grown by writing, a 200-byte
+		// message was held in 301 bytes, every message sent.
+		@:privateAccess (copy : ByteArrayData).__reserve(length);
 		copy.writeBytes(bytes, offset, length);
 		copy.position = 0;
 		return copy;
