@@ -88,6 +88,7 @@ CrossByte currently includes:
     - natively the client takes the server's answers as untrusted, since whoever answers in the server's place writes them, and refuses one no server sends, a column count or a length that would otherwise have it allocate gigabytes or write out of bounds, with error 2027 (`MySQLConnection` lists what it bounds). `sslMode` stays `PREFERRED`, as in MySQL's own clients, which encrypts without checking whose certificate it is: across a network you do not trust, use `VERIFY_IDENTITY` with `sslCa` (`MySQLConfig.sslMode` says why insisting on TLS alone would not keep out a man in the middle)
   - PostgreSQL: natively through libpq, loaded at run time, with bound parameters, statement and connect timeouts and `cancel()`; on php through PDO; no other target
   - MongoDB, through its wire protocol (OP_MSG, SCRAM, TLS, cursors, transactions) on hxcpp, the jvm, the interpreter, hl and neko; not on JavaScript, which cannot block
+  - `ConnectionPool` and `AsyncDatabase` keep those blocking drivers off the runtime's thread, and bound the wait: `AsyncDatabase` fails a job still queued after `queueTimeout` (30 s), at the deadline, though every worker is busy, and refuses one past `maxQueued` (100,000); 0 is no limit for either, and for the pool's `acquireTimeout`
 
 ## Timers
 

@@ -186,13 +186,16 @@ class TestSuites {
 		// its stand-in by NativePostgresBridgeTest below.
 		runner.addCase(new crossbyte.db.TransactionFailureTest());
 		#end
+		#if target.threaded
+		// Where the worker pool has threads, and so a queue to bound: every
+		// target but JavaScript.
+		runner.addCase(new crossbyte.db.AsyncDatabaseTest());
+		#end
 		#if cpp
 		// Against a libpq stand-in built beside the test binary, so the
 		// bridge's threading and its GC-free zones are checked without a
 		// server.
 		runner.addCase(new crossbyte.db.NativePostgresBridgeTest());
-		// Where the worker pool has threads, and so a queue to bound.
-		runner.addCase(new crossbyte.db.AsyncDatabaseTest());
 		// The native MySQL client against a server that logs every byte it
 		// is sent (fakemysql/FakeMySQLServer), so no database is needed.
 		runner.addCase(new crossbyte.db.MySQLNativeWireTest());
