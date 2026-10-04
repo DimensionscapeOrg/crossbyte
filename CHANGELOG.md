@@ -1570,6 +1570,13 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- An HTTP/1.1 response's head is put together natively from an array of
+  its pieces kept from one response to the next, and joined once. A
+  `StringBuf` there is an array of pieces of its own, which grew seven
+  times a head: a GET answered on a kept-alive connection allocated 3,576
+  bytes natively, plain or over TLS, and allocates 1,848; a POST of 4 KB
+  10,340, now 8,612. Elsewhere the head is built as before, the jvm's
+  builder appending numbers without making strings of them.
 - Three places that iterated a map on a path that runs often no longer do.
   Natively a `Map`'s `keys()` and `iterator()` copy every entry into a new
   array first, so asking a map whether it was empty, or walking it for a
