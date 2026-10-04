@@ -1621,11 +1621,13 @@ entry below says how:
   request id, where they were an `IntMap`, which natively made a node for
   each; a call still waiting a ring's length of calls later moves to a map
   of its own. Over an in-memory link, natively: a request and its answer
-  under `callTimeout` allocate 168 bytes, as one without a deadline does,
-  where they allocated 280, on the runtime lane 344 where 456; a call a
-  handler answers later under `handlerTimeout` 656 where 752; and sixteen
-  requests in flight at once 168 bytes each where 211. On the jvm a
-  request under `callTimeout` allocates 192 bytes where 287.
+  under `callTimeout` take 141 ns and allocate 168 bytes, as one without a
+  deadline does, where they took 164 ns and allocated 280, on the
+  runtime lane 258 ns and 344 bytes, where 294 and 456; a call a handler
+  answers later under `handlerTimeout` 258 ns and 656 bytes, where 295
+  and 752; and sixteen requests in flight at once 117 ns and 168 bytes
+  each, where 130 and 211. On the jvm a request under `callTimeout`
+  allocates 192 bytes, where it allocated 287.
 - The runtime RPC lane tells a value's kind without allocating, where
   `Type.typeof` made an object for every `String` and `Bytes` it was
   asked about. The kinds are those `Type.typeof` gave, on every target,
