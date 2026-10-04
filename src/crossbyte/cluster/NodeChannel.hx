@@ -105,9 +105,11 @@ class NodeChannel implements crossbyte.core._internal.PassFlush {
 	private var __header:ByteArray = null;
 	// Whether the runtime will flush this pass's messages when it ends, and
 	// the messages written in the pass until it has: if the link drops
-	// first, they never went, and wait for it with the rest.
+	// first, they never went, and wait for it with the rest. Kept as they
+	// were written, each behind its length, in a buffer of the channel's
+	// own: what `send` was handed is the caller's again once it returns.
 	private var __passQueued:Bool = false;
-	private var __inPass:Array<ByteArray> = [];
+	private var __passBytes:ByteArray = null;
 	private var __inPassCount:Int = 0;
 
 	/** A link this end opens, and reopens for as long as it is not closed. **/
@@ -155,6 +157,14 @@ class NodeChannel implements crossbyte.core._internal.PassFlush {
 	/**
 		Sends one message, or holds it until the link is back.
 
+		The message is `payload`'s bytes from 0 to its `length`, its position
+		aside. They are copied before `send` returns, so `payload` is the
+		caller's again at once, to change or reuse, a listener can forward
+		the payload it was handed for its call alone, such as a datagram's
+		`event.data`. What is held for the link, and what a pass wrote and
+		takes back when the link fails before the pass ends, are those
+		copies.
+
 		@throws IOError When more than `maxQueuedBytes` is already waiting
 		        and `overflowPolicy` is `THROW`.
 	**/
@@ -164,11 +174,11 @@ class NodeChannel implements crossbyte.core._internal.PassFlush {
 		}
 
 		if (__up) {
-			__write(payload);
+			__write(payload, false);
 			return;
 		}
 
-		__queue.push(payload);
+		__queue.push(__copyOf(payload));
 		__queuedBytes += payload == null ? 0 : payload.length;
 		__enforceQueueLimit();
 	}
@@ -325,7 +335,12 @@ class NodeChannel implements crossbyte.core._internal.PassFlush {
 		}
 	}
 
-	private function __write(payload:ByteArray):Void {
+	/**
+		Writes one message to the link. `owned` says `payload` is already the
+		channel's own copy, taken off the queue; otherwise it is the caller's,
+		and anything kept of it is copied.
+	**/
+	private function __write(payload:ByteArray, owned:Bool):Void {
 		try {
 			var length:Int = payload == null ? 0 : payload.length;
 			if (__header == null) {
@@ -343,7 +358,18 @@ class NodeChannel implements crossbyte.core._internal.PassFlush {
 			}
 
 			if (__holdForPass()) {
-				__inPass[__inPassCount++] = payload;
+				// The socket has copied it, but only the channel can take it
+				// back if the link fails before the pass ends; it used to
+				// hold the caller's payload for that, and took back whatever
+				// those bytes had become.
+				if (__passBytes == null) {
+					__passBytes = new ByteArray();
+				}
+				__passBytes.writeBytes(__header, 0, 4);
+				if (length > 0) {
+					__passBytes.writeBytes(payload, 0, length);
+				}
+				__inPassCount++;
 				return;
 			}
 			__socket.flush();
@@ -351,10 +377,19 @@ class NodeChannel implements crossbyte.core._internal.PassFlush {
 			// It did not go, so it waits with everything else, behind what
 			// the pass wrote before it.
 			__requeuePass();
-			__queue.push(payload);
+			__queue.push(owned ? payload : __copyOf(payload));
 			__queuedBytes += payload == null ? 0 : payload.length;
 			__scheduleRetry(Std.string(e));
 		}
+	}
+
+	/** `payload`'s bytes, 0 to its length, in a `ByteArray` of the channel's own. **/
+	private static function __copyOf(payload:ByteArray):ByteArray {
+		var copy = new ByteArray();
+		if (payload != null && payload.length > 0) {
+			copy.writeBytes(payload, 0, payload.length);
+		}
+		return copy;
 	}
 
 	/**
@@ -384,21 +419,44 @@ class NodeChannel implements crossbyte.core._internal.PassFlush {
 		go always did.
 	**/
 	private function __requeuePass():Void {
-		for (i in 0...__inPassCount) {
-			var payload:ByteArray = __inPass[i];
-			__queue.push(payload);
-			__queuedBytes += payload == null ? 0 : payload.length;
+		if (__inPassCount > 0) {
+			var pass:ByteArray = __passBytes;
+			var bytes:haxe.io.Bytes = pass;
+			var at:Int = 0;
+			for (i in 0...__inPassCount) {
+				var length:Int = (bytes.get(at) << 24) | (bytes.get(at + 1) << 16) | (bytes.get(at + 2) << 8) | bytes.get(at + 3);
+				at += 4;
+				var payload = new ByteArray();
+				if (length > 0) {
+					payload.writeBytes(pass, at, length);
+					at += length;
+				}
+				__queue.push(payload);
+				__queuedBytes += length;
+			}
 		}
 		__forgetPass();
 	}
 
-	/** The pass's messages have gone, or will not be held: let go of them. **/
+	/**
+		The pass's messages have gone, or will not be held: let go of them.
+		Their buffer is kept for the next pass's, unless this one wrote more
+		than `PASS_KEEP` bytes, which a link that is not busy should not
+		hold on to.
+	**/
 	private function __forgetPass():Void {
-		for (i in 0...__inPassCount) {
-			__inPass[i] = null;
-		}
 		__inPassCount = 0;
+		if (__passBytes != null) {
+			if (__passBytes.length > PASS_KEEP) {
+				__passBytes = null;
+			} else {
+				__passBytes.length = 0;
+			}
+		}
 	}
+
+	/** The most a pass's buffer keeps between passes: 64 KB. **/
+	private static inline var PASS_KEEP:Int = 64 * 1024;
 
 	private function __flushQueue():Void {
 		// A cursor rather than taking the front off, which is a pass over
@@ -408,7 +466,7 @@ class NodeChannel implements crossbyte.core._internal.PassFlush {
 			__queue[__queueAt] = null;
 			__queueAt++;
 			__queuedBytes -= payload == null ? 0 : payload.length;
-			__write(payload);
+			__write(payload, true);
 		}
 
 		if (__queueAt >= __queue.length) {
