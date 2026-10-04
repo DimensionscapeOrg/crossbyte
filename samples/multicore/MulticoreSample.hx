@@ -171,13 +171,21 @@ class MulticoreSample extends ServerApplication {
 		if (__answered != REQUESTS && __failures.length == 0) {
 			__failures.push('the server counted $__answered requests answered, not $REQUESTS');
 		}
+		// The verdict is flushed as it is printed. To a pipe, as in CI, stdout
+		// is buffered until the process exits, so a process that then failed
+		// on its way out lost the verdict with it, and its log could not say
+		// whether the sample or the exit had gone wrong.
 		if (__failures.length > 0) {
 			for (failure in __failures) {
 				Sys.println('FAIL: $failure');
 			}
+			Sys.stdout().flush();
+			Sys.stderr().writeString('MulticoreSample exits with code 1: ${__failures.length} check(s) failed: ${__failures.join("; ")}\n');
+			Sys.stderr().flush();
 			Sys.exit(1);
 		}
 
 		Sys.println('OK: $REQUESTS requests answered across ${Lambda.count(__byRuntime)} runtimes.');
+		Sys.stdout().flush();
 	}
 }
