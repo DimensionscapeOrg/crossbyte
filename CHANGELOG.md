@@ -1574,6 +1574,15 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- An HTTP response's own fields, Date, Content-Type,
+  X-Content-Type-Options and Server, and the array holding them with the
+  caller's, are kept by the connection from one response to the next
+  when nothing outside will see them, where each response made them anew.
+  An `HTTPStatusEvent` listener is given new ones, as before, which are its
+  to keep. An HTTP/1.1 GET allocates 1,344 bytes natively, where it
+  allocated 1,640, and 3,920 on the jvm, where it allocated 4,080; an
+  HTTP/2 GET, whose handler is new for each stream, 3,448, where it
+  allocated 3,520.
 - A reliable UDP message is copied for sending into a buffer of exactly its
   length, where writing grew the copy half as much again: a 200-byte
   message, delivered and acknowledged, allocates 1,112 bytes natively,

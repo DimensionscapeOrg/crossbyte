@@ -2144,11 +2144,24 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// header block. Everything above this point decides a response; how it
 		// reaches the wire belongs to the writer, and that split is what lets
 		// the same response go out as HTTP/1.1 or as HTTP/2.
-		var fields:Array<URLRequestHeader> = [];
-		fields.push(new URLRequestHeader("Date", __formatHttpDate()));
-		fields.push(new URLRequestHeader("Content-Type", contentType));
-		fields.push(new URLRequestHeader("X-Content-Type-Options", "nosniff"));
-		fields.push(new URLRequestHeader("Server", "CrossByte"));
+		//
+		// Handed to an HTTPStatusEvent's listener, the fields are made anew, as
+		// they always were, and are the listener's to keep. With no listener
+		// nothing outside sees them, the writer reads them and is done, so
+		// the array and the four fields every response carries are this
+		// connection's, kept from one response to the next: they were made
+		// for each, 248 bytes natively.
+		var handedOut:Bool = hasEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS);
+		var fields:Array<URLRequestHeader>;
+		if (handedOut) {
+			fields = [];
+			fields.push(new URLRequestHeader("Date", __formatHttpDate()));
+			fields.push(new URLRequestHeader("Content-Type", contentType));
+			fields.push(new URLRequestHeader("X-Content-Type-Options", "nosniff"));
+			fields.push(new URLRequestHeader("Server", "CrossByte"));
+		} else {
+			fields = __keptFieldsFor(contentType);
+		}
 
 		__responseKeepAlive = __decideKeepAlive(statusCode);
 
@@ -2260,7 +2273,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (hasEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS)) {
 			var statusEvent:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, statusCode, false);
 			statusEvent.responseURL = (__queryString == null || __queryString == "") ? __requestPath : __requestPath + "?" + __queryString;
-			statusEvent.responseHeaders = fields;
+			// A listener added since the fields were begun, by the hook above,
+			// say, is given new ones too: the kept ones are this connection's.
+			statusEvent.responseHeaders = handedOut ? fields : [for (field in fields) __handOutField(field)];
 			dispatchEvent(statusEvent);
 		}
 
@@ -2291,6 +2306,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 			keepAlive: __responseKeepAlive,
 			chunked: chunked
 		});
+		if (!handedOut) {
+			// Written: the caller's fields in it are let go of until the next.
+			fields.resize(0);
+		}
 
 		if (openBody) {
 			// The body is the caller's to write, and endResponse settles the
@@ -3289,6 +3308,42 @@ final class HTTPRequestHandler extends EventDispatcher {
 		} catch (_:Dynamic) {
 			return null;
 		}
+	}
+
+	// The response fields this connection keeps; see __dispatchResponseBytes.
+	@:noCompletion private var __keptFields:Null<Array<URLRequestHeader>> = null;
+	@:noCompletion private var __keptDate:Null<URLRequestHeader> = null;
+	@:noCompletion private var __keptType:Null<URLRequestHeader> = null;
+	// The same for every response, and read only: shared.
+	@:noCompletion private static final __NOSNIFF_FIELD:URLRequestHeader = new URLRequestHeader("X-Content-Type-Options", "nosniff");
+	@:noCompletion private static final __SERVER_FIELD:URLRequestHeader = new URLRequestHeader("Server", "CrossByte");
+
+	/**
+		This connection's kept response fields, emptied and begun as every
+		response's are: Date, Content-Type, X-Content-Type-Options, Server.
+		Only for a response whose fields nobody outside will see.
+	**/
+	@:noCompletion private function __keptFieldsFor(contentType:String):Array<URLRequestHeader> {
+		var fields:Null<Array<URLRequestHeader>> = __keptFields;
+		if (fields == null) {
+			fields = __keptFields = [];
+			__keptDate = new URLRequestHeader("Date", "");
+			__keptType = new URLRequestHeader("Content-Type", "");
+		}
+		__keptDate.value = __formatHttpDate();
+		__keptType.value = contentType;
+		fields.resize(0);
+		fields.push(__keptDate);
+		fields.push(__keptType);
+		fields.push(__NOSNIFF_FIELD);
+		fields.push(__SERVER_FIELD);
+		return fields;
+	}
+
+	/** `field` as a listener may be given it: a copy of one this connection keeps. **/
+	@:noCompletion private function __handOutField(field:URLRequestHeader):URLRequestHeader {
+		return (field == __keptDate || field == __keptType || field == __NOSNIFF_FIELD || field == __SERVER_FIELD) ? new URLRequestHeader(field.name,
+			field.value) : field;
 	}
 
 	/**

@@ -1257,6 +1257,62 @@ class HTTPRequestHandlerTest extends utest.Test {
 		});
 	}
 
+	/**
+		The fields an HTTPStatusEvent carries are its listener's to keep. A
+		connection keeps the fields of a response nobody listens for and
+		reuses them for its next; one somebody listens for is given fields of
+		its own, which no later response on the connection changes.
+	**/
+	public function testTheFieldsAStatusListenerIsGivenAreItsOwn(async:Async):Void {
+		var seen:Array<Array<crossbyte.url.URLRequestHeader>> = [];
+		var listening:Bool = false;
+		__sendRequests(async, [
+			(handler, next) -> {
+				var type:String = switch (handler.requestPath) {
+					case "/a": "text/plain";
+					case "/b": "application/json";
+					default: "text/csv";
+				}
+				handler.respond(200, type, "answered " + handler.requestPath);
+				// After the first response, which goes out with nobody
+				// listening, on the connection's kept fields.
+				if (!listening) {
+					listening = true;
+					handler.addEventListener(crossbyte.events.HTTPStatusEvent.HTTP_RESPONSE_STATUS, e -> seen.push(e.responseHeaders));
+				}
+			}
+		], [
+			"GET /a HTTP/1.1\r\nHost: localhost\r\n\r\n",
+			"GET /b HTTP/1.1\r\nHost: localhost\r\n\r\n",
+			"GET /c HTTP/1.1\r\nHost: localhost\r\n\r\n"
+		], function(result):Void {
+			Assert.equals(3, result.responses.length);
+			var types:Array<String> = [for (response in result.responses) response.headers.get("content-type")];
+			Assert.same(["text/plain", "application/json", "text/csv"], types, "the responses went out with the wrong Content-Type");
+			Assert.equals(2, seen.length, "the listener did not hear the two responses after it was added");
+			if (seen.length == 2) {
+				var typeOf = (fields:Array<crossbyte.url.URLRequestHeader>) -> {
+					var found:Null<String> = null;
+					for (field in fields) {
+						if (field.name.toLowerCase() == "content-type") {
+							found = field.value;
+						}
+					}
+					found;
+				};
+				Assert.equals("application/json", typeOf(seen[0]), "the next response changed the fields a listener was given");
+				Assert.equals("text/csv", typeOf(seen[1]));
+				Assert.isFalse(seen[0] == seen[1], "two responses gave a listener the same array");
+				for (a in seen[0]) {
+					for (b in seen[1]) {
+						Assert.isFalse(a == b, 'two responses gave a listener the same ${a.name} field');
+					}
+				}
+			}
+			async.done();
+		});
+	}
+
 	public function testTheErrorDocumentIsTheBodyOfTheServersOwnErrors(async:Async):Void {
 		// errorDocument was declared, taken by the constructor, and read by
 		// nothing: every error went out as one line of plain text whatever it

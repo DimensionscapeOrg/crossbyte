@@ -77,10 +77,10 @@ class AllocationBudgetTest extends utest.Test {
 	private static final INTERVAL = new Budget("an interval timer firing and re-arming", "firing", [0, 0, 0], [8, 8, 8]);
 	private static final POST = new Budget("a callback posted to the runtime and run", "post", [0, 0, 0], [8, 8, 8]);
 	private static final IDLE_TICK = new Budget("a runtime frame with nothing to do", "frame", [0, 0, 0], [8, 8, 8]);
-	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [1640, 1640, 4088], [2120, 2120, 5176]);
-	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [6352, 6352, 9064], [8008, 8008, 11400]);
-	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3520, 3504, 2591], [4464, 4448, 3304]);
-	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [1640, 1640, 10592], [2120, 2120, 13304]);
+	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [1344, 1344, 3920], [1744, 1744, 4968]);
+	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [6056, 6056, 8896], [7640, 7640, 11184]);
+	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3448, 3432, 2368], [4376, 4360, 3024]);
+	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [1344, 1344, 10456], [1744, 1744, 13136]);
 	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [1576, 1576, 2080], [2040, 2040, 2664]);
 	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [1112, 1112, 1528], [1456, 1456, 1976]);
 	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 336], [8, 8, 488]);
