@@ -65,6 +65,11 @@ entry below says how:
 - `readObject` and `writeObject` throw for an `objectEncoding` the build
   cannot do, on `ByteArray`, `FileStream` and every socket, where they
   read `null` and wrote nothing.
+- An object read through a `ByteArray` or a socket, or by `SharedObject`
+  or `SharedChannel`, may hold 1,000,000 values, elements, members,
+  names, each null of a run, and one holding more is refused with an
+  `IOError`. A program reading larger objects it trusts raises
+  `ByteArray.maxObjectValues`.
 - Types: `SQLiteConnection.lastInsertRowID` and `DBStats`' counts are
   `Float`s; `JWTPayload.issuedAt`, `expiresAt` and `notBeforeTime` are
   `Null<Float>`; `System.memoryUsage()` is a `Float`;
@@ -332,6 +337,9 @@ entry below says how:
   `(delta) -> runtime.pump(delta)`.
 
 ### Added
+- `ByteArray.maxObjectValues`: the most values one object read may make,
+  1,000,000 unless changed, for the whole process; zero or less is no
+  limit. See the fix below.
 - `CrossByte.collectWhenIdle`, off by default: natively, a runtime running
   its own loop collects garbage in the gap before its next tick when the
   collections it has seen say one is due before the gap after, and the gap
@@ -3165,6 +3173,20 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Reading an object bounds what it can make of its bytes. HXSF writes a
+  run of nulls in an array as a count, so twelve bytes, `au100000000h`,
+  made an array of 100,000,000 slots, 840 MB natively, through any
+  socket's `readObject`, `SharedObject` or `SharedChannel`. A negative
+  string or bytes length moved the read back over what it had read, so
+  six bytes read the same value until memory ran out. And AMF made a
+  buffer or a vector of whatever length the bytes claimed before reading
+  any of it: eight bytes asked for 2 GB. An object holding more than
+  `ByteArray.maxObjectValues` values is refused with an `IOError`, in
+  HXSF, JSON and AMF; a negative length, or a run of no nulls, as
+  malformed. AMF reads text, bytes and vectors as they arrive, an AMF
+  object that runs out is an `EOFError` with `position` left where it
+  was, as HXSF's and JSON's are, where it was a `haxe.io.Eof`, and AMF3
+  no longer traces a vector's class name.
 - A timer handle kept after its timer has fired or been cleared no longer
   names another timer later. A handle was a slot and a twelve-bit count of
   that slot's reuses, and slots were reused the most recently freed first,

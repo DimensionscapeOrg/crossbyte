@@ -8,7 +8,11 @@ enum abstract ObjectEncoding(Int) from Int to Int from UInt to UInt {
 	/** AMF3 object encoding. */
 	public var AMF3 = 3;
 
-	/** CrossByte's HXSF object encoding. */
+	/**
+		CrossByte's HXSF object encoding: Haxe's serialization format. Read
+		bounded, as every encoding is: 256 levels deep at most, and
+		`ByteArray.maxObjectValues` values.
+	**/
 	public var HXSF = 10;
 
 	/** JSON object encoding. */

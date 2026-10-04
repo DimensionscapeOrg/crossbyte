@@ -268,6 +268,174 @@ class ByteArrayIOTest extends utest.Test {
 		#end
 	}
 
+	/**
+		An object holding more values than `ByteArray.maxObjectValues` is
+		refused with an IOError, in every encoding, and its bytes are
+		consumed; one holding as many reads. Each null of a run counts:
+		unbounded, `au100000000h`, twelve bytes, made an array of
+		100,000,000 slots, 800 MB natively, wherever a peer's object is read.
+	**/
+	public function testAnObjectHoldingTooManyValuesIsRefused():Void {
+		// The default bound: an array and a million nulls is one too many.
+		Assert.equals(1000000, ByteArray.maxObjectValues);
+		for (text in ["au1000000h", "au5000000h", "au2147483646h"]) {
+			var input = __framed(text);
+			Assert.raises(() -> input.readObject(), IOError, text);
+			Assert.equals(input.length, input.position, '$text: the refused object was not consumed');
+		}
+		var atBound = __framed("au999999h");
+		Assert.equals(999999, (atBound.readObject() : Array<Dynamic>).length);
+
+		var saved:Int = ByteArray.maxObjectValues;
+		ByteArray.maxObjectValues = 1000;
+		try {
+			// A value a byte at a time, in either text encoding.
+			for (encoding in [ObjectEncoding.HXSF, ObjectEncoding.JSON]) {
+				for (count in [999, 1000]) {
+					var input = __framed(__flat(encoding, count));
+					input.objectEncoding = encoding;
+					if (count == 999) {
+						Assert.equals(999, (input.readObject() : Array<Dynamic>).length, 'encoding $encoding: an array and 999 values was refused');
+					} else {
+						Assert.raises(() -> input.readObject(), IOError, 'encoding $encoding, an array and $count values');
+						Assert.equals(input.length, input.position, 'encoding $encoding: the refused object was not consumed');
+					}
+				}
+			}
+			// Names count too: the object, then a name and a value a member.
+			var members = new StringBuf();
+			for (i in 0...499) {
+				members.add((i > 0 ? "," : "") + '"m$i":0');
+			}
+			var json = __framed("{" + members.toString() + "}");
+			json.objectEncoding = ObjectEncoding.JSON;
+			Assert.equals(0, Reflect.field(json.readObject(), "m498"), "an object of 999 values was refused");
+			json = __framed("{" + members.toString() + ',"m499":0}');
+			json.objectEncoding = ObjectEncoding.JSON;
+			Assert.raises(() -> json.readObject(), IOError, "an object of 1,001 values");
+
+			// Each value once, wherever it starts: the array, a string with
+			// a quote in it, the object, its name, the inner array and its
+			// four literals are nine.
+			var mixed = '[ "a\\"b" , {"k" : [true,false,null,-1.5e3]} ]';
+			for (most in [9, 8]) {
+				ByteArray.maxObjectValues = most;
+				var input = __framed(mixed);
+				input.objectEncoding = ObjectEncoding.JSON;
+				if (most == 9) {
+					Assert.equals('a"b', (input.readObject() : Array<Dynamic>)[0], "nine values were refused");
+				} else {
+					Assert.raises(() -> input.readObject(), IOError, "nine values read with a bound of eight");
+				}
+			}
+
+			// Zero or less is no limit.
+			ByteArray.maxObjectValues = 0;
+			Assert.equals(5000, (__framed("au5000h").readObject() : Array<Dynamic>).length);
+		} catch (e:Dynamic) {
+			ByteArray.maxObjectValues = saved;
+			throw e;
+		}
+		ByteArray.maxObjectValues = saved;
+	}
+
+	#if format
+	/**
+		AMF0 and AMF3 are bounded as HXSF is: a value at a time, and a length
+		claimed ahead of a string, bytes or a vector is read as the bytes
+		arrive, never allocated ahead of them. `format` made a buffer of the
+		length claimed first: five bytes asked for 2 GB.
+	**/
+	public function testAMFIsBoundedInValuesAndInWhatItAllocates():Void {
+		// Each claims far more than follows, and reads as running out.
+		var claims:Array<{name:String, encoding:ObjectEncoding, bytes:Array<Int>}> = [
+			{name: "AMF0 long string of 2 GB", encoding: ObjectEncoding.AMF0, bytes: [0x0C, 0x7F, 0xFF, 0xFF, 0xF0, 0x61, 0x62, 0x63]},
+			{name: "AMF3 string of 256 MB", encoding: ObjectEncoding.AMF3, bytes: [0x06, 0xFF, 0xFF, 0xFF, 0xFF, 0x61]},
+			{name: "AMF3 byte array of 256 MB", encoding: ObjectEncoding.AMF3, bytes: [0x0C, 0xFF, 0xFF, 0xFF, 0xFF, 0x61]},
+			{name: "AMF3 vector of 2^28 ints", encoding: ObjectEncoding.AMF3, bytes: [0x0D, 0xFF, 0xFF, 0xFF, 0xFF, 0x01]},
+			{name: "AMF3 vector of 2^28 objects", encoding: ObjectEncoding.AMF3, bytes: [0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x01]}
+		];
+		for (claim in claims) {
+			var input = new ByteArray();
+			for (byte in claim.bytes) {
+				input.writeByte(byte);
+			}
+			input.position = 0;
+			input.objectEncoding = claim.encoding;
+			Assert.raises(() -> input.readObject(), EOFError, claim.name);
+			Assert.equals(0, input.position, claim.name + ": a truncated object moved the position");
+		}
+
+		var saved:Int = ByteArray.maxObjectValues;
+		ByteArray.maxObjectValues = 1000;
+		try {
+			for (count in [999, 1000]) {
+				// AMF0: a strict array of nulls.
+				var amf0 = new ByteArray();
+				amf0.endian = Endian.BIG_ENDIAN;
+				amf0.writeByte(0x0A);
+				amf0.writeUnsignedInt(count);
+				for (_ in 0...count) {
+					amf0.writeByte(0x05);
+				}
+				// AMF3: a fixed vector of ints.
+				var amf3 = new ByteArray();
+				amf3.endian = Endian.BIG_ENDIAN;
+				amf3.writeByte(0x0D);
+				var header:Int = (count << 1) | 1;
+				amf3.writeByte(0x80 | (header >> 7));
+				amf3.writeByte(header & 0x7F);
+				amf3.writeByte(0x01);
+				for (i in 0...count) {
+					amf3.writeInt(i);
+				}
+				for (input in [amf0, amf3]) {
+					input.position = 0;
+					input.objectEncoding = input == amf0 ? ObjectEncoding.AMF0 : ObjectEncoding.AMF3;
+					if (count == 999) {
+						// An array, or for the fixed vector a Vector, whose
+						// length the jvm does not read through Dynamic.
+						var value:Dynamic = input.readObject();
+						var length:Int = Std.isOfType(value, Array) ? (value : Array<Dynamic>).length : (cast value : haxe.ds.Vector<Dynamic>).length;
+						Assert.equals(999, length, 'encoding ${input.objectEncoding}: 1,000 values were refused');
+					} else {
+						Assert.raises(() -> input.readObject(), IOError, 'encoding ${input.objectEncoding}: 1,001 values');
+					}
+				}
+			}
+		} catch (e:Dynamic) {
+			ByteArray.maxObjectValues = saved;
+			throw e;
+		}
+		ByteArray.maxObjectValues = saved;
+	}
+	#end
+
+	/**
+		HXSF that would read its own bytes again is refused with an IOError.
+		A negative string or bytes length moved the read back, so six bytes
+		read the same value for ever, adding it to an array until memory ran
+		out; a run of no nulls, or fewer, set an element already read.
+	**/
+	public function testMalformedHXSFIsRefused():Void {
+		for (text in ["ay-4:h", "as-4:h", "as-8:h", "ay-8:h", "au0h", "au-5h", "ai1u-1h"]) {
+			var input = __framed(text);
+			Assert.raises(() -> input.readObject(), IOError, text);
+		}
+		Assert.same([1, null, null, 2], __framed("ai1u2i2h").readObject());
+	}
+
+	/** An array of `count` zeros, flat, as `encoding` writes it. **/
+	private static function __flat(encoding:ObjectEncoding, count:Int):String {
+		var text = new StringBuf();
+		text.add(encoding == ObjectEncoding.JSON ? "[" : "a");
+		for (i in 0...count) {
+			text.add(encoding == ObjectEncoding.JSON ? (i > 0 ? ",0" : "0") : "z");
+		}
+		text.add(encoding == ObjectEncoding.JSON ? "]" : "h");
+		return text.toString();
+	}
+
 	/** The text of arrays nested `depth` deep, the innermost empty. **/
 	private static function __nested(encoding:ObjectEncoding, depth:Int):String {
 		var open:String = encoding == ObjectEncoding.JSON ? "[" : "a";
