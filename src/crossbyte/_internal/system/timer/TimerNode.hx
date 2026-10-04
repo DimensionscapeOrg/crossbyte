@@ -5,7 +5,24 @@ class TimerNode {
 	public var id:Int;
 	public var time:Float;
 	public var interval:Float;
-	public var enabled:Bool = true; 
+	public var enabled:Bool = true;
+
+	/**
+	 * Whether its callback is running. Kept on the node rather than in one
+	 * field of the scheduler, so a callback that runs a pass of its own, a
+	 * nested pump, does not lose track of the one that called it. Declared
+	 * beside `enabled`, in the padding hxcpp leaves after it, so the node is
+	 * no larger.
+	 */
+	public var firing:Bool = false;
+
+	/**
+	 * Whether the callback running gave its own timer a new time, a
+	 * reschedule, a delay or a resume through its handle, which settling it
+	 * afterwards has to respect.
+	 */
+	public var rearmed:Bool = false;
+
 	public var pausedAt:Null<Float> = null;
 	public var callback:TimerHandle->Void;
 

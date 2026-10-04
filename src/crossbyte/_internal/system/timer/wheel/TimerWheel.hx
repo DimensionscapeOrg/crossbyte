@@ -104,11 +104,6 @@ class TimerWheel implements ITimerScheduler {
 	@:noCompletion private var __maxFires:Int = 0;
 	@:noCompletion private var __deadline:Float = 0;
 
-	// The node whose callback is running, and whether that callback gave it a
-	// new time itself; see the heap.
-	@:noCompletion private var __firing:WheelNode = null;
-	@:noCompletion private var __rearmed:Bool = false;
-
 	@:noCompletion private var nodes:Array<WheelNode> = [];
 	@:noCompletion private var gens:Array<Int> = [];
 	@:noCompletion private var free:Array<Int> = [];
@@ -204,10 +199,10 @@ class TimerWheel implements ITimerScheduler {
 		var node:WheelNode = nodes[handle.id()];
 		node.time = time;
 
-		if (node == __firing) {
+		if (node.firing) {
 			// From its own callback: linked once the callback returns, at the
 			// time it asked for, rather than freed or advanced by an interval.
-			__rearmed = true;
+			node.rearmed = true;
 			return true;
 		}
 
@@ -264,8 +259,8 @@ class TimerWheel implements ITimerScheduler {
 				node.pausedAt = null;
 		}
 
-		if (node == __firing) {
-			__rearmed = true;
+		if (node.firing) {
+			node.rearmed = true;
 		} else {
 			__link(node);
 		}
@@ -443,8 +438,8 @@ class TimerWheel implements ITimerScheduler {
 			// is passed on; see the heap, which does the same.
 			var failed:Bool = false;
 			var failure:Dynamic = null;
-			__firing = node;
-			__rearmed = false;
+			node.firing = true;
+			node.rearmed = false;
 			try {
 				// A Void->Void one directly; see TimerNode.voidCallback.
 				var direct:Void->Void = node.voidCallback;
@@ -458,11 +453,11 @@ class TimerWheel implements ITimerScheduler {
 				failure = error;
 			}
 			__fired++;
-			__firing = null;
+			node.firing = false;
 
 			if (gens[id] != gen || nodes[id] != node) {
 				// Freed or replaced by its own callback; nothing left to do.
-			} else if (__rearmed) {
+			} else if (node.rearmed) {
 				__link(node);
 			} else if (node.enabled && node.interval > 0) {
 				node.time += node.interval;
@@ -632,6 +627,13 @@ private class WheelNode {
 	public var time:Float;
 	public var interval:Float;
 	public var enabled:Bool = true;
+
+	/** Whether its callback is running; see TimerNode.firing. */
+	public var firing:Bool = false;
+
+	/** Whether that callback gave it a new time itself. */
+	public var rearmed:Bool = false;
+
 	public var pausedAt:Null<Float> = null;
 	public var callback:TimerHandle->Void;
 	public var voidCallback:Void->Void;

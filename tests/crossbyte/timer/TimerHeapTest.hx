@@ -330,6 +330,58 @@ class TimerHeapTest extends utest.Test {
 		Assert.isTrue(heap.isEmpty);
 	}
 
+	public function testATimerRescheduledFromItsCallbackAfterANestedPass():Void {
+		// Which timer's callback was running was one field of the heap, and a
+		// pass run from inside a callback, a nested pump, cleared it: the
+		// callback's own reschedule afterwards was lost, and the timer freed.
+		var heap = new TimerHeap();
+		var runs:Array<Float> = [];
+		var nested = 0;
+		var handle = heap.setTimeout(1.0, h -> {
+			runs.push(heap.time);
+			if (runs.length == 1) {
+				heap.setTimeoutVoid(0, () -> nested++);
+				heap.advanceTime(0);
+				heap.reschedule(h, heap.time + 2.0);
+			}
+		});
+
+		heap.advanceTime(1.0);
+		Assert.equals(1, nested, "the nested pass fired nothing");
+		Assert.isTrue(heap.isActive(handle), "the timer rescheduled after a nested pass was freed");
+		heap.advanceTime(1.0);
+		heap.advanceTime(1.0);
+		Assert.same([1.0, 3.0], runs);
+		Assert.isFalse(heap.isActive(handle));
+	}
+
+	public function testATimerResumedFromItsCallbackAfterANestedPassCanBeCleared():Void {
+		// The path `crossbyte.Timer.pause` and `resume` take. Resumed after a
+		// nested pass, the one-shot went back in the heap and had its slot
+		// freed as if it had run: its handle read as cleared, nothing could
+		// clear it, and the resume was lost.
+		var heap = new TimerHeap();
+		var runs = 0;
+		var nested = 0;
+		var handle = heap.setTimeout(1.0, h -> {
+			runs++;
+			if (runs == 1) {
+				heap.setTimeoutVoid(0, () -> nested++);
+				heap.advanceTime(0);
+				heap.setEnabled(h, false);
+				heap.setEnabled(h, true, ResumePolicy.FromNow);
+			}
+		});
+
+		heap.advanceTime(1.0);
+		Assert.equals(1, nested, "the nested pass fired nothing");
+		Assert.isTrue(heap.isActive(handle), "a timer resumed after a nested pass lost its handle");
+		Assert.isTrue(heap.clear(handle), "a timer resumed after a nested pass could not be cleared");
+		heap.advanceTime(1.0);
+		Assert.equals(1, runs, "a cleared timer fired");
+		Assert.isTrue(heap.isEmpty);
+	}
+
 	public function testPauseResumeKeepPhaseFromZeroPreservesRemainingDelay():Void {
 		var heap = new TimerHeap();
 		var fired = 0;

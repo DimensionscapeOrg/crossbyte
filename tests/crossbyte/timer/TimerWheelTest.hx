@@ -281,6 +281,33 @@ class TimerWheelTest extends utest.Test {
 		Assert.equals(1, wheel.size);
 	}
 
+	public function testATimerRescheduledFromItsCallbackAfterANestedPass():Void {
+		// A pass run from inside a callback cleared which timer was firing:
+		// the callback's reschedule afterwards linked the timer into a bucket
+		// and the settle then freed it there, still linked.
+		var wheel = new TimerWheel();
+		var runs = 0;
+		var nested = 0;
+		var handle = wheel.setTimeout(0.010, h -> {
+			runs++;
+			if (runs == 1) {
+				wheel.setTimeoutVoid(0.001, () -> nested++);
+				wheel.advanceTime(0.002);
+				wheel.reschedule(h, wheel.time + 0.020);
+			}
+		});
+
+		wheel.advanceTime(0.010);
+		Assert.equals(1, nested, "the nested pass fired nothing");
+		Assert.isTrue(wheel.isActive(handle), "the timer rescheduled after a nested pass was freed");
+		for (_ in 0...4) {
+			wheel.advanceTime(0.010);
+		}
+		Assert.equals(2, runs);
+		Assert.isFalse(wheel.isActive(handle));
+		Assert.isTrue(wheel.isEmpty);
+	}
+
 	public function testSizeTracksLiveTimers():Void {
 		var wheel = new TimerWheel();
 		Assert.isTrue(wheel.isEmpty);
