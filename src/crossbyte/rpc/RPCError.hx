@@ -43,6 +43,22 @@ class RPCError extends Error {
 	public static inline final NO_HANDLER_MESSAGE:String = "Nothing answers calls on this connection";
 
 	/**
+		What a caller is told when the other side has no method its call
+		names: none of that name, or none with that signature, a peer built
+		from another version of the contract, or from before the method was
+		added, as in a rolling deploy, and, on the runtime lane, no handler
+		registered for its number. See `RPCSession.onUnreadableFrame`.
+	**/
+	public static inline final UNKNOWN_METHOD_MESSAGE:String = "No method here answers this call";
+
+	/**
+		What a caller is told when the other side could not read its call's
+		arguments: they ran past the end of their frame, named more than it
+		holds, or carried a value of a kind it does not know.
+	**/
+	public static inline final UNREADABLE_MESSAGE:String = "The call's arguments could not be read";
+
+	/**
 		@param message What the caller is told.
 		@param id A number for the error, kept on this side; only the message
 		crosses the wire.

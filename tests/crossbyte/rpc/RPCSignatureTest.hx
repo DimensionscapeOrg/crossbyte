@@ -39,6 +39,10 @@ class RPCSignatureTest extends utest.Test {
 		var scaled = fixture.commands.scale(3, 0.5);
 		Assert.same([], fixture.handler.scaled, "a handler ran on arguments reordered");
 		Assert.isFalse(scaled.succeeded, "a call was answered by another version of its method: " + scaled.result);
+		// Answered as a call for a method the server has not got, and the
+		// connection carries on.
+		Assert.equals(RPCError.UNKNOWN_METHOD_MESSAGE, scaled.error);
+		Assert.equals(9, fixture.commands.place(4.5, "nine").result);
 	}
 
 	public function testAnAnswerOfAnotherKindIsNotReadAsThisOne():Void {
@@ -47,6 +51,7 @@ class RPCSignatureTest extends utest.Test {
 		var fixture = new Fixture();
 		var ready = fixture.commands.ready(7);
 		Assert.isFalse(ready.succeeded, "an answer of another kind was read as this one's: " + ready.result);
+		Assert.equals(RPCError.UNKNOWN_METHOD_MESSAGE, ready.error);
 	}
 
 	public function testRenamingAnArgumentOrATypedefChangesNoOp():Void {

@@ -159,6 +159,8 @@ class RPCTest extends utest.Test {
 	}
 
 	public function testUnknownOpDoesNotCollideIntoHandler():Void {
+		// A one-way call for an op the handler has not got runs nothing, and
+		// is passed over with the session told: it ended the connection.
 		var link = LinkedConnection.pair();
 		var handler = new TestHandler();
 		var serverSession = new RPCSession(link.server, null, handler);
@@ -166,6 +168,7 @@ class RPCTest extends utest.Test {
 		var errored:Bool = false;
 		link.server.onClose = _ -> closed = true;
 		link.server.onError = _ -> errored = true;
+		var passed = passedOverBy(serverSession);
 
 		var payload = new ByteArrayOutput(5);
 		payload.writeByte(0);
@@ -178,7 +181,8 @@ class RPCTest extends utest.Test {
 
 		link.client.send(frame);
 		Assert.equals(0, handler.calls);
-		Assert.isTrue(closed || errored);
+		Assert.isFalse(closed || errored, "a one-way call for an unknown op ended the connection");
+		Assert.same(["op 1234567, call 0: no method answers op 0x01234567"], passed);
 	}
 
 	public function testContractDrivenCommandsAndHandlerGenerateFromSharedInterface():Void {
@@ -556,13 +560,17 @@ class RPCTest extends utest.Test {
 		Assert.equals("player-2", commands.lookup(2).result);
 	}
 
-	public function testAFrameWhoseArgumentsDoNotDecodeStillEndsTheConnection():Void {
+	public function testAFrameWhoseArgumentsDoNotDecodeIsAnsweredAndTheConnectionStays():Void {
+		// A request for `lookup` with a byte where its Int should be. It ended
+		// the connection, and every call waiting on it; the frame carries its
+		// length, so the next is read where it begins.
 		var link = LinkedConnection.pair();
-		var serverSession = new RPCSession(link.server, null, new FailingHandler());
+		var handler = new FailingHandler();
+		var serverSession = new RPCSession(link.server, null, handler);
 		var ended = endingOf(link.server);
+		var passed = passedOverBy(serverSession);
+		var answers = errorAnswersAt(link.client);
 
-		// A request for `lookup` with a byte where its Int should be: the
-		// frame is not sound, so nothing after it can be trusted to line up.
 		var payload = new ByteArrayOutput(8);
 		payload.writeByte(crossbyte.rpc._internal.RPCWire.FLAG_REQUEST);
 		payload.writeInt(opOf("lookup(i32):utf8"));
@@ -576,7 +584,11 @@ class RPCTest extends utest.Test {
 		frame.writeBytes(payload, 0, payload.bytesWritten);
 		link.client.send(frame);
 
-		Assert.isTrue(ended.value, "a frame that could not be read left the connection up");
+		Assert.isFalse(ended.value, "a call whose arguments did not read ended the connection");
+		Assert.same([], handler.looked);
+		Assert.same(["1: " + RPCError.UNREADABLE_MESSAGE], answers);
+		Assert.equals(1, passed.length);
+		Assert.stringContains("arguments could not be read", passed[0]);
 	}
 
 	// ---------------------------------------------------- frames and bounds
@@ -592,10 +604,12 @@ class RPCTest extends utest.Test {
 				serverSession.register(999, args -> null);
 			}
 			var ended = endingOf(link.server);
+			var answers = errorAnswersAt(link.client);
 
 			// A request for `lookup` one Int short, and a sound one after it,
 			// in one read. The Int was read from the next frame's length, and
-			// the handler ran on it.
+			// the handler ran on it. Now the short one is answered as unreadable
+			// and the sound one runs on its own.
 			var short = frameOf(out -> {
 				out.writeByte(RPCWire.FLAG_REQUEST);
 				out.writeInt(opOf("lookup(i32):utf8"));
@@ -609,8 +623,9 @@ class RPCTest extends utest.Test {
 			});
 			link.client.send(joined([short, sound]));
 
-			Assert.same([], handler.looked, 'on the $lane lane, a handler ran on arguments from the frame after its own');
-			Assert.isTrue(ended.value, 'on the $lane lane, a frame that ran past its end left the connection up');
+			Assert.same([9], handler.looked, 'on the $lane lane, a handler ran on arguments from the frame after its own');
+			Assert.same(["1: " + RPCError.UNREADABLE_MESSAGE], answers, 'on the $lane lane, the short call was not answered as unreadable');
+			Assert.isFalse(ended.value, 'on the $lane lane, a frame that ran past its end ended the connection');
 		}
 	}
 
@@ -639,7 +654,8 @@ class RPCTest extends utest.Test {
 
 			Assert.isTrue(pending.completed, 'on the $lane lane, the call was never settled');
 			Assert.isFalse(pending.succeeded, 'on the $lane lane, a call was answered from the frame after its answer');
-			Assert.isTrue(ended.value, 'on the $lane lane, a frame that ran past its end left the connection up');
+			Assert.stringContains("could not be read", pending.error);
+			Assert.isFalse(ended.value, 'on the $lane lane, an answer that ran past its end ended the connection');
 		}
 	}
 
@@ -662,8 +678,10 @@ class RPCTest extends utest.Test {
 			});
 			link.server.send(joined([short, soundFrame()]));
 
-			Assert.isTrue(ended.value, 'an error answer for $method that ran past its frame left the connection up');
-			Assert.notEquals("", pending.error);
+			Assert.isFalse(ended.value, 'an error answer for $method that ran past its frame ended the connection');
+			Assert.isTrue(pending.completed && !pending.succeeded, 'an error answer for $method that did not read left its call waiting');
+			Assert.stringContains("could not be read", pending.error);
+			Assert.isFalse(Std.isOfType(pending.cause, RPCError), "an answer that did not read became the other side's refusal");
 		}
 	}
 
@@ -688,9 +706,9 @@ class RPCTest extends utest.Test {
 			link.server.send(joined([short, soundFrame()]));
 
 			var what = failed ? "an error" : "a value";
-			Assert.isTrue(ended.value, 'a runtime answer missing $what left the connection up');
+			Assert.isFalse(ended.value, 'a runtime answer missing $what ended the connection');
 			Assert.isFalse(pending.succeeded, 'a runtime call was answered from the frame after its answer');
-			Assert.notEquals("", pending.error);
+			Assert.stringContains("could not be read", pending.error);
 		}
 	}
 
@@ -699,12 +717,17 @@ class RPCTest extends utest.Test {
 			var link = LinkedConnection.pair();
 			var serverSession = new RPCSession(link.server);
 			var ended = endingOf(link.server);
+			var answers = errorAnswersAt(link.client);
 			var calls = 0;
+			var after = 0;
 			serverSession.register(500, args -> {
 				calls++;
 				return null;
 			});
-			serverSession.register(501, args -> null);
+			serverSession.register(501, args -> {
+				after++;
+				return null;
+			});
 
 			// One Int argument, its tag in the frame and the Int itself not:
 			// it was read from the length of the next frame.
@@ -726,7 +749,9 @@ class RPCTest extends utest.Test {
 
 			var kind = request ? "request" : "one-way call";
 			Assert.equals(0, calls, 'a runtime $kind ran on arguments from the frame after its own');
-			Assert.isTrue(ended.value);
+			Assert.equals(1, after, 'the frame after a runtime $kind that did not read was not taken');
+			Assert.same(request ? ["1: " + RPCError.UNREADABLE_MESSAGE] : [], answers);
+			Assert.isFalse(ended.value);
 		}
 	}
 
@@ -745,8 +770,8 @@ class RPCTest extends utest.Test {
 		}));
 
 		Assert.isFalse(pending.succeeded);
-		Assert.isTrue(ended.value);
-		Assert.isTrue(ended.reason.indexOf("names more than it holds") >= 0, "refused for another reason: " + ended.reason);
+		Assert.isFalse(ended.value);
+		Assert.stringContains("names more than it holds", pending.error);
 	}
 
 	public function testALengthLargerThanItsFrameIsRefusedBeforeAnythingIsMade():Void {
@@ -754,6 +779,7 @@ class RPCTest extends utest.Test {
 		var handler = new TestHandler();
 		var serverSession = new RPCSession(link.server, null, handler);
 		var ended = endingOf(link.server);
+		var passed = passedOverBy(serverSession);
 
 		// `sendData` with a Bytes argument claiming two gigabytes, in a frame
 		// of a couple of dozen bytes. It was allocated before a byte of it
@@ -769,14 +795,16 @@ class RPCTest extends utest.Test {
 		}));
 
 		Assert.equals(0, handler.calls);
-		Assert.isTrue(ended.value);
-		Assert.isTrue(ended.reason.indexOf("names more than it holds") >= 0, "refused for another reason: " + ended.reason);
+		Assert.isFalse(ended.value);
+		Assert.equals(1, passed.length);
+		Assert.stringContains("names more than it holds", passed[0]);
 	}
 
 	public function testARuntimeCountLargerThanItsFrameIsRefusedBeforeAnythingIsMade():Void {
 		var link = LinkedConnection.pair();
 		var serverSession = new RPCSession(link.server);
 		var ended = endingOf(link.server);
+		var passed = passedOverBy(serverSession);
 		serverSession.register(502, args -> null);
 
 		// Two billion arguments, in a frame of ten bytes: an array that size
@@ -787,14 +815,16 @@ class RPCTest extends utest.Test {
 			out.writeVarUInt(0x7FFFFFFF);
 		}));
 
-		Assert.isTrue(ended.value);
-		Assert.isTrue(ended.reason.indexOf("names more than it holds") >= 0, "refused for another reason: " + ended.reason);
+		Assert.isFalse(ended.value);
+		Assert.equals(1, passed.length);
+		Assert.stringContains("names more than it holds", passed[0]);
 	}
 
 	public function testARuntimeBytesLongerThanItsFrameIsRefusedBeforeAnythingIsMade():Void {
 		var link = LinkedConnection.pair();
 		var serverSession = new RPCSession(link.server);
 		var ended = endingOf(link.server);
+		var passed = passedOverBy(serverSession);
 		serverSession.register(503, args -> null);
 
 		link.client.send(frameOf(out -> {
@@ -805,8 +835,42 @@ class RPCTest extends utest.Test {
 			out.writeVarUInt(0x7FFFFFFF);
 		}));
 
-		Assert.isTrue(ended.value);
-		Assert.isTrue(ended.reason.indexOf("names more than it holds") >= 0, "refused for another reason: " + ended.reason);
+		Assert.isFalse(ended.value);
+		Assert.equals(1, passed.length);
+		Assert.stringContains("names more than it holds", passed[0]);
+	}
+
+	public function testARuntimeValueOfAKindNotKnownIsACallNotTaken():Void {
+		// A tag a later release may add: the call it is in cannot be read, and
+		// is answered so, where the connection ended.
+		var link = LinkedConnection.pair();
+		var serverSession = new RPCSession(link.server);
+		var ended = endingOf(link.server);
+		var answers = errorAnswersAt(link.client);
+		var calls = 0;
+		serverSession.register(504, args -> {
+			calls++;
+			return null;
+		});
+
+		link.client.send(joined([
+			frameOf(out -> {
+				out.writeByte(RPCWire.FLAG_RUNTIME | RPCWire.FLAG_REQUEST);
+				out.writeInt(504);
+				out.writeVarUInt(3);
+				out.writeVarUInt(1);
+				out.writeByte(42);
+			}),
+			frameOf(out -> {
+				out.writeByte(RPCWire.FLAG_RUNTIME);
+				out.writeInt(504);
+				out.writeVarUInt(0);
+			})
+		]));
+
+		Assert.isFalse(ended.value);
+		Assert.same(["3: " + RPCError.UNREADABLE_MESSAGE], answers);
+		Assert.equals(1, calls, "the call after a value of an unknown kind was not taken");
 	}
 
 	/** One frame: its length, then what `write` puts in it. **/
@@ -842,6 +906,32 @@ class RPCTest extends utest.Test {
 	/** The op of a method's signature; see `RPCOps`. **/
 	private static inline function opOf(signature:String):Int {
 		return crossbyte.rpc._internal.RPCOps.opOf(signature);
+	}
+
+	/** What `onUnreadableFrame` is told, as `op <hex>, call <id>: <reason>`. **/
+	private static function passedOverBy(session:RPCSession<Dynamic, Dynamic>):Array<String> {
+		var passed:Array<String> = [];
+		session.onUnreadableFrame = (op, requestId, reason) -> passed.push('op ${StringTools.hex(op)}, call $requestId: $reason');
+		return passed;
+	}
+
+	/** Each error answer `connection` is sent from now on, as `<id>: <message>`; nothing reads it otherwise. **/
+	private static function errorAnswersAt(connection:LinkedConnection):Array<String> {
+		var answers:Array<String> = [];
+		connection.readEnabled = true;
+		connection.onData = input -> {
+			while (input.bytesAvailable >= 4) {
+				final end:Int = input.position + 4 + input.readInt();
+				final flags:Int = input.readByte();
+				input.readInt();
+				if ((flags & RPCWire.FLAG_ERROR) != 0) {
+					final id:Int = input.readVarUInt();
+					answers.push(id + ": " + input.readVarUTF());
+				}
+				input.position = end;
+			}
+		};
+		return answers;
 	}
 
 	/** What the session reports, as `method: error`, or `op N: error` for a runtime handler. **/

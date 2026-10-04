@@ -353,7 +353,9 @@ class RPCHandlerMacro {
 	static function makeDecoder(m:MethodInfo, tag:String, callsBefore:Bool, callsAfter:Bool):Field {
 		var stmts:Array<Expr> = [];
 		var paramExprs:Array<Expr> = [];
+		final reads:Array<Expr> = [];
 
+		// Each argument a local, read into below.
 		for (i in 0...m.args.length) {
 			var a = m.args[i];
 			if (a.type == null) {
@@ -361,19 +363,22 @@ class RPCHandlerMacro {
 			}
 
 			var local = "__a" + i;
-			var read = readerForArg(a, m.pos);
 			stmts.push({
 				expr: EVars([
 					{
 						name: local,
 						type: localTypeForArg(a),
-						expr: read
+						expr: zeroForArg(a, m.pos)
 					}
 				]),
 				pos: m.pos
 			});
+			reads.push(macro $i{local} = $e{readerForArg(a, m.pos)});
 			paramExprs.push({expr: EConst(CIdent(local)), pos: m.pos});
 		}
+		// Read whole and within the frame, or the frame is not sound: what an
+		// argument read past its end came from the frame after it.
+		reads.push(macro crossbyte.rpc._internal.RPCWire.requireWithin(input, this.this_frameEnd));
 
 		var callTarget:Expr = {expr: EConst(CIdent(m.name)), pos: m.pos};
 		var callExpr:Expr = {expr: ECall(callTarget, paramExprs), pos: m.pos};
@@ -381,10 +386,22 @@ class RPCHandlerMacro {
 		final op:Expr = macro $v{m.op};
 		final name:Expr = macro $v{m.name};
 
+		// Arguments that do not read are a call this side cannot take, not a
+		// connection that has to end: the frame carries its length, so the next
+		// begins where it says. A request is answered so. They ended the
+		// connection, and every call still waiting on it failed.
+		stmts.push(macro var __read:Bool = false);
+		stmts.push(macro try {
+			$b{reads};
+			__read = true;
+		} catch (__error:Dynamic) {
+			this.__rpc_unreadable($op, requestId, __error);
+		});
+		final run:Array<Expr> = [];
+
 		final later:Null<ComplexType> = futurePayload(m.ret, m.pos);
 		if (later != null) {
-			stmts.push(macro crossbyte.rpc._internal.RPCWire.requireWithin(input, this.this_frameEnd));
-			stmts.push(laterCall(m, later, callExpr, callsAfter));
+			run.push(laterCall(m, later, callExpr, callsAfter));
 		} else if (isVoid(m.ret)) {
 			callStmts.push(callExpr);
 		} else {
@@ -402,32 +419,29 @@ class RPCHandlerMacro {
 		}
 
 		if (later == null) {
-			// Read whole and within the frame, or the frame is not sound: what an
-			// argument read past its end came from the frame after it.
-			stmts.push(macro crossbyte.rpc._internal.RPCWire.requireWithin(input, this.this_frameEnd));
-
 			// The arguments are read above, outside this: a frame that does not
-			// decode is the peer's fault, and ends the connection. What the method
-			// throws once they have, or its answer failing to encode, is this
-			// side's, and becomes an error answer instead; see `__rpc_fail`.
+			// decode is the peer's, and is answered so. What the method throws
+			// once they have, or its answer failing to encode, is this side's,
+			// and becomes an error answer instead; see `__rpc_fail`.
 			var guarded:Expr = {expr: EBlock(callStmts), pos: m.pos};
 			if (callsAfter) {
-				stmts.push(macro var __failure:Null<haxe.Exception> = null);
-				stmts.push(macro try $e{guarded} catch (__error:haxe.Exception) {
+				run.push(macro var __failure:Null<haxe.Exception> = null);
+				run.push(macro try $e{guarded} catch (__error:haxe.Exception) {
 					__failure = __error;
 					this.__rpc_fail($op, $name, requestId, __error);
 				});
-				stmts.push(macro try {
+				run.push(macro try {
 					this.afterCall($name, requestId, __failure);
 				} catch (__error:haxe.Exception) {
 					this.__rpc_report($op, $name, __error);
 				});
 			} else {
-				stmts.push(macro try $e{guarded} catch (__error:haxe.Exception) {
+				run.push(macro try $e{guarded} catch (__error:haxe.Exception) {
 					this.__rpc_fail($op, $name, requestId, __error);
 				});
 			}
 		}
+		stmts.push(macro if (__read) $b{run});
 
 		var body:Expr = {expr: EBlock(stmts), pos: m.pos};
 
@@ -612,7 +626,8 @@ class RPCHandlerMacro {
 						{name: "requestId", type: macro :Int}
 					],
 					expr: {
-						expr: ESwitch(macro op, cases, macro throw "Unknown RPC op"),
+						// A method this handler has not got: answered so, not thrown.
+						expr: ESwitch(macro op, cases, macro this.__rpc_unknown(op, requestId)),
 						pos: Context.currentPos()
 					}
 				}),
@@ -631,7 +646,7 @@ class RPCHandlerMacro {
 				}
 			});
 		}
-		var defaultExpr:Expr = macro throw "Unknown RPC index";
+		var defaultExpr:Expr = macro this.__rpc_unknown(op, requestId);
 
 		var switchExpr:Expr = {
 			expr: ESwitch(macro id, cases, defaultExpr),
@@ -665,7 +680,8 @@ class RPCHandlerMacro {
 			})(op, d);
 			var id = RPC_T[idx];
 			if (id < 0 || RPC_OPS[id] != op) {
-				throw "Unknown RPC op";
+				this.__rpc_unknown(op, requestId);
+				return;
 			}
 
 			$e{switchExpr};
@@ -844,6 +860,16 @@ class RPCHandlerMacro {
 			Context.error("Unsupported RPC arg type " + RPCKinds.nameOf(base, pos) + " for '" + a.name + "'", pos);
 		}
 		return RPCKinds.read(kind, isOpt, macro input, macro this.this_frameEnd);
+	}
+
+	/** What an argument's local holds until it has been read. **/
+	static function zeroForArg(a:FunctionArg, pos:Position):Expr {
+		final kind = RPCKinds.of(unwrapNull(a.type), pos);
+		if (kind == null) {
+			// Refused, naming the method, where its reader is made.
+			return macro null;
+		}
+		return RPCKinds.zero(kind, a.opt || RPCContractMacroTools.isNullable(a.type, pos));
 	}
 
 	/** Fails the build unless an answer of type `ret` can be sent. **/

@@ -89,11 +89,17 @@ class RPCKinds {
 		return optional ? macro($input.readByte() != 0 ? $get : null) : get;
 	}
 
+	/** What a local of this kind holds before a value has been read into it. **/
+	public static inline function zero(kind:RPCKind, optional:Bool):Expr {
+		return optional ? macro null : kind.zero;
+	}
+
 	static final INT:RPCKind = {
 		name: "Int",
 		token: "i32",
 		size: 4,
 		roomOf: null,
+		zero: macro 0,
 		write: (frame, value) -> macro $frame.putInt($value),
 		read: (input, end) -> macro $input.readInt()
 	};
@@ -103,6 +109,7 @@ class RPCKinds {
 		token: "bool",
 		size: 1,
 		roomOf: null,
+		zero: macro false,
 		write: (frame, value) -> macro $frame.putBool($value),
 		read: (input, end) -> macro($input.readByte() != 0)
 	};
@@ -112,6 +119,7 @@ class RPCKinds {
 		token: "f64",
 		size: 8,
 		roomOf: null,
+		zero: macro 0.0,
 		write: (frame, value) -> macro $frame.putDouble($value),
 		read: (input, end) -> macro $input.readDouble()
 	};
@@ -122,6 +130,7 @@ class RPCKinds {
 		token: "utf8",
 		size: -1,
 		roomOf: value -> macro $value.length * 3 + 5,
+		zero: macro null,
 		write: (frame, value) -> macro $frame.putString($value),
 		read: (input, end) -> macro $input.readVarUTF()
 	};
@@ -131,6 +140,7 @@ class RPCKinds {
 		token: "bytes",
 		size: -1,
 		roomOf: value -> macro $value.length + 5,
+		zero: macro null,
 		write: (frame, value) -> macro $frame.putBytes($value),
 		read: (input, end) -> macro {
 			var __len:Int = $input.readVarUInt();
@@ -197,6 +207,7 @@ class RPCKinds {
 	- `size`: the bytes every value of it takes, or -1 when that depends on
 	  the value, and then `roomOf` is the most a value takes, as an
 	  expression of a value that is there.
+	- `zero`: what a local of it holds before a value is read into it.
 	- `write`: writes a value into a frame, an `RPCFrame`.
 	- `read`: reads one from a `ByteArrayInput`, in a frame ending at `end`.
 **/
@@ -205,6 +216,7 @@ typedef RPCKind = {
 	final token:String;
 	final size:Int;
 	final roomOf:Null<Expr->Expr>;
+	final zero:Expr;
 	final write:(Expr, Expr) -> Expr;
 	final read:(Expr, Expr) -> Expr;
 }

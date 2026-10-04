@@ -207,6 +207,22 @@ abstract class RPCCommands {
 		__failResponse(requestId, 'Unsupported RPC response op: $op', null);
 	}
 
+	/**
+		An answer whose value did not read, it ran past its frame, or named
+		more than its frame holds: the call it answers fails saying so, and the
+		connection carries on, where it ended. See
+		`RPCSession.onUnreadableFrame`.
+	**/
+	@:noCompletion private function __rejectUnreadableResponse(op:Int, requestId:Int, error:Dynamic):Void {
+		final response = __takeResponse(requestId);
+		final session = __session;
+		if (session != null) {
+			session.__unreadableAnswer(op, requestId, response, error);
+		} else if (response != null) {
+			response.__fail("RPC answer could not be read: " + Std.string(error), error);
+		}
+	}
+
 	@:noCompletion private function __nextRequestId():Int {
 		do {
 			// `| 0` because the guard below is the overflow handler, and it
