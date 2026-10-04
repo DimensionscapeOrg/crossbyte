@@ -14,7 +14,8 @@ What a release needs, in the order it needs it.
 3. **CI green on every job**, including the ones that only run there: the
    native suite on Windows, Linux and macOS, the browser suite, the
    database suites. Check each step ran for as long as a real run takes; a
-   step that finishes in seconds may have run nothing.
+   step that finishes in seconds may have run nothing. "CI" below says how
+   a failure reads.
 
 ## The release commit
 
@@ -44,3 +45,28 @@ git push origin v<version>
 ```
 
 Publish a GitHub release for the tag with the version's changelog section.
+`haxelib submit` needs lib.haxe.org; CI does not (below), but a release
+waits for the registry.
+
+## CI
+
+- **Libraries from lib.haxe.org** are listed, each with an exact version,
+  in `ci/haxelibs.txt`. `.github/actions/haxelibs` installs them from a
+  cache keyed on that list, and asks the registry only for a version the
+  cache does not hold, so CI keeps running while lib.haxe.org is down (as
+  it was on 2026-10-04, when every job failed at its first install). To
+  change a version, edit the list while the registry is up: the next run on
+  each OS installs that one version from the registry, and every run after
+  takes it from the cache. Adding or dropping a library goes to the
+  registry for all of them, once. GitHub drops a cache unused for seven
+  days, so a quiet week also means one run that needs the registry.
+- **hxcpp** comes from the fork's git repository on GitHub, through
+  `.github/actions/hxcpp`. `haxelib git` asks the registry only for a
+  library's dependencies, and hxcpp has none.
+- **The step that fails is the step whose command failed**, and its error
+  annotation names the command. bash steps stop at the first command that
+  fails. pwsh steps do not stop at a failing native command, so each runs
+  one; and because the runner reports any failing pwsh step as exit code 1,
+  a step that runs a test or a sample prints the code in full: `0xC0000005`
+  is an access violation, `0xC0000409` a fail-fast abort, `0xC00000FD` a
+  stack overflow.

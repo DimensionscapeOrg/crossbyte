@@ -1,0 +1,16 @@
+# The libraries CI installs from lib.haxe.org: a name and an exact version
+# on each line. .github/actions/haxelibs installs them from a cache keyed on
+# this list, and asks the registry only for a version the cache does not
+# hold: after this list changes, or once the cache has expired, so CI
+# keeps running while lib.haxe.org is down. RELEASING.md has more.
+#
+# Every job that needs one of them installs all four, so the jobs share one
+# cache. Dependencies are not followed: a library that needs another lists
+# both here, so that every version stays exact.
+#
+# These are the versions CI installed before they were pinned (2026-10-04),
+# and the versions a local checkout is developed against.
+utest 1.13.2
+hxjava 4.2.0
+hxnodejs 12.2.0
+dox 1.6.0

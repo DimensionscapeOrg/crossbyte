@@ -13,6 +13,18 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# How these jobs install, and how a failure reads:
+# - Libraries from lib.haxe.org come through .github/actions/haxelibs, from a
+#   cache keyed on the exact versions in ci/haxelibs.txt, so a registry
+#   outage does not stop CI. hxcpp comes from the fork on GitHub through
+#   .github/actions/hxcpp.
+# - A bash step runs as `bash -e -o pipefail` (GitHub's flags for
+#   `shell: bash`): the first command that fails ends the step, and the
+#   runner reports that command's exit code as it is. A step of several
+#   commands also traps the failure, to name the command.
+# - A pwsh step does not stop at a failing native command. Native Smoke
+#   says how the Windows jobs' steps are written instead.
+
 env:
   HAXE_VERSION: "4.3.7"
   HXCPP_REPO: "https://github.com/dimensionscape/hxcpp.git"
@@ -43,8 +55,8 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Install test dependencies
-        run: haxelib install utest --quiet
+      - name: Install Haxe libraries
+        uses: ./.github/actions/haxelibs
 
       # haxe itself, not `haxelib run aedifex task interp-tests`. haxelib's
       # aedifex is 0.0.2, which has no `task` command: it printed its banner
@@ -63,7 +75,9 @@ jobs:
         run: haxe ci/interp-tests.hxml -D final --no-output
 
       # Every sample's check.hxml begins with --cwd ../.., so it runs from
-      # its own directory, which is what --cwd reproduces here.
+      # its own directory, which is what --cwd reproduces here. A sample
+      # that fails is named after its log group closes, so the error is not
+      # folded away inside it.
       - name: Validate sample builds
         run: |
           set -euo pipefail
@@ -84,8 +98,13 @@ jobs:
             windows-service \
             worker; do
             echo "::group::samples/${sample}"
-            haxe --cwd "samples/${sample}" check.hxml
+            rc=0
+            haxe --cwd "samples/${sample}" check.hxml || rc=$?
             echo "::endgroup::"
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::samples/${sample}/check.hxml did not type-check (exit code $rc)"
+              exit "$rc"
+            fi
           done
 
   # The jvm target had no CI at all: both entry points existed, neither was
@@ -120,17 +139,15 @@ jobs:
           distribution: temurin
           java-version: "8"
 
-      - name: Install test dependencies
-        run: |
-          haxelib install utest --quiet
-          # --jvm needs hxjava, and nothing else in this job pulls it in.
-          haxelib install hxjava --quiet
+      # utest, and hxjava, which --jvm needs.
+      - name: Install Haxe libraries
+        uses: ./.github/actions/haxelibs
 
-      - name: Build jvm suites
-        run: |
-          set -euo pipefail
-          haxe ci/jvm-smoke.hxml
-          haxe ci/jvm-tests.hxml
+      - name: Build jvm smoke suite
+        run: haxe ci/jvm-smoke.hxml
+
+      - name: Build jvm test suite
+        run: haxe ci/jvm-tests.hxml
 
       # The smoke jar covers the non-networking core; the full jar adds
       # auth, db, http, net, ipc and system. Both run, because the smoke
@@ -158,10 +175,14 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Install Haxe dependencies
-        run: |
-          haxelib install dox --quiet
-          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
+      # dox, and the rest of the list.
+      - name: Install Haxe libraries
+        uses: ./.github/actions/haxelibs
+
+      # From the fork on GitHub, as everywhere. Nothing here compiles C++, so
+      # its tools are not built.
+      - name: Install hxcpp
+        run: haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
 
       # Before the XML is built, because these examples are what goes into it.
       # A reader who copies one out of the published docs expects it to
@@ -176,6 +197,7 @@ jobs:
 
       - name: Build API XML
         run: |
+          trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
           rm -rf export/docs-api export/docs-site
           mkdir -p export/docs-api export/docs-site
           haxe ci/docs-api.hxml
@@ -219,21 +241,11 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Install Haxe dependencies
-        run: |
-          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
-          # Every native extern includes its Build.xml through
-          # ${haxelib:crossbyte}, so hxcpp has to be able to resolve this
-          # repository by name. Without it the first cpp build in the job
-          # stops at 'Could not find haxelib crossbyte'.
-          haxelib dev crossbyte "$GITHUB_WORKSPACE"
-
-      - name: Bootstrap hxcpp tools
-        run: |
-          set -euo pipefail
-          HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
-          (cd "$HXCPP_DIR/tools/run" && haxe compile.hxml)
-          (cd "$HXCPP_DIR/tools/hxcpp" && haxe compile.hxml)
+      - name: Install hxcpp
+        uses: ./.github/actions/hxcpp
+        with:
+          repository: ${{ env.HXCPP_REPO }}
+          ref: ${{ env.HXCPP_REF }}
 
       # haxe directly, for the reason on the interpreter step above: through
       # haxelib's aedifex 0.0.2 each of these printed a banner and passed,
@@ -292,41 +304,39 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Install Haxe dependencies
-        run: |
-          haxelib install utest --quiet
-          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
-          # Every native extern includes its Build.xml through
-          # ${haxelib:crossbyte}, so hxcpp has to be able to resolve this
-          # repository by name. Without it the first cpp build in the job
-          # stops at 'Could not find haxelib crossbyte'.
-          haxelib dev crossbyte "$GITHUB_WORKSPACE"
+      - name: Install Haxe libraries
+        uses: ./.github/actions/haxelibs
 
-      - name: Bootstrap hxcpp tools
-        run: |
-          set -euo pipefail
-          HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
-          (cd "$HXCPP_DIR/tools/run" && haxe compile.hxml)
-          (cd "$HXCPP_DIR/tools/hxcpp" && haxe compile.hxml)
+      - name: Install hxcpp
+        uses: ./.github/actions/hxcpp
+        with:
+          repository: ${{ env.HXCPP_REPO }}
+          ref: ${{ env.HXCPP_REF }}
 
       # libsodium is compiled from vendored sources, so there is nothing
       # to install; this job proves that build works off Windows.
       # Two native builds from cold took 24 and 20+ minutes on the Intel
       # macOS runner on 2026-10-02 and ran into the job's bound; the compiler
       # cache the native suite's job keeps makes the second run of each warm.
+      #
+      # Each value is taken into a variable before it is written: a command
+      # that fails inside "$(...)" in an echo's argument fails nothing, and
+      # the cache key would have been written without the commit.
       - name: Point hxcpp at a compiler cache
         run: |
-          echo "HXCPP_COMPILE_CACHE=$RUNNER_TEMP/hxcpp-cache" >> "$GITHUB_ENV"
+          trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
+          HXCPP_DIR="$(haxelib libpath hxcpp)"
           # Keyed on the fork's commit, not its branch: a cache from another
           # hxcpp holds a precompiled hxcpp.h that clang refuses, "modified
           # since the precompiled header was built" (macOS, 2026-10-02).
-          echo "HXCPP_SHA=$(git -C "$(haxelib path hxcpp | head -n 1)" rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          HXCPP_SHA="$(git -C "$HXCPP_DIR" rev-parse --short HEAD)"
+          echo "HXCPP_COMPILE_CACHE=$RUNNER_TEMP/hxcpp-cache" >> "$GITHUB_ENV"
+          echo "HXCPP_SHA=$HXCPP_SHA" >> "$GITHUB_ENV"
           # The commit is not enough: a fresh clone stamps every file with
           # the time of the clone, and clang checks those times too, so a
           # cache from an earlier run on the same commit was refused the
           # same way (macOS, 2026-10-03). Stamp the headers with the
           # commit's own time, which every clone of it shares.
-          HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
           STAMP="$(TZ=UTC git -C "$HXCPP_DIR" log -1 --format=%cd --date=format-local:%Y%m%d%H%M.%S)"
           find "$HXCPP_DIR/include" -type f -exec env TZ=UTC touch -t "$STAMP" {} +
 
@@ -386,33 +396,32 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Install Haxe dependencies
-        run: |
-          haxelib install utest --quiet
-          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
-          haxelib dev crossbyte "$GITHUB_WORKSPACE"
+      - name: Install Haxe libraries
+        uses: ./.github/actions/haxelibs
 
-      - name: Bootstrap hxcpp tools
-        run: |
-          set -euo pipefail
-          HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
-          (cd "$HXCPP_DIR/tools/run" && haxe compile.hxml)
-          (cd "$HXCPP_DIR/tools/hxcpp" && haxe compile.hxml)
+      - name: Install hxcpp
+        uses: ./.github/actions/hxcpp
+        with:
+          repository: ${{ env.HXCPP_REPO }}
+          ref: ${{ env.HXCPP_REF }}
 
-      # As Native Smoke keeps one: a run compiles what changed.
+      # As Native Smoke keeps one: a run compiles what changed. Each value is
+      # taken into a variable before it is written, as in the crypto job.
       - name: Point hxcpp at a compiler cache
         run: |
-          echo "HXCPP_COMPILE_CACHE=$RUNNER_TEMP/hxcpp-cache" >> "$GITHUB_ENV"
+          trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
+          HXCPP_DIR="$(haxelib libpath hxcpp)"
           # Keyed on the fork's commit, not its branch: a cache from another
           # hxcpp holds a precompiled hxcpp.h that clang refuses, "modified
           # since the precompiled header was built" (macOS, 2026-10-02).
-          echo "HXCPP_SHA=$(git -C "$(haxelib path hxcpp | head -n 1)" rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          HXCPP_SHA="$(git -C "$HXCPP_DIR" rev-parse --short HEAD)"
+          echo "HXCPP_COMPILE_CACHE=$RUNNER_TEMP/hxcpp-cache" >> "$GITHUB_ENV"
+          echo "HXCPP_SHA=$HXCPP_SHA" >> "$GITHUB_ENV"
           # The commit is not enough: a fresh clone stamps every file with
           # the time of the clone, and clang checks those times too, so a
           # cache from an earlier run on the same commit was refused the
           # same way (macOS, 2026-10-03). Stamp the headers with the
           # commit's own time, which every clone of it shares.
-          HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
           STAMP="$(TZ=UTC git -C "$HXCPP_DIR" log -1 --format=%cd --date=format-local:%Y%m%d%H%M.%S)"
           find "$HXCPP_DIR/include" -type f -exec env TZ=UTC touch -t "$STAMP" {} +
 
@@ -441,6 +450,7 @@ jobs:
       - name: Add the loopback addresses the relay tests bind
         if: runner.os == 'macOS'
         run: |
+          trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
           sudo ifconfig lo0 alias 127.0.0.2 up
           sudo ifconfig lo0 alias 127.0.0.3 up
 
@@ -450,6 +460,7 @@ jobs:
       - name: Put OpenSSL 3 before macOS's LibreSSL
         if: runner.os == 'macOS'
         run: |
+          trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
           prefix="$(brew --prefix openssl@3 2>/dev/null || true)"
           if [ ! -x "$prefix/bin/openssl" ]; then
             brew install openssl@3
@@ -487,6 +498,9 @@ jobs:
                 -ex run -ex "thread apply all bt" ./NativeSmokeMain || true
             fi
           fi
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::NativeSmokeMain exited with code $rc"
+          fi
           exit $rc
 
   postgres:
@@ -521,28 +535,21 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Install Haxe dependencies
-        run: |
-          haxelib install utest --quiet
-          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
-          # Every native extern includes its Build.xml through
-          # ${haxelib:crossbyte}, so hxcpp has to be able to resolve this
-          # repository by name. Without it the first cpp build in the job
-          # stops at 'Could not find haxelib crossbyte'.
-          haxelib dev crossbyte "$GITHUB_WORKSPACE"
+      - name: Install Haxe libraries
+        uses: ./.github/actions/haxelibs
 
-      - name: Bootstrap hxcpp tools
-        run: |
-          set -euo pipefail
-          HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
-          (cd "$HXCPP_DIR/tools/run" && haxe compile.hxml)
-          (cd "$HXCPP_DIR/tools/hxcpp" && haxe compile.hxml)
+      - name: Install hxcpp
+        uses: ./.github/actions/hxcpp
+        with:
+          repository: ${{ env.HXCPP_REPO }}
+          ref: ${{ env.HXCPP_REF }}
 
       # The driver dlopens libpq at runtime rather than linking it, so the
       # client library has to be installed even though nothing links against it.
       # libpq.so.5 is the name it looks for.
       - name: Install libpq
         run: |
+          trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
           sudo apt-get update
           sudo apt-get install -y libpq5
 
@@ -573,6 +580,15 @@ jobs:
     timeout-minutes: 35
     defaults:
       run:
+        # A pwsh step does not stop at a native command that fails: it runs
+        # on, and the step reports only the last one's exit code. On
+        # 2026-10-04 a failed `haxelib install` passed its step that way, and
+        # the job failed a step later, at the first build that needed the
+        # library. So each step here runs one native command, and the
+        # installs run in bash, in .github/actions. A step that runs a test
+        # or a sample checks the exit code itself and prints it in full,
+        # because the step reports any non-zero code as 1: an access
+        # violation reads 0xC0000005 only in that line.
         shell: pwsh
 
     steps:
@@ -584,25 +600,15 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Install Haxe dependencies
-        run: |
-          haxelib install utest --quiet
-          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
-          # Every native extern includes its Build.xml through
-          # ${haxelib:crossbyte}, so hxcpp has to be able to resolve this
-          # repository by name. Without it the first cpp build in the job
-          # stops at 'Could not find haxelib crossbyte'.
-          haxelib dev crossbyte $env:GITHUB_WORKSPACE
+      # utest, and hxnodejs for the Node builds.
+      - name: Install Haxe libraries
+        uses: ./.github/actions/haxelibs
 
-      - name: Bootstrap hxcpp tools
-        run: |
-          $hxcppDir = (haxelib path hxcpp | Select-Object -First 1).Trim()
-          Push-Location (Join-Path $hxcppDir "tools/run")
-          haxe compile.hxml
-          Pop-Location
-          Push-Location (Join-Path $hxcppDir "tools/hxcpp")
-          haxe compile.hxml
-          Pop-Location
+      - name: Install hxcpp
+        uses: ./.github/actions/hxcpp
+        with:
+          repository: ${{ env.HXCPP_REPO }}
+          ref: ${{ env.HXCPP_REF }}
 
       # One compiler cache for the three native builds below, the benchmark,
       # the suite and the stress suite share the runtime and most of
@@ -625,19 +631,34 @@ jobs:
         run: haxe ci/js-build.hxml
 
       - name: Build Node target
-        run: |
-          haxelib install hxnodejs --always --quiet
-          haxe ci/node-build.hxml
+        run: haxe ci/node-build.hxml
+
+      - name: Build portable suite for Node
+        run: haxe ci/js-tests.hxml
 
       - name: Run portable suite on Node
         run: |
-          haxe ci/js-tests.hxml
           node export/js-tests/tests.js
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::node export/js-tests/tests.js exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
+
+      - name: Build Node-only suite
+        run: haxe ci/js-runtime-tests.hxml
 
       - name: Run Node-only suite on Node
         run: |
-          haxe ci/js-runtime-tests.hxml
           node export/js-runtime-tests/runtime.js
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::node export/js-runtime-tests/runtime.js exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
+
+      # puppeteer for the browser steps below, and node-turn for the TURN
+      # interop at the end, in one install: `--no-save` prunes whatever is not
+      # in package.json, so installing one of them separately uninstalls the
+      # other, and the only reason that would not break the browser test is
+      # the order these steps run in.
+      - name: Install puppeteer and node-turn
+        run: npm install --no-save --no-audit --no-fund puppeteer node-turn
+
+      - name: Build portable suite for the browser
+        run: haxe ci/browser-tests.hxml
 
       # Node is not a browser. It has no window, no document, and none of a
       # page's restrictions, so a bundle it runs happily can still fail to load
@@ -646,9 +667,11 @@ jobs:
       # threw while loading before any test ran. Every js build stayed green.
       - name: Run portable suite in a headless browser
         run: |
-          npm install --no-save --no-audit --no-fund puppeteer node-turn
-          haxe ci/browser-tests.hxml
           node ci/browser/run.js
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::node ci/browser/run.js exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
+
+      - name: Build the browser interop peer
+        run: haxe ci/browser-interop.hxml
 
       # The only job here whose result depends on an implementation nobody in
       # this repository wrote. Every other test proves this code agrees with
@@ -668,8 +691,23 @@ jobs:
       # incoming check rather than dialled.
       - name: Interoperate with a real browser
         run: |
-          haxe ci/browser-interop.hxml
           node ci/interop/run.js
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::node ci/interop/run.js exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
+
+      - name: Build the support flag probe for Python
+        run: haxe ci/python-support.hxml
+
+      # The one target CI can execute that has UDP but no CSPRNG, which is the
+      # combination where a support flag can lie. StunClient.isSupported said
+      # true on it while the first line of discover() threw; every suite above
+      # runs where a CSPRNG exists, so only this step can catch a relapse.
+      - name: Check support flags on a CSPRNG-less target
+        run: |
+          python export/python-support/flagprobe.py
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::python export/python-support/flagprobe.py exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
+
+      - name: Build the TURN interop peer
+        run: haxe ci/relay-interop.hxml
 
       # The other test whose result depends on somebody else's code, and for
       # the same reason. The suite connects two peers through a relay written
@@ -680,39 +718,30 @@ jobs:
       # applies equally to permissions and to how relayed data is wrapped.
       #
       # node-turn implements RFC 5389 and 5766. What it accepts is evidence.
-      #
-      # node-turn is installed alongside puppeteer above rather than here.
-      # `--no-save` prunes whatever is not in package.json, so installing one
-      # of them separately uninstalls the other, and the only reason that would
-      # not break the browser test today is the order these steps run in.
-      # The one target CI can execute that has UDP but no CSPRNG, which is the
-      # combination where a support flag can lie. StunClient.isSupported said
-      # true on it while the first line of discover() threw; every suite above
-      # runs where a CSPRNG exists, so only this step can catch a relapse.
-      - name: Check support flags on a CSPRNG-less target
-        run: |
-          haxe ci/python-support.hxml
-          python export/python-support/flagprobe.py
-
       - name: Interoperate with a real TURN server
         run: |
-          haxe ci/relay-interop.hxml
           node ci/relay/run.js
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::node ci/relay/run.js exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
+
+      - name: Build the performance suite
+        run: haxe ci/bench.hxml
 
       # Informational: the numbers from a shared runner measure the runner's
       # mood and gate nothing. The step exists so the suite cannot rot, a
       # benchmark that stopped compiling is one nobody has run in a while.
-      - name: Build and run the performance suite (informational)
+      - name: Run the performance suite (informational)
         run: |
-          haxe ci/bench.hxml
           ./export/bench/BenchMain.exe
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::BenchMain.exe exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
 
       - name: Build native smoke harness
         run: haxe ci/native-tests.hxml
 
       - name: Run native smoke suite
         working-directory: export/ci-native-tests
-        run: .\NativeSmokeMain.exe
+        run: |
+          .\NativeSmokeMain.exe
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::NativeSmokeMain.exe exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
 
       - name: Build concurrency stress suite
         run: haxe ci/stress-tests.hxml
@@ -722,7 +751,9 @@ jobs:
       # contention and exit non-zero when one is violated.
       - name: Run concurrency stress suite
         working-directory: export/ci-stress-tests
-        run: .\StressMain.exe
+        run: |
+          .\StressMain.exe
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::StressMain.exe exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
 
   # The samples were the tail of Native Smoke and never actually built there.
   # haxelib's aedifex is 0.0.2, which has no `task` command, so each of the
@@ -736,6 +767,8 @@ jobs:
     timeout-minutes: 40
     defaults:
       run:
+        # As in Native Smoke: one native command per step, or each one's exit
+        # code checked, and a sample's printed in full.
         shell: pwsh
 
     steps:
@@ -747,22 +780,13 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Install Haxe dependencies
-        run: |
-          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
-          # The samples reach the same native externs as the suites, and
-          # those include their Build.xml through ${haxelib:crossbyte}.
-          haxelib dev crossbyte $env:GITHUB_WORKSPACE
-
-      - name: Bootstrap hxcpp tools
-        run: |
-          $hxcppDir = (haxelib path hxcpp | Select-Object -First 1).Trim()
-          Push-Location (Join-Path $hxcppDir "tools/run")
-          haxe compile.hxml
-          Pop-Location
-          Push-Location (Join-Path $hxcppDir "tools/hxcpp")
-          haxe compile.hxml
-          Pop-Location
+      # Nothing from lib.haxe.org: the samples reach the same native externs
+      # as the suites, and need only hxcpp and this checkout registered.
+      - name: Install hxcpp
+        uses: ./.github/actions/hxcpp
+        with:
+          repository: ${{ env.HXCPP_REPO }}
+          ref: ${{ env.HXCPP_REF }}
 
       # The cache the build below fills, kept from run to run as Native
       # Smoke's is.
@@ -815,7 +839,8 @@ jobs:
             $code = $LASTEXITCODE
             Write-Host "::endgroup::"
             if ($code -ne 0) {
-              throw "samples/$dir/$hxml did not build (exit $code)"
+              Write-Host ("::error::samples/{1}/{2} did not build: haxe exited with code {0} (0x{0:X8})" -f $code, $dir, $hxml)
+              exit 1
             }
           }
 
@@ -825,7 +850,9 @@ jobs:
       # a server could not receive a single client message.
       - name: Run websocket echo sample
         working-directory: export/websocket-echo
-        run: .\WebSocketEchoSample.exe
+        run: |
+          .\WebSocketEchoSample.exe
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::WebSocketEchoSample.exe exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
 
       # The other samples that end on their own. Building a sample
       # proves it typechecks; running one is the only thing that exercises
@@ -835,37 +862,39 @@ jobs:
       # back, so a broken response is a failed job rather than a silent one.
       - name: Run web server sample
         working-directory: export/web-server
-        run: .\SimpleWebServerSample.exe
+        run: |
+          .\SimpleWebServerSample.exe
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::SimpleWebServerSample.exe exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
 
       # Both pages over HTTP/2 from a server that also speaks HTTP/1.1, each
       # body checked against what was served. The client never falls back to
       # HTTP/1.1, so a pass is two HTTP/2 streams; anything else exits 1.
       - name: Run HTTP/2 sample
         working-directory: export/http2
-        run: .\Http2Sample.exe
+        run: |
+          .\Http2Sample.exe
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::Http2Sample.exe exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
 
       # One listener spread over several runtimes: sixteen requests at once,
       # answered by more than one runtime, then a drain that exits them. Exits
       # 1 if a request goes unanswered or a single runtime answered them all.
-      #
-      # The exit code is said in full: the step reports any non-zero code a
-      # native command ends with as 1, so a process that crashed on its way
-      # out (0xC0000005) read the same as one whose checks failed.
       - name: Run multicore sample
         working-directory: export/multicore
         run: |
           .\MulticoreSample.exe
-          if ($LASTEXITCODE -ne 0) {
-            throw ("MulticoreSample.exe exited with code {0} (0x{0:X8})" -f $LASTEXITCODE)
-          }
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::MulticoreSample.exe exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
 
       - name: Run simple application sample
         working-directory: export/simple-application
-        run: .\SimpleApplicationSample.exe
+        run: |
+          .\SimpleApplicationSample.exe
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::SimpleApplicationSample.exe exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
 
       - name: Run worker sample
         working-directory: export/worker
-        run: .\WorkerSample.exe
+        run: |
+          .\WorkerSample.exe
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::WorkerSample.exe exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
 
       # The game-server primitives together: an authoritative server and
       # sixteen bots, every snapshot a bot decodes checked against what the
@@ -874,7 +903,9 @@ jobs:
       # pass.
       - name: Run arena sample
         working-directory: export/arena
-        run: .\ArenaSample.exe
+        run: |
+          .\ArenaSample.exe
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::ArenaSample.exe exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
 
   extensions:
     name: Extensions | ${{ matrix.label }}
@@ -888,19 +919,19 @@ jobs:
             repo: DimensionscapeOrg/crossbyte-libuv
             path: crossbyte-libuv
             haxelib_name: crossbyte-libuv
-            native_deps: sudo apt-get update && sudo apt-get install -y libuv1-dev
+            apt_packages: libuv1-dev
             native_test_binary: ../crossbyte/export/crossbyte-libuv-native-test/LibuvNativeTestMain
           - label: Brotli Native Backend
             repo: DimensionscapeOrg/crossbyte-brotli
             path: crossbyte-brotli
             haxelib_name: crossbyte-brotli
-            native_deps: ""
+            apt_packages: ""
             native_test_binary: ../crossbyte/export/crossbyte-brotli-native-test/NativeBrotliTestMain
           - label: LZ4 Native Backend
             repo: DimensionscapeOrg/crossbyte-lz4
             path: crossbyte-lz4
             haxelib_name: crossbyte-lz4
-            native_deps: ""
+            apt_packages: ""
             native_test_binary: ../crossbyte/export/crossbyte-lz4-native-test/NativeLz4TestMain
     defaults:
       run:
@@ -923,26 +954,30 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
+      # Two commands, not `update && install`: a failure on the left of && ends
+      # neither -e nor the trap, and the step would go on past it.
       - name: Install platform dependencies
-        if: ${{ matrix.native_deps != '' }}
-        run: ${{ matrix.native_deps }}
-
-      - name: Install Haxelibs
+        if: ${{ matrix.apt_packages != '' }}
         run: |
-          haxelib install utest --quiet
-          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
-          haxelib dev ${{ matrix.haxelib_name }} "$GITHUB_WORKSPACE/${{ matrix.path }}"
-          # The extension builds against CrossByte's native externs, which
-          # include their Build.xml through ${haxelib:crossbyte}, so this
-          # checkout has to be resolvable by name as well as by -cp.
-          haxelib dev crossbyte "$GITHUB_WORKSPACE/crossbyte"
+          trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.apt_packages }}
 
-      - name: Bootstrap hxcpp tools
-        run: |
-          set -euo pipefail
-          HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
-          (cd "$HXCPP_DIR/tools/run" && haxe compile.hxml)
-          (cd "$HXCPP_DIR/tools/hxcpp" && haxe compile.hxml)
+      - name: Install Haxe libraries
+        uses: ./crossbyte/.github/actions/haxelibs
+
+      # The extension builds against CrossByte's native externs, which
+      # include their Build.xml through ${haxelib:crossbyte}, so the CrossByte
+      # checkout has to be resolvable by name as well as by -cp.
+      - name: Install hxcpp
+        uses: ./crossbyte/.github/actions/hxcpp
+        with:
+          repository: ${{ env.HXCPP_REPO }}
+          ref: ${{ env.HXCPP_REF }}
+          crossbyte: ${{ github.workspace }}/crossbyte
+
+      - name: Register ${{ matrix.haxelib_name }}
+        run: haxelib dev ${{ matrix.haxelib_name }} "$GITHUB_WORKSPACE/${{ matrix.path }}"
 
       - name: Run extension interpreter tests
         working-directory: ${{ matrix.path }}
