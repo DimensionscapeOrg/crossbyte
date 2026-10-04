@@ -124,6 +124,10 @@ class TaskPool {
 		Runs `job` on a pool thread. The task completes with `null`; its type
 		says so, and is `Any` rather than `Dynamic`, so reading anything from
 		the result needs a cast that says what was meant.
+
+		What `job` captures it reads there, later: a payload a listener was
+		handed for its call alone is captured as a copy (see
+		`crossbyte.events.Event`).
 	**/
 	public function submit(job:Void->Void):Task<Any> {
 		return submitResult(function():Any {
