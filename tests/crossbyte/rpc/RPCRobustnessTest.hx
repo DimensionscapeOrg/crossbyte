@@ -322,6 +322,54 @@ class RPCRobustnessTest extends utest.Test {
 		Assert.isFalse(crossbyte.Timer.clear(0));
 		runtime.exit();
 	}
+
+	// ---- whether the runtime lane reads: counted, not asked of the maps ----
+
+	/**
+		A session reads while it has a runtime handler, and stops with the
+		last: counted as they come and go, where the map was asked whether it
+		was empty, which copied it, on every call on the runtime lane.
+	**/
+	public function testRuntimeHandlersKeepTheSessionReadingUntilTheLastGoes():Void {
+		var connection = new StubConnection();
+		var session = new RPCSession(connection);
+		session.register(1, args -> null);
+		session.register(2, args -> null);
+		session.register(2, args -> "again");
+		Assert.isTrue(connection.readEnabled);
+
+		Assert.isTrue(session.deregister(1));
+		Assert.isTrue(connection.readEnabled, "one handler left, and the session stopped reading");
+		Assert.isTrue(session.deregister(2));
+		Assert.isFalse(connection.readEnabled, "no handler left, and the session still reads");
+		Assert.isFalse(session.deregister(2));
+		Assert.equals(0, session.__runtimeHandlerCount);
+	}
+
+	/** A session reads while a call of its own waits for an answer, and stops with the last answered. **/
+	public function testRuntimeCallsWaitingKeepTheSessionReading():Void {
+		var connection = new StubConnection();
+		var session = new RPCSession(connection);
+		var calls = [for (op in 1...5) session.request(op, [])];
+		Assert.isTrue(connection.readEnabled);
+
+		// The first waits in the single slot and the rest in the map; the
+		// slot answered first, then the map's, the last of them in between.
+		for (i in [0, 3, 1, 2]) {
+			Assert.isTrue(connection.readEnabled, 'a call still waits, and the session stopped reading ($i)');
+			Assert.notNull(session.__takeRuntimeResponse(calls[i].requestId));
+		}
+		Assert.isFalse(connection.readEnabled, "every call answered, and the session still reads");
+		Assert.equals(0, session.__runtimePendingCount);
+
+		// Failing every call clears the count with the map.
+		session.request(9, []);
+		session.request(10, []);
+		session.request(11, []);
+		session.__failAllRuntimePending("gone");
+		Assert.equals(0, session.__runtimePendingCount);
+		Assert.isFalse(session.__hasRuntimePendingResponses());
+	}
 }
 
 @:access(crossbyte.rpc.RPCCommands)

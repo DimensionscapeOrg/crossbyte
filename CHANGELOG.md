@@ -328,6 +328,15 @@ entry below says how:
   `(value : String)`, or build `new URL(value)`.
 
 ### Added
+- `SequenceRing.remove(sequence)` and `SequenceRing.writeBits(from, out, at,
+  byteCount)`, which make the ring a receive window as well as a history:
+  what arrived past a gap is filed by sequence, taken out as the gap fills,
+  and acknowledged as a map of bits, bit `k` of byte `i` for
+  `from + 8i + k`, the shape of a selective acknowledgement or a game's ack
+  bitfield. Its presence flags are packed, so `writeBits` reads eight slots
+  at a time and looks again only at a set bit, to check the slot holds that
+  number and not one a ring's length away. Reliable UDP's receive window is
+  built on it.
 - `GlobalTimer.setTimeout` and `setInterval` take a `Void->Void` function by
   an overload of their own, which calls it directly; the ActionScript form,
   any function with arguments, is unchanged.
@@ -1561,6 +1570,24 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- Three places that iterated a map on a path that runs often no longer do.
+  Natively a `Map`'s `keys()` and `iterator()` copy every entry into a new
+  array first, so asking a map whether it was empty, or walking it for a
+  few entries, cost as much as the map was large:
+  - reliable UDP held the frames that arrived past a gap in an `IntMap` and
+    built each ACK's map of them by walking its keys, for every ACK, and
+    one goes at once for each frame past a gap, so a burst of loss cost the
+    square of the frames held. They are held in a `SequenceRing` now: no
+    hashing on the out-of-order path, and the ACK's map read from it a byte
+    at a time. Per ACK, measured natively: 257 to 120 ns with 10 frames
+    held, 2,250 to 210 ns with 100, 11,250 to 600 ns with 500;
+  - `ReliableDatagramServerSocket` asked a host's map whether it had
+    sessions left on every close: 1,000 sessions behind one address, a
+    carrier NAT, closing took 1.3 ms, 4,000 took 18 ms; now 74 us and
+    0.3 ms;
+  - `RPCSession` asked its maps of runtime handlers and of runtime-lane
+    calls waiting whether they were empty, on every answer: with 1,000
+    calls waiting, an answer cost 1,309 ns; now 302 ns at any number.
 - A `DatagramSocket` reads with the transfer that answers -1 when nothing
   is waiting, where `readFrom` threw `Blocked` to end every pass that read
   the socket dry, and its pass's sends that go one at a time use the one

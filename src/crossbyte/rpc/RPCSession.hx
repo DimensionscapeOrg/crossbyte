@@ -93,6 +93,12 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private var __runtimePendingResponseId:Int = 0;
 	@:noCompletion private var __runtimePendingResponse:RPCResponse<Dynamic> = null;
 	@:noCompletion private var __runtimePendingResponses:Null<IntMap<RPCResponse<Dynamic>>> = null;
+	// How many entries the two maps above hold. Asking a map whether it is
+	// empty meant iterating it, and natively that copies every value first:
+	// done on every runtime-lane call, so each call cost as much as the calls
+	// still waiting.
+	@:noCompletion private var __runtimeHandlerCount:Int = 0;
+	@:noCompletion private var __runtimePendingCount:Int = 0;
 
 	/**
 	 * The most inbound calls, on both lanes together, that may wait on an
@@ -556,6 +562,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (__runtimeHandlers == null) {
 			__runtimeHandlers = new IntMap();
 		}
+		if (!__runtimeHandlers.exists(op)) {
+			__runtimeHandlerCount++;
+		}
 		__runtimeHandlers.set(op, handler);
 		__syncOnDataBinding();
 		return this;
@@ -567,6 +576,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			return false;
 		}
 		__runtimeHandlers.remove(op);
+		__runtimeHandlerCount--;
 		if (!__hasRuntimeHandlers()) {
 			__runtimeHandlers = null;
 		}
@@ -615,18 +625,12 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		return response;
 	}
 
-	@:noCompletion private function __hasRuntimeHandlers():Bool {
-		if (__runtimeHandlers == null) {
-			return false;
-		}
-		for (_ in __runtimeHandlers) {
-			return true;
-		}
-		return false;
+	@:noCompletion private inline function __hasRuntimeHandlers():Bool {
+		return __runtimeHandlerCount > 0;
 	}
 
 	@:noCompletion private function __hasRuntimePendingResponses():Bool {
-		return __runtimePendingResponse != null || (__runtimePendingResponses != null && __runtimePendingResponses.iterator().hasNext());
+		return __runtimePendingResponse != null || __runtimePendingCount > 0;
 	}
 
 	/**
@@ -1215,6 +1219,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			if (__runtimePendingResponses == null) {
 				__runtimePendingResponses = new IntMap();
 			}
+			if (!__runtimePendingResponses.exists(requestId)) {
+				__runtimePendingCount++;
+			}
 			__runtimePendingResponses.set(requestId, response);
 		}
 		// A call waiting can only start the session reading.
@@ -1274,6 +1281,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			response = __runtimePendingResponses.get(requestId);
 			if (response != null) {
 				__runtimePendingResponses.remove(requestId);
+				__runtimePendingCount--;
 			}
 		}
 		// One no longer waiting can only stop it, and only when nothing else
@@ -1314,6 +1322,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		final map = __runtimePendingResponses;
 		if (map != null) {
 			__runtimePendingResponses = null;
+			__runtimePendingCount = 0;
 			for (response in map) {
 				response.__fail(message, cause);
 			}
