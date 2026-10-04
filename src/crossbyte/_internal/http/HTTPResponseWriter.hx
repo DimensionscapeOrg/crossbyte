@@ -78,7 +78,13 @@ interface HTTPResponseWriter {
 	 */
 	function writeContinue():Void;
 
-	/** Writes the status and header fields. Called once per response. */
+	/**
+	 * Writes the status and header fields. Called once per response.
+	 *
+	 * `head` and its fields are the caller's again once this returns, a
+	 * connection reuses them for its next response, so a writer that
+	 * needs any of them later copies what it needs.
+	 */
 	function writeHead(head:HTTPResponseHead):Void;
 
 	/** Appends body bytes. May be called repeatedly while streaming. */
