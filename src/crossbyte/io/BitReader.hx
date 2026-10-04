@@ -57,6 +57,10 @@ final class BitReader {
 	/**
 	 * Starts reading `bytes` from the beginning, forgetting what came before.
 	 *
+	 * Reads `bytes` where they are, not a copy: a reader over a payload a
+	 * listener was handed for its call alone reads it during that call, or
+	 * over a copy of it (see `crossbyte.events.Event`).
+	 *
 	 * @throws RangeError If `offset` and `length` do not lie within `bytes`.
 	 */
 	public function reset(bytes:ByteArray, offset:Int = 0, length:Int = -1):Void {

@@ -45,6 +45,16 @@ import crossbyte.Object;
 	included, so a clone is always safe to keep. Queuing events to handle
 	them at the next game tick is the case this is about: queue copies.
 
+	Handing the payload to anything that reads it after the call returns
+	keeps it just the same: a closure given to a timer, a `Future`,
+	`CrossByte.post`, a `TaskPool` or an `AsyncDatabase`, which runs on
+	another thread or later; an object stored to be written later. CrossByte's
+	own APIs that take bytes and use them later copy them as they take them,
+	every send, `URLLoader.load`, `File.save`, `Store.put`, an
+	asynchronous `SQLiteStatement.execute`, `TypedWorker.run`, so the
+	payload can go straight to those from inside the listener; a closure or
+	a structure of your own holds a copy.
+
 	What is handed out other than as an event or to a per-arrival hook
 	stays the receiver's to keep: an RPC argument, a message a decoder
 	returns, a request body, `NetConnection.onData`'s input, a member read

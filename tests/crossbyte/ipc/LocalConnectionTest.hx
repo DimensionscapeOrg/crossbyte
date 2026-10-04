@@ -75,6 +75,57 @@ class LocalConnectionTest extends utest.Test {
 		#end
 	}
 
+	/**
+		What `send` is handed is the caller's again once it returns: a pass's
+		sends go out together when the pass ends, and what arrives is each
+		buffer as it was at its call, though the caller wrote over it at once,
+		as a socket refills a payload a listener forwarded.
+	**/
+	public function testWhatIsSentIsWhatTheBytesWereAtTheCall():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var name = uniqueName("reused");
+		var server = new LocalConnection();
+		var client = new LocalConnection();
+		var received:Array<String> = [];
+		var readyCount = 0;
+
+		try {
+			server.onReady = () -> readyCount++;
+			server.onData = input -> received.push(input.readUTFBytes(input.length));
+			server.readEnabled = true;
+			server.listen(name);
+			client.onReady = () -> readyCount++;
+			client.connect(name);
+			pumpUntil(() -> readyCount == 2 && server.connected && client.connected, 2.0);
+
+			// One buffer for both, written over after each send, inside a pass
+			// that holds them until it ends.
+			var buffer = new ByteArray();
+			CrossByte.current().post(() -> {
+				buffer.writeUTFBytes("first message");
+				client.send(buffer);
+				buffer.clear();
+				buffer.writeUTFBytes("second, longer message");
+				client.send(buffer);
+				buffer.position = 0;
+				buffer.writeUTFBytes("CHANGED AFTERWARDS");
+			});
+			pumpUntil(() -> received.length >= 2, 2.0);
+
+			Assert.same(["first message", "second, longer message"], received, "what was sent became what the buffer held after send returned");
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			closeQuietly(server);
+			throw e;
+		}
+
+		closeQuietly(client);
+		closeQuietly(server);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testReadyAndDataArriveWhileTheRuntimesListenersChange():Void {
 		// The reader thread attached the tick listener that carries its
 		// dispatches to this thread, and EventDispatcher is not thread-safe:
