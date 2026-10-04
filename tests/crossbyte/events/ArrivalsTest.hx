@@ -90,9 +90,16 @@ class ArrivalsTest extends utest.Test {
 		Assert.equals(0, payload.position);
 		Assert.equals(0, payload.bytesAvailable);
 		Assert.raises(() -> payload.readUnsignedByte());
+		#if eval
+		// eval has no second view: a ByteArray is its own storage there, and
+		// Bytes.ofData(getData()) is the ByteArray itself, so what a keeper
+		// of the storage holds reads empty, as the payload does.
+		Assert.equals(0, storage.length, "the storage outlived the kill");
+		#else
 		for (i in 0...4) {
 			Assert.equals(Arrivals.POISON, storage.get(i), "byte " + i + " of the storage survived the kill");
 		}
+		#end
 	}
 
 	public function testAKilledPayloadCanBeKilledAgainAndNullIsNothing():Void {
