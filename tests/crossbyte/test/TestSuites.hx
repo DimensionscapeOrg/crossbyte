@@ -199,6 +199,9 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.MySQLNativeResultTest());
 		runner.addCase(new crossbyte.db.MySQLNativeSessionTest());
 		runner.addCase(new crossbyte.db.MySQLNativeAuthTest());
+		// Answers no MySQL server sends, counts and lengths a hostile one, or
+		// whoever answers in its place, can put in a packet.
+		runner.addCase(new crossbyte.db.MySQLNativeHostileTest());
 		// SQLite opens only natively.
 		runner.addCase(new crossbyte.db.SQLiteNativeTest());
 		#end
