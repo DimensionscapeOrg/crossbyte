@@ -4,6 +4,7 @@ package crossbyte.url._internal;
 // thread of its own: see JsHttpClient.
 #if !js
 import crossbyte._internal.http.Http;
+import crossbyte._internal.http.LoadPool;
 import crossbyte.core.CrossByte;
 import crossbyte.http.HTTPCancelToken;
 import crossbyte.url.URLLoader;
@@ -31,6 +32,14 @@ enum LoaderMessage {
  * post queue, one post per batch, when its first message arrives, so a
  * download reporting progress per read costs a lock per read and a post per
  * runtime turn, not a post per read.
+ *
+ * The load's deadlines that its thread cannot keep are kept here, on the
+ * loader's runtime: `URLRequest.totalTimeout`, and the wait for a thread,
+ * which `URLRequest.idleTimeout` bounds, a load still queued has no
+ * thread to notice it has waited too long. Each is a runtime timer, armed
+ * only when the load has one, and checked against `haxe.Timer.stamp()` when
+ * it fires, so a runtime whose clock runs ahead of the wall's does not end a
+ * load early.
  */
 @:noCompletion
 @:access(crossbyte.url.URLLoader)
@@ -49,6 +58,15 @@ class LoaderRun {
 	private var __outbox:Array<LoaderMessage> = [];
 	private var __drainPosted:Bool = false;
 	private var __abandoned:Bool = false;
+	// Set, under the lock, once a thread has taken the load.
+	private var __running:Bool = false;
+
+	// The runtime timers keeping the deadlines, or -1, which no timer is,
+	// and the deadlines they keep, by haxe.Timer.stamp(). On the runtime.
+	private var __queueTimer:Int = -1;
+	private var __totalTimer:Int = -1;
+	private var __queueDeadline:Float = 0;
+	private var __totalDeadline:Float = 0;
 
 	public function new(loader:URLLoader, runtime:CrossByte, request:URLRequest, token:HTTPCancelToken) {
 		__loader = loader;
@@ -57,18 +75,105 @@ class LoaderRun {
 		__token = token;
 	}
 
-	/** Drops whatever this load still has to say. On the loader's runtime. */
+	/**
+		Queues the load for a thread, and arms the deadlines it has. On the
+		loader's runtime.
+
+		The wait for a thread is armed whether or not one is free: which
+		thread takes a load is decided on the pool's threads, and a timer
+		that finds its load running when it fires does nothing.
+	**/
+	public function start():Void {
+		var now:Float = haxe.Timer.stamp();
+		var total:Int = __request.totalTimeout;
+		var idle:Int = __request.idleTimeout;
+		if (idle > 0 && (total <= 0 || idle < total)) {
+			__queueDeadline = now + idle / 1000.0;
+			__armQueue();
+		}
+		if (total > 0) {
+			__totalDeadline = now + total / 1000.0;
+			__armTotal();
+		}
+		LoadPool.run(execute);
+	}
+
+	/** Drops whatever this load still has to say, and its deadlines. On the loader's runtime. */
 	public function abandon():Void {
 		__acquire();
 		__abandoned = true;
 		__outbox = [];
 		__release();
+		__disarm();
+	}
+
+	private function __armQueue():Void {
+		__queueTimer = crossbyte.Timer.setTimeout(__queueDeadline - haxe.Timer.stamp(), __onQueueTimer);
+	}
+
+	private function __armTotal():Void {
+		__totalTimer = crossbyte.Timer.setTimeout(__totalDeadline - haxe.Timer.stamp(), __onTotalTimer);
+	}
+
+	private function __onQueueTimer():Void {
+		__queueTimer = -1;
+		__acquire();
+		var running:Bool = __running || __abandoned;
+		__release();
+		if (running || __loader.__load != this) {
+			return;
+		}
+		if (haxe.Timer.stamp() < __queueDeadline) {
+			// The runtime's clock is ahead of the wall's: not yet.
+			__armQueue();
+			return;
+		}
+		__expire("The load did not start within " + __request.idleTimeout + " ms: all " + LoadPool.maxThreads
+			+ " of URLLoader.maxConcurrentLoads were busy with loads ahead of it");
+	}
+
+	private function __onTotalTimer():Void {
+		__totalTimer = -1;
+		if (__loader.__load != this) {
+			return;
+		}
+		if (haxe.Timer.stamp() < __totalDeadline) {
+			__armTotal();
+			return;
+		}
+		__expire("The load did not complete within " + __request.totalTimeout + " ms");
+	}
+
+	/**
+		Ends the load at a deadline: what its thread says from now on is
+		dropped, its request is cancelled where it stands, the thread
+		unwinds as it does for `close()`, and the loader is told.
+	**/
+	private function __expire(message:String):Void {
+		abandon();
+		__token.cancel();
+		__loader.__deliver(this, Failure(message, null));
+	}
+
+	/** Clears the deadlines' timers that have not run. On the loader's runtime. */
+	private function __disarm():Void {
+		if (__queueTimer >= 0) {
+			crossbyte.Timer.clear(__queueTimer);
+			__queueTimer = -1;
+		}
+		if (__totalTimer >= 0) {
+			crossbyte.Timer.clear(__totalTimer);
+			__totalTimer = -1;
+		}
 	}
 
 	/** The request itself, on a pool thread. */
 	public function execute():Void {
+		__acquire();
+		__running = true;
+		__release();
 		if (__token.cancelled) {
-			// Closed before a thread took it.
+			// Closed before a thread took it, or past a deadline.
 			return;
 		}
 
@@ -110,7 +215,13 @@ class LoaderRun {
 			// Created on the loader's thread before the load was queued, so
 			// close() can reach a request that has already started.
 			http.cancelToken = __token;
+			// The request's own limits, which were the client's statics, the
+			// same for every request in the process.
 			http.maxDecompressedSize = request.maxDecompressedSize;
+			http.maxBodySize = request.maxBodySize;
+			http.maxRedirects = request.maxRedirects;
+			http.maxResponseHeaderSize = request.maxResponseHeaderSize;
+			http.headTimeout = request.headTimeout;
 			// Only when the request asks for something other than the defaults,
 			// so the pool shares connections between requests that do not.
 			var tls:crossbyte.http.HTTPTLSOptions = new crossbyte.http.HTTPTLSOptions(request.verifyCert, request.certAuthority,
@@ -148,10 +259,28 @@ class LoaderRun {
 		}
 	}
 
-	/** Queues `message` for the loader, posting a drain when it starts a batch. */
+	/**
+		Queues `message` for the loader, posting a drain when it starts a
+		batch.
+
+		Progress takes the place of progress not yet told: only the latest
+		is worth telling, and the client reports it per read and per chunk,
+		so a body arriving faster than the runtime drains, or while it is
+		busy, queued a message for each, without bound: about 300,000 in
+		two seconds for one load, measured. Nothing else is folded, nor the
+		first report of a body, at nothing loaded, which is where a listener
+		learns its total before any of it.
+	**/
 	private function __send(message:LoaderMessage):Void {
 		__acquire();
 		if (__abandoned) {
+			__release();
+			return;
+		}
+		var last:Int = __outbox.length - 1;
+		if (last >= 0 && __isProgress(message) && __isLaterProgress(__outbox[last])) {
+			// Not yet told, and a drain is posted for it already.
+			__outbox[last] = message;
 			__release();
 			return;
 		}
@@ -181,6 +310,13 @@ class LoaderRun {
 		__release();
 
 		for (message in batch) {
+			switch (message) {
+				case Complete(_) | Failure(_, _):
+					// Over: its deadlines go before its outcome is told, so a
+					// listener starting the next load cannot meet them.
+					__disarm();
+				default:
+			}
 			// Checked per message: a listener may close the loader, or start
 			// its next load, part way through a batch.
 			if (!__loader.__deliver(this, message)) {
@@ -191,6 +327,21 @@ class LoaderRun {
 
 		if (more) {
 			__runtime.post(__drain);
+		}
+	}
+
+	private static inline function __isProgress(message:LoaderMessage):Bool {
+		return switch (message) {
+			case Progress(_, _): true;
+			default: false;
+		}
+	}
+
+	/** Progress past the first report, which says nothing has loaded yet. **/
+	private static inline function __isLaterProgress(message:LoaderMessage):Bool {
+		return switch (message) {
+			case Progress(loaded, _): loaded > 0;
+			default: false;
 		}
 	}
 

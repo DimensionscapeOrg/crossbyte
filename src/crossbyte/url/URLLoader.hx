@@ -20,14 +20,16 @@ class URLLoader extends EventDispatcher {
 	#if !js
 	/**
 	 * How many loads run at once, at most, across every `URLLoader` in the
-	 * process. More wait their turn, in the order they were made. Defaults to
-	 * 16.
+	 * process. More wait their turn, in the order they were made, each for
+	 * its request's `idleTimeout` at most: one still waiting then fails with
+	 * an `IO_ERROR` saying so, rather than wait for as long as the loads
+	 * ahead of it take. Defaults to 16.
 	 *
 	 * A load blocks a thread for as long as its server takes to answer, and
 	 * the threads are shared and kept between loads rather than started for
 	 * each. A program that holds many slow requests open at once, long
 	 * polls, say, should raise this to at least that many, or later loads
-	 * wait behind them.
+	 * wait behind them, and fail once they have waited their idle timeout.
 	 */
 	public static var maxConcurrentLoads(get, set):Int;
 
@@ -251,7 +253,7 @@ class URLLoader extends EventDispatcher {
 		cancelToken = new HTTPCancelToken();
 		var run:LoaderRun = new LoaderRun(this, runtime, request, cancelToken);
 		__load = run;
-		LoadPool.run(run.execute);
+		run.start();
 		#end
 	}
 

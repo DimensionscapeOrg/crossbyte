@@ -95,10 +95,110 @@ class URLRequest {
 		as the server takes, until `close()` ends it. It was 30 seconds
 		natively and no limit on JavaScript.
 
+		Natively, on the jvm and the interpreter it also bounds the wait for
+		a thread to run the load on, when `URLLoader.maxConcurrentLoads`
+		loads are already running: a load that has not started by then fails
+		with an `IO_ERROR` saying so. It waited for as long as the loads ahead
+		of it took, which nothing bounded, a load whose server trickles its
+		body holds its thread for as long as the body keeps coming.
+
+		Bytes arriving reset it, so a server sending a byte at a time is
+		waited for however long it takes; `headTimeout` and `totalTimeout`
+		are what a trickle cannot reset.
+
 		Taken from `URLRequestDefaults.idleTimeout` when that is greater than
 		zero, and 30000 otherwise.
 	**/
 	public var idleTimeout:Int;
+
+	/**
+		How long, in milliseconds, the response's head, its status line and
+		header fields, after any `1xx`, has to arrive once the request has
+		been sent, before the load is abandoned with an `IO_ERROR`. A
+		deadline, not an idle timeout: bytes trickling in do not move it, so
+		a server sending its head a byte at a time is given up at it rather
+		than waited on for as long as it keeps sending. Counted afresh for
+		each redirect's request.
+
+		Defaults to 300000, five minutes, as Node's own `fetch` waits for
+		headers; `0` or less is no deadline. A long poll whose server holds
+		its answer longer than this needs it raised, as it needs
+		`idleTimeout` raised.
+
+		Natively, on the jvm, the interpreter and Node, counted from when the
+		request has gone, so an upload's time is not counted against it. In a
+		browser, which tells a page when an upload ends only by a listener
+		that makes a cross-origin request need a preflight, from when the
+		request is handed to the browser.
+	**/
+	public var headTimeout:Int = 300000;
+
+	/**
+		How long, in milliseconds, the whole load may take, from `load()` to
+		its `COMPLETE`, the wait for a thread, the name's lookup, connecting,
+		every redirect, sending the request and reading all of the response,
+		before it is abandoned with an `IO_ERROR`. The request is cancelled
+		where it stands, as `close()` cancels it.
+
+		Defaults to `0`, no deadline: a download that keeps moving is waited
+		for however long it takes, which is right for a large file over a slow
+		link. Set one for a server you do not trust: without it a response
+		trickled a byte at a time, which resets `idleTimeout` with every byte,
+		is waited for for as long as it lasts.
+
+		Kept by the loader's runtime, which delivers the load's events, and
+		measured by the clock, `haxe.Timer.stamp()`: a runtime that is not
+		running ends nothing, as it delivers nothing.
+	**/
+	public var totalTimeout:Int = 0;
+
+	/**
+		The most bytes a response body may take as it arrives, before any
+		content coding is undone, before the load is abandoned with an
+		`IO_ERROR`. A `Content-Length` past it is refused before a byte of the
+		body is read; a chunked body, or one ended by the connection closing,
+		when it grows past it. Defaults to 64 MB; `0` or less removes the
+		limit. `maxDecompressedSize` bounds what it then decodes to.
+
+		It was `Http.MAX_BODY_SIZE` and `MAX_CHUNKED_BODY_SIZE`, process-wide
+		statics of the native client that one caller changed for every
+		request in the process, and Node had no limit at all.
+
+		Natively, on the jvm, the interpreter and Node, and over HTTP/2. In a
+		browser it is held to what the browser says it has received, which
+		for a content-coded response may count the bytes once decoded.
+	**/
+	public var maxBodySize:Int = 64 * 1024 * 1024;
+
+	/**
+		How many redirects the load follows before it fails with an
+		`IO_ERROR`, "Exceeded the number of allowed redirects". Defaults to
+		10; `0` or less follows none, failing at the first, unlike
+		`followRedirects = false`, which hands the redirect back as the
+		response.
+
+		It was `Http.MAX_REDIRECTS`, a process-wide static of the native
+		client. In a browser the browser follows redirects itself, to its own
+		limit, 20, by the Fetch standard, and this is not consulted.
+	**/
+	public var maxRedirects:Int = 10;
+
+	/**
+		The most bytes a response's header section may take, its status
+		line and header fields, with any `1xx` responses ahead of it, and,
+		apart from it, the trailers after a chunked body, before the load is
+		abandoned with an `IO_ERROR`. Defaults to 65536, the 64 KB the server
+		holds a request's header block to; `0` or less removes the limit.
+
+		It was `Http.MAX_RESPONSE_HEADER_BYTES`, a process-wide static of the
+		native client. Over HTTP/2 the section is counted as HPACK counts it,
+		and is held to the 64 KB its connection tells the server it takes
+		whatever this says, since the connection is shared. On Node it is
+		Node's `maxHeaderSize` for the request, which was Node's default of
+		16 KB; in a browser the browser keeps its own limit and this is not
+		consulted.
+	**/
+	public var maxResponseHeaderSize:Int = 64 * 1024;
 
 	/**
 		Whether to carry cookies across this request's redirects.

@@ -263,6 +263,59 @@ class URLLoaderBrowserTest extends utest.Test {
 		Assert.isNull(JsHttpClient.__followedRefusal("/relative", "/relative", false));
 	}
 
+	/**
+		A head that never comes ends at the request's `headTimeout`, and the
+		request is aborted. A page had only the idle timeout, which a server
+		sending a byte at a time keeps from ever firing. The browser is kept
+		from sending at all here, which is a head that never comes.
+	**/
+	public function testAHeadThatNeverComesEndsAtItsDeadline(async:Async):Void {
+		var aborted:Int = 0;
+		var restoreSend:Void->Void = replace("send", (_, _, _) -> null);
+		var restoreAbort:Void->Void = wrap("abort", (_, _) -> aborted++);
+		var request:URLRequest = new URLRequest("/index.html");
+		request.idleTimeout = 0;
+		request.headTimeout = 300;
+		var outcome:String = null;
+		loadThen(request, done -> outcome = done);
+		NetPump.until(() -> outcome != null, 5.0, _ -> {
+			restoreSend();
+			restoreAbort();
+			Assert.equals("error The response head did not arrive within 300 ms of the request", outcome);
+			Assert.equals(1, aborted, "the request was not aborted at its deadline");
+			async.done();
+		});
+	}
+
+	/** And the whole load ends at its `totalTimeout`. **/
+	public function testALoadEndsAtItsTotalTimeout(async:Async):Void {
+		var restoreSend:Void->Void = replace("send", (_, _, _) -> null);
+		var request:URLRequest = new URLRequest("/index.html");
+		request.idleTimeout = 0;
+		request.headTimeout = 0;
+		request.totalTimeout = 300;
+		var outcome:String = null;
+		loadThen(request, done -> outcome = done);
+		NetPump.until(() -> outcome != null, 5.0, _ -> {
+			restoreSend();
+			Assert.equals("error The load did not complete within 300 ms", outcome);
+			async.done();
+		});
+	}
+
+	/** A body past the request's `maxBodySize` fails the load, as it does natively and on Node. **/
+	public function testABodyPastTheLimitFails(async:Async):Void {
+		var limited:URLRequest = new URLRequest("/tests.js");
+		limited.maxBodySize = 1024;
+		loadThen(limited, refused -> {
+			loadThen(new URLRequest("/index.html"), taken -> {
+				Assert.equals("error Response body exceeded 1024 bytes", refused);
+				Assert.equals("complete", taken, "the default limit refused a page");
+				async.done();
+			});
+		});
+	}
+
 	/** Records what `loader` dispatches into `events`, as "COMPLETE <data>" or "IO_ERROR <text>". */
 	private static function listen(loader:URLLoader, events:Array<String>):Void {
 		loader.addEventListener(Event.COMPLETE, _ -> events.push("COMPLETE " + Std.string(loader.data)));

@@ -59,16 +59,25 @@ import haxe.io.Bytes;
  * had already ended when the cancel came completes as usual.
  *
  * Redirects are followed as the HTTP/1.1 client follows them, through the
- * same code: `Http.MAX_REDIRECTS` at most, a relative `Location` resolved
- * against the request's URL, a 301, 302 or 303 turned into a bodiless GET,
- * `https` to `http` only with `followInsecureRedirects`, and the caller's
- * `Authorization`, `Proxy-Authorization` and `Cookie` dropped once a hop
- * leaves the origin the request started at. A hop to an origin already
- * connected to rides that connection.
+ * same code: the request's `maxRedirects` at most, a relative `Location`
+ * resolved against the request's URL, a 301, 302 or 303 turned into a
+ * bodiless GET, `https` to `http` only with `followInsecureRedirects`, and
+ * the caller's `Authorization`, `Proxy-Authorization` and `Cookie` dropped
+ * once a hop leaves the origin the request started at. A hop to an origin
+ * already connected to rides that connection.
  *
  * The request's `timeout` is an idle limit on its stream, as it is on the
  * HTTP/1.1 client's socket: the longest the response may go with nothing
- * arriving for it. `0` or less is none, as it is there.
+ * arriving for it. `0` or less is none, as it is there. Its `headTimeout`
+ * is a deadline on each hop's response head, counted from the request
+ * being sent, and its `maxBodySize` and `maxResponseHeaderSize` hold the
+ * response as they hold it over HTTP/1.1, the header section counted as
+ * HPACK counts it, and never past the 64 KB a connection tells the server
+ * it takes, since the connection, and that setting, are shared.
+ *
+ * A host's name is looked up through the resolver's threads, as the
+ * HTTP/1.1 client's is: within the request's idle timeout, and a cancel
+ * ends the wait.
  */
 class HTTP2Backend implements HTTPBackend {
 	/**
@@ -146,6 +155,14 @@ class HTTP2Backend implements HTTPBackend {
 			query = null;
 
 			var stream:H2Stream = exchange.stream;
+			// The request's own limit on the header section, under the
+			// connection's: counted as the stream's blocks arrived, 1xx
+			// included, and held to here.
+			var headerLimit:Int = context.maxResponseHeaderSize;
+			if (headerLimit > 0 && stream.sectionBytes > headerLimit && !__cancelled(context)) {
+				context.onError("Response header section exceeded " + headerLimit + " bytes");
+				return;
+			}
 			if (!context.followRedirects || !Http.__isRedirect(stream.status) || !stream.endOfStream || __cancelled(context)) {
 				__report(context, stream, exchange.connection);
 				return;
@@ -167,7 +184,7 @@ class HTTP2Backend implements HTTPBackend {
 				context.onError("Could not complete redirect");
 				return;
 			}
-			if (visited.length - 1 >= Http.MAX_REDIRECTS) {
+			if (visited.length - 1 >= (context.maxRedirects > 0 ? context.maxRedirects : 0)) {
 				context.onError("Exceeded the number of allowed redirects");
 				return;
 			}
@@ -264,10 +281,10 @@ class HTTP2Backend implements HTTPBackend {
 			while (stream == null) {
 				session = H2ConnectionPool.acquire(origin, () -> __open(origin, url.host, port, secure, context, tls), timeout, context.cancelToken, tls);
 				try {
-					// The HTTP/1.1 client's limit on a body, read per request
-					// as that client reads it.
+					// The request's limit on a body, and its deadline on the
+					// head, as the HTTP/1.1 client holds them.
 					stream = session.execute(method, scheme, authority, __target(url, query), fields, body, timeout, context.cancelToken,
-						Http.MAX_BODY_SIZE);
+						context.maxBodySize, Http.__idleSeconds(context.headTimeout));
 				} catch (e:H2ConnectionError) {
 					if (e.code == H2ErrorCode.CANCEL && __cancelled(context)) {
 						// Cancelled as it was about to start: refused before
@@ -395,12 +412,15 @@ class HTTP2Backend implements HTTPBackend {
 		}
 
 		try {
-			// The name is looked up here, on the calling thread. That is the
-			// load's own thread, URLLoader runs every load on one of its pool
-			// threads, never on a runtime's, so a slow resolver holds up this
-			// request and no one else's sockets or timers. Resolver, which
-			// hands its answer back to a runtime's thread, is for code on one.
-			socket.connect(host, port);
+			// The name through the resolver's threads, waited for here, on the
+			// load's own thread: within the idle timeout and the resolver's own
+			// limit, and a cancel ends the wait. It was looked up inside the
+			// connect, on this thread, where a wedged resolver held the request,
+			// and every request to its origin waiting on this connect, for
+			// as long as it stayed wedged. The host keeps the name, so TLS asks
+			// for it and checks the certificate against it.
+			var address:sys.net.Host = crossbyte._internal.net.Resolver.lookup(host, timeout, token);
+			socket.connectHost(address, port);
 		} catch (e:Dynamic) {
 			if (token != null) {
 				token.removeHandler(interrupt);

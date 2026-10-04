@@ -60,6 +60,40 @@ class PHPBridge {
 	public final docRoot:String;
 	public final autoIndex:Array<String>;
 
+	/**
+		The most bytes one response may take, the script's CGI header block
+		and body together, before its exchange fails; `0` or less for no
+		limit. `PHPExchange.DEFAULT_MAX_RESPONSE_SIZE`, 8 MB, unless the
+		server's `phpMaxResponseSize` says otherwise.
+	**/
+	public final maxResponseSize:Int;
+
+	/**
+		Exchanges with the backend at once, at most, each holding a connection
+		to it; `0` or less for no limit. More wait their turn, first come first
+		served, within their own deadlines, and past `MAX_WAITING` of those a
+		new one is refused with a `PHPBusy`. Nothing bounded them: every
+		request for a script opened a connection to the backend, however many
+		were already waiting on it, and a `php-cgi -b` answers one at a time.
+	**/
+	public final maxExchanges:Int;
+
+	/** `maxExchanges` unless the server's `phpMaxExchanges` says otherwise. **/
+	public static inline var DEFAULT_MAX_EXCHANGES:Int = 64;
+
+	/** Exchanges, at most, waiting for one with the backend to end. **/
+	public static inline var MAX_WAITING:Int = 1024;
+
+	/**
+		Bytes read from one exchange's connection in one pass, at most, before
+		the rest is left for the next, as a `Socket` leaves it, and for the
+		same reason: a backend sending fast held the runtime, and every other
+		connection on it, for as long as it kept sending. The loop is told to
+		poll again before it waits, so the rest is read at once, not a frame
+		later.
+	**/
+	public static inline var READ_BUDGET:Int = 1024 * 1024;
+
 	// Launch mode spawns php-cgi. Node has no sys.io.Process, so it uses
 	// CrossByte's own NativeProcess, the portable subprocess API this
 	// framework already ships, rather than a second bespoke wrapper. Both
@@ -69,7 +103,13 @@ class PHPBridge {
 	#else
 	private var _proc:Null<Process> = null;
 	#end
-	private var __pending:Array<{exchange:PHPExchange, release:Void->Void}> = [];
+	// Every exchange not yet settled, for the deadline sweep: with the backend,
+	// or waiting to be.
+	private var __pending:Array<Tracked> = [];
+	// Those waiting for an exchange with the backend to end, in turn.
+	private var __waiting:Array<Tracked> = [];
+	// How many are with the backend.
+	private var __inFlight:Int = 0;
 	private var __runtime:Null<CrossByte> = null;
 	private var __sweeping:Bool = false;
 	#if !nodejs
@@ -90,9 +130,12 @@ class PHPBridge {
 	@:noCompletion public var __lookups:Int = 0;
 	#end
 
-	public function new(mode:PHPMode, ?docRoot:String, ?autoIndex:Array<String>, timeoutSeconds:Float = DEFAULT_TIMEOUT) {
+	public function new(mode:PHPMode, ?docRoot:String, ?autoIndex:Array<String>, timeoutSeconds:Float = DEFAULT_TIMEOUT,
+			maxResponseSize:Int = PHPExchange.DEFAULT_MAX_RESPONSE_SIZE, maxExchanges:Int = DEFAULT_MAX_EXCHANGES) {
 		this.mode = mode;
 		this.timeoutSeconds = timeoutSeconds > 0 ? timeoutSeconds : 0;
+		this.maxResponseSize = maxResponseSize;
+		this.maxExchanges = maxExchanges;
 		this.docRoot = docRoot != null ? docRoot : "";
 		this.autoIndex = autoIndex != null ? autoIndex : ["index.php", "index.html"];
 
@@ -164,7 +207,7 @@ class PHPBridge {
 	 * one way of saying "later" and a second would be a second.
 	 */
 	public function execute(req:PHPRequest):Future<PHPResponse> {
-		var exchange = new PHPExchange(timeoutSeconds);
+		var exchange = new PHPExchange(timeoutSeconds, maxResponseSize);
 
 		if (docRoot != "" && req.scriptFilename.indexOf("..") >= 0) {
 			exchange.fail("Traversal refused");
@@ -222,8 +265,61 @@ class PHPBridge {
 			return exchange.future;
 		}
 
-		__begin(exchange, host, port, payload);
+		__admit(new Tracked(exchange, host, port, payload));
 		return exchange.future;
+	}
+
+	/**
+		Starts `tracked`'s exchange with the backend if one may start, queues
+		it if not, and refuses it with a `PHPBusy` if the queue is full. Its
+		deadline runs from here, waiting included.
+	**/
+	private function __admit(tracked:Tracked):Void {
+		var exchange:PHPExchange = tracked.exchange;
+		var free:Bool = maxExchanges <= 0 || __inFlight < maxExchanges;
+		if (!free && __waiting.length >= MAX_WAITING) {
+			var busy:PHPBusy = new PHPBusy(__inFlight, __waiting.length);
+			exchange.fail(busy.toString(), busy);
+			return;
+		}
+
+		__track(tracked);
+		if (free) {
+			__start(tracked);
+		} else {
+			__waiting.push(tracked);
+		}
+	}
+
+	/** Starts `tracked`'s exchange with the backend: it holds one of `maxExchanges`. **/
+	private function __start(tracked:Tracked):Void {
+		tracked.started = true;
+		__inFlight++;
+		__begin(tracked);
+	}
+
+	/**
+		Starts the next of those waiting, while there is room: an exchange with
+		the backend has ended. One whose deadline has passed is failed as the
+		sweep would fail it, rather than connected for nothing.
+	**/
+	private function __startWaiting():Void {
+		while (__waiting.length > 0 && (maxExchanges <= 0 || __inFlight < maxExchanges)) {
+			var next:Tracked = __waiting.shift();
+			if (next.exchange.settled) {
+				continue;
+			}
+			if (next.exchange.expired()) {
+				next.exchange.timeOut(__waitingPhase());
+				__finish(next.exchange);
+				continue;
+			}
+			__start(next);
+		}
+	}
+
+	private inline function __waitingPhase():String {
+		return "waiting for one of the " + maxExchanges + " exchanges with the backend to end";
 	}
 
 	/**
@@ -293,8 +389,15 @@ class PHPBridge {
 	 * which its socket joins the way `crossbyte.net.Socket`'s do. Everything
 	 * else, the parser, the deadline, the table, is shared, and that is
 	 * the point of the split.
+	 *
+	 * Sets `tracked.release`, which lets the transport go, before anything
+	 * can settle the exchange.
 	 */
-	private function __begin(exchange:PHPExchange, host:String, port:Int, payload:Bytes):Void {
+	private function __begin(tracked:Tracked):Void {
+		var exchange:PHPExchange = tracked.exchange;
+		var host:String = tracked.host;
+		var port:Int = tracked.port;
+		var payload:Bytes = tracked.payload;
 		#if nodejs
 		var socket = new crossbyte.net.Socket();
 
@@ -320,6 +423,9 @@ class PHPBridge {
 			if (exchange.receive(chunk, chunk.length)) {
 				exchange.succeed();
 				__finish(exchange, socket);
+			} else if (exchange.settled) {
+				// Refused as it arrived: past a limit.
+				__finish(exchange, socket);
 			}
 		});
 
@@ -339,32 +445,33 @@ class PHPBridge {
 			__finish(exchange, socket);
 		});
 
-		__track(exchange, function():Void {
+		tracked.release = function():Void {
 			try {
 				socket.close();
 			} catch (_:Dynamic) {}
-		});
+		};
 
 		socket.connect(host, port);
 		#else
 		var outbound = new Outbound(this, exchange, host, port, payload);
 		__reading.push(outbound);
 
-		// Tracked from the start, so the deadline covers the connect as well.
-		__track(exchange, function():Void {
+		tracked.release = function():Void {
 			__release(outbound);
-		});
+		};
 
 		#if target.threaded
 		__connectOffThread(outbound);
 		#else
-		// No thread to connect on, so it is made here, as it always was.
+		// No thread to connect on, so it is made here, as it always was,
+		// within what is left of the exchange's deadline.
 		var socket:Null<Socket> = null;
 		var failure:Dynamic = null;
 
 		try {
 			__lookups++;
-			socket = __open(new Host(host), port);
+			var timeout:Float = exchange.remaining();
+			socket = __open(crossbyte._internal.net.Resolver.lookup(host, timeout), port, timeout);
 		} catch (e:Dynamic) {
 			failure = e;
 		}
@@ -475,13 +582,18 @@ class PHPBridge {
 			var failure:Dynamic = null;
 
 			try {
+				// Within what is left of the exchange's deadline, the lookup
+				// and the connect both: neither had a bound, and a backend
+				// whose host dropped the connect held this thread, and every
+				// exchange queued behind it, for as long as the system tried.
+				var timeout:Float = outbound.exchange.remaining();
 				if (resolved == null || resolvedName != outbound.host) {
 					__lookups++;
-					resolved = new Host(outbound.host);
+					resolved = crossbyte._internal.net.Resolver.lookup(outbound.host, timeout);
 					resolvedName = outbound.host;
 				}
 
-				socket = __open(resolved, outbound.port);
+				socket = __open(resolved, outbound.port, timeout);
 			} catch (e:Dynamic) {
 				failure = e;
 				resolved = null;
@@ -504,12 +616,18 @@ class PHPBridge {
 	}
 	#end
 
-	/** A socket connected to `host`, blocking until it is or cannot be. **/
-	private static function __open(host:Host, port:Int):Socket {
+	/**
+		A socket connected to `host`, blocking until it is or cannot be, or
+		for `timeout` seconds at most when that is more than `0`.
+	**/
+	private static function __open(host:Host, port:Int, timeout:Float):Socket {
 		var socket:Socket = new Socket();
 
 		try {
 			socket.setFastSend(true);
+			if (timeout > 0) {
+				socket.setTimeout(timeout);
+			}
 			socket.connect(host, port);
 		} catch (e:Dynamic) {
 			try {
@@ -690,10 +808,22 @@ class PHPBridge {
 
 	/**
 	 * Reads what has arrived into the exchange, and succeeds it once
-	 * END_REQUEST is in. Returns whether the backend hung up first.
+	 * END_REQUEST is in, or lets it go once the exchange has refused what
+	 * arrived. Returns whether the backend hung up first.
+	 *
+	 * `READ_BUDGET` bytes a pass at most: the loop is told there is more, and
+	 * polls again before it waits.
 	 */
 	private function __drain(entry:Outbound):Bool {
+		var taken:Int = 0;
 		while (true) {
+			if (taken >= READ_BUDGET) {
+				if (entry.runtime != null) {
+					@:privateAccess entry.runtime.__noteMoreToRead();
+				}
+				return false;
+			}
+
 			#if eval
 			// A socket cannot be made non-blocking on eval, and a read with
 			// nothing there would stop the runtime until the backend sent more.
@@ -715,9 +845,15 @@ class PHPBridge {
 			if (read <= 0) {
 				return false;
 			}
+			taken += read;
 
 			if (entry.exchange.receive(__scratch, read)) {
 				entry.exchange.succeed();
+				__finish(entry.exchange);
+				return false;
+			}
+			if (entry.exchange.settled) {
+				// Refused as it arrived: past a limit.
 				__finish(entry.exchange);
 				return false;
 			}
@@ -739,8 +875,8 @@ class PHPBridge {
 	 * last, so a server with PHP configured and nothing using it costs nothing
 	 * per frame.
 	 */
-	private function __track(exchange:PHPExchange, release:Void->Void):Void {
-		__pending.push({exchange: exchange, release: release});
+	private function __track(tracked:Tracked):Void {
+		__pending.push(tracked);
 
 		if (__runtime == null) {
 			__runtime = CrossByte.current();
@@ -752,10 +888,16 @@ class PHPBridge {
 		}
 	}
 
+	/**
+		Lets an exchange that has settled go: its transport, its place among
+		those with the backend, which the next waiting takes, or its place
+		in the queue.
+	**/
 	private function __finish(exchange:PHPExchange, ?socket:Dynamic):Void {
+		var finished:Null<Tracked> = null;
 		for (entry in __pending) {
 			if (entry.exchange == exchange) {
-				entry.release();
+				finished = entry;
 				__pending.remove(entry);
 				break;
 			}
@@ -769,6 +911,20 @@ class PHPBridge {
 			}
 		}
 		#end
+
+		if (finished != null) {
+			if (finished.release != null) {
+				finished.release();
+				finished.release = null;
+			}
+			if (finished.started) {
+				finished.started = false;
+				__inFlight--;
+				__startWaiting();
+			} else {
+				__waiting.remove(finished);
+			}
+		}
 
 		if (__pending.length == 0 && __sweeping && __runtime != null) {
 			__runtime.removeEventListener(TickEvent.TICK, __onTick);
@@ -797,6 +953,11 @@ class PHPBridge {
 
 	/** What an exchange that ran out of time was doing: how its timeout is described. **/
 	private function __phase(exchange:PHPExchange):String {
+		for (entry in __waiting) {
+			if (entry.exchange == exchange) {
+				return __waitingPhase();
+			}
+		}
 		#if !nodejs
 		for (entry in __reading) {
 			if (entry.exchange == exchange) {
@@ -902,6 +1063,30 @@ private class Fcgi {
 			bb.addByte((n >> 8) & 0xFF);
 			bb.addByte(n & 0xFF);
 		}
+	}
+}
+
+/**
+	An exchange the bridge has taken on, with what its connection to the
+	backend needs: waiting for one, or with the backend.
+**/
+private class Tracked {
+	public final exchange:PHPExchange;
+	public final host:String;
+	public final port:Int;
+	public final payload:Bytes;
+
+	/** Lets the transport go; null while there is none. **/
+	public var release:Null<Void->Void> = null;
+
+	/** Whether it is with the backend, holding one of `maxExchanges`. **/
+	public var started:Bool = false;
+
+	public function new(exchange:PHPExchange, host:String, port:Int, payload:Bytes) {
+		this.exchange = exchange;
+		this.host = host;
+		this.port = port;
+		this.payload = payload;
 	}
 }
 

@@ -270,6 +270,9 @@ class TestSuites {
 		runner.addCase(new crossbyte._internal.socket.FlexSocketTest());
 		runner.addCase(new crossbyte._internal.socket.BlockedErrorTest());
 		runner.addCase(new crossbyte._internal.net.IPv6Test());
+		// Every threaded target: what lookups cost the process, through a
+		// system lookup the case controls.
+		runner.addCase(new crossbyte._internal.net.ResolverTest());
 		runner.addCase(new crossbyte.net.StunMessageTest());
 		runner.addCase(new crossbyte.net.StunQueryTest());
 		runner.addCase(new crossbyte.net.TurnClientTest());
