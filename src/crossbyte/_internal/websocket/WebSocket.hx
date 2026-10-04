@@ -2917,8 +2917,77 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	}
 
 	public function sendString(data:String):Void {
+		#if (cpp || jvm)
+		if (__sendAsciiText(data)) {
+			return;
+		}
+		#end
 		__prepareMessage(crossbyte._internal.Utf8.bytesOf(data), WebSocketOpcode.TEXT);
 	}
+
+	#if (cpp || jvm)
+	/**
+		Sends `data` as one uncompressed text frame without encoding it into
+		a `Bytes` of its own: it was encoded into one, wrapped in a ByteArray
+		and copied into the frame from there, 190 bytes natively and 520 on
+		the jvm for a 100-character message. Its UTF-8 goes into the
+		session's payload scratch instead, which `__sendFrame` frames as it
+		does any payload.
+
+		Natively when the string is held a byte a character, whose bytes are
+		its UTF-8 as they stand, what `Bytes.ofString` copies, and on the
+		jvm when it is ASCII and short: a loop over the characters there is
+		no faster than the platform's encoder past a few hundred. Not when
+		the message is to be compressed or fragmented.
+
+		@return Whether it went; false leaves it to the general path, which
+		        sends what this does not and refuses a session not open.
+	**/
+	private function __sendAsciiText(data:String):Bool {
+		var length:Int = data.length;
+		if (readyState != OPEN || length > MAX_PAYLOAD || (__deflateSend && length >= compressionThreshold)) {
+			return false;
+		}
+		#if cpp
+		if (untyped __cpp__("{0}.isUTF16Encoded()", data)) {
+			return false;
+		}
+		#else
+		if (length > DIRECT_TEXT_LIMIT) {
+			return false;
+		}
+		for (i in 0...length) {
+			if (StringTools.fastCodeAt(data, i) >= 0x80) {
+				return false;
+			}
+		}
+		#end
+
+		// __sendFrame copies a client's payload into this scratch to mask it,
+		// which with the payload already here copies it onto itself.
+		var payload:ByteArray = __maskedPayload;
+		payload.length = 0;
+		@:privateAccess (payload : ByteArrayData).__resize(length, 0);
+		if (length > 0) {
+			#if cpp
+			untyped __cpp__("memcpy((char *){0}->GetBase(), {1}.raw_ptr(), {2})", (payload : ByteArrayData).getData(), data, length);
+			#else
+			var bytes:ByteArrayData = payload;
+			for (i in 0...length) {
+				bytes.set(i, StringTools.fastCodeAt(data, i));
+			}
+			#end
+		}
+		payload.position = 0;
+		__sendFrame(payload, WebSocketOpcode.TEXT, true, false);
+		return true;
+	}
+
+	#if !cpp
+	/** The longest text the jvm writes into the frame itself; see __sendAsciiText. **/
+	private static inline var DIRECT_TEXT_LIMIT:Int = 256;
+	#end
+	#end
 
 	private function __prepareMessage(data:ByteArray, opcode:Int):Void {
 		if (readyState != OPEN) {

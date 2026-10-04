@@ -81,7 +81,7 @@ class AllocationBudgetTest extends utest.Test {
 	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [6056, 6056, 8896], [7640, 7640, 11184]);
 	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3448, 3432, 2368], [4376, 4360, 3024]);
 	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [1344, 1344, 10456], [1744, 1744, 13136]);
-	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [1576, 1576, 2080], [2040, 2040, 2664]);
+	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [1096, 1096, 1012], [1440, 1440, 1336]);
 	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [1112, 1112, 1528], [1456, 1456, 1976]);
 	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 336], [8, 8, 488]);
 	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [344, 344, 824], [496, 496, 1096]);
