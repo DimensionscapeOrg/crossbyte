@@ -89,6 +89,15 @@ class WebSocketMessageEvent extends Event {
 		__text = null;
 	}
 
+	/**
+		Its call has returned and its message been emptied: the text made
+		from the message goes too, so a reference kept past the call reads
+		an empty message whichever it asks for.
+	**/
+	@:noCompletion public inline function __release():Void {
+		__text = null;
+	}
+
 	@:noCompletion override private function __kill():Void {
 		super.__kill();
 		isText = false;

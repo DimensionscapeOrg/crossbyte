@@ -16,6 +16,17 @@ import crossbyte.Object;
 	receiving thousands of messages a second makes no garbage for them, and
 	the collector stops it that much less often.
 
+	What is handed out again, released (one of each per socket, session or
+	connection, filled again for each arrival): a `DatagramSocket`'s
+	`DatagramSocketDataEvent` and its `data`; a `ReliableDatagramSocket`'s
+	`DatagramSocketDataEvent` and the message it puts back together from
+	fragments, and a stream's `ProgressEvent`; a `WebSocket`'s
+	`WebSocketMessageEvent` and its `data`, and its `ProgressEvent`; a
+	`Socket`'s `connect`, `close`, `ioError` and `socketData` events; and
+	the payloads `TurnClient.onData` and `DtlsTransport.onMessage` are
+	handed. Storage a payload grew past 16 KB is let go once its call has
+	returned, and a socket that has received nothing holds none.
+
 	So a listener that wants something later keeps a copy, not the event:
 
 	```haxe

@@ -783,6 +783,23 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __assembly:ByteArray = null;
 	@:noCompletion private var __fragmentBytes:Int = 0;
 
+	// What this session hands its messages out in, one of each, made when
+	// first needed and filled again for every message after (see
+	// Arrivals): the DATA event; a stream's SOCKET_DATA event; the buffer
+	// a fragmented message is put back together in, kept between messages
+	// up to Arrivals.KEEP; and the payload a bundle's frame is copied out
+	// into. Each is taken afresh while it is out, a listener that pumps
+	// the runtime can be handed the next message inside its own call,
+	// and none is kept under either define.
+	@:noCompletion private var __arrivalEvent:DatagramSocketDataEvent = null;
+	@:noCompletion private var __arrivalOut:Bool = false;
+	@:noCompletion private var __streamEvent:ProgressEvent = null;
+	@:noCompletion private var __streamEventOut:Bool = false;
+	@:noCompletion private var __assemblyKept:ByteArray = null;
+	@:noCompletion private var __assemblyOut:Bool = false;
+	@:noCompletion private var __entry:ByteArray = null;
+	@:noCompletion private var __entryOut:Bool = false;
+
 	// The newest counter delivered on each sequenced channel, -1 for none,
 	// and the next to send. Made on first use: most sessions never sequence
 	// anything, and 256 entries each is not worth carrying for them.
@@ -2035,6 +2052,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (limit > 0 && length > limit - __fragmentBytes) {
 			var message:String = 'A reliable message from the peer passed the $limit byte maxMessageSize before it ended; '
 				+ 'the session was closed rather than hold more of it.';
+			if (__assembly != null && __assembly == __assemblyKept) {
+				// Not held for the next: what it grew to was the peer's doing.
+				Arrivals.release(__assembly);
+			}
 			__assembly = null;
 			__fragmentBytes = 0;
 			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
@@ -2052,10 +2073,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 
 		if (__assembly == null) {
-			__assembly = new ByteArray();
+			__assembly = __takeAssembly();
 		}
 		var assembly:ByteArray = __assembly;
 		if (length > 0) {
+			Arrivals.room(assembly, __fragmentBytes + length, !more);
 			assembly.position = __fragmentBytes;
 			assembly.writeBytes(payload, 0, length);
 		}
@@ -2066,14 +2088,47 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		__assembly = null;
 		__fragmentBytes = 0;
-		// Made for this message: once handed out, it is done with.
+		// Handed out, and done with once that returns: the session's own,
+		// emptied for the next fragmented message, or one of its own,
+		// killed under the check.
+		var kept:Bool = assembly == __assemblyKept;
+		if (kept) {
+			__assemblyOut = true;
+		}
 		try {
 			__dispatchPayload(assembly);
 		} catch (e:Dynamic) {
-			Arrivals.done(assembly);
+			__assembled(assembly, kept);
 			Arrivals.rethrow(e);
 		}
-		Arrivals.done(assembly);
+		__assembled(assembly, kept);
+	}
+
+	/**
+		What a fragmented message is put back together in: the session's
+		own, emptied, unless it is out or reuse is off.
+	**/
+	@:noCompletion private function __takeAssembly():ByteArray {
+		if (!Arrivals.REUSE || __assemblyOut) {
+			return new ByteArray();
+		}
+		var assembly:ByteArray = __assemblyKept;
+		if (assembly == null) {
+			assembly = __assemblyKept = new ByteArray();
+		} else {
+			assembly.length = 0;
+			assembly.position = 0;
+		}
+		return assembly;
+	}
+
+	@:noCompletion private inline function __assembled(assembly:ByteArray, kept:Bool):Void {
+		if (kept) {
+			Arrivals.release(assembly);
+			__assemblyOut = false;
+		} else {
+			Arrivals.done(assembly);
+		}
 	}
 
 	@:noCompletion private static function __filled(size:Int, value:Int):Vector<Int> {
@@ -2810,14 +2865,35 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__input.position = __input.length;
 		__input.writeBytes(payload, 0, payload.length);
 		__input.position = readTo;
-		var event = new ProgressEvent(ProgressEvent.SOCKET_DATA, payload.length, 0);
+		// The session's own event, filled again, unless it is out.
+		var pooled:Bool = Arrivals.REUSE && !__streamEventOut;
+		var event:ProgressEvent;
+		if (pooled) {
+			event = __streamEvent;
+			if (event == null) {
+				event = __streamEvent = new ProgressEvent(ProgressEvent.SOCKET_DATA, payload.length, 0);
+			} else {
+				event.__refill(payload.length, 0);
+			}
+			__streamEventOut = true;
+		} else {
+			event = new ProgressEvent(ProgressEvent.SOCKET_DATA, payload.length, 0);
+		}
 		try {
 			dispatchEvent(event);
 		} catch (e:Dynamic) {
-			Arrivals.doneWith(event);
+			__streamDispatched(event, pooled);
 			Arrivals.rethrow(e);
 		}
-		Arrivals.doneWith(event);
+		__streamDispatched(event, pooled);
+	}
+
+	@:noCompletion private inline function __streamDispatched(event:ProgressEvent, pooled:Bool):Void {
+		if (pooled) {
+			__streamEventOut = false;
+		} else {
+			Arrivals.doneWith(event);
+		}
 	}
 
 	@:noCompletion private function __createBuffer():ByteArray {
@@ -2845,14 +2921,38 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
-		var event = new DatagramSocketDataEvent(DatagramSocketDataEvent.DATA, __remoteAddress, __remotePort, localAddress, localPort, payload);
+		// The session's own event, filled again, unless it is out. The payload
+		// is whoever made it's to finish with: the transport's datagram, a
+		// bundle's frame, a frame held past a gap, a message put back together.
+		var pooled:Bool = Arrivals.REUSE && !__arrivalOut;
+		var event:DatagramSocketDataEvent;
+		if (pooled) {
+			event = __arrivalEvent;
+			if (event == null) {
+				event = __arrivalEvent = new DatagramSocketDataEvent(DatagramSocketDataEvent.DATA, __remoteAddress, __remotePort, localAddress, localPort,
+					payload);
+			} else {
+				event.__refill(__remoteAddress, __remotePort, localAddress, localPort, payload);
+			}
+			__arrivalOut = true;
+		} else {
+			event = new DatagramSocketDataEvent(DatagramSocketDataEvent.DATA, __remoteAddress, __remotePort, localAddress, localPort, payload);
+		}
 		try {
 			dispatchEvent(event);
 		} catch (e:Dynamic) {
-			Arrivals.doneWith(event);
+			__dispatched(event, pooled);
 			Arrivals.rethrow(e);
 		}
-		Arrivals.doneWith(event);
+		__dispatched(event, pooled);
+	}
+
+	@:noCompletion private inline function __dispatched(event:DatagramSocketDataEvent, pooled:Bool):Void {
+		if (pooled) {
+			__arrivalOut = false;
+		} else {
+			Arrivals.doneWith(event);
+		}
 	}
 
 	@:noCompletion private function __dispatchTimeoutError():Void {
@@ -2884,6 +2984,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__inFrameCacheSize = 0;
 		__assembly = null;
 		__fragmentBytes = 0;
+		// A closed session holds nothing for messages that will not come; one
+		// still out is finished with by the call it is out in.
+		__assemblyKept = null;
+		__entry = null;
+		__arrivalEvent = null;
+		__streamEvent = null;
 		__sequencedIn = null;
 		__sequencedOut = null;
 		__outgoingQueue.resize(0);
@@ -3975,20 +4081,42 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			if (length < 0) {
 				return;
 			}
-			var frame = ReliableDatagramProtocol.decodeInto(data, at + ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE, length, false, __decoded());
+			// Copied out of the bundle into the session's own payload, filled
+			// again for each frame, unless it is out.
+			var entry:ByteArray = null;
+			if (Arrivals.REUSE && !__entryOut) {
+				entry = __entry;
+				if (entry == null) {
+					entry = __entry = new ByteArray();
+				}
+			}
+			var frame = ReliableDatagramProtocol.decodeInto(data, at + ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE, length, false, __decoded(), false, entry);
 			at += ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE + length;
 			if (frame != null) {
-				// Copied out of the bundle for this frame, and done with once
-				// the frame has been taken: whatever keeps it has copied it.
+				// Done with once the frame has been taken: whatever keeps it
+				// has copied it.
 				var payload:ByteArray = frame.payload;
+				var pooled:Bool = payload != null && payload == entry;
+				if (pooled) {
+					__entryOut = true;
+				}
 				try {
 					__acceptFrame(frame);
 				} catch (e:Dynamic) {
-					Arrivals.done(payload);
+					__entryTaken(payload, pooled);
 					Arrivals.rethrow(e);
 				}
-				Arrivals.done(payload);
+				__entryTaken(payload, pooled);
 			}
+		}
+	}
+
+	@:noCompletion private inline function __entryTaken(payload:ByteArray, pooled:Bool):Void {
+		if (pooled) {
+			Arrivals.release(payload);
+			__entryOut = false;
+		} else {
+			Arrivals.done(payload);
 		}
 	}
 

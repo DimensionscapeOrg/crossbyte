@@ -121,6 +121,69 @@ class DtlsTransportTest extends utest.Test {
 	}
 
 	/**
+		Records reach `onMessage` in the transport's own payload, read into
+		again for each: each is right in its call, one read inside the call
+		gets a payload of its own, a payload kept past its call is what each
+		mode says, and a listener that throws leaves the next right.
+	**/
+	public function testEachRecordIsRightInWhatTheTransportHandsOutAgain():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.make();
+		var heard:Array<String> = [];
+		var kept:Array<ByteArray> = [];
+		var outerAfter:String = null;
+		pair.server.onMessage = function(payload:ByteArray) {
+			kept.push(payload);
+			var said:String = payload.readUTFBytes(payload.length);
+			heard.push(said);
+			if (said == "outer") {
+				// The next record is read while this one is being handled.
+				pair.client.send(text("nested, and longer"));
+				pair.deliverToServer();
+				payload.position = 0;
+				outerAfter = payload.readUTFBytes(payload.length);
+			} else if (said == "throws") {
+				throw "a listener's own failure";
+			}
+		};
+
+		Assert.isTrue(pair.run(() -> pair.client.connected && pair.server.connected), "the DTLS handshake never completed");
+		for (message in ["first", "second, longer", "outer"]) {
+			pair.client.send(text(message));
+			pair.run(() -> heard.indexOf(message) >= 0);
+		}
+		pair.client.send(text("throws"));
+		var thrown:Dynamic = null;
+		try {
+			pair.run(() -> heard.indexOf("throws") >= 0);
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+		pair.client.send(text("after the throw"));
+		pair.run(() -> heard.indexOf("after the throw") >= 0);
+
+		Assert.same(["first", "second, longer", "outer", "nested, and longer", "throws", "after the throw"], heard);
+		Assert.equals("outer", outerAfter, "a record read inside onMessage changed the one it was handling");
+		Assert.equals("a listener's own failure", Std.string(thrown), "onMessage's throw did not come back out");
+		if (kept.length == 6) {
+			Assert.isTrue(kept[3] != kept[2], "a record read inside onMessage was handed the payload still out");
+			#if cpp
+			Assert.isFalse(@:privateAccess pair.server.__arrivalOut, "something was left out after its call");
+			#end
+			#if crossbyte_check_events
+			Assert.equals(0, kept[0].length, "a payload kept past its call was left alive");
+			#elseif crossbyte_fresh_events
+			Assert.equals("first", kept[0].toString());
+			#else
+			Assert.isTrue(kept[0] == kept[1] && kept[1] == kept[2] && kept[2] == kept[4] && kept[4] == kept[5], "the transport's payload was not read into again");
+			Assert.equals(0, kept[0].length, "a payload kept past its call still read whole");
+			#end
+		}
+		pair.close();
+	}
+
+	/**
 		Closing before it completes tells whoever was waiting.
 
 		Every path that settled this future ran from the handshake, and closing
@@ -508,6 +571,15 @@ private class Pair {
 		}
 
 		return done();
+	}
+
+	/** What the client has sent, to the server now, without moving time. **/
+	public function deliverToServer():Void {
+		var outbound = toServer;
+		toServer = [];
+		for (payload in outbound) {
+			server.receive(payload, now);
+		}
 	}
 
 	public function close():Void {

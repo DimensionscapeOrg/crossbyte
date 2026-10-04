@@ -581,8 +581,13 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__closeAnnounced = true;
 		__dispatchPooledSimpleEvent(Event.CLOSE);
 	}
-	// Hot socket events are reused to reduce steady-state allocation churn.
-	// These events are ephemeral during dispatch and must not be retained.
+	// The socket's connect, close, ioError and socketData events, one of each,
+	// made when first dispatched and handed out again for every dispatch
+	// after: valid only during the listener call, as every event is (see
+	// Event). Each is taken afresh while it is out, a listener that pumps
+	// the runtime can be handed the next inside its own call, and made
+	// afresh every time under -D crossbyte_fresh_events or
+	// -D crossbyte_check_events, the second killing it after its call.
 	@:noCompletion private var __pooledConnectEvent:Event;
 	@:noCompletion private var __pooledConnectEventInUse:Bool = false;
 	@:noCompletion private var __pooledCloseEvent:Event;
@@ -2929,7 +2934,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				case Event.CLOSE: __pooledCloseEventInUse = false;
 				default:
 			}
-			throw error;
+			Arrivals.rethrow(error);
 		}
 
 		switch (type) {
@@ -2984,7 +2989,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			dispatchEvent(__pooledSocketDataEvent);
 		} catch (error:Dynamic) {
 			__pooledSocketDataEventInUse = false;
-			throw error;
+			Arrivals.rethrow(error);
 		}
 		__pooledSocketDataEventInUse = false;
 		#end
@@ -3019,7 +3024,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			dispatchEvent(__pooledIOErrorEvent);
 		} catch (error:Dynamic) {
 			__pooledIOErrorEventInUse = false;
-			throw error;
+			Arrivals.rethrow(error);
 		}
 		__pooledIOErrorEventInUse = false;
 		#end
