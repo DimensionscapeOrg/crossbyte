@@ -77,6 +77,7 @@ class AllocationBudgetTest extends utest.Test {
 	private static final TIMER_FIRED = new Budget("a timeout armed and fired", "timer", [0, 0, 0], [8, 8, 8]);
 	private static final INTERVAL = new Budget("an interval timer firing and re-arming", "firing", [0, 0, 0], [8, 8, 8]);
 	private static final HANDLE_INTERVAL = new Budget("an interval timer taking its handle, firing", "firing", [0, 0, 0], [8, 8, 8]);
+	private static final PAUSE = new Budget("a timer paused and resumed", "pause", [0, 0, 0], [8, 8, 8]);
 	private static final POST = new Budget("a callback posted to the runtime and run", "post", [0, 0, 0], [8, 8, 8]);
 	private static final IDLE_TICK = new Budget("a runtime frame with nothing to do", "frame", [0, 0, 0], [8, 8, 8]);
 	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [1344, 1344, 3936], [1744, 1744, 4984]);
@@ -191,10 +192,37 @@ class AllocationBudgetTest extends utest.Test {
 		__finish();
 	}
 
+	public function testATimerPausedAndResumed():Void {
+		// What a game does with the timers of whatever it pauses. Natively
+		// the time a timer was paused at was a boxed Float, and on the jvm
+		// the time and policy were boxed again by each default they passed.
+		var runtime = __start();
+		// A frame in, so the clock is not at a whole second: natively a boxed
+		// whole number of up to 255 is taken from a cache.
+		runtime.pump(1 / 60, 0);
+		var fired:Int = 0;
+		var handle:Int = Timer.setTimeout(30.0, () -> fired++);
+		var op = () -> {
+			if (!Timer.pause(handle) || !Timer.resume(handle, Timer.getTime())) {
+				throw "the timer was not paused and resumed";
+			}
+		};
+		try {
+			__warm(op, WARM_CHEAP);
+			__within(PAUSE, AllocationMeter.measure(op, 20000));
+		} catch (error:Dynamic) {
+			__finish();
+			throw error;
+		}
+		Timer.clear(handle);
+		__finish();
+		Assert.equals(0, fired, "a timer paused and resumed in place fired");
+	}
+
 	public function testAnIntervalTakingItsHandleFiring():Void {
 		var runtime = __start();
-		// The slot's generation past the small-int caches, as any slot's is
-		// once it has been reused a few hundred times.
+		// Handles past the small-int caches, as a runtime's are once it has
+		// armed a few hundred timers.
 		for (_ in 0...300) {
 			Timer.clear(Timer.setTimeout(30.0, () -> {}));
 		}

@@ -141,7 +141,7 @@ class TimerHeap implements ITimerScheduler {
 		if (immediate) {
 			queue.remove(node);
 			retire(node);
-		} else if (node.pausedAt != null) {
+		} else if (node.isPaused()) {
 			// A paused timer is not in the queue, so advanceTime will never
 			// dequeue it to retire it. Retire it now or it stays live.
 			retire(node);
@@ -206,6 +206,10 @@ class TimerHeap implements ITimerScheduler {
 	}
 
 	public function setEnabled(handle:TimerHandle, enabled:Bool, policy:ResumePolicy = KeepPhase, time:Float = 0.0):Bool {
+		return setEnabledBy(handle, enabled, policy, time);
+	}
+
+	public function setEnabledBy(handle:TimerHandle, enabled:Bool, policy:ResumePolicy, time:Float):Bool {
 		checkTime(time);
 		var node:Null<TimerNode> = __table.get(handle);
 		if (node == null) {
@@ -228,17 +232,17 @@ class TimerHeap implements ITimerScheduler {
 		node.enabled = true;
 		switch (policy) {
 			case KeepPhase:
-				if (node.pausedAt != null) {
+				if (node.isPaused()) {
 					var pausedDur = t - node.pausedAt;
 					if (pausedDur != 0.0) {
 						node.time += pausedDur;
 					}
 
-					node.pausedAt = null;
+					node.pausedAt = Math.NaN;
 				}
 			case FromNow:
 				node.time = (node.interval > 0) ? (t + node.interval) : t;
-				node.pausedAt = null;
+				node.pausedAt = Math.NaN;
 		}
 		node.armPass = __pass;
 		if (node.firing) {
@@ -363,7 +367,7 @@ class TimerHeap implements ITimerScheduler {
 				} else if (node.enabled && node.interval > 0) {
 					node.time += i * node.interval;
 					queue.enqueue(node);
-				} else if (node.enabled || node.pausedAt == null) {
+				} else if (node.enabled || !node.isPaused()) {
 					retire(node);
 				}
 				#else
@@ -451,7 +455,7 @@ class TimerHeap implements ITimerScheduler {
 		} else if (node.enabled && node.interval > 0) {
 			node.time += node.interval;
 			queue.enqueue(node);
-		} else if (node.enabled || node.pausedAt == null) {
+		} else if (node.enabled || !node.isPaused()) {
 			// A one-shot that has run, or a timer cleared lazily from its own
 			// callback. One that paused itself stays live, to be resumed.
 			retire(node);
@@ -465,7 +469,7 @@ class TimerHeap implements ITimerScheduler {
 			if (node.handle == TimerHandle.INVALID) {
 				// Cleared while held back: retired then, the node free now.
 				__recycle(node);
-			} else if (node.heapIndex < 0 && !node.firing && node.pausedAt == null) {
+			} else if (node.heapIndex < 0 && !node.firing && !node.isPaused()) {
 				if (node.enabled) {
 					queue.enqueue(node);
 				} else {
