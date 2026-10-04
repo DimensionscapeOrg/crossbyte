@@ -25,7 +25,7 @@ class WebSocketFrameTest extends utest.Test {
 	public function testServerAcceptsMaskedFrame():Void {
 		var ws = serverParser();
 		var received:ByteArray = null;
-		ws.onmessage = e -> received = e.message;
+		ws.onmessage = e -> received = kept(e.message);
 
 		ws.__input = maskedFrame(0x02, Bytes.ofString("hello"));
 		ws.__onData();
@@ -195,7 +195,7 @@ class WebSocketFrameTest extends utest.Test {
 	public function testValidTextFrameDispatches():Void {
 		var ws = clientParser();
 		var received:ByteArray = null;
-		ws.onmessage = e -> received = e.message;
+		ws.onmessage = e -> received = kept(e.message);
 
 		// "héllo" contains a 2-byte UTF-8 sequence (0xC3 0xA9).
 		ws.__input = unmaskedFrame(0x01, Bytes.ofString("héllo"));
@@ -262,6 +262,17 @@ class WebSocketFrameTest extends utest.Test {
 
 	private static function emptyWebSocket():WebSocket {
 		return Type.createEmptyInstance(WebSocket);
+	}
+
+	/**
+		A copy of a message `onmessage` was handed, to read after the call:
+		the message itself is valid only during it.
+	**/
+	private static function kept(message:ByteArray):ByteArray {
+		var copy = new ByteArray();
+		copy.writeBytes(message, 0, message.length);
+		copy.position = 0;
+		return copy;
 	}
 
 	private static function baseParser():WebSocket {

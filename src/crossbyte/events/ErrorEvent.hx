@@ -19,4 +19,9 @@ class ErrorEvent extends TextEvent {
 		event.currentTarget = currentTarget;
 		return event;
 	}
+
+	@:noCompletion override private function __kill():Void {
+		super.__kill();
+		errorID = -1;
+	}
 }

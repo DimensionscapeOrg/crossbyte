@@ -109,7 +109,12 @@ class DtlsTransport {
 	/** Called with a datagram to put on the wire. **/
 	public dynamic function onSend(payload:ByteArray):Void {}
 
-	/** Called with each decrypted message. **/
+	/**
+		Called with each decrypted message.
+
+		`payload` is valid only during the call, as an event's payload is:
+		copy the bytes out to keep them. See `crossbyte.events.Event`.
+	**/
 	public dynamic function onMessage(payload:ByteArray):Void {}
 
 	/**
@@ -257,7 +262,9 @@ class DtlsTransport {
 	#end
 
 	/**
-		Hands over a datagram that arrived from the peer.
+		Hands over a datagram that arrived from the peer. Read during the
+		call and kept by nothing, so a payload valid only during the caller's
+		own call, an event's, can be passed as it is.
 
 		@return Whether it looked like DTLS. A record layer type between 20 and
 		63 is DTLS by RFC 7983's demultiplexing rule, which is what lets STUN,
@@ -461,7 +468,14 @@ class DtlsTransport {
 			}
 
 			out.position = 0;
-			onMessage(out);
+			// Valid only during the call, as an event's payload is.
+			try {
+				onMessage(out);
+			} catch (e:Dynamic) {
+				crossbyte.events._internal.Arrivals.done(out);
+				crossbyte.events._internal.Arrivals.rethrow(e);
+			}
+			crossbyte.events._internal.Arrivals.done(out);
 		}
 	}
 

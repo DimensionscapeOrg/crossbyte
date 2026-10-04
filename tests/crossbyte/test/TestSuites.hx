@@ -59,6 +59,9 @@ class TestSuites {
 		// Also in PortableSuite: typed event-type constants refuse a listener
 		// of the wrong event at compile time.
 		runner.addCase(new crossbyte.events.EventTypesTest());
+		// Also in PortableSuite: "copy it to keep it", clone() copies, and
+		// what each define does to an event and its payload.
+		runner.addCase(new crossbyte.events.ArrivalsTest());
 	}
 
 	public static function addDataStructures(runner:Runner):Void {
@@ -228,6 +231,9 @@ class TestSuites {
 
 	public static function addNet(runner:Runner):Void {
 		runner.addCase(new crossbyte.net.DatagramSocketTest());
+		// What a datagram listener is handed, sends back and keeps, over real
+		// sockets; asynchronous, and also in PortableSuite for Node's path.
+		runner.addCase(new crossbyte.net.DatagramArrivalTest());
 		// Native only, like DatagramSocketTest beside it. These cases pump the
 		// runtime to wait for a datagram, and pumping means Sys.sleep, which on
 		// node blocks the very loop the socket is delivered on, so the query
@@ -388,6 +394,13 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.SocketTLSClientTest());
 		runner.addCase(new crossbyte.net.WebSocketClientTest());
 		runner.addCase(new crossbyte.net.WebSocketSessionTest());
+		// A message's call, every way to send it back, and what a listener
+		// keeps. Also in PortableSuite, for Node's sessions.
+		runner.addCase(new crossbyte.net.WebSocketArrivalTest());
+		// RPC arguments and a NetConnection's input kept past their calls,
+		// over each transport, and a TCP echo queued behind a peer not
+		// reading. Also in PortableSuite, for Node.
+		runner.addCase(new crossbyte.net.TransportArrivalTest());
 		// Not on eval either: its sockets block, so a write to a peer that has
 		// stopped reading waits rather than buffering.
 		runner.addCase(new crossbyte.net.SocketOutputTest());
@@ -505,7 +518,11 @@ class TestSuites {
 		register nothing here.
 	**/
 	public static function addAllocationBudgets(runner:Runner):Void {
-		#if (cpp || jvm)
+		// And only as released: under -D crossbyte_fresh_events or
+		// -D crossbyte_check_events every event and payload is made afresh,
+		// which is what those defines are for, and the budgets are for the
+		// reuse they turn off.
+		#if ((cpp || jvm) && !(crossbyte_fresh_events || crossbyte_check_events))
 		runner.addCase(new crossbyte.AllocationBudgetTest());
 		#end
 	}

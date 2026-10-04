@@ -130,7 +130,14 @@ class DataChannel {
 	/** Called with each text message. **/
 	public dynamic function onMessage(text:String):Void {}
 
-	/** Called with each binary message. **/
+	/**
+		Called with each binary message.
+
+		`payload` is valid only during the call, as an event's payload is:
+		copy the bytes out to keep them, as `payload.readBytes(mine)` does.
+		Sending it on from here is safe: `sendBytes` copies what it is given
+		before it returns. See `crossbyte.events.Event`.
+	**/
 	public dynamic function onBytes(payload:ByteArray):Void {}
 
 	/**
@@ -292,16 +299,31 @@ class DataChannel {
 				onMessage("");
 			case SctpDataChunk.PPID_BINARY:
 				payload.position = 0;
-				onBytes(payload);
+				__handOut(payload);
 			case SctpDataChunk.PPID_BINARY_EMPTY:
-				onBytes(new ByteArray());
+				__handOut(new ByteArray());
 			default:
 				// An identifier this does not know. Handed over as bytes rather
 				// than dropped: a peer using one from a later revision is still
 				// telling us something.
 				payload.position = 0;
-				onBytes(payload);
+				__handOut(payload);
 		}
+	}
+
+	/**
+		A binary message, to `onBytes`: valid only during that call, so
+		under `-D crossbyte_check_events` it is killed once the call
+		returns, or throws.
+	**/
+	@:noCompletion private function __handOut(payload:ByteArray):Void {
+		try {
+			onBytes(payload);
+		} catch (e:Dynamic) {
+			crossbyte.events._internal.Arrivals.done(payload);
+			crossbyte.events._internal.Arrivals.rethrow(e);
+		}
+		crossbyte.events._internal.Arrivals.done(payload);
 	}
 
 	@:noCompletion private function __requireOpen():Void {

@@ -29,6 +29,7 @@ import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.events.TickEvent;
 import crossbyte.events.WebSocketCloseEvent;
 import crossbyte.events.WebSocketMessageEvent;
+import crossbyte.events._internal.Arrivals;
 import crossbyte.io.ByteArray;
 import haxe.Serializer;
 import haxe.Timer;
@@ -1120,7 +1121,14 @@ class WebSocket extends Socket {
 			// the frame parser filled is big-endian, for the frame's own
 			// fields, and a message used to arrive so whatever `endian` said.
 			newData.endian = endian;
-			dispatchEvent(new WebSocketMessageEvent(WebSocketMessageEvent.MESSAGE, newData, message.isText));
+			var event = new WebSocketMessageEvent(WebSocketMessageEvent.MESSAGE, newData, message.isText);
+			try {
+				dispatchEvent(event);
+			} catch (e:Dynamic) {
+				Arrivals.doneWith(event);
+				Arrivals.rethrow(e);
+			}
+			Arrivals.doneWith(event);
 			return;
 		}
 
@@ -1135,7 +1143,14 @@ class WebSocket extends Socket {
 		// this reported everything unread, so a reader that had left one
 		// message in the stream was told the next was both together.
 		if (arrived > 0) {
-			dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, arrived, 0));
+			var progress = new ProgressEvent(ProgressEvent.SOCKET_DATA, arrived, 0);
+			try {
+				dispatchEvent(progress);
+			} catch (e:Dynamic) {
+				Arrivals.doneWith(progress);
+				Arrivals.rethrow(e);
+			}
+			Arrivals.doneWith(progress);
 		}
 	}
 

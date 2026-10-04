@@ -12,8 +12,13 @@ import crossbyte.io.ByteArray;
 **/
 interface DatagramReceiver {
 	/**
-		One datagram. `data` was made for it alone, and the receiver may keep
-		it or change it: listeners see it afterwards, as the receiver left it.
+		One datagram. `data` is valid only during the call, as an event's
+		payload is: the socket fills the same `ByteArray` with the next
+		datagram. The receiver may change it in place, listeners see it
+		afterwards as the receiver left it, and copies whatever it keeps
+		past the call: a frame held past a gap, a fragment, a CONNECT's
+		payload. Under `-D crossbyte_check_events` it is killed once the
+		call returns, so one kept by reference reads dead.
 	**/
 	function __receiveDatagram(data:ByteArray, address:String, port:Int):Void;
 }
