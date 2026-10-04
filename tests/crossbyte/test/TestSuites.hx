@@ -498,6 +498,18 @@ class TestSuites {
 		runner.addCase(new crossbyte.metrics.MetricsEndpointTest());
 	}
 
+	/**
+		What each common operation allocates, held to a budget. Natively and on
+		the jvm only, the two targets with an allocation counter to read (see
+		AllocationMeter); Node, neko, hl and the interpreter have none, and
+		register nothing here.
+	**/
+	public static function addAllocationBudgets(runner:Runner):Void {
+		#if (cpp || jvm)
+		runner.addCase(new crossbyte.AllocationBudgetTest());
+		#end
+	}
+
 	public static function addAll(runner:Runner):Void {
 		addAuth(runner);
 		addCrypto(runner);
@@ -520,6 +532,7 @@ class TestSuites {
 		addTimers(runner);
 		addUtils(runner);
 		addMetrics(runner);
+		addAllocationBudgets(runner);
 	}
 
 	public static function addNativeSmoke(runner:Runner):Void {
@@ -570,5 +583,6 @@ class TestSuites {
 		// target that packs bits differently produces output that is wrong
 		// rather than merely slower, and nothing else here would say so.
 		addDataStructures(runner);
+		addAllocationBudgets(runner);
 	}
 }
