@@ -3216,7 +3216,8 @@ entry below says how:
   queued for each: the client reports progress per read and per chunk, so
   a body arriving faster than the runtime drained, or while it was busy,
   queued messages without bound, about 300,000 in two seconds for one
-  load, measured, and then dispatched every one.
+  load, measured, and then dispatched every one. The first report, at
+  nothing loaded, which carries the total, is always told.
 - The PHP bridge joins a repeated response header once, at the end, where
   it added each repeat to the whole value so far: 40,000 lines of one field
   held the runtime 5.6 s. It reads a response a megabyte a pass at most and
