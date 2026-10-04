@@ -4,7 +4,9 @@ import crossbyte.Seq32;
 import crossbyte.events.DatagramSocketDataEvent;
 import crossbyte.events.ProgressEvent;
 import crossbyte.io.ByteArray;
+import crossbyte.io.ByteArray.ByteArrayData;
 import crossbyte.io.ByteArrayInput;
+import crossbyte.io.Endian;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrame;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrameType;
@@ -17,12 +19,18 @@ import utest.Assert;
 	keeps past the call that handed it a datagram is a copy.
 
 	Every datagram goes in through the transport's own delivery, as the
-	socket hands one over, and through one buffer filled again for each,
-	which is what a socket that reuses its payload does. So a session that
-	kept any of a datagram by reference, a frame held past a gap, a
-	fragment, a CONNECT's payload, reads the wrong bytes here in every
-	mode, not only under `-D crossbyte_check_events`, where the buffer is
-	also killed between datagrams.
+	socket hands one over: released, in the socket's own payload, filled
+	again for each datagram and emptied after it. So a session that kept
+	any of a datagram by reference, a frame held past a gap, a fragment,
+	a CONNECT's payload, reads the wrong bytes here in every mode, not
+	only under `-D crossbyte_check_events`, where each datagram's own
+	payload is killed once its call returns.
+
+	And what the session hands out again for each message, its event,
+	the buffer a fragmented message is put back together in, the payload a
+	bundle's frame is copied into, is right for every message, emptied
+	after each, and taken afresh for a message arriving inside a listener's
+	call.
 
 	No network: the sender's frames are recorded as it sends them, and the
 	order they arrive in is each case's.
@@ -30,6 +38,7 @@ import utest.Assert;
 @:access(crossbyte.net.ReliableDatagramSocket)
 @:access(crossbyte.net.ReliableDatagramServerSocket)
 @:access(crossbyte.net.DatagramSocket)
+@:access(crossbyte.net.CongestionControl)
 class ReliableDatagramArrivalTest extends utest.Test {
 	public function testFramesHeldPastAGapKeepTheirOwnBytes():Void {
 		var link = Link.make();
@@ -231,9 +240,8 @@ class ReliableDatagramArrivalTest extends utest.Test {
 				return true;
 			};
 
-			var buffer = new ByteArray();
-			deliverThrough(server.__socket, buffer, ReliableDatagramProtocol.encode(CONNECT, 77, text("join token A")), 40001);
-			deliverThrough(server.__socket, buffer, ReliableDatagramProtocol.encode(CONNECT, 78, text("a longer join token, B")), 40002);
+			deliverThrough(server.__socket, ReliableDatagramProtocol.encode(CONNECT, 77, text("join token A")), 40001);
+			deliverThrough(server.__socket, ReliableDatagramProtocol.encode(CONNECT, 78, text("a longer join token, B")), 40002);
 
 			Assert.same(["join token A", "a longer join token, B"], admitted);
 			var first = server.__sessionAt("127.0.0.1", 40001);
@@ -283,18 +291,234 @@ class ReliableDatagramArrivalTest extends utest.Test {
 		Assert.equals("alpha", keptData[0].toString());
 		Assert.equals(-1, wrongByte(keptData[1], 1500));
 		Assert.equals("127.0.0.1", keptEvents[0].srcAddress);
+		#else
+		// Released: the session's one event, handed out for both, and the
+		// message it put back together emptied once its call returned.
+		Assert.isTrue(keptEvents[0] == keptEvents[1], "the session's event was not handed out again");
+		Assert.isTrue(keptData[1] == link.receiver.__assemblyKept, "the message was not put back together in the session's own buffer");
+		Assert.equals(0, keptData[1].length, "a message put back together still read whole after its call");
+		Assert.equals(0, keptData[1].position);
 		#end
 		link.close();
 	}
 
+	/**
+		Message after message through what the session hands out again: each
+		is right in its call, in the session's byte order from position 0,
+		whatever the one before was left as; a clone keeps its bytes after
+		later messages; and storage a large message grew past `Arrivals.KEEP`
+		is let go once its call returns.
+	**/
+	public function testEachMessageIsRightInWhatTheSessionHandsOutAgain():Void {
+		var link = Link.make();
+		if (link == null) return;
+
+		// Room for every frame at once: nothing acknowledges them here.
+		link.sender.__congestion.window = CongestionControl.MAX_WINDOW;
+		link.receiver.endian = Endian.BIG_ENDIAN;
+		var seen:Array<String> = [];
+		var clones:Array<DatagramSocketDataEvent> = [];
+		var capacityAfterLarge:Int = -1;
+		link.receiver.addEventListener(DatagramSocketDataEvent.DATA, e -> {
+			var data:ByteArray = e.data;
+			var first:Int = data.readUnsignedShort();
+			seen.push(data.position + ":" + data.length + ":" + (data.endian == Endian.BIG_ENDIAN ? "big" : "little") + ":" + first);
+			clones.push(cast e.clone());
+			// Left at its end and in the other order: the next is not to
+			// start where this one was left.
+			data.position = data.length;
+			data.endian = Endian.LITTLE_ENDIAN;
+		});
+
+		// Fragmented, single, fragmented and past KEEP, fragmented again, and
+		// bundled: each through what the session keeps for it.
+		link.sender.send(numbered(3000));
+		link.sender.send(numbered(40));
+		link.sender.send(numbered(20000));
+		link.deliver(link.sender.take());
+		capacityAfterLarge = capacityOf(link.receiver.__assemblyKept);
+		link.sender.send(numbered(2600));
+		var sent = link.sender.take();
+		link.sender.send(numbered(30));
+		link.sender.send(numbered(31));
+		var small = link.sender.take();
+		link.deliver(sent.concat([bundle(small)]));
+
+		var lead:Int = (0 << 8) | 7;
+		Assert.same(['2:3000:big:$lead', '2:40:big:$lead', '2:20000:big:$lead', '2:2600:big:$lead', '2:30:big:$lead', '2:31:big:$lead'], seen);
+		var sizes = [3000, 40, 20000, 2600, 30, 31];
+		for (i in 0...clones.length) {
+			Assert.equals(-1, wrongByte(clones[i].data, sizes[i]), 'clone $i lost its bytes to a later message');
+		}
+		#if !(crossbyte_fresh_events || crossbyte_check_events)
+		Assert.isTrue(capacityAfterLarge <= crossbyte.events._internal.Arrivals.KEEP, "a 20,000-byte message's storage was held after its call: " + capacityAfterLarge);
+		Assert.isTrue(capacityOf(link.receiver.__assemblyKept) <= crossbyte.events._internal.Arrivals.KEEP);
+		Assert.notNull(link.receiver.__entry, "a bundle's frames were not copied into the session's own payload");
+		Assert.equals(0, link.receiver.__entry.length, "a bundle's frame still read whole after its call");
+		Assert.isFalse(link.receiver.__arrivalOut || link.receiver.__assemblyOut || link.receiver.__entryOut, "something was left out after its call");
+		#else
+		Assert.isNull(link.receiver.__assemblyKept, "a buffer was kept for reuse with reuse off");
+		Assert.isNull(link.receiver.__arrivalEvent, "an event was kept for reuse with reuse off");
+		#end
+		link.close();
+	}
+
+	/**
+		A message arriving inside a listener's call, the listener pumps, and
+		the next datagram is delivered, gets an event and a buffer of its
+		own, and the one being handled is left as it was.
+	**/
+	public function testAMessageArrivingInsideAListenersCallHasItsOwnEventAndBytes():Void {
+		var link = Link.make();
+		if (link == null) return;
+
+		// Both fragmented, so each is put back together; the nested one is
+		// delivered from inside the listener handling the first.
+		link.sender.send(numbered(2200));
+		var outer = link.sender.take();
+		link.sender.send(numbered(1800));
+		var nested = link.sender.take();
+
+		var depth:Int = 0;
+		var outerEvent:DatagramSocketDataEvent = null;
+		var outerData:ByteArray = null;
+		var nestedEvent:DatagramSocketDataEvent = null;
+		var nestedData:ByteArray = null;
+		var nestedWrong:Int = -2;
+		var outerAfter:Int = -2;
+		var outerFrom:Int = 0;
+		link.receiver.addEventListener(DatagramSocketDataEvent.DATA, e -> {
+			depth++;
+			if (depth == 1) {
+				outerEvent = e;
+				outerData = e.data;
+				link.deliver(nested);
+				e.data.position = 0;
+				outerAfter = wrongByte(e.data, 2200);
+				outerFrom = e.srcPort;
+			} else {
+				nestedEvent = e;
+				nestedData = e.data;
+				nestedWrong = wrongByte(e.data, 1800);
+			}
+			depth--;
+		});
+		link.deliver(outer);
+
+		Assert.equals(-1, nestedWrong, "the nested message was not itself");
+		Assert.equals(-1, outerAfter, "a message arriving inside a listener changed the one it was handling");
+		Assert.equals(9, outerFrom, "a message arriving inside a listener changed the event it was handling");
+		Assert.isTrue(nestedEvent != null && nestedEvent != outerEvent, "a nested message was handed the event still out");
+		Assert.isTrue(nestedData != null && nestedData != outerData, "a nested message was put back together in the buffer still out");
+		#if !(crossbyte_fresh_events || crossbyte_check_events)
+		Assert.isTrue(outerEvent == link.receiver.__arrivalEvent, "the outer message was not handed out in the session's own event");
+		Assert.isTrue(outerData == link.receiver.__assemblyKept, "the outer message was not put back together in the session's own buffer");
+		Assert.isFalse(link.receiver.__arrivalOut || link.receiver.__assemblyOut, "something was left out after its call");
+		#end
+		link.close();
+	}
+
+	/**
+		A listener that throws lets go of what it was handed: the next message
+		is right, and goes through the session's own event and buffer again.
+	**/
+	public function testAListenerThatThrowsLeavesTheNextMessageRight():Void {
+		var link = Link.make();
+		if (link == null) return;
+
+		var calls:Int = 0;
+		var events:Array<DatagramSocketDataEvent> = [];
+		var after:Array<Int> = [];
+		link.receiver.addEventListener(DatagramSocketDataEvent.DATA, e -> {
+			calls++;
+			events.push(e);
+			if (calls == 1) {
+				e.data.position = 9;
+				throw "a listener's own failure";
+			}
+			after.push(wrongByte(e.data, 2400));
+		});
+
+		link.sender.send(numbered(2400));
+		var first = link.sender.take();
+		var thrown:Dynamic = null;
+		try {
+			link.deliver(first);
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+		Assert.equals("a listener's own failure", Std.string(thrown), "the listener's throw did not reach the caller");
+
+		link.sender.send(numbered(2400));
+		link.deliver(link.sender.take());
+
+		Assert.same([-1], after, "the message after a listener threw was wrong");
+		#if !(crossbyte_fresh_events || crossbyte_check_events)
+		Assert.isTrue(events[0] == events[1], "a listener's throw left the session's event out");
+		Assert.isFalse(link.receiver.__arrivalOut || link.receiver.__assemblyOut, "a listener's throw left something out");
+		Assert.isFalse(link.receiver.__transport.__arrivalOut, "a listener's throw left the socket's payload out");
+		#end
+		link.close();
+	}
+
+	/**
+		A server whose application sees each datagram first (`onDatagram`)
+		cannot let a frame take the datagram itself: the frame's payload is
+		copied into the server's own, filled again for each, and the sessions
+		get each message right.
+	**/
+	public function testAServerWhoseApplicationSeesDatagramsFirstCopiesEachRight():Void {
+		if (!ReliableDatagramServerSocket.isSupported) {
+			Assert.isFalse(ReliableDatagramServerSocket.isSupported);
+			return;
+		}
+
+		var server = new ReliableDatagramServerSocket();
+		var looked:Int = 0;
+		var payloads:Array<String> = [];
+		try {
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			server.onDatagram = (data, address, port) -> {
+				looked++;
+				return false;
+			};
+			server.admit = (address, port, payload) -> {
+				payloads.push(payload.readUTFBytes(payload.length));
+				return true;
+			};
+
+			deliverThrough(server.__socket, ReliableDatagramProtocol.encode(CONNECT, 91, text("first token")), 40011);
+			deliverThrough(server.__socket, ReliableDatagramProtocol.encode(CONNECT, 92, text("second, longer token")), 40012);
+
+			Assert.equals(2, looked, "the application did not see each datagram first");
+			Assert.same(["first token", "second, longer token"], payloads);
+			var first = server.__sessionAt("127.0.0.1", 40011);
+			Require.notNull(first, "the first CONNECT opened no session");
+			Assert.equals("first token", first.connectPayload.toString(), "a session's connectPayload was the server's copy");
+			#if !(crossbyte_fresh_events || crossbyte_check_events)
+			Assert.notNull(server.__copy, "the frames were not copied into the server's own payload");
+			Assert.equals(0, server.__copy.length, "the server's copy still read whole after its call");
+			Assert.isFalse(server.__copyOut);
+			#else
+			Assert.isNull(server.__copy, "a payload was kept for reuse with reuse off");
+			#end
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		try server.close() catch (_:Dynamic) {}
+	}
+
 	// ------------------------------------------------------------- helpers
 
-	/** One datagram through `socket`'s own delivery, in `buffer`, as the socket would hand it over. **/
-	private static function deliverThrough(socket:DatagramSocket, buffer:ByteArray, datagram:ByteArray, port:Int):Void {
-		buffer.length = datagram.length;
-		(buffer : Bytes).blit(0, datagram, 0, datagram.length);
-		buffer.position = 0;
-		socket.__deliver(buffer, "127.0.0.1", port, "127.0.0.1", 1);
+	/**
+		One datagram through `socket`'s own delivery, as the socket hands one
+		over: in its own payload, filled again for each, where it reuses one.
+	**/
+	private static function deliverThrough(socket:DatagramSocket, datagram:ByteArray, port:Int):Void {
+		var pooled:Bool = socket.__pooledArrival();
+		var payload:ByteArray = socket.__payloadOf(datagram, 0, datagram.length, pooled);
+		socket.__deliver(payload, pooled, "127.0.0.1", port, "127.0.0.1", 1);
 	}
 
 	private static function text(value:String):ByteArray {
@@ -302,6 +526,15 @@ class ReliableDatagramArrivalTest extends utest.Test {
 		bytes.writeUTFBytes(value);
 		bytes.position = 0;
 		return bytes;
+	}
+
+	/** The storage a payload holds, readable or not; 0 for none. **/
+	private static function capacityOf(payload:ByteArray):Int {
+		if (payload == null) {
+			return 0;
+		}
+		var data:ByteArrayData = payload;
+		return @:privateAccess data.__length;
 	}
 
 	private static function numbered(length:Int):ByteArray {
@@ -383,8 +616,6 @@ private class Link {
 	/** Copies of what the receiver delivered, made during each call. **/
 	public var received:Array<ByteArray> = [];
 
-	private var __buffer:ByteArray = new ByteArray();
-
 	public static function make(mode:ReliableDatagramSocketMode = DATAGRAM, connected:Bool = true):Link {
 		if (!ReliableDatagramSocket.isSupported) {
 			Assert.isFalse(ReliableDatagramSocket.isSupported);
@@ -412,17 +643,16 @@ private class Link {
 
 	/**
 		Each datagram to the receiver, in the order given, through the
-		transport's own delivery: in one buffer filled again for each, as a
-		socket that reuses its payload hands them over, or with `fresh`, in
-		a buffer of its own each.
+		transport's own delivery, as the socket hands them over: in its own
+		payload, filled again for each, where it reuses one, or with
+		`fresh`, in a payload of its own each.
 	**/
 	public function deliver(datagrams:Array<ByteArray>, fresh:Bool = false):Void {
+		var transport = receiver.__transport;
 		for (datagram in datagrams) {
-			var buffer:ByteArray = fresh ? new ByteArray() : __buffer;
-			buffer.length = datagram.length;
-			(buffer : Bytes).blit(0, datagram, 0, datagram.length);
-			buffer.position = 0;
-			receiver.__transport.__deliver(buffer, "127.0.0.1", 9, "127.0.0.1", 1);
+			var pooled:Bool = !fresh && transport.__pooledArrival();
+			var payload:ByteArray = transport.__payloadOf(datagram, 0, datagram.length, pooled);
+			transport.__deliver(payload, pooled, "127.0.0.1", 9, "127.0.0.1", 1);
 		}
 	}
 

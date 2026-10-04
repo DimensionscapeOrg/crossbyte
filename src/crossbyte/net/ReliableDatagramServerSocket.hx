@@ -1561,7 +1561,16 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		if (__decodedFrame == null) {
 			__decodedFrame = new ReliableDatagramFrame(ACK, 0, null, false);
 		}
-		var frame = ReliableDatagramProtocol.decodeInto(data, 0, data.length, owned, __decodedFrame);
+		// A payload that cannot be `data` itself is copied into the server's
+		// own, filled again for each, unless it is out.
+		var copy:ByteArray = null;
+		if (!owned && Arrivals.REUSE && !__copyOut) {
+			copy = __copy;
+			if (copy == null) {
+				copy = __copy = new ByteArray();
+			}
+		}
+		var frame = ReliableDatagramProtocol.decodeInto(data, 0, data.length, owned, __decodedFrame, false, copy);
 		if (frame == null) {
 			return;
 		}
@@ -1573,13 +1582,33 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			__handleFrame(frame, connection, address, port, via);
 			return;
 		}
+		var pooled:Bool = payload == copy;
+		if (pooled) {
+			__copyOut = true;
+		}
 		try {
 			__handleFrame(frame, connection, address, port, via);
 		} catch (e:Dynamic) {
-			Arrivals.done(payload);
+			__handled(payload, pooled);
 			Arrivals.rethrow(e);
 		}
-		Arrivals.done(payload);
+		__handled(payload, pooled);
+	}
+
+	// The payload a frame is copied out into when it cannot take the
+	// datagram itself, an application's onDatagram, or the relay, saw it
+	// first, one for the server, filled again for each; and whether it is
+	// out, when a frame gets one of its own.
+	@:noCompletion private var __copy:ByteArray = null;
+	@:noCompletion private var __copyOut:Bool = false;
+
+	@:noCompletion private inline function __handled(payload:ByteArray, pooled:Bool):Void {
+		if (pooled) {
+			Arrivals.release(payload);
+			__copyOut = false;
+		} else {
+			Arrivals.done(payload);
+		}
 	}
 
 	/** One frame of `__handleDatagram`'s, for the session it is from, or for none yet. **/

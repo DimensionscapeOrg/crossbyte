@@ -2,7 +2,14 @@ package crossbyte.events;
 
 import crossbyte.events.Event;
 
-/** Event dispatched when an asynchronous I/O operation fails. */
+/**
+	Event dispatched when an asynchronous I/O operation fails.
+
+	Valid only during the listener call: a `Socket` hands the same one out
+	again for its next error, as it does its `connect`, `close` and
+	`socketData` events. Read `text` and `errorID` there, or keep a
+	`clone()`; see `Event`.
+**/
 class IOErrorEvent extends ErrorEvent {
 	public static inline var IO_ERROR:EventType<IOErrorEvent> = "ioError";
 

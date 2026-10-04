@@ -52,6 +52,22 @@ Native builds need the `production` branch of the `dimensionscape/hxcpp`
 fork; the README says why. Each of these can need code changed, and its
 entry below says how:
 
+- An event, and a payload handed to a hook called once per arrival, is
+  valid only during the call it is handed to. A `DatagramSocket`, a
+  `ReliableDatagramSocket`, a `WebSocket` and a `Socket` hand the same
+  event and the same `ByteArray` out again for the next arrival, and empty
+  the bytes once the call returns, as `TurnClient.onData` and
+  `DtlsTransport.onMessage` do their payload. Code that keeps one past its
+  call, that queues events, or `event.data`, to handle at the next game
+  tick, say, reads empty bytes, or the next arrival's fields, where it
+  read what arrived. Keep a copy instead: `event.data.readBytes(mine)`,
+  the fields you need, or `event.clone()`, which copies the payload. Build
+  with `-D crossbyte_check_events` to find the line that keeps one, it
+  reads poison there, or reads nothing and throws, and with
+  `-D crossbyte_fresh_events` to have every arrival made afresh, as
+  before, until it copies. What is handed out other than as an event or
+  to such a hook stays yours to keep: an RPC argument, a message a decoder
+  returns, a request body, `NetConnection.onData`'s input.
 - Sockets, datagram sockets and WebSocket messages read and write in
   `ByteArray.defaultEndian`, little-endian unless changed, as every
   `ByteArray` does. A protocol in network byte order sets `endian` on its
@@ -1585,6 +1601,35 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- What arrives is handed out in objects made once and filled again for
+  each arrival after: a `DatagramSocket`'s `DatagramSocketDataEvent` and
+  its `data`; a `ReliableDatagramSocket` session's event, the buffer a
+  fragmented message is put back together in, the payload a bundled frame
+  is copied into, and a stream's `ProgressEvent`; a `WebSocket`'s
+  `WebSocketMessageEvent`, the buffer each message is read into, and its
+  `ProgressEvent`; and the payloads `TurnClient.onData` and
+  `DtlsTransport.onMessage` are handed. One of each per socket, session or
+  connection, made when first needed, one that has received nothing
+  holds none, and taken afresh while it is out, so a listener that pumps
+  the runtime is handed the next arrival in objects of its own. Once its
+  call returns a payload is emptied, length and position 0, and storage it
+  grew past 16 KB is let go: what reuse holds for a connection is at most
+  that and the event, and for a 100-byte message about 300 bytes. A
+  100-byte datagram sent and received allocates nothing natively, where it
+  allocated 344 bytes, and 592 bytes on the jvm, where it allocated 824; a
+  200-byte reliable UDP message delivered and acknowledged 504 bytes
+  natively (1,112) and 1,095 on the jvm (1,519); a 100-byte WebSocket text
+  message echoed 264 bytes natively (1,096) and 672 on the jvm (1,072).
+  Under `-D crossbyte_fresh_events` or `-D crossbyte_check_events` every
+  arrival is made afresh, as before. See Upgrading.
+- A WebSocket message goes from the framing layer to the session by a
+  direct call, with no event made between them, and each frame is read
+  straight into the message it belongs to and unmasked there. Each frame
+  was read into a `ByteArray` of its own, which was copied into the
+  message unless it was the first.
+- A reliable UDP server whose `onDatagram` sees each datagram first copies
+  a frame's payload into one buffer of its own, filled again for each,
+  where each frame's had a `ByteArray` of its own.
 - `clone()` of a `DatagramSocketDataEvent` or a `WebSocketMessageEvent`
   copies the bytes the event carries, where it shared them: a clone is the
   way to keep a whole event past its listener call, and is safe to, with

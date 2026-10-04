@@ -1,6 +1,7 @@
 package crossbyte.events._internal;
 
 import crossbyte.io.ByteArray;
+import crossbyte.io.ByteArray.ByteArrayData;
 
 /**
 	How CrossByte hands out what arrives, and the two defines that change
@@ -9,7 +10,11 @@ import crossbyte.io.ByteArray;
 	are valid only during that call.
 
 	- Released, the hot ones are reused: one event and one payload per
-	  socket or session, filled again for each arrival. `REUSE`.
+	  socket or session, filled again for each arrival (`refill`), and
+	  emptied once the call has returned (`release`). Each is guarded by
+	  a flag while it is handed out, and taken afresh while the flag is
+	  up: a listener that pumps the runtime can be handed the next
+	  arrival inside its own call. `REUSE`.
 	- `-D crossbyte_fresh_events`: every arrival gets objects of its own,
 	  and nothing is reused or cleared, for code that keeps them, until
 	  it copies instead.
@@ -32,6 +37,117 @@ class Arrivals {
 
 	/** What a killed payload's bytes read as. **/
 	public static inline var POISON:Int = 0xDB;
+
+	/**
+		The most storage a reused payload keeps from one arrival to the
+		next: 16 KB. Past every datagram a network path carries whole (1,500
+		bytes, 9,000 with jumbo frames) and the messages a game sends each
+		tick, so the hot path allocates nothing; and small enough that a
+		server with 10,000 idle connections holds at most 160 MB for it,
+		each connection's last message just under the limit, where 64 KB
+		would let it hold 640 MB. A larger arrival is rare enough to have
+		storage of its own, as every arrival had before: it is let go once
+		its call returns.
+	**/
+	public static inline var KEEP:Int = 16 * 1024;
+
+	// What a payload past KEEP is given in place of its storage, so the
+	// storage can go: nothing ever writes into a buffer of no length.
+	static var __nothing:Null<haxe.io.Bytes> = null;
+
+	/**
+		Fills `payload` with `length` bytes of `bytes` from `offset`, for an
+		arrival: what it held is gone, its storage is used again when it is
+		large enough, and it is read from position 0. Storage too small grows
+		by half again, but past `KEEP` only to what this arrival needs.
+	**/
+	public static function refill(payload:ByteArray, bytes:haxe.io.Bytes, offset:Int, length:Int):Void {
+		var data:ByteArrayData = payload;
+		payload.length = 0;
+		data.position = 0;
+		data.objectEncoding = ByteArrayData.defaultObjectEncoding;
+		__room(data, length, true);
+		data.__writeRange(bytes, offset, length);
+		data.position = 0;
+	}
+
+	#if js
+	/** `refill`, from a view of bytes: Node's `Buffer` a datagram arrives in, copied in once. **/
+	public static function refillView(payload:ByteArray, view:js.lib.Uint8Array):Void {
+		var data:ByteArrayData = payload;
+		payload.length = 0;
+		data.position = 0;
+		data.objectEncoding = ByteArrayData.defaultObjectEncoding;
+		__room(data, view.length, true);
+		@:privateAccess data.__appendView(view);
+		data.position = 0;
+	}
+	#end
+
+	/**
+		Makes a reused payload `length` bytes long, read from position 0, for
+		its caller to fill in place, a native read into its storage,
+		without zeroing what is about to be overwritten. Storage grows as
+		`refill`'s does.
+	**/
+	public static function sized(payload:ByteArray, length:Int):Void {
+		var data:ByteArrayData = payload;
+		payload.length = 0;
+		data.position = 0;
+		data.objectEncoding = ByteArrayData.defaultObjectEncoding;
+		__room(data, length, true);
+		@:privateAccess data.__resize(length, 0);
+	}
+
+	/**
+		Empties a reused payload once the call that handed it out has
+		returned: length and position 0, so a reference kept past the call
+		reads nothing, and storage past `KEEP` let go.
+	**/
+	public static function release(payload:ByteArray):Void {
+		var data:ByteArrayData = payload;
+		payload.length = 0;
+		data.position = 0;
+		if (@:privateAccess data.__length > KEEP) {
+			var nothing = __nothing;
+			if (nothing == null) {
+				nothing = __nothing = haxe.io.Bytes.alloc(0);
+			}
+			@:privateAccess data.__setData(nothing);
+		}
+	}
+
+	/**
+		Room in a reused payload for `length` bytes in all, before it is
+		written to piece by piece, as a message put back together from its
+		fragments is: by half again each time it grows, but not past `KEEP`
+		while what is needed is within it, so a message just under `KEEP`
+		keeps its storage for the next. `last` says `length` is all there
+		will be, which past `KEEP` is then exactly what is made room for.
+	**/
+	public static function room(payload:ByteArray, length:Int, last:Bool = false):Void {
+		__room(payload, length, last);
+	}
+
+	/**
+		Storage for `length` bytes, by half again, but no further than `KEEP`
+		while `length` is within it. Past it, exactly `length` for a payload
+		filled at once (`exact`), which is let go after its call anyway, and
+		by half again for one still growing.
+	**/
+	static inline function __room(data:ByteArrayData, length:Int, exact:Bool):Void {
+		if (length > @:privateAccess data.__length) {
+			var grown:Int = length + (length >> 1);
+			if (length > KEEP) {
+				if (exact) {
+					grown = length;
+				}
+			} else if (grown > KEEP) {
+				grown = KEEP;
+			}
+			data.__reserve(grown);
+		}
+	}
 
 	/**
 		Kills `payload`: every byte it held overwritten with `POISON`, so

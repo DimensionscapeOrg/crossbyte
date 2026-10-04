@@ -266,6 +266,16 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		socket for it as a listener would be.
 	**/
 	@:noCompletion public var __receiver(default, null):crossbyte.net._internal.DatagramReceiver = null;
+
+	// The payload and the event each datagram is handed out in: one of each
+	// per socket, made with the first datagram and filled again for every
+	// one after it, so receiving makes no garbage (see Arrivals). Taken
+	// afresh while they are out, a listener that pumps the runtime can be
+	// handed the next datagram inside its own call, and never under
+	// -D crossbyte_fresh_events or -D crossbyte_check_events.
+	@:noCompletion private var __arrival:ByteArray = null;
+	@:noCompletion private var __arrivalEvent:DatagramSocketDataEvent = null;
+	@:noCompletion private var __arrivalOut:Bool = false;
 	#if cpp
 	// What senders handed this socket during the pass, gathered for one call
 	// when the pass ends; see __sendInPass. Kept between passes, emptied.
@@ -480,6 +490,10 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		__bound = false;
 		__connected = false;
 		__closed = true;
+		// A closed socket holds nothing for datagrams that will not come; a
+		// payload still out is finished with by the call it is out in.
+		__arrival = null;
+		__arrivalEvent = null;
 		dispatchEvent(new Event(Event.CLOSE));
 	}
 
@@ -1061,28 +1075,81 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		Hands one datagram out: to the receiver first, then to the `DATA`
 		listeners, when there are any. This is the outermost call that hands
 		`payload` out, on every target, so once it has returned, or a
-		listener has thrown, the datagram is done with: under
-		`-D crossbyte_check_events` it and its event are killed here, and a
-		receiver or listener that kept either reads them dead.
+		listener has thrown, the datagram is done with. `pooled` says
+		`payload` is the socket's own (`__arrival`), which is emptied here
+		for the next datagram, its event with it; otherwise, under
+		`-D crossbyte_check_events`, the payload and its event are killed
+		here, and a receiver or listener that kept either reads them dead.
 	**/
-	@:noCompletion private function __deliver(payload:ByteArray, source:String, port:Int, local:String, localPort:Int):Void {
+	@:noCompletion private function __deliver(payload:ByteArray, pooled:Bool, source:String, port:Int, local:String, localPort:Int):Void {
 		var receiver = __receiver;
 		var event:DatagramSocketDataEvent = null;
+		if (pooled) {
+			__arrivalOut = true;
+		}
 		try {
 			if (receiver != null) {
 				receiver.__receiveDatagram(payload, source, port);
 			}
 			if (receiver == null || __hasDataListener) {
-				event = new DatagramSocketDataEvent(DatagramSocketDataEvent.DATA, source, port, local, localPort, payload);
+				if (pooled) {
+					event = __arrivalEvent;
+					if (event == null) {
+						event = __arrivalEvent = new DatagramSocketDataEvent(DatagramSocketDataEvent.DATA, source, port, local, localPort, payload);
+					} else {
+						event.__refill(source, port, local, localPort, payload);
+					}
+				} else {
+					event = new DatagramSocketDataEvent(DatagramSocketDataEvent.DATA, source, port, local, localPort, payload);
+				}
 				dispatchEvent(event);
 			}
 		} catch (e:Dynamic) {
-			Arrivals.done(payload);
-			Arrivals.doneWith(event);
+			__delivered(payload, event, pooled);
 			Arrivals.rethrow(e);
 		}
-		Arrivals.done(payload);
-		Arrivals.doneWith(event);
+		__delivered(payload, event, pooled);
+	}
+
+	/** A datagram handed out and done with: the socket's own emptied for the next, or one of its own killed under the check. **/
+	@:noCompletion private inline function __delivered(payload:ByteArray, event:DatagramSocketDataEvent, pooled:Bool):Void {
+		if (pooled) {
+			Arrivals.release(payload);
+			__arrivalOut = false;
+		} else {
+			Arrivals.done(payload);
+			Arrivals.doneWith(event);
+		}
+	}
+
+	/**
+		Whether the next datagram is handed out in the socket's own payload
+		and event: unless they are out, or either define turns reuse off.
+	**/
+	@:noCompletion private inline function __pooledArrival():Bool {
+		return Arrivals.REUSE && !__arrivalOut;
+	}
+
+	/**
+		The payload a datagram is handed out in, `length` bytes of `bytes`
+		from `offset`: the socket's own, filled again, when `pooled`, and
+		one of its own otherwise.
+	**/
+	@:noCompletion private function __payloadOf(bytes:Bytes, offset:Int, length:Int, pooled:Bool):ByteArray {
+		var payload:ByteArray;
+		if (pooled) {
+			payload = __arrival;
+			if (payload == null) {
+				payload = __arrival = new ByteArray();
+			}
+			Arrivals.refill(payload, bytes, offset, length);
+		} else {
+			var own:Bytes = Bytes.alloc(length);
+			own.blit(0, bytes, offset, length);
+			payload = ByteArray.fromBytes(own);
+		}
+		payload.endian = __endian;
+		return payload;
 	}
 
 	#if !nodejs
@@ -1117,8 +1184,12 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 
 			__consecutiveReadFailures = 0;
 
-			var packetBytes:Bytes = Bytes.alloc(bytesReady);
-			packetBytes.blit(0, __readBuffer, 0, bytesReady);
+			// Copied out of the read buffer, which the next read fills: into
+			// the socket's own payload, used again for every datagram, or one
+			// of the datagram's own while that one is out. Each datagram had a
+			// Bytes, a ByteArray and an event of its own.
+			var pooled:Bool = __pooledArrival();
+			var payload:ByteArray = __payloadOf(__readBuffer, 0, bytesReady, pooled);
 
 			if (__localText == null) {
 				var local = __getLocalEndpoint();
@@ -1139,11 +1210,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 				__sourceHost = __tempAddress.host;
 			}
 
-			var payload:ByteArray = ByteArray.fromBytes(packetBytes);
-			payload.endian = __endian;
-
 			processed++;
-			__deliver(payload, source, __tempAddress.port, __localText != null ? __localText : "", __localText != null ? __localNumber : 0);
+			__deliver(payload, pooled, source, __tempAddress.port, __localText != null ? __localText : "", __localText != null ? __localNumber : 0);
 		}
 
 		// Stopped at the cap, not at an empty socket: the loop is told, so
@@ -1516,10 +1584,24 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			return;
 		}
 
-		var payload:ByteArray = ByteArray.fromBytes(Bytes.ofData(message.buffer.slice(message.byteOffset, message.byteOffset + message.byteLength)));
+		// Node hands each datagram over in a Buffer of its own, which nothing
+		// here can spare it: its bytes are copied into the socket's payload,
+		// used again for every datagram, where they were sliced into a buffer
+		// of their own and wrapped in a ByteArray, with an event, each time.
+		var pooled:Bool = __pooledArrival();
+		var payload:ByteArray;
+		if (pooled) {
+			payload = __arrival;
+			if (payload == null) {
+				payload = __arrival = new ByteArray();
+			}
+			Arrivals.refillView(payload, message);
+		} else {
+			payload = ByteArray.fromBytes(Bytes.ofData(message.buffer.slice(message.byteOffset, message.byteOffset + message.byteLength)));
+		}
 		payload.endian = __endian;
 
-		__deliver(payload, source, remote.port, __localAddress, __localPort);
+		__deliver(payload, pooled, source, remote.port, __localAddress, __localPort);
 	}
 
 	@:noCompletion private function __rememberLocalEndpoint():Void {
