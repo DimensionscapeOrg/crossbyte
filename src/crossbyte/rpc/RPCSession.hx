@@ -24,7 +24,7 @@ import crossbyte.net.NetConnection;
 import crossbyte.net.NetConnectionBase;
 import crossbyte.events.EventDispatcher;
 import crossbyte.io.ByteArrayInput;
-import crossbyte.io.ByteArrayOutput;
+import crossbyte.rpc._internal.RPCFrame;
 import crossbyte.rpc._internal.RPCWire;
 import crossbyte.rpc._internal.RPCRuntimeCodec;
 import haxe.ds.IntMap;
@@ -177,6 +177,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	// another peer, as a listening LocalConnection does, must not hand that
 	// peer the last one's answers.
 	@:noCompletion private var __epoch:Int = 0;
+	// The buffer every frame this session sends is written in, made with the
+	// first; see __takeFrame. Always null under crossbyte_check_events and
+	// crossbyte_fresh_events, which frame each send in a buffer of its own.
+	@:noCompletion private var __frame:Null<RPCFrame> = null;
 	#if (cpp || neko || hl || java || jvm || eval)
 	@:noCompletion private static final __threadTokens:sys.thread.Tls<{}> = new sys.thread.Tls();
 	#end
@@ -917,19 +921,82 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	/**
+		A frame to write at most `room` bytes into, begun with its flags, op
+		and request id: this session's buffer, or, when that one is being
+		written or sent still, as when a handler calls or answers from inside
+		a send that delivers at once, a fresh one. Every frame taken goes
+		back through `__sent`, sent or not.
+
+		Each frame was a `ByteArrayOutput` of its own, a call's and its
+		answer's alike: most of what a call allocated.
+	**/
+	@:noCompletion private inline function __takeFrame(room:Int, flags:Int, op:Int, requestId:Int):RPCFrame {
+		var frame:Null<RPCFrame> = __frame;
+		if (frame == null || frame.busy) {
+			frame = __newFrame(room);
+		}
+		frame.busy = true;
+		frame.begin(room, flags, op, requestId);
+		return frame;
+	}
+
+	/** A frame for `__takeFrame` when the session's is in use or there is none; the first is kept. **/
+	@:noCompletion private function __newFrame(room:Int):RPCFrame {
+		final frame = new RPCFrame(room);
+		#if !(crossbyte_check_events || crossbyte_fresh_events)
+		if (__frame == null && frame.capacity <= RPCFrame.KEEP_LIMIT) {
+			__frame = frame;
+		}
+		#end
+		return frame;
+	}
+
+	/**
+		Gives back a frame `__takeFrame` gave, once it has been sent or will
+		not be: `send` has copied what it keeps, so it is this session's to
+		write the next frame in. A buffer grown past `RPCFrame.KEEP_LIMIT` is
+		let go. Under `-D crossbyte_check_events` it is poisoned instead, so
+		a transport that kept it sends garbage.
+	**/
+	@:noCompletion private inline function __sent(frame:RPCFrame):Void {
+		#if crossbyte_check_events
+		frame.poison();
+		#end
+		frame.busy = false;
+		if (frame.capacity > RPCFrame.KEEP_LIMIT && frame == __frame) {
+			__frame = null;
+		}
+	}
+
+	/** Sends `frame` and gives it back, whether the send returns or throws. **/
+	@:noCompletion private inline function __sendFrame(frame:RPCFrame):Void {
+		try {
+			__connection.send(frame);
+		} catch (error:Dynamic) {
+			__sent(frame);
+			throw error;
+		}
+		__sent(frame);
+	}
+
+	/**
 		Sends a compiled call's answer, framed by the handler's generated code.
 		One over `maxFrameLength` throws, which the call it answers takes for
 		the handler failing: its caller is answered `RPCError.INTERNAL_MESSAGE`
 		and `onHandlerError` is told.
 	**/
-	@:noCompletion private inline function __sendAnswer(framed:ByteArrayOutput):Void {
+	@:noCompletion private inline function __sendAnswer(framed:RPCFrame):Void {
 		if (__oversized(framed)) {
-			throw new ArgumentError(__oversizedMessage("RPC answer", framed));
+			final message:String = __oversizedMessage("RPC answer", framed);
+			__sent(framed);
+			throw new ArgumentError(message);
 		}
 		// An answer for a connection that has ended, its handler closed it,
 		// has nobody to go to.
-		if (!__ended) {
-			__connection.send(framed);
+		if (__ended) {
+			__sent(framed);
+		} else {
+			__sendFrame(framed);
 		}
 	}
 
@@ -951,7 +1018,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		its response waiting; over local IPC it was reported to `onError`, and
 		the response waited for good.
 	**/
-	@:noCompletion private function __sendRequestFrame<T>(response:RPCResponse<T>, framed:ByteArrayOutput):Void {
+	@:noCompletion private function __sendRequestFrame<T>(response:RPCResponse<T>, framed:RPCFrame):Void {
 		var message:Null<String> = null;
 		var cause:Dynamic = null;
 		if (__oversized(framed)) {
@@ -968,6 +1035,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 				cause = error;
 			}
 		}
+		__sent(framed);
 		if (message != null) {
 			// Out of where it waits first, as a deadline takes it.
 			if (response.__commands != null) {
@@ -986,22 +1054,26 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 		@throws ArgumentError When the call is over `maxFrameLength`.
 	**/
-	@:noCompletion private function __sendCallFrame(framed:ByteArrayOutput):Void {
+	@:noCompletion private function __sendCallFrame(framed:RPCFrame):Void {
 		if (__oversized(framed)) {
-			throw new ArgumentError(__oversizedMessage("RPC call", framed));
+			final message:String = __oversizedMessage("RPC call", framed);
+			__sent(framed);
+			throw new ArgumentError(message);
 		}
-		if (!__ended) {
-			__connection.send(framed);
+		if (__ended) {
+			__sent(framed);
+		} else {
+			__sendFrame(framed);
 		}
 	}
 
-	/** Whether `framed`, its 4-byte length first, holds more than `maxFrameLength`. **/
-	@:noCompletion private inline function __oversized(framed:ByteArrayOutput):Bool {
-		return maxFrameLength > 0 && framed.bytesWritten - 4 > maxFrameLength;
+	/** Whether `framed`, finished, holds more than `maxFrameLength` after its 4-byte length. **/
+	@:noCompletion private inline function __oversized(framed:RPCFrame):Bool {
+		return maxFrameLength > 0 && framed.payloadLength > maxFrameLength;
 	}
 
-	@:noCompletion private function __oversizedMessage(what:String, framed:ByteArrayOutput):String {
-		return what + " of " + (framed.bytesWritten - 4) + " bytes is over the " + maxFrameLength + "-byte RPC frame limit";
+	@:noCompletion private function __oversizedMessage(what:String, framed:RPCFrame):String {
+		return what + " of " + framed.payloadLength + " bytes is over the " + maxFrameLength + "-byte RPC frame limit";
 	}
 
 	/** Answers a compiled request with an error; nothing, once the connection has ended. **/
@@ -1009,25 +1081,32 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (__ended) {
 			return;
 		}
-		var framed:ByteArrayOutput = __errorFrame(RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR, op, requestId, message);
-		if (__oversized(framed)) {
-			// A message too long to send, an RPCError's, is not the caller's
-			// to see in part.
-			framed = __errorFrame(RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR, op, requestId, RPCError.INTERNAL_MESSAGE);
-		}
-		__connection.send(framed);
+		__sendError(RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR, op, requestId, message);
 	}
 
-	@:noCompletion private static function __errorFrame(flags:Int, op:Int, requestId:Int, message:String):ByteArrayOutput {
-		final framed:ByteArrayOutput = new ByteArrayOutput(RPCWire.MIN_PAYLOAD_LEN + 8);
-		framed.writeInt(0);
-		framed.writeByte(flags);
-		framed.writeInt(op);
-		framed.writeVarUInt(requestId);
-		framed.writeVarUTF(message);
-		framed.writeIntAt(0, framed.bytesWritten - 4);
-		framed.flush();
-		return framed;
+	/**
+		Frames and sends an error answer. A message too long to send, an
+		`RPCError`'s, is not the caller's to see in part, and is answered
+		`RPCError.INTERNAL_MESSAGE` instead.
+	**/
+	@:noCompletion private function __sendError(flags:Int, op:Int, requestId:Int, message:String):Void {
+		var framed:RPCFrame = __errorFrame(flags, op, requestId, message);
+		if (__oversized(framed)) {
+			__sent(framed);
+			framed = __errorFrame(flags, op, requestId, RPCError.INTERNAL_MESSAGE);
+		}
+		__sendFrame(framed);
+	}
+
+	@:noCompletion private function __errorFrame(flags:Int, op:Int, requestId:Int, message:String):RPCFrame {
+		final framed:RPCFrame = __takeFrame(4 + RPCWire.MIN_PAYLOAD_LEN + 5 + 5 + message.length * 3, flags, op, requestId);
+		// Its id even when it is 0, which no answer has: an error answer was
+		// always framed so.
+		if (requestId == 0) {
+			framed.putVarUInt(0);
+		}
+		framed.putString(message);
+		return framed.finish();
 	}
 
 	@:noCompletion private inline function __afterRuntimeCall(op:Int, requestId:Int, failure:Null<haxe.Exception>):Void {
@@ -1166,36 +1245,46 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		} catch (_:Dynamic) {}
 	}
 
-	/** A runtime call's frame: a request with `requestId`, or a one-way call when it is 0. **/
-	@:noCompletion private static function __runtimeFrame(op:Int, requestId:Int, args:Array<Dynamic>):ByteArrayOutput {
-		final framed = new ByteArrayOutput(RPCWire.MIN_PAYLOAD_LEN + 8);
-		framed.writeInt(0);
-		framed.writeByte(RPCWire.FLAG_RUNTIME | (requestId != 0 ? RPCWire.FLAG_REQUEST : 0));
-		framed.writeInt(op);
-		if (requestId != 0) {
-			framed.writeVarUInt(requestId);
+	/**
+		A runtime call's frame: a request with `requestId`, or a one-way call
+		when it is 0.
+
+		@throws String When an argument is of a type the runtime lane does not
+		carry; nothing is held for it.
+	**/
+	@:noCompletion private function __runtimeFrame(op:Int, requestId:Int, args:Array<Dynamic>):RPCFrame {
+		final framed:RPCFrame = __takeFrame(RUNTIME_ROOM, RPCWire.FLAG_RUNTIME | (requestId != 0 ? RPCWire.FLAG_REQUEST : 0), op, requestId);
+		try {
+			RPCRuntimeCodec.writeArgs(framed, args);
+		} catch (error:Dynamic) {
+			__sent(framed);
+			throw error;
 		}
-		RPCRuntimeCodec.writeArgs(framed, args);
-		framed.writeIntAt(0, framed.bytesWritten - 4);
-		framed.flush();
-		return framed;
+		return framed.finish();
 	}
+
+	/** Room a runtime frame is begun with: it grows as its values are written. **/
+	@:noCompletion private static inline final RUNTIME_ROOM:Int = 64;
 
 	/** One over `maxFrameLength` throws, as `__sendAnswer` does. **/
 	@:noCompletion private function __sendRuntimeResponse(op:Int, requestId:Int, value:Dynamic):Void {
-		final framed = new ByteArrayOutput(RPCWire.MIN_PAYLOAD_LEN + 8);
-		framed.writeInt(0);
-		framed.writeByte(RPCWire.FLAG_RUNTIME | RPCWire.FLAG_RESPONSE);
-		framed.writeInt(op);
-		framed.writeVarUInt(requestId);
-		RPCRuntimeCodec.writeValue(framed, value);
-		framed.writeIntAt(0, framed.bytesWritten - 4);
-		framed.flush();
-		if (__oversized(framed)) {
-			throw new ArgumentError(__oversizedMessage("RPC answer", framed));
+		final framed:RPCFrame = __takeFrame(RUNTIME_ROOM, RPCWire.FLAG_RUNTIME | RPCWire.FLAG_RESPONSE, op, requestId);
+		try {
+			RPCRuntimeCodec.writeValue(framed, value);
+		} catch (error:Dynamic) {
+			__sent(framed);
+			throw error;
 		}
-		if (!__ended) {
-			__connection.send(framed);
+		framed.finish();
+		if (__oversized(framed)) {
+			final message:String = __oversizedMessage("RPC answer", framed);
+			__sent(framed);
+			throw new ArgumentError(message);
+		}
+		if (__ended) {
+			__sent(framed);
+		} else {
+			__sendFrame(framed);
 		}
 	}
 
@@ -1203,12 +1292,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (__ended) {
 			return;
 		}
-		final flags:Int = RPCWire.FLAG_RUNTIME | RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR;
-		var framed:ByteArrayOutput = __errorFrame(flags, op, requestId, message);
-		if (__oversized(framed)) {
-			framed = __errorFrame(flags, op, requestId, RPCError.INTERNAL_MESSAGE);
-		}
-		__connection.send(framed);
+		__sendError(RPCWire.FLAG_RUNTIME | RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR, op, requestId, message);
 	}
 
 	@:noCompletion private function __trackRuntimeResponse(requestId:Int, response:RPCResponse<Dynamic>):Void {
@@ -1502,17 +1586,14 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/** A ping: a one-way frame for `ping`, with no arguments. **/
 	@:noCompletion private function __sendPing():Void {
-		final framed:ByteArrayOutput = new ByteArrayOutput(RPCWire.MIN_PAYLOAD_LEN + 4);
-		framed.writeInt(RPCWire.MIN_PAYLOAD_LEN);
-		framed.writeByte(0);
-		framed.writeInt(RPCWire.PING_OP);
-		framed.flush();
+		final framed:RPCFrame = __takeFrame(RPCWire.MIN_PAYLOAD_LEN + 4, 0, RPCWire.PING_OP, 0).finish();
 		try {
 			__connection.send(framed);
 		} catch (_:Dynamic) {
 			// A connection that can take nothing more says so as it ends,
 			// which stops this. A beat does not throw out of the tick.
 		}
+		__sent(framed);
 	}
 
 	/**
@@ -1525,13 +1606,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (__ended) {
 			return;
 		}
-		final framed:ByteArrayOutput = new ByteArrayOutput(RPCWire.MIN_PAYLOAD_LEN + 5);
-		framed.writeInt(RPCWire.MIN_PAYLOAD_LEN + 1);
-		framed.writeByte(RPCWire.FLAG_RESPONSE);
-		framed.writeInt(RPCWire.PING_OP);
-		framed.writeVarUInt(0);
-		framed.flush();
-		__connection.send(framed);
+		final framed:RPCFrame = __takeFrame(RPCWire.MIN_PAYLOAD_LEN + 5, RPCWire.FLAG_RESPONSE, RPCWire.PING_OP, 0);
+		// Request id 0, which answers no call.
+		framed.putVarUInt(0);
+		__sendFrame(framed.finish());
 	}
 
 	/**

@@ -330,6 +330,17 @@ entry below says how:
   but `pump` is not a value any more, `var step = runtime.pump` and a
   call through `Dynamic` do not compile or find it. Wrap it,
   `(delta) -> runtime.pump(delta)`.
+- An `INetConnection` of your own copies what its `send` is given before
+  keeping any of it, to queue it, say: an `RPCSession` writes its next
+  frame over the one it sent as soon as `send` returns. Every transport
+  CrossByte ships copies. `-D crossbyte_check_events` poisons each frame
+  once it is sent, so a connection that keeps one sends garbage its tests
+  will see; `-D crossbyte_fresh_events` frames each in a buffer of its own,
+  as before.
+- A null `String` or `Bytes` argument to a compiled RPC call, where the
+  argument is neither optional nor `Null<T>`, throws an `ArgumentError`
+  natively too, where a null `String` went as an empty one: pass `""`, or
+  declare the argument `?name` or `Null<String>` to send null.
 
 ### Added
 - `SequenceRing.remove(sequence)` and `SequenceRing.writeBits(from, out, at,
@@ -1574,6 +1585,26 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- An `RPCSession` writes every frame it sends, calls and answers, error
+  answers, pings and pongs, on both lanes, in one buffer it keeps, begun
+  with room for the whole frame, where each was a `ByteArrayOutput` of its
+  own grown as it was written. `INetConnection.send` says that what it is
+  given is valid only during the call, which every transport CrossByte
+  ships already honours: each copies what it keeps. A call made from inside
+  a send that delivers at once, a handler calling back, is framed in a
+  buffer of its own, and a buffer grown past 16 KB is let go once its frame
+  is sent. A string goes into the frame as its UTF-8, natively when it is
+  held a byte a character and on the jvm when it is ASCII and at most 256
+  characters, where it was encoded into a `Bytes` first. Over an in-memory
+  link, natively: a one-way call of three numbers takes 46 ns and
+  allocates nothing, where it took 83 ns and allocated 208 bytes; one of a
+  12-character string 54 ns and 24 bytes, the string the handler is given,
+  where 110 ns and 384; a request and its answer 133 ns and 168 bytes,
+  where 233 ns and 544; the runtime lane's one-way call 163 ns and 368
+  bytes, where 293 ns and 1,008. Over TCP a one-way call costs 453 to 469
+  ns of CPU in all, where it cost 500 to 531. Under `-D crossbyte_check_events`
+  each frame is a buffer of its own, poisoned once sent, and under
+  `-D crossbyte_fresh_events` a buffer of its own left as it is.
 - A WebSocket text message is written into its frame without being encoded
   into a buffer of its own first, natively when the string is held a byte a
   character and on the jvm when it is ASCII and no longer than 256
@@ -3135,6 +3166,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A compiled RPC call with a null `String` or `Bytes` argument, where the
+  argument is neither optional nor `Null<T>`, throws an `ArgumentError`
+  before anything is framed, on every target; natively a null `Bytes`
+  crashed the process and a null `String` went as an empty one, and on the
+  interpreter and the jvm either threw a null access. A handler's answer
+  of such a type that is null fails its call as a throw does: the caller
+  is answered `RPCError.INTERNAL_MESSAGE`, and `onHandlerError` is told.
 - An `RPCSession`'s heartbeat pings on every beat that nothing else has
   been sent for an interval before, where the clock's rounding put the
   beat after a ping a hair short of the interval, 2.8 s less 1.8 s is
