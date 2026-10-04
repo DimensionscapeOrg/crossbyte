@@ -453,7 +453,17 @@ class TimerWheel implements ITimerScheduler {
 				if (direct != null) {
 					direct();
 				} else {
+					#if cpp
+					// Boxed once per timer; see TimerNode.handleBox.
+					var box:Dynamic = node.handleBox;
+					if (box == null) {
+						box = node.handleBox = (new TimerHandle(node.id, gens[node.id]) : Int);
+					}
+					var withHandle:Dynamic->Void = cast node.callback;
+					withHandle(box);
+					#else
 					node.callback(new TimerHandle(node.id, gens[node.id]));
+					#end
 				}
 			} catch (error:Dynamic) {
 				failed = true;
@@ -692,6 +702,11 @@ private class WheelNode {
 	public var prev:WheelNode;
 	public var next:WheelNode;
 
+	#if cpp
+	/** Its handle, boxed once; see TimerNode.handleBox. */
+	public var handleBox:Dynamic = null;
+	#end
+
 	public inline function new(id:Int, time:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void) {
 		this.id = id;
 		this.time = time;
@@ -714,6 +729,9 @@ private class WheelNode {
 		next = null;
 		firing = false;
 		rearmed = false;
+		#if cpp
+		handleBox = null;
+		#end
 	}
 
 	/** Lets go of what its last timer referred to; see TimerNode.release. */
@@ -723,5 +741,8 @@ private class WheelNode {
 		pausedAt = null;
 		prev = null;
 		next = null;
+		#if cpp
+		handleBox = null;
+		#end
 	}
 }

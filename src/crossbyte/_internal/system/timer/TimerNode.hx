@@ -59,6 +59,17 @@ class TimerNode {
 	 */
 	public var voidCallback:Void->Void;
 
+	#if cpp
+	/**
+	 * The handle as hxcpp passes it to a callback that takes one, boxed once
+	 * for the timer rather than once per fire: a closure is called with its
+	 * arguments boxed, and a handle is past the small-int cache from a slot's
+	 * first reuse on, so an interval taking its handle allocated every time
+	 * it fired. Null until the first fire.
+	 */
+	public var handleBox:Dynamic = null;
+	#end
+
 	public inline function new(id:Int, time:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void) {
 		this.id = id;
 		this.time = time;
@@ -85,6 +96,9 @@ class TimerNode {
 		firing = false;
 		rearmed = false;
 		held = false;
+		#if cpp
+		handleBox = null;
+		#end
 	}
 
 	/**
@@ -96,5 +110,8 @@ class TimerNode {
 		callback = null;
 		voidCallback = null;
 		pausedAt = null;
+		#if cpp
+		handleBox = null;
+		#end
 	}
 }

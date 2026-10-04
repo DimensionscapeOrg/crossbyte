@@ -1574,6 +1574,12 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- Natively a timer callback that takes its handle, `Timer.setInterval(1,
+  1, handle -> ...)`, is given the handle boxed once per timer, where
+  every fire boxed it anew: hxcpp passes a closure its arguments boxed,
+  and a handle is past the small-int cache once its slot has been reused,
+  so such an interval allocated 24 bytes each time it fired. It allocates
+  nothing now. Other targets did not box it.
 - A timer's node is reused for the next timer armed once its timer is done,
   where every `setTimeout` and `setInterval` made one: 80 bytes natively,
   and on the jvm 72 with the slot's generation and number boxed, which was

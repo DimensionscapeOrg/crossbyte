@@ -520,6 +520,28 @@ class TimerHeapTest extends utest.Test {
 		Assert.isTrue(heap.isEmpty);
 	}
 
+	public function testACallbackTakingItsHandleIsGivenItsOwnEachTime():Void {
+		// Natively the handle is boxed once per timer; a reused node must not
+		// hand the next timer the box of the one before.
+		var heap = new TimerHeap();
+		for (_ in 0...300) {
+			heap.clear(heap.setTimeoutVoid(1.0, () -> {}));
+		}
+		var seen:Array<Int> = [];
+		var handle:TimerHandle = TimerHandle.INVALID;
+		handle = heap.setInterval(1.0, 1.0, h -> seen.push(h));
+		for (_ in 0...3) {
+			heap.advanceTime(1.0);
+		}
+		Assert.same([(handle : Int), (handle : Int), (handle : Int)], seen);
+		heap.clear(handle);
+
+		var next:TimerHandle = heap.setTimeout(1.0, h -> seen.push(h));
+		Assert.isTrue((next : Int) != (handle : Int));
+		heap.advanceTime(1.0);
+		Assert.equals((next : Int), seen[3], "a reused node passed the handle of the timer before");
+	}
+
 	public function testPauseResumeKeepPhaseFromZeroPreservesRemainingDelay():Void {
 		var heap = new TimerHeap();
 		var fired = 0;

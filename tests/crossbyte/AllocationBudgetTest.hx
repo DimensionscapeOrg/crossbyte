@@ -76,6 +76,7 @@ class AllocationBudgetTest extends utest.Test {
 	private static final TIMER = new Budget("a timeout armed and cleared", "timer", [0, 0, 0], [8, 8, 8]);
 	private static final TIMER_FIRED = new Budget("a timeout armed and fired", "timer", [0, 0, 0], [8, 8, 8]);
 	private static final INTERVAL = new Budget("an interval timer firing and re-arming", "firing", [0, 0, 0], [8, 8, 8]);
+	private static final HANDLE_INTERVAL = new Budget("an interval timer taking its handle, firing", "firing", [0, 0, 0], [8, 8, 8]);
 	private static final POST = new Budget("a callback posted to the runtime and run", "post", [0, 0, 0], [8, 8, 8]);
 	private static final IDLE_TICK = new Budget("a runtime frame with nothing to do", "frame", [0, 0, 0], [8, 8, 8]);
 	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [1344, 1344, 3936], [1744, 1744, 4984]);
@@ -183,6 +184,37 @@ class AllocationBudgetTest extends utest.Test {
 		try {
 			__warm(op, WARM_CHEAP);
 			__within(TIMER_FIRED, AllocationMeter.measure(op, 20000));
+		} catch (error:Dynamic) {
+			__finish();
+			throw error;
+		}
+		__finish();
+	}
+
+	public function testAnIntervalTakingItsHandleFiring():Void {
+		var runtime = __start();
+		// The slot's generation past the small-int caches, as any slot's is
+		// once it has been reused a few hundred times.
+		for (_ in 0...300) {
+			Timer.clear(Timer.setTimeout(30.0, () -> {}));
+		}
+		var fired:Int = 0;
+		var handle:Int = -1;
+		handle = Timer.setInterval(1 / 60, 1 / 60, (h:Int) -> {
+			if (h == handle) {
+				fired++;
+			}
+		});
+		var op = () -> {
+			var before:Int = fired;
+			runtime.pump(1 / 60, 0);
+			if (fired != before + 1) {
+				throw "the interval fired " + (fired - before) + " times in a frame with its own handle";
+			}
+		};
+		try {
+			__warm(op, WARM_CHEAP);
+			__within(HANDLE_INTERVAL, AllocationMeter.measure(op, 20000));
 		} catch (error:Dynamic) {
 			__finish();
 			throw error;
