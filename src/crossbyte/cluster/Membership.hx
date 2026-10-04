@@ -33,18 +33,35 @@ import haxe.ds.StringMap;
 	heartbeats had been could suspect a node that went quiet early and give a
 	reliably-jittery one more room, and `lastHeardFrom` is exposed so that
 	can be built on top without this having an opinion about it.
+
+	A timeout of 0 is none, as everywhere in CrossByte: no node is ever
+	declared gone for being quiet, and one leaves only by `forget`.
 **/
 class Membership {
-	/** How long a node may go unheard before it is considered gone. **/
+	/**
+		The longest a name may be: 255 characters. A longer one is refused,
+		as a name past `maxNodes` is.
+
+		`maxNodes` bounded how many names were held but not how long each
+		was, so a peer could make each of its 1,024 a megabyte.
+	**/
+	public static inline var MAX_NAME_LENGTH:Int = 255;
+
+	/**
+		Seconds a node may go unheard before it is considered gone, or 0 for
+		no limit: a node then stays until it is forgotten.
+	**/
 	public var timeout(default, null):Float;
 
 	/**
-		The most nodes tracked at once.
+		The most nodes tracked at once: 1,024 unless the constructor was given
+		another, and 0 for no limit.
 
 		A name arrives from outside and nothing here can tell a real node
 		from an invented one, so a peer that makes them up would otherwise
 		grow this without limit. Past the bound a name that is not already
-		known is refused rather than admitted.
+		known is refused rather than admitted. Each name held costs its
+		characters, at most `MAX_NAME_LENGTH`, and a small record.
 	**/
 	public var maxNodes(default, null):Int;
 
@@ -71,18 +88,27 @@ class Membership {
 	private var __clock:Void->Float;
 
 	/**
-		@param timeout Seconds a node may go unheard before it is gone.
+		@param timeout Seconds a node may go unheard before it is gone, or 0
+		       for no limit.
 		@param maxNodes The most to track; zero for no limit, which is only
 		       safe when the names come from somewhere trusted.
 		@param clock Where the time comes from. Supply one in a test.
+		@throws ArgumentError For a negative or NaN `timeout`, and a negative
+		        `maxNodes`. A timeout of 0 was refused, against the rule that
+		        0 is no limit; NaN was taken, and no node ever left; and a
+		        negative `maxNodes` was read as no limit.
 	**/
 	public function new(timeout:Float, maxNodes:Int = 1024, ?clock:Void->Float) {
-		if (timeout <= 0) {
-			throw new ArgumentError("A membership needs a positive timeout.");
+		if (Math.isNaN(timeout) || timeout < 0) {
+			throw new ArgumentError('A membership timeout is a number of seconds, 0 for none: $timeout is not one.');
+		}
+
+		if (maxNodes < 0) {
+			throw new ArgumentError('A membership maxNodes must not be negative ($maxNodes); 0 is no limit.');
 		}
 
 		this.timeout = timeout;
-		this.maxNodes = maxNodes < 0 ? 0 : maxNodes;
+		this.maxNodes = maxNodes;
 		this.__clock = clock == null ? function():Float return haxe.Timer.stamp() : clock;
 		this.__heard = new StringMap();
 	}
@@ -94,14 +120,17 @@ class Membership {
 		       negative, it asks that clock.
 		@return Whether this is the first time it has been heard from since
 		        it was last alive, which is when `onJoin` fires. Returns
-		        false for a name refused by `maxNodes`.
+		        false for a name refused by `maxNodes` or longer than
+		        `MAX_NAME_LENGTH`.
+		@throws ArgumentError For a null or empty name, and a `now` of NaN,
+		        which made the node one that never timed out.
 	**/
 	public function heard(node:String, now:Float = -1):Bool {
 		if (node == null || node == "") {
 			throw new ArgumentError("A node needs a name.");
 		}
 
-		var at:Float = now < 0 ? __clock() : now;
+		var at:Float = __when(now);
 		var entry:HeardNode = __heard.get(node);
 
 		if (entry != null) {
@@ -112,7 +141,7 @@ class Membership {
 			return false;
 		}
 
-		if (maxNodes > 0 && length >= maxNodes) {
+		if ((maxNodes > 0 && length >= maxNodes) || node.length > MAX_NAME_LENGTH) {
 			return false;
 		}
 
@@ -132,11 +161,12 @@ class Membership {
 
 		@param now When, by the clock this was made with; left out, or
 		       negative, it asks that clock.
-		@return How many left.
+		@return How many left: always 0 with a `timeout` of 0.
+		@throws ArgumentError For a `now` of NaN.
 	**/
 	public function sweep(now:Float = -1):Int {
-		var at:Float = now < 0 ? __clock() : now;
-		if (at - __earliest < timeout) {
+		var at:Float = __when(now);
+		if (timeout == 0 || at - __earliest < timeout) {
 			return 0;
 		}
 
@@ -217,6 +247,15 @@ class Membership {
 		__order = [];
 		__earliest = Math.POSITIVE_INFINITY;
 		length = 0;
+	}
+
+	/** `now`, or the clock's time for a negative one; NaN is refused. **/
+	private inline function __when(now:Float):Float {
+		if (Math.isNaN(now)) {
+			throw new ArgumentError("A membership was given a time of NaN.");
+		}
+
+		return now < 0 ? __clock() : now;
 	}
 
 	/**

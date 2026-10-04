@@ -370,6 +370,31 @@ class ProcessLifecycleTest extends utest.Test {
 		#end
 	}
 
+	/**
+		A handshake timeout of 0 is none, as everywhere in CrossByte: the call
+		waits for the handshake to settle. It was read as "do not wait", and
+		answered while the handshake was still pending, so a process the
+		SCM did start could report itself a console run. Run alone, before
+		anything else here attaches, this read PENDING.
+	**/
+	public function testServiceControlWithATimeoutOfZeroWaitsForTheHandshake():Void {
+		Assert.isFalse(ProcessLifecycle.installServiceControl("CrossByteTestService", 0));
+
+		#if (cpp && windows)
+		Assert.equals(crossbyte.sys._internal.NativeServiceControl.NOT_A_SERVICE,
+			crossbyte.sys._internal.NativeServiceControl.attachState(), "answered before the handshake settled");
+		#end
+	}
+
+	/** A negative bound is refused, on every target, rather than read as 0. **/
+	public function testServiceControlRefusesANegativeTimeout():Void {
+		Assert.raises(() -> ProcessLifecycle.installServiceControl("CrossByteTestService", -1), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> ProcessLifecycle.reportServiceStopPending(-1), crossbyte.errors.ArgumentError);
+		// 0 is the SCM's default hint, there being no hint without a limit.
+		ProcessLifecycle.reportServiceStopPending(0);
+		Assert.isFalse(ProcessLifecycle.shutdownRequested);
+	}
+
 	public function testServiceStatusReportsAreSafeWhenNotAService():Void {
 		// Every one of these is a no-op off the SCM. The point is that a server
 		// written for service deployment can call them unconditionally and still

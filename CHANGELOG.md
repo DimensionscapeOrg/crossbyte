@@ -335,6 +335,11 @@ entry below says how:
   to `0x7FFFFFFF`, for no bound, as before. A negative `maxSize` or
   `maxFree`, and an `ExpiringMap` `ttl` that is not a positive number,
   throw an `ArgumentError`.
+- A `Membership` timeout of 0, and `installServiceControl`'s
+  `connectTimeoutMs` of 0, are no limit: a membership whose nodes should
+  leave needs a timeout above 0. A negative or NaN timeout, a negative
+  `maxNodes`, and a negative `connectTimeoutMs` or stop-pending hint,
+  throw an `ArgumentError`.
 
 ### Added
 - `SequenceRing.remove(sequence)` and `SequenceRing.writeBits(from, out, at,
@@ -1579,6 +1584,14 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A `Membership` timeout of 0 is none, as 0 is everywhere in CrossByte:
+  no node leaves for being quiet, only by `forget`. It was refused. A
+  negative or NaN timeout, a negative `maxNodes` (which read as no limit)
+  and a time of NaN given to `heard` or `sweep` throw an `ArgumentError`:
+  NaN made a node that never left. A name longer than
+  `Membership.MAX_NAME_LENGTH`, 255 characters, is refused as one past
+  `maxNodes` is, since the number of names a peer could make up was
+  bounded but not their length.
 - `ExpiringMap` holds at most 100,000 entries unless given another
   `maxSize`, where it held whatever was put in it for as long as its
   `ttl`: the map built for sessions and tokens, what a peer makes a
@@ -3156,6 +3169,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `ProcessLifecycle.installServiceControl(name, 0)` waits for its
+  handshake with the Service Control Manager to settle, 0 being no limit,
+  where it did not wait at all: the handshake was still pending when it
+  answered, so a process the SCM had started could report itself a
+  console run. A negative `connectTimeoutMs`, and a negative hint to
+  `reportServiceStopPending`, throw an `ArgumentError`; a hint of 0 is
+  the SCM's default of 30 seconds, there being no hint without a limit.
 - The native MySQL client no longer lets one packet from the server end
   the process. A result header's column count sized an allocation before
   any column arrived, with no bound and no check: nine bytes, from the
