@@ -314,6 +314,13 @@ server at sixty ticks a second: pauses of 50-70 ms every few seconds with
 2.4 GB. A runtime whose ticks must stay inside a frame wants its live heap
 well under 100 MB, or the world held where the collector does not scan it.
 
+Where a collection fits between two ticks, `CrossByte.collectWhenIdle` moves
+it there: the runtime learns how often the collector runs and makes the
+collection that is due in the gap before a tick instead. At thirty ticks a
+second with 180 MB of small objects live, two collections in three left the
+ticks for the gaps between them; a collection longer than two thirds of the
+gap stays where it falls.
+
 ## HashLink and Neko
 
 Both build and run the test suite, in CI on Windows and Linux. What they need,

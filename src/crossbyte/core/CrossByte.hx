@@ -422,6 +422,43 @@ final class CrossByte extends EventDispatcher {
 	 */
 	public var postQueueDepth(get, never):Int;
 
+	/**
+		Whether this runtime collects garbage in the gap before its next tick
+		when a collection is about due, rather than leaving the collector to
+		run in whichever tick allocates past its target. Off by default.
+
+		Natively, the collector stops every thread in the process and marks
+		the whole live heap whenever an allocation finds the heap's free
+		space spent, in the middle of a tick, which a game server feels as
+		one long frame: with 180 MB of small objects live, a tick of 2 ms
+		took 14 to 18. With this on, the runtime notes when collections
+		happen and how much free space each starts with, and once the last
+		ones say the collector will run before the gap after this one, it
+		collects as this gap begins, if the time left to the next tick is
+		half as long again as its own collections have been taking; after
+		one that ran past the next tick's start, it leaves the next cycles
+		to the collector, twice as many after each that overruns in a row.
+		It moves collections rather than adding them, a little early: a
+		steady server collects a few percent more often. Some still land in
+		ticks: the first two, which it learns from; one cycle in every few,
+		one in seventeen once the load holds steady, which it leaves to
+		the collector to measure how long a cycle runs; and any that comes
+		sooner than the last ones said, or when no gap was long enough. A
+		collection longer than two thirds of a gap is never moved: at sixty
+		ticks a second that is a live heap of about 100 MB of small objects.
+
+		One collection stops every runtime in the process, so this fits a
+		process with one ticking runtime, or one where only one runtime turns
+		it on: two would each collect for the other's garbage. It acts in a
+		runtime's own loop, `DEFAULT` or `POLL`; a host-driven or `CUSTOM`
+		runtime's gaps are its host's, which can call
+		`cpp.vm.Gc.run(false)` in them.
+
+		On the jvm, JavaScript, HashLink, neko and the interpreter it does
+		nothing: their collectors run on their own terms.
+	**/
+	public var collectWhenIdle:Bool = false;
+
 	// ==== Private Variables ====
 	@:noCompletion private var __tickInterval:Float;
 
@@ -482,6 +519,10 @@ final class CrossByte extends EventDispatcher {
 	// table.
 	@:noCompletion private var __pooledTickEvent:TickEvent = null;
 	@:noCompletion private var __pooledTickEventInUse:Bool = false;
+
+	// What decides when collectWhenIdle collects; made the first time it is
+	// asked. Null from the start, for neko: see __pooledTickEvent.
+	@:noCompletion private var __idleCollector:IdleCollector = null;
 
 	// What asked to send its held output when this pass ends, in the order
 	// it asked, and how far the current flush has got through it.
@@ -1957,6 +1998,11 @@ final class CrossByte extends EventDispatcher {
 		}
 		#end
 
+		#if cpp
+		if (collectWhenIdle) {
+			__collectIfIdle();
+		}
+		#end
 		__cpuTime = __dt = Timer.stamp() - frameStart;
 		__wait(frameStart);
 		#end
@@ -1978,6 +2024,12 @@ final class CrossByte extends EventDispatcher {
 			return;
 		}
 
+		#if cpp
+		// Before the poll the rest of the frame is spent in, which is the gap.
+		if (collectWhenIdle) {
+			__collectIfIdle();
+		}
+		#end
 		__cpuTime = __dt = Timer.stamp() - frameStart;
 
 		if (__socketRegistry.isEmpty) {
@@ -2160,6 +2212,16 @@ final class CrossByte extends EventDispatcher {
 		#end
 	}
 
+	// The gap before the next tick is starting: collectWhenIdle's chance.
+	// Counted as the frame's work, as a collection inside the tick was.
+	@:noCompletion private function __collectIfIdle():Void {
+		var collector:IdleCollector = __idleCollector;
+		if (collector == null) {
+			collector = __idleCollector = new IdleCollector();
+		}
+		collector.atGap(__frameDeadline, __tickInterval);
+	}
+
 	// Runs what was posted, then sends what it asked to have sent, before
 	// the loop goes back to waiting. Counted as the frame's work: done inside
 	// the wait, it was missing from cpuLoad.
@@ -2192,3 +2254,251 @@ final class CrossByte extends EventDispatcher {
 	}
 	#end
 }
+
+/**
+	When `CrossByte.collectWhenIdle` collects: asked as each gap before a
+	tick begins.
+
+	hxcpp says nothing about how far through its free space a cycle has got,
+	the in-use figure moves only when the heap grows or a collection ends,
+	measured: flat for the whole of a steady cycle, so this goes by when
+	collections happen. A cycle spends the free space a collection leaves,
+	which can be read, at the rate the program allocates, which a steady
+	server keeps: so the time from one collection to the next, per byte of
+	free space, is what it learns, from cycles the collector ends itself.
+	It collects five percent short of that.
+
+	A cycle this ends tells it nothing about how long the cycle would have
+	run, so every few it leaves one to the collector, to measure: after two
+	at first, and twice as many each time the measurement agrees with what
+	it had, up to sixteen. A load that grows ends a cycle early, which is
+	learned from at once; one that shrinks is found by the next measurement.
+	A collection is seen by a weak reference to an object nothing else
+	holds, which every collection clears.
+
+	The clock, the collection and what the heap says are methods, overridden
+	by a test.
+**/
+@:noCompletion @:dox(hide)
+class IdleCollector {
+	/** How much sooner than the cycle last measured to collect. **/
+	@:noCompletion private static inline var LEAD:Float = 0.05;
+
+	/** How much longer than its collections take a gap has to be. **/
+	@:noCompletion private static inline var FIT:Float = 1.5;
+
+	/** Collections made between measurements: the fewest, and the most. **/
+	@:noCompletion private static inline var MIN_RUN:Int = 2;
+	@:noCompletion private static inline var MAX_RUN:Int = 16;
+
+	/** How near what it had a measurement has to be to count as agreeing. **/
+	@:noCompletion private static inline var AGREES:Float = 0.1;
+
+	/** The most cycles left to the collector after collections that overran. **/
+	@:noCompletion private static inline var MAX_BACKOFF:Int = 64;
+
+	/** Collections made in a gap. **/
+	public var collections(default, null):Int = 0;
+
+	/** Of those, how many ran past the next tick's start. **/
+	public var overruns(default, null):Int = 0;
+
+	/**
+		Cycles the collector ended itself before this collected, once it had
+		learned: a load grown, no gap long enough, or held off after one
+		that overran.
+	**/
+	public var missed(default, null):Int = 0;
+
+	/** Cycles left to the collector on purpose, to measure them. **/
+	public var measured(default, null):Int = 0;
+
+	/**
+		Seconds a collection in a gap takes, smoothed; raised to what one took
+		when it ran past the next tick, and eased when a cycle was due and no
+		gap was long enough, so a slow one does not rule out gaps for good.
+	**/
+	public var pause(default, null):Float = 0.0;
+
+	// This cycle's collection was due and no gap was long enough for it.
+	@:noCompletion private var __unfitted:Bool = false;
+
+	// Cycles left to the collector after a collection that overran: twice as
+	// many after each that overran in a row, none again once one fits.
+	@:noCompletion private var __backoff:Int = 0;
+	@:noCompletion private var __holdOff:Int = 0;
+	@:noCompletion private var __holding:Bool = false;
+
+	// Seconds a cycle lasts, per byte of the free space it began with, as
+	// last measured; negative until two collections have been seen.
+	@:noCompletion private var __perByte:Float = -1.0;
+
+	// Collections made since the last measurement, how many to make before
+	// the next, and whether the cycle under way is being measured.
+	@:noCompletion private var __made:Int = 0;
+	@:noCompletion private var __run:Int = MIN_RUN;
+	@:noCompletion private var __measuring:Bool = false;
+
+	// When the cycle under way began, and the free space it began with.
+	@:noCompletion private var __lastAt:Float = 0.0;
+	@:noCompletion private var __lastFree:Float = 0.0;
+	@:noCompletion private var __seen:Bool = false;
+	@:noCompletion private var __watching:Bool = false;
+
+	#if cpp
+	@:noCompletion private var __canary:cpp.vm.WeakRef<IdleCanary> = null;
+	#end
+
+	public function new() {}
+
+	/**
+		The gap before the next tick, due at `deadline` on `clock()`, begins;
+		ticks come every `interval` seconds. Collects when the cycle the last
+		ones say is due would end before the next gap, if this one is long
+		enough. Returns whether it collected.
+	**/
+	public function atGap(deadline:Float, interval:Float):Bool {
+		var now:Float = clock();
+		var free:Float = freeSpace();
+
+		if (collectedSince()) {
+			// Made by the collector, in a tick or anywhere else this did not
+			// collect: the cycle it ended is a measurement.
+			if (__seen && __lastFree > 0) {
+				var perByte:Float = (now - __lastAt) / __lastFree;
+				if (__perByte >= 0) {
+					if (__measuring) {
+						measured++;
+					} else {
+						missed++;
+					}
+					var ratio:Float = perByte / __perByte;
+					__run = (ratio > 1 - AGREES && ratio < 1 + AGREES) ? (__run * 2 < MAX_RUN ? __run * 2 : MAX_RUN) : MIN_RUN;
+				}
+				__perByte = perByte;
+			}
+			if (__unfitted) {
+				pause *= 0.8;
+				__unfitted = false;
+			}
+			__made = 0;
+			__measuring = false;
+			__holding = false;
+			__seen = true;
+			__lastAt = now;
+			__lastFree = free;
+			return false;
+		}
+
+		if (__perByte < 0 || free <= 0 || __measuring || __holding) {
+			return false;
+		}
+		// Waiting for the next gap would be too late.
+		if (now + interval < __lastAt + __perByte * (1 - LEAD) * free) {
+			return false;
+		}
+		if (__made >= __run) {
+			// Due, and this one is left to the collector, to measure.
+			__measuring = true;
+			return false;
+		}
+		if (__holdOff > 0) {
+			// Due, and left to the collector: one made in a gap overran.
+			__holdOff--;
+			__holding = true;
+			return false;
+		}
+		// Until one has been timed, half a tick has to be left.
+		if (deadline - now < (pause > 0 ? pause * FIT : interval * 0.5)) {
+			__unfitted = true;
+			return false;
+		}
+
+		var before:Float = clock();
+		collect();
+		var after:Float = clock();
+		var took:Float = after - before;
+		// A quarter of the way to each new one: on a busy machine single
+		// collections ran half as long again as their neighbours.
+		pause = pause > 0 ? pause + (took - pause) * 0.25 : took;
+		collections++;
+		if (after > deadline) {
+			// Backed off: the next wants a gap half as long again as this
+			// took, and the next cycles are left to the collector, one, then
+			// twice as many each time one overruns again, where easing the
+			// estimate alone had a collection that never fits retried, and
+			// overrun, every few cycles.
+			overruns++;
+			if (took > pause) {
+				pause = took;
+			}
+			__backoff = __backoff == 0 ? 1 : (__backoff * 2 < MAX_BACKOFF ? __backoff * 2 : MAX_BACKOFF);
+			__holdOff = __backoff;
+		} else {
+			__backoff = 0;
+		}
+		__unfitted = false;
+		__made++;
+		__lastAt = after;
+		__lastFree = freeSpace();
+		// Its own collection cleared the canary: armed again, not counted.
+		collectedSince();
+		return true;
+	}
+
+	@:noCompletion private function clock():Float {
+		return Timer.stamp();
+	}
+
+	@:noCompletion private function collect():Void {
+		#if cpp
+		cpp.vm.Gc.run(false);
+		#end
+	}
+
+	/**
+		Whether a collection has happened since this was last asked. The
+		first time, it starts watching and answers false.
+	**/
+	@:noCompletion private function collectedSince():Bool {
+		#if cpp
+		if (__watching && __canary.get() != null) {
+			return false;
+		}
+		var seen:Bool = __watching;
+		__watching = true;
+		__canary = __newCanary();
+		return seen;
+		#else
+		return false;
+		#end
+	}
+
+	/**
+		Free space in the heap's blocks as the last collection left it: what
+		the cycle under way began with, and more once the heap grows. Two
+		fields read, with no lock taken.
+	**/
+	@:noCompletion private function freeSpace():Float {
+		#if cpp
+		return cpp.vm.Gc.memInfo64(cpp.vm.Gc.MEM_INFO_RESERVED) - cpp.vm.Gc.memInfo64(cpp.vm.Gc.MEM_INFO_USAGE);
+		#else
+		return 0.0;
+		#end
+	}
+
+	#if cpp
+	// Made apart from its caller, so that no stale slot of the caller's
+	// frame holds the canary: one still referenced survives the collection
+	// it is there to see.
+	@:noCompletion private static function __newCanary():cpp.vm.WeakRef<IdleCanary> {
+		return new cpp.vm.WeakRef(new IdleCanary());
+	}
+	#end
+}
+
+#if cpp
+private class IdleCanary {
+	public function new() {}
+}
+#end

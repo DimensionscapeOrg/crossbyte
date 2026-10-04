@@ -332,6 +332,20 @@ entry below says how:
   `(delta) -> runtime.pump(delta)`.
 
 ### Added
+- `CrossByte.collectWhenIdle`, off by default: natively, a runtime running
+  its own loop collects garbage in the gap before its next tick when the
+  collections it has seen say one is due before the gap after, and the gap
+  is half as long again as its collections take, rather than leaving the
+  collector to stop the process inside whichever tick allocates past its
+  target. It learns how long a cycle runs per byte of free space from the
+  collections the collector makes, and leaves one cycle in every few to it
+  to keep measuring. At 30 ticks a second, with 180 MB of small objects
+  live and about 55 MB of garbage a second, collections in ticks fell from
+  18 a minute to 5-7, and a tick's work at the 99th percentile from 14-18
+  ms to 2-3 ms, for one collection a minute more. A collection stops every
+  runtime in the process, so it suits a process where one runtime ticks or
+  only one turns it on. Off, it costs a frame one test; on the jvm,
+  JavaScript, HashLink, neko and the interpreter it does nothing.
 - `SequenceRing.remove(sequence)` and `SequenceRing.writeBits(from, out, at,
   byteCount)`, which make the ring a receive window as well as a history:
   what arrived past a gap is filed by sequence, taken out as the gap fills,
