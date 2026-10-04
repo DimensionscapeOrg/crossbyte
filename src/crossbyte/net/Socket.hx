@@ -2625,7 +2625,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					}
 
 					if (l > 0) {
-						__input.writeBytes(scratch, 0, l);
+						// As Bytes: writeBytes takes a ByteArray, and one was
+						// made around the scratch for every read.
+						@:privateAccess (__input : ByteArrayData).__writeRange(scratch, 0, l);
 						bLength += l;
 					}
 					// The eval gate below runs inside this try on purpose: a

@@ -929,7 +929,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 					break;
 				}
 				totalBytes += nBytes;
-				__input.writeBytes(scratch, 0, nBytes);
+				// As Bytes, as Socket's read does: writeBytes takes a
+				// ByteArray, and one was made around the scratch every read.
+				@:privateAccess (__input : ByteArrayData).__writeRange(scratch, 0, nBytes);
 
 				// A pass's share, as Socket's (see READ_BUDGET there): what
 				// is left stays in the kernel, which reports the socket
