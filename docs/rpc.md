@@ -275,11 +275,33 @@ session.onHandlerError = (op, method, error) -> {
 A one-way call has nobody to answer, so whatever it throws, `RPCError` or not,
 goes to `onHandlerError`.
 
-What does end a connection is a frame that cannot be read: longer than the
-session's `maxFrameLength` (8 MiB unless set), for a method this side's handler
-does not have, or with arguments that do not decode or that run past the end
-of the frame. Nothing after such a frame could be trusted to line up, so the
-session closes the connection, and every call still waiting on it fails.
+A call this side cannot take is answered or passed over, and the connection
+carries on. A request for a method its handler has not got, from a peer
+built from another version of the contract, or one calling a method added
+since, as in a rolling deploy, is answered `RPCError.UNKNOWN_METHOD_MESSAGE`,
+and one whose arguments do not read, they run past the end of their frame,
+or name more than it holds, `RPCError.UNREADABLE_MESSAGE`; a one-way call of
+either kind is dropped. An answer that does not read fails the call it
+answers, and a frame of a kind the session does not know is passed over. Every
+frame carries its length, so the next is read where it begins. The session's
+`onUnreadableFrame` is told of each, and does nothing unless set; a server can
+count them, and close a peer that sends too many:
+
+```haxe
+// Given session:RPCSession<ChatCommands>.
+var unreadable = 0;
+session.onUnreadableFrame = (op, requestId, reason) -> {
+	trace('passed over a frame for op $op: $reason');
+	if (++unreadable > 100) {
+		session.close();
+	}
+};
+```
+
+What does end a connection is a frame whose length cannot be trusted: shorter
+than any frame, or longer than the session's `maxFrameLength` (8 MiB unless
+set). Nothing after it would line up, so the session closes the connection,
+and every call still waiting on it fails.
 
 A frame too long is caught before it is sent as well: a request over the
 sending session's `maxFrameLength` fails at once with an `ArgumentError` as its
@@ -549,9 +571,12 @@ session.call(LOG, ["one-way", 2, true]);
 
 Values on this lane carry a tag each, so an array can mix them: `null`,
 `Bool`, `Int`, `Float`, `String` and `haxe.io.Bytes`. A request to a number
-nobody registered is answered with an error, by any session, whether or not
-it has runtime handlers, and a one-way call to one is dropped. `deregister`
-removes a handler.
+nobody registered is answered `RPCError.UNKNOWN_METHOD_MESSAGE`, by any
+session, whether or not it has runtime handlers, and a one-way call to one
+is dropped. A value whose tag the receiving side does not know makes a call it
+cannot read, answered `RPCError.UNREADABLE_MESSAGE`, rather than a connection
+it ends: a later release can add kinds of value. `deregister` removes a
+handler.
 
 A runtime handler fails the way a compiled one does, an `RPCError`'s message
 is the answer, anything else is `INTERNAL_MESSAGE` and goes to
@@ -600,9 +625,10 @@ connection.onClose = reason -> trace('connection closed: $reason');
 
 A call waiting on an answer fails as soon as none can come: when the
 connection closes or a transport error stops its reads, when the session is
-stopped, when the heartbeat gives up on the peer, and when the connection is
-ended over a frame that cannot be read. Its `RPCResponse` fails with a message
-saying which, so nothing waits for good on a peer that has gone.
+stopped, when the heartbeat gives up on the peer, when the connection is ended
+over a frame whose length cannot be trusted, and when its answer does not
+read. Its `RPCResponse` fails with a message saying which, so nothing waits for
+good on a peer that has gone.
 
 A call that cannot go at all fails as it is made: on a connection that has
 ended, with the `Reason` it ended with as its `cause`; when the transport's

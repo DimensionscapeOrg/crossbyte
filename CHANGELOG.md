@@ -348,6 +348,9 @@ entry below says how:
   hand-written `dispatch` compares against `Hash.fnv1a32` of each method's
   signature, the RPC guide's "What names a call", where it compared
   against that of its name.
+- A runtime-lane request for a number nobody registered is answered
+  `RPCError.UNKNOWN_METHOD_MESSAGE`, where it was answered "Unsupported
+  runtime RPC op: " and the number: compare an error with the constant.
 
 ### Added
 - `SequenceRing.remove(sequence)` and `SequenceRing.writeBits(from, out, at,
@@ -1592,6 +1595,20 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- An `RPCSession` answers or passes over a frame it cannot read, and its
+  connection carries on, where the connection ended and every call waiting
+  on it failed, so in a rolling deploy a client calling a method its
+  server did not have yet was disconnected. A request for a method the
+  handler has not got, on either lane, is answered
+  `RPCError.UNKNOWN_METHOD_MESSAGE`; one whose arguments do not read,
+  they ran past their frame, or named more than it holds,
+  `RPCError.UNREADABLE_MESSAGE`; a one-way call of either kind is dropped.
+  An answer that does not read fails the call it answers, and a frame of a
+  kind the session does not know is passed over, a runtime value of a kind
+  it does not know among them, so a later release can add kinds without
+  disconnecting this one. `RPCSession.onUnreadableFrame` is told of each.
+  Only a frame whose length cannot be trusted ends the connection now, and,
+  as before, whatever a hand-written `dispatch` throws.
 - A compiled RPC call is named on the wire by the hash of its method's
   signature, its name, and the kinds of its arguments and of its answer,
   where it was the hash of its name alone. A client and a server built

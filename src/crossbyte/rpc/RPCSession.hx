@@ -665,8 +665,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private static function __noData(input:ByteArrayInput):Void {}
 
 	/*
-		A delivery, read here whatever the session has bound; a frame nothing
-		here can read ends the connection.
+		A delivery, read here whatever the session has bound. A frame whose
+		length cannot be trusted ends the connection, since nothing after it
+		would line up; and so does a send that throws while a frame is
+		answered, and anything a hand-written dispatch throws.
 
 		The handler is bound to this session for as long as its calls run,
 		a field write per call, and put back as it was once the delivery
@@ -706,6 +708,15 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		up. Now any runtime call is answered as the runtime lane answers, and
 		a request with nothing to answer it is answered
 		`RPCError.NO_HANDLER_MESSAGE`.
+
+		Every frame carries its length, so one this session cannot read is
+		passed over, and the next is read where it begins: a call for a
+		method it has not got, or whose arguments do not read, a request
+		answered saying so, an answer that does not read, and a frame of a
+		kind it does not know. Each is told to `onUnreadableFrame`. They
+		ended the connection, so in a rolling deploy a client calling a
+		method its server did not have yet was disconnected. Only a length
+		that cannot be trusted still ends it.
 	**/
 	@:noCompletion private inline function __readFrames(input:ByteArrayInput):Void {
 		final maxLength:Int = maxFrameLength;
@@ -729,27 +740,52 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			if ((flags & RPCWire.FLAG_RUNTIME) != 0) {
 				__dispatchRuntimeFrame(flags, op, input, frameEnd);
 			} else if (flags == 0 || flags == RPCWire.FLAG_REQUEST) {
-				final requestId:Int = flags == 0 ? 0 : input.readVarUInt();
+				var requestId:Int = 0;
+				var readable:Bool = true;
+				if (flags != 0) {
+					// Within the frame, or the frame is passed over: one too
+					// short for its id took it from the next.
+					try {
+						requestId = input.readVarUInt();
+						readable = input.position <= frameEnd;
+					} catch (_:Dynamic) {
+						readable = false;
+					}
+				}
 				final handler = __handler;
-				if (requestId == 0 && op == RPCWire.PING_OP) {
+				if (!readable) {
+					__passedOver(op, 0, UNREADABLE_ID);
+				} else if (requestId == 0 && op == RPCWire.PING_OP) {
 					__pinged();
 				} else if (handler != null) {
 					handler.this_session = cast this;
 					handler.this_frameEnd = frameEnd;
 					handler.dispatch(op, input, requestId);
-				} else if (requestId != 0) {
-					__sendCompiledError(op, requestId, RPCError.NO_HANDLER_MESSAGE);
+				} else {
+					if (requestId != 0) {
+						__sendCompiledError(op, requestId, RPCError.NO_HANDLER_MESSAGE);
+					}
+					__passedOver(op, requestId, "nothing answers calls on this connection");
 				}
 			} else if (flags == RPCWire.FLAG_RESPONSE || flags == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
+				var requestId:Int = 0;
+				var readable:Bool = true;
+				try {
+					requestId = input.readVarUInt();
+					readable = input.position <= frameEnd;
+				} catch (_:Dynamic) {
+					readable = false;
+				}
 				// Id 0 answers no call: a pong.
-				final requestId:Int = input.readVarUInt();
 				final commands = __commands;
-				if (requestId != 0 && commands != null) {
+				if (!readable) {
+					__passedOver(op, 0, UNREADABLE_ID);
+				} else if (requestId != 0 && commands != null) {
 					commands.__frameEnd = frameEnd;
 					commands.__rpc_handle_response(op, requestId, input, flags != RPCWire.FLAG_RESPONSE);
 				}
 			} else {
-				throw "Invalid RPC frame flags " + flags;
+				__passedOver(op, 0, "a frame of a kind this session does not know, flags 0x" + StringTools.hex(flags & 0xFF, 2));
 			}
 
 			input.position = frameEnd;
@@ -759,6 +795,80 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (now >= 0.0) {
 			__connection.inTimestamp = now;
 		}
+	}
+
+	/** What `onUnreadableFrame` is told of a frame too short for its request id. **/
+	@:noCompletion private static inline final UNREADABLE_ID:String = "a frame whose request id could not be read";
+
+	/**
+		Told of each frame this session could not read and passed over, the
+		connection staying up: a call for a method it has not got, from a
+		peer built from another version of the contract, or after a method
+		was added, as in a rolling deploy, or for an op no runtime handler
+		is registered under, or reaching a session with nothing to answer
+		calls; a call whose arguments did not read; an answer whose value did
+		not read; and a frame of a kind it does not know. `requestId` is a
+		call's id, 0 for a one-way call, and for a frame that is not a call,
+		and `reason` says which it was.
+
+		A request among them has been answered by then, with
+		`RPCError.UNKNOWN_METHOD_MESSAGE`, `RPCError.UNREADABLE_MESSAGE` or
+		`RPCError.NO_HANDLER_MESSAGE`, and the call an unreadable answer was
+		for has failed; a one-way call has been dropped. They ended the
+		connection, where only a frame whose length cannot be trusted does
+		now.
+
+		Does nothing unless set: a server can count them, and close a peer
+		that sends too many. What it throws is ignored.
+	**/
+	public dynamic function onUnreadableFrame(op:Int, requestId:Int, reason:String):Void {}
+
+	/** Tells `onUnreadableFrame` of a frame passed over. **/
+	@:noCompletion private function __passedOver(op:Int, requestId:Int, reason:String):Void {
+		try {
+			onUnreadableFrame(op, requestId, reason);
+		} catch (_:Dynamic) {}
+	}
+
+	/**
+		A compiled call for a method the handler has not got: a request is
+		answered `RPCError.UNKNOWN_METHOD_MESSAGE`, a one-way call dropped. It
+		was thrown, and ended the connection.
+	**/
+	@:noCompletion private function __unknownCall(op:Int, requestId:Int):Void {
+		if (requestId != 0) {
+			__sendCompiledError(op, requestId, RPCError.UNKNOWN_METHOD_MESSAGE);
+		}
+		__passedOver(op, requestId, "no method answers op 0x" + StringTools.hex(op, 8));
+	}
+
+	/**
+		A call, on either lane, whose arguments did not read: a request is
+		answered `RPCError.UNREADABLE_MESSAGE`, a one-way call dropped.
+	**/
+	@:noCompletion private function __unreadableCall(op:Int, requestId:Int, runtime:Bool, error:Dynamic):Void {
+		if (requestId != 0) {
+			if (runtime) {
+				__sendRuntimeError(op, requestId, RPCError.UNREADABLE_MESSAGE);
+			} else {
+				__sendCompiledError(op, requestId, RPCError.UNREADABLE_MESSAGE);
+			}
+		}
+		__passedOver(op, requestId, "the call's arguments could not be read: " + Std.string(error));
+	}
+
+	/**
+		An answer, on either lane, whose value did not read: `response`, the
+		call it answers if one waits, fails saying so, with what failed as
+		its cause, not an `RPCError`, since it was this side's reading that
+		failed and not the other side refusing.
+	**/
+	@:noCompletion private function __unreadableAnswer(op:Int, requestId:Int, response:Null<RPCResponse<Dynamic>>, error:Dynamic):Void {
+		final message:String = "RPC answer could not be read: " + Std.string(error);
+		if (response != null) {
+			response.__fail(message, error);
+		}
+		__passedOver(op, requestId, message);
 	}
 
 	/**
@@ -785,41 +895,68 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	**/
 	@:noCompletion private function __dispatchRuntimeFrame(flags:Int, op:Int, input:ByteArrayInput, frameEnd:Int):Void {
 		final runtimeFlags:Int = flags & ~RPCWire.FLAG_RUNTIME;
-		if (runtimeFlags == 0 || runtimeFlags == RPCWire.FLAG_REQUEST) {
-			final requestId:Int = runtimeFlags == 0 ? 0 : input.readVarUInt();
+		final call:Bool = runtimeFlags == 0 || runtimeFlags == RPCWire.FLAG_REQUEST;
+		if (!call && runtimeFlags != RPCWire.FLAG_RESPONSE && runtimeFlags != (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
+			__passedOver(op, 0, "a runtime frame of a kind this session does not know, flags 0x" + StringTools.hex(flags & 0xFF, 2));
+			return;
+		}
+		var requestId:Int = 0;
+		if (runtimeFlags != 0) {
+			var readable:Bool = true;
+			try {
+				requestId = input.readVarUInt();
+				readable = input.position <= frameEnd;
+			} catch (_:Dynamic) {
+				readable = false;
+			}
+			if (!readable) {
+				__passedOver(op, 0, UNREADABLE_ID);
+				return;
+			}
+		}
+		if (call) {
 			// Asked before the arguments are read, so a call refused for its
 			// size costs nothing to refuse. Refused, the frame is passed over.
 			if (beforeRuntimeCall != null && !__admitRuntimeCall(op, requestId, frameEnd - input.position)) {
 				return;
 			}
-			final args = RPCRuntimeCodec.readArgs(input, frameEnd);
-			RPCWire.requireWithin(input, frameEnd);
+			// A value of a kind this side does not know makes a call it cannot
+			// read, not a connection that has to end: a later release can add
+			// kinds of value without disconnecting this one.
+			var args:Array<Dynamic> = null;
+			try {
+				args = RPCRuntimeCodec.readArgs(input, frameEnd);
+				RPCWire.requireWithin(input, frameEnd);
+			} catch (error:Dynamic) {
+				__unreadableCall(op, requestId, true, error);
+				return;
+			}
 			__invokeRuntime(op, args, requestId);
 			return;
 		}
-		if (runtimeFlags == RPCWire.FLAG_RESPONSE) {
-			final requestId:Int = input.readVarUInt();
-			final value:Dynamic = RPCRuntimeCodec.readValue(input, frameEnd);
+		final failed:Bool = runtimeFlags != RPCWire.FLAG_RESPONSE;
+		var value:Dynamic = null;
+		try {
+			value = failed ? input.readVarUTF() : RPCRuntimeCodec.readValue(input, frameEnd);
 			RPCWire.requireWithin(input, frameEnd);
+		} catch (error:Dynamic) {
+			__unreadableAnswer(op, requestId, __takeRuntimeResponse(requestId), error);
+			return;
+		}
+		if (failed) {
+			__rejectRuntimeResponse(op, requestId, value);
+		} else {
 			__resolveRuntimeResponse(op, requestId, value);
-			return;
 		}
-		if (runtimeFlags == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
-			final requestId:Int = input.readVarUInt();
-			final message:String = input.readVarUTF();
-			RPCWire.requireWithin(input, frameEnd);
-			__rejectRuntimeResponse(op, requestId, message);
-			return;
-		}
-		throw "Invalid runtime RPC flags";
 	}
 
 	@:noCompletion private function __invokeRuntime(op:Int, args:Array<Dynamic>, requestId:Int):Void {
 		final handler = (__runtimeHandlers != null) ? __runtimeHandlers.get(op) : null;
 		if (handler == null) {
 			if (requestId != 0) {
-				__sendRuntimeError(op, requestId, "Unsupported runtime RPC op: " + op);
+				__sendRuntimeError(op, requestId, RPCError.UNKNOWN_METHOD_MESSAGE);
 			}
+			__passedOver(op, requestId, "no runtime handler is registered for op " + op);
 			return;
 		}
 		if (__atCallLimit()) {

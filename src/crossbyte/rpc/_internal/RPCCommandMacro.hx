@@ -374,22 +374,48 @@ class RPCCommandMacro {
 		return RPCKinds.read(kind, isOpt, macro input, macro this.__frameEnd);
 	}
 
+	/** What a response's local holds before its value has been read. **/
+	private static function zeroForType(ct:ComplexType, pos:Position):Expr {
+		final kind = RPCKinds.of(RPCKinds.unwrapNull(ct), pos);
+		return kind == null ? macro null : RPCKinds.zero(kind, RPCContractMacroTools.isNullable(ct, pos));
+	}
+
 	private static function injectResponseHandler(newFields:Array<Field>, methods:Array<ResponseMethod>, sent:Array<String>, overridesInherited:Bool):Void {
+		// An error answer's message, read whole and within its frame; one that
+		// does not read fails its call, and the connection carries on.
+		final readMessage:Expr = macro {
+			var message:String = null;
+			try {
+				message = input.readVarUTF();
+				crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
+			} catch (__error:Dynamic) {
+				this.__rejectUnreadableResponse(op, requestId, __error);
+				return;
+			}
+			this.__rejectResponse(op, requestId, message);
+		};
 		var cases:Array<Case> = [];
 		for (method in methods) {
 			var read = readerForType(method.responseType, method.pos);
+			final type:ComplexType = method.responseType;
+			final zero:Expr = zeroForType(type, method.pos);
 			cases.push({
 				values: [macro $v{method.op}],
 				expr: macro {
 					// Read whole and within the frame before the caller is
-					// answered with it.
+					// answered with it: an answer that does not read fails its
+					// call, where it ended the connection.
 					if (failed) {
-						var message = input.readVarUTF();
-						crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
-						this.__rejectResponse(op, requestId, message);
+						$readMessage;
 					} else {
-						var value = $read;
-						crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
+						var value:$type = $zero;
+						try {
+							value = $read;
+							crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
+						} catch (__error:Dynamic) {
+							this.__rejectUnreadableResponse(op, requestId, __error);
+							return;
+						}
 						this.__resolveResponse(op, requestId, value);
 					}
 					return;
@@ -399,9 +425,7 @@ class RPCCommandMacro {
 
 		var defaultExpr:Expr = macro {
 			if (failed) {
-				var message = input.readVarUTF();
-				crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
-				this.__rejectResponse(op, requestId, message);
+				$readMessage;
 			} else {
 				this.__rejectUnknownResponse(requestId, op);
 			}
