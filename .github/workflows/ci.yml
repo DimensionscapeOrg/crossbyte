@@ -14,10 +14,10 @@ concurrency:
   cancel-in-progress: true
 
 # How these jobs install, and how a failure reads:
-# - Libraries from lib.haxe.org come through .github/actions/haxelibs, from a
-#   cache keyed on the exact versions in ci/haxelibs.txt, so a registry
-#   outage does not stop CI. hxcpp comes from the fork on GitHub through
-#   .github/actions/hxcpp.
+# - The Haxe libraries come through .github/actions/haxelibs: from a cache,
+#   else from GitHub at the commits ci/haxelibs.txt pins, else from
+#   lib.haxe.org, so CI does not depend on the registry. hxcpp comes from the
+#   fork on GitHub through .github/actions/hxcpp.
 # - A bash step runs as `bash -e -o pipefail` (GitHub's flags for
 #   `shell: bash`): the first command that fails ends the step, and the
 #   runner reports that command's exit code as it is. A step of several
