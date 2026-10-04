@@ -2,6 +2,7 @@ package crossbyte.auth;
 
 import crossbyte._internal.serial.JsonNesting;
 import crossbyte.crypto.SecureRandom;
+import crossbyte.errors.ArgumentError;
 import crossbyte.events.Event;
 import crossbyte.events.HTTPStatusEvent;
 import crossbyte.events.IOErrorEvent;
@@ -54,10 +55,21 @@ using StringTools;
  */
 class OAuth {
 	/**
-	 * Seconds the token endpoint has to answer an exchange or refresh before it
-	 * fails with an error. 30 by default.
+	 * Seconds the token endpoint has to answer an exchange or refresh, from the
+	 * call until its answer is whole, before it fails with an error: a
+	 * deadline that an answer drip-fed a byte at a time does not move. 30 by
+	 * default.
+	 *
+	 * `0` is no deadline of OAuth's own, and so is `Math.POSITIVE_INFINITY`:
+	 * the exchange then waits for as long as the client does on its own,
+	 * `URLRequest`'s defaults, a 30 second idle timeout among them. `0` was
+	 * read as a deadline of no time at all, which failed every exchange at
+	 * once. A negative number or `NaN` is refused with an `ArgumentError`: a
+	 * `NaN` was taken, and ran the client's idle timeout with it.
 	 */
-	public var timeout:Float = 30;
+	public var timeout(get, set):Float;
+
+	@:noCompletion private var __timeout:Float = 30;
 
 	private var config:OAuthConfig;
 
@@ -68,6 +80,22 @@ class OAuth {
 	 */
 	public function new(config:OAuthConfig) {
 		this.config = config;
+	}
+
+	@:noCompletion private inline function get_timeout():Float {
+		return __timeout;
+	}
+
+	@:noCompletion private function set_timeout(value:Float):Float {
+		if (Math.isNaN(value) || value < 0) {
+			throw new ArgumentError("OAuth.timeout must be zero or more seconds, or zero for no deadline; got " + value + ".");
+		}
+		return __timeout = value;
+	}
+
+	/** Whether `timeout` sets a deadline: more than zero, and finite. **/
+	@:noCompletion private inline function __hasDeadline():Bool {
+		return __timeout > 0 && Math.isFinite(__timeout);
 	}
 
 	/**
@@ -228,8 +256,15 @@ class OAuth {
 			request.requestHeaders.push(new URLRequestHeader("Authorization", authorization));
 		}
 		// The client's own idle limit as a backstop; the deadline below is what
-		// bounds the whole exchange, drip-fed answers included.
-		request.idleTimeout = Std.int(Math.max(1, timeout) * 1000);
+		// bounds the whole exchange, drip-fed answers included. With no
+		// deadline, the request keeps the client's defaults. A second at
+		// least, and none past what an Int of milliseconds holds, where the
+		// deadline bounds the exchange anyway.
+		var deadlined:Bool = __hasDeadline();
+		if (deadlined) {
+			var idle:Float = Math.max(1, __timeout) * 1000;
+			request.idleTimeout = idle < 2147483647 ? Std.int(idle) : 0;
+		}
 
 		var loader:URLLoader = new URLLoader();
 		var settled:Bool = false;
@@ -275,25 +310,32 @@ class OAuth {
 
 		// Armed before the load, so a load that settles inside load(),
 		// refused before it starts, clears it rather than leaving it armed.
-		deadline = crossbyte.Timer.setTimeout(timeout, () -> {
-			if (!settle()) {
-				return;
-			}
-			// Cancelled, so a native worker blocked on the socket unwinds rather
-			// than waiting out its own idle limit. Through the token, not
-			// `loader.close()`: close drops the loader's worker while the request
-			// is still running, and the worker then reports through a null
-			// reference, an access violation on native. The token closes the
-			// socket, and the loader winds down on its own, unheard.
-			#if js
-			loader.close();
-			#else
-			if (loader.cancelToken != null) {
-				loader.cancelToken.cancel();
-			}
-			#end
-			__fail(operation, "the token endpoint did not answer within " + timeout + " s", onError);
-		});
+		// None for no deadline: a timer of 0 ran at the next tick and failed
+		// the exchange then.
+		var seconds:Float = __timeout;
+		if (deadlined) {
+			deadline = crossbyte.Timer.setTimeout(seconds, () -> {
+				deadline = -1;
+				if (!settle()) {
+					return;
+				}
+				// Cancelled, so a native worker blocked on the socket unwinds
+				// rather than waiting out its own idle limit. Through the token,
+				// not `loader.close()`: close drops the loader's worker while the
+				// request is still running, and the worker then reports through a
+				// null reference, an access violation on native. The token
+				// closes the socket, and the loader winds down on its own,
+				// unheard.
+				#if js
+				loader.close();
+				#else
+				if (loader.cancelToken != null) {
+					loader.cancelToken.cancel();
+				}
+				#end
+				__fail(operation, "the token endpoint did not answer within " + seconds + " s", onError);
+			});
+		}
 
 		loader.load(request);
 	}

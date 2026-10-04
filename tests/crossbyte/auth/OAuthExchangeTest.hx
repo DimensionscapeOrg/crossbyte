@@ -105,7 +105,50 @@ class OAuthExchangeTest extends utest.Test {
 		}
 	}
 
+	/**
+		`timeout` is a number of seconds, or `0` for no deadline: a negative
+		number or `NaN` is refused where it is set, and leaves the timeout as
+		it was. `NaN` was taken, and reached the client as an idle timeout of
+		whatever `Std.int` made of it on the target.
+	**/
+	public function testATimeoutThatIsNotSecondsIsRefused():Void {
+		var oauth:OAuth = new OAuth(new OAuthConfig("client", "", "https://auth.example/authorize", "https://auth.example/token",
+			"https://app.example/callback"));
+		Assert.equals(30.0, oauth.timeout);
+		for (bad in [Math.NaN, -1.0, -0.001, Math.NEGATIVE_INFINITY]) {
+			Assert.raises(() -> oauth.timeout = bad, crossbyte.errors.ArgumentError, "a timeout of " + bad + " was taken");
+			Assert.equals(30.0, oauth.timeout, "a refused timeout changed it");
+		}
+		for (good in [0.0, 0.25, 600.0, Math.POSITIVE_INFINITY]) {
+			oauth.timeout = good;
+			Assert.equals(good, oauth.timeout);
+		}
+	}
+
 	#if (sys || nodejs)
+	/**
+		A timeout of `0` is no deadline, as it is everywhere in CrossByte: the
+		exchange waits for the endpoint. It was a deadline of no time at all,
+		which failed every exchange at once.
+	**/
+	public function testATimeoutOfZeroIsNoDeadline(async:Async):Void {
+		serve(0.4, 200, TOKEN_RESPONSE, endpoint -> {
+			var oauth:OAuth = client(endpoint.port);
+			oauth.timeout = 0;
+			var delivered:Null<OAuthToken> = null;
+			var failure:Null<String> = null;
+
+			oauth.getAccessToken("code-abc", token -> delivered = token, message -> failure = message);
+
+			pumpUntil(() -> delivered != null || failure != null, 15, _ -> {
+				Assert.isNull(failure, "an exchange with no deadline failed: " + failure);
+				Assert.equals("at-123", delivered == null ? null : delivered.accessToken);
+				endpoint.close();
+				async.done();
+			});
+		});
+	}
+
 	public function testTheExchangeRunsOffTheRuntimeAndSendsTheVerifier(async:Async):Void {
 		serve(0.4, 200, TOKEN_RESPONSE, endpoint -> {
 			var oauth:OAuth = client(endpoint.port);
