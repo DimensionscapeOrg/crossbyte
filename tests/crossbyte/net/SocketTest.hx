@@ -124,7 +124,16 @@ class SocketTest extends utest.Test {
 		socket.socket_onOpen(null);
 
 		Assert.notNull(first);
+		#if (crossbyte_fresh_events || crossbyte_check_events)
+		// Either define makes every event a new one.
+		Assert.notEquals(first, second);
+		#else
 		Assert.equals(first, second);
+		#end
+		#if crossbyte_check_events
+		// And under the check, one kept past its call reads dead.
+		Assert.isNull(first.target);
+		#end
 	}
 
 	public function testWriteWithoutRuntimeBuffersButDoesNotCrash():Void {
@@ -524,9 +533,12 @@ class SocketTest extends utest.Test {
 		var socket = new Socket();
 		var first:ProgressEvent = null;
 		var second:ProgressEvent = null;
+		var loaded:Array<Int> = [];
 		var count = 0;
 		socket.addEventListener(ProgressEvent.SOCKET_DATA, event -> {
 			count++;
+			// Read during the call, which is when an event is valid.
+			loaded.push(event.bytesLoaded);
 			if (count == 1) {
 				first = event;
 			} else if (count == 2) {
@@ -538,8 +550,19 @@ class SocketTest extends utest.Test {
 		socket.__dispatchPooledSocketData(8, 0);
 
 		Assert.notNull(first);
+		Assert.same([4, 8], loaded);
+		#if (crossbyte_fresh_events || crossbyte_check_events)
+		// Either define makes every event a new one.
+		Assert.notEquals(first, second);
+		#else
 		Assert.equals(first, second);
-		Assert.equals(8, second.bytesLoaded);
+		#end
+		#if crossbyte_check_events
+		// And under the check, one kept past its call reads dead.
+		Assert.isTrue(second.bytesLoaded == (cast -1 : UInt), "a SOCKET_DATA event kept past its call still said what arrived");
+		#elseif crossbyte_fresh_events
+		Assert.equals(4, first.bytesLoaded);
+		#end
 	}
 
 	/**

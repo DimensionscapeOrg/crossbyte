@@ -503,7 +503,12 @@ class DataChannelTest extends utest.Test {
 		var asText:String = null;
 		var asBytes:ByteArray = null;
 		accepted.onMessage = text -> asText = text;
-		accepted.onBytes = payload -> asBytes = payload;
+		// A copy: the payload is valid only during the call.
+		accepted.onBytes = payload -> {
+			asBytes = new ByteArray();
+			payload.readBytes(asBytes);
+			asBytes.position = 0;
+		};
 
 		var payload = new ByteArray();
 

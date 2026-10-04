@@ -1955,9 +1955,17 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			return;
 		}
 
+		// The outermost call that hands the message out: once it returns the
+		// message is done with, and whoever keeps it has copied it.
 		var event = new WebsocketEvent(WebsocketEvent.MESSAGE, this, message);
 		event.isText = isText;
-		onmessage(event);
+		try {
+			onmessage(event);
+		} catch (e:Dynamic) {
+			crossbyte.events._internal.Arrivals.done(message);
+			crossbyte.events._internal.Arrivals.rethrow(e);
+		}
+		crossbyte.events._internal.Arrivals.done(message);
 	}
 
 	private function __generateResponseHandshake(headers:StringMap<String>):Bytes {

@@ -562,7 +562,8 @@ private class RecordingSocket extends ReliableDatagramSocket {
 		socket.__windowBase = 1000;
 		socket.__firstSequence = 1000;
 		socket.__inSequence = 1000;
-		socket.addEventListener(DatagramSocketDataEvent.DATA, e -> socket.delivered.push(e.data));
+		// A copy: the event's bytes are valid only during the listener call.
+		socket.addEventListener(DatagramSocketDataEvent.DATA, e -> socket.delivered.push(cast(e.clone(), DatagramSocketDataEvent).data));
 		return socket;
 	}
 

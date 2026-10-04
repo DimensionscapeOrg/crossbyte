@@ -4,6 +4,7 @@ import crossbyte.Future;
 import crossbyte._internal.net.IPv6;
 import crossbyte.crypto.SecureRandom;
 import crossbyte.errors.ArgumentError;
+import crossbyte.events._internal.Arrivals;
 import crossbyte.io.ByteArray;
 import crossbyte.net._internal.stun.StunMessage;
 import crossbyte.net._internal.stun.StunMessage.StunAttribute;
@@ -271,7 +272,13 @@ class TurnClient {
 	**/
 	public var failure(default, null):Null<TurnError> = null;
 
-	/** Datagrams a peer sent through the relay. **/
+	/**
+		Datagrams a peer sent through the relay.
+
+		`payload` is valid only during the call, as an event's payload is:
+		copy the bytes out to keep them, as `payload.readBytes(mine)` does.
+		See `crossbyte.events.Event`.
+	**/
 	public dynamic function onData(payload:ByteArray, fromAddress:String, fromPort:Int):Void {}
 
 	/** Called with a datagram bound for the relay. **/
@@ -1709,8 +1716,23 @@ class TurnClient {
 
 		data.position = 0;
 		payload.position = 0;
-		onData(data, channel.address, channel.port);
+		__handOut(data, channel.address, channel.port);
 		return true;
+	}
+
+	/**
+		What the relay forwarded, to `onData`: valid only during that call,
+		so under `-D crossbyte_check_events` it is killed once the call
+		returns, or throws.
+	**/
+	@:noCompletion private function __handOut(payload:ByteArray, address:String, port:Int):Void {
+		try {
+			onData(payload, address, port);
+		} catch (e:Dynamic) {
+			Arrivals.done(payload);
+			Arrivals.rethrow(e);
+		}
+		Arrivals.done(payload);
 	}
 
 	@:noCompletion private function __deliver(message:StunMessage):Void {
@@ -1730,7 +1752,7 @@ class TurnClient {
 		}
 
 		payload.position = 0;
-		onData(payload, peer.address, peer.port);
+		__handOut(payload, peer.address, peer.port);
 	}
 
 	/**

@@ -20,6 +20,7 @@ import crossbyte.errors.RangeError;
 import crossbyte.events.DatagramSocketDataEvent;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
+import crossbyte.events._internal.Arrivals;
 import crossbyte.events.EventType;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.io.ByteArray;
@@ -1056,6 +1057,34 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		__syncPolling();
 	}
 
+	/**
+		Hands one datagram out: to the receiver first, then to the `DATA`
+		listeners, when there are any. This is the outermost call that hands
+		`payload` out, on every target, so once it has returned, or a
+		listener has thrown, the datagram is done with: under
+		`-D crossbyte_check_events` it and its event are killed here, and a
+		receiver or listener that kept either reads them dead.
+	**/
+	@:noCompletion private function __deliver(payload:ByteArray, source:String, port:Int, local:String, localPort:Int):Void {
+		var receiver = __receiver;
+		var event:DatagramSocketDataEvent = null;
+		try {
+			if (receiver != null) {
+				receiver.__receiveDatagram(payload, source, port);
+			}
+			if (receiver == null || __hasDataListener) {
+				event = new DatagramSocketDataEvent(DatagramSocketDataEvent.DATA, source, port, local, localPort, payload);
+				dispatchEvent(event);
+			}
+		} catch (e:Dynamic) {
+			Arrivals.done(payload);
+			Arrivals.doneWith(event);
+			Arrivals.rethrow(e);
+		}
+		Arrivals.done(payload);
+		Arrivals.doneWith(event);
+	}
+
 	#if !nodejs
 	public function registryOnReadable():Void {
 		if (!__receiving || __socket == null) {
@@ -1114,21 +1143,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			payload.endian = __endian;
 
 			processed++;
-			if (__receiver != null) {
-				__receiver.__receiveDatagram(payload, source, __tempAddress.port);
-				if (!__hasDataListener) {
-					continue;
-				}
-			}
-
-			dispatchEvent(new DatagramSocketDataEvent(
-				DatagramSocketDataEvent.DATA,
-				source,
-				__tempAddress.port,
-				__localText != null ? __localText : "",
-				__localText != null ? __localNumber : 0,
-				payload
-			));
+			__deliver(payload, source, __tempAddress.port, __localText != null ? __localText : "", __localText != null ? __localNumber : 0);
 		}
 
 		// Stopped at the cap, not at an empty socket: the loop is told, so
@@ -1504,14 +1519,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		var payload:ByteArray = ByteArray.fromBytes(Bytes.ofData(message.buffer.slice(message.byteOffset, message.byteOffset + message.byteLength)));
 		payload.endian = __endian;
 
-		if (__receiver != null) {
-			__receiver.__receiveDatagram(payload, source, remote.port);
-			if (!__hasDataListener) {
-				return;
-			}
-		}
-
-		dispatchEvent(new DatagramSocketDataEvent(DatagramSocketDataEvent.DATA, source, remote.port, __localAddress, __localPort, payload));
+		__deliver(payload, source, remote.port, __localAddress, __localPort);
 	}
 
 	@:noCompletion private function __rememberLocalEndpoint():Void {

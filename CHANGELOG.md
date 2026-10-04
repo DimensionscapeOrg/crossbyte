@@ -332,6 +332,17 @@ entry below says how:
   `(delta) -> runtime.pump(delta)`.
 
 ### Added
+- `-D crossbyte_check_events` finds code that keeps an event, or the bytes
+  one carries, past the listener call it was handed to. Every event and
+  payload a socket hands out for an arrival is then made for it alone, and
+  killed when the call that handed it out returns, or throws: its bytes
+  overwritten with `0xDB`, its length and position set to 0, and the
+  event's fields cleared, strings null, numbers -1. So the line that kept
+  one reads poison, or reads nothing and throws end-of-file, instead of
+  quietly reading the next arrival. `-D crossbyte_fresh_events` makes
+  every one afresh too and kills nothing, as before 1.0: the workaround
+  for such code until it copies. `Event` says what is valid when, and how
+  to keep it.
 - `SequenceRing.remove(sequence)` and `SequenceRing.writeBits(from, out, at,
   byteCount)`, which make the ring a receive window as well as a history:
   what arrived past a gap is filed by sequence, taken out as the gap fills,
@@ -1574,6 +1585,14 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `clone()` of a `DatagramSocketDataEvent` or a `WebSocketMessageEvent`
+  copies the bytes the event carries, where it shared them: a clone is the
+  way to keep a whole event past its listener call, and is safe to, with
+  bytes of its own at the same position and in the same byte order.
+- A `Socket` reuses its `connect`, `close`, `ioError` and `socketData`
+  events, as it did, now under the two defines above: each is made afresh
+  under either, and killed once dispatched under
+  `-D crossbyte_check_events`.
 - A WebSocket text message is written into its frame without being encoded
   into a buffer of its own first, natively when the string is held a byte a
   character and on the jvm when it is ASCII and no longer than 256

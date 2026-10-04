@@ -538,7 +538,8 @@ private class Pair {
 		// Where the handshake would have left them: the receiver expecting the
 		// sender's first sequence number.
 		receiver.__inSequence = sender.__outSequence;
-		receiver.addEventListener(DatagramSocketDataEvent.DATA, e -> received.push(e.data));
+		// A copy: the event's bytes are valid only during the listener call.
+		receiver.addEventListener(DatagramSocketDataEvent.DATA, e -> received.push(cast(e.clone(), DatagramSocketDataEvent).data));
 	}
 
 	/** Hands the receiver each frame, in the order given. **/

@@ -40,6 +40,7 @@ import crossbyte.events.EventDispatcher;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.OutputProgressEvent;
 import crossbyte.events.ProgressEvent;
+import crossbyte.events._internal.Arrivals;
 import crossbyte.io.ByteArray;
 import crossbyte.io.Endian;
 import crossbyte.io.IDataInput;
@@ -2878,6 +2879,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			return;
 		}
 
+		#if (crossbyte_fresh_events || crossbyte_check_events)
+		__dispatchFresh(new Event(type));
+		#else
 		var pooledEvent:Event;
 		var inUse:Bool;
 		switch (type) {
@@ -2933,6 +2937,22 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			case Event.CLOSE: __pooledCloseEventInUse = false;
 			default:
 		}
+		#end
+	}
+
+	/**
+		An event of its own, dispatched: what the pooled dispatches below do
+		under `-D crossbyte_fresh_events` or `-D crossbyte_check_events`, the
+		second killing it once it has been dispatched, or a listener threw.
+	**/
+	@:noCompletion private function __dispatchFresh(event:Event):Void {
+		try {
+			dispatchEvent(event);
+		} catch (error:Dynamic) {
+			Arrivals.doneWith(event);
+			Arrivals.rethrow(error);
+		}
+		Arrivals.doneWith(event);
 	}
 
 	@:noCompletion private function __dispatchPooledSocketData(bytesLoaded:UInt, bytesTotal:UInt):Void {
@@ -2940,6 +2960,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			return;
 		}
 
+		#if (crossbyte_fresh_events || crossbyte_check_events)
+		__dispatchFresh(new ProgressEvent(ProgressEvent.SOCKET_DATA, bytesLoaded, bytesTotal));
+		#else
 		if (__pooledSocketDataEventInUse) {
 			dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, bytesLoaded, bytesTotal));
 			return;
@@ -2964,6 +2987,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			throw error;
 		}
 		__pooledSocketDataEventInUse = false;
+		#end
 	}
 
 	@:noCompletion private function __dispatchPooledIOError(text:String = "", id:Int = 0):Void {
@@ -2971,6 +2995,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			return;
 		}
 
+		#if (crossbyte_fresh_events || crossbyte_check_events)
+		__dispatchFresh(new IOErrorEvent(IOErrorEvent.IO_ERROR, text, id));
+		#else
 		if (__pooledIOErrorEventInUse) {
 			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text, id));
 			return;
@@ -2995,6 +3022,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			throw error;
 		}
 		__pooledIOErrorEventInUse = false;
+		#end
 	}
 
 	override public function dispatchEvent(event:Event):Bool {
