@@ -667,6 +667,200 @@ Content-Length: ${body.length}
 	}
 	#end
 
+	/**
+		A body trickled a byte at a time ends at the request's `totalTimeout`.
+		Each byte reset the idle timeout, and nothing else bounded a load, so
+		this one, five seconds of body, ran to the end of it: measured,
+		5.6 s for a body sent a byte every 700 ms.
+	**/
+	public function testATrickledBodyEndsAtTheTotalTimeout():Void {
+		var fixture = serveTrickled("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 100\r\n\r\n", StringTools.rpad("", "t", 100), 0.05);
+		var request = new URLRequest('http://127.0.0.1:${fixture.port}/trickle');
+		request.idleTimeout = 2000;
+		request.totalTimeout = 700;
+		var loader = new URLLoader();
+		var events:Array<String> = [];
+		loader.addEventListener(Event.COMPLETE, _ -> events.push("complete"));
+		loader.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> events.push("error: " + event.text));
+
+		var started:Float = haxe.Timer.stamp();
+		loader.load(request);
+		pumpUntil(() -> events.length > 0, 8.0);
+		var took:Float = haxe.Timer.stamp() - started;
+
+		Assert.equals(1, events.length, "the load did not end once: " + events);
+		Assert.isTrue(events.length > 0 && events[0].indexOf("did not complete within 700 ms") >= 0, "the load did not end at its deadline: " + events);
+		Assert.isTrue(took >= 0.6 && took < 3.0, 'a 0.7 s deadline ended the load after $took s');
+
+		// And nothing more is said of it, however much more its thread says
+		// as it winds down: on eval under Windows the cancel ends its read
+		// only when the server stops sending.
+		var settle:Float = haxe.Timer.stamp() + 0.3;
+		pumpUntil(() -> haxe.Timer.stamp() >= settle);
+		Assert.equals(1, events.length, "the load said more after its deadline: " + events);
+		fixture.done.wait(6.0);
+	}
+
+	/**
+		Progress the runtime has not yet told is folded into the latest. The
+		client reports it per chunk, so 5,000 chunks arriving while the
+		runtime was busy queued 5,000 messages, and 5,000 events followed;
+		measured, about 300,000 were queued in two seconds for one load.
+	**/
+	public function testProgressNotYetToldIsFoldedIntoTheLatest():Void {
+		var chunks:StringBuf = new StringBuf();
+		for (_ in 0...5000) {
+			chunks.add("a\r\n0123456789\r\n");
+		}
+		chunks.add("0\r\n\r\n");
+		var fixture = serveRequests(_ -> "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n" + chunks.toString(), 1);
+		var request = new URLRequest('http://127.0.0.1:${fixture.port}/chunks');
+		request.idleTimeout = 5000;
+		var loader = new URLLoader();
+		var progress:Array<Int> = [];
+		var done:Bool = false;
+		loader.addEventListener(ProgressEvent.PROGRESS, (event:ProgressEvent) -> progress.push(Std.int(event.bytesLoaded)));
+		loader.addEventListener(Event.COMPLETE, _ -> done = true);
+		loader.addEventListener(IOErrorEvent.IO_ERROR, _ -> done = true);
+		loader.load(request);
+
+		// The runtime busy, not pumped, while the whole body arrives.
+		fixture.waitDone();
+		crossbyte.sys.System.sleep(0.5);
+		pumpUntil(() -> done, 5.0);
+
+		Assert.isTrue(done, "the load never ended");
+		Assert.isTrue(progress.length < 50, progress.length + " progress events told for 5,000 chunks the runtime was too busy to hear");
+		// The first report, at nothing loaded, is kept: where a listener
+		// learns the total before any of the body.
+		Assert.equals(0, progress.length > 0 ? progress[0] : -1, "the first progress told is not the body's start");
+		Assert.equals(50000, progress.length > 0 ? progress[progress.length - 1] : -1, "the last progress told is not the whole body");
+	}
+
+	/** A deadline the load meets changes nothing: the load completes, once. **/
+	public function testALoadWithinItsTotalTimeoutCompletes():Void {
+		var fixture = serveRequests(_ -> response(200, "OK", ["Content-Length: 5"], "hello"), 1);
+		var request = new URLRequest('http://127.0.0.1:${fixture.port}/quick');
+		request.totalTimeout = 5000;
+		var result = load(request);
+		fixture.waitDone();
+		Assert.isNull(result.error, result.error);
+		Assert.equals("hello", result.data);
+	}
+
+	/**
+		A load waiting for a thread waits its `idleTimeout` at most. With
+		every thread taken by loads whose servers held them, it waited for as
+		long as they did, measured, 3.0 s past its own 500 ms limit, and a
+		load whose server trickles holds its thread for good.
+	**/
+	public function testALoadWaitingForAThreadEndsAtItsIdleTimeout():Void {
+		var saved:Int = URLLoader.maxConcurrentLoads;
+		URLLoader.maxConcurrentLoads = 1;
+		var held = holdOne();
+		var first = new URLLoader();
+		var firstEvents:Array<String> = [];
+		first.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> firstEvents.push(event.text));
+		first.addEventListener(Event.COMPLETE, _ -> firstEvents.push("complete"));
+		var holding = new URLRequest('http://127.0.0.1:${held.port}/held');
+		holding.idleTimeout = 5000;
+		first.load(holding);
+		pumpUntil(() -> held.requests.length > 0, 3.0);
+		Assert.equals(1, held.requests.length, "the first load never reached its server");
+
+		var second = new URLLoader();
+		var events:Array<String> = [];
+		second.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> events.push(event.text));
+		second.addEventListener(Event.COMPLETE, _ -> events.push("complete"));
+		var queued = new URLRequest('http://127.0.0.1:${held.port}/queued');
+		queued.idleTimeout = 500;
+		var started:Float = haxe.Timer.stamp();
+		second.load(queued);
+		pumpUntil(() -> events.length > 0, 4.0);
+		var took:Float = haxe.Timer.stamp() - started;
+
+		first.close();
+		URLLoader.maxConcurrentLoads = saved;
+		held.done.wait(3.0);
+
+		Assert.equals(1, events.length, "the queued load did not end once: " + events);
+		Assert.isTrue(events.length > 0 && events[0].indexOf("did not start within 500 ms") >= 0, "the queued load did not say it waited for a thread: " + events);
+		Assert.isTrue(took >= 0.4 && took < 2.5, 'a 0.5 s limit on the wait ended it after $took s');
+		Assert.same([], firstEvents);
+	}
+
+	/**
+		Takes one request, holds it unanswered until its client goes, five
+		seconds at most, and refuses anything after it.
+	**/
+	private static function holdOne():URLLoaderHttpFixture {
+		var fixture = new URLLoaderHttpFixture(1);
+		Thread.create(() -> {
+			var server = new SysSocket();
+			var peer:SysSocket = null;
+			try {
+				server.bind(new Host("127.0.0.1"), 0);
+				server.listen(4);
+				fixture.port = server.host().port;
+				fixture.ready.release();
+				peer = server.accept();
+				peer.setTimeout(5.0);
+				fixture.requests.push(readRequest(peer));
+				try {
+					peer.input.readByte();
+				} catch (_:Dynamic) {}
+			} catch (error:Dynamic) {
+				fixture.error = error;
+				fixture.ready.release();
+			}
+			closeQuietly(peer);
+			closeQuietly(server);
+			fixture.done.release();
+		});
+		if (!fixture.ready.wait(2.0)) {
+			Assert.fail("Timed out waiting for HTTP fixture server");
+		}
+		return fixture;
+	}
+
+	/**
+		Takes one request and answers `prompt` at once, then `trickled` a byte
+		every `gap` seconds, each byte enough to reset an idle timeout,
+		until the client goes.
+	**/
+	private static function serveTrickled(prompt:String, trickled:String, gap:Float):URLLoaderHttpFixture {
+		var fixture = new URLLoaderHttpFixture(1);
+		Thread.create(() -> {
+			var server = new SysSocket();
+			var peer:SysSocket = null;
+			try {
+				server.bind(new Host("127.0.0.1"), 0);
+				server.listen(1);
+				fixture.port = server.host().port;
+				fixture.ready.release();
+				peer = server.accept();
+				peer.setTimeout(6.0);
+				fixture.requests.push(readRequest(peer));
+				peer.output.writeString(prompt);
+				peer.output.flush();
+				for (i in 0...trickled.length) {
+					crossbyte.sys.System.sleep(gap);
+					peer.output.writeString(trickled.charAt(i));
+					peer.output.flush();
+				}
+			} catch (_:Dynamic) {
+				// The client went: what this waits for.
+			}
+			closeQuietly(peer);
+			closeQuietly(server);
+			fixture.done.release();
+		});
+		if (!fixture.ready.wait(2.0)) {
+			Assert.fail("Timed out waiting for HTTP fixture server");
+		}
+		return fixture;
+	}
+
 	private static function loadText(url:String):URLLoaderHttpResult {
 		return load(new URLRequest(url));
 	}

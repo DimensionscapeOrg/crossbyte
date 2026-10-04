@@ -295,9 +295,14 @@ class H2ClientSession {
 	 *
 	 * `maxBodyLength` is the most response body the stream holds, `0` or
 	 * less for none; absent, the connection's `maxResponseBodySize`.
+	 *
+	 * `headTimeoutSeconds` is a deadline, not an idle limit: the response's
+	 * final header block has that long to arrive once the request has been
+	 * sent, however much else arrives meanwhile, 1xx blocks among it,
+	 * after which the stream is reset and this throws. `0` or less is none.
 	 */
 	public function execute(method:String, scheme:String, authority:String, path:String, headers:Array<HpackHeader>, body:Null<Bytes>,
-			timeoutSeconds:Float, ?cancelToken:HTTPCancelToken, ?maxBodyLength:Int):H2Stream {
+			timeoutSeconds:Float, ?cancelToken:HTTPCancelToken, ?maxBodyLength:Int, headTimeoutSeconds:Float = 0):H2Stream {
 		var target:H2Stream;
 		var waiter:H2Wake = new H2Wake();
 		var hasBody:Bool = body != null && body.length > 0;
@@ -425,17 +430,22 @@ class H2ClientSession {
 			return target;
 		}
 
-		if (!__awaitEnd(target, waiter, timeoutSeconds)) {
-			// The peer went quiet on it. The stream is reset rather than
-			// abandoned: leaving it open holds a slot against
-			// MAX_CONCURRENT_STREAMS for the life of the connection.
+		// From here, with the request sent, or with what a window held back
+		// of its body on its way.
+		var headDeadline:Float = headTimeoutSeconds > 0 ? haxe.Timer.stamp() + headTimeoutSeconds : 0;
+		var ended:Int = __awaitEnd(target, waiter, timeoutSeconds, headDeadline);
+		if (ended != ENDED) {
+			// The peer went quiet on it, or held its head past the deadline.
+			// The stream is reset rather than abandoned: leaving it open holds
+			// a slot against MAX_CONCURRENT_STREAMS for the life of the
+			// connection.
 			__lock.acquire();
 			try {
 				connection.resetStream(target.id, H2ErrorCode.CANCEL);
 			} catch (_:Dynamic) {}
 			__lock.release();
 			__writerWake.release();
-			if (__stalledFor(timeoutSeconds)) {
+			if (ended == IDLE && __stalledFor(timeoutSeconds)) {
 				// And it has taken nothing all that while either: the
 				// connection goes too, rather than wait on for the next
 				// request to find it so.
@@ -443,12 +453,21 @@ class H2ClientSession {
 			}
 
 			__finish(streamId, cancelToken, onCancelled);
+			if (ended == HEAD) {
+				throw new H2StreamError(streamId, H2ErrorCode.CANCEL, 'The response head from $origin did not arrive within ${headTimeoutSeconds}s of the request');
+			}
 			throw __timedOut(streamId, timeoutSeconds);
 		}
 
 		__finish(streamId, cancelToken, onCancelled);
 		return target;
 	}
+
+	/** How `__awaitEnd` ended: the stream ended, it went quiet, or its head missed its deadline. */
+	private static inline var ENDED:Int = 0;
+
+	private static inline var IDLE:Int = 1;
+	private static inline var HEAD:Int = 2;
 
 	/**
 	 * Waits for `target` to end for as long as its peer keeps sending it
@@ -466,42 +485,72 @@ class H2ClientSession {
 	 * This looks at the count four times per timeout, and a look that finds it
 	 * moved starts the quiet period over from then. So the limit is never
 	 * reached early, and at most a quarter of it late.
+	 *
+	 * `headDeadline`, a `haxe.Timer.stamp()` or `0` for none, is when the
+	 * final header block must have arrived by: a look at it then, and the
+	 * wait ends `HEAD` if it has not. Frames move the idle limit, not this.
 	 */
-	private function __awaitEnd(target:H2Stream, waiter:H2Wake, timeoutSeconds:Float):Bool {
-		if (timeoutSeconds <= 0) {
+	private function __awaitEnd(target:H2Stream, waiter:H2Wake, timeoutSeconds:Float, headDeadline:Float):Int {
+		if (timeoutSeconds <= 0 && headDeadline <= 0) {
 			// No limit. Each thing that wakes the waiter, the stream ending,
 			// a cancel, the connection going, ends this wait. A limit of
 			// zero was a wait of none, and failed every such request at once.
 			waiter.wait();
-			return true;
+			return ENDED;
 		}
 
-		var slice:Float = timeoutSeconds / 4;
+		var slice:Float = timeoutSeconds > 0 ? timeoutSeconds / 4 : Math.POSITIVE_INFINITY;
 		__lock.acquire();
 		var seen:Int = target.framesIn;
 		__lock.release();
 		var quietSince:Float = haxe.Timer.stamp();
 
-		while (!waiter.wait(slice)) {
+		while (true) {
+			var wait:Float = slice;
+			if (headDeadline > 0) {
+				var left:Float = headDeadline - haxe.Timer.stamp();
+				if (left < wait) {
+					// Never under a millisecond: a wait of nothing would spin.
+					wait = left < 0.001 ? 0.001 : left;
+				}
+			}
+			if (waiter.wait(wait)) {
+				return ENDED;
+			}
+
 			__lock.acquire();
 			var frames:Int = target.framesIn;
 			var ended:Bool = target.isClosed();
+			var headed:Bool = target.headerSectionReceived;
 			__lock.release();
 
 			if (ended) {
 				// Closed as the wait ran out, its wake-up not yet taken.
-				return true;
+				return ENDED;
 			}
 
 			var now:Float = haxe.Timer.stamp();
-			if (frames != seen) {
-				seen = frames;
-				quietSince = now;
-			} else if (now - quietSince >= timeoutSeconds) {
-				return false;
+			if (headDeadline > 0) {
+				if (headed) {
+					// In: the deadline has done its work.
+					headDeadline = 0;
+					if (timeoutSeconds <= 0) {
+						waiter.wait();
+						return ENDED;
+					}
+				} else if (now >= headDeadline) {
+					return HEAD;
+				}
+			}
+			if (timeoutSeconds > 0) {
+				if (frames != seen) {
+					seen = frames;
+					quietSince = now;
+				} else if (now - quietSince >= timeoutSeconds) {
+					return IDLE;
+				}
 			}
 		}
-		return true;
 	}
 
 	/**

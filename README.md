@@ -268,6 +268,52 @@ a network hop. Spread a process over
 runtimes when connections need to reach shared state cheaply (a game world, a
 cache); use processes when they do not.
 
+## HTTP client limits and deadlines
+
+What a server you call can cost you is bounded per request, on the
+`URLRequest`, so one caller's settings never reach another's requests:
+
+| `URLRequest` | Default | Bounds |
+| --- | --- | --- |
+| `idleTimeout` | 30 s | time with nothing arriving, and, off JavaScript, the wait for a load thread past `URLLoader.maxConcurrentLoads` |
+| `headTimeout` | 300 s | the response's head, from the request having gone; bytes trickling in do not move it |
+| `totalTimeout` | none | the whole load, from `load()` to `COMPLETE` |
+| `maxBodySize` | 64 MB | the body on the wire; a larger `Content-Length` is refused before it is read |
+| `maxDecompressedSize` | 64 MB | what the body decodes to |
+| `maxResponseHeaderSize` | 64 KB | the status line and header fields, 1xx responses included |
+| `maxRedirects` | 10 | redirects followed before the load fails |
+
+`0` or less lifts any of them. An idle timeout alone does not bound a request:
+a server sending a byte at a time resets it with every byte, so give a
+request to a server you do not trust a `totalTimeout`:
+
+```haxe
+var request = new URLRequest("https://api.example.com/report");
+request.totalTimeout = 60000;
+request.maxBodySize = 4 * 1024 * 1024;
+var loader = new URLLoader();
+loader.addEventListener(IOErrorEvent.IO_ERROR, (e:IOErrorEvent) -> trace(e.text));
+loader.load(request);
+```
+
+A custom `HTTPBackend` reads the same limits from its `HTTPRequestContext`;
+the loader cancels a request past its `totalTimeout` through the context's
+`cancelToken`.
+
+**Names.** A socket's connect by name, and every client request, looks the
+name up on one of four threads the process keeps for it, a system lookup
+cannot be stopped, so that is the most a wedged resolver can hold, and its
+caller waits 30 s for the answer at most (less within a request's idle
+timeout, and a cancel ends the wait at once). An answer is kept for 30 s, a
+failure for 5, and callers asking for a name already being looked up share
+the lookup.
+
+**PHP.** `HTTPServerConfig.phpMaxResponseSize` (8 MiB) bounds a script's
+response, whose CGI header block is held to 64 KiB and 100 lines besides,
+and `phpMaxExchanges` (64) the requests a runtime has with its PHP backend
+at once; more wait their turn within `phpTimeout`, and past 1,024 waiting
+a request is refused.
+
 ## Extensions
 
 CrossByte's extension story is intentional: features that benefit from native backends or external platform libraries can live in sibling haxelibs instead of bloating the core.

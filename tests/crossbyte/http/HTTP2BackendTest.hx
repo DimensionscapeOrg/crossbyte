@@ -1338,8 +1338,8 @@ class HTTP2BackendTest extends utest.Test {
 	}
 
 	public function testAnHttp2RedirectLimitIsTheHttp11One():Void {
-		// Ten followed and then answered is within Http.MAX_REDIRECTS; an
-		// eleventh is one too many.
+		// Ten followed and then answered is within the request's
+		// maxRedirects, ten by default; an eleventh is one too many.
 		function hops(answerAt:Int):H2RouteServer {
 			return new H2RouteServer(request -> {
 				var hop:Int = Std.parseInt(request.path.substr(4));
@@ -1366,6 +1366,82 @@ class HTTP2BackendTest extends utest.Test {
 		endless.stop();
 		Assert.equals("Exceeded the number of allowed redirects", outcome);
 		Assert.equals(11, endless.requests().length);
+	}
+
+	/** The request's own redirect limit holds over HTTP/2 as over HTTP/1.1. **/
+	public function testAnHttp2RedirectLimitIsTheRequests():Void {
+		var server = new H2RouteServer(request -> {
+			var hop:Int = Std.parseInt(request.path.substr(4));
+			return hop == 3 ? {status: 200, chunks: ["done"]} : {status: 302, fields: [new HpackHeader("location", '/hop${hop + 1}')]};
+		});
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var outcome:String = null;
+		var http = new Http('http://127.0.0.1:${server.port}/hop0', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		http.maxRedirects = 2;
+		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+		http.onError = (message, ?data) -> outcome = message;
+		http.load();
+		Assert.equals("Exceeded the number of allowed redirects", outcome);
+
+		outcome = null;
+		http = new Http('http://127.0.0.1:${server.port}/hop0', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+		http.onError = (message, ?data) -> outcome = message;
+		http.load();
+		server.stop();
+		Assert.equals("COMPLETED done", outcome);
+	}
+
+	/** A header section past the request's own limit, under the connection's, is refused. **/
+	public function testAnHttp2HeaderLimitIsTheRequests():Void {
+		var server = new H2cServer();
+		server.respond([new HpackHeader(":status", "200"), new HpackHeader("x-padding", StringTools.rpad("", "p", 2000))], "ok");
+		server.start();
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var outcome:String = null;
+		var http = new Http('http://127.0.0.1:${server.port}/padded', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		http.maxResponseHeaderSize = 1024;
+		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+		http.onError = (message, ?data) -> outcome = message;
+		http.load();
+		server.waitDone();
+		Assert.equals("Response header section exceeded 1024 bytes", outcome);
+	}
+
+	/**
+		A head the server keeps putting off ends at its deadline. Each 103
+		Early Hints is a frame of the stream, which resets its idle limit, so
+		a server sending one every tenth of a second held the request for as
+		long as it kept going.
+	**/
+	public function testAnHttp2HeadPutOffEndsAtItsDeadline():Void {
+		var server = new H2ScriptServer(peer -> {
+			peer.open();
+			var id:Int = peer.readRequest();
+			var until:Float = haxe.Timer.stamp() + 4.0;
+			while (haxe.Timer.stamp() < until && !peer.server.hungUp) {
+				peer.headers(id, [new HpackHeader(":status", "103"), new HpackHeader("link", "</style.css>; rel=preload")], 0);
+				System.sleep(0.1);
+			}
+			peer.drain();
+		});
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var outcome:String = null;
+		var http = new Http('http://127.0.0.1:${server.port}/later', "GET", null, null, null, null, HttpVersion.HTTP_2, 2000);
+		http.headTimeout = 600;
+		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+		http.onError = (message, ?data) -> outcome = message;
+		var started:Float = haxe.Timer.stamp();
+		http.load();
+		var took:Float = haxe.Timer.stamp() - started;
+		server.hangUp();
+		server.waitDone(5.0);
+
+		Assert.isTrue(outcome != null && outcome.indexOf("did not arrive within 0.6s") >= 0, "a head put off past its deadline did not end there: " + outcome);
+		Assert.isTrue(took >= 0.5 && took < 2.5, 'a 0.6 s head deadline ended the request after $took s');
 	}
 
 	public function testAnHttp2RedirectLeavingHttpIsRefused():Void {
@@ -1477,12 +1553,10 @@ class HTTP2BackendTest extends utest.Test {
 	// ------------------------------------------------------ a hostile server
 
 	public function testAResponseBodyPastTheLimitIsAnError():Void {
-		// The HTTP/1.1 client holds a body to Http.MAX_BODY_SIZE; over HTTP/2
-		// nothing held it, and the stream's window was opened again as every
-		// half of it arrived, so a server sending without end grew the body
-		// for as long as it liked. 4 MB here against a 256 KB limit.
-		var saved:Int = Http.MAX_BODY_SIZE;
-		Http.MAX_BODY_SIZE = 256 * 1024;
+		// The HTTP/1.1 client holds a body to the request's maxBodySize; over
+		// HTTP/2 nothing held it, and the stream's window was opened again as
+		// every half of it arrived, so a server sending without end grew the
+		// body for as long as it liked. 4 MB here against a 256 KB limit.
 		var server = new H2ScriptServer(peer -> {
 			peer.open();
 			var id:Int = peer.readRequest();
@@ -1500,13 +1574,13 @@ class HTTP2BackendTest extends utest.Test {
 		var error:Null<String> = null;
 		try {
 			var http = new Http('http://127.0.0.1:${server.port}/endless', "GET", null, null, null, null, HttpVersion.HTTP_2, 10000);
+			http.maxBodySize = 256 * 1024;
 			http.onComplete = data -> completed = data;
 			http.onError = (message, ?data) -> error = message;
 			http.load();
 		} catch (e:Dynamic) {
 			error = "threw " + Std.string(e);
 		}
-		Http.MAX_BODY_SIZE = saved;
 		// What the server saw, before the pool hangs up: a close with its
 		// frames unread would be a reset, which throws them away.
 		var outcome:String = server.waitNote(10);

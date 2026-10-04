@@ -130,6 +130,72 @@ class PHPExchangeTest extends utest.Test {
 		Assert.equals(404, __respond(__cgi("Status: 404 Not Found\r\n\r\n", Bytes.ofString("x"))).status);
 	}
 
+	/**
+		A response past its limit fails as it arrives, the bytes past the
+		limit never held. Nothing bounded one: a script, or a backend not
+		running PHP at all, chose how much of the server's memory each
+		request took, and the server held it whole, and then twice over as
+		the body was taken from it.
+	**/
+	public function testAResponsePastItsLimitFailsAsItArrives():Void {
+		var small = __records(__cgiBytes(Bytes.ofString("Content-Type: text/plain\r\n\r\n"), Bytes.alloc(3000)));
+		var limited = new PHPExchange(0, 1024);
+		Assert.isFalse(limited.receive(small, small.length), "a 3 KB response completed under a 1 KB limit");
+		Assert.isTrue(limited.settled, "a response past its limit did not end the exchange");
+		Assert.isTrue(limited.future.error != null && limited.future.error.indexOf("exceeded 1024 bytes") >= 0, "the failure does not say why: " + limited.future.error);
+
+		// 8 MB by default: 9 MB fails, and 1 MB is a page.
+		var big = __records(__cgiBytes(Bytes.ofString("Content-Type: application/octet-stream\r\n\r\n"), Bytes.alloc(9 * 1024 * 1024)));
+		var bounded = new PHPExchange(0);
+		Assert.isFalse(bounded.receive(big, big.length), "a 9 MB response completed under the default limit");
+		Assert.isTrue(bounded.future.error != null && bounded.future.error.indexOf("exceeded " + PHPExchange.DEFAULT_MAX_RESPONSE_SIZE) >= 0,
+			"the failure does not say why: " + bounded.future.error);
+
+		var page = __records(__cgiBytes(Bytes.ofString("Content-Type: application/octet-stream\r\n\r\n"), Bytes.alloc(1024 * 1024)));
+		var taken = new PHPExchange(0);
+		Assert.isTrue(taken.receive(page, page.length), "a 1 MB response failed under the default limit: " + taken.future.error);
+		Assert.equals(1024 * 1024, taken.response().body.length);
+
+		// No limit at all, when asked for.
+		var unlimited = new PHPExchange(0, 0);
+		Assert.isTrue(unlimited.receive(big, big.length), "a response with no limit failed: " + unlimited.future.error);
+	}
+
+	/**
+		A header block past 64 KB, or of more than a hundred lines, fails as
+		it arrives. 40,000 lines of one field were taken and joined each onto
+		the whole value so far, quadratic in the lines: 5.6 s on the runtime's
+		thread, measured. They are joined once, at the end, now too.
+	**/
+	public function testAHeaderBlockPastItsLimitsFails():Void {
+		var flood = new StringBuf();
+		for (_ in 0...40000) {
+			flood.add("Vary: Accept\r\n");
+		}
+		flood.add("\r\n");
+		var records = __records(__cgiBytes(Bytes.ofString(flood.toString()), Bytes.ofString("body")));
+		var exchange = new PHPExchange(0);
+		var started:Float = haxe.Timer.stamp();
+		var finished:Bool = exchange.receive(records, records.length);
+		var took:Float = haxe.Timer.stamp() - started;
+		Assert.isFalse(finished, "a header block of 40,000 lines was taken");
+		Assert.isTrue(exchange.future.error != null && exchange.future.error.indexOf("header block exceeded") >= 0, "the failure does not say why: " + exchange.future.error);
+		Assert.isTrue(took < 1.0, 'refusing the header block took $took s');
+
+		// One past a hundred lines, under 64 KB.
+		var lines:Array<String> = [for (i in 0...101) 'X-Field-$i: $i'];
+		var many = new PHPExchange(0);
+		var tooMany = __cgi(lines.join("\r\n") + "\r\n\r\n", Bytes.ofString("body"));
+		Assert.isFalse(many.receive(tooMany, tooMany.length), "101 header lines were taken");
+		Assert.isTrue(many.future.error != null && many.future.error.indexOf("101 lines") >= 0, "the failure does not say why: " + many.future.error);
+
+		// A hundred are a header block, repeats joined as the handler expects.
+		var hundred:Array<String> = [for (i in 0...100) 'Vary: v$i'];
+		var response = __respond(__cgi(hundred.join("\r\n") + "\r\n\r\n", Bytes.ofString("body")));
+		Assert.equals([for (i in 0...100) 'v$i'].join(", "), response.headers.get("vary"));
+		Assert.equals("body", response.body.toString());
+	}
+
 	public function testALargeRequestIsSplitIntoRecordsPhpFpmCanRead():Void {
 		// A record's length field is sixteen bits. The whole body went in one
 		// STDIN record, so a 100,000-byte POST declared 34,464 bytes and
@@ -402,6 +468,112 @@ class PHPExchangeTest extends utest.Test {
 	}
 
 	/**
+		Exchanges with the backend are bounded: past `maxExchanges` a request
+		waits for one to end, and only then connects. Every request opened a
+		connection of its own, however many were already waiting on a backend
+		that answers one at a time.
+	**/
+	public function testExchangesWithTheBackendAreBounded():Void {
+		var backend = new BlockingBackend();
+		var bridge = new PHPBridge(PHPMode.Connect("127.0.0.1", backend.port), "", ["index.php"], 20, PHPExchange.DEFAULT_MAX_RESPONSE_SIZE, 2);
+		var futures = [for (_ in 0...3) bridge.execute(__request())];
+
+		var first = backend.accept();
+		__readRequest(first);
+		var second = backend.accept();
+		__readRequest(second);
+		Assert.isFalse(backend.pending(0.5), "a third exchange connected past a limit of two");
+
+		backend.replyOn(first, __cgi("Status: 200 OK\r\n\r\n", Bytes.ofString("one")));
+		var third = backend.accept();
+		Assert.isTrue(__readRequest(third).stdinEnded, "the waiting exchange never reached the backend once one ended");
+		backend.replyOn(second, __cgi("Status: 200 OK\r\n\r\n", Bytes.ofString("two")));
+		backend.replyOn(third, __cgi("Status: 200 OK\r\n\r\n", Bytes.ofString("three")));
+
+		var runtime = crossbyte.core.CrossByte.current();
+		var deadline:Float = haxe.Timer.stamp() + 10;
+		while (!(futures[0].completed && futures[1].completed && futures[2].completed) && haxe.Timer.stamp() < deadline) {
+			runtime.pump(1 / 60, 0.0);
+			crossbyte.sys.System.sleep(0.001);
+		}
+		backend.close();
+		bridge.stop();
+
+		Assert.same(["one", "two", "three"], [for (future in futures) future.succeeded ? future.result.body.toString() : "failed: " + future.error]);
+	}
+
+	/**
+		Past `MAX_WAITING` behind the exchanges with the backend, a request is
+		refused at once, as busy, a `PHPBusy` the handler can tell from a
+		backend that answered badly.
+	**/
+	public function testARequestPastAFullQueueIsRefusedAsBusy():Void {
+		var backend = new BlockingBackend();
+		var bridge = new PHPBridge(PHPMode.Connect("127.0.0.1", backend.port), "", ["index.php"], 2, PHPExchange.DEFAULT_MAX_RESPONSE_SIZE, 1);
+		var queued = [for (_ in 0...PHPBridge.MAX_WAITING + 1) bridge.execute(__request())];
+		var refused = bridge.execute(__request());
+
+		Assert.isTrue(refused.completed, "a request past a full queue was not refused at once");
+		Assert.isFalse(refused.succeeded);
+		Assert.isTrue(Std.isOfType(refused.cause, PHPBusy), "the refusal is not a PHPBusy: " + refused.error);
+		Assert.isTrue(refused.error != null && refused.error.indexOf("busy") >= 0, refused.error);
+		Assert.equals(0, [for (future in queued) if (future.completed) future].length, "a queued request was refused");
+
+		// They wait within their deadlines, and are failed by them.
+		var runtime = crossbyte.core.CrossByte.current();
+		var deadline:Float = haxe.Timer.stamp() + 10;
+		while ([for (future in queued) if (!future.completed) future].length > 0 && haxe.Timer.stamp() < deadline) {
+			runtime.pump(1 / 60, 0.0);
+			crossbyte.sys.System.sleep(0.001);
+		}
+		backend.close();
+		bridge.stop();
+		Assert.equals(0, [for (future in queued) if (!future.completed) future].length, "queued requests outlived their deadline");
+		Assert.isTrue(Std.isOfType(queued[queued.length - 1].cause, PHPTimeout), "the last queued request did not time out: " + queued[queued.length - 1].error);
+	}
+
+	/**
+		A pass reads `READ_BUDGET` bytes of a response at most, and tells the
+		loop there is more. A backend sending fast was read for as long as it
+		sent, the whole runtime waiting.
+	**/
+	public function testAPassReadsTheBudgetAndLeavesTheRest():Void {
+		var backend = new BlockingBackend();
+		var bridge = new PHPBridge(PHPMode.Connect("127.0.0.1", backend.port), "", ["index.php"], 20);
+		var future = bridge.execute(__request());
+		var peer = backend.accept();
+		__readRequest(peer);
+
+		// Four times the budget, written from a thread of its own, since it
+		// does not fit in the socket's buffers.
+		var answer = __records(__cgiBytes(Bytes.ofString("Content-Type: application/octet-stream\r\n\r\n"), Bytes.alloc(4 * PHPBridge.READ_BUDGET)));
+		sys.thread.Thread.create(() -> {
+			try {
+				peer.output.write(answer);
+				peer.output.flush();
+			} catch (_:Dynamic) {}
+		});
+
+		var runtime = crossbyte.core.CrossByte.current();
+		var stopped:Int = 0;
+		var deadline:Float = haxe.Timer.stamp() + 20;
+		while (!future.completed && haxe.Timer.stamp() < deadline) {
+			@:privateAccess runtime.__socketRegistry.update(0.01);
+			if (@:privateAccess runtime.__socketRegistry.__moreToRead) {
+				stopped++;
+			}
+		}
+		backend.close();
+		bridge.stop();
+
+		Assert.isTrue(future.succeeded, "the response did not arrive whole: " + future.error);
+		Assert.isTrue(stopped > 0, "no pass stopped at the read budget, with four budgets' worth to read");
+		if (future.succeeded) {
+			Assert.equals(4 * PHPBridge.READ_BUDGET, future.result.body.length);
+		}
+	}
+
+	/**
 		Polls the runtime's sockets the way its loop does between ticks, and
 		never ticks: what arrives here is read on readiness or not at all.
 	**/
@@ -480,6 +652,21 @@ class PHPExchangeTest extends utest.Test {
 		var out = new BytesBuffer();
 		__header(out, 6, cgi.length);
 		out.add(cgi);
+		__header(out, 3, 8);
+		out.add(Bytes.alloc(8));
+		return out.getBytes();
+	}
+
+	/** `cgi` as FCGI_STDOUT records of 60,000 bytes at most, then FCGI_END_REQUEST. **/
+	private static function __records(cgi:Bytes):Bytes {
+		var out = new BytesBuffer();
+		var offset:Int = 0;
+		while (offset < cgi.length) {
+			var length:Int = cgi.length - offset < 60000 ? cgi.length - offset : 60000;
+			__header(out, 6, length);
+			out.addBytes(cgi, offset, length);
+			offset += length;
+		}
 		__header(out, 3, 8);
 		out.add(Bytes.alloc(8));
 		return out.getBytes();
@@ -660,6 +847,25 @@ private class BlockingBackend {
 	public function reply(bytes:Bytes):Void {
 		peer.output.write(bytes);
 		peer.output.flush();
+	}
+
+	/** Answers on a connection taken earlier. **/
+	public function replyOn(socket:sys.net.Socket, bytes:Bytes):Void {
+		socket.output.write(bytes);
+		socket.output.flush();
+	}
+
+	/** Whether a connection waits to be taken within `seconds`, the runtime pumped meanwhile. **/
+	public function pending(seconds:Float):Bool {
+		var runtime = crossbyte.core.CrossByte.current();
+		var deadline:Float = haxe.Timer.stamp() + seconds;
+		while (haxe.Timer.stamp() < deadline) {
+			if (sys.net.Socket.select([listener], [], [], 0.01).read.length > 0) {
+				return true;
+			}
+			runtime.pump(1 / 60, 0.0);
+		}
+		return false;
 	}
 
 	public function close():Void {

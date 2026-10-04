@@ -26,13 +26,12 @@ import haxe.io.Bytes;
  * cannot drift in what they report even though almost nothing about how they
  * work is shared. Where the platform leaves a choice, they make the one the
  * native client makes: redirects are followed, dropping credentials when one
- * leaves the origin, and `idleTimeout` is time without progress rather than a
- * deadline on the whole exchange.
+ * leaves the origin, `idleTimeout` is time without progress rather than a
+ * deadline on the whole exchange, and `headTimeout` and `totalTimeout` are
+ * deadlines nothing arriving moves, kept by the runtime's timers and
+ * checked against the clock (see `Deadline`).
  */
 class JsHttpClient {
-	/** Redirects followed before giving up, as `Http.MAX_REDIRECTS` on native. */
-	private static inline var MAX_REDIRECTS:Int = 10;
-
 	/** What a cancelled request reports, as the native client says it. */
 	private static inline var CANCELLED:String = "Request cancelled";
 
@@ -137,12 +136,23 @@ class JsHttpClient {
 		var xhr = new js.html.XMLHttpRequest();
 		var settled:Bool = false;
 		var idle:haxe.Timer = null;
+		// The deadlines: the head's, until the headers are in, and the whole
+		// request's.
+		var head:Null<Deadline> = null;
+		var total:Null<Deadline> = null;
 		var onCancelled:Null<Void->Void> = null;
 
 		function stopIdle():Void {
 			if (idle != null) {
 				idle.stop();
 				idle = null;
+			}
+		}
+
+		function stopHead():Void {
+			if (head != null) {
+				head.stop();
+				head = null;
 			}
 		}
 
@@ -153,10 +163,24 @@ class JsHttpClient {
 			}
 			settled = true;
 			stopIdle();
+			stopHead();
+			if (total != null) {
+				total.stop();
+				total = null;
+			}
 			if (onCancelled != null) {
 				token.removeHandler(onCancelled);
 			}
 			return true;
+		}
+
+		// Ends the request where it stands with `message`, unless it has
+		// ended already.
+		function abandon(message:String):Void {
+			if (settle()) {
+				xhr.abort();
+				onError(message);
+			}
 		}
 
 		// Time without progress, not a deadline on the whole exchange: this
@@ -221,6 +245,7 @@ class JsHttpClient {
 			// is worth reporting, waiting for the body would hold it back
 			// behind however long the transfer takes.
 			if (xhr.readyState == 2) {
+				stopHead();
 				// Both absolute, as the browser reports where a response came
 				// from: compared with the URL as written, a relative one said
 				// every response to it had been redirected.
@@ -247,6 +272,14 @@ class JsHttpClient {
 				return;
 			}
 			armIdle();
+			// The request's limit on the body, held to what the browser says
+			// has arrived: a declared length past it at the first report, and
+			// a body growing past it as it does.
+			var limit:Int = request.maxBodySize;
+			if (limit > 0 && (e.loaded > limit || (e.lengthComputable && e.total > limit))) {
+				abandon("Response body exceeded " + limit + " bytes");
+				return;
+			}
 			onProgress(Std.int(e.loaded), e.lengthComputable ? Std.int(e.total) : 0);
 		};
 
@@ -281,16 +314,20 @@ class JsHttpClient {
 		// The request ends where it stands. An abort fires neither load nor
 		// error, so the cancel is reported here, once.
 		if (token != null) {
-			onCancelled = () -> {
-				if (settle()) {
-					xhr.abort();
-					onError(CANCELLED);
-				}
-			};
+			onCancelled = () -> abandon(CANCELLED);
 			token.onCancel(onCancelled);
 		}
 
 		armIdle();
+		// From the send, since the browser says when an upload has gone only
+		// to a listener on `xhr.upload`, which makes a cross-origin request
+		// one that needs a preflight.
+		if (request.headTimeout > 0) {
+			head = new Deadline(request.headTimeout, () -> abandon("The response head did not arrive within " + request.headTimeout + " ms of the request"));
+		}
+		if (request.totalTimeout > 0) {
+			total = new Deadline(request.totalTimeout, () -> abandon("The load did not complete within " + request.totalTimeout + " ms"));
+		}
 		xhr.send(__body(body));
 	}
 
@@ -414,7 +451,7 @@ class JsHttpClient {
 	 * two are separate here rather than one client that reads the URL.
 	 *
 	 * Node follows no redirects, so this does, by the native client's rules:
-	 * at most `MAX_REDIRECTS`, a 301, 302 or 303 turning into a bodiless GET,
+	 * at most `maxRedirects`, a 301, 302 or 303 turning into a bodiless GET,
 	 * `https` to `http` only when `followInsecureRedirects` says so, and the
 	 * caller's `Authorization`, `Proxy-Authorization` and `Cookie` dropped once
 	 * a hop leaves the origin the request started at. A 3xx used to complete
@@ -427,6 +464,17 @@ class JsHttpClient {
 		// The hop in flight, which a cancel aborts.
 		var current:Null<js.node.http.ClientRequest> = null;
 		var onCancelled:Null<Void->Void> = null;
+		// The deadlines: the hop's head, from its request going until its
+		// response comes, and the whole request's.
+		var head:Null<Deadline> = null;
+		var total:Null<Deadline> = null;
+
+		function stopHead():Void {
+			if (head != null) {
+				head.stop();
+				head = null;
+			}
+		}
 
 		// Marks the request over, and answers whether it was not already.
 		function settle():Bool {
@@ -434,6 +482,11 @@ class JsHttpClient {
 				return false;
 			}
 			settled = true;
+			stopHead();
+			if (total != null) {
+				total.stop();
+				total = null;
+			}
 			if (onCancelled != null) {
 				token.removeHandler(onCancelled);
 			}
@@ -446,19 +499,24 @@ class JsHttpClient {
 			}
 		};
 
-		// Aborted where it stands: the request's socket is destroyed, which the
+		// Ends the request where it stands: its socket is destroyed, which the
 		// server sees at once, and whatever Node reports of it after this is
 		// the request being over already.
-		if (token != null) {
-			onCancelled = () -> {
-				if (!settled) {
-					if (current != null) {
-						current.destroy();
-					}
-					fail(CANCELLED);
+		function abandon(message:String):Void {
+			if (!settled) {
+				if (current != null) {
+					current.destroy();
 				}
-			};
+				fail(message);
+			}
+		}
+
+		if (token != null) {
+			onCancelled = () -> abandon(CANCELLED);
 			token.onCancel(onCancelled);
+		}
+		if (request.totalTimeout > 0 && !settled) {
+			total = new Deadline(request.totalTimeout, () -> abandon("The load did not complete within " + request.totalTimeout + " ms"));
 		}
 
 		var headers:haxe.DynamicAccess<String> = {};
@@ -551,18 +609,27 @@ class JsHttpClient {
 				port: port < 0 ? null : port,
 				path: url.pathname + url.search,
 				method: method,
-				headers: headers
+				headers: headers,
+				// The request's limit on the response's header section, which
+				// was Node's own 16 KB, a quarter of the native client's.
+				maxHeaderSize: request.maxResponseHeaderSize > 0 ? request.maxResponseHeaderSize : 0x7FFFFFFF
 			};
 			if (secure) {
 				__applyTls(request, options, leftOrigin);
 			}
 
+			// Whether this hop's response has come, which its request's
+			// "finish" may follow: a server can answer before it has read it all.
+			var answered:Bool = false;
+
 			var handler = function(response:js.node.http.IncomingMessage):Void {
+				answered = true;
 				if (settled) {
 					// Cancelled, or timed out, as the response came.
 					response.resume();
 					return;
 				}
+				stopHead();
 				var code:Int = response.statusCode;
 				onStatus(code);
 
@@ -581,7 +648,7 @@ class JsHttpClient {
 					// socket go back to the pool.
 					response.resume();
 
-					if (redirects >= MAX_REDIRECTS) {
+					if (redirects >= (request.maxRedirects > 0 ? request.maxRedirects : 0)) {
 						fail("Exceeded the number of allowed redirects");
 						return;
 					}
@@ -630,13 +697,23 @@ class JsHttpClient {
 				onResponse(code, __nodeHeaders(response.headers), target, redirects > 0);
 
 				var lengthHeader = response.headers.get("content-length");
-				var total:Int = 0;
+				var declared:Int = 0;
 
 				if (lengthHeader != null) {
 					// As the native client reads it: past an Int, Std.parseInt
 					// gave Node a number no Int holds.
 					var parsed:Int = crossbyte.utils.IntParse.decimal(Std.string(lengthHeader));
-					total = parsed < 0 ? 0 : parsed;
+					declared = parsed < 0 ? 0 : parsed;
+				}
+
+				// The request's limit on the body, as the native client holds
+				// it: a declared length past it before a byte is read, and a
+				// body growing past it as it does. Node held none.
+				var limit:Int = request.maxBodySize;
+				if (limit > 0 && declared > limit) {
+					response.resume();
+					abandon("Response declared " + declared + " bytes, more than the " + limit + " allowed");
+					return;
 				}
 
 				var chunks:Array<js.node.Buffer> = [];
@@ -646,9 +723,13 @@ class JsHttpClient {
 					if (settled) {
 						return;
 					}
+					if (limit > 0 && loaded + chunk.length > limit) {
+						abandon("Response body exceeded " + limit + " bytes");
+						return;
+					}
 					chunks.push(chunk);
 					loaded += chunk.length;
-					onProgress(loaded, total);
+					onProgress(loaded, declared);
 				});
 
 				response.on("end", function() {
@@ -701,6 +782,19 @@ class JsHttpClient {
 				clientRequest.setTimeout(request.idleTimeout, function(_) {
 					clientRequest.destroy();
 					fail("HTTP request timed out: " + target);
+				});
+			}
+
+			// The head's deadline, from the request having gone, "finish" is
+			// Node saying its last byte went to the socket, to the response.
+			// Nothing arriving moves it, as bytes arriving move the idle one.
+			if (request.headTimeout > 0) {
+				clientRequest.on("finish", function() {
+					if (settled || answered || current != clientRequest) {
+						return;
+					}
+					stopHead();
+					head = new Deadline(request.headTimeout, () -> abandon("The response head did not arrive within " + request.headTimeout + " ms of the request"));
 				});
 			}
 
@@ -951,4 +1045,51 @@ class JsHttpClient {
 		return list;
 	}
 	#end
+}
+
+/**
+	Calls `then` once `ms` milliseconds have passed by `haxe.Timer.stamp()`,
+	unless stopped first.
+
+	On the runtime's timers, as `haxe.Timer` is here, and checked against the
+	clock when one runs: a runtime pumped faster than the clock, a test's,
+	a host's, would otherwise end a request early.
+**/
+private class Deadline {
+	private final __due:Float;
+	private final __then:Void->Void;
+	private var __timer:Null<haxe.Timer> = null;
+	private var __stopped:Bool = false;
+
+	public function new(ms:Int, then:Void->Void) {
+		__due = haxe.Timer.stamp() + ms / 1000;
+		__then = then;
+		__arm();
+	}
+
+	public function stop():Void {
+		__stopped = true;
+		if (__timer != null) {
+			__timer.stop();
+			__timer = null;
+		}
+	}
+
+	private function __arm():Void {
+		var left:Float = __due - haxe.Timer.stamp();
+		__timer = haxe.Timer.delay(__run, left > 0 ? Math.ceil(left * 1000) : 0);
+	}
+
+	private function __run():Void {
+		__timer = null;
+		if (__stopped) {
+			return;
+		}
+		if (haxe.Timer.stamp() < __due) {
+			__arm();
+			return;
+		}
+		__stopped = true;
+		__then();
+	}
 }
