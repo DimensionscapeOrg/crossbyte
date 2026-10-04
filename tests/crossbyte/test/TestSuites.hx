@@ -178,6 +178,9 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.mongodb.MongoWireTest());
 		runner.addCase(new crossbyte.db.mongodb.MongoCrudTest());
 		runner.addCase(new crossbyte.db.mongodb.MongoTransactionTest());
+		// TCP keepalive on the clients' sockets, and a server gone silent as a
+		// partitioned host does (Linux, through DeadPeerProbe).
+		runner.addCase(new crossbyte.db.DatabaseKeepAliveTest());
 		runner.addCase(new crossbyte.db.MySQLDriverTest());
 		runner.addCase(new crossbyte.db.SQLiteDriverTest());
 		runner.addCase(new crossbyte.db.ItemClassTest());

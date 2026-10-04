@@ -102,6 +102,33 @@ class MongoUriTest extends utest.Test {
 		}
 	}
 
+	/**
+		Keepalive is on with MySQL's timings unless told otherwise; the
+		client had none, and with no socket timeout, the default, a read
+		waiting on a server gone silent waited for good.
+	**/
+	public function testKeepAliveIsOnWithTimingsByDefault():Void {
+		var s = MongoUri.settings({});
+		Assert.isTrue(s.keepAlive);
+		Assert.equals("60 10 6", [s.keepAliveIdle, s.keepAliveInterval, s.keepAliveCount].join(" "));
+
+		var off = MongoUri.settings({keepAlive: false, keepAliveIdle: 45, keepAliveInterval: 7, keepAliveCount: 4});
+		Assert.isFalse(off.keepAlive);
+		Assert.equals("45 7 4", [off.keepAliveIdle, off.keepAliveInterval, off.keepAliveCount].join(" "));
+
+		Assert.raises(() -> MongoUri.settings({keepAliveIdle: -1}), ArgumentError);
+		Assert.raises(() -> MongoUri.settings({keepAliveCount: -1}), ArgumentError);
+	}
+
+	/**
+		A timeout of NaN is refused, as a negative one is: it compares false
+		with everything, so a NaN connect timeout was no limit at all.
+	**/
+	public function testATimeoutOfNaNIsRefused():Void {
+		Assert.raises(() -> MongoUri.settings({connectTimeout: Math.NaN}), ArgumentError);
+		Assert.raises(() -> MongoUri.settings({socketTimeout: Math.NaN}), ArgumentError);
+	}
+
 	public function testNamingACertificateTurnsTlsOn():Void {
 		// Credentials would otherwise go out in the clear under a config that
 		// reads as if they did not.
