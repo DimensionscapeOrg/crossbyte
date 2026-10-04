@@ -184,6 +184,41 @@ class DtlsTransportTest extends utest.Test {
 	}
 
 	/**
+		Red team. Each record reaches `onMessage` in the byte order a
+		`ByteArray` made for it has, `ByteArray.defaultEndian`, as it did when
+		each had one of its own. The transport's one payload is read into
+		again for each, and its `endian` was never set again: a handler that
+		read one record big-endian left every record after it big-endian.
+	**/
+	public function testEachRecordStartsInTheDefaultByteOrder():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.make();
+		var orders:Array<String> = [];
+		var values:Array<Int> = [];
+		pair.server.onMessage = function(payload:ByteArray) {
+			orders.push(payload.endian);
+			if (orders.length == 1) {
+				payload.endian = crossbyte.io.Endian.BIG_ENDIAN;
+			}
+			values.push(payload.readUnsignedShort());
+		};
+
+		Assert.isTrue(pair.run(() -> pair.client.connected && pair.server.connected), "the DTLS handshake never completed");
+		// The same two bytes in each: 0x01 then 0x02.
+		pair.client.send(text("\x01\x02 first"));
+		pair.run(() -> orders.length >= 1);
+		pair.client.send(text("\x01\x02 second"));
+		pair.run(() -> orders.length >= 2);
+
+		var standard:String = ByteArray.defaultEndian;
+		var swapped:Int = standard == crossbyte.io.Endian.BIG_ENDIAN ? 0x0102 : 0x0201;
+		Assert.same([standard, standard], orders, "a record did not start in the default byte order: " + orders.join(", "));
+		Assert.same([0x0102, swapped], values, "the second record was read in the byte order the first one's handler chose: " + values.join(", "));
+		pair.close();
+	}
+
+	/**
 		Closing before it completes tells whoever was waiting.
 
 		Every path that settled this future ran from the handshake, and closing

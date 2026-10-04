@@ -129,6 +129,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.io.ByteArrayIOTest());
 		runner.addCase(new crossbyte.io.ByteArrayOutputTest());
 		runner.addCase(new crossbyte.io.FileTest());
+		// Red team: a datagram saved to a file from its listener.
+		runner.addCase(new crossbyte.io.FileArrivalTest());
 		runner.addCase(new crossbyte.io.FilePathTest());
 		runner.addCase(new crossbyte.io.FileStreamTest());
 		runner.addCase(new crossbyte.io.FileStreamContractTest());
@@ -141,6 +143,8 @@ class TestSuites {
 	public static function addURL(runner:Runner):Void {
 		runner.addCase(new crossbyte.url.URLTest());
 		runner.addCase(new crossbyte.url.URLLoaderHttpTest());
+		// Red team: a datagram forwarded as a request body from its listener.
+		runner.addCase(new crossbyte.url.URLLoaderArrivalTest());
 		runner.addCase(new crossbyte.url.URLLoaderTest());
 		runner.addCase(new crossbyte.url.URLVariablesTest());
 		// Registered for the browser, which reaches it through PortableSuite;
@@ -204,6 +208,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.MySQLNativeAuthTest());
 		// SQLite opens only natively.
 		runner.addCase(new crossbyte.db.SQLiteNativeTest());
+		// Red team: a datagram stored as a blob from its listener.
+		runner.addCase(new crossbyte.db.SQLiteArrivalTest());
 		#end
 		// The fixed-slot objects rows and documents are built as.
 		runner.addCase(new crossbyte._internal.AnonBuilderTest());
@@ -399,6 +405,9 @@ class TestSuites {
 		// A message's call, every way to send it back, and what a listener
 		// keeps. Also in PortableSuite, for Node's sessions.
 		runner.addCase(new crossbyte.net.WebSocketArrivalTest());
+		// Red team: what a session holds once a message's call returned, and
+		// what one message leaves behind for the next. Also in PortableSuite.
+		runner.addCase(new crossbyte.net.WebSocketReuseTest());
 		// RPC arguments and a NetConnection's input kept past their calls,
 		// over each transport, and a TCP echo queued behind a peer not
 		// reading. Also in PortableSuite, for Node.
