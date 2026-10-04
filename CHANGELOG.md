@@ -3135,6 +3135,25 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The native MySQL client no longer lets one packet from the server end
+  the process. A result header's column count sized an allocation before
+  any column arrived, with no bound and no check: nine bytes, from the
+  server, or from whoever answers in its place, which the default
+  `sslMode`, `PREFERRED`, does not rule out, since it checks no
+  certificate, asked for 150 GB and wrote to the NULL that came back,
+  and four bytes allocated 1.2 GB. A column or row length near 2^31, a
+  column without a name, an empty packet among the rows and a request
+  for a file of the client's (`0xFB`) ended the process too, and an error
+  cut short at its SQLSTATE was reported with the state of a success,
+  "00000". A result now has 1 to 65,535 columns, checked before anything
+  is allocated; every length is checked against its packet; and an
+  answer no server sends fails the statement with error 2027
+  (`CR_MALFORMED_PACKET`) and closes the connection. Fixed in the hxcpp
+  fork (`fix/mysql-hostile-counts`). `PREFERRED` stays the default, as in
+  MySQL's own clients: insisting on TLS would refuse servers that offer
+  none and still not keep out a man in the middle, which only
+  `VERIFY_CA` and `VERIFY_IDENTITY` do, `MySQLConfig.sslMode` has the
+  trade-off.
 - Natively, a process whose threads end as it exits, a server spread
   over runtimes, which exits them after `drain()`, is one, no longer
   hangs there on Windows, nor crashes there when built with stack traces

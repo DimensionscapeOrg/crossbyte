@@ -22,6 +22,21 @@ import sys.db.Mysql;
  * MySQL connection wrapper. On cpp it drives the client hxcpp bundles
  * directly, and reads the session state the server reports after every
  * statement; elsewhere it runs on Haxe's `sys.db.Mysql`.
+ *
+ * **What a server can send.** The native client takes the server's answers
+ * as untrusted, since under the default `sslMode` whoever answers in the
+ * server's place writes them. A result has from 1 to 65,535 columns, counted
+ * before anything is allocated; every length is checked against the packet
+ * it is in; and an answer no server sends, a count or length past those,
+ * a column without a name, a row that does not match its columns, a
+ * request for a file of the client's, fails the statement with a
+ * `MySQLError` of code 2027 (`CR_MALFORMED_PACKET`) and closes the
+ * connection, which cannot be followed past it. Each of those ended the
+ * process, or allocated a gigabyte, from a packet of a few bytes. What the
+ * client holds is then what the server sends: `request()` reads a result
+ * whole, so a result without end is held without end, where
+ * `MySQLStatement` reads rows as they are asked for. Other targets use
+ * their own clients, which these bounds are not.
  */
 class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransactionalConnection {
 	// The client character sets MySQL accepts that the escaping here is safe

@@ -22,6 +22,21 @@ typedef MySQLConfig = {
 	 * How much TLS to insist on; `PREFERRED` when unset, which uses it
 	 * whenever the server offers it. See `MySQLSSLMode`. Only the native
 	 * client has TLS: elsewhere a mode that insists on it fails `open()`.
+	 *
+	 * `PREFERRED` stays the default for a server across a network too, as
+	 * it is in MySQL's own clients. Insisting on TLS there, `REQUIRED`,
+	 * would refuse every server that offers none, which MariaDB before 11.4
+	 * does not by default, and would still not keep out a man in the middle:
+	 * neither mode checks whose certificate it is, so whoever answers in the
+	 * server's place can encrypt to the client as well as the server could.
+	 * What it would stop is a listener reading a session to a server that
+	 * has TLS, after someone in the middle hid it. `VERIFY_CA` and
+	 * `VERIFY_IDENTITY`, with `sslCa`, are what keep the middle out; use
+	 * `VERIFY_IDENTITY` across any network you do not trust.
+	 *
+	 * Whoever answers cannot crash the native client: it bounds what it
+	 * reads, and refuses an answer no server sends, `MySQLConnection` says
+	 * how.
 	 */
 	@:optional var sslMode:MySQLSSLMode;
 
