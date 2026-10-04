@@ -2027,6 +2027,10 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 		message.position = 0;
 		message.endian = BIG_ENDIAN;
+		// As a ByteArray made for the message would read objects. The
+		// session's own buffer kept whatever a listener had set, so after one
+		// listener read a JSON message every message read JSON.
+		message.objectEncoding = ByteArray.defaultObjectEncoding;
 		return message;
 	}
 
