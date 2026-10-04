@@ -3154,6 +3154,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `NodeChannel.send` copies the message before it returns, as every other
+  send does. It held the caller's `ByteArray`, queued while the link was
+  down, and until the pass ended while it was up, to take back if the
+  link failed first, and sent what its bytes were by then: a buffer
+  reused after `send` went as its later contents, and a listener
+  forwarding what arrived (`channel.send(event.data)`) forwarded whatever
+  the payload held when the link came back. A pass now keeps what it
+  wrote in one buffer of the channel's, kept between passes up to 64 KB,
+  so the common case allocates nothing more.
 - Natively, a process whose threads end as it exits, a server spread
   over runtimes, which exits them after `drain()`, is one, no longer
   hangs there on Windows, nor crashes there when built with stack traces

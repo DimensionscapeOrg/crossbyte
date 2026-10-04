@@ -374,6 +374,8 @@ class TestSuites {
 		// it did not.
 		#if (cpp || java || jvm)
 		runner.addCase(new crossbyte.cluster.NodeChannelTest());
+		// What a message waits as, queued or held for the pass: a copy.
+		runner.addCase(new crossbyte.cluster.NodeChannelKeeperTest());
 		runner.addCase(new crossbyte.net.SocketTest());
 		runner.addCase(new crossbyte.net.ServerSocketDrainTest());
 		runner.addCase(new crossbyte.net.ServerWebSocketDrainTest());
