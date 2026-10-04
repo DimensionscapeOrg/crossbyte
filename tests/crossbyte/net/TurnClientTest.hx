@@ -1583,6 +1583,51 @@ class TurnClientTest extends utest.Test {
 	}
 
 	/**
+		Red team. Each datagram a channel carries reaches `onData` in the byte
+		order a `ByteArray` made for it has, `ByteArray.defaultEndian`, as it
+		did when each had one of its own, and as a `DatagramSocket` hands each
+		datagram out in its own `endian`. The client's one payload is filled
+		again for each, and its `endian` was never set again: a handler that
+		read one datagram's big-endian header left every datagram after it
+		big-endian, so the next one's numbers were read byte-swapped.
+	**/
+	public function testEachChannelDatagramStartsInTheDefaultByteOrder():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.useChannels = true;
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+		client.permit(PEER, network.now);
+		client.bindChannel(PEER, PEER_PORT, network.now);
+		network.run(() -> network.relay.count("channel-bound") > 0, 5);
+		network.advance(0.1);
+
+		var orders:Array<String> = [];
+		var values:Array<Int> = [];
+		client.onData = function(payload:ByteArray, address:String, port:Int):Void {
+			orders.push(payload.endian);
+			// The first is a message with a big-endian header, and its
+			// handler reads it so.
+			if (orders.length == 1) {
+				payload.endian = crossbyte.io.Endian.BIG_ENDIAN;
+			}
+			values.push(payload.readUnsignedShort());
+		};
+
+		// The same two bytes in each: 0x01 then 0x02.
+		network.inject(client, channelData(TurnClient.FIRST_CHANNEL, "\x01\x02 first"), network.relayAddress, network.relayPort);
+		network.inject(client, channelData(TurnClient.FIRST_CHANNEL, "\x01\x02 second"), network.relayAddress, network.relayPort);
+
+		var standard:String = ByteArray.defaultEndian;
+		var swapped:Int = standard == crossbyte.io.Endian.BIG_ENDIAN ? 0x0102 : 0x0201;
+		Assert.same([standard, standard], orders, "a datagram did not start in the default byte order: " + orders.join(", "));
+		Assert.same([0x0102, swapped], values, "the second datagram was read in the byte order the first one's handler chose: " + values.join(", "));
+	}
+
+	/**
 		A Data indication naming a peer this client never let through is not
 		delivered, whoever it seems to come from. A relay forwards nothing from
 		a peer without a permission, so one that claims to have was not

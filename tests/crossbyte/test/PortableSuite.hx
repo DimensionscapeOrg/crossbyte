@@ -82,6 +82,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.WebSocketSessionTest());
 		// A message's call, every way to send it back, and what a listener keeps.
 		runner.addCase(new crossbyte.net.WebSocketArrivalTest());
+		// Red team: what a session holds once a message's call returned.
+		runner.addCase(new crossbyte.net.WebSocketReuseTest());
 		// RPC arguments and a NetConnection's input kept past their calls.
 		runner.addCase(new crossbyte.net.TransportArrivalTest());
 		// permessage-deflate on Node's sessions, and zlib, what a browser
@@ -94,6 +96,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.ReliableDatagramArrivalTest());
 		// And what a datagram listener is handed, sends back and keeps.
 		runner.addCase(new crossbyte.net.DatagramArrivalTest());
+		// Red team: a datagram forwarded as an HTTP body from its listener.
+		runner.addCase(new crossbyte.url.URLLoaderArrivalTest());
 		runner.addCase(new crossbyte.net.NodeListenerFailureTest());
 		// Empty wherever there are threads; on Node, an async write refused.
 		runner.addCase(new crossbyte.io.FileStreamAsyncRefusalTest());
