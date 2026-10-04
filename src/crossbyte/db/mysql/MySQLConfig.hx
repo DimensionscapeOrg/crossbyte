@@ -65,9 +65,16 @@ typedef MySQLConfig = {
 
 	/**
 	 * Seconds to reach the server and log in before `open()` gives up: 10 when
-	 * unset. A connect to a host that drops the packets otherwise waits for
-	 * the operating system, 21 seconds on Windows, over two minutes on
-	 * Linux, and a server that accepts and never greets waited 50.
+	 * unset, 0 for no limit. A connect to a host that drops the packets
+	 * otherwise waits for the operating system, 21 seconds on Windows, over
+	 * two minutes on Linux, and a server that accepts and never greets
+	 * waited 50.
+	 *
+	 * One deadline for all of it: the connect, TLS, the greeting and the
+	 * login. Each read of the handshake used to wait the whole timeout again,
+	 * so a server that answered a byte at a time, each inside it, held
+	 * `open()` for as long as it went on. NaN and negatives are refused with
+	 * an `ArgumentError`.
 	 *
 	 * The `MySQLConnectionError` says which ran out: 2003, "Timed out after
 	 * ... connecting", when no connection was made in time, the host
@@ -80,8 +87,9 @@ typedef MySQLConfig = {
 	@:optional var connectTimeout:Float;
 
 	/**
-	 * Seconds any one read may wait for the server once connected, or unset
-	 * for no limit. It bounds a statement's whole run as the client sees it,
+	 * Seconds any one read may wait for the server once connected, or unset or
+	 * 0 for no limit; NaN and negatives are refused. It bounds a statement's
+	 * whole run as the client sees it,
 	 * so set it above the slowest statement expected; a read that times out
 	 * closes the connection, since the answer it gave up on is still coming.
 	 * `MySQLConnection.cancel()` stops one statement on demand; a limit that
@@ -91,7 +99,7 @@ typedef MySQLConfig = {
 	 */
 	@:optional var readTimeout:Float;
 
-	/** Seconds any one write may wait, or unset for no limit. **/
+	/** Seconds any one write may wait, or unset or 0 for no limit; NaN and negatives are refused. **/
 	@:optional var writeTimeout:Float;
 
 	/**

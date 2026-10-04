@@ -362,6 +362,29 @@ class MySQLDriverTest extends utest.Test {
 		}
 	}
 
+	/**
+		A timeout that is not a number of seconds is refused before
+		connecting, on every target, as 0, no limit, is taken. NaN reached
+		the native client as no limit at all, and a negative one as the old
+		50 seconds or five hours.
+	**/
+	public function testANaNOrNegativeTimeoutIsRefusedBeforeConnecting():Void {
+		var bad:Array<Float> = [Math.NaN, -1];
+
+		for (value in bad) {
+			Assert.raises(() -> new MySQLConnection().open({host: "127.0.0.1", port: 1, user: "app", password: "secret", database: "app",
+				connectTimeout: value}), crossbyte.errors.ArgumentError);
+			Assert.raises(() -> new MySQLConnection().open({host: "127.0.0.1", port: 1, user: "app", password: "secret", database: "app",
+				readTimeout: value}), crossbyte.errors.ArgumentError);
+			Assert.raises(() -> new MySQLConnection().open({host: "127.0.0.1", port: 1, user: "app", password: "secret", database: "app",
+				writeTimeout: value}), crossbyte.errors.ArgumentError);
+		}
+
+		// A negative keepalive timing was taken for the system's own.
+		Assert.raises(() -> new MySQLConnection().open({host: "127.0.0.1", port: 1, user: "app", password: "secret", database: "app",
+			keepAliveIdle: -1}), crossbyte.errors.ArgumentError);
+	}
+
 	#if !cpp
 	public function testAnSslModeThatNeedsTlsIsRefusedWhereTheClientHasNone():Void {
 		// Only the native client reads sslMode. Elsewhere REQUIRED and both

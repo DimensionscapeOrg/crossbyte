@@ -28,6 +28,12 @@ typedef PostgresConfig = {
 	@:optional var password:String;
 	@:optional var database:String;
 	@:optional var sslMode:String;
+
+	/**
+	 * Seconds libpq may take to connect, per address it tries (libpq
+	 * `connect_timeout`): 5 when unset, 0 for no limit. A negative one is
+	 * refused with an `ArgumentError`, where it was taken for no limit.
+	 */
 	@:optional var connectTimeout:Int;
 
 	/**

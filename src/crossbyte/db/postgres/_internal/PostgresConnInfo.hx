@@ -37,6 +37,12 @@ class PostgresConnInfo {
 
 		var connectTimeout:Int = cfg.connectTimeout != null ? cfg.connectTimeout : 5;
 
+		// 0 is no limit, as libpq reads an absent connect_timeout; a negative
+		// one was taken for the same without a word.
+		if (connectTimeout < 0) {
+			throw new ArgumentError('PostgresConfig.connectTimeout must not be negative ($connectTimeout); 0 is no limit.');
+		}
+
 		if (connectTimeout > 0) {
 			__add(out, "connect_timeout", Std.string(connectTimeout));
 		}

@@ -160,6 +160,16 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	public function open(cfg:MySQLConfig):Void {
 		var charset:String = null;
 
+		__checkSeconds("connectTimeout", cfg.connectTimeout);
+		__checkSeconds("readTimeout", cfg.readTimeout);
+		__checkSeconds("writeTimeout", cfg.writeTimeout);
+
+		for (timing in [cfg.keepAliveIdle, cfg.keepAliveInterval, cfg.keepAliveCount]) {
+			if (timing != null && timing < 0) {
+				throw new ArgumentError('A MySQLConfig keepalive timing must not be negative ($timing); 0 is the system\'s own.');
+			}
+		}
+
 		if (cfg.charset != null && cfg.charset != "") {
 			charset = cfg.charset.toLowerCase();
 
@@ -253,6 +263,17 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		}
 
 		__dispatch(SQLEvent.OPEN);
+	}
+
+	/**
+		A timeout of `MySQLConfig`, unset or a number of seconds, 0 for no
+		limit, or an `ArgumentError`. NaN reached the native client as no
+		limit at all, and a negative one as the old 50 seconds or five hours.
+	**/
+	@:noCompletion private static function __checkSeconds(setting:String, value:Null<Float>):Void {
+		if (value != null && (Math.isNaN(value) || value < 0)) {
+			throw new ArgumentError('MySQLConfig.$setting is a number of seconds, 0 for none: $value is not one.');
+		}
 	}
 
 	/**

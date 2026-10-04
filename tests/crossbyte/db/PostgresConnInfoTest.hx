@@ -100,6 +100,9 @@ class PostgresConnInfoTest extends utest.Test {
 		Assert.raises(() -> PostgresConnInfo.build({tcpUserTimeout: -0.5}));
 		Assert.raises(() -> PostgresConnInfo.build({keepAliveIdle: -1}));
 		Assert.raises(() -> PostgresConnInfo.build({statementTimeout: Math.NaN}));
+		// It was taken for no limit, without a word; 0 is that, asked for.
+		Assert.raises(() -> PostgresConnInfo.build({connectTimeout: -1}), crossbyte.errors.ArgumentError);
+		Assert.equals(-1, PostgresConnInfo.build({connectTimeout: 0}).indexOf("connect_timeout"));
 	}
 
 	public function testParametersAreSortedAndTheirKeywordsChecked():Void {
