@@ -314,6 +314,22 @@ class TimerHeapTest extends utest.Test {
 		while (haxe.Timer.stamp() < end) {}
 	}
 
+	public function testATimerClearedLazilyWhileHeldBackIsFreed():Void {
+		// Armed during a pass and due in it, it is held back for the next
+		// pass; cleared lazily meanwhile, nothing dequeued it to free its
+		// slot, and its handle read as live for as long as the heap ran.
+		var heap = new TimerHeap();
+		var held:TimerHandle = TimerHandle.INVALID;
+		heap.setTimeoutVoid(1.0, () -> held = heap.scheduleVoid(1.2, () -> Assert.fail("a cleared timer fired")));
+		heap.setTimeoutVoid(1.5, () -> Assert.isTrue(heap.clear(held, false)));
+
+		heap.advanceTime(2.0);
+		Assert.isFalse(heap.isActive(held), "a timer cleared while held back stayed alive");
+		heap.advanceTime(1.0);
+		Assert.isFalse(heap.isActive(held));
+		Assert.isTrue(heap.isEmpty);
+	}
+
 	public function testPauseResumeKeepPhaseFromZeroPreservesRemainingDelay():Void {
 		var heap = new TimerHeap();
 		var fired = 0;

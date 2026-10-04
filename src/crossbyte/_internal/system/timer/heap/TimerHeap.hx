@@ -397,8 +397,15 @@ class TimerHeap implements ITimerScheduler {
 	// Returns what a pass held back to the queue, for the next pass.
 	private function __readmit():Void {
 		for (node in __deferred) {
-			if (nodes[node.id] == node && node.heapIndex < 0 && node.enabled && node.pausedAt == null) {
-				queue.enqueue(node);
+			if (nodes[node.id] == node && node.heapIndex < 0 && node.pausedAt == null) {
+				if (node.enabled) {
+					queue.enqueue(node);
+				} else {
+					// Cleared lazily while held back. No pass dequeues it to
+					// free its slot, which stayed taken, and its handle live,
+					// for as long as the scheduler ran.
+					freeSlot(node.id);
+				}
 			}
 		}
 		__deferred.resize(0);
