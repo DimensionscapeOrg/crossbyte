@@ -127,7 +127,7 @@ class RPCUnhandledCallTest extends utest.Test {
 		var fixture = new Fixture();
 		var payload = new crossbyte.io.ByteArrayOutput(32);
 		payload.writeByte(RPCWire.FLAG_ERROR);
-		payload.writeInt(crossbyte.rpc._internal.RPCOps.opOf("notice"));
+		payload.writeInt(crossbyte.rpc._internal.RPCOps.opOf("notice(utf8)"));
 		payload.writeVarUTF("text");
 		var frame = new ByteArray();
 		frame.writeInt(payload.bytesWritten);

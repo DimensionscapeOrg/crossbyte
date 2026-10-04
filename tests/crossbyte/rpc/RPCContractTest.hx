@@ -57,8 +57,11 @@ class RPCContractTest extends utest.Test {
 
 	// ----------------------------------------------------------------- ops
 
-	public function testAnOpIsTheHashOfTheMethodsNameAlone():Void {
-		Assert.equals(Hash.fnv1a32(haxe.io.Bytes.ofString("label")), RPCOps.opOf("label"));
+	public function testAnOpIsTheHashOfTheMethodsSignatureNotItsNameAlone():Void {
+		// One name, answered with another kind: two methods on the wire.
+		Assert.equals(Hash.fnv1a32(haxe.io.Bytes.ofString("label(i32):utf8")), RPCOps.opOf("label(i32):utf8"));
+		Assert.notEquals(RPCOps.opOf("label(i32):utf8"), RPCOps.opOf("label(i32):i32"));
+		Assert.notEquals(RPCOps.opOf("label(i32):utf8"), RPCOps.opOf("label"));
 	}
 
 	public function testTwoNamesThatHashAlikeAreFound():Void {

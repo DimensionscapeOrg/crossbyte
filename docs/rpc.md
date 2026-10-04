@@ -186,7 +186,9 @@ anything is sent, and a handler answering null where its type is not
 
 Because nothing on the wire names a field, the two ends must agree on each
 method exactly: its name, its arguments in order, and their types. Build both
-from one contract and they do.
+from one contract and they do. If they do not, a client and a server built
+from two versions of a method, the call finds no method, rather than one end
+reading the other's bytes as its own; see "What names a call", below.
 
 ## Contracts or `@:rpc` methods
 
@@ -491,10 +493,36 @@ class LobbyCommands extends PresenceCommands {
 
 Hooks overridden in a shared base handler apply to every handler built on it.
 
-Each call is identified on the wire by a 32-bit hash of its method's name.
-Two names that hash alike would be one call, so a surface that has both,
-however they came to be in it, fails the build and names them. It also
-means renaming a method changes the call: rename it on both ends together.
+### What names a call
+
+Each call is named on the wire by its *op*, a 32-bit hash, FNV-1a, as
+`crossbyte.utils.Hash.fnv1a32` computes it, of its method's signature: the
+method's name, the kinds of its arguments in order and, for a request, of its
+answer.
+
+```
+signature := name "(" [ kind ("," kind)* ] ")" [ ":" kind ]
+kind      := [ "?" ] ( "i32" | "bool" | "f64" | "utf8" | "bytes" )
+```
+
+`i32` is an `Int`, `bool` a `Bool`, `f64` a `Float`, `utf8` a `String` and
+`bytes` a `haxe.io.Bytes`, and `?` one that may be absent, `Null<T>` or an
+optional argument. `join(room:String):Int` is `join(utf8):i32`;
+`say(room:String, text:String):Void` is `say(utf8,utf8)`. A one-way call's
+signature has no answer, and a method that is answered takes one-way calls
+too: it runs, and its answer goes nowhere. `ping` is the hash of its name
+alone.
+
+A kind names a layout, not a type, so renaming an argument, or a typedef,
+changes nothing: `(position:Coordinate)`, with `typedef Coordinate = Float`,
+is `(f64)`. Renaming the method, reordering arguments of different kinds,
+retyping one, adding or removing one, or letting one be absent changes the
+op, and a peer built from the other version answers the call as one for a
+method it does not have. Swapping two arguments of the same kind changes
+nothing on the wire, and so not the op: rename the method too.
+
+Two signatures that hash alike would be one call, so a surface that has both,
+however they came to be in it, fails the build and names them.
 
 ## The runtime lane
 
@@ -541,7 +569,7 @@ session.afterRuntimeCall = (op, requestId, error) -> {
 ```
 
 The two lanes share a connection without seeing each other: a runtime number
-and a compiled method's hash never collide.
+and a compiled method's op never collide.
 
 ## Sessions, heartbeats and pending calls
 

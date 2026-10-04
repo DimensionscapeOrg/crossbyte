@@ -12,8 +12,8 @@ using haxe.macro.Tools;
 
 class RPCCommandMacro {
 	// On a generated __rpc_handle_response(), for a commands class that
-	// extends this one: the name of every method this class sends, and the
-	// name and type of every response it reads.
+	// extends this one: the signature of every method this class sends (see
+	// RPCOps), and the name, arguments and answer of every response it reads.
 	static inline final COMMANDS_META:String = ":rpcCommands";
 	static inline final RESPONDS_META:String = ":rpcResponds";
 
@@ -23,7 +23,8 @@ class RPCCommandMacro {
 		var responseMethods:Array<ResponseMethod> = [];
 		// The commands classes between this one and RPCCommands, nearest first.
 		final ancestors = commandsAncestors();
-		final sentNames = new Array<String>();
+		// The signature of each method this class sends.
+		final sent = new Array<String>();
 		final contractMethods = RPCContractMacroTools.getContractMethods(":rpcContract");
 		final manualRpcFields = fields.filter(field -> field.name != "new" && field.meta != null && field.meta.filter(m -> m.name == ":rpc").length > 0);
 
@@ -46,7 +47,7 @@ class RPCCommandMacro {
 				if (ancestorField(ancestors, method.name) != null) {
 					continue;
 				}
-				sentNames.push(method.name);
+				sent.push(RPCContractMacroTools.signatureOf(method.name, method.args, method.responseType, method.pos));
 				if (hasFieldNamed(fields, method.name) || hasFieldNamed(fields, "meta_" + method.name)) {
 					Context.error("RPC commands class already declares '" + method.name + "'; remove the manual declaration when using @:rpcContract(...).", method.pos);
 				}
@@ -74,13 +75,14 @@ class RPCCommandMacro {
 					responseMethods.push({
 						name: method.name,
 						op: method.op,
+						args: method.args,
 						responseType: method.responseType,
 						pos: method.pos
 					});
 				}
 			}
 
-			return finish(fields, newFields, responseMethods, sentNames, ancestors);
+			return finish(fields, newFields, responseMethods, sent, ancestors);
 		}
 
 
@@ -88,11 +90,14 @@ class RPCCommandMacro {
 			if (field.name != "new" && field.meta != null && field.meta.filter(m -> m.name == ":rpc").length > 0) {
 				switch (field.kind) {
 					case FFun(method):
-						sentNames.push(field.name);
 						var metaName = "meta_" + field.name;
 						var retType = method.ret != null ? method.ret : macro :Void;
 						var responseType = responsePayloadType(retType, field.pos);
-						var opCode:Int = Hash.fnv1a32(haxe.io.Bytes.ofString(field.name));
+						// Its signature's hash: its name, and the kinds of its
+						// arguments and its answer.
+						final signature:String = RPCContractMacroTools.signatureOf(field.name, method.args, responseType, field.pos);
+						sent.push(signature);
+						var opCode:Int = RPCOps.opOf(signature);
 
 						field.kind = createWrapperFunction(field, metaName, method.args, retType, responseType, opCode).kind;
 						newFields.push(createMetaFunction(metaName, field.name, method.args, field.pos, opCode));
@@ -101,6 +106,7 @@ class RPCCommandMacro {
 							responseMethods.push({
 								name: field.name,
 								op: opCode,
+								args: method.args,
 								responseType: responseType,
 								pos: field.pos
 							});
@@ -111,7 +117,7 @@ class RPCCommandMacro {
 			}
 		}
 
-		return finish(fields, newFields, responseMethods, sentNames, ancestors);
+		return finish(fields, newFields, responseMethods, sent, ancestors);
 	}
 
 	/**
@@ -121,11 +127,14 @@ class RPCCommandMacro {
 		again, which Haxe refused in a subclass, so no commands class could
 		extend another.
 	**/
-	private static function finish(fields:Array<Field>, newFields:Array<Field>, responseMethods:Array<ResponseMethod>, sentNames:Array<String>,
+	private static function finish(fields:Array<Field>, newFields:Array<Field>, responseMethods:Array<ResponseMethod>, sent:Array<String>,
 			ancestors:Array<ClassType>):Array<Field> {
-		final inheritedSent = inheritedNames(ancestors, COMMANDS_META);
-		final allSent = sentNames.concat([for (name in inheritedSent) if (sentNames.indexOf(name) < 0) name]);
-		RPCContractMacroTools.requireDistinctOps([for (name in allSent) {name: name, pos: Context.currentPos()}], true);
+		final sentNames = sent.map(nameIn);
+		final allSent = sent.concat([for (signature in inheritedNames(ancestors, COMMANDS_META)) if (sentNames.indexOf(nameIn(signature)) < 0) signature]);
+		RPCContractMacroTools.requireDistinctOps([
+			for (signature in allSent)
+				{name: nameIn(signature), op: RPCOps.opOf(signature), pos: Context.currentPos()}
+		], true);
 
 		for (inherited in inheritedResponses(ancestors)) {
 			if (!Lambda.exists(responseMethods, method -> method.name == inherited.name)) {
@@ -166,7 +175,13 @@ class RPCCommandMacro {
 		return null;
 	}
 
-	/** The names the nearest ancestor's response reader recorded under `meta`. **/
+	/** The method a signature names: what comes before its arguments. **/
+	private static function nameIn(signature:String):String {
+		final at:Int = signature.indexOf("(");
+		return at < 0 ? signature : signature.substr(0, at);
+	}
+
+	/** The strings the nearest ancestor's response reader recorded under `meta`. **/
 	private static function inheritedNames(ancestors:Array<ClassType>, meta:String):Array<String> {
 		final reader = ancestorField(ancestors, "__rpc_handle_response");
 		final names = new Array<String>();
@@ -203,7 +218,8 @@ class RPCCommandMacro {
 					case EFunction(FNamed(name, _), fn) if (fn.ret != null):
 						responses.push({
 							name: name,
-							op: RPCOps.opOf(name),
+							op: RPCContractMacroTools.opOfMethod(name, fn.args, fn.ret, param.pos),
+							args: fn.args,
 							responseType: fn.ret,
 							pos: param.pos
 						});
@@ -216,13 +232,27 @@ class RPCCommandMacro {
 
 	/**
 		A response as a commands class extending this one reads it: a function
-		expression, never typed, returning the response's type written out in
-		full. That class reads it in its own module, which need not import, nor
-		see the typedefs of, this one's.
+		expression, never typed, taking the call's arguments and returning the
+		response's type, every type written out in full, the arguments are
+		in its op. That class reads it in its own module, which need not
+		import, nor see the typedefs of, this one's.
 	**/
 	private static function responseSignature(method:ResponseMethod):Expr {
 		return {
-			expr: EFunction(FNamed(method.name, false), {args: [], ret: RPCContractMacroTools.fullType(method.responseType, method.pos), expr: null}),
+			expr: EFunction(FNamed(method.name, false), {
+				args: [
+					for (arg in method.args)
+						({
+							name: arg.name,
+							opt: arg.opt,
+							type: RPCContractMacroTools.fullType(arg.type, method.pos),
+							value: null,
+							meta: []
+						} : FunctionArg)
+				],
+				ret: RPCContractMacroTools.fullType(method.responseType, method.pos),
+				expr: null
+			}),
 			pos: method.pos
 		};
 	}
@@ -241,7 +271,7 @@ class RPCCommandMacro {
 				Context.error("RPC arg '" + a.name + "' must have an explicit type.", errPos);
 			}
 			final kind = argKind(a, errPos);
-			final optional:Bool = argOptional(a);
+			final optional:Bool = argOptional(a, errPos);
 			final name:Expr = macro $i{a.name};
 			final size:Int = RPCKinds.size(kind, optional);
 			if (size >= 0) {
@@ -291,9 +321,15 @@ class RPCCommandMacro {
 		return kind;
 	}
 
-	/** Whether an argument may be absent, and so goes after a byte saying whether it is there. **/
-	private static inline function argOptional(a:FunctionArg):Bool {
-		return a.opt || RPCKinds.isNullWrapped(a.type);
+	/**
+		Whether an argument may be absent, and so goes after a byte saying
+		whether it is there: one that is optional, or whose type is `Null<T>`
+		however it is named, as the handler's side decides it. Named through a
+		typedef, a `Null<T>` went with no such byte, and a null could not be
+		sent.
+	**/
+	private static inline function argOptional(a:FunctionArg, pos:Position):Bool {
+		return a.opt || RPCContractMacroTools.isNullable(a.type, pos);
 	}
 
 	private static function createWrapperFunction(field:Field, metaName:String, args:Array<FunctionArg>, retType:ComplexType,
@@ -477,6 +513,7 @@ class RPCCommandMacro {
 private typedef ResponseMethod = {
 	name:String,
 	op:Int,
+	args:Array<FunctionArg>,
 	responseType:ComplexType,
 	pos:Position
 }

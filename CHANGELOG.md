@@ -341,6 +341,13 @@ entry below says how:
   argument is neither optional nor `Null<T>`, throws an `ArgumentError`
   natively too, where a null `String` went as an empty one: pass `""`, or
   declare the argument `?name` or `Null<String>` to send null.
+- Both ends of a compiled RPC connection are built with 1.0: a compiled
+  call's op is the hash of its method's signature, where it was the hash of
+  its name, so a peer on 1.0.0-rc.1 finds none of a 1.0 peer's methods, nor
+  it the rc.1 peer's. The runtime lane and the heartbeat are unchanged. A
+  hand-written `dispatch` compares against `Hash.fnv1a32` of each method's
+  signature, the RPC guide's "What names a call", where it compared
+  against that of its name.
 
 ### Added
 - `SequenceRing.remove(sequence)` and `SequenceRing.writeBits(from, out, at,
@@ -1585,6 +1592,21 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A compiled RPC call is named on the wire by the hash of its method's
+  signature, its name, and the kinds of its arguments and of its answer,
+  where it was the hash of its name alone. A client and a server built
+  from two versions of a method read each other's bytes as their own:
+  `(x:Int, y:Int)` sent to `(v:Float)` ran the handler on a `Float` made of
+  two `Int`s, arguments reordered were read in the new order, and an `Int`
+  answer read as a `Bool` was its first byte. Now such a call finds no
+  method. A kind names a layout, not a type, so renaming an argument or a
+  typedef changes no op; renaming the method, reordering, retyping, adding
+  or removing an argument, or letting one be absent does. A one-way call
+  reaches a method that answers, as before, and `ping` keeps its op. An
+  argument whose type is a typedef of `Null<T>` carries the byte saying
+  whether it is there, as one written `Null<T>` does, where it went bare
+  and could not be null. The format is in the RPC guide, under "What names
+  a call".
 - An `RPCSession` writes every frame it sends, calls and answers, error
   answers, pings and pongs, on both lanes, in one buffer it keeps, begun
   with room for the whole frame, where each was a `ByteArrayOutput` of its

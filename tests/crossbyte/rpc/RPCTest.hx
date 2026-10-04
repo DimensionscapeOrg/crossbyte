@@ -335,7 +335,7 @@ class RPCTest extends utest.Test {
 		var compileHandler = new TestHandler();
 		var serverSession = new RPCSession(link.server, null, compileHandler);
 		var runtimeCalls:Int = 0;
-		final collidingOp:Int = Hash.fnv1a32(Bytes.ofString("sendData"));
+		final collidingOp:Int = opOf("sendData(i32,bool,f64,utf8,bytes,?utf8)");
 
 		serverSession.register(collidingOp, args -> {
 			runtimeCalls++;
@@ -565,7 +565,7 @@ class RPCTest extends utest.Test {
 		// frame is not sound, so nothing after it can be trusted to line up.
 		var payload = new ByteArrayOutput(8);
 		payload.writeByte(crossbyte.rpc._internal.RPCWire.FLAG_REQUEST);
-		payload.writeInt(Hash.fnv1a32(Bytes.ofString("lookup")));
+		payload.writeInt(opOf("lookup(i32):utf8"));
 		payload.writeVarUInt(1);
 		payload.writeByte(0);
 		payload.flush();
@@ -598,12 +598,12 @@ class RPCTest extends utest.Test {
 			// the handler ran on it.
 			var short = frameOf(out -> {
 				out.writeByte(RPCWire.FLAG_REQUEST);
-				out.writeInt(opOf("lookup"));
+				out.writeInt(opOf("lookup(i32):utf8"));
 				out.writeVarUInt(1);
 			});
 			var sound = frameOf(out -> {
 				out.writeByte(RPCWire.FLAG_REQUEST);
-				out.writeInt(opOf("lookup"));
+				out.writeInt(opOf("lookup(i32):utf8"));
 				out.writeVarUInt(2);
 				out.writeInt(9);
 			});
@@ -632,7 +632,7 @@ class RPCTest extends utest.Test {
 			// empty name.
 			var short = frameOf(out -> {
 				out.writeByte(RPCWire.FLAG_RESPONSE);
-				out.writeInt(opOf("getName"));
+				out.writeInt(opOf("getName(i32):utf8"));
 				out.writeVarUInt(pending.requestId);
 			});
 			link.server.send(joined([short, soundFrame()]));
@@ -646,7 +646,7 @@ class RPCTest extends utest.Test {
 	public function testAnErrorAnswerIsNotTakenFromTheFrameAfterIts():Void {
 		// For a method the commands know, and for one they do not, which is
 		// read on a path of its own.
-		for (method in ["getName", "noSuchMethod"]) {
+		for (method in ["getName(i32):utf8", "noSuchMethod()"]) {
 			var link = LinkedConnection.pair();
 			var commands = new TestCommands();
 			var clientSession = new RPCSession<TestCommands>(link.client, commands);
@@ -739,7 +739,7 @@ class RPCTest extends utest.Test {
 
 		link.server.send(frameOf(out -> {
 			out.writeByte(RPCWire.FLAG_RESPONSE);
-			out.writeInt(opOf("blob"));
+			out.writeInt(opOf("blob(i32):bytes"));
 			out.writeVarUInt(pending.requestId);
 			out.writeVarUInt(0x7FFFFFFF);
 		}));
@@ -760,7 +760,7 @@ class RPCTest extends utest.Test {
 		// was read.
 		link.client.send(frameOf(out -> {
 			out.writeByte(0);
-			out.writeInt(opOf("sendData"));
+			out.writeInt(opOf("sendData(i32,bool,f64,utf8,bytes,?utf8)"));
 			out.writeInt(7);
 			out.writeByte(1);
 			out.writeDouble(1.25);
@@ -823,7 +823,7 @@ class RPCTest extends utest.Test {
 	private static function soundFrame():ByteArray {
 		return frameOf(out -> {
 			out.writeByte(RPCWire.FLAG_RESPONSE);
-			out.writeInt(opOf("getName"));
+			out.writeInt(opOf("getName(i32):utf8"));
 			out.writeVarUInt(999);
 			out.writeVarUTF("x");
 		});
@@ -839,8 +839,9 @@ class RPCTest extends utest.Test {
 		return all;
 	}
 
-	private static inline function opOf(method:String):Int {
-		return Hash.fnv1a32(Bytes.ofString(method));
+	/** The op of a method's signature; see `RPCOps`. **/
+	private static inline function opOf(signature:String):Int {
+		return crossbyte.rpc._internal.RPCOps.opOf(signature);
 	}
 
 	/** What the session reports, as `method: error`, or `op N: error` for a runtime handler. **/
