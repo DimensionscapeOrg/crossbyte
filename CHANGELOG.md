@@ -345,6 +345,9 @@ entry below says how:
   `maxQueued` is 100,000 unless set: set 0, or more, for a batch that
   submits more than that at once. A `ConnectionPool` `acquireTimeout` of 0
   waits without limit, where it failed at once.
+- A MySQL `connectTimeout` of 0 is no limit natively, where it bounded
+  each handshake read at 50 seconds; NaN and negative MySQL timeouts, and
+  a negative Postgres `connectTimeout`, throw an `ArgumentError`.
 
 ### Added
 - `SequenceRing.remove(sequence)` and `SequenceRing.writeBits(from, out, at,
@@ -3207,6 +3210,19 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A MySQL `connectTimeout` is one deadline for the whole of `open()`
+  natively, the connect, TLS, the greeting and the login. Each read of
+  the handshake waited the whole timeout again, so a server that answered
+  a byte at a time held `open()` for as long as it went on: a greeting
+  trickled at 0.25 s a byte took 20.8 s under a 1 s timeout, and then
+  logged in. It now fails at the deadline with error 2013. A
+  `connectTimeout` of 0 is no limit, where it meant 50 seconds for each
+  read of the handshake. Fixed in the hxcpp fork
+  (`fix/mysql-hostile-counts`). On every target `open()` refuses a NaN or
+  negative `connectTimeout`, `readTimeout` or `writeTimeout` and a
+  negative keepalive timing with an `ArgumentError`, as Postgres refuses a
+  negative `connectTimeout`: each was taken for no limit, or for the old
+  defaults.
 - `ProcessLifecycle.installServiceControl(name, 0)` waits for its
   handshake with the Service Control Manager to settle, 0 being no limit,
   where it did not wait at all: the handshake was still pending when it
