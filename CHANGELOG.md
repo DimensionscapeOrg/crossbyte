@@ -3135,6 +3135,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A timer whose callback runs a frame of its own, `pump`, or
+  `HostApplication.advance`, called from inside it, and then resumes
+  itself through its handle is no longer lost. Which timer's callback was
+  running was one field of the scheduler, and the timers of the inner frame
+  cleared it: a one-shot paused and resumed afterwards had its slot freed
+  as if it had run, so it never ran again and `Timer.clear` could not find
+  it, and on the `WHEEL` scheduler it was left in a bucket where it had
+  been freed. Each timer now knows whether its own callback is running.
 - Natively, a process whose threads end as it exits, a server spread
   over runtimes, which exits them after `drain()`, is one, no longer
   hangs there on Windows, nor crashes there when built with stack traces

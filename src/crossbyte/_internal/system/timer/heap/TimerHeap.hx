@@ -33,12 +33,6 @@ class TimerHeap implements ITimerScheduler {
 	// next pass rather than fired by this one.
 	private var __deferred:Array<TimerNode> = [];
 
-	// The node whose callback is running, and whether that callback gave it a
-	// new time itself, a reschedule, a delay or a resume through its own
-	// handle, which settling it afterwards has to respect.
-	private var __firing:TimerNode = null;
-	private var __rearmed:Bool = false;
-
 	private var __cutShort:Bool = false;
 
 	/**
@@ -130,11 +124,11 @@ class TimerHeap implements ITimerScheduler {
 		var node:TimerNode = nodes[handle.id()];
 		node.time = time;
 		node.armPass = __pass;
-		if (node == __firing) {
+		if (node.firing) {
 			// From its own callback: the new time is what it runs at next,
 			// one-shot or not, instead of being freed or advanced by an
 			// interval once the callback returns.
-			__rearmed = true;
+			node.rearmed = true;
 		} else {
 			queue.update(node);
 		}
@@ -152,8 +146,8 @@ class TimerHeap implements ITimerScheduler {
 
 		var node:TimerNode = nodes[handle.id()];
 		node.time += dt;
-		if (node == __firing) {
-			__rearmed = true;
+		if (node.firing) {
+			node.rearmed = true;
 		} else {
 			queue.update(node);
 		}
@@ -195,8 +189,8 @@ class TimerHeap implements ITimerScheduler {
 				node.pausedAt = null;
 		}
 		node.armPass = __pass;
-		if (node == __firing) {
-			__rearmed = true;
+		if (node.firing) {
+			node.rearmed = true;
 		} else {
 			queue.enqueue(node);
 		}
@@ -276,8 +270,8 @@ class TimerHeap implements ITimerScheduler {
 				// and took whatever was driving the scheduler down with it.
 				var failed:Bool = false;
 				var failure:Dynamic = null;
-				__firing = node;
-				__rearmed = false;
+				node.firing = true;
+				node.rearmed = false;
 
 				#if timer_burst_catchup
 				var fires:Int = 1;
@@ -305,15 +299,15 @@ class TimerHeap implements ITimerScheduler {
 					// Stop if the callback cleared or re-armed this timer through
 					// its handle, or threw: the rest of the burst is not owed to
 					// a callback that has just failed.
-					if (failed || __rearmed || gens[node.id] != gen || nodes[node.id] != node) {
+					if (failed || node.rearmed || gens[node.id] != gen || nodes[node.id] != node) {
 						break;
 					}
 				}
-				__firing = null;
+				node.firing = false;
 
 				if (gens[node.id] != gen || nodes[node.id] != node) {
 					// freed by the callback; nothing to do
-				} else if (__rearmed) {
+				} else if (node.rearmed) {
 					queue.enqueue(node);
 				} else if (node.enabled && node.interval > 0) {
 					node.time += i * node.interval;
@@ -334,7 +328,7 @@ class TimerHeap implements ITimerScheduler {
 					failure = error;
 				}
 				fired++;
-				__firing = null;
+				node.firing = false;
 				__settle(node, gen);
 				#end
 
@@ -381,7 +375,7 @@ class TimerHeap implements ITimerScheduler {
 	private inline function __settle(node:TimerNode, gen:Int):Void {
 		if (gens[node.id] != gen || nodes[node.id] != node) {
 			// already freed/replaced by the callback; nothing to do
-		} else if (__rearmed) {
+		} else if (node.rearmed) {
 			// Given a new time by its own callback, which stands as given.
 			queue.enqueue(node);
 		} else if (node.enabled && node.interval > 0) {
