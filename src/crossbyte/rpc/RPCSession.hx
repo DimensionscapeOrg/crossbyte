@@ -1487,10 +1487,18 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			__timedOut(now - heard);
 			return;
 		}
-		if (now - __connection.outTimestamp >= __intervalSec) {
+		// An interval less a millisecond: the beat after a ping is an interval
+		// after it, and the clock's rounding put that a hair short, 2.8 - 1.8
+		// is 0.99999999999999978, so a ping went every other beat. A session
+		// pinging at 45 seconds against a 90-second timeout heard its pongs 90
+		// seconds apart, and could time out a healthy peer.
+		if (now - __connection.outTimestamp >= __intervalSec - BEAT_SLACK) {
 			__sendPing();
 		}
 	}
+
+	/** How much short of an interval since the last send still owes a ping; see `__onHeartbeat`. **/
+	@:noCompletion private static inline final BEAT_SLACK:Float = 0.001;
 
 	/** A ping: a one-way frame for `ping`, with no arguments. **/
 	@:noCompletion private function __sendPing():Void {
