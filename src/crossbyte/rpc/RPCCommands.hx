@@ -7,8 +7,8 @@ import crossbyte.errors.IllegalOperationError;
 import crossbyte.io.ByteArrayInput;
 import crossbyte.net.NetConnection;
 import crossbyte.rpc._internal.RPCFrame;
+import crossbyte.rpc._internal.RPCPendingCalls;
 import crossbyte.rpc._internal.RPCWire;
-import haxe.ds.IntMap;
 
 /**
 	`RPCCommands` is the outbound stub surface for CrossByte RPC sessions.
@@ -51,7 +51,7 @@ abstract class RPCCommands {
 	@:noCompletion private var __requestIdSeed:Int = 0;
 	@:noCompletion private var __pendingResponseId:Int = 0;
 	@:noCompletion private var __pendingResponse:RPCResponse<Dynamic> = null;
-	@:noCompletion private var __pendingResponses:Null<IntMap<RPCResponse<Dynamic>>> = null;
+	@:noCompletion private var __pendingResponses:Null<RPCPendingCalls> = null;
 	// Where the frame whose response is being read ends; the generated
 	// readers read no further.
 	@:noCompletion private var __frameEnd:Int = RPCWire.NO_FRAME_END;
@@ -85,15 +85,15 @@ abstract class RPCCommands {
 			__pendingResponse = cast response;
 		} else {
 			if (__pendingResponses == null) {
-				__pendingResponses = new IntMap();
+				__pendingResponses = new RPCPendingCalls();
 			}
-			__pendingResponses.set(requestId, cast response);
+			__pendingResponses.put(requestId, cast response);
 		}
-		// The session's deadline for every call, if it has one; a call
-		// without one arms nothing.
+		// The session's deadline for every call, if it has one, in its queue
+		// of them; a call without one arms nothing.
 		final session = __session;
 		if (session != null && session.callTimeout > 0) {
-			response.__arm(session.callTimeout);
+			session.__queueDeadline(cast response, session.callTimeout);
 		}
 		return response;
 	}
@@ -202,10 +202,7 @@ abstract class RPCCommands {
 			__pendingResponse = null;
 			__pendingResponseId = 0;
 		} else if (__pendingResponses != null) {
-			response = __pendingResponses.get(requestId);
-			if (response != null) {
-				__pendingResponses.remove(requestId);
-			}
+			response = __pendingResponses.take(requestId);
 		}
 		return response;
 	}
@@ -246,7 +243,7 @@ abstract class RPCCommands {
 				__requestIdSeed = 1;
 			}
 		} while ((__requestIdSeed == __pendingResponseId)
-			|| (__pendingResponses != null && __pendingResponses.exists(__requestIdSeed)));
+			|| (__pendingResponses != null && __pendingResponses.has(__requestIdSeed)));
 
 		return __requestIdSeed;
 	}
@@ -265,12 +262,10 @@ abstract class RPCCommands {
 			__pendingResponseId = 0;
 			pending.__fail(message, cause);
 		}
-		final map = __pendingResponses;
-		if (map != null) {
+		final waiting = __pendingResponses;
+		if (waiting != null) {
 			__pendingResponses = null;
-			for (response in map) {
-				response.__fail(message, cause);
-			}
+			waiting.failAll(message, cause);
 		}
 	}
 }

@@ -24,7 +24,9 @@ import crossbyte.net.NetConnection;
 import crossbyte.net.NetConnectionBase;
 import crossbyte.events.EventDispatcher;
 import crossbyte.io.ByteArrayInput;
+import crossbyte.rpc._internal.RPCDeadlines;
 import crossbyte.rpc._internal.RPCFrame;
+import crossbyte.rpc._internal.RPCPendingCalls;
 import crossbyte.rpc._internal.RPCWire;
 import crossbyte.rpc._internal.RPCRuntimeCodec;
 import haxe.ds.IntMap;
@@ -92,10 +94,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private var __runtimeRequestIdSeed:Int = 0;
 	@:noCompletion private var __runtimePendingResponseId:Int = 0;
 	@:noCompletion private var __runtimePendingResponse:RPCResponse<Dynamic> = null;
-	@:noCompletion private var __runtimePendingResponses:Null<IntMap<RPCResponse<Dynamic>>> = null;
-	// How many entries the two maps above hold. Asking a map whether it is
-	// empty meant iterating it, and natively that copies every value first:
-	// done on every runtime-lane call, so each call cost as much as the calls
+	@:noCompletion private var __runtimePendingResponses:Null<RPCPendingCalls> = null;
+	// How many handlers `__runtimeHandlers` holds, and how many calls
+	// `__runtimePendingResponses` does. Asking a map whether it is empty
+	// meant iterating it, and natively that copies every value first: done
+	// on every runtime-lane call, so each call cost as much as the calls
 	// still waiting.
 	@:noCompletion private var __runtimeHandlerCount:Int = 0;
 	@:noCompletion private var __runtimePendingCount:Int = 0;
@@ -123,8 +126,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		call waits for as long as the connection lasts. A call can have a
 		deadline of its own instead; see `RPCResponse.timeout`.
 
-		Read as each call is made. A call with no deadline arms nothing; one
-		with a deadline holds a timer until it is answered.
+		Read as each call is made. A call with no deadline arms nothing. The
+		calls given this one wait in a queue, in the order they were made, and
+		one timer serves them all; a call answered leaves it at once. One
+		made after it was lowered, which would fall due before the calls
+		ahead of it, holds a timer of its own until it is answered.
 	**/
 	public var callTimeout:Int = 0;
 
@@ -139,7 +145,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		connection lasts.
 
 		Both lanes, and only calls answered later: a method answering at once
-		has answered before any deadline could pass.
+		has answered before any deadline could pass. Their deadlines wait in a
+		queue, as `callTimeout`'s do, with one timer for all of them.
 	**/
 	public var handlerTimeout:Int = 0;
 
@@ -761,10 +768,32 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		response.__session = cast this;
 		__trackRuntimeResponse(requestId, cast response);
 		if (callTimeout > 0) {
-			response.__arm(callTimeout);
+			__queueDeadline(cast response, callTimeout);
 		}
 		__sendRequestFrame(response, framed);
 		return response;
+	}
+
+	// The deadlines of the calls this session makes under `callTimeout`, made
+	// with the first; see RPCDeadlines.
+	@:noCompletion private var __deadlines:Null<RPCDeadlines> = null;
+	// And of those its handler answers later under `handlerTimeout`.
+	@:noCompletion private var __handlerDeadlines:Null<HandlerDeadlines> = null;
+
+	/**
+		Gives `response` the session's deadline, `milliseconds` from now, in
+		the queue one timer keeps for all of them; one that would fall before
+		the last queued, `callTimeout` lowered between calls, arms its own.
+		Each call armed a timer of its own: a closure and a timer node a call.
+	**/
+	@:noCompletion private function __queueDeadline(response:RPCResponse<Dynamic>, milliseconds:Int):Void {
+		var queue:Null<RPCDeadlines> = __deadlines;
+		if (queue == null) {
+			queue = __deadlines = new RPCDeadlines();
+		}
+		if (!queue.add(response, milliseconds, Timer.getTime())) {
+			response.__arm(milliseconds);
+		}
 	}
 
 	@:noCompletion private inline function __hasRuntimeHandlers():Bool {
@@ -1580,12 +1609,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			__runtimePendingResponse = response;
 		} else {
 			if (__runtimePendingResponses == null) {
-				__runtimePendingResponses = new IntMap();
+				__runtimePendingResponses = new RPCPendingCalls();
 			}
-			if (!__runtimePendingResponses.exists(requestId)) {
-				__runtimePendingCount++;
-			}
-			__runtimePendingResponses.set(requestId, response);
+			// An id nothing waits under: see __nextRuntimeRequestId.
+			__runtimePendingResponses.put(requestId, response);
+			__runtimePendingCount++;
 		}
 		// A call waiting can only start the session reading.
 		if (__readState != READ_ON) {
@@ -1641,9 +1669,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			__runtimePendingResponse = null;
 			__runtimePendingResponseId = 0;
 		} else if (__runtimePendingResponses != null) {
-			response = __runtimePendingResponses.get(requestId);
+			response = __runtimePendingResponses.take(requestId);
 			if (response != null) {
-				__runtimePendingResponses.remove(requestId);
 				__runtimePendingCount--;
 			}
 		}
@@ -1664,7 +1691,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 				__runtimeRequestIdSeed = 1;
 			}
 		} while ((__runtimeRequestIdSeed == __runtimePendingResponseId)
-			|| (__runtimePendingResponses != null && __runtimePendingResponses.exists(__runtimeRequestIdSeed)));
+			|| (__runtimePendingResponses != null && __runtimePendingResponses.has(__runtimeRequestIdSeed)));
 
 		return __runtimeRequestIdSeed;
 	}
@@ -1682,13 +1709,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			__runtimePendingResponseId = 0;
 			pending.__fail(message, cause);
 		}
-		final map = __runtimePendingResponses;
-		if (map != null) {
+		final waiting = __runtimePendingResponses;
+		if (waiting != null) {
 			__runtimePendingResponses = null;
 			__runtimePendingCount = 0;
-			for (response in map) {
-				response.__fail(message, cause);
-			}
+			waiting.failAll(message, cause);
 		}
 	}
 
@@ -1705,6 +1730,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	 * decide by, and a gateway could not tell a backend gone from a refusal.
 	 */
 	@:noCompletion private function __failAllPending(message:String, ?cause:Dynamic):Void {
+		// Every call it holds fails here, so the queue is let go of first.
+		if (__deadlines != null) {
+			__deadlines.clear();
+		}
 		if (__commands != null) {
 			__commands.__failAllPending(message, cause);
 		}
@@ -1943,17 +1972,34 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 @:access(crossbyte.rpc.RPCSession)
 @:access(crossbyte.Future)
 private class HandlerDeadline<T> {
+	/** `timer` while the deadline is in its session's `HandlerDeadlines`. **/
+	public static inline final QUEUED:Int = -2;
+
 	final session:RPCSession<Dynamic, Dynamic>;
 	final future:Future<T>;
 	final settle:Future<T>->Void;
 	var settled:Bool = false;
+	// A timer of its own, QUEUED while its session's queue holds it instead,
+	// or TimerHandle.INVALID once neither does.
 	var timer:Int = TimerHandle.INVALID;
+	// Its place in that queue, and when it falls due there.
+	public var previous:Null<HandlerDeadline<Dynamic>> = null;
+	public var next:Null<HandlerDeadline<Dynamic>> = null;
+	public var due:Float = 0.0;
 
 	public function new(session:RPCSession<Dynamic, Dynamic>, future:Future<T>, settle:Future<T>->Void, milliseconds:Int) {
 		this.session = session;
 		this.future = future;
 		this.settle = settle;
-		timer = Timer.setTimeout(milliseconds / 1000, expire);
+		var queue:Null<HandlerDeadlines> = session.__handlerDeadlines;
+		if (queue == null) {
+			queue = session.__handlerDeadlines = new HandlerDeadlines();
+		}
+		if (queue.add(cast this, milliseconds)) {
+			timer = QUEUED;
+		} else {
+			timer = Timer.setTimeout(milliseconds / 1000, expire);
+		}
 	}
 
 	/** The future has completed. **/
@@ -1962,15 +2008,17 @@ private class HandlerDeadline<T> {
 			return;
 		}
 		settled = true;
-		if (timer != TimerHandle.INVALID) {
+		if (timer == QUEUED) {
+			session.__handlerDeadlines.remove(cast this);
+		} else if (timer != TimerHandle.INVALID) {
 			Timer.clear(timer);
-			timer = TimerHandle.INVALID;
 		}
+		timer = TimerHandle.INVALID;
 		session.__callsWaiting--;
 		settle(future);
 	}
 
-	function expire():Void {
+	public function expire():Void {
 		timer = TimerHandle.INVALID;
 		if (settled) {
 			return;
@@ -1978,6 +2026,103 @@ private class HandlerDeadline<T> {
 		settled = true;
 		session.__callsWaiting--;
 		settle(RPCSession.__handlerTimedOut());
+	}
+}
+
+/**
+	A session's `handlerTimeout` deadlines, in the order their calls came,
+	which, with one timeout for all of them, is the order they fall due,
+	and one timer for them all, set for the first. Each armed a timer of its
+	own: a closure and a timer node a call. A call settled leaves the list
+	at once.
+
+	The timer, when it fires, answers for the calls that are due, at the
+	time a timer of their own would have fired, and is set for the next. A
+	deadline that would fall before the last one, `handlerTimeout`
+	lowered between calls, is not queued, and arms its own.
+**/
+@:access(crossbyte.rpc.RPCSession)
+private class HandlerDeadlines {
+	/** How much past its time the scheduler still counts a timer due: theirs, so these fall due with it. **/
+	static inline final DUE_EPSILON:Float = 1e-9;
+
+	var first:Null<HandlerDeadline<Dynamic>> = null;
+	var last:Null<HandlerDeadline<Dynamic>> = null;
+	var timer:Int = TimerHandle.INVALID;
+	var firing:Bool = false;
+	final fire:Void->Void;
+
+	public function new() {
+		fire = fired;
+	}
+
+	/** Queues `deadline`, `milliseconds` from now; `false`, queuing nothing, when it would fall before the last. **/
+	public function add(deadline:HandlerDeadline<Dynamic>, milliseconds:Int):Bool {
+		final now:Float = Timer.getTime();
+		final due:Float = now + milliseconds / 1000;
+		final tail:Null<HandlerDeadline<Dynamic>> = last;
+		if (tail != null && due < tail.due) {
+			return false;
+		}
+		deadline.due = due;
+		deadline.previous = tail;
+		if (tail != null) {
+			tail.next = deadline;
+		} else {
+			first = deadline;
+		}
+		last = deadline;
+		if (timer == TimerHandle.INVALID && !firing) {
+			timer = Timer.setTimeout(due - now, fire);
+		}
+		return true;
+	}
+
+	public function remove(deadline:HandlerDeadline<Dynamic>):Void {
+		final previous = deadline.previous;
+		final next = deadline.next;
+		if (previous != null) {
+			previous.next = next;
+		} else {
+			first = next;
+		}
+		if (next != null) {
+			next.previous = previous;
+		} else {
+			last = previous;
+		}
+		deadline.previous = null;
+		deadline.next = null;
+	}
+
+	/** The timer: every call that is due is answered for, and the timer is set for the next. **/
+	function fired():Void {
+		timer = TimerHandle.INVALID;
+		firing = true;
+		final now:Float = Timer.getTime();
+		var failed:Bool = false;
+		var failure:Dynamic = null;
+		while (first != null && first.due <= now + DUE_EPSILON) {
+			final deadline = first;
+			remove(deadline);
+			try {
+				deadline.expire();
+			} catch (error:Dynamic) {
+				// The rest are still answered for, and the timer set again,
+				// before the scheduler hears of it.
+				if (!failed) {
+					failed = true;
+					failure = error;
+				}
+			}
+		}
+		firing = false;
+		if (first != null && timer == TimerHandle.INVALID) {
+			timer = Timer.setTimeout(first.due - Timer.getTime(), fire);
+		}
+		if (failed) {
+			throw failure;
+		}
 	}
 }
 

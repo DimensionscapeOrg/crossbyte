@@ -726,14 +726,21 @@ joining.catchError(message -> {
 ```
 
 `timeout(0)` leaves a call no deadline. A call without one arms nothing and
-costs nothing for it; one with a deadline holds a timer until it is answered.
+costs nothing for it. The calls under `callTimeout` fall due in the order they
+were made, so they wait in one queue a session, with one timer for all of them,
+and a call answered leaves it at once: a deadline costs a call no allocation,
+and no timer of its own, of which a runtime holds at most 524,288 at once. A
+call given its own with `timeout` holds a timer of its own until it is
+answered, as does one made after `callTimeout` was lowered, which would fall due
+before the calls ahead of it.
 
 A handler can be held to one as well. `handlerTimeout` is how long a call its
 handler answers with a `Future` may wait for that future: past it the caller is
 answered `RPCError.TIMEOUT_MESSAGE`, `onHandlerError` and `afterCall` are told
 with an `RPCTimeoutError`, and the call gives up its place among the
 `maxCallsWaiting`. Without it, a future that never completes holds that place
-for as long as the connection lasts.
+for as long as the connection lasts. These deadlines wait in a queue of their
+own, as `callTimeout`'s do.
 
 ```haxe
 // Given session:RPCSession<ChatCommands>.

@@ -6,7 +6,7 @@ import crossbyte.net.INetConnection;
 import crossbyte.net.Protocol;
 import crossbyte.net.Reason;
 import crossbyte.net.Transport;
-import haxe.ds.IntMap;
+import crossbyte.rpc._internal.RPCPendingCalls;
 import utest.Assert;
 
 /**
@@ -41,13 +41,13 @@ class RPCRobustnessTest extends utest.Test {
 		var commands = new RobustCommands();
 		commands.__requestIdSeed = 9;
 		commands.__pendingResponseId = 0;
-		commands.__pendingResponses = new IntMap();
-		commands.__pendingResponses.set(10, new RPCResponse<Dynamic>(10, 1));
-		commands.__pendingResponses.set(11, new RPCResponse<Dynamic>(11, 1));
+		commands.__pendingResponses = new RPCPendingCalls();
+		commands.__pendingResponses.put(10, new RPCResponse<Dynamic>(10, 1));
+		commands.__pendingResponses.put(11, new RPCResponse<Dynamic>(11, 1));
 
 		var id = commands.__nextRequestId();
 
-		Assert.isFalse(commands.__pendingResponses.exists(id));
+		Assert.isFalse(commands.__pendingResponses.has(id));
 		Assert.equals(12, id);
 	}
 
@@ -99,9 +99,9 @@ class RPCRobustnessTest extends utest.Test {
 		var extraB = new RPCResponse<Dynamic>(3, 1);
 		commands.__pendingResponseId = 1;
 		commands.__pendingResponse = slot;
-		commands.__pendingResponses = new IntMap();
-		commands.__pendingResponses.set(2, extraA);
-		commands.__pendingResponses.set(3, extraB);
+		commands.__pendingResponses = new RPCPendingCalls();
+		commands.__pendingResponses.put(2, extraA);
+		commands.__pendingResponses.put(3, extraB);
 
 		commands.__failAllPending("session stopped");
 
@@ -141,12 +141,12 @@ class RPCRobustnessTest extends utest.Test {
 		var session = new RPCSession(new StubConnection());
 		session.__runtimeRequestIdSeed = 20;
 		session.__runtimePendingResponseId = 0;
-		session.__runtimePendingResponses = new IntMap();
-		session.__runtimePendingResponses.set(21, new RPCResponse<Dynamic>(21, 1));
+		session.__runtimePendingResponses = new RPCPendingCalls();
+		session.__runtimePendingResponses.put(21, new RPCResponse<Dynamic>(21, 1));
 
 		var id = session.__nextRuntimeRequestId();
 
-		Assert.isFalse(session.__runtimePendingResponses.exists(id));
+		Assert.isFalse(session.__runtimePendingResponses.has(id));
 		Assert.equals(22, id);
 	}
 

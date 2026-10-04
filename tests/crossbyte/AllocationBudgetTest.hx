@@ -481,6 +481,39 @@ class AllocationBudgetTest extends utest.Test {
 		Assert.isTrue(answered > 0);
 	}
 
+	/**
+		A deadline from the session's `callTimeout` costs a call nothing: the
+		calls under it share one queue and one timer. Each armed a timer of
+		its own, 112 bytes natively and 95 on the jvm, which a budget a
+		quarter over a call's figure would not have caught coming back.
+	**/
+	public function testAnRpcCallsDeadlineAllocatesNothing():Void {
+		var without:AllocationReading = __rpcCallUnder(0);
+		var under:AllocationReading = __rpcCallUnder(30000);
+		__report("an RPC call and its answer, without a deadline", without);
+		__report("an RPC call and its answer, under callTimeout", under);
+		Assert.isTrue(under.perOperation - without.perOperation <= 16,
+			"a call under callTimeout allocated " + under + ", where one without allocated " + without);
+	}
+
+	private static function __rpcCallUnder(callTimeout:Int):AllocationReading {
+		var link = LinkedConnection.pair();
+		var commands = new BudgetCommands();
+		var clientSession = new RPCSession<BudgetCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, new BudgetHandler());
+		clientSession.callTimeout = callTimeout;
+		var answered:Int = 0;
+		var op = () -> {
+			var response = commands.add(answered, 1);
+			if (!response.completed) {
+				throw "the call was not answered";
+			}
+			answered = response.result;
+		};
+		__warm(op, WARM_CHEAP);
+		return AllocationMeter.measure(op, 20000);
+	}
+
 	public function testAOneWayRpcCall():Void {
 		var link = LinkedConnection.pair();
 		var commands = new BudgetCommands();
