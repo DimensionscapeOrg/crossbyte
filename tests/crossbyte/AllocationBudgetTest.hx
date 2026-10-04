@@ -78,7 +78,7 @@ class AllocationBudgetTest extends utest.Test {
 	private static final POST = new Budget("a callback posted to the runtime and run", "post", [0, 0, 0], [8, 8, 8]);
 	private static final IDLE_TICK = new Budget("a runtime frame with nothing to do", "frame", [0, 0, 0], [8, 8, 8]);
 	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [1640, 1640, 4088], [2120, 2120, 5176]);
-	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [8404, 8404, 11196], [10576, 10576, 14064]);
+	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [6352, 6352, 9064], [8008, 8008, 11400]);
 	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3520, 3504, 2591], [4464, 4448, 3304]);
 	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [1640, 1640, 10592], [2120, 2120, 13304]);
 	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [1576, 1576, 2080], [2040, 2040, 2664]);

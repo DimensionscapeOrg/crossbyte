@@ -4336,6 +4336,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var need:UInt = __expectBody - __bodyBuf.length;
 		var take:UInt = (avail < need) ? avail : need;
 		if (take > 0) {
+			// Grown as it arrives, by half again, but never past the length
+			// the request declared: grown by writing, a 4,096-byte body was
+			// held in 6,177. Room is made only for what has come, so a
+			// declared length alone allocates nothing.
+			var body:ByteArrayData = __bodyBuf;
+			var needed:Int = body.length + (take : Int);
+			if (needed > @:privateAccess body.__length) {
+				var grown:Int = needed + (needed >> 1);
+				body.__reserve(grown < __expectBody ? grown : __expectBody);
+			}
 			__bodyBuf.writeBytes(__incomingBuffer, __incomingBuffer.position, take);
 			__incomingBuffer.position += take;
 		}
