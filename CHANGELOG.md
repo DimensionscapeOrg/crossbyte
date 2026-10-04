@@ -3203,6 +3203,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An `SQLiteStatement` executed on an asynchronous connection binds the
+  bytes its parameters held when `execute()` was called. Their map was
+  copied but the bytes were not, and the worker bound them later: a blob
+  stored from a datagram's `event.data` inside its listener was stored
+  empty, and bytes changed after `execute()` returned were stored changed.
 - `URLLoader.load` copies a request body of bytes as it begins, so what
   goes out is the body as it was at the call. Natively and on the jvm it
   was read later, on a load thread, and on Node handed to Node as a view
