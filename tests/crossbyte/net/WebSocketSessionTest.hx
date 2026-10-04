@@ -398,6 +398,72 @@ class WebSocketSessionTest extends utest.Test {
 	}
 
 	/**
+		Text arrives as it was sent, whichever way it was framed: natively a
+		string held a byte a character, and on the jvm short ASCII, goes into
+		the frame without being encoded into a buffer of its own first, and
+		everything else, other characters, longer text, a message to be
+		fragmented, is encoded as before. Each is sent by the client, masked,
+		and sent back by the session, unmasked.
+	**/
+	@:timeout(30000)
+	public function testTextArrivesAsSentWhicheverWayItIsFramed(async:Async):Void {
+		var ascii:String->Int->String = function(seed:String, length:Int):String {
+			var buffer = new StringBuf();
+			while (buffer.length < length) {
+				buffer.add(seed);
+			}
+			return buffer.toString().substr(0, length);
+		};
+		var texts:Array<String> = [
+			"",
+			"a",
+			ascii("the quick brown fox ", 100),
+			"tab\tand\r\nnewline",
+			"héllo wörld €",
+			"日本語 \u{1F600}",
+			ascii("0123456789", 256),
+			ascii("0123456789", 257),
+			ascii("abc", 300) + "é",
+			"é" + ascii("abc", 300),
+			ascii("xyz ", 5000),
+			ascii("m", crossbyte._internal.websocket.WebSocket.MAX_PAYLOAD),
+			ascii("n", crossbyte._internal.websocket.WebSocket.MAX_PAYLOAD + 1)
+		];
+		__serve(null, function(server, sessions, finish) {
+			var client = new WebSocket();
+			var echoed:Array<WebSocketMessageEvent> = [];
+			var opened:Bool = false;
+			client.addEventListener(Event.CONNECT, function(_) opened = true);
+			client.addEventListener(WebSocketMessageEvent.MESSAGE, function(e:WebSocketMessageEvent) echoed.push(e));
+			client.connect("127.0.0.1", server.localPort);
+
+			NetPump.until(() -> opened && sessions.length > 0, 5.0, function(_) {
+				if (sessions.length == 0) {
+					Assert.fail("no session");
+					finish();
+					return;
+				}
+				var session = sessions[0];
+				session.addEventListener(WebSocketMessageEvent.MESSAGE, function(e:WebSocketMessageEvent) session.sendText(e.text));
+				for (text in texts) {
+					client.sendText(text);
+				}
+
+				NetPump.until(() -> echoed.length >= texts.length, 20.0, function(_) {
+					Assert.equals(texts.length, echoed.length, "not every text came back");
+					for (i in 0...Std.int(Math.min(texts.length, echoed.length))) {
+						Assert.isTrue(echoed[i].isText, "text " + i + " came back as binary");
+						var back:String = echoed[i].text;
+						Assert.isTrue(back == texts[i], "text " + i + " of " + texts[i].length + " characters came back as " + (back == null ? "null" : back.length + " different characters"));
+					}
+					try client.close() catch (_:Dynamic) {}
+					finish();
+				});
+			});
+		}, async);
+	}
+
+	/**
 		`socketData`'s `bytesLoaded` is what has just arrived, as a plain
 		socket reports it now on every target. A WebSocket reported
 		everything unread, so a reader that left the first message in the

@@ -675,6 +675,9 @@ class WebSocketTest extends utest.Test {
 		ws.__pendingOutput.endian = BIG_ENDIAN;
 		ws.__outgoingMessageBuffer = new ByteArray();
 		ws.__outgoingMessageBuffer.endian = BIG_ENDIAN;
+		// Text is framed from here natively, a server's as well as a client's.
+		ws.__maskedPayload = new ByteArray();
+		ws.__maskedPayload.endian = BIG_ENDIAN;
 		ws.__runtime = CrossByte.current();
 		return ws;
 	}

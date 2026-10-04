@@ -1574,6 +1574,13 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A WebSocket text message is written into its frame without being encoded
+  into a buffer of its own first, natively when the string is held a byte a
+  character and on the jvm when it is ASCII and no longer than 256
+  characters; other text, and text to be compressed or fragmented, is
+  encoded as before. A 100-character message echoed allocates 1,096 bytes
+  natively, where it allocated 1,576, and about 1,100 on the jvm, where it
+  allocated 2,000. What arrives is unchanged.
 - An HTTP response's own fields, Date, Content-Type,
   X-Content-Type-Options and Server, and the array holding them with the
   caller's, are kept by the connection from one response to the next
