@@ -353,6 +353,18 @@ entry below says how:
   runtime RPC op: " and the number: compare an error with the constant.
 
 ### Added
+- An RPC hello: every `RPCSession` says hello as its connection starts,
+  at once on one up already, or as one becomes ready, with its protocol
+  version, `RPCSession.PROTOCOL_VERSION` (1), its capabilities (none in
+  1.0), and fingerprints of the methods its commands call and its handler
+  answers. Nothing waits for it, so it adds no round trip. The peer's sets
+  `peerVersion`, `peerCapabilities`, `peerCallsFingerprint` and
+  `peerAnswersFingerprint`, and calls `onHello`; a session's own are
+  `callsFingerprint` and `answersFingerprint`. A peer from before 1.0 says
+  none, and its version is 0. The hello is a response frame under request
+  id 0, as a pong is, which a session from before 1.0 passes over. A
+  feature added after 1.0 is to be used towards a peer only once its hello
+  has declared it, so later releases keep talking to this one.
 - `SequenceRing.remove(sequence)` and `SequenceRing.writeBits(from, out, at,
   byteCount)`, which make the ring a receive window as well as a history:
   what arrived past a gap is filed by sequence, taken out as the gap fills,

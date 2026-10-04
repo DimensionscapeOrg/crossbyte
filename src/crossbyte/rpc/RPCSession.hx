@@ -305,6 +305,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		// ready, for a heartbeat started before it was.
 		(connection : NetConnectionBase).__observeClose(__connectionEnded);
 		(connection : NetConnectionBase).__observeReady(__connectionReady);
+		// Connected already, as an accepted connection is: hello now. One not
+		// yet says it as it becomes ready.
+		if (__isUp) {
+			__sendHello();
+		}
 	}
 
 	/** The shortest wait before a session made by `dial` dials again, in seconds. **/
@@ -333,6 +338,134 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	@:noCompletion private inline function get_up():Bool {
 		return __isUp && !__ended && __connection.connected;
+	}
+
+	/** The RPC protocol version a session of this build speaks, which its hello declares: 1 for 1.0. **/
+	public static inline final PROTOCOL_VERSION:Int = RPCWire.VERSION;
+
+	/**
+		The protocol version the peer's hello declared: 1 for a peer of 1.0.
+
+		Every session says hello as its connection starts, at once on one
+		connected already, or as one becomes ready, a frame of its own sent
+		ahead of its calls and never waited for. A peer from before 1.0 sends
+		none, and its version stays 0, as it is until a hello arrives. Back to
+		0 as the connection ends: a session made by `dial` hears a hello from
+		each connection, and a listening `LocalConnection` from each peer.
+	**/
+	public var peerVersion(default, null):Int = 0;
+
+	/**
+		The capabilities the peer's hello declared, a bit each. None are
+		defined in 1.0, so 0. A feature added after 1.0, a flag, a kind of
+		frame or of value, compression, is to be used towards a peer only
+		once its hello has declared it.
+	**/
+	public var peerCapabilities(default, null):Int = 0;
+
+	/**
+		A fingerprint of the methods this session's commands call: their ops
+		(see `RPCOps`), hashed in order, so that two sides built from the same
+		methods with the same signatures have the same one. 0 with no
+		commands. Its hello sends it, as `peerCallsFingerprint` on the other
+		side.
+	**/
+	public var callsFingerprint(get, never):Int;
+
+	/**
+		A fingerprint of the methods this session's handler answers, as
+		`callsFingerprint` is of what it calls. 0 with no handler, or one with
+		a hand-written `dispatch`.
+	**/
+	public var answersFingerprint(get, never):Int;
+
+	/** The peer's `callsFingerprint`, from its hello: 0 until one arrives. **/
+	public var peerCallsFingerprint(default, null):Int = 0;
+
+	/** The peer's `answersFingerprint`, from its hello: 0 until one arrives. **/
+	public var peerAnswersFingerprint(default, null):Int = 0;
+
+	/**
+		Called when the peer's hello arrives, once a connection, with
+		`peerVersion`, `peerCapabilities` and the peer's fingerprints set.
+
+		The fingerprints are for a log line: two that differ say the sides
+		were built from different methods, one has a method more, or a
+		signature changed, not that any call will fail, and nothing is
+		refused for it. A call for a method the other side has not got is
+		answered `RPCError.UNKNOWN_METHOD_MESSAGE` whatever the fingerprints
+		say.
+
+		```haxe
+		// Given session:RPCSession<ChatCommands>.
+		session.onHello = () -> {
+			if (session.peerAnswersFingerprint != session.callsFingerprint) {
+				trace('the peer was built from other methods than these commands call');
+			}
+		};
+		```
+	**/
+	public dynamic function onHello():Void {}
+
+	@:noCompletion private function get_callsFingerprint():Int {
+		return __commands != null ? __commands.__rpc_fingerprint() : 0;
+	}
+
+	@:noCompletion private function get_answersFingerprint():Int {
+		return __handler != null ? __handler.__rpc_fingerprint() : 0;
+	}
+
+	/**
+		Says hello: a response frame under request id 0, which answers no call,
+		a session from before 1.0 passes over it, as it does a pong, with
+		this side's protocol version, capabilities and fingerprints. Sent and
+		never waited for: a call made next goes right behind it. A send that
+		throws here is the connection's to report, not the start's.
+	**/
+	@:noCompletion private function __sendHello():Void {
+		final framed:RPCFrame = __takeFrame(HELLO_ROOM, RPCWire.FLAG_RESPONSE, RPCWire.HELLO_OP, 0);
+		framed.putVarUInt(0);
+		framed.putVarUInt(RPCWire.VERSION);
+		framed.putVarUInt(RPCWire.CAPABILITIES);
+		framed.putInt(callsFingerprint);
+		framed.putInt(answersFingerprint);
+		try {
+			__connection.send(framed.finish());
+		} catch (_:Dynamic) {}
+		__sent(framed);
+	}
+
+	/** A hello's frame at its longest: its length, flags and op, an id, the version and capabilities, two fingerprints. **/
+	@:noCompletion private static inline final HELLO_ROOM:Int = 4 + 5 + 1 + 5 + 5 + 4 + 4;
+
+	/**
+		The peer's hello, in a frame ending at `frameEnd`: what this version
+		knows of it is read, and what a later one appends passed over.
+	**/
+	@:noCompletion private function __helloArrived(input:ByteArrayInput, frameEnd:Int):Void {
+		var version:Int = 0;
+		var capabilities:Int = 0;
+		var calls:Int = 0;
+		var answers:Int = 0;
+		try {
+			version = input.readVarUInt();
+			capabilities = input.readVarUInt();
+			calls = input.readInt();
+			answers = input.readInt();
+			RPCWire.requireWithin(input, frameEnd);
+		} catch (error:Dynamic) {
+			__passedOver(RPCWire.HELLO_OP, 0, "a hello that could not be read: " + Std.string(error));
+			return;
+		}
+		peerVersion = version;
+		peerCapabilities = capabilities;
+		peerCallsFingerprint = calls;
+		peerAnswersFingerprint = answers;
+		try {
+			onHello();
+		} catch (error:Dynamic) {
+			Logger.error("RPCSession.onHello threw: " + Std.string(error));
+		}
 	}
 
 	// Whether the connection has been ready since it last ended, from the
@@ -475,6 +608,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		__isUp = false;
 		__ended = true;
 		__endReason = reason;
+		// The peer that said hello has gone; the next says its own.
+		peerVersion = 0;
+		peerCapabilities = 0;
+		peerCallsFingerprint = 0;
+		peerAnswersFingerprint = 0;
 		// `| 0` so it wraps on JavaScript as it does elsewhere.
 		__epoch = (__epoch + 1) | 0;
 		// Stopped, not forgotten: `start()` still stands, for a connection
@@ -776,14 +914,18 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 				} catch (_:Dynamic) {
 					readable = false;
 				}
-				// Id 0 answers no call: a pong.
 				final commands = __commands;
 				if (!readable) {
 					__passedOver(op, 0, UNREADABLE_ID);
-				} else if (requestId != 0 && commands != null) {
-					commands.__frameEnd = frameEnd;
-					commands.__rpc_handle_response(op, requestId, input, flags != RPCWire.FLAG_RESPONSE);
+				} else if (requestId != 0) {
+					if (commands != null) {
+						commands.__frameEnd = frameEnd;
+						commands.__rpc_handle_response(op, requestId, input, flags != RPCWire.FLAG_RESPONSE);
+					}
+				} else if (op == RPCWire.HELLO_OP && flags == RPCWire.FLAG_RESPONSE) {
+					__helloArrived(input, frameEnd);
 				}
+				// Otherwise id 0, which answers no call: a pong.
 			} else {
 				__passedOver(op, 0, "a frame of a kind this session does not know, flags 0x" + StringTools.hex(flags & 0xFF, 2));
 			}
@@ -1631,6 +1773,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			__ended = false;
 			__endReason = null;
 		}
+		// Ahead of anything onUp sends.
+		__sendHello();
 		__redialDelay = MIN_REDIAL;
 		if (__active && !__hasHeartbeat) {
 			__resumeHeartbeat();

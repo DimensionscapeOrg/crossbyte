@@ -644,6 +644,37 @@ can tell a peer that has gone from a peer that said no. Over a WebSocket the
 a server going away, 1008 for one refusing by policy, and `Closed` when the
 connection ended with no code known.
 
+### Hello
+
+Every session says hello as its connection starts, at once on a connection
+that is up already, as an accepted one is, or as one becomes ready, with the
+protocol version it speaks (`RPCSession.PROTOCOL_VERSION`, 1), the
+capabilities it has (none are defined in 1.0), and a fingerprint of the
+methods its commands call and one of those its handler answers. The hello goes
+out ahead of the session's calls and nothing waits for it, so it costs no
+round trip. The peer's sets `peerVersion`, `peerCapabilities`,
+`peerCallsFingerprint` and `peerAnswersFingerprint`, and `onHello` is called;
+they go back to 0 as the connection ends, and a session made by `dial` hears
+a hello from each connection. A peer from before 1.0 says no hello, and its
+version stays 0. The hello is a response frame under request id 0, as a pong
+is, which a session from before 1.0 passes over.
+
+Two sides built from the same methods, with the same signatures, have the same
+fingerprints. They are for a log line, and never refuse anything:
+
+```haxe
+// Given session:RPCSession<ChatCommands>.
+session.onHello = () -> {
+	if (session.peerAnswersFingerprint != session.callsFingerprint) {
+		trace('the server was built from other methods than these commands call');
+	}
+};
+```
+
+A feature added after 1.0, a new kind of frame or of value, compression,
+is used towards a peer only once its hello has declared it, so that a 1.0
+session and a later one keep understanding each other.
+
 ## A client that comes back
 
 A client that must survive its server restarting, a gateway in front of a

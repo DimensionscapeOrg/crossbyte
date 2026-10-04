@@ -27,6 +27,8 @@ class RPCFrameTest extends utest.Test {
 		var server = new RPCSession(link.server, null, new FrameHandler());
 		server.register(30, args -> args[0]);
 		var keeping:KeepingConnection = cast link.client;
+		// What each side said as it started, a hello, aside.
+		keeping.forget();
 
 		commands.note("first");
 		Assert.equals("second!", commands.shout("second").result);
@@ -64,6 +66,7 @@ class RPCFrameTest extends utest.Test {
 		var client = new RPCSession<FrameCommands>(link.client, commands);
 		var server = new RPCSession(link.server, null, new FrameHandler());
 		var keeping:KeepingConnection = cast link.client;
+		keeping.forget();
 
 		commands.note("a message long enough to tell apart");
 		final first:ByteArray = keeping.kept[0];
@@ -99,6 +102,7 @@ class RPCFrameTest extends utest.Test {
 		var client = new RPCSession<FrameCommands>(link.client, clientCommands, clientHandler);
 		var server = new RPCSession<FrameCommands>(link.server, serverCommands, serverHandler);
 		var keeping:KeepingConnection = cast link.client;
+		keeping.forget();
 
 		clientCommands.relay("outer");
 
@@ -160,6 +164,7 @@ class RPCFrameTest extends utest.Test {
 		var client = new RPCSession<FrameCommands>(link.client, commands);
 		var server = new RPCSession(link.server, null, new FrameHandler());
 		var keeping:KeepingConnection = cast link.client;
+		keeping.forget();
 		var reported:Array<String> = [];
 		server.onHandlerError = (op, method, error) -> reported.push(method + ": " + Type.getClassName(Type.getClass(error)));
 
@@ -220,6 +225,12 @@ private class KeepingConnection extends LinkedConnection {
 
 	public function new() {
 		super();
+	}
+
+	/** Forgets what was sent so far: the hello a session says as it starts. **/
+	public function forget():Void {
+		kept.resize(0);
+		copies.resize(0);
 	}
 
 	override public function send(data:ByteArray):Void {

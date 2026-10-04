@@ -57,6 +57,32 @@ class RPCOps {
 	}
 
 	/**
+		A fingerprint of a set of methods, by their ops: FNV-1a over each op's
+		four bytes, little-endian, the ops in ascending order, so the order
+		methods are declared in does not matter. Two sides built from the
+		same methods with the same signatures have the same fingerprint; one
+		with a method more, or a signature changed, has another. Never 0,
+		which a session's hello sends for a side with no methods at all.
+	**/
+	public static function fingerprint(ops:Array<Int>):Int {
+		final sorted:Array<Int> = ops.copy();
+		sorted.sort((a, b) -> a < b ? -1 : (a > b ? 1 : 0));
+		var hash:Int = 0x811c9dc5;
+		var last:Null<Int> = null;
+		for (op in sorted) {
+			// A method reached twice is one method.
+			if (last != null && op == last) {
+				continue;
+			}
+			last = op;
+			for (shift in [0, 8, 16, 24]) {
+				hash = Hash.mul32(hash ^ ((op >>> shift) & 0xFF), 0x01000193);
+			}
+		}
+		return hash == 0 ? 1 : hash;
+	}
+
+	/**
 		The first two of `signatures` that share an op, or `null` if none do.
 		One listed twice is one method reached twice, not a clash.
 	**/

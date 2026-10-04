@@ -47,6 +47,9 @@ class RPCDialTest extends utest.Test {
 			var duringOutage:RPCResponse<Int> = null;
 			session = RPCSession.dial('tcp://127.0.0.1:${server.localPort}', commands);
 			session.onUp = () -> ups++;
+			// Each connection's server says hello, heard on the connection it came on.
+			var hellos = 0;
+			session.onHello = () -> hellos++;
 			session.onDown = reason -> {
 				downs.push(Std.string(reason));
 				// Down: a call now fails at once, saying why.
@@ -61,6 +64,8 @@ class RPCDialTest extends utest.Test {
 			pumpUntil(() -> session.up, 5.0);
 			Assert.equals(1, ups, "onUp was not told of the first connection");
 			Assert.equals(7, answerOf(commands.echo(7)));
+			Assert.equals(1, hellos, "the server's hello was not heard");
+			Assert.equals(RPCSession.PROTOCOL_VERSION, session.peerVersion);
 
 			// The backend drops its connections: the session comes back.
 			for (connection in accepted) {
@@ -74,6 +79,7 @@ class RPCDialTest extends utest.Test {
 			Assert.isTrue(isReason(duringOutage.cause), "a call while down was not failed with a Reason: " + duringOutage.cause);
 			Assert.equals(2, ups, "the session did not come back");
 			Assert.equals(8, answerOf(commands.echo(8)), "the session came back and did not answer");
+			Assert.equals(2, hellos, "the next connection's hello was not heard");
 
 			// Closed, it dials no more.
 			session.close();

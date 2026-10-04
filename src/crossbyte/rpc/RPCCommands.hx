@@ -65,6 +65,14 @@ abstract class RPCCommands {
 	@:noCompletion abstract public function __rpc_handle_response(op:Int, requestId:Int, input:ByteArrayInput, failed:Bool):Void;
 
 	/**
+		The fingerprint of the methods these commands call, `RPCOps.fingerprint`
+		of their ops: what a session's hello says it calls. Generated.
+	**/
+	@:noCompletion public function __rpc_fingerprint():Int {
+		return 0;
+	}
+
+	/**
 		The call for `op` waiting under `requestId`, which the stub took from
 		`__nextRequestId` and framed its call with first: a call whose
 		arguments cannot be framed throws before anything waits.

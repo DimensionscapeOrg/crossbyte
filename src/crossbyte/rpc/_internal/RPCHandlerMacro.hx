@@ -332,6 +332,9 @@ class RPCHandlerMacro {
 		}
 
 		newFields.push(makeDispatcher(methods, entries, usePerfectHash, tag, inheritedDispatch != null));
+		// What a hello says this handler answers: each method by its own op,
+		// as a commands class calls it, `ping` aside.
+		newFields.push(RPCCommandMacro.fingerprintField([for (method in methods) if (method.name != "ping") method.op]));
 
 		return fields.concat(newFields);
 	}
