@@ -18,7 +18,12 @@ import haxe.macro.Type;
 	byte saying whether it is there.
 
 	A kind added later gives a token of its own, and every kind here keeps
-	the token it has, and with it every op that names it.
+	the token it has, and with it every op that names it. A structure's
+	token is to carry a hash of its shape, each field's id, name, kind and
+	absence, as hxwire's shape does, so that retyping a field changes the
+	op of every method that carries it, and moving one does not; an array's,
+	its element's token inside its own brackets. `RPCOps.signature` joins
+	whatever tokens it is given.
 **/
 class RPCKinds {
 	/** The kind of a value of type `ct`, absence aside, or `null` for a type the compiled lane does not carry. **/

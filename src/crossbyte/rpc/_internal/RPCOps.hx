@@ -4,34 +4,71 @@ import crossbyte.utils.Hash;
 import haxe.io.Bytes;
 
 /**
-	How an RPC method's name becomes the op that names it on the wire, and the
-	check that no two methods of one surface share an op.
+	How a compiled RPC method becomes the op that names it on the wire, and
+	the check that no two methods of one surface share an op.
 
-	An op is the 32-bit FNV-1a hash of the method's name, and nothing else,
-	not the contract it was declared in, so a method keeps its op wherever a
-	contract that declares it is reused. Two different names can still hash
-	alike (`glbvs` and `yacxa` do), and on one connection they would be one
-	method. Compiled into the macros as well as the runtime, so the check the
-	build makes is the one the tests exercise.
+	An op is the 32-bit FNV-1a hash of the method's signature, its UTF-8
+	bytes:
+
+	```
+	signature := name "(" [ kind ("," kind)* ] ")" [ ":" kind ]
+	kind      := [ "?" ] ( "i32" | "bool" | "f64" | "utf8" | "bytes" )
+	```
+
+	The kinds are the method's arguments in order, and after the colon its
+	answer's; a one-way method has none. A `?` is a value that may be
+	absent, an optional argument, a `Null<T>`, which a byte before it
+	says. `add(a:Int, b:Int):Int` is `add(i32,i32):i32`, and
+	`say(text:String):Void` is `say(utf8)`.
+
+	A kind names a layout, not a type: a typedef is the kind it names, so
+	renaming one, or an argument, changes no op, and a client and a server
+	still agree. Reordering arguments of different kinds, retyping one,
+	adding or removing one, or making one optional changes the op: a peer
+	built from the other version of the method finds no method with it,
+	and is answered as for a method it does not have, where it read the
+	bytes as its own and ran on what they made. Swapping two arguments of
+	the same kind changes nothing on the wire, and so not the op.
+
+	Not the contract the method was declared in: a method keeps its op
+	wherever a contract that declares it is reused. Two signatures can
+	still hash alike, and on one connection they would be one method, so a
+	surface with two such fails the build. `ping`, every session's own, is
+	the hash of its name alone (`RPCWire.PING_OP`).
+
+	A kind added later, an array, a structure, an enum, names its own
+	layout, a structure's by a hash of its shape, and every kind above
+	keeps its token. Compiled into the macros as well as the runtime, so
+	the check the build makes is the one the tests exercise.
 **/
 class RPCOps {
-	public static inline function opOf(name:String):Int {
-		return Hash.fnv1a32(Bytes.ofString(name));
+	/** The op of `text`, a method's signature or `ping`: its FNV-1a hash. **/
+	public static inline function opOf(text:String):Int {
+		return Hash.fnv1a32(Bytes.ofString(text));
 	}
 
 	/**
-		The first two of `names` that share an op, or `null` if none do. A
-		name listed twice is one method reached twice, not a clash.
+		A method's signature: its name, the kinds of its arguments, and, for a
+		method that is answered, after a colon, its answer's. `answer` is
+		`null` for a one-way method.
 	**/
-	public static function firstClash(names:Array<String>):Null<Array<String>> {
+	public static function signature(name:String, args:Array<String>, answer:Null<String>):String {
+		return name + "(" + args.join(",") + ")" + (answer == null ? "" : ":" + answer);
+	}
+
+	/**
+		The first two of `signatures` that share an op, or `null` if none do.
+		One listed twice is one method reached twice, not a clash.
+	**/
+	public static function firstClash(signatures:Array<String>):Null<Array<String>> {
 		final byOp:Map<Int, String> = new Map();
-		for (name in names) {
-			final op:Int = opOf(name);
+		for (signature in signatures) {
+			final op:Int = opOf(signature);
 			final other:Null<String> = byOp.get(op);
 			if (other == null) {
-				byOp.set(op, name);
-			} else if (other != name) {
-				return [other, name];
+				byOp.set(op, signature);
+			} else if (other != signature) {
+				return [other, signature];
 			}
 		}
 		return null;

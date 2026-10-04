@@ -150,7 +150,7 @@ class RPCHandlerMacro {
 								pos: f.pos,
 								args: fn.args,
 								ret: fn.ret != null ? fn.ret : macro :Void,
-								op: RPCOps.opOf(f.name)
+								op: RPCContractMacroTools.opOfMethod(f.name, fn.args, answerOf(fn.ret, f.pos), f.pos)
 							});
 						default:
 							Context.error("Field " + f.name + " is @:rpc but not a function", f.pos);
@@ -188,11 +188,22 @@ class RPCHandlerMacro {
 			}
 		}
 
-		var n = methods.length;
-		if (n == 0) {
+		if (methods.length == 0) {
 			return fields;
 		}
-		RPCContractMacroTools.requireDistinctOps([for (method in methods) {name: method.name, pos: method.pos}], true);
+		// The ops dispatch answers, each a method's: its own, and for a method
+		// with an answer also the op of a one-way call to it, which has none
+		// in its signature, run as ever, its answer sent nowhere.
+		final entries = new Array<DispatchEntry>();
+		for (method in methods) {
+			entries.push({op: method.op, method: method});
+			final oneWay:Int = method.name == "ping" ? method.op : RPCContractMacroTools.opOfMethod(method.name, method.args, null, method.pos);
+			if (oneWay != method.op) {
+				entries.push({op: oneWay, method: method});
+			}
+		}
+		final n:Int = entries.length;
+		RPCContractMacroTools.requireDistinctOps([for (entry in entries) {name: entry.method.name, op: entry.op, pos: entry.method.pos}], true);
 
 		final tag = classTag();
 		// Hooks cost a handler nothing unless it, or a handler it extends,
@@ -205,7 +216,8 @@ class RPCHandlerMacro {
 		}
 
 		var newFields:Array<Field> = [];
-		final usePerfectHash = (n > DIRECT_SWITCH_MAX_METHODS);
+		// By how many methods, as it was before a method could have two ops.
+		final usePerfectHash = (methods.length > DIRECT_SWITCH_MAX_METHODS);
 
 		if (usePerfectHash) {
 			var mVal = n;
@@ -236,7 +248,7 @@ class RPCHandlerMacro {
 
 			var buckets = [for (_ in 0...mVal) new Array<Int>()];
 			for (i in 0...n) {
-				buckets[h1(methods[i].op)].push(i);
+				buckets[h1(entries[i].op)].push(i);
 			}
 			buckets.sort((a, b) -> b.length - a.length);
 
@@ -263,14 +275,14 @@ class RPCHandlerMacro {
 					continue;
 				}
 
-				var b = h1(methods[bucket[0]].op);
+				var b = h1(entries[bucket[0]].op);
 				var d = 0;
 				while (true) {
 					var ok = true;
 					var slots = new Array<Int>();
 
 					for (id in bucket) {
-						var slot = h2(methods[id].op, d);
+						var slot = h2(entries[id].op, d);
 						if (used[slot] || slots.indexOf(slot) != -1) {
 							ok = false;
 							break;
@@ -285,7 +297,6 @@ class RPCHandlerMacro {
 							var slot = slots[i];
 							used[slot] = true;
 							T[slot] = id;
-							methods[id].idx = id;
 						}
 						break;
 					}
@@ -299,7 +310,7 @@ class RPCHandlerMacro {
 
 			newFields.push(makeIntArray("RPC_G", G));
 			newFields.push(makeIntArray("RPC_T", T));
-			newFields.push(makeIntArray("RPC_OPS", methods.map(method -> method.op)));
+			newFields.push(makeIntArray("RPC_OPS", entries.map(entry -> entry.op)));
 
 			newFields.push({
 				name: "RPC_M",
@@ -316,11 +327,11 @@ class RPCHandlerMacro {
 			});
 		}
 
-		for (i in 0...n) {
-			newFields.push(makeDecoder(methods[i], tag, callsBefore, callsAfter));
+		for (method in methods) {
+			newFields.push(makeDecoder(method, tag, callsBefore, callsAfter));
 		}
 
-		newFields.push(makeDispatcher(methods, usePerfectHash, tag, inheritedDispatch != null));
+		newFields.push(makeDispatcher(methods, entries, usePerfectHash, tag, inheritedDispatch != null));
 
 		return fields.concat(newFields);
 	}
@@ -522,6 +533,18 @@ class RPCHandlerMacro {
 	}
 
 	/**
+		What a method returning `ret` is answered with, for its signature:
+		`null` for `Void`, which is one-way, and `T` for a future of `T`.
+	**/
+	static function answerOf(ret:Null<ComplexType>, pos:Position):Null<ComplexType> {
+		if (ret == null || isVoid(ret)) {
+			return null;
+		}
+		final later:Null<ComplexType> = futurePayload(ret, pos);
+		return later != null ? later : ret;
+	}
+
+	/**
 		`T` when `ct` is `crossbyte.Future<T>`, or a future of its own such as
 		`RPCResponse<T>`: a method returning one answers later, with a `T`.
 		Resolving the type path types no method.
@@ -553,7 +576,7 @@ class RPCHandlerMacro {
 		return false;
 	}
 
-	static function makeDispatcher(methods:Array<MethodInfo>, usePerfectHash:Bool, tag:String, overridesInherited:Bool):Field {
+	static function makeDispatcher(methods:Array<MethodInfo>, entries:Array<DispatchEntry>, usePerfectHash:Bool, tag:String, overridesInherited:Bool):Field {
 		// Never inline: it is reached through RPCHandler's abstract dispatch()
 		// in any case, and a subclass must be able to override it.
 		final access:Array<Access> = overridesInherited ? [APublic, AOverride] : [APublic];
@@ -570,7 +593,7 @@ class RPCHandlerMacro {
 			for (method in methods) {
 				final fname = decoderName(tag, method.name);
 				cases.push({
-					values: [macro $v{method.op}],
+					values: [for (entry in entries) if (entry.method == method) macro $v{entry.op}],
 					expr: macro {
 						this.$fname(input, requestId);
 					}
@@ -598,8 +621,8 @@ class RPCHandlerMacro {
 		}
 
 		var cases = new Array<Case>();
-		for (i in 0...methods.length) {
-			var fname = decoderName(tag, methods[i].name);
+		for (i in 0...entries.length) {
+			var fname = decoderName(tag, entries[i].method.name);
 			cases.push({
 				values: [macro $v{i}],
 				expr: macro {
@@ -720,7 +743,7 @@ class RPCHandlerMacro {
 									} : FunctionArg)
 							],
 							ret: fn.ret != null ? fn.ret : macro :Void,
-							op: RPCOps.opOf(name)
+							op: RPCContractMacroTools.opOfMethod(name, fn.args, answerOf(fn.ret, param.pos), param.pos)
 						});
 					default:
 				}
@@ -813,7 +836,8 @@ class RPCHandlerMacro {
 
 	static function readerForArg(a:FunctionArg, pos:Position):Expr {
 		var ct = a.type;
-		var isOpt = a.opt || isNullWrapped(ct);
+		// Through a typedef too, as the commands side decides it.
+		var isOpt = a.opt || RPCContractMacroTools.isNullable(ct, pos);
 		var base = unwrapNull(ct);
 		var kind = RPCKinds.of(base, pos);
 		if (kind == null) {
@@ -955,6 +979,12 @@ class RPCHandlerMacro {
 			pos: pos
 		});
 	}
+}
+
+/** An op a generated dispatch answers, and the method it calls. **/
+private typedef DispatchEntry = {
+	op:Int,
+	method:MethodInfo
 }
 
 private typedef MethodInfo = {
