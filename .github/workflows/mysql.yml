@@ -9,6 +9,10 @@ run-name: CrossByte MySQL | ${{ github.event_name }} | ${{ github.ref_name }}
 #
 # It builds against the hxcpp fork's production branch, as ci.yml does, so it
 # needs the fork's MySQL client work (branch fix/mysql-client) merged there.
+#
+# utest comes through .github/actions/haxelibs, from a cache, so an outage of
+# lib.haxe.org does not stop this job. ci.yml's header says how a failure
+# reads.
 
 on:
   push:
@@ -72,21 +76,14 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Install Haxe dependencies
-        run: |
-          haxelib install utest --quiet
-          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
-          # Every native extern includes its Build.xml through
-          # ${haxelib:crossbyte}, so hxcpp has to be able to resolve this
-          # repository by name.
-          haxelib dev crossbyte "$GITHUB_WORKSPACE"
+      - name: Install Haxe libraries
+        uses: ./.github/actions/haxelibs
 
-      - name: Bootstrap hxcpp tools
-        run: |
-          set -euo pipefail
-          HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
-          (cd "$HXCPP_DIR/tools/run" && haxe compile.hxml)
-          (cd "$HXCPP_DIR/tools/hxcpp" && haxe compile.hxml)
+      - name: Install hxcpp
+        uses: ./.github/actions/hxcpp
+        with:
+          repository: ${{ env.HXCPP_REPO }}
+          ref: ${{ env.HXCPP_REF }}
 
       - name: Build MySQL integration suite
         run: haxe ci/mysql-tests.hxml
@@ -104,7 +101,15 @@ jobs:
           CROSSBYTE_MYSQL_DATABASE: crossbyte
         run: |
           set -o pipefail
-          ./export/ci-mysql-tests/MySQLIntegrationMain | tee mysql-tests.log
+          rc=0
+          ./export/ci-mysql-tests/MySQLIntegrationMain | tee mysql-tests.log || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::MySQLIntegrationMain exited with code $rc"
+            exit "$rc"
+          fi
           # utest reports failures as FAILURE and ERROR, and the exit code of
           # a run that dies before its report is not to be trusted alone.
-          grep -q "results: ALL TESTS OK" mysql-tests.log
+          if ! grep -q "results: ALL TESTS OK" mysql-tests.log; then
+            echo "::error::MySQLIntegrationMain exited 0 without reporting 'results: ALL TESTS OK'"
+            exit 1
+          fi

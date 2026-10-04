@@ -1,0 +1,123 @@
+name: Haxe libraries
+description: >-
+  Installs the libraries ci/haxelibs.txt lists, at its exact versions, from a
+  cache, and asks lib.haxe.org only for what the cache does not hold.
+
+# On 2026-10-04 lib.haxe.org's API lost its database, every job failed at its
+# first `haxelib install`, and main stayed red for hours over nothing in the
+# code. A cache alone would not have helped: `haxelib install` asks the
+# registry about a version even when that version is installed already. So
+# this installs from the registry only a version the restored cache lacks.
+#
+# The cache holds each library's folder in the haxelib repository setup-haxe
+# made: its version folders and its .current, so restoring it is
+# installing it. The key names every version on the list. When no cache has
+# that key, the newest one saved for an older list is restored instead, and
+# only what changed goes to the registry. (A cache is restored only into the
+# folders it was saved from, so a list that adds or drops a library goes to
+# the registry for all of them, once.)
+#
+# Every step runs in bash, Git Bash on Windows, and names a command that
+# fails.
+
+runs:
+  using: composite
+  steps:
+    - name: Read ci/haxelibs.txt
+      id: plan
+      shell: bash
+      run: |
+        set -euo pipefail
+        trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
+        list="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)/ci/haxelibs.txt"
+        # haxelib prints the repository with a trailing separator, and on
+        # Windows with backslashes, which the cache action also accepts as
+        # forward slashes.
+        repo="$(haxelib config)"
+        repo="${repo%$'\r'}"
+        repo="${repo//\\//}"
+        repo="${repo%/}"
+        key="haxelibs-v1-$RUNNER_OS-$RUNNER_ARCH"
+        paths=""
+        # A Windows checkout ends each line with CR LF.
+        while read -r name version extra || [ -n "$name" ]; do
+          name="${name%$'\r'}"
+          version="${version%$'\r'}"
+          extra="${extra%$'\r'}"
+          case "$name" in ''|'#'*) continue ;; esac
+          if [ -z "$version" ] || [ -n "$extra" ]; then
+            echo "::error file=ci/haxelibs.txt::Expected a name and a version, found: $name $version $extra"
+            exit 1
+          fi
+          key="$key-$name-$version"
+          paths="$paths$repo/$name"$'\n'
+        done < "$list"
+        echo "Repository: $repo"
+        echo "Cache key: $key"
+        {
+          echo "list=$list"
+          echo "repo=$repo"
+          echo "key=$key"
+          echo "restore-key=haxelibs-v1-$RUNNER_OS-$RUNNER_ARCH-"
+          echo "paths<<EOF"
+          printf '%s' "$paths"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Restore the libraries
+      id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.plan.outputs.paths }}
+        key: ${{ steps.plan.outputs.key }}
+        restore-keys: ${{ steps.plan.outputs.restore-key }}
+
+    - name: Install what the cache did not hold
+      shell: bash
+      env:
+        LIST: ${{ steps.plan.outputs.list }}
+        REPO: ${{ steps.plan.outputs.repo }}
+      run: |
+        set -euo pipefail
+        trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
+        while read -r name version extra || [ -n "$name" ]; do
+          name="${name%$'\r'}"
+          version="${version%$'\r'}"
+          case "$name" in ''|'#'*) continue ;; esac
+          folder="$REPO/$name"
+          # haxelib keeps version 1.13.2 in a folder named 1,13,2.
+          installed="${version//./,}"
+          if haxelib path "$name:$version" > /dev/null 2>&1; then
+            from="the cache"
+          else
+            # A folder haxelib cannot read is not reinstalled over.
+            rm -rf "$folder/$installed"
+            if ! haxelib install "$name" "$version" --always --skip-dependencies; then
+              echo "::error::$name $version is not in the haxelib cache, and lib.haxe.org did not supply it (haxelib's error is above). The cache holds what earlier runs installed: a version ci/haxelibs.txt names that none installed yet needs the registry."
+              exit 1
+            fi
+            from="lib.haxe.org"
+          fi
+          # Current, whatever the restored .current named: a cache saved for
+          # an older list names that list's version.
+          printf '%s' "$version" > "$folder/.current"
+          for entry in "$folder"/*; do
+            if [ -d "$entry" ] && [ "${entry##*/}" != "$installed" ]; then
+              echo "Removing $name ${entry##*/}, which ci/haxelibs.txt does not list."
+              rm -rf "$entry"
+            fi
+          done
+          haxelib path "$name:$version" > /dev/null
+          echo "$name $version: from $from"
+        done < "$LIST"
+
+    # Saved as soon as the libraries are in, whatever the rest of the job
+    # does, so a failing job still leaves the next run a cache. Jobs that run
+    # at once save the same key; the first one's is kept, and the others
+    # warn.
+    - name: Save the libraries
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ steps.plan.outputs.paths }}
+        key: ${{ steps.plan.outputs.key }}
