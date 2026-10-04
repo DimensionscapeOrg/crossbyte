@@ -422,6 +422,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		}
 		__connections = new StringMap();
 		__byHost = new StringMap();
+		__byHostCount = new StringMap();
 		__pending = new StringMap();
 		__pendingCount = 0;
 
@@ -1396,6 +1397,11 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	// key, is what everything else reads; the two change together, through
 	// `__file` and `__unfile`.
 	@:noCompletion private var __byHost:StringMap<haxe.ds.IntMap<ReliableDatagramSocket>> = new StringMap();
+	// How many sessions each host in `__byHost` has. Whether a host had any
+	// left was asked of its map, and asking a map whether it is empty copies
+	// all of it natively: on every close, for every session behind the same
+	// address, a carrier NAT puts many players behind one.
+	@:noCompletion private var __byHostCount:StringMap<Int> = new StringMap();
 
 	/** Files `socket` under its endpoint, in both maps. **/
 	@:noCompletion private function __file(address:String, port:Int, socket:ReliableDatagramSocket):Void {
@@ -1405,6 +1411,10 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			ports = new haxe.ds.IntMap();
 			__byHost.set(address, ports);
 		}
+		if (!ports.exists(port)) {
+			var count:Null<Int> = __byHostCount.get(address);
+			__byHostCount.set(address, count == null ? 1 : count + 1);
+		}
 		ports.set(port, socket);
 	}
 
@@ -1412,8 +1422,14 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	@:noCompletion private function __unfile(address:String, port:Int):Void {
 		__connections.remove(__endpointKey(address, port));
 		var ports = __byHost.get(address);
-		if (ports != null && ports.remove(port) && !ports.iterator().hasNext()) {
-			__byHost.remove(address);
+		if (ports != null && ports.remove(port)) {
+			var count:Null<Int> = __byHostCount.get(address);
+			if (count == null || count <= 1) {
+				__byHost.remove(address);
+				__byHostCount.remove(address);
+			} else {
+				__byHostCount.set(address, count - 1);
+			}
 		}
 	}
 

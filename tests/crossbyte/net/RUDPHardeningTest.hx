@@ -3,6 +3,8 @@ package crossbyte.net;
 import crossbyte.Seq32;
 import crossbyte.io.ByteArray;
 import crossbyte.net._internal.reliable.OutstandingFrame;
+import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
+import crossbyte.ds.SequenceRing;
 import haxe.ds.IntMap;
 import utest.Assert;
 
@@ -360,7 +362,7 @@ class RUDPHardeningTest extends utest.Test {
 
 	private static function makeSocket():ReliableDatagramSocket {
 		var socket:ReliableDatagramSocket = Type.createEmptyInstance(ReliableDatagramSocket);
-		socket.__inFrameCache = new IntMap();
+		socket.__inFrameCache = new SequenceRing(ReliableDatagramSocket.IN_FRAME_SLOTS);
 		socket.__inFrameCacheSize = 0;
 		socket.__inSequence = 0;
 		return socket;
@@ -371,5 +373,157 @@ class RUDPHardeningTest extends utest.Test {
 		bytes.writeUTFBytes(value);
 		bytes.position = 0;
 		return bytes;
+	}
+
+	/**
+		An ACK's map of the frames held past a gap is read from a ring of bits
+		kept beside the cache, where it was built by walking the cache's keys.
+		It names exactly what the walk named, frames held, by their offset
+		past the next expected, for any next expected, the 32-bit wrap
+		included, and as frames are delivered and the cache drains.
+	**/
+	public function testTheAckMapNamesExactlyTheFramesHeld():Void {
+		var seed:Int = 12345;
+		function next(bound:Int):Int {
+			seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF;
+			return seed % bound;
+		}
+		for (start in [0, 1000, 0x7FFFFF00, 0x7FFFFFFF, -300, -1, -600]) {
+			for (trial in 0...12) {
+				var socket = makeSocket();
+				socket.__inSequence = start;
+				var held:Array<Int> = [];
+				for (_ in 0...(1 + next(80))) {
+					// Taken into an Int first: a local function is called through
+					// Dynamic natively, and `| 0` on what it returns does not compile.
+					var offset:Int = next(499);
+					var sequence:Seq32 = ((start : Int) + 1 + offset) | 0;
+					if (socket.__shouldBufferPacket(sequence)) {
+						socket.__cacheFrame(sequence, new ByteArray());
+						held.push(sequence);
+					}
+				}
+				Assert.equals(held.length, socket.__inFrameCacheSize);
+				Assert.same(heldMap(socket, held), ackMap(socket), 'the map at $start, trial $trial');
+
+				// What arrives in order, and the held frames it lets through,
+				// leave the cache as __drainBufferedPackets takes them.
+				for (_ in 0...(1 + next(40))) {
+					socket.__inSequence++;
+					while (socket.__inFrameCache.has(socket.__inSequence)) {
+						Assert.isTrue(socket.__inFrameCache.remove(socket.__inSequence));
+						held.remove(socket.__inSequence);
+						socket.__inFrameCacheSize--;
+						socket.__inSequence++;
+					}
+				}
+				Assert.same(heldMap(socket, held), ackMap(socket), 'the map at $start, trial $trial, after delivery');
+			}
+		}
+	}
+
+	/**
+		A frame left in the cache behind the next expected, which delivery
+		keeps from happening, but an in-order FIN moves on without draining,
+		shares a slot of the ring with the frame 511 ahead, and must not make
+		the ACK say that one arrived: the peer would give up sending it.
+	**/
+	public function testAStaleFrameNeverClaimsAnotherArrived():Void {
+		var socket = makeSocket();
+		socket.__inSequence = 4096;
+		socket.__cacheFrame(4096, new ByteArray());
+		socket.__cacheFrame(4100, new ByteArray());
+
+		var map = ackMap(socket);
+		Assert.same(heldMap(socket, [4096, 4100]), map);
+		Assert.equals(1, map.length, "the map ran to the slot the stale frame shares");
+	}
+
+	/**
+		The receive ring's window moves only as frames are held. After more
+		than 2^31 frames in order with none held, the next held past a gap
+		read as older than the window, and was refused: counted as held, never
+		kept. The ring starts again whenever nothing is held.
+	**/
+	public function testAFrameHeldAfterALongCleanStretchIsKept():Void {
+		var socket = makeSocket();
+		socket.__cacheFrame(5, new ByteArray());
+		Assert.isTrue(socket.__inFrameCache.remove(5));
+		socket.__inFrameCacheSize--;
+
+		// 2^31 + 204 frames past 5, wrapped: written out, since a constant
+		// that overflows folds to a Float natively.
+		socket.__inSequence = -2147483444;
+		var sequence:Seq32 = ((socket.__inSequence : Int) + 3) | 0;
+		Assert.isTrue(socket.__shouldBufferPacket(sequence));
+		socket.__cacheFrame(sequence, new ByteArray());
+
+		Assert.equals(1, socket.__inFrameCacheSize);
+		Assert.isTrue(socket.__inFrameCache.has(sequence), "the frame was counted and not kept");
+		Assert.same(heldMap(socket, [sequence]), ackMap(socket));
+	}
+
+	/** What `__writeAckPayload` wrote, without a delay. **/
+	private static function ackMap(socket:ReliableDatagramSocket):Array<Int> {
+		var length:Int = socket.__writeAckPayload(false);
+		var bytes:haxe.io.Bytes = socket.__sackScratch;
+		return [for (i in 0...length) bytes.get(i)];
+	}
+
+	/** The map as it was built before: from the frames held, as the cache's keys were walked. **/
+	private static function heldMap(socket:ReliableDatagramSocket, held:Array<Int>):Array<Int> {
+		var map:Array<Int> = [for (_ in 0...ReliableDatagramProtocol.SACK_BYTES) 0];
+		var base:Int = ((socket.__inSequence : Int) + 1) | 0;
+		var used:Int = 0;
+		for (sequence in held) {
+			var offset:Int = (sequence - base) | 0;
+			if (offset < 0 || offset >= ReliableDatagramProtocol.SACK_BITS) {
+				continue;
+			}
+			map[offset >> 3] |= 1 << (offset & 7);
+			if ((offset >> 3) + 1 > used) {
+				used = (offset >> 3) + 1;
+			}
+		}
+		return map.slice(0, used);
+	}
+
+	/**
+		Sessions are filed by host, and a host's entry goes once its last
+		session does: counted, where the host's map was asked whether it was
+		empty, which copied the whole of it, on every close.
+	**/
+	public function testAHostIsForgottenWithItsLastSession():Void {
+		if (!ReliableDatagramServerSocket.isSupported) {
+			Assert.isFalse(ReliableDatagramServerSocket.isSupported);
+			return;
+		}
+		var server = new ReliableDatagramServerSocket();
+		@:privateAccess {
+			var session = () -> Type.createEmptyInstance(ReliableDatagramSocket);
+			server.__file("10.0.0.1", 1001, session());
+			server.__file("10.0.0.1", 1002, session());
+			server.__file("10.0.0.1", 1002, session());
+			server.__file("10.0.0.2", 2001, session());
+
+			server.__unfile("10.0.0.1", 1001);
+			Assert.notNull(server.__sessionAt("10.0.0.1", 1002), "the host's other session went with the first");
+			server.__unfile("10.0.0.1", 1002);
+			Assert.isNull(server.__sessionAt("10.0.0.1", 1002));
+			Assert.isFalse(server.__byHost.exists("10.0.0.1"), "the host outlived its last session");
+			Assert.isFalse(server.__byHostCount.exists("10.0.0.1"));
+			Assert.notNull(server.__sessionAt("10.0.0.2", 2001), "another host's session went too");
+
+			// Unfiling what is not there changes nothing.
+			server.__unfile("10.0.0.1", 1002);
+			server.__unfile("10.0.0.2", 9999);
+			Assert.notNull(server.__sessionAt("10.0.0.2", 2001));
+
+			// The sessions here were never made, only filed: close would close
+			// them, so they go first.
+			server.__unfile("10.0.0.2", 2001);
+			Assert.isFalse(server.__byHost.exists("10.0.0.2"));
+		}
+		server.close();
 	}
 }

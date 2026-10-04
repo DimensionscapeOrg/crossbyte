@@ -27,6 +27,7 @@ import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagra
 import crossbyte.net._internal.RuntimeHandOff;
 import haxe.Serializer;
 import haxe.Unserializer;
+import crossbyte.ds.SequenceRing;
 import haxe.ds.IntMap;
 import haxe.ds.Vector;
 #if !(js && !nodejs)
@@ -590,6 +591,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private static inline var CONNECTION_ATTEMPT_INTERVAL:Float = 3.0;
 	@:noCompletion private static inline var DELIVERY_WINDOW:Int = 500;
 
+	// The receive ring's slots: an ACK names this many frames past the next
+	// expected, and the window must fit inside it.
+	@:noCompletion private static inline var IN_FRAME_SLOTS:Int = ReliableDatagramProtocol.SACK_BITS;
+
 	/** `timeout` unless changed, in milliseconds. **/
 	public static inline var DEFAULT_TIMEOUT:Int = 20000;
 
@@ -760,8 +765,14 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __lookups:Int = 0;
 	@:noCompletion private var __endian:Endian = ByteArray.defaultEndian;
 	// Out-of-order frames, kept whole: a fragment's `more` flag is as much a
-	// part of it as its bytes.
-	@:noCompletion private var __inFrameCache:IntMap<ReliableDatagramFrame>;
+	// part of it as its bytes. Filed by sequence in a ring, not a map: the
+	// window holds them within DELIVERY_WINDOW of the next expected, fewer
+	// than the ring's IN_FRAME_SLOTS, and an ACK's map of them is read from
+	// it a byte at a time. It was built by walking a map's keys, which
+	// natively copies them all first, for every ACK, and one goes at once
+	// for each frame past a gap, so a burst of loss cost the square of the
+	// frames held.
+	@:noCompletion private var __inFrameCache:SequenceRing<ReliableDatagramFrame>;
 
 	// The fragments of a reliable message still arriving, and their total.
 	// Joined once when the last arrives, rather than appended to a buffer
@@ -963,7 +974,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	public function new(host:String = null, port:Int = 0) {
 		super();
 
-		__inFrameCache = new IntMap();
+		__inFrameCache = new SequenceRing(IN_FRAME_SLOTS);
 		__inFrameCacheSize = 0;
 		__outFrameCache = new IntMap();
 		__outgoingQueue = [];
@@ -2603,11 +2614,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/** A graceful FIN held past a gap, as `__cacheFrame` holds a PACKET. **/
 	@:noCompletion private function __cacheFin(sequence:Seq32):Void {
-		if (!__inFrameCache.exists(sequence)) {
-			__inFrameCacheSize++;
-		}
-
-		__inFrameCache.set(sequence, new ReliableDatagramFrame(FIN, sequence, null, false, null, false, false, true));
+		__holdFrame(sequence, new ReliableDatagramFrame(FIN, sequence, null, false, null, false, false, true));
 	}
 
 	/**
@@ -2648,7 +2655,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return false;
 		}
 
-		if (__inFrameCache.exists(sequence)) {
+		if (__inFrameCache.has(sequence)) {
 			return false;
 		}
 
@@ -2662,17 +2669,26 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		return __inSequence + DELIVERY_WINDOW;
 	}
 
+	@:noCompletion private function __cacheFrame(sequence:Seq32, payload:ByteArray, more:Bool = false):Void {
+		__holdFrame(sequence, new ReliableDatagramFrame(PACKET, sequence, payload, false, null, more));
+	}
+
 	// Every insert into the out-of-order cache runs through here, and every
 	// removal decrements alongside the `remove`, so `__inFrameCacheSize` tracks
-	// the map exactly. The count used to be recovered by walking `keys()`, which
-	// cost an O(n) iteration plus an iterator allocation for every buffered
-	// datagram.
-	@:noCompletion private function __cacheFrame(sequence:Seq32, payload:ByteArray, more:Bool = false):Void {
-		if (!__inFrameCache.exists(sequence)) {
+	// the cache exactly. The count used to be recovered by walking `keys()`,
+	// which cost an O(n) iteration plus an iterator allocation for every
+	// buffered datagram.
+	@:noCompletion private function __holdFrame(sequence:Seq32, frame:ReliableDatagramFrame):Void {
+		var added:Bool = !__inFrameCache.has(sequence);
+		if (added && __inFrameCacheSize == 0) {
+			// Nothing held: the ring's window starts again here. It moves only
+			// as frames are put, and one put 2^31 frames ago, a long, clean
+			// stretch, would make this one read as older than the window.
+			__inFrameCache.clear();
+		}
+		if (__inFrameCache.put(sequence, frame) && added) {
 			__inFrameCacheSize++;
 		}
-
-		__inFrameCache.set(sequence, new ReliableDatagramFrame(PACKET, sequence, payload, false, null, more));
 	}
 
 	@:noCompletion private inline function __inFrameCacheCount():Int {
@@ -2825,7 +2841,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__stopRetransmitClock();
 
 		__outFrameCache = new IntMap();
-		__inFrameCache = new IntMap();
+		__inFrameCache = new SequenceRing(IN_FRAME_SLOTS);
 		__inFrameCacheSize = 0;
 		__fragments.resize(0);
 		__fragmentBytes = 0;
@@ -2889,7 +2905,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	@:noCompletion private function __drainBufferedPackets():Void {
-		while (!__closed && __inFrameCache.exists(__inSequence)) {
+		while (!__closed && __inFrameCache.has(__inSequence)) {
 			var frame:ReliableDatagramFrame = __inFrameCache.get(__inSequence);
 			__inFrameCache.remove(__inSequence);
 			__inFrameCacheSize--;
@@ -3748,23 +3764,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (__inFrameCacheSize == 0) {
 			return at;
 		}
-		bytes.fill(at, ReliableDatagramProtocol.SACK_BYTES, 0);
-
-		var base:Int = (__inSequence : Int) + 1;
-		var used:Int = 0;
-		for (sequence in __inFrameCache.keys()) {
-			// Wrapped to 32 bits, which JavaScript's arithmetic is not.
-			var offset:Int = (sequence - base) | 0;
-			if (offset < 0 || offset >= ReliableDatagramProtocol.SACK_BITS) {
-				continue;
-			}
-			var index:Int = offset >> 3;
-			bytes.set(at + index, bytes.get(at + index) | (1 << (offset & 7)));
-			if (index + 1 > used) {
-				used = index + 1;
-			}
-		}
-		return at + used;
+		// Bit k of byte i: whether next expected + 1 + 8i + k is held. Wrapped
+		// to 32 bits, which JavaScript's arithmetic is not.
+		var base:Int = ((__inSequence : Int) + 1) | 0;
+		return at + __inFrameCache.writeBits(base, bytes, at, ReliableDatagramProtocol.SACK_BYTES);
 	}
 
 	#if !nodejs
