@@ -1,0 +1,47 @@
+name: hxcpp from the fork
+description: >-
+  Installs hxcpp from the fork's git repository, builds its tools, and
+  registers this checkout as the crossbyte haxelib.
+
+# From GitHub, not lib.haxe.org: `haxelib git` asks the registry only for a
+# library's dependencies, and hxcpp has none, so this keeps working through a
+# registry outage: as it did on 2026-10-04, when every `haxelib install`
+# failed.
+#
+# Every native extern includes its Build.xml through ${haxelib:crossbyte}, so
+# hxcpp has to be able to resolve this repository by name; -cp is not enough.
+# Without it the first cpp build in a job stops at 'Could not find haxelib
+# crossbyte'.
+#
+# One bash step, Git Bash on Windows, which names a command that fails.
+
+inputs:
+  repository:
+    description: The hxcpp git repository.
+    required: true
+  ref:
+    description: The branch of it to install.
+    required: true
+  crossbyte:
+    description: Where this repository is checked out, if not the workspace.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Install hxcpp, build its tools, and register CrossByte
+      shell: bash
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+        REF: ${{ inputs.ref }}
+        CROSSBYTE: ${{ inputs.crossbyte || github.workspace }}
+      run: |
+        set -euo pipefail
+        trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
+        haxelib git hxcpp "$REPOSITORY" "$REF"
+        haxelib dev crossbyte "$CROSSBYTE"
+        hxcpp="$(haxelib libpath hxcpp)"
+        hxcpp="${hxcpp%$'\r'}"
+        (cd "$hxcpp/tools/run" && haxe compile.hxml)
+        (cd "$hxcpp/tools/hxcpp" && haxe compile.hxml)
