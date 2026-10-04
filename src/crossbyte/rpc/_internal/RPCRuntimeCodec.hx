@@ -1,7 +1,6 @@
 package crossbyte.rpc._internal;
 
 import crossbyte.io.ByteArrayInput;
-import crossbyte.io.ByteArrayOutput;
 import haxe.io.Bytes;
 
 /**
@@ -19,11 +18,13 @@ class RPCRuntimeCodec {
 	public static inline final TAG_STRING:Int = 5;
 	public static inline final TAG_BYTES:Int = 6;
 
-	public static function writeArgs(output:ByteArrayOutput, args:Array<Dynamic>):Void {
-		final values = (args == null) ? [] : args;
-		output.reserve(5);
-		output.writeVarUInt(values.length);
-		for (value in values) {
+	public static function writeArgs(output:RPCFrame, args:Array<Dynamic>):Void {
+		if (args == null) {
+			output.putVarUInt(0);
+			return;
+		}
+		output.putVarUInt(args.length);
+		for (value in args) {
 			writeValue(output, value);
 		}
 	}
@@ -40,29 +41,24 @@ class RPCRuntimeCodec {
 		return values;
 	}
 
-	public static function writeValue(output:ByteArrayOutput, value:Dynamic):Void {
+	public static function writeValue(output:RPCFrame, value:Dynamic):Void {
 		if (value == null) {
-			output.reserve(1);
-			output.writeByte(TAG_NULL);
+			output.putByte(TAG_NULL);
 			return;
 		}
 
 		switch (Type.typeof(value)) {
 			case TBool:
-				output.reserve(1);
-				output.writeByte(value ? TAG_TRUE : TAG_FALSE);
+				output.putByte(value ? TAG_TRUE : TAG_FALSE);
 			case TInt:
-				output.reserve(5);
-				output.writeByte(TAG_INT);
-				output.writeInt(value);
+				output.putByte(TAG_INT);
+				output.putInt(value);
 			case TFloat:
-				output.reserve(9);
-				output.writeByte(TAG_FLOAT);
-				output.writeDouble(value);
+				output.putByte(TAG_FLOAT);
+				output.putDouble(value);
 			case TClass(String):
-				output.reserve(1);
-				output.writeByte(TAG_STRING);
-				output.writeVarUTF(value);
+				output.putByte(TAG_STRING);
+				output.putString(value);
 			case TClass(Bytes):
 				__writeBytes(output, cast value);
 			case TClass(_) if (Std.isOfType(value, Bytes)):
@@ -75,12 +71,9 @@ class RPCRuntimeCodec {
 		}
 	}
 
-	private static inline function __writeBytes(output:ByteArrayOutput, bytes:Bytes):Void {
-		output.reserve(1);
-		output.writeByte(TAG_BYTES);
-		output.writeVarUInt(bytes.length);
-		output.reserve(bytes.length);
-		output.writeBytes(bytes, 0, bytes.length);
+	private static inline function __writeBytes(output:RPCFrame, bytes:Bytes):Void {
+		output.putByte(TAG_BYTES);
+		output.putBytes(bytes);
 	}
 
 	/** Reads one value, not past `end`. **/

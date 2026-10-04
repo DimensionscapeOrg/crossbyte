@@ -4,9 +4,9 @@ package crossbyte.rpc;
 // Node and in a browser.
 
 import crossbyte.Future;
+import crossbyte.rpc._internal.RPCFrame;
 import crossbyte.rpc._internal.RPCWire;
 import crossbyte.io.ByteArrayInput;
-import crossbyte.io.ByteArrayOutput;
 
 /**
 	`RPCHandler` is the inbound implementation surface for CrossByte RPC sessions.
@@ -206,13 +206,13 @@ abstract class RPCHandler {
 		session.__settleOnThisThread(future, settle);
 	}
 
-	/** Sends the answer the generated code has framed, on the calling session. **/
-	@:noCompletion private inline function __rpc_answer(framed:ByteArrayOutput):Void {
-		this_session.__sendAnswer(framed);
+	/** The frame an answer to `requestId` is written into, begun: `session`'s, the one the call came from. **/
+	@:noCompletion private inline function __rpc_frame(session:RPCSession<Dynamic, Dynamic>, room:Int, op:Int, requestId:Int):RPCFrame {
+		return session.__takeFrame(room, RPCWire.FLAG_RESPONSE, op, requestId);
 	}
 
-	/** Sends an answer framed later, on the session its call came from. **/
-	@:noCompletion private inline function __rpc_answerOn(session:RPCSession<Dynamic, Dynamic>, framed:ByteArrayOutput):Void {
+	/** Sends the answer the generated code has framed, on the session it was framed for. **/
+	@:noCompletion private inline function __rpc_answerOn(session:RPCSession<Dynamic, Dynamic>, framed:RPCFrame):Void {
 		session.__sendAnswer(framed);
 	}
 

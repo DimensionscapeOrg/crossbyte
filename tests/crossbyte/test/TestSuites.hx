@@ -463,10 +463,12 @@ class TestSuites {
 		runner.addCase(new crossbyte.rpc.RPCUnsendableCallTest());
 		runner.addCase(new crossbyte.rpc.RPCReadyAgainTest());
 		runner.addCase(new crossbyte.rpc.RPCPeerCloseCodeTest());
+		runner.addCase(new crossbyte.rpc.RPCFrameTest());
 		// Real sockets pumped until something happens, which Node cannot do,
 		// so not in the portable suite.
 		runner.addCase(new crossbyte.rpc.RPCConnectionEndTest());
 		runner.addCase(new crossbyte.rpc.RPCDialTest());
+		runner.addCase(new crossbyte.rpc.RPCTransportTest());
 	}
 
 	public static function addResources(runner:Runner):Void {

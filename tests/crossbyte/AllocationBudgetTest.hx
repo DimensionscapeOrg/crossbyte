@@ -85,12 +85,11 @@ class AllocationBudgetTest extends utest.Test {
 	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [1112, 1112, 1535], [1456, 1456, 1984]);
 	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 336], [8, 8, 488]);
 	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [344, 344, 824], [496, 496, 1096]);
-	// LinkedConnection, the in-memory pair these run over, copies each
-	// message it carries into a ByteArray of its own, where a socket's read
-	// would not: about a third of a call's figure natively, and half of a
-	// one-way call's.
-	private static final RPC_CALL = new Budget("an RPC call and its answer", "call", [920, 920, 592], [1216, 1216, 808]);
-	private static final RPC_ONE_WAY = new Budget("a one-way RPC call", "call", [392, 392, 264], [560, 560, 400]);
+	// Over LinkedConnection, the in-memory pair, which copies each message
+	// into a buffer it keeps, as a socket's read does. A call's figure is its
+	// RPCResponse and what waiting on it takes; a frame costs nothing.
+	private static final RPC_CALL = new Budget("an RPC call and its answer", "call", [200, 200, 208], [320, 320, 328]);
+	private static final RPC_ONE_WAY = new Budget("a one-way RPC call", "call", [0, 0, 24], [8, 8, 96]);
 
 	/**
 		Operations run before measuring, so what the first ones build is not

@@ -17,6 +17,14 @@ RPC runs on every target CrossByte builds for, JavaScript included: the
 portable test suite runs it on Node and in a browser. What carries it is the
 `NetConnection` a session is given, so it goes wherever one does.
 
+A session writes every frame it sends, calls, answers, pings, in one
+buffer of its own, and hands it to its connection's `send`, which copies what
+it keeps before it returns: framing a call allocates nothing. Every transport
+CrossByte ships copies. An `INetConnection` of your own must as well, since the
+buffer holds the session's next frame as soon as `send` returns; built with
+`-D crossbyte_check_events`, a session poisons each frame once it is sent, so
+a connection that kept one sends garbage its tests will see.
+
 Every example on this page is typechecked by `node ci/doc-examples.js`, which
 CI runs, in the order it appears: a later example uses what an earlier one
 declared.
@@ -170,7 +178,10 @@ on the wire:
 | `haxe.io.Bytes` | a length, then the bytes |
 
 An argument that may be absent, `?value:Int`, or `value:Null<Int>`, costs
-one more byte to say whether it is there. A return type is any of these, or
+one more byte to say whether it is there. One that may not cannot be null: a
+call with a null `String` or `Bytes` there throws an `ArgumentError` before
+anything is sent, and a handler answering null where its type is not
+`Null<T>` fails the call as a throw does. A return type is any of these, or
 `Void`. Anything else fails the build, naming the method.
 
 Because nothing on the wire names a field, the two ends must agree on each

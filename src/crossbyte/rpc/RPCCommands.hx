@@ -5,8 +5,8 @@ package crossbyte.rpc;
 
 import crossbyte.errors.IllegalOperationError;
 import crossbyte.io.ByteArrayInput;
-import crossbyte.io.ByteArrayOutput;
 import crossbyte.net.NetConnection;
+import crossbyte.rpc._internal.RPCFrame;
 import crossbyte.rpc._internal.RPCWire;
 import haxe.ds.IntMap;
 
@@ -102,6 +102,21 @@ abstract class RPCCommands {
 	@:noCompletion private static inline final UNBOUND_MESSAGE:String = "RPC commands are not bound to a session";
 
 	/**
+		The frame a stub writes its call into, begun: its session's, or with
+		no session, whose call fails as it is sent, one of its own.
+	**/
+	@:noCompletion private inline function __startFrame(room:Int, op:Int, requestId:Int):RPCFrame {
+		final session = __session;
+		final flags:Int = requestId != 0 ? RPCWire.FLAG_REQUEST : 0;
+		if (session != null) {
+			return session.__takeFrame(room, flags, op, requestId);
+		}
+		final frame = new RPCFrame(room);
+		frame.begin(room, flags, op, requestId);
+		return frame;
+	}
+
+	/**
 		Sends a one-way call's frame, as its stub built it. On a connection
 		that has ended it is dropped: nobody is told what becomes of a one-way
 		call.
@@ -111,7 +126,7 @@ abstract class RPCCommands {
 		the connection on the other side.
 		@throws IllegalOperationError When these commands have no session.
 	**/
-	@:noCompletion private function __sendCall(framed:ByteArrayOutput):Void {
+	@:noCompletion private function __sendCall(framed:RPCFrame):Void {
 		final session = __session;
 		if (session == null) {
 			throw new IllegalOperationError(UNBOUND_MESSAGE);
@@ -124,7 +139,7 @@ abstract class RPCCommands {
 		once when it cannot go, see `RPCSession.__sendRequestFrame`, or
 		these commands have no session.
 	**/
-	@:noCompletion private function __sendRequest<T>(response:RPCResponse<T>, framed:ByteArrayOutput):Void {
+	@:noCompletion private function __sendRequest<T>(response:RPCResponse<T>, framed:RPCFrame):Void {
 		final session = __session;
 		if (session == null) {
 			__failResponse(response.requestId, UNBOUND_MESSAGE, new IllegalOperationError(UNBOUND_MESSAGE));
