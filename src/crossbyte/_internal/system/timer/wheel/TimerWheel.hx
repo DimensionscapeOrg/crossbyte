@@ -1,6 +1,8 @@
 package crossbyte._internal.system.timer.wheel;
 
+import crossbyte._internal.system.timer.heap.TimerHeap;
 import haxe.Timer as HxTimer;
+import haxe.ds.Vector;
 
 /**
  * Timing wheel scheduler: an alternative to `TimerHeap` for runtimes that
@@ -105,8 +107,16 @@ class TimerWheel implements ITimerScheduler {
 	@:noCompletion private var __deadline:Float = 0;
 
 	@:noCompletion private var nodes:Array<WheelNode> = [];
-	@:noCompletion private var gens:Array<Int> = [];
-	@:noCompletion private var free:Array<Int> = [];
+
+	// Each slot's generation, and the free slots, the first `__freeCount` of
+	// `free`: vectors, so the jvm boxes neither; see the heap.
+	@:noCompletion private var gens:Vector<Int> = new Vector<Int>(16);
+	@:noCompletion private var free:Vector<Int> = new Vector<Int>(16);
+	@:noCompletion private var __freeCount:Int = 0;
+
+	// Nodes whose timers are done, for the next ones armed, up to the heap's
+	// `SPARE_LIMIT`; see there.
+	@:noCompletion private var __spare:Array<WheelNode> = [];
 
 	public function new() {
 		__buckets = [];
@@ -174,11 +184,11 @@ class TimerWheel implements ITimerScheduler {
 
 		if (immediate) {
 			__unlink(node);
-			__freeSlot(node.id);
+			__freeSlot(node);
 		} else if (node.pausedAt != null) {
 			// Not linked anywhere, so no tick will ever reach it to free the
 			// slot. Free it now or it leaks, the same case the heap calls out.
-			__freeSlot(node.id);
+			__freeSlot(node);
 		} else {
 			node.enabled = false;
 		}
@@ -427,12 +437,9 @@ class TimerWheel implements ITimerScheduler {
 			__unlinkFrom(index, node);
 
 			if (!node.enabled) {
-				__freeSlot(node.id);
+				__freeSlot(node);
 				continue;
 			}
-
-			var id:Int = node.id;
-			var gen:Int = gens[id];
 
 			// Contained, and settled as if it had returned before the failure
 			// is passed on; see the heap, which does the same.
@@ -446,7 +453,7 @@ class TimerWheel implements ITimerScheduler {
 				if (direct != null) {
 					direct();
 				} else {
-					node.callback(new TimerHandle(id, gen));
+					node.callback(new TimerHandle(node.id, gens[node.id]));
 				}
 			} catch (error:Dynamic) {
 				failed = true;
@@ -455,8 +462,11 @@ class TimerWheel implements ITimerScheduler {
 			__fired++;
 			node.firing = false;
 
-			if (gens[id] != gen || nodes[id] != node) {
-				// Freed or replaced by its own callback; nothing left to do.
+			if (nodes[node.id] != node) {
+				// Freed by its own callback, and done with now: a node is not
+				// reused while its callback runs, so the slot cannot hold this
+				// one for another timer.
+				__recycle(node);
 			} else if (node.rearmed) {
 				__link(node);
 			} else if (node.enabled && node.interval > 0) {
@@ -465,7 +475,7 @@ class TimerWheel implements ITimerScheduler {
 			} else if (node.enabled || node.pausedAt == null) {
 				// A one-shot that has run, or one cleared lazily from its own
 				// callback. One that paused itself stays live, to be resumed.
-				__freeSlot(id);
+				__freeSlot(node);
 			}
 
 			if (failed) {
@@ -514,24 +524,44 @@ class TimerWheel implements ITimerScheduler {
 	@:noCompletion private function __create(time:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void):TimerHandle {
 		var id:Int;
 
-		if (free.length > 0) {
-			id = free.pop();
+		if (__freeCount > 0) {
+			id = free[--__freeCount];
 		} else {
 			id = nodes.length;
 			if (id >= TimerHandle.MAX_TIMERS) {
 				// Past this the id no longer fits its handle; see the heap.
 				throw "TimerWheel full: " + TimerHandle.MAX_TIMERS + " timers are already alive on this runtime";
 			}
+			if (id >= gens.length) {
+				__growSlots();
+			}
 			nodes.push(null);
-			gens.push(0);
+			gens[id] = 0;
 		}
 
-		var node:WheelNode = new WheelNode(id, time, interval, callback, voidCallback);
+		var node:WheelNode;
+		if (__spare.length > 0) {
+			node = __spare.pop();
+			node.rearm(id, time, interval, callback, voidCallback);
+		} else {
+			node = new WheelNode(id, time, interval, callback, voidCallback);
+		}
 		nodes[id] = node;
 		__size++;
 		__link(node);
 
 		return new TimerHandle(id, gens[id]);
+	}
+
+	// Doubles the generation and free tables; see the heap.
+	@:noCompletion private function __growSlots():Void {
+		var capacity:Int = gens.length << 1;
+		var grownGens:Vector<Int> = new Vector<Int>(capacity);
+		Vector.blit(gens, 0, grownGens, 0, gens.length);
+		gens = grownGens;
+		var grownFree:Vector<Int> = new Vector<Int>(capacity);
+		Vector.blit(free, 0, grownFree, 0, __freeCount);
+		free = grownFree;
 	}
 
 	@:noCompletion private function __link(node:WheelNode):Void {
@@ -611,19 +641,40 @@ class TimerWheel implements ITimerScheduler {
 		node.next = null;
 	}
 
-	@:noCompletion private inline function __freeSlot(id:Int):Void {
+	// Frees a timer's slot. Its node goes to the spares at once, unless its
+	// callback is running: then once that returns.
+	@:noCompletion private inline function __freeSlot(node:WheelNode):Void {
+		var id:Int = node.id;
 		if (nodes[id] != null) {
 			__size--;
 		}
 
 		nodes[id] = null;
 		gens[id] = (gens[id] + 1) & TimerHandle.GEN_MASK;
-		free.push(id);
+		free[__freeCount++] = id;
+		if (!node.firing) {
+			__recycle(node);
+		}
+	}
+
+	// A node in no bucket and no callback, kept for the next timer while
+	// there is room.
+	@:noCompletion private inline function __recycle(node:WheelNode):Void {
+		node.release();
+		if (__spare.length < TimerHeap.SPARE_LIMIT) {
+			__spare.push(node);
+		}
 	}
 }
 
+// Declared in the order hxcpp lays the fields out, as TimerNode is: the two
+// Ints share a word, and the Bools another.
 private class WheelNode {
 	public var id:Int;
+
+	/** Ring slot holding this node, or -1 when it is in overflow or detached. */
+	public var bucket:Int = -1;
+
 	public var time:Float;
 	public var interval:Float;
 	public var enabled:Bool = true;
@@ -638,9 +689,6 @@ private class WheelNode {
 	public var callback:TimerHandle->Void;
 	public var voidCallback:Void->Void;
 
-	/** Ring slot holding this node, or -1 when it is in overflow or detached. */
-	public var bucket:Int = -1;
-
 	public var prev:WheelNode;
 	public var next:WheelNode;
 
@@ -650,5 +698,30 @@ private class WheelNode {
 		this.interval = interval;
 		this.callback = callback;
 		this.voidCallback = voidCallback;
+	}
+
+	/** Carries a new timer; see TimerNode.rearm. */
+	public inline function rearm(id:Int, time:Float, interval:Float, callback:TimerHandle->Void, voidCallback:Void->Void):Void {
+		this.id = id;
+		this.time = time;
+		this.interval = interval;
+		this.callback = callback;
+		this.voidCallback = voidCallback;
+		enabled = true;
+		pausedAt = null;
+		bucket = -1;
+		prev = null;
+		next = null;
+		firing = false;
+		rearmed = false;
+	}
+
+	/** Lets go of what its last timer referred to; see TimerNode.release. */
+	public inline function release():Void {
+		callback = null;
+		voidCallback = null;
+		pausedAt = null;
+		prev = null;
+		next = null;
 	}
 }

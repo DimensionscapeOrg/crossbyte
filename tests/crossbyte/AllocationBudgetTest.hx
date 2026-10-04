@@ -73,7 +73,8 @@ class AllocationBudgetTest extends utest.Test {
 	//
 	//                                                                           measured                budget
 	private static final EVENT = new Budget("an event dispatched to a listener", "dispatch", [0, 0, 0], [8, 8, 8]);
-	private static final TIMER = new Budget("a timeout armed and cleared", "timer", [80, 80, 72], [168, 168, 160]);
+	private static final TIMER = new Budget("a timeout armed and cleared", "timer", [0, 0, 0], [8, 8, 8]);
+	private static final TIMER_FIRED = new Budget("a timeout armed and fired", "timer", [0, 0, 0], [8, 8, 8]);
 	private static final INTERVAL = new Budget("an interval timer firing and re-arming", "firing", [0, 0, 0], [8, 8, 8]);
 	private static final POST = new Budget("a callback posted to the runtime and run", "post", [0, 0, 0], [8, 8, 8]);
 	private static final IDLE_TICK = new Budget("a runtime frame with nothing to do", "frame", [0, 0, 0], [8, 8, 8]);
@@ -163,6 +164,30 @@ class AllocationBudgetTest extends utest.Test {
 		}
 		__finish();
 		Assert.equals(0, fired, "a cleared timeout fired");
+	}
+
+	public function testATimeoutArmedAndFired():Void {
+		// What reliable UDP does with every acknowledgement it holds whose
+		// time runs out.
+		var runtime = __start();
+		var fired:Int = 0;
+		var callback:Void->Void = () -> fired++;
+		var op = () -> {
+			var before:Int = fired;
+			Timer.setTimeout(0.0, callback);
+			runtime.pump(1 / 60, 0);
+			if (fired != before + 1) {
+				throw "the timeout fired " + (fired - before) + " times in a frame";
+			}
+		};
+		try {
+			__warm(op, WARM_CHEAP);
+			__within(TIMER_FIRED, AllocationMeter.measure(op, 20000));
+		} catch (error:Dynamic) {
+			__finish();
+			throw error;
+		}
+		__finish();
 	}
 
 	public function testAnIntervalFiringAndRearming():Void {

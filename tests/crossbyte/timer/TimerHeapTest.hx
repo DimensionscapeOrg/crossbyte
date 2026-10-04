@@ -314,6 +314,144 @@ class TimerHeapTest extends utest.Test {
 		while (haxe.Timer.stamp() < end) {}
 	}
 
+	// A done timer's node carries the next timer armed. A handle names a slot
+	// and the slot's generation, never a node, so what a cleared handle can
+	// reach is decided by the slot alone: these hold whichever node a timer
+	// is given.
+
+	public function testClearingAHandleTwiceClearsNothingElse():Void {
+		var heap = new TimerHeap();
+		var fired = 0;
+		var handle = heap.setTimeoutVoid(1.0, () -> Assert.fail("a cleared timer fired"));
+		var other = heap.setTimeoutVoid(1.0, () -> fired++);
+
+		Assert.isTrue(heap.clear(handle));
+		Assert.isFalse(heap.clear(handle), "a handle cleared twice was cleared twice");
+		Assert.isFalse(heap.clear(handle, false));
+		Assert.isTrue(heap.isActive(other));
+		Assert.equals(1, heap.advanceTime(1.0));
+		Assert.equals(1, fired);
+	}
+
+	public function testAClearedHandleCannotReachTheTimerItsNodeNowCarries():Void {
+		var heap = new TimerHeap();
+		var stale = heap.setTimeoutVoid(1.0, () -> Assert.fail("a cleared timer fired"));
+		var node = @:privateAccess heap.nodes[stale.id()];
+		Assert.isTrue(heap.clear(stale));
+
+		var fired = 0;
+		var next = heap.setTimeoutVoid(1.0, () -> fired++);
+		Assert.equals(node, @:privateAccess heap.nodes[next.id()], "the cleared timer's node was not reused");
+
+		Assert.isFalse(heap.isActive(stale));
+		Assert.isFalse(heap.clear(stale), "a stale handle cleared the timer its node now carries");
+		Assert.isFalse(heap.reschedule(stale, 50.0));
+		Assert.isFalse(heap.delay(stale, 50.0));
+		Assert.isFalse(heap.setEnabled(stale, false));
+		Assert.isTrue(heap.isActive(next));
+
+		Assert.equals(1, heap.advanceTime(1.0));
+		Assert.equals(1, fired, "the timer on the reused node did not fire");
+		Assert.isFalse(heap.clear(stale));
+	}
+
+	public function testATimerClearingItselfAndArmingAnotherFromItsCallback():Void {
+		// The node whose callback is running is not handed to a timer armed
+		// in that callback: the pass still has it to settle.
+		var heap = new TimerHeap();
+		var first = 0;
+		var second = 0;
+		var firstNode:Dynamic = null;
+		var secondHandle:TimerHandle = TimerHandle.INVALID;
+		var handle:TimerHandle = TimerHandle.INVALID;
+		handle = heap.setInterval(1.0, 1.0, h -> {
+			first++;
+			firstNode = @:privateAccess heap.nodes[h.id()];
+			heap.clear(h);
+			secondHandle = heap.setTimeoutVoid(2.0, () -> second++);
+			Assert.isTrue(@:privateAccess heap.nodes[secondHandle.id()] != firstNode, "a timer armed in a callback was given the node still firing");
+		});
+
+		heap.advanceTime(1.0);
+		Assert.equals(1, first);
+		Assert.isFalse(heap.isActive(handle));
+		Assert.isTrue(heap.isActive(secondHandle), "the timer armed in the callback was settled as the one that fired");
+		heap.advanceTime(1.0);
+		Assert.equals(0, second);
+		heap.advanceTime(1.0);
+		Assert.equals(1, first, "the cleared interval fired again");
+		Assert.equals(1, second);
+		Assert.isTrue(heap.isEmpty);
+	}
+
+	public function testAnIntervalRearmsOnItsOwnNode():Void {
+		var heap = new TimerHeap();
+		var fired = 0;
+		var handle = heap.setIntervalVoid(1.0, 1.0, () -> fired++);
+		var node = @:privateAccess heap.nodes[handle.id()];
+
+		for (_ in 0...5) {
+			heap.advanceTime(1.0);
+		}
+		Assert.equals(5, fired);
+		Assert.isTrue(heap.isActive(handle));
+		Assert.equals(node, @:privateAccess heap.nodes[handle.id()]);
+		Assert.equals(0, @:privateAccess heap.__spare.length, "an interval re-arming gave up its node");
+	}
+
+	public function testATimeoutArmedInsideAnotherTimersCallback():Void {
+		var heap = new TimerHeap();
+		var order:Array<String> = [];
+		var outer = heap.setTimeoutVoid(1.0, () -> {
+			order.push("outer");
+			heap.setTimeoutVoid(0.5, () -> order.push("inner"));
+		});
+		var outerNode = @:privateAccess heap.nodes[outer.id()];
+
+		heap.advanceTime(1.0);
+		Assert.same(["outer"], order);
+		Assert.equals(1, heap.size);
+		// The one-shot that ran is done, and its node is spare for the next.
+		Assert.equals(outerNode, @:privateAccess heap.__spare[0]);
+		heap.advanceTime(0.5);
+		Assert.same(["outer", "inner"], order);
+		Assert.isTrue(heap.isEmpty);
+	}
+
+	public function testASparesNodeHoldsNoCallback():Void {
+		// A cleared timer's closure is not kept alive by its node waiting to
+		// be reused.
+		var heap = new TimerHeap();
+		heap.clear(heap.setTimeoutVoid(1.0, () -> {}));
+		heap.clear(heap.setTimeout(1.0, _ -> {}));
+		var spares:Array<crossbyte._internal.system.timer.TimerNode> = @:privateAccess heap.__spare;
+		Assert.equals(1, spares.length);
+		Assert.isNull(spares[0].callback);
+		Assert.isNull(spares[0].voidCallback);
+	}
+
+	public function testABurstOfTimersLeavesAtMostTheLimitSpare():Void {
+		var heap = new TimerHeap();
+		var handles:Array<TimerHandle> = [];
+		for (_ in 0...10000) {
+			handles.push(heap.setTimeoutVoid(1.0, () -> {}));
+		}
+		for (handle in handles) {
+			heap.clear(handle);
+		}
+		Assert.equals(TimerHeap.SPARE_LIMIT, @:privateAccess heap.__spare.length, "a burst pinned its nodes");
+		Assert.isTrue(heap.isEmpty);
+
+		// And the slots and the spares serve the next burst.
+		var fired = 0;
+		for (_ in 0...1000) {
+			heap.setTimeoutVoid(1.0, () -> fired++);
+		}
+		Assert.equals(TimerHeap.SPARE_LIMIT - 1000, @:privateAccess heap.__spare.length);
+		Assert.equals(1000, heap.advanceTime(1.0));
+		Assert.equals(1000, fired);
+	}
+
 	public function testATimerClearedLazilyWhileHeldBackIsFreed():Void {
 		// Armed during a pass and due in it, it is held back for the next
 		// pass; cleared lazily meanwhile, nothing dequeued it to free its
