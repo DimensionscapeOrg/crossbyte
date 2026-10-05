@@ -26,6 +26,7 @@ import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrame;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrameType;
 import crossbyte.net._internal.reliable.ResetBudget;
+import crossbyte.net._internal.reliable.SipHash;
 import haxe.ds.StringMap;
 import crossbyte._internal.net.IPv6;
 #if !nodejs
@@ -139,8 +140,70 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 
 		Dropped rather than refused, because a refusal is itself a datagram to
 		an address that may never have asked for one.
+
+		CONNECTs from forged addresses could fill every slot on their own;
+		`joinValidation` keeps them to `joinValidationThreshold` of them, and
+		the rest for joins that show where they came from.
 	**/
 	public var maxPendingConnections:Int = DEFAULT_MAX_PENDING_CONNECTIONS;
+
+	/** `joinValidationThreshold` unless changed. **/
+	public static inline var DEFAULT_JOIN_VALIDATION_THRESHOLD:Int = 64;
+
+	/**
+		When a CONNECT from an address with no session must show it came from
+		there before a session is opened for it: `UNDER_PRESSURE` unless
+		changed, which is once `joinValidationThreshold` sessions are waiting
+		to finish their handshakes; or `ALWAYS`, or `NEVER`.
+
+		A session waiting for its handshake is held for the CONNECT's word
+		alone, an address and port UDP lets a sender write for itself,
+		so a few CONNECTs a second from forged addresses kept all
+		`maxPendingConnections` slots full, at about 13 a second for the
+		default 256 held 20 seconds each, and no real player could join; an
+		`admit` that checks tokens bound to the player's address stops that,
+		and a server without them had nothing. A join that must show where
+		it came from is answered with a cookie instead, as a TCP stack
+		answers with a SYN cookie: the server's keyed hash of the address,
+		the port, the CONNECT's connection id and the time, for which it
+		keeps nothing. Only a CONNECT that returns it within its time, from
+		the address and port it was made for, goes on to `admit` and a
+		session. A forged address never receives its cookie, so a flood of
+		them holds no slot past the threshold, and a real join costs one
+		more round trip. `maxPendingConnections` still bounds the sessions
+		such joins open, and `admit` still decides on each.
+
+		A cookie is no larger than the CONNECT it answers, a 1.0 peer pads
+		its CONNECT to whatever may be sent back, so it gives a sender who
+		names someone else's address nothing it could not send itself. It
+		is good for 10 to 20 seconds: the key it is made with is new every
+		10 seconds, and the one before is still accepted. Within that time
+		the same address, port and connection id can return it again, which
+		opens nothing a CONNECT from there could not.
+
+		A peer on 1.0 or later returns a cookie by itself. A peer from
+		before 1.0 cannot: while joins are validated its CONNECTs are
+		dropped, and it joins once fewer than the threshold are waiting
+		(under `UNDER_PRESSURE`), or never (under `ALWAYS`). The keys come
+		from the secure random source; on a target without one, neko,
+		HashLink, from the ordinary one, which someone able to predict it
+		could forge cookies with: hardening there, as the sequence numbers
+		are, rather than a boundary.
+
+		Read for each CONNECT, so a change takes effect at the next.
+	**/
+	public var joinValidation:JoinValidation = UNDER_PRESSURE;
+
+	/**
+		How many sessions may be waiting to finish their handshakes before a
+		join must show where it came from, under `joinValidation`'s
+		`UNDER_PRESSURE`: 64 unless changed, a quarter of the default
+		`maxPendingConnections`, so a flood of forged CONNECTs holds at most
+		that many slots and leaves the rest to joins that show they are
+		real. 0 validates every join, as `ALWAYS` does. Keep it below
+		`maxPendingConnections`, or the slots fill before it is reached.
+	**/
+	public var joinValidationThreshold:Int = DEFAULT_JOIN_VALIDATION_THRESHOLD;
 
 	/** `maxResetsPerSecond` unless changed. **/
 	public static inline var DEFAULT_MAX_RESETS_PER_SECOND:Int = 1000;
@@ -229,9 +292,11 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		network in the clear, so anyone who saw it can send it again: a token
 		this checks should be one only this side could have issued, and short
 		lived, or bound to the address it was issued to. This runs for every
-		CONNECT from a new address, which is the packet a flood is made of, so
-		keep it cheap, or put a `RateLimiter` in front of anything that is
-		not, such as checking a signature.
+		CONNECT from a new address, while joins are validated (see
+		`joinValidation`), only for one that has returned its cookie, and so
+		shown it receives at that address, which is the packet a flood is
+		made of, so keep it cheap, or put a `RateLimiter` in front of
+		anything that is not, such as checking a signature.
 
 		A hook that throws refuses the CONNECT.
 	**/
@@ -1668,6 +1733,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		}
 
 		if (frame.type != ReliableDatagramFrameType.CONNECT) {
+			// A cookie or a rebind's answer is a server's to send, not to
+			// take, and from an address with no session it is a stranger's.
 			__resetStranger(frame, address, port, via);
 			return;
 		}
@@ -1676,9 +1743,12 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			return;
 		}
 
-		if (maxPendingConnections >= 0 && __pendingCount >= maxPendingConnections) {
-			return;
-		}
+		// Read before the hooks run: the frame is the one every datagram is
+		// decoded into, and a hook that pumps the runtime has the next one
+		// decoded over it.
+		var connectionId:Int = frame.sequence;
+		var bundles:Bool = frame.bundles;
+		var extended:Bool = frame.extended;
 
 		// No connect() sends more than a frame, and each pending session
 		// keeps what its CONNECT carried, so a larger one is not held.
@@ -1687,11 +1757,22 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			return;
 		}
 
-		// Read before the hooks run: the frame is the one every datagram is
-		// decoded into, and a hook that pumps the runtime has the next one
-		// decoded over it.
-		var connectionId:Int = frame.sequence;
-		var bundles:Bool = frame.bundles;
+		// Shown to come from where it says, or asked to show it: see
+		// `joinValidation`. A cookie that does not check out is no cookie,
+		// and the CONNECT is taken as one without.
+		if (!(frame.hasCookie && __cookieChecks(frame.cookieHigh, frame.cookieLow, address, port, connectionId)) && __joinsMustShowAddress()) {
+			// A peer from before 1.0 cannot answer a cookie, and its CONNECT
+			// is too short for one to be sent back: dropped, as at
+			// `maxPendingConnections`. A 1.0 CONNECT is padded past a cookie.
+			if (extended) {
+				__sendCookie(connectionId, address, port, via);
+			}
+			return;
+		}
+
+		if (maxPendingConnections >= 0 && __pendingCount >= maxPendingConnections) {
+			return;
+		}
 
 		var admitted:Bool = false;
 		try {
@@ -1753,6 +1834,176 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 
 		connection.__challenge(now);
 		return false;
+	}
+
+	/** Whether a CONNECT from an address with no session must show it receives there; see `joinValidation`. **/
+	@:noCompletion private inline function __joinsMustShowAddress():Bool {
+		return switch (joinValidation) {
+			case ALWAYS: true;
+			case NEVER: false;
+			default: __pendingCount >= joinValidationThreshold;
+		}
+	}
+
+	// The keys cookies, and rebind challenges, are made with: the one in
+	// use, and the one before it, which is still accepted. Made when first
+	// needed, and turned over every `__pathKeyPeriod` seconds; a cookie says
+	// which of the two made it in its top bit, the turnover's parity.
+	@:noCompletion private var __pathKey:SipHash = null;
+	@:noCompletion private var __pathKeyBefore:SipHash = null;
+	@:noCompletion private var __pathGeneration:Int = 0;
+	@:noCompletion private var __pathKeyMadeAt:Float = 0;
+
+	/** How long a key is in use; a cookie made with it is good for once to twice this. **/
+	@:noCompletion private static inline var PATH_KEY_PERIOD:Float = 10.0;
+
+	@:noCompletion private var __pathKeyPeriod:Float = PATH_KEY_PERIOD;
+
+	// What a key hashes, written here, and the answer: nothing allocated per
+	// CONNECT or per reset.
+	@:noCompletion private var __macInput:haxe.io.Bytes = null;
+	@:noCompletion private var __macHigh:Int = 0;
+	@:noCompletion private var __macLow:Int = 0;
+
+	// The frames this server sends about an address, cookies, rebinds'
+	// answers, written here.
+	@:noCompletion private var __pathScratch:ByteArray = null;
+
+	/** What each kind of keyed hash starts with, so one can never pass for another. **/
+	@:noCompletion private static inline var COOKIE_DOMAIN:Int = 0x43;
+
+	/** The keys as they are at `now`: made, or turned over once their time is up. **/
+	@:noCompletion private function __pathKeys(now:Float):Void {
+		if (__pathKey == null) {
+			__pathKey = __newPathKey();
+			__pathKeyBefore = __newPathKey();
+			__pathKeyMadeAt = now;
+			return;
+		}
+		var age:Float = now - __pathKeyMadeAt;
+		if (age < 0) {
+			// The time of day, set back (hl, neko, the interpreter): the key
+			// in use starts its period again.
+			__pathKeyMadeAt = now;
+			return;
+		}
+		if (age < __pathKeyPeriod) {
+			return;
+		}
+		if (age < __pathKeyPeriod * 2) {
+			__pathKeyBefore = __pathKey;
+			__pathKey = __newPathKey();
+			__pathGeneration++;
+		} else {
+			// Both are past their time: neither is accepted any more, and the
+			// parity is kept, so a cookie two turnovers old reads as the
+			// current key's and fails against it.
+			__pathKeyBefore = __newPathKey();
+			__pathKey = __newPathKey();
+			__pathGeneration += 2;
+		}
+		__pathKeyMadeAt = now;
+	}
+
+	@:noCompletion private static function __newPathKey():SipHash {
+		var key = haxe.io.Bytes.alloc(SipHash.KEY_SIZE);
+		if (crossbyte.crypto.SecureRandom.isSupported) {
+			try {
+				var random:ByteArray = crossbyte.crypto.SecureRandom.getSecureRandomBytes(SipHash.KEY_SIZE);
+				key.blit(0, random, 0, SipHash.KEY_SIZE);
+				return new SipHash(key);
+			} catch (_:Dynamic) {}
+		}
+		// No secure source (neko, HashLink, the interpreter): the ordinary
+		// one, as the sequence numbers fall back to; see `joinValidation`.
+		for (i in 0...SipHash.KEY_SIZE) {
+			key.set(i, Std.random(256));
+		}
+		return new SipHash(key);
+	}
+
+	/**
+		The keyed hash of `domain`, `port`, `value` and `address` under `key`,
+		left in `__macHigh` and `__macLow`.
+	**/
+	@:noCompletion private function __mac(key:SipHash, domain:Int, address:String, port:Int, value:Int):Void {
+		var length:Int = 7 + address.length;
+		if (__macInput == null || __macInput.length < length) {
+			__macInput = haxe.io.Bytes.alloc(length < 64 ? 64 : length);
+		}
+		var input:haxe.io.Bytes = __macInput;
+		input.set(0, domain);
+		input.set(1, (port >>> 8) & 0xFF);
+		input.set(2, port & 0xFF);
+		input.set(3, value >>> 24);
+		input.set(4, (value >>> 16) & 0xFF);
+		input.set(5, (value >>> 8) & 0xFF);
+		input.set(6, value & 0xFF);
+		// An address is ASCII: digits, dots, colons, hex, and a zone's name.
+		for (i in 0...address.length) {
+			input.set(7 + i, StringTools.fastCodeAt(address, i) & 0xFF);
+		}
+		key.hash(input, 0, length);
+		__macHigh = key.high;
+		__macLow = key.low;
+	}
+
+	/**
+		Whether a cookie is the one this server made for a CONNECT with
+		`connectionId` from `address`:`port`, with the key in use or the one
+		before it.
+	**/
+	@:noCompletion private function __cookieChecks(high:Int, low:Int, address:String, port:Int, connectionId:Int):Bool {
+		__pathKeys(haxe.Timer.stamp());
+		var parity:Int = high >>> 31;
+		__mac(parity == (__pathGeneration & 1) ? __pathKey : __pathKeyBefore, COOKIE_DOMAIN, address, port, connectionId);
+		// Every bit compared, whichever differs first.
+		return (((__macHigh & 0x7FFFFFFF) ^ (high & 0x7FFFFFFF)) | (__macLow ^ low)) == 0;
+	}
+
+	/**
+		Answers a CONNECT with its cookie: a PATH frame, 16 bytes, echoing the
+		connection id, sent back the way the CONNECT came. Nothing is kept.
+	**/
+	@:noCompletion private function __sendCookie(connectionId:Int, address:String, port:Int, via:Null<TurnClient>):Void {
+		__pathKeys(haxe.Timer.stamp());
+		__mac(__pathKey, COOKIE_DOMAIN, address, port, connectionId);
+		var high:Int = (__macHigh & 0x7FFFFFFF) | ((__pathGeneration & 1) << 31);
+		var scratch:ByteArray = __pathFrame(ReliableDatagramFrameType.PATH, connectionId, ReliableDatagramProtocol.PATH_COOKIE);
+		var bytes:haxe.io.Bytes = scratch;
+		var at:Int = ReliableDatagramProtocol.HEADER_SIZE + 1;
+		__setInt(bytes, at, high);
+		__setInt(bytes, at + 4, __macLow);
+		__sendScratch(ReliableDatagramProtocol.COOKIE_FRAME_SIZE, address, port, via);
+	}
+
+	/** A frame's header and its first payload byte, written into `__pathScratch`. **/
+	@:noCompletion private function __pathFrame(type:ReliableDatagramFrameType, sequence:Int, kind:Int):ByteArray {
+		if (__pathScratch == null) {
+			__pathScratch = new ByteArray();
+			__pathScratch.length = 64;
+		}
+		var written:Int = ReliableDatagramProtocol.encodeInto(__pathScratch, type, sequence, null, 0, 0, false, 0, false, false);
+		(__pathScratch : haxe.io.Bytes).set(written, kind);
+		return __pathScratch;
+	}
+
+	/** `length` bytes of `__pathScratch` to a peer, back the way it reached this server. **/
+	@:noCompletion private function __sendScratch(length:Int, address:String, port:Int, via:Null<TurnClient>):Void {
+		try {
+			if (via != null) {
+				__sendRelayed(via, __pathScratch, 0, length, address, port);
+			} else {
+				__socket.send(__pathScratch, 0, length, address, port);
+			}
+		} catch (_:Dynamic) {}
+	}
+
+	@:noCompletion private static inline function __setInt(bytes:haxe.io.Bytes, at:Int, value:Int):Void {
+		bytes.set(at, value >>> 24);
+		bytes.set(at + 1, (value >>> 16) & 0xFF);
+		bytes.set(at + 2, (value >>> 8) & 0xFF);
+		bytes.set(at + 3, value & 0xFF);
 	}
 
 	/**

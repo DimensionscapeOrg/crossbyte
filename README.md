@@ -318,6 +318,41 @@ and `phpMaxExchanges` (64) the requests a runtime has with its PHP backend
 at once; more wait their turn within `phpTimeout`, and past 1,024 waiting
 a request is refused.
 
+## Reliable UDP: joins and resets
+
+A `ReliableDatagramServerSocket` opens a session for a CONNECT and holds it
+while the handshake finishes, on the strength of a source address UDP lets
+any sender write. What that costs the server, and what it sends to addresses
+nobody has proved, is bounded:
+
+| On the server | Default | Bounds |
+| --- | --- | --- |
+| `maxPendingConnections` | 256 | sessions waiting to finish their handshakes |
+| `joinValidation` | `UNDER_PRESSURE` | when a join must show it receives at its address before a session is opened |
+| `joinValidationThreshold` | 64 | pending sessions past which `UNDER_PRESSURE` validates |
+| `maxResetsPerSecond` (static) | 1,000 | FINs every server in the process sends, together, to addresses with no session |
+
+**The handshake.** A client sends CONNECT, its connection id, and the
+payload its `connect` passed, for `admit`, every three seconds until the
+server's HANDSHAKE arrives; each side's HANDSHAKE says where its sequence
+starts, and the client's answer completes it. A validated join has one step
+more: the server answers the first CONNECT with a cookie, its keyed hash of
+the address, port, connection id and time, keeping nothing, and the client
+sends the CONNECT again at once with the cookie in it. Only a CONNECT that
+returns its cookie, from where the cookie was sent, reaches `admit`. So a
+flood of CONNECTs from forged addresses holds at most the threshold's worth
+of slots, and a real player joins through it a round trip later; an
+ordinary join, below the threshold, costs nothing extra. A 1.0 client pads
+its CONNECT to 29 bytes, so nothing the server sends back to one is larger,
+and a CONNECT from 1.0.0-rc.1, which cannot return a cookie, joins only
+while joins are not validated.
+
+**Resets.** A frame from an address with no session, a peer whose session
+the server closed, or one that has restarted, is answered with a FIN that
+ends the peer's session at once, so it stops sending into nothing. All the
+servers of a process share one allowance of them, `maxResetsPerSecond`,
+which holds a second's worth.
+
 ## Extensions
 
 CrossByte's extension story is intentional: features that benefit from native backends or external platform libraries can live in sibling haxelibs instead of bloating the core.

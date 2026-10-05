@@ -20,6 +20,16 @@ enum abstract ReliableDatagramFrameType(Int) from Int to Int {
 		its top byte and a 24-bit counter below it; see `sequencedField`.
 	**/
 	var SEQUENCED = 6;
+
+	/**
+		About the peer's address, never acknowledged or resent: a server's
+		join cookie, a client's REBIND and the server's answer to it. The
+		first byte of the payload says which (`ReliableDatagramProtocol`'s
+		`PATH_COOKIE`, `PATH_REBIND`, `PATH_REBOUND`), and a frame with none
+		is not a frame. A peer from before 1.0 drops it, as a decoder drops
+		every type it does not know.
+	**/
+	var PATH = 7;
 }
 
 final class ReliableDatagramFrame {
@@ -72,6 +82,26 @@ final class ReliableDatagramFrame {
 	**/
 	public var ackDelay(default, null):Float;
 
+	/**
+		On a CONNECT: whether it came from a peer on 1.0 or later, which puts
+		an extension ahead of what its `connect` passed (see
+		`ReliableDatagramProtocol`), `payload` is then what `connect`
+		passed, and nothing of the extension. With it, `features` is what
+		the peer declares, and `hasCookie`, `cookieHigh` and `cookieLow` the
+		join cookie it returns, if it returns one.
+
+		Only a CONNECT sets these; on any other frame they say whatever the
+		last CONNECT decoded into the same frame said, and nothing reads them.
+	**/
+	public var extended(default, null):Bool = false;
+
+	/** On an extended CONNECT: `FEATURE_COOKIE`, `FEATURE_REBIND`, or'd. **/
+	public var features(default, null):Int = 0;
+
+	public var hasCookie(default, null):Bool = false;
+	public var cookieHigh(default, null):Int = 0;
+	public var cookieLow(default, null):Int = 0;
+
 	/** For a frame to keep; the hot path decodes into one with `decodeInto`. **/
 	public function new(type:ReliableDatagramFrameType, sequence:Seq32, payload:ByteArray, resend:Bool, ?ack:Seq32, more:Bool = false,
 			bundles:Bool = false, graceful:Bool = false) {
@@ -90,6 +120,14 @@ final class ReliableDatagramFrame {
 		this.bundles = bundles;
 		this.graceful = graceful;
 		this.ackDelay = ackDelay;
+	}
+
+	@:noCompletion public inline function __setConnect(extended:Bool, features:Int, hasCookie:Bool, cookieHigh:Int, cookieLow:Int):Void {
+		this.extended = extended;
+		this.features = features;
+		this.hasCookie = hasCookie;
+		this.cookieHigh = cookieHigh;
+		this.cookieLow = cookieLow;
 	}
 
 	private function get_ack():Null<Seq32> {
@@ -142,6 +180,29 @@ final class ReliableDatagramFrame {
 	frame preceded by its length in two bytes. A session sends one only to a
 	peer whose CONNECT or HANDSHAKE said it takes them, since an older peer
 	would drop the whole datagram as a frame with the wrong magic.
+
+	A CONNECT from a peer on 1.0 or later sets `CONNECT_EXTENDED_MASK`,
+	the bit a FIN calls graceful, and its payload starts with an
+	extension, ahead of what the peer's `connect` passed: a byte saying how
+	many bytes of extension follow it; a byte of features, `FEATURE_REBIND`
+	(the sender answers a reset that carries a rebind challenge) and
+	`FEATURE_COOKIE` (a join cookie follows); the cookie, `COOKIE_SIZE`
+	bytes, when there is one; and zeros. The zeros pad the datagram to
+	`MIN_CONNECT_SIZE`, the most anything sends back to a CONNECT, a
+	cookie, or a HANDSHAKE carrying a rebind key, so that answering one
+	never sends more than it was sent. A CONNECT with the bit that is
+	shorter than that, or whose extension runs past its end, is not a
+	frame. A peer from before 1.0 sets none of this, and read none of it:
+	it took no payload on a CONNECT.
+
+	A PATH frame is about the address its sender or receiver is at, and its
+	payload starts with what it is. `PATH_COOKIE` is a server's answer to a
+	CONNECT from an address it will not open a session for until the sender
+	shows it receives there: the sequence field echoes the CONNECT's
+	connection id, and the cookie follows, 16 bytes in all; the peer
+	returns the cookie in its next CONNECT. A cookie is the server's keyed
+	hash of the address, the port, the connection id and the time, so the
+	server keeps nothing while it waits.
 **/
 final class ReliableDatagramProtocol {
 	public static inline var HEADER_SIZE:Int = 7;
@@ -190,6 +251,40 @@ final class ReliableDatagramProtocol {
 
 	/** A HANDSHAKE's payload from this build: an echoed id, four bytes, and an announced delay, two. **/
 	public static inline var HANDSHAKE_PAYLOAD_SIZE:Int = 6;
+
+	/** On a CONNECT: its payload starts with the extension. The bit is `GRACEFUL_MASK`, which means that only on a FIN. **/
+	public static inline var CONNECT_EXTENDED_MASK:Int = 0x08;
+
+	/** A CONNECT's feature: a join cookie follows the features byte. **/
+	public static inline var FEATURE_COOKIE:Int = 0x01;
+
+	/** A CONNECT's feature: its sender answers a reset carrying a rebind challenge with a REBIND. **/
+	public static inline var FEATURE_REBIND:Int = 0x02;
+
+	/** A join cookie's length. **/
+	public static inline var COOKIE_SIZE:Int = 8;
+
+	/** The secret a HANDSHAKE gives a peer that may rebind. **/
+	public static inline var REBIND_KEY_SIZE:Int = 16;
+
+	/**
+		The most a server sends back to a CONNECT, and so the least an
+		extended CONNECT may be: a HANDSHAKE carrying a rebind key, 29 bytes.
+		A cookie's frame is 16.
+	**/
+	public static inline var MIN_CONNECT_SIZE:Int = HEADER_SIZE + HANDSHAKE_PAYLOAD_SIZE + REBIND_KEY_SIZE;
+
+	/** The most an extension adds to a CONNECT whose payload needs no padding: its length, its features, a cookie. **/
+	public static inline var CONNECT_EXTENSION_MAX:Int = 2 + COOKIE_SIZE;
+
+	/** A PATH frame's kinds, its payload's first byte. **/
+	public static inline var PATH_COOKIE:Int = 1;
+
+	public static inline var PATH_REBIND:Int = 2;
+	public static inline var PATH_REBOUND:Int = 3;
+
+	/** A cookie's frame: the header, the kind, the cookie. **/
+	public static inline var COOKIE_FRAME_SIZE:Int = HEADER_SIZE + 1 + COOKIE_SIZE;
 
 	/** Seconds as whole `ACK_DELAY_UNIT`s, held to two bytes. **/
 	public static inline function delayUnits(seconds:Float):Int {
@@ -284,10 +379,8 @@ final class ReliableDatagramProtocol {
 		}
 
 		var meta:Int = bytes.get(from + 2);
+		// Every value the three bits can hold is a type now, PATH the last.
 		var typeValue:Int = meta & TYPE_MASK;
-		if (typeValue > (SEQUENCED : Int)) {
-			return null;
-		}
 
 		var ackPresent:Bool = (meta & ACK_PRESENT_MASK) != 0;
 		var start:Int = HEADER_SIZE;
@@ -309,6 +402,40 @@ final class ReliableDatagramProtocol {
 			}
 			delay = ((bytes.get(from + start) << 8) | bytes.get(from + start + 1)) * ACK_DELAY_UNIT;
 			start += 2;
+		}
+
+		// A CONNECT's extension, read off and stepped over: what is left is
+		// what the peer's connect passed.
+		var connect:Bool = typeValue == (CONNECT : Int);
+		var extended:Bool = false;
+		var features:Int = 0;
+		var hasCookie:Bool = false;
+		var cookieHigh:Int = 0;
+		var cookieLow:Int = 0;
+		if (connect && (meta & CONNECT_EXTENDED_MASK) != 0) {
+			// Padded by every sender to what may be sent back: shorter, it
+			// would draw more than it brought.
+			if (length < MIN_CONNECT_SIZE || length < start + 2) {
+				return null;
+			}
+			var extension:Int = bytes.get(from + start);
+			if (extension < 1 || start + 1 + extension > length) {
+				return null;
+			}
+			features = bytes.get(from + start + 1);
+			if ((features & FEATURE_COOKIE) != 0) {
+				if (extension < 1 + COOKIE_SIZE) {
+					return null;
+				}
+				hasCookie = true;
+				cookieHigh = __getInt(bytes, from + start + 2);
+				cookieLow = __getInt(bytes, from + start + 6);
+			}
+			extended = true;
+			start += 1 + extension;
+		} else if (typeValue == (PATH : Int) && length <= start) {
+			// A PATH frame says what it is in its first byte.
+			return null;
 		}
 
 		var payloadLength:Int = length - start;
@@ -339,7 +466,68 @@ final class ReliableDatagramProtocol {
 
 		into.__set(cast typeValue, sequence, payload, (meta & RESEND_MASK) != 0, ack, ackPresent, (meta & MORE_MASK) != 0,
 			(meta & BUNDLES_MASK) != 0, typeValue == (FIN : Int) && (meta & GRACEFUL_MASK) != 0, delay);
+		if (connect) {
+			into.__setConnect(extended, features, hasCookie, cookieHigh, cookieLow);
+		}
 		return into;
+	}
+
+	/**
+		Writes the payload of an extended CONNECT into `out` at `at`, the
+		extension, padded to `MIN_CONNECT_SIZE` for the whole frame, then
+		`length` bytes of `payload` from `offset`, and says how many bytes
+		it took. The frame it goes in sets `CONNECT_EXTENDED_MASK` and
+		carries no acknowledgement. `out` must have room:
+		`CONNECT_EXTENSION_MAX` more than the payload, or `MIN_CONNECT_SIZE`.
+
+		@param features `FEATURE_REBIND`, or 0; `FEATURE_COOKIE` is added
+		       when `hasCookie`.
+	**/
+	public static function writeConnectPayload(out:Bytes, at:Int, features:Int, hasCookie:Bool, cookieHigh:Int, cookieLow:Int, payload:Bytes,
+			offset:Int, length:Int):Int {
+		var extension:Int = 1 + (hasCookie ? COOKIE_SIZE : 0);
+		// Zeros after the cookie, until the frame is as long as an answer.
+		var short:Int = MIN_CONNECT_SIZE - (HEADER_SIZE + 1 + extension + length);
+		if (short > 0) {
+			extension += short;
+		}
+		out.set(at, extension);
+		out.set(at + 1, hasCookie ? (features | FEATURE_COOKIE) : (features & ~FEATURE_COOKIE));
+		var next:Int = at + 2;
+		if (hasCookie) {
+			__setInt(out, next, cookieHigh);
+			__setInt(out, next + 4, cookieLow);
+			next += COOKIE_SIZE;
+		}
+		var end:Int = at + 1 + extension;
+		while (next < end) {
+			out.set(next, 0);
+			next++;
+		}
+		if (payload != null && length > 0) {
+			out.blit(next, payload, offset, length);
+			next += length;
+		}
+		return next - at;
+	}
+
+	/**
+		An extended CONNECT in a buffer of its own, as a 1.0 peer sends one;
+		`encode` makes one from before 1.0. For tests, and for callers that
+		want a frame to keep.
+	**/
+	public static function encodeConnect(connectionId:Int, ?payload:ByteArray, features:Int = FEATURE_REBIND, hasCookie:Bool = false,
+			cookieHigh:Int = 0, cookieLow:Int = 0):ByteArray {
+		var length:Int = payload != null ? payload.length : 0;
+		var body = new ByteArray();
+		body.length = CONNECT_EXTENSION_MAX + MIN_CONNECT_SIZE + length;
+		var written:Int = writeConnectPayload(body, 0, features, hasCookie, cookieHigh, cookieLow, payload, 0, length);
+		var frame = new ByteArray();
+		frame.length = HEADER_SIZE + written;
+		var size:Int = encodeInto(frame, CONNECT, connectionId, body, 0, written, false, 0, false, false, 0, true);
+		frame.length = size;
+		frame.position = 0;
+		return frame;
 	}
 
 	/** Whether a datagram is a bundle rather than a frame. **/
@@ -400,7 +588,9 @@ final class ReliableDatagramProtocol {
 		@param ack The cumulative acknowledgement, when `hasAck`.
 		@param graceful The 0x08 bit: on a FIN, that it is the graceful kind,
 		       in sequence; on an ACK, that its payload starts with a delay
-		       (`ACK_DELAY_MASK`), which the caller has written there.
+		       (`ACK_DELAY_MASK`), which the caller has written there; on a
+		       CONNECT, that its payload starts with the extension
+		       (`CONNECT_EXTENDED_MASK`; see `writeConnectPayload`).
 	**/
 	public static function encodeInto(out:ByteArray, type:ReliableDatagramFrameType, sequence:Seq32, payload:ByteArray, offset:Int, length:Int,
 			resend:Bool, ack:Int, hasAck:Bool, more:Bool, start:Int = 0, graceful:Bool = false):Int {
