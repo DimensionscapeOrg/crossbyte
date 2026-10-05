@@ -226,6 +226,13 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		this socket before they leave. As `receiveBufferSize`, for the other
 		direction.
 
+		On macOS it is also the largest datagram the socket sends: 9,216
+		bytes to begin with (`net.inet.udp.maxdgram`), and a larger one is
+		refused with an error that says so (see `send`). Raise it there
+		before sending more, `sendBufferSize = 64 * 1024` covers anything
+		UDP carries. Linux and Windows send a datagram larger than this
+		buffer, up to UDP's own limit.
+
 		@throws RangeError If set below 1.
 		@throws IOError If set once the socket is closed, or if the system
 		        refuses it.
@@ -235,6 +242,9 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	public var sendBufferSize(get, set):Int;
 
 	@:noCompletion private static inline var DEFAULT_BUFFER_SIZE:Int = 65535;
+	// The most UDP carries in one datagram: 65,535 less the UDP header and
+	// IPv6's (IPv4's header leaves 65,507).
+	@:noCompletion private static inline var MAX_DATAGRAM:Int = 65527;
 	// Most datagrams read in one go before the other sockets get their turn.
 	// It was 64, and the registry asks once a pass, so a socket could take in
 	// no more than 64 datagrams a pass, at 60 passes a second, 3,840 a
@@ -339,6 +349,11 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	@:noCompletion private var __sendsInFlight:Int = 0;
 	@:noCompletion private var __closeWhenSent:NodeDatagram = null;
 	@:noCompletion private var __onSent:js.lib.Error->Int->Void = null;
+	// The length of each send Node has not finished, oldest first: Node
+	// finishes a socket's sends in the order they were made, and one refused
+	// for its size is named with it. One callback for every send, rather
+	// than a closure made for each.
+	@:noCompletion private var __sendLengths:Array<Int> = [];
 
 	// Chosen from the first address this socket is given, because Node fixes
 	// the family when the socket is made where a sys.net.UdpSocket does not.
@@ -714,7 +729,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			try {
 				__socket.sendTo(datagram.bytes, 0, datagram.bytes.length, target);
 			} catch (e:Dynamic) {
-				__dispatchSendError("Send to " + host + ":" + port + " failed: " + Std.string(e));
+				__dispatchSendError("Send to " + host + ":" + port + " failed: " + __sendFailure(e, datagram.bytes.length));
 			}
 		}
 	}
@@ -778,6 +793,22 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		thread with no CrossByte runtime a name is looked up in the call, as
 		it always was. A datagram sent with no destination while a name given
 		to `connect()` is looked up waits for that answer the same way.
+
+		How large a datagram can be: UDP carries at most 65,507 bytes over
+		IPv4 and 65,527 over IPv6, and every system refuses more. macOS also
+		refuses a datagram larger than the socket's `sendBufferSize`, which
+		starts at 9,216 bytes there: raise it first to send larger ones.
+		Linux and Windows send up to UDP's limit whatever `sendBufferSize`
+		is. A datagram refused for its size throws an `IOError` that says so,
+		"a datagram of N bytes is larger than this socket can send
+		(sendBufferSize M)", with the limits, and the `ioError` event says
+		the same, natively and on the jvm; on Node, which sends a turn later,
+		only the event. HashLink and Neko report every failed send alike, so
+		there only a datagram past 65,527 bytes is named so. Short of these
+		limits, a datagram larger than the network path carries in one
+		packet (about 1,472 bytes over Ethernet with IPv4) is cut into IP
+		fragments and lost whole if any one is: keep what a game sends every
+		tick to about 1,200 bytes.
 
 		@param bytes The payload bytes to send.
 		@param offset The zero-based offset into `bytes` at which sending should begin.
@@ -850,6 +881,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			}
 			__nodeSocket(address).send(Buffer.hxFromBytes(payload), 0, length, port, address, __onSent);
 			__sendsInFlight++;
+			__sendLengths.push(length);
 			__rememberLocalEndpoint();
 			#else
 			var target:Null<Address> = __targetFor(address, port);
@@ -866,16 +898,64 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			#end
 		} catch (e:HxIOError) {
 			// The listener already gets the real reason; so does the caller.
-			__dispatchSendError(Std.string(e));
-			throw new IOError("Send to " + address + ":" + port + " failed: " + Std.string(e));
+			var reason:String = __sendFailure(e, length);
+			__dispatchSendError(reason);
+			throw new IOError("Send to " + address + ":" + port + " failed: " + reason);
 		} catch (e:Dynamic) {
 			switch (Std.string(e)) {
 				case "Unresolved host":
 					throw new ArgumentError("One of the parameters is invalid");
 				default:
-					throw new IOError("Send to " + address + ":" + port + " failed: " + Std.string(e));
+					// Told as the failures above are: HashLink reports every
+					// failed send as an Eof, which left its listeners untold.
+					var reason:String = __sendFailure(e, length);
+					__dispatchSendError(reason);
+					throw new IOError("Send to " + address + ":" + port + " failed: " + reason);
 			}
 		}
+	}
+
+	/**
+		What a send that failed says: for a datagram larger than this socket
+		can send, its size, the socket's send buffer and the limits, where it
+		said "Socket operation failed" as every other failure did; otherwise
+		what the system said.
+
+		Told apart natively by the system's own error (EMSGSIZE; the glue
+		throws "Datagram too large" for it), on the jvm by the JDK's text
+		for it, and on Node by the error's code, in `__sent`. HashLink and
+		Neko report every failure alike, so there only a datagram past
+		`MAX_DATAGRAM`: too large for UDP over either family, is named.
+	**/
+	@:noCompletion private function __sendFailure(error:Dynamic, length:Int):String {
+		return __isTooLarge(error, length) ? __tooLargeText(length) : Std.string(error);
+	}
+
+	@:noCompletion private static function __isTooLarge(error:Dynamic, length:Int):Bool {
+		if (length > MAX_DATAGRAM) {
+			return true;
+		}
+		#if cpp
+		return Std.string(error).indexOf("Datagram too large") >= 0;
+		#elseif ((java || jvm) && !macro)
+		// The JDK's words for EMSGSIZE: strerror's on Linux and macOS, its
+		// own for WSAEMSGSIZE on Windows.
+		var text:String = Std.string(error);
+		return text.indexOf("Message too long") >= 0 || text.indexOf("message is larger than the maximum") >= 0;
+		#else
+		return false;
+		#end
+	}
+
+	/** A datagram of `length` bytes too large for this socket: what to say of it. **/
+	@:noCompletion private function __tooLargeText(length:Int):String {
+		var buffer:Int = 0;
+		try {
+			buffer = __bufferSize(false);
+		} catch (_:Dynamic) {}
+		return 'a datagram of $length bytes is larger than this socket can send ('
+			+ (buffer > 0 ? 'sendBufferSize $buffer' : 'its send buffer size cannot be read here')
+			+ '): UDP carries at most 65,507 bytes over IPv4 and 65,527 over IPv6, and macOS no more than the send buffer';
 	}
 
 	#if nodejs
@@ -890,6 +970,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	**/
 	@:noCompletion private function __sent(error:js.lib.Error, _:Int):Void {
 		__sendsInFlight--;
+		var length:Int = __sendLengths.length > 0 ? __sendLengths.shift() : 0;
 
 		if (__sendsInFlight <= 0 && __closeWhenSent != null) {
 			var socket:NodeDatagram = __closeWhenSent;
@@ -902,7 +983,9 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		if (error != null && !__closed) {
 			// Contained: this runs from Node's event loop.
 			try {
-				__dispatchSendError("A datagram could not be sent: " + Std.string(error.message));
+				var code:Dynamic = (cast error : Dynamic).code;
+				__dispatchSendError("A datagram could not be sent: "
+					+ (code == "EMSGSIZE" || length > MAX_DATAGRAM ? __tooLargeText(length) : Std.string(error.message)));
 			} catch (thrown:Dynamic) {
 				CrossByte.__socketListenerThrew(thrown, this, 'An "ioError" listener threw');
 			}
@@ -1037,7 +1120,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			try {
 				__socket.sendTo(datagram.bytes, 0, datagram.bytes.length, target);
 			} catch (e:Dynamic) {
-				__dispatchSendError("Send to " + address + ":" + datagram.port + " failed: " + Std.string(e));
+				__dispatchSendError("Send to " + address + ":" + datagram.port + " failed: " + __sendFailure(e, datagram.bytes.length));
 			}
 		}
 
@@ -1627,10 +1710,11 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
 				return;
 			}
+			var reason:String = __sendFailure(e, length);
 			if (sender != null) {
-				sender.__datagramFailed(Std.string(e));
+				sender.__datagramFailed(reason);
 			} else {
-				__dispatchSendError(Std.string(e));
+				__dispatchSendError(reason);
 			}
 		}
 	}
@@ -1677,7 +1761,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 					failures = [];
 				}
 				failed.push(stopped);
-				failures.push(Std.string(e));
+				failures.push(__sendFailure(e, __outSpans[2 * stopped + 1]));
 			}
 		}
 
@@ -1858,8 +1942,15 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		} catch (_:Dynamic) {}
 	}
 
+	/**
+		The buffer sizes asked for, applied once Node has bound the socket:
+		once it has a port. `bind()` returns before Node has, and a size set
+		in between was applied to a handle with no socket yet, ENOTSOCK,
+		and reported as an `ioError` that also stopped the socket receiving.
+		A refusal is reported, and the socket goes on receiving.
+	**/
 	@:noCompletion private function __applyNodeBuffers():Void {
-		if (__socket == null || !__bound) {
+		if (__socket == null || __localPort == 0) {
 			return;
 		}
 		var socket:Dynamic = __socket;
@@ -1871,7 +1962,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 				socket.setSendBufferSize(__sendBufferRequest);
 			}
 		} catch (e:Dynamic) {
-			__dispatchIoError("Could not size the socket's buffers: " + Std.string(e));
+			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Could not size the socket's buffers: " + Std.string(e)));
 		}
 	}
 	#else
@@ -2009,7 +2100,9 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			return 0;
 		}
 		#elseif nodejs
-		if (!__bound) {
+		// Until Node has bound it, `bind()` returns first, there is no
+		// socket to ask.
+		if (__localPort == 0) {
 			return receive ? __receiveBufferRequest : __sendBufferRequest;
 		}
 		var socket:Dynamic = __socket;
