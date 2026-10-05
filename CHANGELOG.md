@@ -429,6 +429,34 @@ entry below says how:
   runtime RPC op: " and the number: compare an error with the constant.
 
 ### Added
+- `ReliableDatagramServerSocket.allowRebind`, off unless set: a reliable
+  UDP session that follows its player to a new address, a NAT that
+  gives it a new port, a phone moving from Wi-Fi to a mobile network,
+  where it was reset and the player cut off. Each session a 1.0 peer opens
+  is given a 16-byte random rebind key in the server's HANDSHAKE; when the
+  peer's frames then come from an address with no session, the server's
+  reset carries a challenge, a keyed hash of the new address and port
+  made as a join cookie is, and the peer's live session answers it from
+  there with a REBIND: its connection id, the challenge, and a keyed hash
+  of the two with the session's key. The server moves the session, its
+  endpoint maps, its host's count, its relay path, `remoteAddress` and
+  `remotePort`: answers with a REBOUND, and both sides send again at
+  once what went out while the peer could not be reached. The same session
+  object goes on; through a NAT written for the tests, every message both
+  ways arrived once and in order, under 15% loss too, and traffic resumed
+  0.2 ms after the client's first frame from its new port over loopback
+  (0.35 ms on the jvm), where the session had been reset. Refused: a wrong proof, a challenge
+  made for another address or more than 10 to 20 s old, a session not
+  connected or closing, and a second move within a second; at most 16
+  REBINDs are checked a pass. A client gives up after its `timeout`, with
+  an `ioError` naming the failed rebind. Without encryption the key crosses
+  the network in the clear, so someone on the path when a session began
+  could move it later: use it with encryption, or where no one hostile
+  shares the path. Nothing per packet, and nothing at all while off; no
+  key is given on a target with no secure random source (neko, HashLink).
+  TCP and WebSocket connections cannot follow an address, and reconnect
+  and resume, as `ReliableDatagramServerSocket`'s "Resuming a player"
+  shows.
 - `ReliableDatagramServerSocket.joinValidation` (`JoinValidation`:
   `UNDER_PRESSURE` unless changed, `ALWAYS`, `NEVER`) and
   `joinValidationThreshold` (64): a stateless cookie for reliable UDP
@@ -1777,7 +1805,15 @@ entry below says how:
   field echoing the connection id, then 8 bytes, 16 in all, whose top bit
   says which of the server's two keys made it. A peer on 1.0.0-rc.1 drops
   type 7 and ignores the flag and the payload, as it ignored every CONNECT
-  payload.
+  payload. For `allowRebind`: every 1.0 CONNECT declares feature 0x02; a
+  server session given a key sends HANDSHAKEs of 22 payload bytes (the six
+  of 1.0, then the key) until its peer has shown it took one; a reset (a
+  FIN without the graceful bit) carries the challenge in its sequence
+  field, where it carried 0, and stays 7 bytes; `PATH` kind 2, REBIND, is
+  20 bytes (connection id in the sequence field, the 4-byte challenge, an
+  8-byte proof), and kind 3, REBOUND, 12 (connection id, the challenge).
+  A peer from before 1.0, or with no key, takes a reset with a challenge
+  as any reset.
 - On the jvm a datagram socket allocates nothing to send a datagram, and
   nothing to read one from the peer the last came from. Each send made a
   view of the bytes (48 bytes) and the destination afresh, an

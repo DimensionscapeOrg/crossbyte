@@ -203,6 +203,26 @@ final class ReliableDatagramFrame {
 	returns the cookie in its next CONNECT. A cookie is the server's keyed
 	hash of the address, the port, the connection id and the time, so the
 	server keeps nothing while it waits.
+
+	A rebind moves a session to the address its peer's frames now come from
+	(`ReliableDatagramServerSocket.allowRebind`). A server that allows it
+	gives each peer whose CONNECT declared `FEATURE_REBIND` a key of
+	`REBIND_KEY_SIZE` random bytes, after the six of its HANDSHAKE (22 in
+	all), for as long as the peer has not shown it took the HANDSHAKE; a
+	peer that reads six takes none, and is never offered a rebind. Its
+	reset, the FIN that ends a session at once, answering a frame from an
+	address with no session, then carries a challenge in its sequence
+	field, where a reset carried 0: four bytes, the server's keyed hash of
+	the address and port the frame came from and the time, never 0. A peer
+	from before 1.0, or one with no key, ends its session on it as on any
+	reset. A peer with a key, whose session is live, answers instead with a
+	`PATH_REBIND`, 20 bytes: its connection id in the sequence field, then
+	the challenge, then eight bytes of proof, its keyed hash with the
+	session's key of the connection id and the challenge. A server that
+	finds all three right moves the session to the address the REBIND came
+	from, and answers from the session with a `PATH_REBOUND`, 12 bytes: the
+	connection id, and the challenge it answers. Neither is acknowledged or
+	resent: the peer sends its REBIND again until a REBOUND comes.
 **/
 final class ReliableDatagramProtocol {
 	public static inline var HEADER_SIZE:Int = 7;
@@ -285,6 +305,21 @@ final class ReliableDatagramProtocol {
 
 	/** A cookie's frame: the header, the kind, the cookie. **/
 	public static inline var COOKIE_FRAME_SIZE:Int = HEADER_SIZE + 1 + COOKIE_SIZE;
+
+	/** A rebind challenge: four bytes, in a reset's sequence field and in the REBIND and REBOUND after it. **/
+	public static inline var CHALLENGE_SIZE:Int = 4;
+
+	/** A REBIND's proof that its sender holds the session's rebind key. **/
+	public static inline var REBIND_PROOF_SIZE:Int = 8;
+
+	/** A REBIND's frame: the header, the kind, the challenge, the proof; 20 bytes. **/
+	public static inline var REBIND_FRAME_SIZE:Int = HEADER_SIZE + 1 + CHALLENGE_SIZE + REBIND_PROOF_SIZE;
+
+	/** A REBOUND's frame: the header, the kind, the challenge it answers; 12 bytes. **/
+	public static inline var REBOUND_FRAME_SIZE:Int = HEADER_SIZE + 1 + CHALLENGE_SIZE;
+
+	/** A HANDSHAKE's payload when it gives a rebind key: the usual six bytes, then the key. **/
+	public static inline var REBIND_HANDSHAKE_PAYLOAD_SIZE:Int = HANDSHAKE_PAYLOAD_SIZE + REBIND_KEY_SIZE;
 
 	/** Seconds as whole `ACK_DELAY_UNIT`s, held to two bytes. **/
 	public static inline function delayUnits(seconds:Float):Int {
