@@ -301,13 +301,24 @@ class EventDispatcher implements IEventDispatcher {
 		// still invoked for this one, the same contract a per-dispatch copy
 		// gave, without allocating an array every time an event is sent.
 		// One listener is not walked, so the count is left alone for it.
+		//
+		// A listener that throws ends the walk too: the count was left raised,
+		// and every add and remove on this dispatcher copied its listeners
+		// from then on. A try costs nothing natively or on the jvm until
+		// something throws.
 		__walking++;
-		for (i in 0...len) {
-			var entry = list[i];
-			if (entry == null || entry.listener == null) {
-				continue;
+		try {
+			for (i in 0...len) {
+				var entry = list[i];
+				if (entry == null || entry.listener == null) {
+					continue;
+				}
+				entry.listener(event);
 			}
-			entry.listener(event);
+		} catch (error:Dynamic) {
+			__walking--;
+			// Natively with the stack it was thrown from. Never returns.
+			crossbyte.events._internal.Arrivals.rethrow(error);
 		}
 		__walking--;
 		return true;
