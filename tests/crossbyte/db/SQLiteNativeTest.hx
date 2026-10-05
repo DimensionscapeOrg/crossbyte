@@ -143,6 +143,8 @@ class SQLiteNativeTest extends utest.Test {
 		// A second connection cannot take the write lock now.
 		var other:SQLiteConnection = new SQLiteConnection();
 		other.open(path, SQLiteMode.UPDATE, false, 4096);
+		// Refused at once, rather than after busyTimeout's 5 s.
+		other.busyTimeout = 0;
 		var locked:Bool = false;
 
 		try {
@@ -410,6 +412,65 @@ class SQLiteNativeTest extends utest.Test {
 		connection.close();
 		__pumpUntil(() -> events.length >= 4);
 		Assert.same(["open", "close", "open", "close"], events);
+	}
+
+	public function testAWriteWaitsForAnotherConnectionsLockByDefault():Void {
+		// SQLite's own busy_timeout is 0, and a connection opened with it:
+		// a write while another connection was writing failed at once with
+		// "database is locked", though the lock went a moment later.
+		var path:String = __path("busy-default");
+		var setup:SQLiteConnection = new SQLiteConnection();
+		setup.open(path, SQLiteMode.CREATE, false, 4096);
+		setup.request("CREATE TABLE t (x INTEGER)");
+		setup.close();
+
+		var holder:SQLiteConnection = new SQLiteConnection();
+		holder.open(path, SQLiteMode.UPDATE, false, 4096);
+		holder.request("BEGIN IMMEDIATE");
+		holder.request("INSERT INTO t VALUES (1)");
+
+		// Told not to wait, as every connection was: refused at once.
+		var impatient:SQLiteConnection = new SQLiteConnection();
+		impatient.open(path, SQLiteMode.UPDATE, false, 4096);
+		impatient.busyTimeout = 0;
+		var refused:String = null;
+		try {
+			impatient.request("INSERT INTO t VALUES (2)");
+		} catch (e:Dynamic) {
+			refused = Std.string(e);
+		}
+		impatient.close();
+		Assert.isTrue(refused != null && refused.indexOf("locked") >= 0, "a write with no wait was not refused as locked: " + refused);
+
+		// The holder commits 300 ms from now, on another thread, while this
+		// one waits on the lock.
+		var waiter:SQLiteConnection = new SQLiteConnection();
+		waiter.open(path, SQLiteMode.UPDATE, false, 4096);
+		Assert.equals(SQLiteConnection.DEFAULT_BUSY_TIMEOUT, waiter.busyTimeout);
+		var committed:sys.thread.Lock = new sys.thread.Lock();
+		sys.thread.Thread.create(function() {
+			crossbyte.sys.System.sleep(0.3);
+			try {
+				holder.request("COMMIT");
+			} catch (_:Dynamic) {}
+			committed.release();
+		});
+
+		var started:Float = haxe.Timer.stamp();
+		var failure:String = null;
+		try {
+			waiter.request("INSERT INTO t VALUES (3)");
+		} catch (e:Dynamic) {
+			failure = Std.string(e);
+		}
+		var waited:Float = haxe.Timer.stamp() - started;
+		Assert.isTrue(committed.wait(10.0), "the holder never committed");
+
+		Assert.isNull(failure, "the write did not wait for the lock");
+		Assert.isTrue(waited >= 0.1, "the write did not wait at all: " + waited + " s");
+		Assert.equals(2, __count(waiter, "t"), "the rows written are not the holder's and the waiter's");
+		waiter.close();
+		holder.close();
 	}
 
 	public function testDeanalyzeRemovesTheStatisticsAndKeepsTheConnection():Void {

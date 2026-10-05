@@ -382,6 +382,11 @@ entry below says how:
   `maxQueued` is 100,000 unless set: set 0, or more, for a batch that
   submits more than that at once. A `ConnectionPool` `acquireTimeout` of 0
   waits without limit, where it failed at once.
+- A `SQLiteConnection` waits up to 5 seconds for another connection's
+  write lock, `busyTimeout` as it opens, where it failed at once with
+  "database is locked". On a synchronous connection the wait is on the
+  calling thread: set `busyTimeout = 0` where failing at once is wanted,
+  or less where a runtime's thread calls it.
 - A MySQL `connectTimeout` of 0 is no limit natively, where it bounded
   each handshake read at 50 seconds; NaN and negative MySQL timeouts, and
   a negative Postgres `connectTimeout`, throw an `ArgumentError`.
@@ -1712,6 +1717,12 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `SQLiteConnection.busyTimeout` is 5,000 milliseconds as a connection
+  opens, `DEFAULT_BUSY_TIMEOUT`, where it was SQLite's own 0: a write
+  while another connection, in this process or another, held the write
+  lock failed at once with "database is locked", though the lock went a
+  moment later. It now waits for the lock, as Python's `sqlite3` and
+  most drivers do by default. See Upgrading.
 - Pausing and resuming a timer, `Timer.pause`, `Timer.resume`,
   allocates nothing, where the pair allocated 24 bytes natively and on the
   jvm: the time a timer was paused at was a boxed `Float`, and on the jvm
