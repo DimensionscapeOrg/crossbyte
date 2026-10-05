@@ -58,11 +58,13 @@ class DatagramSocketTest extends utest.Test {
 		ports already in use, 25 of a thousand game clients over reliable
 		UDP shared one with another client, and never connected, and any
 		local process could bind a server's port as well. Fixed in hxcpp's
-		socket_bind (the fork's production); Windows never set it. The other
-		sys runtimes' own binds still do, and Node's is asynchronous.
+		socket_bind (the fork's production); Windows never set it. Neko's
+		and HashLink's binds still set it, and their natives cannot be asked
+		not to, so on Linux DatagramSocket checks its port after binding
+		there. Node's bind is asynchronous, and refuses through an event.
 	**/
 	public function testAPortHeldIsNotGivenToAnother():Void {
-		#if (cpp || jvm)
+		#if (sys && !nodejs)
 		if (!DatagramSocket.isSupported) {
 			Assert.isFalse(DatagramSocket.isSupported);
 			return;
@@ -80,11 +82,56 @@ class DatagramSocketTest extends utest.Test {
 				refused = true;
 			}
 			Assert.isTrue(refused, "a second socket was bound to port " + port + ", which another already held");
+
+			// Refused, the socket is still one to bind elsewhere and use.
+			second.bind(0, "127.0.0.1");
+			Assert.isTrue(second.localPort > 0 && second.localPort != port, "a socket refused a port held could not be bound to another: " + second.localPort);
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
 		try second.close() catch (_:Dynamic) {}
 		try holder.close() catch (_:Dynamic) {}
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		Every socket bound to port 0 is given a port of its own, however many
+		are bound. With SO_REUSEADDR set on datagram sockets, Linux handed out
+		ports already held, 18 in 1,000 binds in C, and the socket that
+		shared one received none of its own datagrams: on neko,
+		`testInterleavedSendersAreEachNamed` received none of six (CI,
+		2026-10-05).
+	**/
+	public function testEachSocketBoundToPortZeroHasAPortOfItsOwn():Void {
+		#if (sys && !nodejs)
+		if (!DatagramSocket.isSupported) {
+			Assert.isFalse(DatagramSocket.isSupported);
+			return;
+		}
+
+		var sockets:Array<DatagramSocket> = [];
+		var seen:Map<Int, Bool> = new Map();
+		var shared:Array<Int> = [];
+		try {
+			for (_ in 0...500) {
+				var socket = new DatagramSocket();
+				sockets.push(socket);
+				socket.bind(0, "127.0.0.1");
+				var port:Int = socket.localPort;
+				if (seen.exists(port)) {
+					shared.push(port);
+				}
+				seen.set(port, true);
+			}
+			Assert.same([], shared, "ports handed out to two sockets at once");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		for (socket in sockets) {
+			closeQuietly(socket);
+		}
 		#else
 		Assert.pass();
 		#end

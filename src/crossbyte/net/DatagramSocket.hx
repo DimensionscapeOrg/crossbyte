@@ -446,6 +446,9 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			__bound = true;
 			#else
 			__socket.bind(new Host(localAddress), localPort);
+			#if (neko || hl)
+			__refuseSharedPort(localAddress, localPort);
+			#end
 			__bound = true;
 			__localText = null;
 			#end
@@ -463,6 +466,137 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			}
 		}
 	}
+
+	#if (neko || hl)
+	/**
+		Neko's and HashLink's binds set SO_REUSEADDR, and on Linux two
+		datagram sockets that both set it may share a port: a bind to port 0
+		can be handed one another socket holds, the one of the two then
+		receives the other's datagrams, and a bind to a port in use
+		succeeds. hxcpp's bind no longer sets it on a datagram socket (the
+		fork's 7ddf550b); these natives cannot be asked not to. So on Linux
+		the port is checked against /proc/net/udp once bound: one another
+		socket holds is refused, as it is everywhere else, and port 0 handed
+		one is asked for again, on a socket of its own, up to 16 times. A
+		socket refused keeps a fresh socket underneath, to bind again.
+
+		On neko `DatagramSocketTest.testInterleavedSendersAreEachNamed`
+		received none of six datagrams in CI (2026-10-05): its receiver had
+		been handed a port another socket held.
+	**/
+	@:noCompletion private function __refuseSharedPort(localAddress:String, asked:Int):Void {
+		if (!__portsCanBeShared()) {
+			return;
+		}
+		for (_ in 0...16) {
+			var local = __getLocalEndpoint();
+			if (local == null || !__portShared(local.host.toString(), local.port)) {
+				return;
+			}
+			__freshSocket();
+			if (asked != 0) {
+				throw 'port $asked is held by another socket';
+			}
+			__socket.bind(new Host(localAddress), 0);
+		}
+		__freshSocket();
+		throw "every port the system handed out was held by another socket";
+	}
+
+	/** A socket of its own in place of the one bound to a shared port, in the poll set if that one was. **/
+	@:noCompletion private function __freshSocket():Void {
+		var old:UdpSocket = __socket;
+		if (__registered && __cbInstance != null) {
+			__cbInstance.deregisterSocket(old);
+			__registered = false;
+		}
+		try {
+			old.close();
+		} catch (_:Dynamic) {}
+		__initSocket();
+		__syncPolling();
+	}
+
+	@:noCompletion private static var __linux:Null<Bool> = null;
+
+	@:noCompletion private static function __portsCanBeShared():Bool {
+		if (__linux == null) {
+			__linux = Sys.systemName() == "Linux";
+		}
+		return __linux;
+	}
+
+	/**
+		Whether a socket other than this one holds `port` on an address
+		overlapping `address`: two or more entries for it in /proc/net/udp
+		and udp6, this socket's own among them. An IPv6 entry overlaps when
+		it is the any address, which takes IPv4 too, or IPv4-mapped.
+	**/
+	@:noCompletion private static function __portShared(address:String, port:Int):Bool {
+		return __holders("/proc/net/udp", address, port, false) + __holders("/proc/net/udp6", address, port, true) > 1;
+	}
+
+	@:noCompletion private static function __holders(path:String, address:String, port:Int, six:Bool):Int {
+		var text:String;
+		try {
+			// Read to its end: a /proc file says it is empty.
+			var input = sys.io.File.read(path, false);
+			text = input.readAll().toString();
+			input.close();
+		} catch (_:Dynamic) {
+			return 0;
+		}
+		var count:Int = 0;
+		for (line in text.split("\n")) {
+			var fields:Array<String> = [for (field in line.split(" ")) if (field.length > 0) field];
+			if (fields.length < 2) {
+				continue;
+			}
+			var local:String = fields[1];
+			var colon:Int = local.lastIndexOf(":");
+			if (colon < 0 || Std.parseInt("0x" + local.substr(colon + 1)) != port) {
+				continue;
+			}
+			var hex:String = local.substr(0, colon);
+			if (six) {
+				if (hex == "00000000000000000000000000000000") {
+					count++;
+					continue;
+				}
+				if (!StringTools.startsWith(hex, "0000000000000000FFFF0000")) {
+					continue;
+				}
+				hex = hex.substr(24);
+			}
+			var held:String = __dotted(hex);
+			if (held == null) {
+				continue;
+			}
+			if (held == "0.0.0.0" || address == "0.0.0.0" || held == address) {
+				count++;
+			}
+		}
+		return count;
+	}
+
+	/** An IPv4 address as /proc prints it, its four bytes as one little-endian word, as text. **/
+	@:noCompletion private static function __dotted(hex:String):Null<String> {
+		if (hex.length != 8) {
+			return null;
+		}
+		var parts:Array<String> = [];
+		var i:Int = 6;
+		while (i >= 0) {
+			var byte:Null<Int> = Std.parseInt("0x" + hex.substr(i, 2));
+			if (byte == null) {
+				return null;
+			}
+			parts.push(Std.string(byte));
+			i -= 2;
+		}
+		return parts.join(".");
+	}
+	#end
 
 	/**
 		Closes the socket and stops any active receive loop.
