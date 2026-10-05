@@ -102,6 +102,12 @@ entry below says how:
   `abort()` is the old immediate close. Its FIN holds a place in the
   sequence, which a peer from before 1.0 does not know, so both ends need
   1.0 for what was sent before a close to arrive before it.
+- A reliable datagram client on 1.0.0-rc.1 cannot return a join cookie:
+  while a 1.0 server validates joins, once `joinValidationThreshold`
+  sessions are pending, by default, its CONNECTs are dropped, and it
+  joins once fewer are pending, or never under `JoinValidation.ALWAYS`.
+  Set `joinValidation = NEVER` on a server that must take such clients
+  under any load. A 1.0 client joins a server on rc.1 as before.
 - `DatagramSocket.timeout` is gone; it did nothing, so delete what sets it.
 - A closed `DataChannel` resets its SCTP stream, so the peer's end closes
   too. That needs RE-CONFIG at both ends: a peer on 1.0.0-rc.1 does not
@@ -423,6 +429,27 @@ entry below says how:
   runtime RPC op: " and the number: compare an error with the constant.
 
 ### Added
+- `ReliableDatagramServerSocket.joinValidation` (`JoinValidation`:
+  `UNDER_PRESSURE` unless changed, `ALWAYS`, `NEVER`) and
+  `joinValidationThreshold` (64): a stateless cookie for reliable UDP
+  joins, as TCP's SYN cookies, QUIC's Retry and DTLS's HelloVerifyRequest
+  do. A pending session was held for 20 seconds on the word of a source
+  address UDP lets a sender write, so about 13 forged CONNECTs a second
+  kept all 256 `maxPendingConnections` slots full and no real player could
+  join. Once `joinValidationThreshold` sessions are pending, or always,
+  under `ALWAYS`, a CONNECT is answered with a cookie instead: a keyed
+  hash (SipHash-2-4) of its address, port, connection id and the time,
+  for which the server keeps nothing, under a key made at random and
+  turned over every 10 seconds with the one before still accepted. Only a
+  CONNECT that returns it, from the address and port it was made for, goes
+  on to `admit` and a session. A 1.0 client returns it by itself, at once:
+  a join under a flood costs one more round trip, and an ordinary one
+  nothing. In a test, 1,040 forged CONNECTs from 200 addresses held 8
+  slots under a threshold of 8 where they had held all 16, and a real
+  client joined through them, where it could not. A cookie is never
+  larger than the CONNECT it answers: a 1.0 CONNECT is padded to 29
+  bytes, the largest anything is sent back to one. See Changed for the
+  wire, and Upgrading for peers on 1.0.0-rc.1.
 - `ReliableDatagramServerSocket.maxResetsPerSecond`, 1,000 unless changed:
   the resets every reliable datagram server in the process may send
   together in a second, from one allowance that holds a second's worth and
@@ -1737,6 +1764,20 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- The reliable UDP wire, for join cookies (see `joinValidation` under
+  Added). A 1.0 CONNECT sets the flag bit 0x08 (`CONNECT_EXTENDED_MASK`,
+  graceful on a FIN), and its payload starts with an extension ahead of
+  what `connect` passed: one byte, the extension's length after it; one
+  byte of features (0x01 a cookie follows, 0x02 the sender answers a
+  rebind challenge); the 8-byte cookie when it has one; zero padding until
+  the datagram is 29 bytes. A CONNECT with the bit and fewer than 29
+  bytes, or an extension past its end, is not a frame. Frame type 7,
+  `PATH`, is new: its payload's first byte says what it is, and a server
+  answers a CONNECT it validates with kind 1, the cookie, the sequence
+  field echoing the connection id, then 8 bytes, 16 in all, whose top bit
+  says which of the server's two keys made it. A peer on 1.0.0-rc.1 drops
+  type 7 and ignores the flag and the payload, as it ignored every CONNECT
+  payload.
 - On the jvm a datagram socket allocates nothing to send a datagram, and
   nothing to read one from the peer the last came from. Each send made a
   view of the bytes (48 bytes) and the destination afresh, an

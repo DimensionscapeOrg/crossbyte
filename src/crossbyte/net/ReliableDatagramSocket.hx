@@ -741,6 +741,16 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// was called, or null for nothing.
 	@:noCompletion private var __connectOut:ByteArray = null;
 
+	// The join cookie the server sent this attempt, which every CONNECT
+	// after it returns; see `ReliableDatagramServerSocket.joinValidation`.
+	@:noCompletion private var __hasJoinCookie:Bool = false;
+	@:noCompletion private var __joinCookieHigh:Int = 0;
+	@:noCompletion private var __joinCookieLow:Int = 0;
+
+	// Where a CONNECT's payload is put together, the extension, then
+	// `__connectOut`: while the handshake lasts.
+	@:noCompletion private var __connectScratch:ByteArray = null;
+
 	// The bundle being gathered, in `__scratch`: two bytes kept at the front
 	// for the bundle's magic, then each frame after two bytes of its length,
 	// written in place. `__pendingLength` is where the next entry goes.
@@ -1000,9 +1010,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__outgoingQueue = [];
 		__scratch = new ByteArray();
 		// A single frame of the largest size, with room before it for the
-		// bundle's magic and its length, which it is sent without.
+		// bundle's magic and its length, which it is sent without, and the
+		// largest is a CONNECT carrying a whole frame's payload behind its
+		// extension.
 		__scratch.length = ReliableDatagramProtocol.MAX_FRAME_SIZE + ReliableDatagramProtocol.BUNDLE_HEADER_SIZE
-			+ ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE;
+			+ ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE + ReliableDatagramProtocol.CONNECT_EXTENSION_MAX;
 		objectEncoding = ObjectEncoding.DEFAULT;
 		__input = __createBuffer();
 		__output = __createBuffer();
@@ -1232,6 +1244,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		sender's address until the handshake completes, so what it can carry
 		is something the server can check, not something that must stay secret.
 
+		A server that wants the join to show it comes from this address first
+		(`ReliableDatagramServerSocket.joinValidation`) answers the first
+		CONNECT with a cookie, and the socket sends it back at once in a
+		CONNECT of its own: one round trip more, and nothing to do here. Each
+		CONNECT is padded to at least 29 bytes, so whatever the server answers
+		it with is no larger.
+
 		`host` may be a name everywhere but Node. It is looked up off the
 		runtime's thread, and the handshake starts when the answer comes;
 		`remoteAddress` is the address it resolved to from then. The attempt's
@@ -1365,8 +1384,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 	#end
 
-	/** A connection id: random, 32 bits, and never 0, which means none. **/
+	/**
+		A connection id for a new attempt: random, 32 bits, and never 0,
+		which means none. A join cookie from an earlier attempt was made for
+		its id, and is let go.
+	**/
 	@:noCompletion private function __newConnectionId():Int {
+		__hasJoinCookie = false;
 		var id:Int = 0;
 		while (id == 0) {
 			id = __randomSequenceSeed();
@@ -1873,6 +1897,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
+		// About this side's address, and no sign of a peer's session: taken
+		// on its own (see `__acceptPath`).
+		if (frame.type == PATH) {
+			__acceptPath(frame);
+			return;
+		}
+
 		// Meant for an earlier attempt from this address and port, a
 		// session that went on answering a peer since restarted, and taking
 		// it would start this one from that session's sequence.
@@ -1986,6 +2017,39 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				__acceptUnreliable(frame.payload);
 			case SEQUENCED:
 				__acceptSequenced(frame.sequence, frame.payload);
+			case PATH:
+				// Taken before anything else, above.
+		}
+	}
+
+	/**
+		A PATH frame from the peer. A join cookie (`PATH_COOKIE`) is taken
+		only by a session dialling, for the attempt it is in, its sequence
+		field echoes that attempt's connection id, and the CONNECT that
+		returns it goes at once rather than at the next attempt three seconds
+		on: the cookie is the one round trip more a validated join costs.
+		Once for each new cookie, so a server answering every CONNECT with
+		the same one cannot draw one CONNECT after another as fast as they
+		cross; the attempts that follow return it as they go.
+	**/
+	@:noCompletion private function __acceptPath(frame:ReliableDatagramFrame):Void {
+		var payload:ByteArray = frame.payload;
+		var bytes:haxe.io.Bytes = payload;
+		var kind:Int = bytes.get(0);
+		if (kind == ReliableDatagramProtocol.PATH_COOKIE) {
+			if (__incoming || __connected || (frame.sequence : Int) != __connectionId
+				|| payload.length < 1 + ReliableDatagramProtocol.COOKIE_SIZE) {
+				return;
+			}
+			var high:Int = (bytes.get(1) << 24) | (bytes.get(2) << 16) | (bytes.get(3) << 8) | bytes.get(4);
+			var low:Int = (bytes.get(5) << 24) | (bytes.get(6) << 16) | (bytes.get(7) << 8) | bytes.get(8);
+			var fresh:Bool = !__hasJoinCookie || high != __joinCookieHigh || low != __joinCookieLow;
+			__hasJoinCookie = true;
+			__joinCookieHigh = high;
+			__joinCookieLow = low;
+			if (fresh) {
+				__sendHandshakeAttempt();
+			}
 		}
 	}
 
@@ -3128,6 +3192,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__inSequence = sequence;
 			__connected = true;
 			__alive = true;
+			// No CONNECT goes from a connected session.
+			__connectScratch = null;
+			__hasJoinCookie = false;
 		}
 
 		if (peerHasOurs) {
@@ -3506,7 +3573,19 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (__remoteAddress == "" || __remotePort == 0 || __transport == null) {
 			return;
 		}
-		__sendFrame(CONNECT, __connectionId, __connectOut, 0, __connectOut == null ? 0 : __connectOut.length, false, 0, false, false);
+		// The extension first: the server's cookie, once it has sent one.
+		// Padded, so whatever the server sends back is no larger.
+		var length:Int = __connectOut == null ? 0 : __connectOut.length;
+		var room:Int = length + ReliableDatagramProtocol.CONNECT_EXTENSION_MAX + ReliableDatagramProtocol.MIN_CONNECT_SIZE;
+		if (__connectScratch == null) {
+			__connectScratch = new ByteArray();
+		}
+		if (__connectScratch.length < room) {
+			__connectScratch.length = room;
+		}
+		var written:Int = ReliableDatagramProtocol.writeConnectPayload(__connectScratch, 0, 0, __hasJoinCookie,
+			__joinCookieHigh, __joinCookieLow, __connectOut, 0, length);
+		__sendFrame(CONNECT, __connectionId, __connectScratch, 0, written, false, 0, false, false, true);
 	}
 
 	/**
