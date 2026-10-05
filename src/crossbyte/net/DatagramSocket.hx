@@ -226,6 +226,13 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		this socket before they leave. As `receiveBufferSize`, for the other
 		direction.
 
+		On macOS it is also the largest datagram the socket sends: 9,216
+		bytes to begin with (`net.inet.udp.maxdgram`), and a larger one is
+		refused with an error that says so (see `send`). Raise it there
+		before sending more, `sendBufferSize = 64 * 1024` covers anything
+		UDP carries. Linux and Windows send a datagram larger than this
+		buffer, up to UDP's own limit.
+
 		@throws RangeError If set below 1.
 		@throws IOError If set once the socket is closed, or if the system
 		        refuses it.
@@ -235,6 +242,9 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	public var sendBufferSize(get, set):Int;
 
 	@:noCompletion private static inline var DEFAULT_BUFFER_SIZE:Int = 65535;
+	// The most UDP carries in one datagram: 65,535 less the UDP header and
+	// IPv6's (IPv4's header leaves 65,507).
+	@:noCompletion private static inline var MAX_DATAGRAM:Int = 65527;
 	// Most datagrams read in one go before the other sockets get their turn.
 	// It was 64, and the registry asks once a pass, so a socket could take in
 	// no more than 64 datagrams a pass, at 60 passes a second, 3,840 a
@@ -242,6 +252,11 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	// kernel's buffer. Reading one costs a microsecond or two, so this still
 	// bounds a flood's hold on the loop to a few milliseconds.
 	@:noCompletion private static inline var MAX_DATAGRAMS_PER_TICK:Int = 1024;
+
+	// How many datagrams a batch takes in at first, and at most: a read that
+	// fills one doubles it for the next, up to the most.
+	@:noCompletion private static inline var BATCH_FIRST:Int = 8;
+	@:noCompletion private static inline var BATCH_MOST:Int = 64;
 
 	// How long a name's answer is used before it is looked up again, how soon
 	// a lookup that failed to refresh one is tried again, and how many
@@ -285,6 +300,25 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	@:noCompletion private var __outTargets:Array<Dynamic> = [];
 	@:noCompletion private var __outSenders:Array<crossbyte._internal.net.DatagramSender> = [];
 	@:noCompletion private var __outQueued:Bool = false;
+
+	// Linux: what one recvmmsg took in, handed out from __batchNext (see
+	// __batchRead). Made when a pass first finds a second datagram waiting,
+	// so a socket that never has more than one at a time has none.
+	@:noCompletion private var __batch:Dynamic = null;
+	@:noCompletion private var __batchCapacity:Int = 0;
+	@:noCompletion private var __batchCount:Int = 0;
+	@:noCompletion private var __batchNext:Int = 0;
+	// The last read took in all it asked for, so more may be waiting.
+	@:noCompletion private var __batchFull:Bool = false;
+	// The system would not map a batch, or has no recvmmsg: not asked again.
+	@:noCompletion private var __batchRefused:Bool = false;
+	@:noCompletion private var __leftoversPosted:Bool = false;
+
+	/**
+		Whether sockets read in batches where they can (Linux). Internal: a
+		test turns it off to compare, and it is on wherever it can be.
+	**/
+	@:noCompletion public static var __batchReads:Bool = crossbyte._internal.net.NativeSocketAddress.batchSupported();
 	#end
 	#if nodejs
 	// Buffer sizes asked for, applied when the socket is bound: Node cannot
@@ -315,6 +349,11 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	@:noCompletion private var __sendsInFlight:Int = 0;
 	@:noCompletion private var __closeWhenSent:NodeDatagram = null;
 	@:noCompletion private var __onSent:js.lib.Error->Int->Void = null;
+	// The length of each send Node has not finished, oldest first: Node
+	// finishes a socket's sends in the order they were made, and one refused
+	// for its size is named with it. One callback for every send, rather
+	// than a closure made for each.
+	@:noCompletion private var __sendLengths:Array<Int> = [];
 
 	// Chosen from the first address this socket is given, because Node fixes
 	// the family when the socket is made where a sys.net.UdpSocket does not.
@@ -407,6 +446,9 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			__bound = true;
 			#else
 			__socket.bind(new Host(localAddress), localPort);
+			#if (neko || hl)
+			__refuseSharedPort(localAddress, localPort);
+			#end
 			__bound = true;
 			__localText = null;
 			#end
@@ -424,6 +466,137 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			}
 		}
 	}
+
+	#if (neko || hl)
+	/**
+		Neko's and HashLink's binds set SO_REUSEADDR, and on Linux two
+		datagram sockets that both set it may share a port: a bind to port 0
+		can be handed one another socket holds, the one of the two then
+		receives the other's datagrams, and a bind to a port in use
+		succeeds. hxcpp's bind no longer sets it on a datagram socket (the
+		fork's 7ddf550b); these natives cannot be asked not to. So on Linux
+		the port is checked against /proc/net/udp once bound: one another
+		socket holds is refused, as it is everywhere else, and port 0 handed
+		one is asked for again, on a socket of its own, up to 16 times. A
+		socket refused keeps a fresh socket underneath, to bind again.
+
+		On neko `DatagramSocketTest.testInterleavedSendersAreEachNamed`
+		received none of six datagrams in CI (2026-10-05): its receiver had
+		been handed a port another socket held.
+	**/
+	@:noCompletion private function __refuseSharedPort(localAddress:String, asked:Int):Void {
+		if (!__portsCanBeShared()) {
+			return;
+		}
+		for (_ in 0...16) {
+			var local = __getLocalEndpoint();
+			if (local == null || !__portShared(local.host.toString(), local.port)) {
+				return;
+			}
+			__freshSocket();
+			if (asked != 0) {
+				throw 'port $asked is held by another socket';
+			}
+			__socket.bind(new Host(localAddress), 0);
+		}
+		__freshSocket();
+		throw "every port the system handed out was held by another socket";
+	}
+
+	/** A socket of its own in place of the one bound to a shared port, in the poll set if that one was. **/
+	@:noCompletion private function __freshSocket():Void {
+		var old:UdpSocket = __socket;
+		if (__registered && __cbInstance != null) {
+			__cbInstance.deregisterSocket(old);
+			__registered = false;
+		}
+		try {
+			old.close();
+		} catch (_:Dynamic) {}
+		__initSocket();
+		__syncPolling();
+	}
+
+	@:noCompletion private static var __linux:Null<Bool> = null;
+
+	@:noCompletion private static function __portsCanBeShared():Bool {
+		if (__linux == null) {
+			__linux = Sys.systemName() == "Linux";
+		}
+		return __linux;
+	}
+
+	/**
+		Whether a socket other than this one holds `port` on an address
+		overlapping `address`: two or more entries for it in /proc/net/udp
+		and udp6, this socket's own among them. An IPv6 entry overlaps when
+		it is the any address, which takes IPv4 too, or IPv4-mapped.
+	**/
+	@:noCompletion private static function __portShared(address:String, port:Int):Bool {
+		return __holders("/proc/net/udp", address, port, false) + __holders("/proc/net/udp6", address, port, true) > 1;
+	}
+
+	@:noCompletion private static function __holders(path:String, address:String, port:Int, six:Bool):Int {
+		var text:String;
+		try {
+			// Read to its end: a /proc file says it is empty.
+			var input = sys.io.File.read(path, false);
+			text = input.readAll().toString();
+			input.close();
+		} catch (_:Dynamic) {
+			return 0;
+		}
+		var count:Int = 0;
+		for (line in text.split("\n")) {
+			var fields:Array<String> = [for (field in line.split(" ")) if (field.length > 0) field];
+			if (fields.length < 2) {
+				continue;
+			}
+			var local:String = fields[1];
+			var colon:Int = local.lastIndexOf(":");
+			if (colon < 0 || Std.parseInt("0x" + local.substr(colon + 1)) != port) {
+				continue;
+			}
+			var hex:String = local.substr(0, colon);
+			if (six) {
+				if (hex == "00000000000000000000000000000000") {
+					count++;
+					continue;
+				}
+				if (!StringTools.startsWith(hex, "0000000000000000FFFF0000")) {
+					continue;
+				}
+				hex = hex.substr(24);
+			}
+			var held:String = __dotted(hex);
+			if (held == null) {
+				continue;
+			}
+			if (held == "0.0.0.0" || address == "0.0.0.0" || held == address) {
+				count++;
+			}
+		}
+		return count;
+	}
+
+	/** An IPv4 address as /proc prints it, its four bytes as one little-endian word, as text. **/
+	@:noCompletion private static function __dotted(hex:String):Null<String> {
+		if (hex.length != 8) {
+			return null;
+		}
+		var parts:Array<String> = [];
+		var i:Int = 6;
+		while (i >= 0) {
+			var byte:Null<Int> = Std.parseInt("0x" + hex.substr(i, 2));
+			if (byte == null) {
+				return null;
+			}
+			parts.push(Std.string(byte));
+			i -= 2;
+		}
+		return parts.join(".");
+	}
+	#end
 
 	/**
 		Closes the socket and stops any active receive loop.
@@ -476,6 +649,11 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		try {
 			__socket.close();
 		} catch (_:Dynamic) {}
+		#if cpp
+		// Unmapped now rather than when the socket is collected: what it
+		// held goes with the socket, as the kernel's queue does.
+		__batchStop();
+		#end
 		// Datagrams still waiting on a name go with the socket they were
 		// waiting to leave by; an answer arriving later finds nothing to do.
 		__names = null;
@@ -685,7 +863,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			try {
 				__socket.sendTo(datagram.bytes, 0, datagram.bytes.length, target);
 			} catch (e:Dynamic) {
-				__dispatchSendError("Send to " + host + ":" + port + " failed: " + Std.string(e));
+				__dispatchSendError("Send to " + host + ":" + port + " failed: " + __sendFailure(e, datagram.bytes.length));
 			}
 		}
 	}
@@ -694,6 +872,24 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	/**
 		Begins receiving datagrams and dispatching `DatagramSocketDataEvent.DATA`
 		events on the current CrossByte thread.
+
+		Each pass of the runtime reads what has arrived, up to 1,024
+		datagrams, and hands them out one at a time. On Linux, natively, a
+		socket that finds a second datagram waiting in a pass reads from
+		then on in batches: one system call (`recvmmsg`) takes in up to 64,
+		where each datagram took a `recvfrom` of its own and the pass one
+		more to find the socket empty. A reliable UDP server reading once a
+		frame, as the runtime's `DEFAULT` loop does, made 95% fewer system
+		calls for it and spent 6 to 9% less processor time, 5% less in the
+		kernel, at 200 and 1,000 clients; one woken for each arrival, as the
+		`POLL` loop is, finds a datagram or two at a time and spends about
+		the same. Every slot of a batch is 64 KB, past the largest datagram,
+		so none is cut short; the system commits a slot's memory only as
+		datagrams are written into it. So a busy socket holds at most 4 MB
+		of address space and, for datagrams of up to 4 KB, 256 KB of memory,
+		let go by `close()`; one that never has two datagrams waiting at
+		once holds none. Other systems and targets read one datagram a call.
+
 		@throws IOError If the socket is not valid.
 	**/
 	public function receive():Void {
@@ -732,6 +928,22 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		it always was. A datagram sent with no destination while a name given
 		to `connect()` is looked up waits for that answer the same way.
 
+		How large a datagram can be: UDP carries at most 65,507 bytes over
+		IPv4 and 65,527 over IPv6, and every system refuses more. macOS also
+		refuses a datagram larger than the socket's `sendBufferSize`, which
+		starts at 9,216 bytes there: raise it first to send larger ones.
+		Linux and Windows send up to UDP's limit whatever `sendBufferSize`
+		is. A datagram refused for its size throws an `IOError` that says so,
+		"a datagram of N bytes is larger than this socket can send
+		(sendBufferSize M)", with the limits, and the `ioError` event says
+		the same, natively and on the jvm; on Node, which sends a turn later,
+		only the event. HashLink and Neko report every failed send alike, so
+		there only a datagram past 65,527 bytes is named so. Short of these
+		limits, a datagram larger than the network path carries in one
+		packet (about 1,472 bytes over Ethernet with IPv4) is cut into IP
+		fragments and lost whole if any one is: keep what a game sends every
+		tick to about 1,200 bytes.
+
 		@param bytes The payload bytes to send.
 		@param offset The zero-based offset into `bytes` at which sending should begin.
 		@param length The number of bytes to send. Use `0` to send all remaining bytes from `offset`.
@@ -741,8 +953,20 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		@throws RangeError If `offset`, `length`, or `port` are out of range.
 		@throws IllegalOperationError If a connected socket is asked to send to an explicit alternate destination.
 		@throws IOError If the send operation fails.
+
+		`send` is `inline`, a forwarder over a method with no optional
+		arguments, which on the jvm boxed each one per call (16 bytes for a
+		port, a length or an offset above 127), so a subclass cannot
+		override it: wrap the socket instead (see the CHANGELOG's Upgrading
+		notes). Taken as a value, or called through `Reflect` or `Dynamic`,
+		it works as before.
 	**/
-	public function send(bytes:ByteArray, offset:Int = 0, length:Int = 0, address:String = null, port:Int = 0):Void {
+	public inline function send(bytes:ByteArray, offset:Int = 0, length:Int = 0, address:String = null, port:Int = 0):Void {
+		__send(bytes, offset, length, address, port);
+	}
+
+	/** `send`, with every argument given: nothing boxed on the jvm. **/
+	@:noCompletion public function __send(bytes:ByteArray, offset:Int, length:Int, address:String, port:Int):Void {
 		if (__socket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
@@ -803,6 +1027,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			}
 			__nodeSocket(address).send(Buffer.hxFromBytes(payload), 0, length, port, address, __onSent);
 			__sendsInFlight++;
+			__sendLengths.push(length);
 			__rememberLocalEndpoint();
 			#else
 			var target:Null<Address> = __targetFor(address, port);
@@ -819,16 +1044,64 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			#end
 		} catch (e:HxIOError) {
 			// The listener already gets the real reason; so does the caller.
-			__dispatchSendError(Std.string(e));
-			throw new IOError("Send to " + address + ":" + port + " failed: " + Std.string(e));
+			var reason:String = __sendFailure(e, length);
+			__dispatchSendError(reason);
+			throw new IOError("Send to " + address + ":" + port + " failed: " + reason);
 		} catch (e:Dynamic) {
 			switch (Std.string(e)) {
 				case "Unresolved host":
 					throw new ArgumentError("One of the parameters is invalid");
 				default:
-					throw new IOError("Send to " + address + ":" + port + " failed: " + Std.string(e));
+					// Told as the failures above are: HashLink reports every
+					// failed send as an Eof, which left its listeners untold.
+					var reason:String = __sendFailure(e, length);
+					__dispatchSendError(reason);
+					throw new IOError("Send to " + address + ":" + port + " failed: " + reason);
 			}
 		}
+	}
+
+	/**
+		What a send that failed says: for a datagram larger than this socket
+		can send, its size, the socket's send buffer and the limits, where it
+		said "Socket operation failed" as every other failure did; otherwise
+		what the system said.
+
+		Told apart natively by the system's own error (EMSGSIZE; the glue
+		throws "Datagram too large" for it), on the jvm by the JDK's text
+		for it, and on Node by the error's code, in `__sent`. HashLink and
+		Neko report every failure alike, so there only a datagram past
+		`MAX_DATAGRAM`: too large for UDP over either family, is named.
+	**/
+	@:noCompletion private function __sendFailure(error:Dynamic, length:Int):String {
+		return __isTooLarge(error, length) ? __tooLargeText(length) : Std.string(error);
+	}
+
+	@:noCompletion private static function __isTooLarge(error:Dynamic, length:Int):Bool {
+		if (length > MAX_DATAGRAM) {
+			return true;
+		}
+		#if cpp
+		return Std.string(error).indexOf("Datagram too large") >= 0;
+		#elseif ((java || jvm) && !macro)
+		// The JDK's words for EMSGSIZE: strerror's on Linux and macOS, its
+		// own for WSAEMSGSIZE on Windows.
+		var text:String = Std.string(error);
+		return text.indexOf("Message too long") >= 0 || text.indexOf("message is larger than the maximum") >= 0;
+		#else
+		return false;
+		#end
+	}
+
+	/** A datagram of `length` bytes too large for this socket: what to say of it. **/
+	@:noCompletion private function __tooLargeText(length:Int):String {
+		var buffer:Int = 0;
+		try {
+			buffer = __bufferSize(false);
+		} catch (_:Dynamic) {}
+		return 'a datagram of $length bytes is larger than this socket can send ('
+			+ (buffer > 0 ? 'sendBufferSize $buffer' : 'its send buffer size cannot be read here')
+			+ '): UDP carries at most 65,507 bytes over IPv4 and 65,527 over IPv6, and macOS no more than the send buffer';
 	}
 
 	#if nodejs
@@ -843,6 +1116,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	**/
 	@:noCompletion private function __sent(error:js.lib.Error, _:Int):Void {
 		__sendsInFlight--;
+		var length:Int = __sendLengths.length > 0 ? __sendLengths.shift() : 0;
 
 		if (__sendsInFlight <= 0 && __closeWhenSent != null) {
 			var socket:NodeDatagram = __closeWhenSent;
@@ -855,7 +1129,9 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		if (error != null && !__closed) {
 			// Contained: this runs from Node's event loop.
 			try {
-				__dispatchSendError("A datagram could not be sent: " + Std.string(error.message));
+				var code:Dynamic = (cast error : Dynamic).code;
+				__dispatchSendError("A datagram could not be sent: "
+					+ (code == "EMSGSIZE" || length > MAX_DATAGRAM ? __tooLargeText(length) : Std.string(error.message)));
 			} catch (thrown:Dynamic) {
 				CrossByte.__socketListenerThrew(thrown, this, 'An "ioError" listener threw');
 			}
@@ -990,7 +1266,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			try {
 				__socket.sendTo(datagram.bytes, 0, datagram.bytes.length, target);
 			} catch (e:Dynamic) {
-				__dispatchSendError("Send to " + address + ":" + datagram.port + " failed: " + Std.string(e));
+				__dispatchSendError("Send to " + address + ":" + datagram.port + " failed: " + __sendFailure(e, datagram.bytes.length));
 			}
 		}
 
@@ -1159,37 +1435,98 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		}
 
 		var processed:Int = 0;
+		#if cpp
+		// Datagrams this pass read one at a time, and whether it has read a
+		// batch yet.
+		var single:Int = 0;
+		var asked:Bool = false;
+		#end
 		while (__receiving && processed < MAX_DATAGRAMS_PER_TICK) {
 			var bytesReady:Int = 0;
-			// -1 when nothing is waiting, which ends every pass that read:
-			// readFrom threw Blocked for it, an exception made and caught each
-			// time the socket was drained.
-			try {
-				bytesReady = @:privateAccess __socket.__tryReadFrom(__readBuffer, 0, __readBuffer.length, __tempAddress);
-			} catch (_:Eof) {
-				break;
-			} catch (e:Dynamic) {
-				if (__isBlockedError(e)) {
+			var pooled:Bool;
+			var payload:ByteArray;
+			#if cpp
+			var batched:Bool = __batch != null;
+			if (batched) {
+				if (__batchNext >= __batchCount) {
+					// All the last read took in is handed out. This pass reads
+					// again, unless its own read already found the socket
+					// emptied, fewer waiting than it asked for, when the
+					// next poll says when more come, as an empty read did.
+					if (asked && !__batchFull) {
+						break;
+					}
+					asked = true;
+					var taken:Int;
+					try {
+						taken = __batchRead(MAX_DATAGRAMS_PER_TICK - processed);
+					} catch (e:Dynamic) {
+						__onReadFailed(Std.string(HxIOError.Custom(e)));
+						return;
+					}
+					if (taken == -2) {
+						// A kernel without recvmmsg: one at a time, as before.
+						__batchStop();
+						__batchRefused = true;
+						continue;
+					}
+					if (taken < 0) {
+						return;
+					}
+					continue;
+				}
+
+				var index:Int = __batchNext++;
+				bytesReady = crossbyte._internal.net.NativeSocketAddress.batchTake(__batch, index, __tempAddress);
+				// An empty datagram is not handed out, as a single read's is
+				// not.
+				if (bytesReady <= 0) {
+					continue;
+				}
+				pooled = __pooledArrival();
+				payload = __batchPayload(index, bytesReady, pooled);
+			} else
+			#end
+			{
+				// -1 when nothing is waiting, which ends every pass that read:
+				// readFrom threw Blocked for it, an exception made and caught
+				// each time the socket was drained.
+				try {
+					bytesReady = @:privateAccess __socket.__tryReadFrom(__readBuffer, 0, __readBuffer.length, __tempAddress);
+				} catch (_:Eof) {
+					break;
+				} catch (e:Dynamic) {
+					if (__isBlockedError(e)) {
+						return;
+					}
+					__onReadFailed(Std.string(e));
 					return;
 				}
-				__onReadFailed(Std.string(e));
-				return;
-			}
 
-			// Nothing waiting (-1), or the empty read readFrom ended the pass
-			// with as Eof (0).
-			if (bytesReady <= 0) {
-				return;
+				// Nothing waiting (-1), or the empty read readFrom ended the
+				// pass with as Eof (0).
+				if (bytesReady <= 0) {
+					return;
+				}
+
+				// Copied out of the read buffer, which the next read fills:
+				// into the socket's own payload, used again for every
+				// datagram, or one of the datagram's own while that one is
+				// out. Each datagram had a Bytes, a ByteArray and an event of
+				// its own.
+				pooled = __pooledArrival();
+				payload = __payloadOf(__readBuffer, 0, bytesReady, pooled);
+
+				#if cpp
+				// A second datagram waiting in one pass: from here on they
+				// are read in batches.
+				if (++single == 2 && __batchReads && !__batchRefused) {
+					__batchStart();
+				}
+				#end
 			}
 
 			__consecutiveReadFailures = 0;
-
-			// Copied out of the read buffer, which the next read fills: into
-			// the socket's own payload, used again for every datagram, or one
-			// of the datagram's own while that one is out. Each datagram had a
-			// Bytes, a ByteArray and an event of its own.
-			var pooled:Bool = __pooledArrival();
-			var payload:ByteArray = __payloadOf(__readBuffer, 0, bytesReady, pooled);
 
 			if (__localText == null) {
 				var local = __getLocalEndpoint();
@@ -1211,6 +1548,20 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			}
 
 			processed++;
+			#if cpp
+			if (batched) {
+				try {
+					__deliver(payload, pooled, source, __tempAddress.port, __localText != null ? __localText : "", __localText != null ? __localNumber : 0);
+				} catch (e:Dynamic) {
+					// The pass ends here, as it does for a single read; what
+					// the batch still holds is handed out next pass, since the
+					// poll cannot see it.
+					__leftoversLater();
+					Arrivals.rethrow(e);
+				}
+				continue;
+			}
+			#end
 			__deliver(payload, pooled, source, __tempAddress.port, __localText != null ? __localText : "", __localText != null ? __localNumber : 0);
 		}
 
@@ -1240,6 +1591,116 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	}
 
 	@:noCompletion private static inline var SOURCE_SLOTS:Int = 256;
+
+	#if cpp
+	/**
+		Starts reading this socket in batches (Linux; see `__batchRead`), or
+		marks it as not to ask again where the system will not map one.
+	**/
+	@:noCompletion private function __batchStart():Void {
+		var batch:Dynamic = crossbyte._internal.net.NativeSocketAddress.batchNew(BATCH_FIRST);
+		if (batch == null) {
+			__batchRefused = true;
+			return;
+		}
+		__batch = batch;
+		__batchCapacity = BATCH_FIRST;
+		__batchCount = 0;
+		__batchNext = 0;
+		__batchFull = false;
+	}
+
+	/** Lets the batch go, and what it still held: on close, or where there is no recvmmsg. **/
+	@:noCompletion private function __batchStop():Void {
+		if (__batch != null) {
+			crossbyte._internal.net.NativeSocketAddress.batchFree(__batch);
+		}
+		__batch = null;
+		__batchCapacity = 0;
+		__batchCount = 0;
+		__batchNext = 0;
+		__batchFull = false;
+	}
+
+	/**
+		Takes in every datagram waiting, up to `limit` and the batch's size,
+		in one `recvmmsg`, for the pass to hand out one at a time: how many,
+		-1 when none was waiting, or -2 where the kernel has no recvmmsg.
+
+		A batch starts at `BATCH_FIRST` and doubles, up to `BATCH_MOST`, each
+		time a read fills it, here, when everything it held is out, so
+		nothing is lost. Each slot is 64 KB, past the largest datagram, so
+		none is cut short; the system commits a slot's memory a page at a
+		time, as datagrams are written into it. So a busy socket holds at
+		most 4 MB of address space, and, for datagrams of up to 4 KB, 4 KB a
+		slot it has used, 256 KB at the most, while a socket that never
+		has a second datagram waiting holds none.
+	**/
+	@:noCompletion private function __batchRead(limit:Int):Int {
+		if (__batchFull && __batchCapacity < BATCH_MOST) {
+			var bigger:Dynamic = crossbyte._internal.net.NativeSocketAddress.batchNew(__batchCapacity * 2);
+			if (bigger != null) {
+				crossbyte._internal.net.NativeSocketAddress.batchFree(__batch);
+				__batch = bigger;
+				__batchCapacity *= 2;
+			}
+		}
+		var asking:Int = limit < __batchCapacity ? limit : __batchCapacity;
+		__batchCount = 0;
+		__batchNext = 0;
+		__batchFull = false;
+		var taken:Int = crossbyte._internal.net.NativeSocketAddress.batchReceive(@:privateAccess __socket.__s, __batch, asking);
+		if (taken > 0) {
+			__batchCount = taken;
+			__batchFull = taken == asking;
+		}
+		return taken;
+	}
+
+	/**
+		The payload datagram `index` of the batch is handed out in, `length`
+		bytes, as `__payloadOf` makes one from the read buffer: copied
+		straight from the batch into the socket's own when `pooled`, and
+		into one of its own otherwise.
+	**/
+	@:noCompletion private function __batchPayload(index:Int, length:Int, pooled:Bool):ByteArray {
+		var payload:ByteArray;
+		if (pooled) {
+			payload = __arrival;
+			if (payload == null) {
+				payload = __arrival = new ByteArray();
+			}
+			Arrivals.sized(payload, length);
+			crossbyte._internal.net.NativeSocketAddress.batchCopy(__batch, index, (payload : Bytes).getData(), 0);
+		} else {
+			var own:Bytes = Bytes.alloc(length);
+			crossbyte._internal.net.NativeSocketAddress.batchCopy(__batch, index, own.getData(), 0);
+			payload = ByteArray.fromBytes(own);
+		}
+		payload.endian = __endian;
+		return payload;
+	}
+
+	/**
+		Datagrams a batch took in that a pass did not hand out, a listener
+		threw, or stopped the socket receiving, are handed out on the
+		runtime's next pass, before anything read after them: the poll
+		cannot see them, since the kernel no longer has them.
+	**/
+	@:noCompletion private function __leftoversLater():Void {
+		if (__leftoversPosted || __batchNext >= __batchCount || __cbInstance == null) {
+			return;
+		}
+		__leftoversPosted = __cbInstance.post(__handOutLeftovers);
+	}
+
+	@:noCompletion private function __handOutLeftovers():Void {
+		__leftoversPosted = false;
+		if (__registered && __batchNext < __batchCount) {
+			registryOnReadable();
+		}
+	}
+	#end
 
 	public inline function registryOnWritable():Void {}
 
@@ -1395,10 +1856,11 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
 				return;
 			}
+			var reason:String = __sendFailure(e, length);
 			if (sender != null) {
-				sender.__datagramFailed(Std.string(e));
+				sender.__datagramFailed(reason);
 			} else {
-				__dispatchSendError(Std.string(e));
+				__dispatchSendError(reason);
 			}
 		}
 	}
@@ -1445,7 +1907,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 					failures = [];
 				}
 				failed.push(stopped);
-				failures.push(Std.string(e));
+				failures.push(__sendFailure(e, __outSpans[2 * stopped + 1]));
 			}
 		}
 
@@ -1480,6 +1942,11 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		if (shouldPoll && !__registered && __cbInstance != null && __socket != null) {
 			__cbInstance.registerSocket(__socket);
 			__registered = true;
+			#if cpp
+			// Datagrams a batch held when the socket stopped receiving come
+			// first, and the poll does not know of them.
+			__leftoversLater();
+			#end
 			return;
 		}
 
@@ -1621,8 +2088,15 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		} catch (_:Dynamic) {}
 	}
 
+	/**
+		The buffer sizes asked for, applied once Node has bound the socket:
+		once it has a port. `bind()` returns before Node has, and a size set
+		in between was applied to a handle with no socket yet, ENOTSOCK,
+		and reported as an `ioError` that also stopped the socket receiving.
+		A refusal is reported, and the socket goes on receiving.
+	**/
 	@:noCompletion private function __applyNodeBuffers():Void {
-		if (__socket == null || !__bound) {
+		if (__socket == null || __localPort == 0) {
 			return;
 		}
 		var socket:Dynamic = __socket;
@@ -1634,7 +2108,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 				socket.setSendBufferSize(__sendBufferRequest);
 			}
 		} catch (e:Dynamic) {
-			__dispatchIoError("Could not size the socket's buffers: " + Std.string(e));
+			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Could not size the socket's buffers: " + Std.string(e)));
 		}
 	}
 	#else
@@ -1772,7 +2246,9 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			return 0;
 		}
 		#elseif nodejs
-		if (!__bound) {
+		// Until Node has bound it, `bind()` returns first, there is no
+		// socket to ask.
+		if (__localPort == 0) {
 			return receive ? __receiveBufferRequest : __sendBufferRequest;
 		}
 		var socket:Dynamic = __socket;

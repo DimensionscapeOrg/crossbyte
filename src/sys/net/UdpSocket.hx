@@ -310,7 +310,17 @@ class UdpSocket extends Socket {
 		// Straight into the caller's buffer. A new buffer of `len` bytes was
 		// allocated, and zeroed, for every datagram, 64 KB for each of a
 		// DatagramSocket's reads, and the datagram then copied out of it.
-		var bb = ByteBuffer.wrap(buf.getData(), pos, len);
+		// Through a view of that buffer kept for the next read into it: a
+		// view made for each read was 48 bytes a datagram.
+		var data = buf.getData();
+		var bb:ByteBuffer = __readView;
+		if (bb == null || __readArray != data) {
+			bb = __readView = ByteBuffer.wrap(data);
+			__readArray = data;
+		}
+		bb.clear();
+		bb.position(pos);
+		bb.limit(pos + len);
 		var src:SocketAddress = try {
 			__dc().receive(bb);
 		} catch (e:Dynamic) {
@@ -325,8 +335,25 @@ class UdpSocket extends Socket {
 
 	/** `sendTo` without an exception for a full send buffer: -1 then. **/
 	@:noCompletion private function __trySendTo(buf:haxe.io.Bytes, pos:Int, len:Int, addr:Address):Int {
-		var target:SocketAddress = cast __toSocketAddress(addr);
-		var bb = ByteBuffer.wrap(buf.getData(), pos, len);
+		if (pos < 0 || len < 0 || pos > buf.length || len > buf.length - pos)
+			throw OutsideBounds;
+		var target:SocketAddress = cast __socketAddressOf(addr);
+		// Copied into a direct buffer this socket keeps, which the channel
+		// sends from as it is. A view of the caller's array was 48 bytes a
+		// datagram, and the channel copied a heap buffer into a direct one
+		// of its own anyway: one copy either way. Sized to the largest
+		// datagram sent so far, so a socket sending small ones holds little.
+		var bb:ByteBuffer = __sendStage;
+		if (bb == null || bb.capacity() < len) {
+			var size:Int = 2048;
+			while (size < len) {
+				size <<= 1;
+			}
+			bb = __sendStage = ByteBuffer.allocateDirect(size);
+		}
+		bb.clear();
+		bb.put(buf.getData(), pos, len);
+		bb.flip();
 		var n:Int = try {
 			__dc().send(bb, target);
 		} catch (e:Dynamic) {
@@ -334,6 +361,64 @@ class UdpSocket extends Socket {
 		}
 		// A non-blocking channel that cannot queue the datagram returns 0.
 		return n == 0 ? -1 : n;
+	}
+
+	// The view of the last array read into, and the array; see __tryReadFrom.
+	private var __readView:ByteBuffer = null;
+	private var __readArray:haxe.io.BytesData = null;
+	// What sends are copied into; see __trySendTo.
+	private var __sendStage:ByteBuffer = null;
+	// The last sender a datagram came from, as the channel handed it over,
+	// and what it read as: the channel hands over the same object while the
+	// sender stays the same, so a run of datagrams from one peer names it
+	// once. See __fromSocketAddress.
+	private var __lastSender:InetSocketAddress = null;
+	private var __lastHost:Int = 0;
+	private var __lastIpv6:haxe.io.BytesData = null;
+
+	/**
+		The jvm's form of `addr`, kept with `addr` for the next send to it,
+		a reliable session keeps its peer's Address, a DatagramSocket the last
+		one it sent to, and made again when what it was made from changes:
+		compared by value, host, port and IPv6 bytes, since an Address is
+		mutable. Made for every datagram, it was an `InetSocketAddress`, an
+		`InetAddress`, their holders and the address's bytes: 120 bytes a
+		datagram.
+	**/
+	private function __socketAddressOf(addr:Address):InetSocketAddress {
+		var kept:InetSocketAddress = addr.__jvmAddress;
+		var ipv6:haxe.io.BytesData = @:privateAccess addr.ipv6;
+		if (kept != null && addr.__jvmHost == addr.host && addr.__jvmPort == addr.port && __sameAddress(addr.__jvmIpv6, ipv6)) {
+			return kept;
+		}
+		var made:InetSocketAddress = __toSocketAddress(addr);
+		addr.__jvmAddress = made;
+		addr.__jvmHost = addr.host;
+		addr.__jvmPort = addr.port;
+		// A copy, so bytes changed in place are seen as a change. Copied by
+		// hand: Haxe takes java.util.Arrays.copyOf for its Object[] form.
+		var copy:haxe.io.BytesData = null;
+		if (ipv6 != null) {
+			copy = new java.NativeArray<java.StdTypes.Int8>(ipv6.length);
+			java.lang.System.arraycopy(ipv6, 0, copy, 0, ipv6.length);
+		}
+		addr.__jvmIpv6 = copy;
+		return made;
+	}
+
+	private static function __sameAddress(kept:Null<haxe.io.BytesData>, now:Null<haxe.io.BytesData>):Bool {
+		if (kept == null || now == null) {
+			return kept == now;
+		}
+		if (kept.length != now.length) {
+			return false;
+		}
+		for (i in 0...kept.length) {
+			if (kept[i] != now[i]) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	public function setBroadcast(b:Bool):Void {
@@ -362,27 +447,31 @@ class UdpSocket extends Socket {
 		return new InetSocketAddress(ia, addr.port);
 	}
 
-	// Populate the crossbyte Address from the source InetSocketAddress.
+	/**
+		Populates the crossbyte Address from the source InetSocketAddress:
+		from what the last datagram's read as when it came from the same
+		sender (the channel hands over the same object then), and otherwise
+		without copying an IPv4 address's bytes out, `getAddress()` makes a
+		new array each time it is asked, which was every datagram.
+	**/
 	private function __fromSocketAddress(addr:Address, isa:InetSocketAddress):Void {
 		addr.port = isa.getPort();
-		var ia = isa.getAddress();
-		var raw = ia.getAddress();
-		if (raw.length == 16) {
-			var bytes = haxe.io.Bytes.alloc(16);
-			// Unchecked rather than cast(_, Int): a byte is an Int already, and
-			// the checked cast was a type test per byte of every datagram.
-			for (i in 0...16)
-				bytes.set(i, (cast raw[i] : Int) & 0xFF);
-			@:privateAccess addr.ipv6 = bytes.getData();
-			addr.host = 0;
-		} else {
-			var b0 = (cast raw[0] : Int) & 0xFF;
-			var b1 = (cast raw[1] : Int) & 0xFF;
-			var b2 = (cast raw[2] : Int) & 0xFF;
-			var b3 = (cast raw[3] : Int) & 0xFF;
-			addr.host = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
-			@:privateAccess addr.ipv6 = null;
+		if (isa != __lastSender) {
+			var ia = isa.getAddress();
+			if (Std.isOfType(ia, java.net.Inet4Address)) {
+				// An Inet4Address's hash is its address, big-endian: what
+				// the bytes made below for every datagram.
+				__lastHost = ia.hashCode();
+				__lastIpv6 = null;
+			} else {
+				// The array getAddress() makes is this datagram's own.
+				__lastHost = 0;
+				__lastIpv6 = ia.getAddress();
+			}
+			__lastSender = isa;
 		}
+		addr.host = __lastHost;
+		@:privateAccess addr.ipv6 = __lastIpv6;
 	}
 }
 

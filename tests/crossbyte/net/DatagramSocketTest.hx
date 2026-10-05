@@ -58,11 +58,13 @@ class DatagramSocketTest extends utest.Test {
 		ports already in use, 25 of a thousand game clients over reliable
 		UDP shared one with another client, and never connected, and any
 		local process could bind a server's port as well. Fixed in hxcpp's
-		socket_bind (the fork's production); Windows never set it. The other
-		sys runtimes' own binds still do, and Node's is asynchronous.
+		socket_bind (the fork's production); Windows never set it. Neko's
+		and HashLink's binds still set it, and their natives cannot be asked
+		not to, so on Linux DatagramSocket checks its port after binding
+		there. Node's bind is asynchronous, and refuses through an event.
 	**/
 	public function testAPortHeldIsNotGivenToAnother():Void {
-		#if (cpp || jvm)
+		#if (sys && !nodejs)
 		if (!DatagramSocket.isSupported) {
 			Assert.isFalse(DatagramSocket.isSupported);
 			return;
@@ -80,11 +82,210 @@ class DatagramSocketTest extends utest.Test {
 				refused = true;
 			}
 			Assert.isTrue(refused, "a second socket was bound to port " + port + ", which another already held");
+
+			// Refused, the socket is still one to bind elsewhere and use.
+			second.bind(0, "127.0.0.1");
+			Assert.isTrue(second.localPort > 0 && second.localPort != port, "a socket refused a port held could not be bound to another: " + second.localPort);
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
 		try second.close() catch (_:Dynamic) {}
 		try holder.close() catch (_:Dynamic) {}
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		One `Address` sent to, changed, and sent to again goes where it now
+		points, never where it pointed: its port, its IPv4 host, and its IPv6
+		bytes, set anew or changed in place. On the jvm the socket keeps the
+		`InetSocketAddress` it made for an Address with it, for the next send
+		(it was made for every datagram); kept by identity, the second send
+		of each pair below went to the first one's peer.
+	**/
+	public function testAnAddressChangedBetweenSendsGoesWhereItNowPoints():Void {
+		#if (sys && !nodejs)
+		if (!requireDatagramSupport()) return;
+
+		var got:Map<String, Array<String>> = new Map();
+		var sockets:Array<DatagramSocket> = [];
+		function receiver(name:String, host:String):Null<DatagramSocket> {
+			var socket = new DatagramSocket();
+			try {
+				socket.bind(0, host);
+			} catch (_:Dynamic) {
+				closeQuietly(socket);
+				return null;
+			}
+			got.set(name, []);
+			socket.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) {
+				e.data.position = 0;
+				got.get(name).push(e.data.readUTFBytes(e.data.length));
+			});
+			socket.receive();
+			sockets.push(socket);
+			return socket;
+		}
+		function sendTo(sender:DatagramSocket, target:sys.net.Address, text:String):Void {
+			var bytes = haxe.io.Bytes.ofString(text);
+			// The path a reliable session's datagrams take, with an Address
+			// it keeps.
+			sender.__sendNow(bytes, 0, bytes.length, target, null);
+		}
+
+		try {
+			var a = receiver("a", "127.0.0.1");
+			var b = receiver("b", "127.0.0.1");
+			// Another loopback address, where the system has one (not macOS).
+			var c = receiver("c", "127.0.0.2");
+			var sender = new DatagramSocket();
+			sockets.push(sender);
+			sender.bind(0, "0.0.0.0");
+
+			var target = new sys.net.Address();
+			target.setHost(new sys.net.Host("127.0.0.1"));
+			target.port = a.localPort;
+			sendTo(sender, target, "1");
+			target.port = b.localPort;
+			sendTo(sender, target, "2");
+			target.port = a.localPort;
+			sendTo(sender, target, "3");
+			// The host changed, the port kept: never to a.
+			target.host = new sys.net.Host("127.0.0.2").ip;
+			sendTo(sender, target, "4");
+			if (c != null) {
+				target.port = c.localPort;
+				sendTo(sender, target, "5");
+			}
+			target.setHost(new sys.net.Host("127.0.0.1"));
+			target.port = a.localPort;
+			sendTo(sender, target, "6");
+			pumpUntil(() -> got["a"].length >= 3 && got["b"].length >= 1 && (c == null || got["c"].length >= 1), 2.0);
+			pumpUntil(() -> false, 0.1);
+
+			Assert.same(["1", "3", "6"], got["a"], "what the first peer received");
+			Assert.same(["2"], got["b"], "what the second peer received");
+			if (c != null) {
+				Assert.same(["5"], got["c"], "what the peer on another address received");
+			}
+
+			if (requireIpv6Loopback()) {
+				var d = receiver("d", "::1");
+				var e = receiver("e", "::1");
+				var sender6 = new DatagramSocket();
+				sockets.push(sender6);
+				sender6.bind(0, "::1");
+				var target6 = new sys.net.Address();
+				target6.setHost(new sys.net.Host("::1"));
+				target6.port = d.localPort;
+				sendTo(sender6, target6, "x");
+				target6.port = e.localPort;
+				sendTo(sender6, target6, "y");
+				target6.port = d.localPort;
+				// The IPv6 bytes changed in place, to ::2, which nothing holds.
+				var raw:haxe.io.BytesData = @:privateAccess target6.ipv6;
+				if (raw != null) {
+					var bytes = haxe.io.Bytes.ofData(raw);
+					bytes.set(15, 2);
+					try sendTo(sender6, target6, "z") catch (_:Dynamic) {}
+					bytes.set(15, 1);
+				}
+				sendTo(sender6, target6, "w");
+				pumpUntil(() -> got["d"].length >= 2 && got["e"].length >= 1, 2.0);
+				pumpUntil(() -> false, 0.1);
+				Assert.same(["x", "w"], got["d"], "what the first IPv6 peer received");
+				Assert.same(["y"], got["e"], "what the second IPv6 peer received");
+			}
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		for (socket in sockets) {
+			closeQuietly(socket);
+		}
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		`send` is an inline forwarder (it boxed its optional arguments on the
+		jvm), and still works every other way it could be reached: taken as a
+		value, through `Reflect`, and through `Dynamic`, with its arguments
+		given or left out.
+	**/
+	public function testSendReachedAsAValueOrDynamicallyStillSends():Void {
+		if (!requireDatagramSupport()) return;
+
+		var receiver = new DatagramSocket();
+		var sender = new DatagramSocket();
+		var connected = new DatagramSocket();
+		var seen:Array<String> = [];
+		try {
+			receiver.bind(0, "127.0.0.1");
+			receiver.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) {
+				e.data.position = 0;
+				seen.push(e.data.readUTFBytes(e.data.length));
+			});
+			receiver.receive();
+			sender.bind(0, "127.0.0.1");
+			connected.bind(0, "127.0.0.1");
+			connected.connect("127.0.0.1", receiver.localPort);
+			var port:Int = receiver.localPort;
+
+			var asValue = sender.send;
+			asValue(bytesOf("value"), 0, 0, "127.0.0.1", port);
+			Reflect.callMethod(sender, Reflect.field(sender, "send"), [bytesOf("reflect"), 0, 0, "127.0.0.1", port]);
+			sendThroughDynamic(sender, bytesOf("dynamic"), port);
+			sendThroughDynamicConnected(connected, bytesOf("defaults"));
+			pumpUntil(() -> seen.length >= 4, 2.0);
+
+			seen.sort(Reflect.compare);
+			Assert.same(["defaults", "dynamic", "reflect", "value"], seen);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		closeQuietly(connected);
+		closeQuietly(sender);
+		closeQuietly(receiver);
+	}
+
+	/**
+		Every socket bound to port 0 is given a port of its own, however many
+		are bound. With SO_REUSEADDR set on datagram sockets, Linux handed out
+		ports already held, 18 in 1,000 binds in C, and the socket that
+		shared one received none of its own datagrams: on neko,
+		`testInterleavedSendersAreEachNamed` received none of six (CI,
+		2026-10-05).
+	**/
+	public function testEachSocketBoundToPortZeroHasAPortOfItsOwn():Void {
+		#if (sys && !nodejs)
+		if (!DatagramSocket.isSupported) {
+			Assert.isFalse(DatagramSocket.isSupported);
+			return;
+		}
+
+		var sockets:Array<DatagramSocket> = [];
+		var seen:Map<Int, Bool> = new Map();
+		var shared:Array<Int> = [];
+		try {
+			for (_ in 0...500) {
+				var socket = new DatagramSocket();
+				sockets.push(socket);
+				socket.bind(0, "127.0.0.1");
+				var port:Int = socket.localPort;
+				if (seen.exists(port)) {
+					shared.push(port);
+				}
+				seen.set(port, true);
+			}
+			Assert.same([], shared, "ports handed out to two sockets at once");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		for (socket in sockets) {
+			closeQuietly(socket);
+		}
 		#else
 		Assert.pass();
 		#end
@@ -681,6 +882,12 @@ class DatagramSocketTest extends utest.Test {
 		var flood = new FloodUdpSocket();
 		var sender = new DatagramSocket();
 		var received:Int = 0;
+		#if cpp
+		// The flood is the read one datagram at a time; a batch is read by
+		// recvmmsg, past it. Batches past a pass's share are the case below.
+		var batches:Bool = DatagramSocket.__batchReads;
+		DatagramSocket.__batchReads = false;
+		#end
 
 		try {
 			flood.setBlocking(false);
@@ -702,16 +909,363 @@ class DatagramSocketTest extends utest.Test {
 
 			Assert.equals(3001, received, 'one frame read $received of the 3,001 datagrams waiting');
 		} catch (e:Dynamic) {
+			#if cpp
+			DatagramSocket.__batchReads = batches;
+			#end
 			closeQuietly(sender);
 			closeQuietly(receiver);
 			throw e;
 		}
 
+		#if cpp
+		DatagramSocket.__batchReads = batches;
+		#end
 		closeQuietly(sender);
 		closeQuietly(receiver);
 		#else
 		Assert.pass();
 		#end
+	}
+
+	/**
+		A burst read in batches, Linux, natively: `recvmmsg`, up to 64 a
+		call, arrives as read one at a time: every datagram whole, in the
+		order each sender sent it, named as from its sender, the largest UDP
+		carries over IPv4 included, an empty one handed out as before (not
+		at all), and the batch grown to its most by a burst that keeps
+		filling it. The same with batches turned off, where the result must
+		not differ. Elsewhere both runs read one at a time.
+	**/
+	public function testABurstReadInBatchesArrivesAsReadOneAtATime():Void {
+		if (!requireDatagramSupport()) return;
+		for (batches in [true, false]) {
+			burstOf(batches);
+		}
+	}
+
+	private function burstOf(batches:Bool):Void {
+		var receiver = new DatagramSocket();
+		var first = new DatagramSocket();
+		var second = new DatagramSocket();
+		var got:Map<Int, Array<String>> = new Map();
+		var wrong:Array<String> = [];
+		var empties:Int = 0;
+		#if cpp
+		var before:Bool = DatagramSocket.__batchReads;
+		var here:Bool = before && batches;
+		DatagramSocket.__batchReads = here;
+		#end
+
+		try {
+			if (DatagramSocket.bufferSizeSupported) {
+				receiver.receiveBufferSize = 1024 * 1024;
+			}
+			receiver.bind(0, "127.0.0.1");
+			receiver.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) {
+				if (e.data.length == 0) {
+					empties++;
+					return;
+				}
+				var index:Int = indexOf(e.data);
+				var problem:Null<String> = wrongIn(e.data, index);
+				if (problem != null) {
+					wrong.push(problem);
+				}
+				if (!got.exists(e.srcPort)) {
+					got.set(e.srcPort, []);
+				}
+				got.get(e.srcPort).push(index + "/" + e.data.length + "@" + e.srcAddress);
+			});
+			receiver.receive();
+			for (sender in [first, second]) {
+				// The largest datagram needs it on macOS.
+				if (DatagramSocket.bufferSizeSupported) {
+					sender.sendBufferSize = 128 * 1024;
+				}
+				sender.bind(0, "127.0.0.1");
+			}
+
+			// Where the receive buffer cannot be raised, HashLink and Neko,
+			// a burst that fits Windows' 64 KB default, without the
+			// largest datagram.
+			var sizable:Bool = DatagramSocket.bufferSizeSupported;
+			var perSender:Int = sizable ? 100 : 30;
+			var expected:Map<Int, Array<String>> = [first.localPort => [], second.localPort => []];
+			for (i in 0...perSender) {
+				for (sender in [first, second]) {
+					var index:Int = sender == first ? i : 1000 + i;
+					var length:Int = i % 7 == 0 ? 1200 : 4 + i;
+					if (sender == second && i == 60) {
+						length = 65507;
+					}
+					#if cpp
+					if (sender == first && i == 50) {
+						// An empty datagram: none is handed out. Natively only:
+						// the jvm's send takes one for a full buffer.
+						sender.send(new ByteArray(), 0, 0, "127.0.0.1", receiver.localPort);
+					}
+					#end
+					sender.send(numbered(index, length), 0, 0, "127.0.0.1", receiver.localPort);
+					expected[sender.localPort].push(index + "/" + length + "@127.0.0.1");
+				}
+			}
+			// All of it waiting before the first pass reads.
+			crossbyte.sys.System.sleep(0.05);
+			pumpUntil(() -> count(got) >= 2 * perSender, 3.0);
+
+			var mode:String = batches ? "in batches" : "one at a time";
+			for (sender in [first, second]) {
+				var port:Int = sender.localPort;
+				var arrived:Array<String> = got.exists(port) ? got[port] : [];
+				var missing:Array<String> = expected[port].filter(e -> arrived.indexOf(e) < 0);
+				Assert.same(expected[port], arrived, 'what a sender sent, read $mode: ${arrived.length} of ${expected[port].length} arrived, missing ${missing.slice(0, 5)}');
+			}
+			Assert.same([], wrong, 'datagrams read $mode were not as sent');
+			Assert.equals(0, empties, 'an empty datagram was handed out, read $mode');
+			#if cpp
+			if (here) {
+				Assert.notNull(receiver.__batch, "a burst was not read in batches");
+				Assert.equals(DatagramSocket.BATCH_MOST, receiver.__batchCapacity, "a burst that kept filling the batch did not grow it to its most");
+			} else {
+				Assert.isNull(receiver.__batch, "a batch was made with batches off, or where there are none");
+			}
+			DatagramSocket.__batchReads = before;
+			#end
+		} catch (e:Dynamic) {
+			#if cpp
+			DatagramSocket.__batchReads = before;
+			#end
+			closeQuietly(first);
+			closeQuietly(second);
+			closeQuietly(receiver);
+			throw e;
+		}
+
+		closeQuietly(first);
+		closeQuietly(second);
+		closeQuietly(receiver);
+		#if cpp
+		Assert.isNull(receiver.__batch, "a closed socket kept its batch");
+		#end
+	}
+
+	/** Batched, over IPv6: each datagram named as from its sender, `::1`. **/
+	public function testABurstOverIpv6IsNamedAsFromEachSender():Void {
+		if (!requireDatagramSupport()) return;
+		if (!requireIpv6Loopback()) {
+			Assert.pass();
+			return;
+		}
+
+		var receiver = new DatagramSocket();
+		var first = new DatagramSocket();
+		var second = new DatagramSocket();
+		var got:Array<String> = [];
+
+		try {
+			receiver.bind(0, "::1");
+			receiver.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) {
+				got.push(indexOf(e.data) + "@" + e.srcAddress + ":" + e.srcPort);
+			});
+			receiver.receive();
+			first.bind(0, "::1");
+			second.bind(0, "::1");
+
+			var expected:Array<String> = [];
+			for (i in 0...20) {
+				first.send(numbered(i, 40), 0, 0, "::1", receiver.localPort);
+				second.send(numbered(100 + i, 40), 0, 0, "::1", receiver.localPort);
+				expected.push(i + "@::1:" + first.localPort);
+				expected.push((100 + i) + "@::1:" + second.localPort);
+			}
+			crossbyte.sys.System.sleep(0.05);
+			pumpUntil(() -> got.length >= 40, 3.0);
+
+			Assert.same(expected, got, "a datagram over IPv6 was not named as from its sender");
+			#if cpp
+			if (DatagramSocket.__batchReads) {
+				Assert.notNull(receiver.__batch, "a burst over IPv6 was not read in batches");
+			}
+			#end
+		} catch (e:Dynamic) {
+			closeQuietly(first);
+			closeQuietly(second);
+			closeQuietly(receiver);
+			throw e;
+		}
+
+		closeQuietly(first);
+		closeQuietly(second);
+		closeQuietly(receiver);
+	}
+
+	/**
+		A listener that stops the socket receiving, a few datagrams into a
+		batch, is handed the rest once it receives again, before anything
+		read after: in order, each once, though the kernel no longer has
+		them and so the poll cannot say they are there.
+	**/
+	public function testWhatABatchHeldWhenReceivingStoppedComesFirstOnReceivingAgain():Void {
+		if (!requireDatagramSupport()) return;
+
+		var pair = new BatchPair();
+		try {
+			pair.onIndex = index -> {
+				if (index == 3) {
+					pair.receiver.stopReceiving();
+				}
+			};
+			pair.send(0, 8);
+			pumpUntil(() -> false, 0.2);
+			Assert.same([0, 1, 2, 3], pair.got, "a socket stopped from its listener went on handing datagrams out");
+
+			pair.receiver.receive();
+			pumpUntil(() -> pair.got.length >= 8, 2.0);
+			pair.send(8, 2);
+			pumpUntil(() -> pair.got.length >= 10, 2.0);
+			Assert.same([for (i in 0...10) i], pair.got, "what a batch held was lost, repeated or put out of order");
+		} catch (e:Dynamic) {
+			pair.close();
+			throw e;
+		}
+		pair.close();
+	}
+
+	/**
+		A listener that throws a few datagrams into a batch ends the pass, as
+		it does reading one at a time, and what the batch still holds is
+		handed out on the next: in order, each once.
+	**/
+	public function testWhatABatchHeldWhenAListenerThrewComesNext():Void {
+		if (!requireDatagramSupport()) return;
+
+		var pair = new BatchPair();
+		try {
+			pair.onIndex = index -> {
+				if (index == 3) {
+					throw "a listener's own failure";
+				}
+			};
+			pair.send(0, 8);
+			pumpUntil(() -> pair.got.length >= 8, 2.0);
+			Assert.same([for (i in 0...8) i], pair.got, "what a batch held after a listener threw was lost, repeated or put out of order");
+			Assert.isTrue(pair.receiver.receiving, "a listener that threw stopped the socket receiving");
+		} catch (e:Dynamic) {
+			pair.close();
+			throw e;
+		}
+		pair.close();
+	}
+
+	/** A listener that closes the socket a few datagrams into a batch is handed nothing more, and the batch goes with the socket. **/
+	public function testClosingInsideABatchHandsOutNothingMore():Void {
+		if (!requireDatagramSupport()) return;
+
+		var pair = new BatchPair();
+		try {
+			pair.onIndex = index -> {
+				if (index == 3) {
+					pair.receiver.close();
+				}
+			};
+			pair.send(0, 8);
+			pumpUntil(() -> false, 0.3);
+			Assert.same([0, 1, 2, 3], pair.got, "a socket closed from its listener went on handing datagrams out");
+			#if cpp
+			Assert.isNull(pair.receiver.__batch, "a socket closed from its listener kept its batch");
+			#end
+		} catch (e:Dynamic) {
+			pair.close();
+			throw e;
+		}
+		pair.close();
+	}
+
+	/**
+		A listener that runs the loop, a few datagrams into a batch, is handed
+		the rest inside its own call, from the same batch and then the
+		kernel: every datagram once, in order.
+	**/
+	public function testADatagramArrivingInsideAListenerMidBatchComesInOrder():Void {
+		if (!requireDatagramSupport()) return;
+
+		var pair = new BatchPair();
+		try {
+			var runtime = CrossByte.current();
+			pair.onIndex = index -> {
+				if (index == 2) {
+					var deadline:Float = haxe.Timer.stamp() + 2.0;
+					while (pair.got.length < 12 && haxe.Timer.stamp() < deadline) {
+						runtime.pump(0, 0);
+						crossbyte.sys.System.sleep(0.001);
+					}
+				}
+			};
+			pair.send(0, 12);
+			pumpUntil(() -> pair.got.length >= 12, 3.0);
+			Assert.same([for (i in 0...12) i], pair.got, "datagrams handed out inside a listener were lost, repeated or put out of order");
+		} catch (e:Dynamic) {
+			pair.close();
+			throw e;
+		}
+		pair.close();
+	}
+
+	/** A socket that never has a second datagram waiting at once makes no batch. **/
+	public function testASocketReadOneDatagramAtATimeMakesNoBatch():Void {
+		if (!requireDatagramSupport()) return;
+
+		var pair = new BatchPair();
+		try {
+			for (i in 0...5) {
+				pair.send(i, 1);
+				pumpUntil(() -> pair.got.length > i, 2.0);
+			}
+			Assert.same([0, 1, 2, 3, 4], pair.got);
+			#if cpp
+			Assert.isNull(pair.receiver.__batch, "a socket that never had two datagrams waiting made a batch");
+			#end
+		} catch (e:Dynamic) {
+			pair.close();
+			throw e;
+		}
+		pair.close();
+	}
+
+	private static function count(got:Map<Int, Array<String>>):Int {
+		var n:Int = 0;
+		for (list in got) {
+			n += list.length;
+		}
+		return n;
+	}
+
+	/** `length` bytes: `index` big-endian, then bytes that follow from it. **/
+	private static function numbered(index:Int, length:Int):ByteArray {
+		var bytes = new ByteArray();
+		bytes.endian = crossbyte.io.Endian.BIG_ENDIAN;
+		bytes.writeInt(index);
+		for (k in 4...length) {
+			bytes.writeByte((index * 31 + k) & 0xFF);
+		}
+		bytes.position = 0;
+		return bytes;
+	}
+
+	private static function indexOf(data:ByteArray):Int {
+		var raw:haxe.io.Bytes = data;
+		return (raw.get(0) << 24) | (raw.get(1) << 16) | (raw.get(2) << 8) | raw.get(3);
+	}
+
+	/** Where a datagram `numbered` made is not as made, or null. **/
+	private static function wrongIn(data:ByteArray, index:Int):Null<String> {
+		var raw:haxe.io.Bytes = data;
+		for (k in 4...data.length) {
+			if (raw.get(k) != ((index * 31 + k) & 0xFF)) {
+				return 'datagram $index of ${data.length} bytes differs at byte $k';
+			}
+		}
+		return data.position == 0 ? null : 'datagram $index was handed out at position ${data.position}';
 	}
 
 	/**
@@ -848,6 +1402,24 @@ class DatagramSocketTest extends utest.Test {
 		closeQuietly(receiver);
 	}
 
+	// Through a parameter: a local `Dynamic` copied from a typed one was
+	// compiled for neko as the method read off and called unbound, which
+	// called `send` without its socket whatever `send` was.
+	private static function sendThroughDynamic(socket:Dynamic, bytes:ByteArray, port:Int):Void {
+		socket.send(bytes, 0, 0, "127.0.0.1", port);
+	}
+
+	private static function sendThroughDynamicConnected(socket:Dynamic, bytes:ByteArray):Void {
+		#if neko
+		// neko calls a function with exactly the arguments it takes, so one
+		// left out through Dynamic is an "Invalid call" there, whatever the
+		// function: it always was.
+		socket.send(bytes, 0, 0, null, 0);
+		#else
+		socket.send(bytes);
+		#end
+	}
+
 	private static function bytesOf(value:String):ByteArray {
 		var bytes = new ByteArray();
 		bytes.writeUTFBytes(value);
@@ -925,6 +1497,50 @@ class DatagramSocketTest extends utest.Test {
 		} catch (_:Dynamic) {
 			return false;
 		}
+	}
+}
+
+/**
+	A receiver and a sender on the loopback, for the batched-receive cases:
+	`send(from, n)` sends datagrams numbered `from` on and waits until they
+	are all in the receiver's queue; `got` is the numbers handed out, in
+	order, and `onIndex` runs inside the listener for each.
+**/
+@:access(crossbyte.net.DatagramSocketTest)
+private class BatchPair {
+	public var receiver:DatagramSocket;
+	public var sender:DatagramSocket;
+	public var got:Array<Int> = [];
+	public var onIndex:Int->Void = null;
+
+	public function new() {
+		receiver = new DatagramSocket();
+		sender = new DatagramSocket();
+		if (DatagramSocket.bufferSizeSupported) {
+			receiver.receiveBufferSize = 1024 * 1024;
+		}
+		receiver.bind(0, "127.0.0.1");
+		receiver.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) {
+			var index:Int = DatagramSocketTest.indexOf(e.data);
+			got.push(index);
+			if (onIndex != null) {
+				onIndex(index);
+			}
+		});
+		receiver.receive();
+		sender.bind(0, "127.0.0.1");
+	}
+
+	public function send(from:Int, n:Int):Void {
+		for (i in from...from + n) {
+			sender.send(DatagramSocketTest.numbered(i, 40), 0, 0, "127.0.0.1", receiver.localPort);
+		}
+		crossbyte.sys.System.sleep(0.02);
+	}
+
+	public function close():Void {
+		DatagramSocketTest.closeQuietly(sender);
+		DatagramSocketTest.closeQuietly(receiver);
 	}
 }
 

@@ -22,6 +22,7 @@ typedef int SocketLen;
 #include <vector>
 #if defined(__linux__)
 #include <netinet/udp.h>
+#include <sys/mman.h>
 #endif
 typedef int SOCKET;
 #define INVALID_SOCKET (-1)
@@ -383,7 +384,26 @@ static bool crossbyte_would_block() {
 #endif
 }
 
+// True when the last send failed because its datagram is larger than the
+// socket can send (EMSGSIZE): past UDP's 65,507 bytes over IPv4 or 65,527
+// over IPv6 anywhere, and on macOS past the socket's send buffer, 9,216
+// bytes unless raised. Read, as the above, inside the GC-free zone.
+static bool crossbyte_too_large() {
+#if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
+	return WSAGetLastError() == WSAEMSGSIZE;
+#else
+	return errno == EMSGSIZE;
+#endif
 }
+
+}
+
+/**
+	What a send of a datagram too large for its socket throws, in place of
+	"Socket operation failed": DatagramSocket names the datagram's size and
+	the socket's send buffer from it, where every other failure read alike.
+**/
+#define CROSSBYTE_TOO_LARGE "Datagram too large"
 
 /**
 	`send`, or -1 when the socket's buffer is full. Any other failure throws
@@ -488,9 +508,13 @@ int crossbyte_socket_try_send_to(Dynamic socket, Array<unsigned char> buffer, in
 #endif
 	if (sent == SOCKET_ERROR) {
 		bool wouldBlock = crossbyte_would_block();
+		bool tooLarge = !wouldBlock && crossbyte_too_large();
 		hx::ExitGCFreeZone();
 		if (wouldBlock) {
 			return -1;
+		}
+		if (tooLarge) {
+			hx::Throw(HX_CSTRING(CROSSBYTE_TOO_LARGE));
 		}
 		hx::Throw(HX_CSTRING("Socket operation failed"));
 	}
@@ -764,6 +788,245 @@ int crossbyte_socket_send_batch(Dynamic socket, Array<unsigned char> buffer, Arr
 		sent++;
 	}
 	return sent;
+#endif
+}
+
+/*
+	Datagrams received in batches, on Linux: recvmmsg takes in every datagram
+	waiting, up to a batch, in one system call, where recvfrom takes one,
+	and a pass over a socket ended with one recvfrom more, to find it empty.
+
+	A batch is `capacity` slots of 65,536 bytes, past the largest datagram
+	UDP carries (65,507 bytes over IPv4, 65,527 over IPv6), so none is ever
+	cut short: the kernel discards what does not fit a slot, and a datagram
+	longer than its slot would be lost for good. The slots are mapped rather
+	than allocated, so the system commits a page of one only when a datagram
+	is written into it: a slot that only ever holds datagrams of up to 4 KB
+	costs 4 KB, whatever its size. Huge pages are refused for the mapping,
+	where they would commit 2 MB at the first byte written.
+
+	Elsewhere there is no batch: crossbyte_udp_batch_supported answers false
+	and crossbyte_udp_batch_new null.
+*/
+namespace {
+#if defined(__linux__)
+enum { BATCH_SLOT = 65536 };
+
+// The GC's handle on a batch's mapping, which its finalizer unmaps if
+// nothing released it first.
+struct RecvBatch : public hx::Object {
+	HX_IS_INSTANCE_OF enum { _hx_ClassId = hx::clsIdAbstract };
+
+	int capacity;
+	int count;
+	size_t mapped;
+	char* memory;
+	struct mmsghdr* messages;
+	char* slots;
+
+	void release() {
+		if (memory != 0) {
+			munmap(memory, mapped);
+		}
+		memory = 0;
+		messages = 0;
+		slots = 0;
+		count = 0;
+		capacity = 0;
+	}
+
+	static void finalize(Dynamic object) {
+		((RecvBatch*)object.mPtr)->release();
+	}
+
+	String toString() HXCPP_OVERRIDE {
+		return HX_CSTRING("DatagramSocket receive batch");
+	}
+};
+
+static RecvBatch* crossbyte_batch_of(Dynamic batch) {
+	if (batch.mPtr == 0) {
+		return 0;
+	}
+	RecvBatch* found = dynamic_cast<RecvBatch*>(batch.mPtr);
+	return (found != 0 && found->memory != 0) ? found : 0;
+}
+
+// Datagram `index` of what the last receive took in, or a throw.
+static struct mmsghdr* crossbyte_batch_message(RecvBatch* found, int index) {
+	if (found == 0 || index < 0 || index >= found->count) {
+		hx::Throw(HX_CSTRING("Invalid batch index"));
+	}
+	return &found->messages[index];
+}
+#endif
+}
+
+/** Whether datagrams can be received in batches here: on Linux. **/
+bool crossbyte_udp_batch_supported() {
+#if defined(__linux__)
+	return true;
+#else
+	return false;
+#endif
+}
+
+/**
+	A batch for `capacity` datagrams, or null where there are none or the
+	system would not map one. Its memory is let go by
+	crossbyte_udp_batch_free, or when the batch is collected.
+**/
+Dynamic crossbyte_udp_batch_new(int capacity) {
+#if defined(__linux__)
+	if (capacity < 1 || capacity > 1024) {
+		hx::Throw(HX_CSTRING("Invalid batch capacity"));
+	}
+	long page = sysconf(_SC_PAGESIZE);
+	if (page <= 0) {
+		page = 4096;
+	}
+	// The headers first, each array aligned as the one before it ends (64,
+	// 16 and 128 bytes an entry); the slots from the next page.
+	size_t headers = (size_t)capacity * (sizeof(struct mmsghdr) + sizeof(struct iovec) + sizeof(sockaddr_storage));
+	headers = (headers + (size_t)page - 1) / (size_t)page * (size_t)page;
+	size_t size = headers + (size_t)capacity * BATCH_SLOT;
+	void* memory = mmap(0, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+	if (memory == MAP_FAILED) {
+		return null();
+	}
+	#ifdef MADV_NOHUGEPAGE
+	madvise(memory, size, MADV_NOHUGEPAGE);
+	#endif
+
+	RecvBatch* batch = new RecvBatch();
+	batch->capacity = capacity;
+	batch->count = 0;
+	batch->mapped = size;
+	batch->memory = (char*)memory;
+	batch->messages = (struct mmsghdr*)memory;
+	struct iovec* pieces = (struct iovec*)(batch->messages + capacity);
+	sockaddr_storage* names = (sockaddr_storage*)(pieces + capacity);
+	batch->slots = (char*)memory + headers;
+	// A fresh mapping reads as zeros: only the pointers need setting.
+	for (int i = 0; i < capacity; ++i) {
+		pieces[i].iov_base = batch->slots + (size_t)i * BATCH_SLOT;
+		pieces[i].iov_len = BATCH_SLOT;
+		batch->messages[i].msg_hdr.msg_name = &names[i];
+		batch->messages[i].msg_hdr.msg_iov = &pieces[i];
+		batch->messages[i].msg_hdr.msg_iovlen = 1;
+	}
+	_hx_set_finalizer(batch, RecvBatch::finalize);
+	return batch;
+#else
+	return null();
+#endif
+}
+
+/** How many datagrams `batch` takes in at most; 0 once it is freed. **/
+int crossbyte_udp_batch_capacity(Dynamic batch) {
+#if defined(__linux__)
+	RecvBatch* found = crossbyte_batch_of(batch);
+	return found == 0 ? 0 : found->capacity;
+#else
+	return 0;
+#endif
+}
+
+/**
+	Takes in up to `max` waiting datagrams, no more than the batch holds,
+	in one recvmmsg: how many, or -1 when none is waiting, or -2 where the
+	kernel has no recvmmsg. What the last call took in is gone. Any other
+	failure throws, as crossbyte_socket_try_recv_from does; one that comes
+	after a datagram was taken in is the next call's to report.
+**/
+int crossbyte_udp_batch_receive(Dynamic socket, Dynamic batch, int max) {
+#if defined(__linux__)
+	SOCKET nativeSocket = crossbyte_val_sock(socket);
+	RecvBatch* found = crossbyte_batch_of(batch);
+	if (found == 0) {
+		hx::Throw(HX_CSTRING("Invalid batch"));
+	}
+	found->count = 0;
+	if (max > found->capacity) {
+		max = found->capacity;
+	}
+	if (max < 1) {
+		return -1;
+	}
+	for (int i = 0; i < max; ++i) {
+		found->messages[i].msg_hdr.msg_namelen = sizeof(sockaddr_storage);
+		found->messages[i].msg_hdr.msg_flags = 0;
+		found->messages[i].msg_len = 0;
+	}
+
+	struct mmsghdr* messages = found->messages;
+	hx::EnterGCFreeZone();
+	int received;
+	do {
+		received = recvmmsg(nativeSocket, messages, (unsigned int)max, MSG_DONTWAIT, 0);
+	} while (received < 0 && errno == EINTR);
+	if (received < 0) {
+		bool wouldBlock = crossbyte_would_block();
+		bool missing = errno == ENOSYS;
+		hx::ExitGCFreeZone();
+		if (wouldBlock) {
+			return -1;
+		}
+		if (missing) {
+			return -2;
+		}
+		hx::Throw(HX_CSTRING("Socket operation failed"));
+	}
+	hx::ExitGCFreeZone();
+	found->count = received;
+	return received;
+#else
+	hx::Throw(HX_CSTRING("No batched receive on this system"));
+	return -1;
+#endif
+}
+
+/**
+	Datagram `index` of the last receive: its length, with where it came
+	from written into `address` (a sys.net.Address) as
+	crossbyte_socket_try_recv_from writes it.
+**/
+int crossbyte_udp_batch_take(Dynamic batch, int index, Dynamic address) {
+#if defined(__linux__)
+	struct mmsghdr* message = crossbyte_batch_message(crossbyte_batch_of(batch), index);
+	crossbyte_sockaddr_to_dynamic(reinterpret_cast<sockaddr*>(message->msg_hdr.msg_name), message->msg_hdr.msg_namelen, address);
+	return (int)message->msg_len;
+#else
+	hx::Throw(HX_CSTRING("No batched receive on this system"));
+	return 0;
+#endif
+}
+
+/** Copies datagram `index` of the last receive into `buffer` at `position`. **/
+void crossbyte_udp_batch_copy(Dynamic batch, int index, Array<unsigned char> buffer, int position) {
+#if defined(__linux__)
+	RecvBatch* found = crossbyte_batch_of(batch);
+	struct mmsghdr* message = crossbyte_batch_message(found, index);
+	int length = (int)message->msg_len;
+	int bufferLength = buffer->length;
+	if (position < 0 || position > bufferLength || length > bufferLength - position) {
+		hx::Throw(HX_CSTRING("Invalid data position"));
+	}
+	if (length > 0) {
+		memcpy((char*)&buffer[0] + position, found->slots + (size_t)index * BATCH_SLOT, (size_t)length);
+	}
+#else
+	hx::Throw(HX_CSTRING("No batched receive on this system"));
+#endif
+}
+
+/** Unmaps a batch's memory now, rather than when it is collected. **/
+void crossbyte_udp_batch_free(Dynamic batch) {
+#if defined(__linux__)
+	RecvBatch* found = crossbyte_batch_of(batch);
+	if (found != 0) {
+		found->release();
+	}
 #endif
 }
 
