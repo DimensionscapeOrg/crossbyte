@@ -107,6 +107,37 @@ jobs:
             fi
           done
 
+  # An event, and the bytes it carries, is valid only during the listener
+  # call it is handed to: CrossByte fills the same objects for the next
+  # arrival. Code that keeps one past its call reads the next arrival's bytes,
+  # wrong bytes, not a crash, so every target family runs its suite once
+  # more with -D crossbyte_check_events somewhere, which kills each payload
+  # once its call returns, and a keeper reads 0xDB or nothing instead. A job
+  # of its own so the interpreter's second pass adds nothing to the wall time;
+  # the other families take theirs in their own jobs below.
+  core-tests-checked:
+    name: Core | Haxe Tests (arrivals checked)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: ${{ env.HAXE_VERSION }}
+
+      - name: Install Haxe libraries
+        uses: ./.github/actions/haxelibs
+
+      - name: Run interpreter test suite with arrivals checked
+        run: haxe ci/interp-tests.hxml -D crossbyte_check_events
+
   # The jvm target had no CI at all: both entry points existed, neither was
   # ever built or run here. Three jvm defects were found and fixed by hand
   # this release (a PriorityQueue VerifyError, a SwitchTable
@@ -119,7 +150,7 @@ jobs:
   jvm-tests:
     name: Core | JVM Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
@@ -156,6 +187,14 @@ jobs:
         run: java -jar export/jvm/CrossByteJvmSmoke.jar
 
       - name: Run jvm test suite
+        run: java -jar export/jvm/CrossByteTests.jar
+
+      # Again with every arrival's payload killed once its call returns (see
+      # core-tests-checked). The same jar path: the hxml names its output.
+      - name: Build jvm test suite with arrivals checked
+        run: haxe ci/jvm-tests.hxml -D crossbyte_check_events
+
+      - name: Run jvm test suite with arrivals checked
         run: java -jar export/jvm/CrossByteTests.jar
 
   docs:
@@ -379,10 +418,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux, where servers run, and Windows' Native Smoke keep the
+          # reuse a release build has; macOS checks every arrival instead
+          # (see core-tests-checked), which costs it no extra run.
           - os: ubuntu-latest
             label: Linux
+            defines: ""
           - os: macos-15-intel
             label: macOS
+            defines: "-D crossbyte_check_events"
     defaults:
       run:
         shell: bash
@@ -442,7 +486,7 @@ jobs:
         # for 44 minutes after its last server's log line. Not stripped, so a
         # stack taken below names its functions: stripped, every frame read
         # ___lldb_unnamed_symbol.
-        run: haxe ci/posix-native-tests.hxml -D test_trace -D nostrip
+        run: haxe ci/posix-native-tests.hxml -D test_trace -D nostrip ${{ matrix.defines }}
 
       # The relay tests bind 127.0.0.2 and 127.0.0.3, so that what a peer
       # sends itself and what the relay forwards do not share a source. Linux
@@ -637,6 +681,16 @@ jobs:
         run: haxe ci/js-tests.hxml
 
       - name: Run portable suite on Node
+        run: |
+          node export/js-tests/tests.js
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::node export/js-tests/tests.js exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
+
+      # Again with every arrival's payload killed once its call returns (see
+      # core-tests-checked), over the same output.
+      - name: Build portable suite for Node with arrivals checked
+        run: haxe ci/js-tests.hxml -D crossbyte_check_events
+
+      - name: Run portable suite on Node with arrivals checked
         run: |
           node export/js-tests/tests.js
           if ($LASTEXITCODE -ne 0) { Write-Host ("::error::node export/js-tests/tests.js exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
