@@ -62,7 +62,7 @@ import utest.Assert;
 class AllocationBudgetTest extends utest.Test {
 	#if (cpp || jvm)
 	/** The day the figures below were measured. **/
-	private static inline var MEASURED_ON:String = "2026-10-04";
+	private static inline var MEASURED_ON:String = "2026-10-05";
 
 	// What each operation allocates, in bytes: as measured on MEASURED_ON
 	// natively on Windows, natively on Linux and on the jvm, and then the
@@ -85,9 +85,9 @@ class AllocationBudgetTest extends utest.Test {
 	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3448, 3432, 2392], [4376, 4360, 3056]);
 	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [1344, 1344, 10472], [1744, 1744, 13160]);
 	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [264, 264, 704], [400, 400, 944]);
-	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [504, 504, 1127], [696, 696, 1480]);
+	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [504, 504, 528], [696, 696, 728]);
 	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 336], [8, 8, 488]);
-	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [0, 0, 576], [8, 8, 784]);
+	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [0, 0, 312], [8, 8, 456]);
 	// Over LinkedConnection, the in-memory pair, which copies each message
 	// into a buffer it keeps, as a socket's read does. A call's figure is its
 	// RPCResponse and what waiting on it takes; a frame costs nothing.

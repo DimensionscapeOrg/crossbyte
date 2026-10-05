@@ -97,6 +97,118 @@ class DatagramSocketTest extends utest.Test {
 	}
 
 	/**
+		One `Address` sent to, changed, and sent to again goes where it now
+		points, never where it pointed: its port, its IPv4 host, and its IPv6
+		bytes, set anew or changed in place. On the jvm the socket keeps the
+		`InetSocketAddress` it made for an Address with it, for the next send
+		(it was made for every datagram); kept by identity, the second send
+		of each pair below went to the first one's peer.
+	**/
+	public function testAnAddressChangedBetweenSendsGoesWhereItNowPoints():Void {
+		#if (sys && !nodejs)
+		if (!requireDatagramSupport()) return;
+
+		var got:Map<String, Array<String>> = new Map();
+		var sockets:Array<DatagramSocket> = [];
+		function receiver(name:String, host:String):Null<DatagramSocket> {
+			var socket = new DatagramSocket();
+			try {
+				socket.bind(0, host);
+			} catch (_:Dynamic) {
+				closeQuietly(socket);
+				return null;
+			}
+			got.set(name, []);
+			socket.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) {
+				e.data.position = 0;
+				got.get(name).push(e.data.readUTFBytes(e.data.length));
+			});
+			socket.receive();
+			sockets.push(socket);
+			return socket;
+		}
+		function sendTo(sender:DatagramSocket, target:sys.net.Address, text:String):Void {
+			var bytes = haxe.io.Bytes.ofString(text);
+			// The path a reliable session's datagrams take, with an Address
+			// it keeps.
+			sender.__sendNow(bytes, 0, bytes.length, target, null);
+		}
+
+		try {
+			var a = receiver("a", "127.0.0.1");
+			var b = receiver("b", "127.0.0.1");
+			// Another loopback address, where the system has one (not macOS).
+			var c = receiver("c", "127.0.0.2");
+			var sender = new DatagramSocket();
+			sockets.push(sender);
+			sender.bind(0, "0.0.0.0");
+
+			var target = new sys.net.Address();
+			target.setHost(new sys.net.Host("127.0.0.1"));
+			target.port = a.localPort;
+			sendTo(sender, target, "1");
+			target.port = b.localPort;
+			sendTo(sender, target, "2");
+			target.port = a.localPort;
+			sendTo(sender, target, "3");
+			// The host changed, the port kept: never to a.
+			target.host = new sys.net.Host("127.0.0.2").ip;
+			sendTo(sender, target, "4");
+			if (c != null) {
+				target.port = c.localPort;
+				sendTo(sender, target, "5");
+			}
+			target.setHost(new sys.net.Host("127.0.0.1"));
+			target.port = a.localPort;
+			sendTo(sender, target, "6");
+			pumpUntil(() -> got["a"].length >= 3 && got["b"].length >= 1 && (c == null || got["c"].length >= 1), 2.0);
+			pumpUntil(() -> false, 0.1);
+
+			Assert.same(["1", "3", "6"], got["a"], "what the first peer received");
+			Assert.same(["2"], got["b"], "what the second peer received");
+			if (c != null) {
+				Assert.same(["5"], got["c"], "what the peer on another address received");
+			}
+
+			if (requireIpv6Loopback()) {
+				var d = receiver("d", "::1");
+				var e = receiver("e", "::1");
+				var sender6 = new DatagramSocket();
+				sockets.push(sender6);
+				sender6.bind(0, "::1");
+				var target6 = new sys.net.Address();
+				target6.setHost(new sys.net.Host("::1"));
+				target6.port = d.localPort;
+				sendTo(sender6, target6, "x");
+				target6.port = e.localPort;
+				sendTo(sender6, target6, "y");
+				target6.port = d.localPort;
+				// The IPv6 bytes changed in place, to ::2, which nothing holds.
+				var raw:haxe.io.BytesData = @:privateAccess target6.ipv6;
+				if (raw != null) {
+					var bytes = haxe.io.Bytes.ofData(raw);
+					bytes.set(15, 2);
+					try sendTo(sender6, target6, "z") catch (_:Dynamic) {}
+					bytes.set(15, 1);
+				}
+				sendTo(sender6, target6, "w");
+				pumpUntil(() -> got["d"].length >= 2 && got["e"].length >= 1, 2.0);
+				pumpUntil(() -> false, 0.1);
+				Assert.same(["x", "w"], got["d"], "what the first IPv6 peer received");
+				Assert.same(["y"], got["e"], "what the second IPv6 peer received");
+			}
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		for (socket in sockets) {
+			closeQuietly(socket);
+		}
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
 		`send` is an inline forwarder (it boxed its optional arguments on the
 		jvm), and still works every other way it could be reached: taken as a
 		value, through `Reflect`, and through `Dynamic`, with its arguments

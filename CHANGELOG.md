@@ -1727,6 +1727,22 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- On the jvm a datagram socket allocates nothing to send a datagram, and
+  nothing to read one from the peer the last came from. Each send made a
+  view of the bytes (48 bytes) and the destination afresh, an
+  `InetSocketAddress`, an `InetAddress`, their holders and the address's
+  bytes, 120 more, and each read a view of the read buffer and a copy of
+  the sender's address bytes. A send now copies into a direct buffer the
+  socket keeps (the channel copied a heap buffer into one of its own
+  anyway), the destination is kept with the `sys.net.Address` it was made
+  from and made again only when its host, port or IPv6 bytes change, a
+  read reuses its view, and the sender's address is read once a run of
+  datagrams from it. This is reliable UDP's send and receive on the jvm
+  too: a 100-byte datagram sent and received allocates 312 bytes there,
+  where it allocated 576, and a reliable UDP message delivered and
+  acknowledged 464, where it allocated 992 (Oracle JRE 8; Temurin 8 248
+  and 464). A socket that sends holds a direct buffer the size of the
+  largest datagram it has sent, 2 KB at least.
 - On the jvm `DatagramSocket.send` boxes nothing. Its optional arguments
   were objects there, and `Integer` keeps only -128 to 127, so a send to a
   real port allocated 16 bytes for the port, and 16 more each for a length
