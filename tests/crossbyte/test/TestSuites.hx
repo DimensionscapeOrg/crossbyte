@@ -472,6 +472,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.CongestionControlTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramAckDelayTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramSendQueueTest());
+		// Joins under a flood, and the resets strangers are sent.
+		runner.addCase(new crossbyte.net.ReliableDatagramJoinTest());
 		// Real sockets: a raw Bytes write, and a burst taken within one pass.
 		runner.addCase(new crossbyte.net.SocketPassTest());
 	}
