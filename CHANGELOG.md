@@ -457,6 +457,12 @@ entry below says how:
   TCP and WebSocket connections cannot follow an address, and reconnect
   and resume, as `ReliableDatagramServerSocket`'s "Resuming a player"
   shows.
+- "Resuming a player", in `ReliableDatagramServerSocket`'s class doc: how a
+  game takes back a player whose session was reset, a peer from before
+  1.0, a server without `allowRebind`, any TCP or WebSocket connection,
+  with a single-use resume token in its `connect` payload, checked by
+  `admit` and put back on the new session by its handler, which ends the
+  one left behind; a server and a client, compiled with the doc examples.
 - `ReliableDatagramServerSocket.joinValidation` (`JoinValidation`:
   `UNDER_PRESSURE` unless changed, `ALWAYS`, `NEVER`) and
   `joinValidationThreshold` (64): a stateless cookie for reliable UDP

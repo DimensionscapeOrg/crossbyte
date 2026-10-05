@@ -51,6 +51,141 @@ import sys.net.Host;
 	its session. To use more cores, run a server per runtime, each on a port
 	of its own, and send each client to one of them.
 
+	**Resuming a player.** A player whose address changes, a NAT that
+	hands it a new port, a phone moving from Wi-Fi to a mobile network,
+	sends from an address with no session, and is reset. `allowRebind`
+	moves the session instead, where the server allows it and both ends are
+	on 1.0. Where that cannot be, a peer from before 1.0, a server that
+	leaves it off, and every TCP and WebSocket connection, which no change
+	of address survives, the game resumes the player itself:
+
+	- the server hands each player a resume token over its session, and
+	  keeps the player's state under it;
+	- a client that is reset, or times out, connects again with the token
+	  as its `connect` payload;
+	- `admit` checks the token, a lookup, since it is asked for every
+	  CONNECT, and the handler of the new session puts the player's state
+	  back on it, ending the session it left behind, which the server would
+	  otherwise notice only at its `idleTimeout`.
+
+	The token crosses the network in the clear, in the CONNECT, and anyone
+	who saw it can send it: make it single-use, give a new one at every
+	join, and forget it soon after the player leaves, as below. A quiet
+	player does not need any of this to keep its address: a session's
+	keepalive, every 15 seconds (`keepAliveInterval`), keeps a NAT's mapping
+	for it open.
+
+	```haxe
+	import crossbyte.net.ReliableDatagramSocket;
+
+	class Player {
+		// What the game keeps of a player: its state, and the token it
+		// may come back with.
+		public var name:String;
+		public var token:String = null;
+		public var session:ReliableDatagramSocket = null;
+
+		public function new(name:String) {
+			this.name = name;
+		}
+	}
+	```
+
+	```haxe
+	// Given server:ReliableDatagramServerSocket.
+	import crossbyte.crypto.SecureRandom;
+	import crossbyte.ds.ExpiringMap;
+	import crossbyte.events.Event;
+	import crossbyte.events.ReliableDatagramSocketConnectEvent;
+	import crossbyte.io.ByteArray;
+
+	// Tokens of the players here, and of those gone, for a minute.
+	var here = new Map<String, Player>();
+	var gone = new ExpiringMap<String, Player>(60);
+
+	// A lookup, and nothing more: this is asked for every CONNECT.
+	server.admit = function(address:String, port:Int, payload:ByteArray):Bool {
+		var said:String = payload.readUTFBytes(payload.length);
+		if (!StringTools.startsWith(said, "resume:")) {
+			return true;
+		}
+		var token:String = said.substr(7);
+		return here.exists(token) || gone.exists(token);
+	};
+
+	server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, function(e:ReliableDatagramSocketConnectEvent):Void {
+		var session:ReliableDatagramSocket = e.socket;
+		var said:String = session.connectPayload.readUTFBytes(session.connectPayload.length);
+		var player:Player = null;
+		if (StringTools.startsWith(said, "resume:")) {
+			// Spent: a token resumes once.
+			var token:String = said.substr(7);
+			player = here.exists(token) ? here.get(token) : gone.get(token);
+			here.remove(token);
+			gone.remove(token);
+		}
+		if (player == null) {
+			player = new Player(said);
+		}
+		// The session it left behind, at the address it left.
+		var left:ReliableDatagramSocket = player.session;
+		player.session = session;
+		if (left != null) {
+			left.abort();
+		}
+
+		var raw:haxe.io.Bytes = SecureRandom.getSecureRandomBytes(16);
+		player.token = raw.toHex();
+		here.set(player.token, player);
+		var message = new ByteArray();
+		message.writeUTFBytes("token:" + player.token);
+		session.send(message);
+
+		session.addEventListener(Event.CLOSE, function(_:Event):Void {
+			// Ended, and not because the player came back on another.
+			if (player.session == session) {
+				player.session = null;
+				here.remove(player.token);
+				gone.set(player.token, player);
+			}
+		});
+	});
+	```
+
+	And a client that comes back by itself, with the latest token it was
+	given:
+
+	```haxe
+	// Given host:String, port:Int.
+	import crossbyte.events.DatagramSocketDataEvent;
+	import crossbyte.events.Event;
+	import crossbyte.io.ByteArray;
+
+	var token:String = null;
+	var leaving:Bool = false;
+
+	function join():Void {
+		var socket = new ReliableDatagramSocket();
+		socket.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
+			var text:String = e.data.readUTFBytes(e.data.length);
+			if (StringTools.startsWith(text, "token:")) {
+				token = text.substr(6);
+			}
+		});
+		// Reset, timed out, or the server gone: back in, as itself if it can.
+		socket.addEventListener(Event.CLOSE, function(_:Event):Void {
+			if (!leaving) {
+				join();
+			}
+		});
+		var hello = new ByteArray();
+		hello.writeUTFBytes(token != null ? "resume:" + token : "player one");
+		socket.connect(host, port, hello);
+	}
+
+	join();
+	```
+
 	@event close Dispatched when the server socket is closed.
 	@event connect Dispatched when a session a peer opened completes its
 	       handshake. A session this server dials, with `connect` or
