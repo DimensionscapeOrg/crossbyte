@@ -176,12 +176,27 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	public var walAutoCheckpoint(get, set):Int;
 
 	/**
-	 * Milliseconds to wait on a locked database before failing.
+	 * Milliseconds to wait on a locked database before failing:
+	 * `DEFAULT_BUSY_TIMEOUT`, 5,000, as `open()` and `openAsync()` leave it.
+	 * `0` fails at once, with "database is locked", which is SQLite's own
+	 * default and was this connection's before 1.0.
 	 *
-	 * Getter/Setter wrap `PRAGMA busy_timeout`.
-	 * Useful when multiple processes/threads contend for the DB.
+	 * Another connection writing, in this process or another, holds the
+	 * lock until it commits; this one waits for it, up to this long, rather
+	 * than failing a write that would have succeeded a moment later. The
+	 * wait is on the thread that runs the statement: an asynchronous
+	 * connection's worker, with the work queued behind it, or, on a
+	 * synchronous connection, the caller's, a runtime's thread, if that is
+	 * where it is called, stops for it. Set it lower, or to `0`, where that
+	 * matters more than the write.
+	 *
+	 * Getter/Setter wrap `PRAGMA busy_timeout`, which holds for this
+	 * connection alone.
 	 */
 	public var busyTimeout(get, set):Int;
+
+	/** `busyTimeout` as a connection opens: 5,000 milliseconds. **/
+	public static inline var DEFAULT_BUSY_TIMEOUT:Int = 5000;
 
 	/**
 	 * Memory-mapped I/O window size in bytes.
@@ -1451,9 +1466,10 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			}
 		}
 
-		// Not through the property: on an asynchronous connection this is the
-		// worker opening, and the property would ask the worker.
+		// Not through the properties: on an asynchronous connection this is
+		// the worker opening, and a property would ask the worker.
 		__setCacheSize(DEFAULT_CACHE_SIZE);
+		__connection.request('PRAGMA busy_timeout = $DEFAULT_BUSY_TIMEOUT;');
 	}
 
 	private function __onSQLWorkerComplete(e:ThreadEvent):Void {}
