@@ -185,12 +185,15 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		The remote IP address for this reliable session, or an empty string before a
-		connection attempt begins.
+		connection attempt begins. For a session a server accepted, where the
+		peer is now: a rebind moves it (see
+		`ReliableDatagramServerSocket.allowRebind`).
 	**/
 	public var remoteAddress(get, never):String;
 
 	/**
-		The remote UDP port for this reliable session, or `0` before a connection attempt begins.
+		The remote UDP port for this reliable session, or `0` before a connection attempt
+		begins; moved by a rebind, as `remoteAddress` is.
 	**/
 	public var remotePort(get, never):Int;
 
@@ -200,6 +203,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		the attempt goes on, a CONNECT every three seconds, until the peer
 		answers or `close()` is called. Set it before `connect()`; an attempt
 		already under way keeps the deadline it began with.
+
+		It is also how long a connected session waits for its server to take
+		it back at a new address, once the server has said it no longer
+		knows the old one (see `ReliableDatagramServerSocket.allowRebind`):
+		past it the session closes, after an `ioError` saying the rebind
+		failed. Zero leaves that to `idleTimeout`.
 
 		@throws RangeError If set below zero.
 	**/
@@ -751,6 +760,37 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// `__connectOut`: while the handshake lasts.
 	@:noCompletion private var __connectScratch:ByteArray = null;
 
+	// A rebind (see `ReliableDatagramServerSocket.allowRebind`). The
+	// session's rebind key: made by the server for a session it accepted,
+	// and given to the peer in its HANDSHAKE; taken from that HANDSHAKE by
+	// a session dialling; null without. Whether this side is the server's,
+	// which gives the key and checks proofs, and the hash made with it.
+	@:noCompletion private var __rebindKey:haxe.io.Bytes = null;
+	@:noCompletion private var __offersRebind:Bool = false;
+	@:noCompletion private var __rebindHash:crossbyte.net._internal.reliable.SipHash = null;
+	@:noCompletion private var __proofHigh:Int = 0;
+	@:noCompletion private var __proofLow:Int = 0;
+
+	// A dialling session's rebind under way: since when (-1 while none is),
+	// the challenge it answers, when it last sent a REBIND, and the timer
+	// that sends it again and gives up.
+	@:noCompletion private var __rebindingSince:Float = -1;
+	@:noCompletion private var __rebindChallenge:Int = 0;
+	@:noCompletion private var __rebindSentAt:Float = -1;
+	@:noCompletion private var __rebindTimer:Int = -1;
+
+	// An accepted session: when its server last moved it.
+	@:noCompletion private var __reboundAt:Float = -1;
+
+	// Where the PATH frames this session sends are written.
+	@:noCompletion private var __pathOut:ByteArray = null;
+
+	/** How often a session whose address changed sends its REBIND again while no REBOUND has come. **/
+	@:noCompletion private static inline var REBIND_RETRY:Float = 0.25;
+
+	/** What a rebind proof's hash starts with, so it can pass for no other. **/
+	@:noCompletion private static inline var PROOF_DOMAIN:Int = 0x52;
+
 	// The bundle being gathered, in `__scratch`: two bytes kept at the front
 	// for the bundle's magic, then each frame after two bytes of its length,
 	// written in place. `__pendingLength` is where the next entry goes.
@@ -939,8 +979,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/**
 		The relay this session reaches its peer through, or null for a peer
 		reached directly: set by `ReliableDatagramServerSocket` for a session
-		accepted through its relay or dialled with `connectRelayed`, and never
-		changed. Every datagram then goes to the relay to forward.
+		accepted through its relay or dialled with `connectRelayed`, and
+		changed only by a rebind, to however the peer's REBIND came. Every
+		datagram then goes to the relay to forward.
 	**/
 	@:noCompletion private var __relay:TurnClient = null;
 
@@ -1773,9 +1814,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		payload:ByteArray,
 		congestion:CongestionControl,
 		peerConnectionId:Int = 0,
-		?relay:TurnClient
+		?relay:TurnClient,
+		?rebindKey:haxe.io.Bytes
 	):ReliableDatagramSocket {
 		var socket = new ReliableDatagramSocket();
+		// Before the handshake, whose HANDSHAKE gives the peer the key.
+		socket.__rebindKey = rebindKey;
+		socket.__offersRebind = rebindKey != null;
 		if (congestion != null) {
 			socket.__congestion = congestion;
 		}
@@ -1904,6 +1949,17 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
+		// A reset carrying a rebind challenge: the server holds no session
+		// for the address this side's frames now come from. A live session
+		// with a key answers it and stays; any other takes it as a reset,
+		// below. Not a sign of life either way: a server that only ever
+		// answers with these has not taken this side back.
+		if (frame.type == FIN && !frame.graceful && (frame.sequence : Int) != 0 && __rebindKey != null && !__offersRebind && __connected
+			&& !__closing) {
+			__answerChallenge(frame.sequence);
+			return;
+		}
+
 		// Meant for an earlier attempt from this address and port, a
 		// session that went on answering a peer since restarted, and taking
 		// it would start this one from that session's sequence.
@@ -2000,6 +2056,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 					__peerTakesBundles = true;
 				}
 				__readAnnouncedDelay(frame.payload);
+				// A rebind key, from the HANDSHAKE that connects a session
+				// this side dialled, and from no other.
+				if (!__connected && !__incoming && !__offersRebind) {
+					__takeRebindKey(frame.payload);
+				}
 				__onHandshake(frame.sequence, frame.hasAck);
 			case PACKET:
 				__acceptPacket(frame.sequence, frame.payload, frame.more);
@@ -2050,7 +2111,231 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			if (fresh) {
 				__sendHandshakeAttempt();
 			}
+		} else if (kind == ReliableDatagramProtocol.PATH_REBOUND) {
+			// The server took this side's REBIND, at the address it came
+			// from: the rebind under way is done. One for another id, or
+			// with none under way, is nobody's.
+			if (__offersRebind || __rebindingSince < 0 || (frame.sequence : Int) != __connectionId) {
+				return;
+			}
+			__endRebind();
+			__alive = true;
+			__afterRebind();
 		}
+	}
+
+	/**
+		The rebind key in a HANDSHAKE's payload, past the six bytes every
+		HANDSHAKE from 1.0 carries, kept as this session's own; nothing from
+		a HANDSHAKE that carries none.
+	**/
+	@:noCompletion private function __takeRebindKey(payload:ByteArray):Void {
+		if (payload == null || payload.length < ReliableDatagramProtocol.REBIND_HANDSHAKE_PAYLOAD_SIZE) {
+			return;
+		}
+		var key = haxe.io.Bytes.alloc(ReliableDatagramProtocol.REBIND_KEY_SIZE);
+		key.blit(0, payload, ReliableDatagramProtocol.HANDSHAKE_PAYLOAD_SIZE, ReliableDatagramProtocol.REBIND_KEY_SIZE);
+		__rebindKey = key;
+		__rebindHash = null;
+	}
+
+	/**
+		The keyed hash a REBIND proves its sender holds the session's key
+		with, left in `__proofHigh` and `__proofLow`: of the dialling side's
+		connection id and the challenge, under the rebind key.
+
+		The key crossed the network in the server's HANDSHAKE. Where a
+		session is encrypted, its own key is the one to use, which nobody on
+		the path ever saw: this is where the proof is keyed.
+	**/
+	@:noCompletion private function __proofFor(connectionId:Int, challenge:Int):Void {
+		if (__rebindHash == null) {
+			__rebindHash = new crossbyte.net._internal.reliable.SipHash(__rebindKey);
+		}
+		if (__pathOut == null) {
+			__pathOut = new ByteArray();
+			__pathOut.length = ReliableDatagramProtocol.REBIND_FRAME_SIZE;
+		}
+		// Written where the frame will go, and overwritten by it.
+		var input:haxe.io.Bytes = __pathOut;
+		input.set(0, PROOF_DOMAIN);
+		__setInt(input, 1, connectionId);
+		__setInt(input, 5, challenge);
+		__rebindHash.hash(input, 0, 9);
+		__proofHigh = __rebindHash.high;
+		__proofLow = __rebindHash.low;
+	}
+
+	/** Whether a REBIND's proof is the one this server's session's key gives. **/
+	@:noCompletion private function __rebindProofChecks(challenge:Int, high:Int, low:Int):Bool {
+		if (__rebindKey == null || !__offersRebind) {
+			return false;
+		}
+		__proofFor(__peerConnectionId, challenge);
+		// Every bit compared, whichever differs first.
+		return ((__proofHigh ^ high) | (__proofLow ^ low)) == 0;
+	}
+
+	/**
+		The server holds no session for where this side's frames now come
+		from, and has said so with a challenge for that address: a NAT gave
+		this side a new port, or the device moved to another network. The
+		answer is a REBIND, the challenge, and the proof, from the new
+		address, sent at once for a new challenge and every `REBIND_RETRY`
+		until the server's REBOUND comes. Within `timeout` of the first
+		challenge, or the session ends saying so.
+	**/
+	@:noCompletion private function __answerChallenge(challenge:Int):Void {
+		var now:Float = __clock();
+		if (__rebindingSince < 0) {
+			__rebindingSince = now;
+			__rebindSentAt = -1;
+			if (__rebindTimer == -1) {
+				__rebindTimer = __timers().setInterval(REBIND_RETRY, REBIND_RETRY, __onRebindTimer);
+			}
+		}
+		var fresh:Bool = challenge != __rebindChallenge;
+		__rebindChallenge = challenge;
+		if (fresh || __rebindSentAt < 0 || now - __rebindSentAt >= REBIND_RETRY) {
+			__sendRebind(now);
+		}
+	}
+
+	/** Sends the REBIND for the latest challenge, as a datagram of its own. **/
+	@:noCompletion private function __sendRebind(now:Float):Void {
+		__rebindSentAt = now;
+		__proofFor(__connectionId, __rebindChallenge);
+		var out:haxe.io.Bytes = __pathOut;
+		var at:Int = ReliableDatagramProtocol.encodeInto(__pathOut, PATH, __connectionId, null, 0, 0, false, 0, false, false);
+		out.set(at, ReliableDatagramProtocol.PATH_REBIND);
+		__setInt(out, at + 1, __rebindChallenge);
+		__setInt(out, at + 5, __proofHigh);
+		__setInt(out, at + 9, __proofLow);
+		__sendPathOut(ReliableDatagramProtocol.REBIND_FRAME_SIZE);
+	}
+
+	/** The rebind under way: sent again, or, past `timeout`, given up with the session. **/
+	@:noCompletion private function __onRebindTimer():Void {
+		if (__closed || __rebindingSince < 0) {
+			__endRebind();
+			return;
+		}
+		var now:Float = __clock();
+		var waited:Float = now - __rebindingSince;
+		if (__timeout > 0 && waited >= __timeout / 1000) {
+			__endRebind();
+			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR,
+					'The rebind failed: this side\'s address changed, and the server took no REBIND from the new one within ${Math.round(waited * 10) / 10} s; '
+					+ 'the session was closed.', IOErrorEvent.TIMEOUT_ERROR_ID));
+			}
+			__dispose(true);
+			return;
+		}
+		__sendRebind(now);
+	}
+
+	@:noCompletion private function __endRebind():Void {
+		__rebindingSince = -1;
+		if (__rebindTimer != -1) {
+			__timers().clear(__rebindTimer);
+			__rebindTimer = -1;
+		}
+	}
+
+	/**
+		This server's session, moved to the address its peer's REBIND came
+		from (`ReliableDatagramServerSocket.__moveSession` has refiled it):
+		answered with a REBOUND, and what it sent meanwhile sent again.
+	**/
+	@:noCompletion private function __rebound(challenge:Int, now:Float):Void {
+		__reboundAt = now;
+		__alive = true;
+		__sendRebound(challenge);
+		__afterRebind();
+	}
+
+	/** A REBOUND, answering the REBIND that carried `challenge`, to where the peer is now. **/
+	@:noCompletion private function __sendRebound(challenge:Int):Void {
+		if (__pathOut == null) {
+			__pathOut = new ByteArray();
+			__pathOut.length = ReliableDatagramProtocol.REBIND_FRAME_SIZE;
+		}
+		var out:haxe.io.Bytes = __pathOut;
+		var at:Int = ReliableDatagramProtocol.encodeInto(__pathOut, PATH, __peerConnectionId, null, 0, 0, false, 0, false, false);
+		out.set(at, ReliableDatagramProtocol.PATH_REBOUND);
+		__setInt(out, at + 1, challenge);
+		__sendPathOut(ReliableDatagramProtocol.REBOUND_FRAME_SIZE);
+	}
+
+	/**
+		Sends `length` bytes of `__pathOut` to the peer, as a datagram of its
+		own, never in a bundle, which a server takes only from an address
+		that holds a session, and at once. A failure is not the session's
+		end: an address changing is when sends fail for a moment, and the
+		REBIND is sent again, under its deadline.
+	**/
+	@:noCompletion private function __sendPathOut(length:Int):Void {
+		if (__remoteAddress == "" || __remotePort == 0 || __transport == null) {
+			return;
+		}
+		__sentSinceKeepAlive = true;
+		try {
+			if (__relay != null) {
+				__relay.permit(__remoteAddress, haxe.Timer.stamp());
+				__relay.sendTo(__pathOut, __remoteAddress, __remotePort, 0, length);
+			} else {
+				__transport.send(__pathOut, 0, length, __remoteAddress, __remotePort);
+			}
+		} catch (_:Dynamic) {}
+	}
+
+	/**
+		After a rebind, on either side: what went out while the peer could
+		not be reached is sent again, now, as after any loss. Every frame in
+		flight that the peer has not said it holds goes again, in order,
+		those sent since the address changed went where the peer no longer
+		is, and the rest are at most the window, each waited for by the
+		round trip measured rather than by the timeout backed off while
+		nothing came back. Sending only the oldest, and letting its answer
+		show the rest lost, left them to the next frame sent: a tick of a
+		game's loop, 16 ms at 60 Hz, where this is a round trip.
+	**/
+	@:noCompletion private function __afterRebind():Void {
+		if (__closed) {
+			return;
+		}
+		if (__answerRtt >= 0) {
+			__setRto(__baseRto());
+		} else {
+			__rto = INITIAL_RTO;
+		}
+		__probed = false;
+		var now:Float = __clock();
+		var sequence:Seq32 = __windowBase;
+		while (sequence < __outSequence) {
+			var frame:Null<OutstandingFrame> = __outFrameCache.get(sequence);
+			if (frame != null && !frame.sacked) {
+				frame.attempts++;
+				frame.sentAt = now;
+				frame.deadline = now + __rto;
+				__lastTransmitAt = now;
+				__fastResends++;
+				__transmit(sequence, frame, true);
+				if (__closed) {
+					return;
+				}
+			}
+			sequence++;
+		}
+		__drainQueue();
+	}
+
+	@:noCompletion private static inline function __setInt(bytes:haxe.io.Bytes, at:Int, value:Int):Void {
+		bytes.set(at, value >>> 24);
+		bytes.set(at + 1, (value >>> 16) & 0xFF);
+		bytes.set(at + 2, (value >>> 8) & 0xFF);
+		bytes.set(at + 3, value & 0xFF);
 	}
 
 	/**
@@ -3031,6 +3316,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		__closed = true;
 		__clearHandshakeTimers();
+		__endRebind();
 		if (__keepAliveHandle != -1) {
 			__timers().clear(__keepAliveHandle);
 			__keepAliveHandle = -1;
@@ -3573,8 +3859,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (__remoteAddress == "" || __remotePort == 0 || __transport == null) {
 			return;
 		}
-		// The extension first: the server's cookie, once it has sent one.
-		// Padded, so whatever the server sends back is no larger.
+		// The extension first: that this side answers a rebind's challenge,
+		// as every 1.0 peer does, and the server's cookie, once it has sent
+		// one. Padded, so whatever the server sends back is no larger.
 		var length:Int = __connectOut == null ? 0 : __connectOut.length;
 		var room:Int = length + ReliableDatagramProtocol.CONNECT_EXTENSION_MAX + ReliableDatagramProtocol.MIN_CONNECT_SIZE;
 		if (__connectScratch == null) {
@@ -3583,7 +3870,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (__connectScratch.length < room) {
 			__connectScratch.length = room;
 		}
-		var written:Int = ReliableDatagramProtocol.writeConnectPayload(__connectScratch, 0, 0, __hasJoinCookie,
+		var written:Int = ReliableDatagramProtocol.writeConnectPayload(__connectScratch, 0, ReliableDatagramProtocol.FEATURE_REBIND, __hasJoinCookie,
 			__joinCookieHigh, __joinCookieLow, __connectOut, 0, length);
 		__sendFrame(CONNECT, __connectionId, __connectScratch, 0, written, false, 0, false, false, true);
 	}
@@ -3602,9 +3889,17 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// The peer's id, or 0 for none, and how long this side holds an
 		// acknowledgement, which also says to the peer that this side reads
 		// how long the peer held one; see `ReliableDatagramProtocol`.
-		if (__echoScratch == null) {
+		// And the rebind key this server's session gives its peer, until the
+		// peer shows it took a HANDSHAKE: the one that connects it is the
+		// one it takes the key from.
+		var length:Int = ReliableDatagramProtocol.HANDSHAKE_PAYLOAD_SIZE;
+		var givesKey:Bool = __offersRebind && !__peerConfirmed && __rebindKey != null;
+		if (givesKey) {
+			length = ReliableDatagramProtocol.REBIND_HANDSHAKE_PAYLOAD_SIZE;
+		}
+		if (__echoScratch == null || __echoScratch.length < length) {
 			__echoScratch = new ByteArray();
-			__echoScratch.length = ReliableDatagramProtocol.HANDSHAKE_PAYLOAD_SIZE;
+			__echoScratch.length = length;
 		}
 		var bytes:haxe.io.Bytes = __echoScratch;
 		bytes.set(0, __peerConnectionId >>> 24);
@@ -3614,8 +3909,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		var units:Int = ReliableDatagramProtocol.delayUnits(__ackDelay);
 		bytes.set(4, units >> 8);
 		bytes.set(5, units & 0xFF);
-		__sendFrame(HANDSHAKE, __firstSequence, __echoScratch, 0, ReliableDatagramProtocol.HANDSHAKE_PAYLOAD_SIZE, false, __inSequence, __connected,
-			false);
+		if (givesKey) {
+			bytes.blit(ReliableDatagramProtocol.HANDSHAKE_PAYLOAD_SIZE, __rebindKey, 0, ReliableDatagramProtocol.REBIND_KEY_SIZE);
+		}
+		__sendFrame(HANDSHAKE, __firstSequence, __echoScratch, 0, length, false, __inSequence, __connected, false);
 	}
 
 	/**
