@@ -305,6 +305,27 @@ class HTTPPhpTest extends utest.Test {
 		world.close();
 	}
 
+	public function testARequestTheBridgeHasNoRoomForIsAnswered503():Void {
+		// A request refused at once because the bridge already had as many
+		// exchanges with the backend as it holds, and as many waiting, was
+		// answered 502, as though the backend had answered badly: the backend
+		// did nothing wrong, and the request may succeed in a moment.
+		var backend = new FakeFastCGI();
+		var world = new PhpWorld(backend, (config, _) -> config.phpMaxExchanges = 1);
+		// No queue behind the one exchange, rather than 1,024 connections.
+		@:privateAccess world.server.php.__maxWaiting = 0;
+
+		world.send("GET /index.php HTTP/1.1\r\nHost: localhost\r\n\r\n");
+		var refused = world.freshClient("GET /index.php HTTP/1.1\r\nHost: localhost\r\n\r\n");
+		HTTPTestSupport.pumpUntil(() -> HTTPTestSupport.isResponseComplete(refused.text()), 3.0);
+
+		var response = HTTPTestSupport.parseResponse(refused.text());
+		Assert.equals(503, response.status, "not the 503: " + refused.text());
+		Assert.equals("Service Unavailable", response.body);
+		Assert.equals(0, world.responseCount(), "the exchange with the backend was answered too");
+		world.close();
+	}
+
 	public function testABackendThatTimesOutIsAnsweredWithAWholeResponse():Void {
 		var backend = new FakeFastCGI();
 		var world = new PhpWorld(backend, (config, _) -> config.phpTimeout = 0.5);
