@@ -84,6 +84,9 @@ class PHPBridge {
 	/** Exchanges, at most, waiting for one with the backend to end. **/
 	public static inline var MAX_WAITING:Int = 1024;
 
+	/** `MAX_WAITING`, as this bridge holds it; a test lowers it. **/
+	@:noCompletion private var __maxWaiting:Int = MAX_WAITING;
+
 	/**
 		Bytes read from one exchange's connection in one pass, at most, before
 		the rest is left for the next, as a `Socket` leaves it, and for the
@@ -281,7 +284,7 @@ class PHPBridge {
 	private function __admit(tracked:Tracked):Void {
 		var exchange:PHPExchange = tracked.exchange;
 		var free:Bool = maxExchanges <= 0 || __inFlight < maxExchanges;
-		if (!free && __waiting.length >= MAX_WAITING) {
+		if (!free && __waiting.length >= __maxWaiting) {
 			var busy:PHPBusy = new PHPBusy(__inFlight, __waiting.length);
 			exchange.fail(busy.toString(), busy);
 			return;

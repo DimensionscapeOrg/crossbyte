@@ -32,6 +32,7 @@ import crossbyte._internal.http.headers.Connection;
 import crossbyte._internal.http.DirectoryListings;
 import crossbyte._internal.http.HttpSyntax;
 import crossbyte._internal.php.PHPBridge;
+import crossbyte._internal.php.PHPBusy;
 import crossbyte._internal.php.PHPRequest;
 import crossbyte._internal.php.PHPResponse;
 import crossbyte._internal.php.PHPTimeout;
@@ -4182,6 +4183,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 			if (Std.isOfType(exchange.cause, PHPTimeout)) {
 				Logger.error("PHP backend timed out: " + message, ["path" => __requestPath]);
 				__dispatchResponse(504, "Gateway Timeout", null, "text/plain", "Gateway Timeout", bodiless);
+				return;
+			}
+
+			// Refused before it reached the backend: the bridge already had
+			// as many exchanges with it as it holds, and as many waiting. The
+			// backend did nothing wrong, and the same request may well succeed
+			// in a moment, which is what 503 says and 502 does not.
+			if (Std.isOfType(exchange.cause, PHPBusy)) {
+				Logger.warn(message, ["path" => __requestPath]);
+				__dispatchResponse(503, "Service Unavailable", null, "text/plain", "Service Unavailable", bodiless);
 				return;
 			}
 

@@ -1747,7 +1747,8 @@ entry below says how:
   `HTTPServerConfig.phpMaxExchanges`, 64 by default, requests with its PHP
   backend at once, each holding a connection: more wait their turn, within
   `phpTimeout`, and past 1,024 waiting a request is refused at once as busy
-  (a `PHPBusy` failure). Every request opened a connection of its own,
+  and answered `503 Service Unavailable`, not the `502` of a backend that
+  answered badly. Every request opened a connection of its own,
   however many were already waiting on a `php-cgi -b` that answers one at a
   time.
 - Host names are looked up on four threads the process keeps for lookups,
