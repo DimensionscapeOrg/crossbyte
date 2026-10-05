@@ -3546,6 +3546,25 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A datagram too large to send says so. `DatagramSocket.send`, and the
+  `ioError` event, said "Socket operation failed" for one, as for any other
+  failure, all CI's macOS leg reported for a 20,000-byte datagram, which
+  macOS refuses past the socket's send buffer, 9,216 bytes unless raised.
+  They now say "a datagram of N bytes is larger than this socket can send
+  (sendBufferSize M)", with UDP's limits: 65,507 bytes over IPv4 and
+  65,527 over IPv6 everywhere, and on macOS the send buffer. Natively, on
+  the jvm and on Node (as the event Node reports a send's failure in);
+  HashLink and Neko report every failed send alike, so there only a
+  datagram past 65,527 bytes is named so. A failed send on HashLink is
+  told to the `ioError` listeners too: it came as an `Eof`, which only the
+  caller heard. `send` and `sendBufferSize` say what the largest datagram
+  is on each system and how to raise it.
+- On Node, a `DatagramSocket`'s `receiveBufferSize` or `sendBufferSize`
+  set between `bind()` and Node binding the socket, `bind()` returns
+  first, is applied once Node has. It was applied to a handle with no
+  socket yet, which refused it (ENOTSOCK), and the `ioError` reporting
+  that also stopped the socket receiving. A size Node refuses is still
+  reported, and the socket goes on receiving.
 - A listener that throws out of `dispatchEvent` no longer leaves its
   dispatcher copying its listeners on every `addEventListener` and
   `removeEventListener` after. A dispatch to two or more listeners counts

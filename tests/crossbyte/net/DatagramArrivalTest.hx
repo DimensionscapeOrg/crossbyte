@@ -1,7 +1,9 @@
 package crossbyte.net;
 
 import crossbyte.core.CrossByte;
+import crossbyte.errors.IOError;
 import crossbyte.events.DatagramSocketDataEvent;
+import crossbyte.events.IOErrorEvent;
 import crossbyte.events._internal.Arrivals;
 import crossbyte.io.ByteArray;
 import crossbyte.io.ByteArray.ByteArrayData;
@@ -14,7 +16,8 @@ import utest.Async;
 	"Copy it to keep it" on a `DatagramSocket`, over real sockets: what a
 	`DATA` listener is handed is right while it is handled, what it sends
 	back is what arrived, and what it keeps, a clone, or the event itself,
-	is what each mode says it is.
+	is what each mode says it is. And what a datagram too large to send
+	says, which on Node comes back from Node later, as an event.
 
 	Asynchronous, so Node runs it too: its datagrams come through a path of
 	their own.
@@ -231,6 +234,92 @@ class DatagramArrivalTest extends utest.Test {
 					pair.close();
 					async.done();
 				});
+			});
+		});
+	}
+
+	/**
+		A datagram too large to send says so, and why, where it said only
+		"Socket operation failed" (natively), which is all CI's macOS leg
+		reported for a 20,000-byte datagram, since macOS sends none larger
+		than the socket's send buffer, 9,216 bytes unless raised.
+
+		65,520 bytes is past what UDP carries over IPv4 (65,507), and the
+		system's refusal is what says so: natively, on the jvm and on Node.
+		65,528 is past what it carries over either family, which is said
+		on every target, HashLink and Neko included, whose sockets report
+		every failure alike. Natively and on the jvm `send` throws; on Node
+		the refusal is an `ioError` event, Node sending a turn later. With
+		the send buffer at 8 KB, a 20,000-byte datagram is refused on macOS
+		for the buffer, and goes everywhere else.
+	**/
+	@:timeout(15000)
+	public function testADatagramTooLargeToSendSaysSoAndWhy(async:Async):Void {
+		var pair = Pair.make(async);
+		if (pair == null) return;
+
+		var reported:Array<String> = [];
+		pair.client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent):Void {
+			reported.push(e.text);
+		});
+		var arrived:Array<Int> = [];
+		pair.server.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
+			arrived.push(e.data.length);
+		});
+		if (DatagramSocket.bufferSizeSupported) {
+			pair.client.sendBufferSize = 8 * 1024;
+		}
+
+		pair.whenReady(function():Void {
+			var thrown:Array<String> = [];
+			for (length in [65520, 65528, 20000]) {
+				try {
+					pair.client.send(numbered(length, 5), 0, 0, "127.0.0.1", pair.server.localPort);
+				} catch (e:IOError) {
+					thrown.push(e.message);
+				} catch (e:Dynamic) {
+					thrown.push("not an IOError: " + Std.string(e));
+				}
+			}
+			var macOS:Bool = #if nodejs js.Node.process.platform == "darwin" #else Sys.systemName() == "Mac" #end;
+			// Where the system's own refusal is told apart from any other.
+			var told:Bool = #if (cpp || jvm || nodejs) true #else false #end;
+			var refusals:Int = macOS ? 3 : 2;
+			NetPump.until(() -> reported.length >= refusals && (macOS || arrived.length >= 1), 5.0, function(_) {
+				var buffer:Int = pair.client.sendBufferSize;
+				var why:Int->String = length -> 'a datagram of $length bytes is larger than this socket can send ('
+					+ (buffer > 0 ? 'sendBufferSize $buffer' : 'its send buffer size cannot be read here') + ')';
+				// Nothing else reported: on Node a send buffer asked for between
+				// bind() and Node binding was refused (ENOTSOCK), and the socket
+				// stopped receiving for it.
+				Assert.equals(refusals, reported.length, "the ioError events: " + reported.join(" | "));
+				#if nodejs
+				Assert.equals(0, thrown.length, "Node threw where it reports a send's failure as an event: " + thrown.join(" | "));
+				var said:Array<String> = reported;
+				#else
+				Assert.equals(refusals, thrown.length, "a refused send did not throw: " + thrown.join(" | "));
+				var said:Array<String> = thrown.concat(reported);
+				#end
+				if (DatagramSocket.bufferSizeSupported) {
+					Assert.isTrue(buffer >= 8 * 1024, "the send buffer asked for before the socket was bound was not applied: " + buffer);
+				}
+				function saysWhy(length:Int):Bool {
+					return said.filter(text -> text.indexOf(why(length)) >= 0).length == #if nodejs 1 #else 2 #end;
+				}
+				Assert.isTrue(saysWhy(65528), "a datagram too large for UDP was not named so: " + said.join(" | "));
+				if (told) {
+					Assert.isTrue(saysWhy(65520), "a datagram too large for UDP over IPv4 was not named so: " + said.join(" | "));
+				}
+				if (macOS) {
+					if (told) {
+						Assert.isTrue(saysWhy(20000), "a datagram past macOS's send buffer was not named so: " + said.join(" | "));
+					}
+				} else {
+					Assert.same([20000], arrived, "a 20,000-byte datagram did not go with an 8 KB send buffer");
+				}
+				Assert.isTrue(pair.client.receiving, "a datagram too large to send stopped the socket receiving");
+				pair.close();
+				async.done();
 			});
 		});
 	}

@@ -384,7 +384,26 @@ static bool crossbyte_would_block() {
 #endif
 }
 
+// True when the last send failed because its datagram is larger than the
+// socket can send (EMSGSIZE): past UDP's 65,507 bytes over IPv4 or 65,527
+// over IPv6 anywhere, and on macOS past the socket's send buffer, 9,216
+// bytes unless raised. Read, as the above, inside the GC-free zone.
+static bool crossbyte_too_large() {
+#if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
+	return WSAGetLastError() == WSAEMSGSIZE;
+#else
+	return errno == EMSGSIZE;
+#endif
 }
+
+}
+
+/**
+	What a send of a datagram too large for its socket throws, in place of
+	"Socket operation failed": DatagramSocket names the datagram's size and
+	the socket's send buffer from it, where every other failure read alike.
+**/
+#define CROSSBYTE_TOO_LARGE "Datagram too large"
 
 /**
 	`send`, or -1 when the socket's buffer is full. Any other failure throws
@@ -489,9 +508,13 @@ int crossbyte_socket_try_send_to(Dynamic socket, Array<unsigned char> buffer, in
 #endif
 	if (sent == SOCKET_ERROR) {
 		bool wouldBlock = crossbyte_would_block();
+		bool tooLarge = !wouldBlock && crossbyte_too_large();
 		hx::ExitGCFreeZone();
 		if (wouldBlock) {
 			return -1;
+		}
+		if (tooLarge) {
+			hx::Throw(HX_CSTRING(CROSSBYTE_TOO_LARGE));
 		}
 		hx::Throw(HX_CSTRING("Socket operation failed"));
 	}
