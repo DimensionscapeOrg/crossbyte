@@ -208,6 +208,12 @@ class DatagramArrivalTest extends utest.Test {
 			seen.push(e.data.length + ":" + wrongByte(e.data, e.data.length, e.data.length == 20000 ? 3 : 4));
 		});
 
+		// macOS sends no datagram larger than the socket's send buffer, 9,216
+		// bytes unless asked for more: the send failed (CI, 2026-10-05).
+		if (DatagramSocket.bufferSizeSupported) {
+			pair.client.sendBufferSize = 64 * 1024;
+		}
+
 		pair.whenReady(function():Void {
 			pair.client.send(numbered(20000, 3), 0, 0, "127.0.0.1", pair.server.localPort);
 			NetPump.until(() -> seen.length >= 1, 5.0, function(_) {
