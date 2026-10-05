@@ -43,6 +43,13 @@ class WakeSocketTest extends utest.Test {
 				try {
 					while (!stop) {
 						waker.wake();
+						// Once closed a wake makes no system call, and a thread
+						// spinning in nothing else holds the interpreter's
+						// runtime lock: the closing thread, back from its
+						// sleep, waited for it for good (alone, 3 runs of 3).
+						if (waker.registryClosed) {
+							crossbyte.sys.System.sleep(0.0001);
+						}
 					}
 				} catch (error:Dynamic) {
 					failures.push(Std.string(error));
