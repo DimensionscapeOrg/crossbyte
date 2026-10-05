@@ -25,6 +25,7 @@ import crossbyte.events.ReliableDatagramSocketConnectEvent;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrame;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrameType;
+import crossbyte.net._internal.reliable.ResetBudget;
 import haxe.ds.StringMap;
 import crossbyte._internal.net.IPv6;
 #if !nodejs
@@ -140,6 +141,35 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		an address that may never have asked for one.
 	**/
 	public var maxPendingConnections:Int = DEFAULT_MAX_PENDING_CONNECTIONS;
+
+	/** `maxResetsPerSecond` unless changed. **/
+	public static inline var DEFAULT_MAX_RESETS_PER_SECOND:Int = 1000;
+
+	/**
+		How many resets every reliable datagram server in this process may
+		send, together, in a second: 1,000 unless changed. Negative is no
+		limit, and 0 sends none.
+
+		A reset is the FIN a server answers a frame with when it holds no
+		session for the address the frame came from, a peer whose session
+		it closed, a server that restarted, a player whose address changed.
+		Each is a datagram to an address that has proved
+		nothing, since UDP lets a sender write whatever it likes in the
+		source field; it is no larger than the frame that drew it, but one
+		was sent for every such frame however many came, so a server could be
+		made to send as many datagrams as it was sent to whoever an attacker
+		named. Past the allowance a frame is dropped unanswered, and its
+		sender, if it is a real peer, hears at its next frame, or at its own
+		`idleTimeout`.
+
+		One allowance for the process, shared by every server in it on every
+		runtime: it holds up to one second's worth and fills at this rate, so
+		a burst of resets after a restart goes out at once and a flood gets
+		no more than this. At 1,000 that is at most about 35 KB a second of
+		7-byte frames and their headers. Read whenever a reset is due, so a
+		change takes effect at the next one.
+	**/
+	public static var maxResetsPerSecond:Int = DEFAULT_MAX_RESETS_PER_SECOND;
 
 	/**
 		The operating system's receive buffer, in bytes, for the one socket
@@ -1739,9 +1769,18 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		answered, since its sender waits for an acknowledgement nothing here
 		will give, often from a session that took the FIN and went, its
 		answer lost on the way.
+
+		Sent only within the process's allowance, `maxResetsPerSecond`: one
+		was sent for every frame from a stranger, however many came.
 	**/
 	@:noCompletion private function __resetStranger(frame:Null<ReliableDatagramFrame>, address:String, port:Int, via:Null<TurnClient>):Void {
 		if (frame != null && frame.type == ReliableDatagramFrameType.FIN && !frame.graceful) {
+			return;
+		}
+
+		// Within the process's allowance, which every server shares; see
+		// `maxResetsPerSecond`.
+		if (!ResetBudget.take(maxResetsPerSecond, haxe.Timer.stamp())) {
 			return;
 		}
 

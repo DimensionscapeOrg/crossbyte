@@ -423,6 +423,16 @@ entry below says how:
   runtime RPC op: " and the number: compare an error with the constant.
 
 ### Added
+- `ReliableDatagramServerSocket.maxResetsPerSecond`, 1,000 unless changed:
+  the resets every reliable datagram server in the process may send
+  together in a second, from one allowance that holds a second's worth and
+  fills at that rate; negative is no limit and 0 sends none. A reset is
+  the FIN a server answers a frame from an address with no session with,
+  and one went out for every such frame however many came, so a sender
+  writing someone else's address could have the server send that address
+  a datagram for each of its own: 600 stranger frames drew 600 FINs, and
+  draw 50 under an allowance of 50. Past the allowance a frame is dropped
+  unanswered.
 - `ByteArray.maxObjectValues`: the most values one object read may make,
   1,000,000 unless changed, for the whole process; zero or less is no
   limit. See the fix below.
