@@ -24,5 +24,22 @@ extern class NativeSocketAddress {
 	@:native("crossbyte_socket_try_recv") public static function tryRecv(socket:Dynamic, buffer:haxe.io.BytesData, position:Int, length:Int):Int;
 	@:native("crossbyte_socket_try_send_to") public static function trySendTo(socket:Dynamic, buffer:haxe.io.BytesData, position:Int, length:Int, address:Dynamic):Int;
 	@:native("crossbyte_socket_try_recv_from") public static function tryRecvFrom(socket:Dynamic, buffer:haxe.io.BytesData, position:Int, length:Int, address:Dynamic):Int;
+
+	/**
+		Datagrams received in batches, by one `recvmmsg` (Linux; see
+		NativeSocketAddress.cpp). `batchSupported` says whether there are
+		any here; `batchNew` maps a batch of `capacity` slots of 64 KB, or
+		answers null; `batchReceive` takes in up to `max` waiting datagrams,
+		how many, -1 for none waiting, -2 for a kernel without the call,
+		and `batchTake`/`batchCopy` read datagram `index` of them: its
+		length and source, then its bytes. `batchFree` unmaps it now.
+	**/
+	@:native("crossbyte_udp_batch_supported") public static function batchSupported():Bool;
+	@:native("crossbyte_udp_batch_new") public static function batchNew(capacity:Int):Dynamic;
+	@:native("crossbyte_udp_batch_capacity") public static function batchCapacity(batch:Dynamic):Int;
+	@:native("crossbyte_udp_batch_receive") public static function batchReceive(socket:Dynamic, batch:Dynamic, max:Int):Int;
+	@:native("crossbyte_udp_batch_take") public static function batchTake(batch:Dynamic, index:Int, address:Dynamic):Int;
+	@:native("crossbyte_udp_batch_copy") public static function batchCopy(batch:Dynamic, index:Int, buffer:haxe.io.BytesData, position:Int):Void;
+	@:native("crossbyte_udp_batch_free") public static function batchFree(batch:Dynamic):Void;
 }
 #end

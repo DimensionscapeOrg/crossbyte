@@ -1717,6 +1717,24 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- On Linux, natively, a `DatagramSocket` that finds a second datagram
+  waiting in a pass reads from then on in batches: one `recvmmsg` takes in
+  up to 64, where each datagram took a `recvfrom` of its own and the pass
+  one more to find the socket empty. Each is still handed out one at a
+  time, in the socket's reused payload, under the same 1,024-a-pass share;
+  datagrams a batch holds when a listener throws or stops the socket
+  receiving are handed out next, before anything read after them. A
+  reliable UDP server reading once a frame, as the `DEFAULT` loop does,
+  made 95% fewer system calls for its datagrams and spent 6 to 9% less
+  processor time, 5% less in the kernel, at 200 and 1,000 clients x 30 Hz
+  (WSL, 11 interleaved runs each); one woken for each arrival, as the
+  `POLL` loop is, reads a datagram or two at a time, made a third fewer
+  calls and spent the same. A batch's slots are 64 KB, past the largest
+  datagram, so none is cut short, and mapped, so the system commits only
+  the pages datagrams land in: a busy socket holds at most 4 MB of address
+  space and, for datagrams up to 4 KB, 256 KB of memory, until `close()`;
+  a socket that never has two datagrams waiting holds none. macOS, Windows
+  and the other targets read one datagram a call, as before.
 - `SQLiteConnection.busyTimeout` is 5,000 milliseconds as a connection
   opens, `DEFAULT_BUSY_TIMEOUT`, where it was SQLite's own 0: a write
   while another connection, in this process or another, held the write
