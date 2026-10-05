@@ -173,7 +173,9 @@ class StunQuery {
 			return NOT_OURS;
 		}
 
-		answer = response;
+		// Kept, and so with its own copy of the bytes it was decoded from,
+		// which are the datagram's and valid only during this call.
+		answer = response.__keep();
 		var address = response.mappedAddress();
 
 		// A success with no address is a server that answered without

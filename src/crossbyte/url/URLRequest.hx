@@ -34,6 +34,11 @@ class URLRequest {
 		A redirect that turns the request into a GET, a 301, 302 or 303, for
 		anything but a HEAD, leaves the body behind. In a browser a GET or
 		HEAD carries no body at all: the browser drops it.
+
+		Bytes are copied when `URLLoader.load` takes the request, so they are
+		the caller's again once it returns: a payload a listener was handed
+		for its call alone, a datagram's `event.data`, can be sent on
+		from inside it.
 	**/
 	public var data:Dynamic;
 

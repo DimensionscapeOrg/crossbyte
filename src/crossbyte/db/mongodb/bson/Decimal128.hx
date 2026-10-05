@@ -30,7 +30,7 @@ final class Decimal128 {
 	@:noCompletion private static inline var EXPONENT_MIN:Int = -6176;
 	@:noCompletion private static inline var MAX_DIGITS:Int = 34;
 
-	/** Wraps 16 bytes, little-endian, as they are stored. **/
+	/** Wraps 16 bytes, little-endian, as they are stored: kept as they are rather than copied, as `ObjectId` keeps its. **/
 	public function new(bytes:Bytes) {
 		if (bytes == null || bytes.length != 16) {
 			throw new ArgumentError("A Decimal128 is 16 bytes.");

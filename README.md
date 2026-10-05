@@ -343,6 +343,8 @@ All optional, all off unless you pass them.
 | `crossbyte_lz4_native` | Route LZ4 through the native backend from the `crossbyte-lz4` haxelib instead of the bundled Haxe implementation. |
 | `crossbyte_libuv_native` | Build the libuv poll backend from the `crossbyte-libuv` haxelib (cpp only). Needs libuv's headers and library, and `LibuvPoll.install()` called before the first runtime is created; without the define `install()` returns false and the built-in backend is used. See that repository's README. |
 | `crossbyte_no_http2` | Do not auto-register the bundled HTTP/2 backend. A backend registered explicitly through `HTTPBackendRegistry` still wins either way; this only stops the bundled one from being picked up on its own. |
+| `crossbyte_check_events` | Find code that keeps an event, or the received bytes one carries, past its listener call (see `Event`): every event and payload handed out for an arrival is made afresh and killed once the call returns, bytes overwritten with `0xDB`, length and position 0, fields cleared, so the line that kept one reads poison or throws. For tests and debugging. |
+| `crossbyte_fresh_events` | Make every event and payload handed out for an arrival afresh, as before 1.0, where a released build hands out one of each per socket, session or connection again for every arrival: the workaround for code that keeps them, until it copies what it keeps. |
 | `http_debug` | Log each response line the HTTP client reads, through `Logger`, so it honours the configured level and sink. |
 | `crossbyte_debug` | Keep `crossbyte.io.File` out of `@:noDebug`, so its frames appear in stack traces. |
 

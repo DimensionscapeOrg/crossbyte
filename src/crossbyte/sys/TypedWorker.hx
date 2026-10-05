@@ -115,6 +115,19 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 		__resetState();
 	}
 
+	/**
+		Runs `doWork` with `message`: on a thread of its own where there are
+		threads, and here, holding this thread, on JavaScript.
+
+		A message of bytes, a `ByteArray` or `haxe.io.Bytes`, is copied
+		before this returns, from 0 to its `length`, and `doWork` is handed
+		the copy: the thread reads it later, and the caller's bytes are the
+		caller's again at once, as a payload a listener was handed for its
+		call alone is. Anything else is handed over as it is, to be read on
+		the other thread: a structure holding such a payload holds a copy
+		of it, or the thread reads what it has become (see
+		`crossbyte.events.Event`).
+	**/
 	public function run(?message:In):Void {
 		if (running) {
 			throw new IllegalOperationError("Worker is already running.");
@@ -122,7 +135,7 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 
 		__resetState();
 		state = RUNNING;
-		__runMessage = message;
+		__runMessage = __handedOver(message);
 
 		#if target.threaded
 		__runtime = CrossByte.current();
@@ -147,6 +160,25 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 		#else
 		__doWork();
 		#end
+	}
+
+	/**
+		`message` as `run` hands it to the work: bytes copied, a `ByteArray`
+		at the same position, in the same byte order and object encoding,
+		and anything else as it is.
+	**/
+	@:noCompletion private static function __handedOver<T>(message:Null<T>):Null<T> {
+		if (message == null) {
+			return message;
+		}
+		if (Std.isOfType(message, crossbyte.io.ByteArray.ByteArrayData)) {
+			return cast crossbyte.events._internal.Arrivals.copyOf(cast message);
+		}
+		if (Std.isOfType(message, haxe.io.Bytes)) {
+			var bytes:haxe.io.Bytes = cast message;
+			return cast bytes.sub(0, bytes.length);
+		}
+		return message;
 	}
 
 	public function sendComplete(?message:Out):Void {

@@ -71,6 +71,16 @@ class JsHttpClient {
 		// of the map a URLVariables is at run time, or "{ user : bob }".
 		var url:String = request.url;
 		var body:Dynamic = request.data;
+		// Bytes are copied as the load begins: they are the caller's again
+		// once `load` has returned, a datagram's payload handed on from its
+		// listener, which the socket fills with the next datagram. Node was
+		// given a view of them, which it writes once connected, and a
+		// redirect that keeps the body read them again later still: the
+		// server was sent the next datagram's bytes over the first's.
+		if (body != null && (body is Bytes)) {
+			var bytes:Bytes = cast body;
+			body = bytes.sub(0, bytes.length);
+		}
 		var contentType:String = request.contentType;
 		var form:Null<String> = FormEncoding.encode(request.data);
 		if (form != null) {

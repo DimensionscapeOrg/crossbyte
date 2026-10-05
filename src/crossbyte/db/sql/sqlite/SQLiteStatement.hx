@@ -58,6 +58,11 @@ class SQLiteStatement extends EventDispatcher {
 		literals, and the text prepared again on every run: a repeated INSERT
 		took 3.8-6.1 µs where it takes 0.36-0.63 µs bound (the audit's
 		SqlitePerf).
+
+		Read when `execute()` is called: on an asynchronous connection, which
+		binds them on its worker later, they are copied then, bytes included,
+		so they are the caller's to change, and a blob may be a payload a
+		listener was handed for its call alone.
 	**/
 	public var parameters(default, null):FieldStruct<SQLValue>;
 	public var sqlConnection(get, set):SQLiteConnection;
@@ -194,7 +199,7 @@ class SQLiteStatement extends EventDispatcher {
 		if (connection.__async) {
 			try {
 				// The values as they are now, bound on the worker later.
-				connection.__queueStatement(this, true, text, prefetch, values.copy());
+				connection.__queueStatement(this, true, text, prefetch, __snapshot(values));
 			} catch (e:Dynamic) {
 				// Refused: its worker has stopped, after an open that failed.
 				__executing = false;
@@ -272,6 +277,26 @@ class SQLiteStatement extends EventDispatcher {
 	/** The map `parameters` keeps its values in. **/
 	@:noCompletion private inline function __values():StringMap<Dynamic> {
 		return cast parameters;
+	}
+
+	/**
+		`values` as they are now, for the worker to bind later: the map
+		copied, and bytes in it copied too, from 0 to their `length`. The map
+		alone was copied, so a blob bound from a payload valid only during a
+		listener's call, a datagram's `event.data`, was bound on the
+		worker after the socket had emptied it, and stored empty; and bytes
+		the caller changed after `execute` returned were stored changed.
+	**/
+	@:noCompletion private static function __snapshot(values:StringMap<Dynamic>):StringMap<Dynamic> {
+		var copy = new StringMap<Dynamic>();
+		for (name => value in values) {
+			if (value != null && Std.isOfType(value, haxe.io.Bytes)) {
+				var bytes:haxe.io.Bytes = cast value;
+				value = bytes.sub(0, bytes.length);
+			}
+			copy.set(name, value);
+		}
+		return copy;
 	}
 
 	/**

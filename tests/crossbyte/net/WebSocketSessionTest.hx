@@ -360,7 +360,8 @@ class WebSocketSessionTest extends utest.Test {
 			var messages:Array<WebSocketMessageEvent> = [];
 			var opened:Bool = false;
 			client.addEventListener(Event.CONNECT, function(_) opened = true);
-			client.addEventListener(WebSocketMessageEvent.MESSAGE, function(e:WebSocketMessageEvent) messages.push(e));
+			// Clones: an event is valid only during the listener call.
+			client.addEventListener(WebSocketMessageEvent.MESSAGE, function(e:WebSocketMessageEvent) messages.push(cast e.clone()));
 			client.connect("127.0.0.1", server.localPort);
 
 			NetPump.until(() -> opened && sessions.length > 0, 5.0, function(_) {
@@ -434,7 +435,8 @@ class WebSocketSessionTest extends utest.Test {
 			var echoed:Array<WebSocketMessageEvent> = [];
 			var opened:Bool = false;
 			client.addEventListener(Event.CONNECT, function(_) opened = true);
-			client.addEventListener(WebSocketMessageEvent.MESSAGE, function(e:WebSocketMessageEvent) echoed.push(e));
+			// Clones: an event is valid only during the listener call.
+			client.addEventListener(WebSocketMessageEvent.MESSAGE, function(e:WebSocketMessageEvent) echoed.push(cast e.clone()));
 			client.connect("127.0.0.1", server.localPort);
 
 			NetPump.until(() -> opened && sessions.length > 0, 5.0, function(_) {

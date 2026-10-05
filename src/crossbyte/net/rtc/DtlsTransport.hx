@@ -2,6 +2,7 @@ package crossbyte.net.rtc;
 
 import crossbyte.Future;
 import crossbyte.errors.ArgumentError;
+import crossbyte.events._internal.Arrivals;
 import crossbyte.io.ByteArray;
 #if cpp
 import cpp.ConstPointer;
@@ -109,7 +110,14 @@ class DtlsTransport {
 	/** Called with a datagram to put on the wire. **/
 	public dynamic function onSend(payload:ByteArray):Void {}
 
-	/** Called with each decrypted message. **/
+	/**
+		Called with each decrypted message.
+
+		`payload` is valid only during the call, as an event's payload is:
+		the transport reads the next message into the same `ByteArray`, and
+		empties it once the call returns. Copy the bytes out to keep them, as
+		`payload.readBytes(mine)` does. See `crossbyte.events.Event`.
+	**/
 	public dynamic function onMessage(payload:ByteArray):Void {}
 
 	/**
@@ -257,7 +265,9 @@ class DtlsTransport {
 	#end
 
 	/**
-		Hands over a datagram that arrived from the peer.
+		Hands over a datagram that arrived from the peer. Read during the
+		call and kept by nothing, so a payload valid only during the caller's
+		own call, an event's, can be passed as it is.
 
 		@return Whether it looked like DTLS. A record layer type between 20 and
 		63 is DTLS by RFC 7983's demultiplexing rule, which is what lets STUN,
@@ -449,10 +459,26 @@ class DtlsTransport {
 				return;
 			}
 
-			var out = new ByteArray(size);
+			// Read into the transport's own payload, used again for every
+			// record, unless it is out: each record had a ByteArray of its
+			// own, zeroed and then overwritten.
+			var pooled:Bool = Arrivals.REUSE && !__arrivalOut;
+			var out:ByteArray;
+			if (pooled) {
+				out = __arrival;
+				if (out == null) {
+					out = __arrival = new ByteArray();
+				}
+				Arrivals.sized(out, size);
+			} else {
+				out = new ByteArray(size);
+			}
 			var read = NativeDtlsSession.read(__handle, __ptr(out), size);
 
 			if (read <= 0) {
+				if (pooled) {
+					Arrivals.release(out);
+				}
 				return;
 			}
 
@@ -461,7 +487,33 @@ class DtlsTransport {
 			}
 
 			out.position = 0;
-			onMessage(out);
+			// Valid only during the call, as an event's payload is.
+			if (pooled) {
+				__arrivalOut = true;
+			}
+			try {
+				onMessage(out);
+			} catch (e:Dynamic) {
+				__delivered(out, pooled);
+				Arrivals.rethrow(e);
+			}
+			__delivered(out, pooled);
+		}
+	}
+
+	// The payload records are handed to onMessage in, one per transport,
+	// made with the first and filled again for each (see Arrivals); and
+	// whether it is out, when a record read inside onMessage's call gets one
+	// of its own. Never kept under either define.
+	@:noCompletion private var __arrival:ByteArray = null;
+	@:noCompletion private var __arrivalOut:Bool = false;
+
+	@:noCompletion private inline function __delivered(out:ByteArray, pooled:Bool):Void {
+		if (pooled) {
+			Arrivals.release(out);
+			__arrivalOut = false;
+		} else {
+			Arrivals.done(out);
 		}
 	}
 

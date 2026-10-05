@@ -67,6 +67,7 @@ const STANDALONE = [
   'src/crossbyte/db/mongodb/bson/Decimal128.hx',
   'src/crossbyte/db/mongodb/bson/ExtendedJson.hx',
   'src/crossbyte/db/mongodb/bson/ObjectId.hx',
+  'src/crossbyte/events/Event.hx',
   'src/crossbyte/http/HTTP2Backend.hx',
   'src/crossbyte/io/File.hx',
   'src/crossbyte/io/Store.hx',

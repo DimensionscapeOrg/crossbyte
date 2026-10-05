@@ -14,6 +14,7 @@ import crossbyte.errors.SecurityError;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.Event;
 import crossbyte.events.WebSocketCloseEvent;
+import crossbyte.events._internal.Arrivals;
 import crossbyte.io.ByteArrayInput;
 import crossbyte.events.ProgressEvent;
 import crossbyte.io.ByteArray;
@@ -1095,10 +1096,14 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 		__onClose(reason);
 	}
 
-	@:noCompletion private inline function socket_onDatagramData(event:DatagramSocketDataEvent):Void {
+	@:noCompletion private function socket_onDatagramData(event:DatagramSocketDataEvent):Void {
 		inTimestamp = __uptime();
-		event.data.position = 0;
-		__onData(event.data);
+		// A copy: the event's bytes are valid only during this call, and what
+		// `onData` is handed is the application's to keep, on every transport,
+		// a stream's own input over TCP and WebSocket, and here the message.
+		var message:ByteArray = Arrivals.copyOf(event.data);
+		message.position = 0;
+		__onData(message);
 	}
 
 	@:noCompletion private function socket_onStreamData(_event:ProgressEvent):Void {

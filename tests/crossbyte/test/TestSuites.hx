@@ -60,6 +60,9 @@ class TestSuites {
 		// Also in PortableSuite: typed event-type constants refuse a listener
 		// of the wrong event at compile time.
 		runner.addCase(new crossbyte.events.EventTypesTest());
+		// Also in PortableSuite: "copy it to keep it", clone() copies, and
+		// what each define does to an event and its payload.
+		runner.addCase(new crossbyte.events.ArrivalsTest());
 	}
 
 	public static function addDataStructures(runner:Runner):Void {
@@ -127,6 +130,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.io.ByteArrayIOTest());
 		runner.addCase(new crossbyte.io.ByteArrayOutputTest());
 		runner.addCase(new crossbyte.io.FileTest());
+		// Red team: a datagram saved to a file from its listener.
+		runner.addCase(new crossbyte.io.FileArrivalTest());
 		runner.addCase(new crossbyte.io.FilePathTest());
 		runner.addCase(new crossbyte.io.FileStreamTest());
 		runner.addCase(new crossbyte.io.FileStreamContractTest());
@@ -139,6 +144,8 @@ class TestSuites {
 	public static function addURL(runner:Runner):Void {
 		runner.addCase(new crossbyte.url.URLTest());
 		runner.addCase(new crossbyte.url.URLLoaderHttpTest());
+		// Red team: a datagram forwarded as a request body from its listener.
+		runner.addCase(new crossbyte.url.URLLoaderArrivalTest());
 		runner.addCase(new crossbyte.url.URLLoaderTest());
 		runner.addCase(new crossbyte.url.URLVariablesTest());
 		// Registered for the browser, which reaches it through PortableSuite;
@@ -211,6 +218,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.MySQLNativeHostileTest());
 		// SQLite opens only natively.
 		runner.addCase(new crossbyte.db.SQLiteNativeTest());
+		// Red team: a datagram stored as a blob from its listener.
+		runner.addCase(new crossbyte.db.SQLiteArrivalTest());
 		#end
 		// The fixed-slot objects rows and documents are built as.
 		runner.addCase(new crossbyte._internal.AnonBuilderTest());
@@ -238,6 +247,9 @@ class TestSuites {
 
 	public static function addNet(runner:Runner):Void {
 		runner.addCase(new crossbyte.net.DatagramSocketTest());
+		// What a datagram listener is handed, sends back and keeps, over real
+		// sockets; asynchronous, and also in PortableSuite for Node's path.
+		runner.addCase(new crossbyte.net.DatagramArrivalTest());
 		// Native only, like DatagramSocketTest beside it. These cases pump the
 		// runtime to wait for a datagram, and pumping means Sys.sleep, which on
 		// node blocks the very loop the socket is delivered on, so the query
@@ -381,6 +393,8 @@ class TestSuites {
 		// it did not.
 		#if (cpp || java || jvm)
 		runner.addCase(new crossbyte.cluster.NodeChannelTest());
+		// What a message waits as, queued or held for the pass: a copy.
+		runner.addCase(new crossbyte.cluster.NodeChannelKeeperTest());
 		runner.addCase(new crossbyte.net.SocketTest());
 		runner.addCase(new crossbyte.net.ServerSocketDrainTest());
 		runner.addCase(new crossbyte.net.ServerWebSocketDrainTest());
@@ -401,6 +415,16 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.SocketTLSClientTest());
 		runner.addCase(new crossbyte.net.WebSocketClientTest());
 		runner.addCase(new crossbyte.net.WebSocketSessionTest());
+		// A message's call, every way to send it back, and what a listener
+		// keeps. Also in PortableSuite, for Node's sessions.
+		runner.addCase(new crossbyte.net.WebSocketArrivalTest());
+		// Red team: what a session holds once a message's call returned, and
+		// what one message leaves behind for the next. Also in PortableSuite.
+		runner.addCase(new crossbyte.net.WebSocketReuseTest());
+		// RPC arguments and a NetConnection's input kept past their calls,
+		// over each transport, and a TCP echo queued behind a peer not
+		// reading. Also in PortableSuite, for Node.
+		runner.addCase(new crossbyte.net.TransportArrivalTest());
 		// Not on eval either: its sockets block, so a write to a peer that has
 		// stopped reading waits rather than buffering.
 		runner.addCase(new crossbyte.net.SocketOutputTest());
@@ -435,6 +459,10 @@ class TestSuites {
 		// Real sockets whose frames go through memory, so reordering, loss and
 		// duplication happen when a case says rather than when a network does.
 		runner.addCase(new crossbyte.net.ReliableDatagramDeliveryTest());
+		// Every datagram through the transport's own delivery, in one buffer:
+		// what a session keeps past a datagram's call is a copy. Also in
+		// PortableSuite, for Node's datagrams.
+		runner.addCase(new crossbyte.net.ReliableDatagramArrivalTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramCoalescingTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramLossRecoveryTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramCloseTest());
@@ -524,7 +552,11 @@ class TestSuites {
 		register nothing here.
 	**/
 	public static function addAllocationBudgets(runner:Runner):Void {
-		#if (cpp || jvm)
+		// And only as released: under -D crossbyte_fresh_events or
+		// -D crossbyte_check_events every event and payload is made afresh,
+		// which is what those defines are for, and the budgets are for the
+		// reuse they turn off.
+		#if ((cpp || jvm) && !(crossbyte_fresh_events || crossbyte_check_events))
 		runner.addCase(new crossbyte.AllocationBudgetTest());
 		#end
 	}

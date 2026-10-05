@@ -95,7 +95,7 @@ class WebSocketTest extends utest.Test {
 	public function testMaskedBinaryFrameDispatchesPayload():Void {
 		var ws = openParser();
 		var received:ByteArray = null;
-		ws.onmessage = e -> received = e.message;
+		ws.onmessage = e -> received = kept(e.message);
 
 		ws.__input = maskedFrame(0x02, Bytes.ofString("hello"));
 		ws.__onData();
@@ -339,7 +339,7 @@ class WebSocketTest extends utest.Test {
 		var received:ByteArray = null;
 		ws.onmessage = e -> {
 			calls++;
-			received = e.message;
+			received = kept(e.message);
 		};
 
 		var first = maskedFrame(0x01, Bytes.ofString("hel"), false);
@@ -374,7 +374,7 @@ class WebSocketTest extends utest.Test {
 	public function testExtendedPayloadLength126DispatchesPayload():Void {
 		var ws = openParser();
 		var received:ByteArray = null;
-		ws.onmessage = e -> received = e.message;
+		ws.onmessage = e -> received = kept(e.message);
 
 		var payload = Bytes.alloc(130);
 		for (i in 0...payload.length) {
@@ -393,7 +393,7 @@ class WebSocketTest extends utest.Test {
 	public function testExtendedPayloadLength127DispatchesMaxPayload():Void {
 		var ws = openParser();
 		var received:ByteArray = null;
-		ws.onmessage = e -> received = e.message;
+		ws.onmessage = e -> received = kept(e.message);
 
 		var payload = Bytes.alloc(InternalWebSocket.MAX_PAYLOAD);
 		payload.set(0, 0x41);
@@ -522,7 +522,7 @@ class WebSocketTest extends utest.Test {
 		ws.onclose = _ -> {};
 
 		var received:ByteArray = null;
-		ws.onmessage = e -> received = e.message;
+		ws.onmessage = e -> received = kept(e.message);
 
 		var response = [
 			"HTTP/1.1 101 Switching Protocols",
@@ -548,7 +548,7 @@ class WebSocketTest extends utest.Test {
 		var opened = 0;
 		ws.onopen = _ -> opened++;
 		var received:ByteArray = null;
-		ws.onmessage = e -> received = e.message;
+		ws.onmessage = e -> received = kept(e.message);
 
 		var response = [
 			"HTTP/1.1 101 Switching Protocols",
@@ -644,6 +644,17 @@ class WebSocketTest extends utest.Test {
 
 	private static function emptyWebSocket():InternalWebSocket {
 		return Type.createEmptyInstance(InternalWebSocket);
+	}
+
+	/**
+		A copy of a message `onmessage` was handed, to read after the call:
+		the message itself is valid only during it.
+	**/
+	private static function kept(message:ByteArray):ByteArray {
+		var copy = new ByteArray();
+		copy.writeBytes(message, 0, message.length);
+		copy.position = 0;
+		return copy;
 	}
 
 	private static function openParser():InternalWebSocket {
