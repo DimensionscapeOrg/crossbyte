@@ -3546,6 +3546,17 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On neko and HashLink on Linux, a `DatagramSocket` is never given a port
+  another socket holds. Their binds set SO_REUSEADDR, with which Linux lets
+  two datagram sockets share a port: a bind to port 0 could be handed one
+  already held, 18 in 1,000 binds, and the one of the two that got the
+  datagrams was not always the one they were for, and a bind to a port in
+  use succeeded. hxcpp's bind stopped setting it in round two; these
+  natives cannot be told not to, so the port is checked against
+  /proc/net/udp once bound: a port held is refused with an `IOError`, as
+  it is on every other target, and port 0 handed one is asked for again on
+  a socket of its own. It was a neko CI failure,
+  `testInterleavedSendersAreEachNamed` receiving none of six datagrams.
 - A datagram too large to send says so. `DatagramSocket.send`, and the
   `ioError` event, said "Socket operation failed" for one, as for any other
   failure, all CI's macOS leg reported for a 20,000-byte datagram, which
