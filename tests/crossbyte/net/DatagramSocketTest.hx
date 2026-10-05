@@ -236,10 +236,8 @@ class DatagramSocketTest extends utest.Test {
 			var asValue = sender.send;
 			asValue(bytesOf("value"), 0, 0, "127.0.0.1", port);
 			Reflect.callMethod(sender, Reflect.field(sender, "send"), [bytesOf("reflect"), 0, 0, "127.0.0.1", port]);
-			var dynamicSender:Dynamic = sender;
-			dynamicSender.send(bytesOf("dynamic"), 0, 0, "127.0.0.1", port);
-			var dynamicConnected:Dynamic = connected;
-			dynamicConnected.send(bytesOf("defaults"));
+			sendThroughDynamic(sender, bytesOf("dynamic"), port);
+			sendThroughDynamicConnected(connected, bytesOf("defaults"));
 			pumpUntil(() -> seen.length >= 4, 2.0);
 
 			seen.sort(Reflect.compare);
@@ -1402,6 +1400,24 @@ class DatagramSocketTest extends utest.Test {
 		closeQuietly(first);
 		closeQuietly(second);
 		closeQuietly(receiver);
+	}
+
+	// Through a parameter: a local `Dynamic` copied from a typed one was
+	// compiled for neko as the method read off and called unbound, which
+	// called `send` without its socket whatever `send` was.
+	private static function sendThroughDynamic(socket:Dynamic, bytes:ByteArray, port:Int):Void {
+		socket.send(bytes, 0, 0, "127.0.0.1", port);
+	}
+
+	private static function sendThroughDynamicConnected(socket:Dynamic, bytes:ByteArray):Void {
+		#if neko
+		// neko calls a function with exactly the arguments it takes, so one
+		// left out through Dynamic is an "Invalid call" there, whatever the
+		// function: it always was.
+		socket.send(bytes, 0, 0, null, 0);
+		#else
+		socket.send(bytes);
+		#end
 	}
 
 	private static function bytesOf(value:String):ByteArray {
