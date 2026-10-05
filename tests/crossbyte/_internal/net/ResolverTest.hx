@@ -90,7 +90,8 @@ class ResolverTest extends utest.Test {
 
 		now += Resolver.NEGATIVE_TTL + 0.5;
 		system.failing = false;
-		Assert.isNull(__failureOf(name), "a name was refused after it began to resolve");
+		var after:Null<String> = __failureOf(name);
+		Assert.isNull(after, "a name was refused after it began to resolve: " + after);
 		Assert.equals(2, system.calls(name), "a failure was kept past its time");
 	}
 
