@@ -291,6 +291,44 @@ class FileStreamContractTest extends utest.Test {
 		}
 	}
 
+	public function testAnObjectOfMoreValuesThanAllowedIsRefused():Void {
+		// As ByteArray's readObject: `ByteArray.maxObjectValues` holds for a
+		// file's object in either text encoding. A JSON one was bounded in
+		// nesting only, and read whatever count of values it held.
+		var saved:Int = ByteArray.maxObjectValues;
+		ByteArray.maxObjectValues = 8;
+		try {
+			for (encoding in [crossbyte.net.ObjectEncoding.HXSF, crossbyte.net.ObjectEncoding.JSON]) {
+				// An array and eight numbers: nine values.
+				var body:String = encoding == crossbyte.net.ObjectEncoding.JSON ? "[1,2,3,4,5,6,7,8]" : "ai1i2i3i4i5i6i7i8h";
+				for (async in __modes()) {
+					var how = (async ? "openAsync" : "open") + ", encoding " + encoding;
+					var file = File.createTempFile();
+					try {
+						var writer = new FileStream();
+						writer.open(file, WRITE);
+						writer.writeUnsignedInt(body.length);
+						writer.writeUTFBytes(body);
+						writer.close();
+
+						var reader = new FileStream();
+						reader.objectEncoding = encoding;
+						__open(reader, file, async);
+						Assert.raises(() -> reader.readObject(), crossbyte.errors.IOError, how);
+						__close(reader);
+					} catch (e:Dynamic) {
+						Assert.fail(how + ": " + Std.string(e));
+					}
+					__delete(file);
+				}
+			}
+		} catch (e:Dynamic) {
+			ByteArray.maxObjectValues = saved;
+			throw e;
+		}
+		ByteArray.maxObjectValues = saved;
+	}
+
 	public function testObjectEncodingAppliesToAnAsynchronousStream():Void {
 		// The asynchronous stream read and wrote through its buffer, which was
 		// a plain ByteArray: HXSF and little-endian, whatever the stream said.
