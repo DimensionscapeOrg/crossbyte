@@ -97,6 +97,50 @@ class DatagramSocketTest extends utest.Test {
 	}
 
 	/**
+		`send` is an inline forwarder (it boxed its optional arguments on the
+		jvm), and still works every other way it could be reached: taken as a
+		value, through `Reflect`, and through `Dynamic`, with its arguments
+		given or left out.
+	**/
+	public function testSendReachedAsAValueOrDynamicallyStillSends():Void {
+		if (!requireDatagramSupport()) return;
+
+		var receiver = new DatagramSocket();
+		var sender = new DatagramSocket();
+		var connected = new DatagramSocket();
+		var seen:Array<String> = [];
+		try {
+			receiver.bind(0, "127.0.0.1");
+			receiver.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) {
+				e.data.position = 0;
+				seen.push(e.data.readUTFBytes(e.data.length));
+			});
+			receiver.receive();
+			sender.bind(0, "127.0.0.1");
+			connected.bind(0, "127.0.0.1");
+			connected.connect("127.0.0.1", receiver.localPort);
+			var port:Int = receiver.localPort;
+
+			var asValue = sender.send;
+			asValue(bytesOf("value"), 0, 0, "127.0.0.1", port);
+			Reflect.callMethod(sender, Reflect.field(sender, "send"), [bytesOf("reflect"), 0, 0, "127.0.0.1", port]);
+			var dynamicSender:Dynamic = sender;
+			dynamicSender.send(bytesOf("dynamic"), 0, 0, "127.0.0.1", port);
+			var dynamicConnected:Dynamic = connected;
+			dynamicConnected.send(bytesOf("defaults"));
+			pumpUntil(() -> seen.length >= 4, 2.0);
+
+			seen.sort(Reflect.compare);
+			Assert.same(["defaults", "dynamic", "reflect", "value"], seen);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		closeQuietly(connected);
+		closeQuietly(sender);
+		closeQuietly(receiver);
+	}
+
+	/**
 		Every socket bound to port 0 is given a port of its own, however many
 		are bound. With SO_REUSEADDR set on datagram sockets, Linux handed out
 		ports already held, 18 in 1,000 binds in C, and the socket that

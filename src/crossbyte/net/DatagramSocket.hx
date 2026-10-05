@@ -953,8 +953,20 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		@throws RangeError If `offset`, `length`, or `port` are out of range.
 		@throws IllegalOperationError If a connected socket is asked to send to an explicit alternate destination.
 		@throws IOError If the send operation fails.
+
+		`send` is `inline`, a forwarder over a method with no optional
+		arguments, which on the jvm boxed each one per call (16 bytes for a
+		port, a length or an offset above 127), so a subclass cannot
+		override it: wrap the socket instead (see the CHANGELOG's Upgrading
+		notes). Taken as a value, or called through `Reflect` or `Dynamic`,
+		it works as before.
 	**/
-	public function send(bytes:ByteArray, offset:Int = 0, length:Int = 0, address:String = null, port:Int = 0):Void {
+	public inline function send(bytes:ByteArray, offset:Int = 0, length:Int = 0, address:String = null, port:Int = 0):Void {
+		__send(bytes, offset, length, address, port);
+	}
+
+	/** `send`, with every argument given: nothing boxed on the jvm. **/
+	@:noCompletion public function __send(bytes:ByteArray, offset:Int, length:Int, address:String, port:Int):Void {
 		if (__socket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
