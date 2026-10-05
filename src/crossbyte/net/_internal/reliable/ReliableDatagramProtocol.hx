@@ -263,11 +263,14 @@ final class ReliableDatagramProtocol {
 		@param keepEmpty Whether an ACK or a FIN with nothing in it is given
 		       an empty payload, as `decodeRange` gives one; a session passes
 		       false, and reads null.
+		@param reuse A payload of the caller's to copy a payload into, when
+		       one is copied, in place of a new one: the caller's to empty
+		       once it has finished with the frame (see `Arrivals`).
 		@return `into`, or null for anything that is not a frame this build
 		        knows, `into` then unchanged.
 	**/
 	public static function decodeInto(packet:ByteArray, from:Int, length:Int, owned:Bool, into:ReliableDatagramFrame,
-			keepEmpty:Bool = false):ReliableDatagramFrame {
+			keepEmpty:Bool = false, ?reuse:ByteArray):ReliableDatagramFrame {
 		// Read off the storage rather than through the stream API: the header
 		// is a handful of fixed offsets, and a datagram is decoded for every
 		// packet a session receives.
@@ -320,6 +323,9 @@ final class ReliableDatagramProtocol {
 			}
 			packet.length = payloadLength;
 			payload = packet;
+		} else if (reuse != null) {
+			crossbyte.events._internal.Arrivals.refill(reuse, bytes, from + start, payloadLength);
+			payload = reuse;
 		} else {
 			payload = new ByteArray();
 			if (payloadLength > 0) {

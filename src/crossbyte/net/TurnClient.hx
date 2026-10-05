@@ -4,6 +4,7 @@ import crossbyte.Future;
 import crossbyte._internal.net.IPv6;
 import crossbyte.crypto.SecureRandom;
 import crossbyte.errors.ArgumentError;
+import crossbyte.events._internal.Arrivals;
 import crossbyte.io.ByteArray;
 import crossbyte.net._internal.stun.StunMessage;
 import crossbyte.net._internal.stun.StunMessage.StunAttribute;
@@ -271,7 +272,15 @@ class TurnClient {
 	**/
 	public var failure(default, null):Null<TurnError> = null;
 
-	/** Datagrams a peer sent through the relay. **/
+	/**
+		Datagrams a peer sent through the relay.
+
+		`payload` is valid only during the call, as an event's payload is:
+		the client fills the same `ByteArray` with the next datagram a
+		channel carries, and empties it once the call returns. Copy the bytes
+		out to keep them, as `payload.readBytes(mine)` does. See
+		`crossbyte.events.Event`.
+	**/
 	public dynamic function onData(payload:ByteArray, fromAddress:String, fromPort:Int):Void {}
 
 	/** Called with a datagram bound for the relay. **/
@@ -1701,16 +1710,63 @@ class TurnClient {
 			return false;
 		}
 
-		var data = new ByteArray();
-
-		if (length > 0) {
-			payload.readBytes(data, 0, length);
+		// Copied out of the datagram into the client's own payload, filled
+		// again for each, unless it is out: each relayed datagram had a
+		// ByteArray of its own.
+		var pooled:Bool = Arrivals.REUSE && !__arrivalOut;
+		var data:ByteArray;
+		if (pooled) {
+			data = __arrival;
+			if (data == null) {
+				data = __arrival = new ByteArray();
+			}
+			Arrivals.refill(data, payload, CHANNEL_HEADER, length);
+		} else {
+			data = new ByteArray();
+			if (length > 0) {
+				payload.readBytes(data, 0, length);
+			}
 		}
 
 		data.position = 0;
 		payload.position = 0;
-		onData(data, channel.address, channel.port);
+		__handOut(data, pooled, channel.address, channel.port);
 		return true;
+	}
+
+	// The payload a channel's datagrams are handed to onData in, one per
+	// client, made with the first and filled again for each (see Arrivals);
+	// and whether it is out, when a datagram arriving inside onData's call
+	// gets one of its own. Never kept under either define.
+	@:noCompletion private var __arrival:ByteArray = null;
+	@:noCompletion private var __arrivalOut:Bool = false;
+
+	/**
+		What the relay forwarded, to `onData`: valid only during that call.
+		`pooled` says it is the client's own, emptied for the next once the
+		call returns, or throws; otherwise, under `-D crossbyte_check_events`,
+		it is killed then.
+	**/
+	@:noCompletion private function __handOut(payload:ByteArray, pooled:Bool, address:String, port:Int):Void {
+		if (pooled) {
+			__arrivalOut = true;
+		}
+		try {
+			onData(payload, address, port);
+		} catch (e:Dynamic) {
+			__handedOut(payload, pooled);
+			Arrivals.rethrow(e);
+		}
+		__handedOut(payload, pooled);
+	}
+
+	@:noCompletion private inline function __handedOut(payload:ByteArray, pooled:Bool):Void {
+		if (pooled) {
+			Arrivals.release(payload);
+			__arrivalOut = false;
+		} else {
+			Arrivals.done(payload);
+		}
 	}
 
 	@:noCompletion private function __deliver(message:StunMessage):Void {
@@ -1730,7 +1786,7 @@ class TurnClient {
 		}
 
 		payload.position = 0;
-		onData(payload, peer.address, peer.port);
+		__handOut(payload, false, peer.address, peer.port);
 	}
 
 	/**

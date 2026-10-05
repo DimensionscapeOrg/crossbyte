@@ -926,7 +926,8 @@ class ReliableDatagramSocketTest extends utest.Test {
 				accepted = event.socket;
 				accepted.addEventListener(DatagramSocketDataEvent.DATA, dataEvent -> {
 					arrived.push(dataEvent.data.length);
-					messages.push(dataEvent.data);
+					// A copy: the event's bytes are valid only during the listener call.
+					messages.push(cast(dataEvent.clone(), DatagramSocketDataEvent).data);
 				});
 			});
 			server.listen();

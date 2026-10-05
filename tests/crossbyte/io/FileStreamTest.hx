@@ -308,6 +308,53 @@ class FileStreamTest extends utest.Test {
 		}
 	}
 
+	/**
+		Bytes written to a stream opened for asynchronous writing are the
+		caller's again once `writeBytes` returns: the file holds what they
+		were at the call, though the write goes out on another thread later
+		and the caller, or a socket refilling a listener's payload,
+		writes over them at once.
+	**/
+	public function testAnAsyncWriteIsWhatTheBytesWereAtTheCall():Void {
+		#if !target.threaded
+		Assert.pass();
+		return;
+		#end
+		var file = File.createTempFile();
+		var stream = new FileStream();
+		var input = new FileStream();
+		var closeSeen = false;
+
+		try {
+			stream.addEventListener(Event.CLOSE, (_:Event) -> closeSeen = true);
+			stream.openAsync(file, FileMode.WRITE);
+			var buffer = new ByteArray();
+			buffer.writeUTFBytes("first write;");
+			stream.writeBytes(buffer);
+			buffer.clear();
+			buffer.writeUTFBytes("second write.");
+			stream.writeBytes(buffer);
+			// Reused once more, after the last write.
+			buffer.position = 0;
+			buffer.writeUTFBytes("CHANGED AFTERWARDS");
+			stream.close();
+
+			pumpUntil(() -> closeSeen, 2.0);
+			Assert.isTrue(closeSeen);
+
+			input.open(file, FileMode.READ);
+			Assert.equals("first write;second write.", input.readUTFBytes(input.bytesAvailable), "an async write went out as the bytes became after writeBytes returned");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try input.close() catch (_:Dynamic) {}
+		try stream.close() catch (_:Dynamic) {}
+		if (file.exists) {
+			file.deleteFile();
+		}
+	}
+
 	public function testWriteUTFUsesUtf8ByteLength():Void {
 		var file = File.createTempFile();
 		var output = new FileStream();

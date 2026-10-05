@@ -17,4 +17,9 @@ class TextEvent extends Event {
 		event.currentTarget = currentTarget;
 		return event;
 	}
+
+	@:noCompletion override private function __kill():Void {
+		super.__kill();
+		text = null;
+	}
 }

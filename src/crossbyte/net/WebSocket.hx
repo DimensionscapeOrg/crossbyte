@@ -29,6 +29,7 @@ import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.events.TickEvent;
 import crossbyte.events.WebSocketCloseEvent;
 import crossbyte.events.WebSocketMessageEvent;
+import crossbyte.events._internal.Arrivals;
 import crossbyte.io.ByteArray;
 import haxe.Serializer;
 import haxe.Timer;
@@ -1108,8 +1109,23 @@ class WebSocket extends Socket {
 
 	@:noCompletion override private function socket_onMessage(msg:Dynamic):Void {
 		var message:WebsocketEvent = msg;
-		var newData:ByteArray = message.message;
+		__messageArrived(message.message, message.isText);
+	}
 
+	// The MESSAGE event this session hands its messages out in, made with the
+	// first and filled again for each after it (see Arrivals), and whether
+	// it is out: a listener that pumps the runtime can be handed the next
+	// message inside its own call, which gets an event of its own. Never
+	// kept under either define.
+	@:noCompletion private var __messageEvent:WebSocketMessageEvent = null;
+	@:noCompletion private var __messageEventOut:Bool = false;
+
+	/**
+		One whole message from the session, handed over directly
+		(`__onMessage`), with no event made between the two layers: valid
+		only during this call, which is the outermost to hand it out here.
+	**/
+	@:noCompletion private function __messageArrived(newData:ByteArray, isText:Bool):Void {
 		// One message, whole, to whoever asked for messages, and then not
 		// into the stream as well, which nobody would be reading and which
 		// would only grow. Every message used to go into the stream, so where
@@ -1120,7 +1136,26 @@ class WebSocket extends Socket {
 			// the frame parser filled is big-endian, for the frame's own
 			// fields, and a message used to arrive so whatever `endian` said.
 			newData.endian = endian;
-			dispatchEvent(new WebSocketMessageEvent(WebSocketMessageEvent.MESSAGE, newData, message.isText));
+			var pooled:Bool = Arrivals.REUSE && !__messageEventOut;
+			var event:WebSocketMessageEvent;
+			if (pooled) {
+				event = __messageEvent;
+				if (event == null) {
+					event = __messageEvent = new WebSocketMessageEvent(WebSocketMessageEvent.MESSAGE, newData, isText);
+				} else {
+					event.__refill(newData, isText);
+				}
+				__messageEventOut = true;
+			} else {
+				event = new WebSocketMessageEvent(WebSocketMessageEvent.MESSAGE, newData, isText);
+			}
+			try {
+				dispatchEvent(event);
+			} catch (e:Dynamic) {
+				__messageDispatched(event, pooled);
+				Arrivals.rethrow(e);
+			}
+			__messageDispatched(event, pooled);
 			return;
 		}
 
@@ -1133,9 +1168,19 @@ class WebSocket extends Socket {
 
 		// What has just arrived, as a plain socket reports it on every target;
 		// this reported everything unread, so a reader that had left one
-		// message in the stream was told the next was both together.
+		// message in the stream was told the next was both together. In the
+		// event a plain socket hands out too, filled again for each.
 		if (arrived > 0) {
-			dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, arrived, 0));
+			__dispatchPooledSocketData(arrived, 0);
+		}
+	}
+
+	@:noCompletion private inline function __messageDispatched(event:WebSocketMessageEvent, pooled:Bool):Void {
+		if (pooled) {
+			event.__release();
+			__messageEventOut = false;
+		} else {
+			Arrivals.doneWith(event);
 		}
 	}
 
@@ -1185,6 +1230,9 @@ class WebSocket extends Socket {
 		__webSocket.binaryType = "arraybuffer";
 		__webSocket.onopen = socket_onOpen;
 		__webSocket.onmessage = socket_onMessage;
+		// Messages come straight here, typed, with no event between the
+		// layers: one was made for each, and dispatched to this alone.
+		__webSocket.__onMessage = __messageArrived;
 		__webSocket.onclose = socket_onClose;
 		__webSocket.onerror = socket_onError;
 		__webSocket.onoverflow = __overflowCloses;

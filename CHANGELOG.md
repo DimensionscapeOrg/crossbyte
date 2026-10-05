@@ -52,6 +52,22 @@ Native builds need the `production` branch of the `dimensionscape/hxcpp`
 fork; the README says why. Each of these can need code changed, and its
 entry below says how:
 
+- An event, and a payload handed to a hook called once per arrival, is
+  valid only during the call it is handed to. A `DatagramSocket`, a
+  `ReliableDatagramSocket`, a `WebSocket` and a `Socket` hand the same
+  event and the same `ByteArray` out again for the next arrival, and empty
+  the bytes once the call returns, as `TurnClient.onData` and
+  `DtlsTransport.onMessage` do their payload. Code that keeps one past its
+  call, that queues events, or `event.data`, to handle at the next game
+  tick, say, reads empty bytes, or the next arrival's fields, where it
+  read what arrived. Keep a copy instead: `event.data.readBytes(mine)`,
+  the fields you need, or `event.clone()`, which copies the payload. Build
+  with `-D crossbyte_check_events` to find the line that keeps one, it
+  reads poison there, or reads nothing and throws, and with
+  `-D crossbyte_fresh_events` to have every arrival made afresh, as
+  before, until it copies. What is handed out other than as an event or
+  to such a hook stays yours to keep: an RPC argument, a message a decoder
+  returns, a request body, `NetConnection.onData`'s input.
 - Sockets, datagram sockets and WebSocket messages read and write in
   `ByteArray.defaultEndian`, little-endian unless changed, as every
   `ByteArray` does. A protocol in network byte order sets `endian` on its
@@ -436,6 +452,17 @@ entry below says how:
   id 0, as a pong is, which a session from before 1.0 passes over. A
   feature added after 1.0 is to be used towards a peer only once its hello
   has declared it, so later releases keep talking to this one.
+- `-D crossbyte_check_events` finds code that keeps an event, or the bytes
+  one carries, past the listener call it was handed to. Every event and
+  payload a socket hands out for an arrival is then made for it alone, and
+  killed when the call that handed it out returns, or throws: its bytes
+  overwritten with `0xDB`, its length and position set to 0, and the
+  event's fields cleared, strings null, numbers -1. So the line that kept
+  one reads poison, or reads nothing and throws end-of-file, instead of
+  quietly reading the next arrival. `-D crossbyte_fresh_events` makes
+  every one afresh too and kills nothing, as before 1.0: the workaround
+  for such code until it copies. `Event` says what is valid when, and how
+  to keep it.
 - `SequenceRing.remove(sequence)` and `SequenceRing.writeBits(from, out, at,
   byteCount)`, which make the ring a receive window as well as a history:
   what arrived past a gap is filed by sequence, taken out as the gap fills,
@@ -1887,6 +1914,47 @@ entry below says how:
   ns of CPU in all, where it cost 500 to 531. Under `-D crossbyte_check_events`
   each frame is a buffer of its own, poisoned once sent, and under
   `-D crossbyte_fresh_events` a buffer of its own left as it is.
+- What arrives is handed out in objects made once and filled again for
+  each arrival after: a `DatagramSocket`'s `DatagramSocketDataEvent` and
+  its `data`; a `ReliableDatagramSocket` session's event, the buffer a
+  fragmented message is put back together in, the payload a bundled frame
+  is copied into, and a stream's `ProgressEvent`; a `WebSocket`'s
+  `WebSocketMessageEvent`, the buffer each message is read into, and its
+  `ProgressEvent`; and the payloads `TurnClient.onData` and
+  `DtlsTransport.onMessage` are handed. One of each per socket, session or
+  connection, made when first needed, one that has received nothing
+  holds none, and taken afresh while it is out, so a listener that pumps
+  the runtime is handed the next arrival in objects of its own. Once its
+  call returns a payload is emptied, length and position 0, and storage it
+  grew past 16 KB is let go: what reuse holds for a connection is at most
+  that and its events. Measured over 1,000 connections, a WebSocket
+  connection holds about 390 bytes more for it natively (170 on the jvm)
+  and a reliable UDP session about 90 (100), so 4 MB and 1 MB at 10,000;
+  at worst, each connection's last message just under 16 KB, 16 KB more
+  each. A
+  100-byte datagram sent and received allocates nothing natively, where it
+  allocated 344 bytes, and 592 bytes on the jvm, where it allocated 824; a
+  200-byte reliable UDP message delivered and acknowledged 504 bytes
+  natively (1,112) and 1,095 on the jvm (1,519); a 100-byte WebSocket text
+  message echoed 264 bytes natively (1,096) and 672 on the jvm (1,072).
+  Under `-D crossbyte_fresh_events` or `-D crossbyte_check_events` every
+  arrival is made afresh, as before. See Upgrading.
+- A WebSocket message goes from the framing layer to the session by a
+  direct call, with no event made between them, and each frame is read
+  straight into the message it belongs to and unmasked there. Each frame
+  was read into a `ByteArray` of its own, which was copied into the
+  message unless it was the first.
+- A reliable UDP server whose `onDatagram` sees each datagram first copies
+  a frame's payload into one buffer of its own, filled again for each,
+  where each frame's had a `ByteArray` of its own.
+- `clone()` of a `DatagramSocketDataEvent` or a `WebSocketMessageEvent`
+  copies the bytes the event carries, where it shared them: a clone is the
+  way to keep a whole event past its listener call, and is safe to, with
+  bytes of its own at the same position and in the same byte order.
+- A `Socket` reuses its `connect`, `close`, `ioError` and `socketData`
+  events, as it did, now under the two defines above: each is made afresh
+  under either, and killed once dispatched under
+  `-D crossbyte_check_events`.
 - A WebSocket text message is written into its frame without being encoded
   into a buffer of its own first, natively when the string is held a byte a
   character and on the jvm when it is ASCII and no longer than 256
@@ -3565,6 +3633,45 @@ entry below says how:
   second at a time. With the defaults, 45 seconds between pings against a
   90-second timeout, a session could hear its peer's pongs 90 seconds
   apart and time out a peer that was answering.
+- `TypedWorker.run` (and `Worker.run`) hands the work a copy of a message
+  of bytes, made before it returns. The work read the caller's own bytes
+  on its thread later, as whatever they had become, a datagram's
+  `event.data` handed to a worker from its listener read empty or as the
+  next datagram, while the caller's thread could be writing them.
+- `File.data` after `save(bytes)` is a copy of what was saved, read from
+  position 0, as its doc says it is what was saved. It was the caller's
+  `ByteArray` itself: one reused after saving, or a datagram's
+  `event.data` saved from its listener, changed `data` into bytes that
+  were never saved, empty, in the datagram's case.
+- An `SQLiteStatement` executed on an asynchronous connection binds the
+  bytes its parameters held when `execute()` was called. Their map was
+  copied but the bytes were not, and the worker bound them later: a blob
+  stored from a datagram's `event.data` inside its listener was stored
+  empty, and bytes changed after `execute()` returned were stored changed.
+- `URLLoader.load` copies a request body of bytes as it begins, so what
+  goes out is the body as it was at the call. Natively and on the jvm it
+  was read later, on a load thread, and on Node handed to Node as a view
+  written once connected, and read again for a redirect that keeps it: a
+  datagram's `event.data` forwarded as a POST body from its listener went
+  out empty, or on Node as the next datagram's bytes over the first's,
+  and a body changed after `load` returned went out changed.
+- `HTTPRequestHandler.respondBytes` sends the body as it was at the call
+  when the body is past `maxOutputBufferSize` too. Such a body goes out
+  over later drains, and it went from the caller's own `ByteArray`: a
+  body changed or reused after `respondBytes` returned, for the next
+  response, or a payload valid only during the listener call that
+  answered with it, went out as its later bytes after the first burst.
+  It is now streamed from a copy, made only past the cap; below it the
+  writer's one copy is unchanged.
+- `NodeChannel.send` copies the message before it returns, as every other
+  send does. It held the caller's `ByteArray`, queued while the link was
+  down, and until the pass ended while it was up, to take back if the
+  link failed first, and sent what its bytes were by then: a buffer
+  reused after `send` went as its later contents, and a listener
+  forwarding what arrived (`channel.send(event.data)`) forwarded whatever
+  the payload held when the link came back. A pass now keeps what it
+  wrote in one buffer of the channel's, kept between passes up to 64 KB,
+  so the common case allocates nothing more.
 - Natively, a process whose threads end as it exits, a server spread
   over runtimes, which exits them after `drain()`, is one, no longer
   hangs there on Windows, nor crashes there when built with stack traces

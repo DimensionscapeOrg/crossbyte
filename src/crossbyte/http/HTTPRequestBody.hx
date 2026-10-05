@@ -29,7 +29,16 @@ abstract HTTPRequestBody(Either<String, Bytes>) {
 		return text == null ? null : new HTTPRequestBody(Left(text));
 	}
 
-	/** A body of bytes, sent as they are; null for null, as no body. */
+	/**
+		A body of bytes, sent as they are; null for null, as no body.
+
+		The bytes themselves, not a copy: the body is read when the request
+		goes out, and again for a redirect that keeps it. The client makes
+		one from a copy it took when the load began (`URLLoader.load`), so a
+		caller's bytes are its own again once `load` has returned; code that
+		makes a context itself keeps its bytes unchanged until the request
+		is done.
+	**/
 	@:from public static function fromBytes(bytes:Bytes):HTTPRequestBody {
 		return bytes == null ? null : new HTTPRequestBody(Right(bytes));
 	}

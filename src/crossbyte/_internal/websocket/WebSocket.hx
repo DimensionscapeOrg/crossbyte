@@ -18,6 +18,7 @@ import crossbyte._internal.system.timer.TimerScheduler;
 import crossbyte.core.CrossByte;
 import crossbyte.crypto.SecureRandom;
 import crossbyte.events.Event;
+import crossbyte.events._internal.Arrivals;
 import crossbyte.io.ByteArray;
 import crossbyte.net.WebSocketRequest;
 import crossbyte._internal.socket.BlockedError;
@@ -172,6 +173,21 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	private var __inputPosition:Int = 0;
 	private var __input:ByteArray;
 	private var __incomingMessageBuffer:ByteArray;
+	// The buffer messages are read into, kept from one to the next, up to
+	// Arrivals.KEEP, and filled again, so receiving makes no garbage; and
+	// whether it is out, handed over and not yet returned, when a message
+	// is read into one of its own. A listener that pumps the runtime can be
+	// handed the next message inside its own call. Never kept under either
+	// define.
+	private var __messageKept:ByteArray = null;
+	private var __messageOut:Bool = false;
+
+	/**
+		Handed each whole message directly, with no event made for it, in
+		place of `onmessage` where it is set: `crossbyte.net.WebSocket`'s
+		hand-off. `message` is valid only during the call; see `Arrivals`.
+	**/
+	@:noCompletion public var __onMessage:Null<(message:ByteArray, isText:Bool) -> Void> = null;
 	private var __incomingOpcode:Int = -1;
 	private var __incomingMessageSize:Int = 0;
 	private var __output:ByteArray;
@@ -488,8 +504,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		__pendingOutput = new ByteArray();
 		__pendingOutput.endian = BIG_ENDIAN;
 
-		__incomingMessageBuffer = new ByteArray();
-		__incomingMessageBuffer.endian = BIG_ENDIAN;
+		// Taken when a message's first frame arrives (see __takeMessage).
+		__incomingMessageBuffer = null;
 
 		__outgoingMessageBuffer = new ByteArray();
 		__outgoingMessageBuffer.endian = BIG_ENDIAN;
@@ -1481,18 +1497,17 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 					__input.position = keyAt + 4;
 				}
 
-				var payload:ByteArray = new ByteArray(payloadLength);
-				if (payloadLength > 0) {
-					__input.readBytes(payload, 0, payloadLength);
-				}
-				if (isMasked) {
-					__applyMask(payload, payloadLength, __input, keyAt);
-				}
-
-				payload.position = 0;
-
 				if (isControl) {
-					__handleControlFrame(opCode, payload);
+					// At most 125 bytes, and rare: a buffer of its own.
+					var control:ByteArray = new ByteArray(payloadLength);
+					if (payloadLength > 0) {
+						__input.readBytes(control, 0, payloadLength);
+					}
+					if (isMasked) {
+						__applyMask(control, payloadLength, __input, keyAt);
+					}
+					control.position = 0;
+					__handleControlFrame(opCode, control);
 					__validateInputPosition();
 					if (opCode == WebSocketOpcode.CLOSE || readyState == CLOSED) {
 						return;
@@ -1526,18 +1541,25 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 					return;
 				}
 
-				if (__incomingMessageBuffer == null || __incomingMessageBuffer.length == 0) {
-					// A message's first frame is the message so far, and is
-					// taken as it is: every message was copied from its
-					// payload into an empty buffer, a second copy of every
-					// byte received.
-					payload.endian = BIG_ENDIAN;
-					payload.position = payload.length;
-					__incomingMessageBuffer = payload;
-				} else {
-					__incomingMessageBuffer.position = __incomingMessageBuffer.length;
-					__incomingMessageBuffer.writeBytes(payload);
+				// Read straight into the message the frame belongs to, unmasked
+				// where it lands: a message's first frame takes the buffer it
+				// is read into (__takeMessage), and each after it is appended.
+				// Every frame was read into a ByteArray made for it, which was
+				// the message if it was the first, and was copied into the
+				// message and dropped if it was not.
+				if (opCode != WebSocketOpcode.CONTINUATION) {
+					__incomingMessageBuffer = __takeMessage();
 				}
+				var message:ByteArray = __incomingMessageBuffer;
+				var at:Int = message.length;
+				if (payloadLength > 0) {
+					Arrivals.room(message, at + payloadLength, isFinal);
+					__input.readBytes(message, at, payloadLength);
+					if (isMasked) {
+						__applyMask(message, payloadLength, __input, keyAt, at);
+					}
+				}
+				message.position = message.length;
 
 				if (isFinal) {
 					// Inflated whole, once the last frame is in: the size cap
@@ -1741,7 +1763,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	}
 
 	/**
-	 * XORs `length` bytes of `data` in place with the four-byte `mask`.
+	 * XORs `length` bytes of `data` from `dataAt` in place with the four-byte
+	 * mask at `maskAt` in `mask`: a frame read straight into the message it
+	 * belongs to is unmasked where it landed.
 	 *
 	 * Masking and unmasking are the same operation, so both directions use
 	 * this. It runs on `Bytes` rather than through `ByteArray`'s array
@@ -1754,8 +1778,10 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * accessor as the data, so both agree on byte order and word `i` lines
 	 * up with `mask[(i + j) & 3]` for every offset that is a multiple of
 	 * four, which is why only the trailing bytes need the scalar loop.
+	 * (Word `i` is counted from `dataAt`, so this holds wherever the frame
+	 * starts.)
 	 */
-	private static function __applyMask(data:Bytes, length:Int, mask:Bytes, maskAt:Int = 0):Void {
+	private static function __applyMask(data:Bytes, length:Int, mask:Bytes, maskAt:Int = 0, dataAt:Int = 0):Void {
 		if (length <= 0) {
 			return;
 		}
@@ -1765,12 +1791,12 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		var i:Int = 0;
 
 		while (i < wordEnd) {
-			data.setInt32(i, data.getInt32(i) ^ key);
+			data.setInt32(dataAt + i, data.getInt32(dataAt + i) ^ key);
 			i += 4;
 		}
 
 		while (i < length) {
-			data.set(i, data.get(i) ^ mask.get(maskAt + (i & 0x03)));
+			data.set(dataAt + i, data.get(dataAt + i) ^ mask.get(maskAt + (i & 0x03)));
 			i++;
 		}
 	}
@@ -1943,21 +1969,79 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		var message:ByteArray = __incomingMessageBuffer;
 		var isText:Bool = __incomingOpcode == WebSocketOpcode.TEXT;
 		message.position = 0;
-		// The next message's first frame becomes its buffer (see __onData),
-		// so none is made for it here.
+		// The next message's first frame takes a buffer of its own (see
+		// __onData), so this one is let go of here.
 		__incomingMessageBuffer = null;
 		__incomingOpcode = -1;
 		__incomingMessageSize = 0;
 
+		var kept:Bool = message == __messageKept;
+
 		// Nothing new is delivered once closing: RFC 6455 has a peer's data
 		// after its close frame, or after ours, belong to no one.
 		if (readyState != OPEN) {
+			if (kept) {
+				Arrivals.release(message);
+			}
 			return;
 		}
 
-		var event = new WebsocketEvent(WebsocketEvent.MESSAGE, this, message);
-		event.isText = isText;
-		onmessage(event);
+		// The outermost call that hands the message out: once it returns the
+		// message is done with, and whoever keeps it has copied it. The
+		// session's own is emptied for the next; one of its own is killed
+		// under the check.
+		if (kept) {
+			__messageOut = true;
+		}
+		try {
+			var direct = __onMessage;
+			if (direct != null) {
+				direct(message, isText);
+			} else {
+				var event = new WebsocketEvent(WebsocketEvent.MESSAGE, this, message);
+				event.isText = isText;
+				onmessage(event);
+			}
+		} catch (e:Dynamic) {
+			__delivered(message, kept);
+			Arrivals.rethrow(e);
+		}
+		__delivered(message, kept);
+	}
+
+	/**
+		The buffer a message's first frame is read into: the session's own,
+		emptied, unless it is out or reuse is off.
+	**/
+	private function __takeMessage():ByteArray {
+		var message:ByteArray;
+		if (Arrivals.REUSE && !__messageOut) {
+			message = __messageKept;
+			if (message == null) {
+				message = __messageKept = new ByteArray();
+			} else {
+				// All a listener left on it taken back: position, length,
+				// byte order and object encoding, as a ByteArray made for the
+				// message has them. The object encoding was kept, so after
+				// one listener read a JSON message every message read JSON.
+				Arrivals.reset(message);
+			}
+		} else {
+			message = new ByteArray();
+		}
+		// The frame's own fields are big-endian; the session reads the
+		// message in its own byte order once it is whole.
+		message.endian = BIG_ENDIAN;
+		return message;
+	}
+
+	private inline function __delivered(message:ByteArray, kept:Bool):Void {
+		if (kept) {
+			Arrivals.release(message);
+			__messageOut = false;
+		} else {
+			Arrivals.done(message);
+		}
 	}
 
 	private function __generateResponseHandshake(headers:StringMap<String>):Bytes {
@@ -2265,6 +2349,11 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 
 		stream.endian = BIG_ENDIAN;
+		// What arrived compressed is done with: the session's own buffer is
+		// emptied, not left holding it.
+		if (__incomingMessageBuffer != null && __incomingMessageBuffer == __messageKept) {
+			Arrivals.release(__incomingMessageBuffer);
+		}
 		__incomingMessageBuffer = stream;
 		__incomingCompressed = false;
 		return true;

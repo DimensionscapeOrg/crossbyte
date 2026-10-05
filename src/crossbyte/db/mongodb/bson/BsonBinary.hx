@@ -30,6 +30,13 @@ final class BsonBinary {
 	public var subtype(default, null):Int;
 	public var data(default, null):Bytes;
 
+	/**
+		Wraps `data`, kept as it is rather than copied, as `ObjectId` keeps
+		its bytes: what is encoded is what `data` holds when the document is
+		written. A payload a listener was handed for its call alone is
+		written during that call, or wrapped as a copy (see
+		`crossbyte.events.Event`).
+	**/
 	public function new(subtype:Int, data:Bytes) {
 		if (subtype < 0 || subtype > 0xFF) {
 			throw new ArgumentError('A BSON binary subtype is one byte, not $subtype.');

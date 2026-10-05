@@ -19,6 +19,7 @@ import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.TickEvent;
+import crossbyte.events._internal.Arrivals;
 import crossbyte.io.ByteArray;
 import crossbyte.events.ReliableDatagramSocketConnectEvent;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
@@ -185,6 +186,11 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		again. A CONNECT carrying more than one frame's worth is dropped
 		without asking, since no `connect` can send one.
 
+		The payload is valid only during the call, as an event's is: it is
+		the datagram's own bytes, which the socket fills with the next one.
+		Copy what you need; the admitted session keeps a copy of its own as
+		`connectPayload`. See `Event`.
+
 		Neither is proof of anything yet. The address is only a claim, UDP
 		lets a sender write whatever it likes in the source field, so use it
 		to drop traffic, not to accuse anyone: a block list or a `RateLimiter`
@@ -296,6 +302,11 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		client it drives itself, a probe, a second framing, which had no way
 		in: every datagram went to the reliable decoder, and anything that was
 		not a reliable frame was dropped as noise. `sendDatagram` is the way out.
+
+		`data` is valid only during the call, as an event's payload is,
+		whether the hook takes the datagram or not: the socket fills the same
+		`ByteArray` with the next one. To handle it later, copy the bytes out,
+		`data.readBytes(mine)`: before returning. See `Event`.
 
 		A hook that throws drops the datagram.
 	**/
@@ -1439,6 +1450,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		return ports != null ? ports.get(port) : null;
 	}
 
+	/** For tests: a datagram handed over as the socket hands one, from an event made for it. **/
 	@:noCompletion private function __onData(e:DatagramSocketDataEvent):Void {
 		__receiveDatagram(e.data, e.srcAddress, e.srcPort);
 	}
@@ -1448,8 +1460,9 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		`DatagramReceiver`.
 	**/
 	@:noCompletion public function __receiveDatagram(data:ByteArray, address:String, port:Int):Void {
-		// The datagram is the sessions' to take its payload from, unless a
-		// hook of the application's has seen it, which may have kept it.
+		// The datagram is the sessions' to take its payload from, unless
+		// something else has decoded it, a hook of the application's, or
+		// the STUN decode below, which reads it in place.
 		var owned:Bool = true;
 
 		// First, whatever the application routes itself.
@@ -1524,8 +1537,10 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 
 		@param via The relay it came through, which a session it opens answers
 		through; null for one straight off the socket.
-		@param owned Whether `data` was made for this datagram and nobody
-		else has it, so a frame may take it for its payload.
+		@param owned Whether nobody else reads `data` during this call, so a
+		frame may take it for its payload, moved down within it. Either way
+		`data` is valid only during the call: a session copies what it
+		keeps, a frame past a gap, a fragment, a CONNECT's payload.
 	**/
 	@:noCompletion private function __handleDatagram(data:ByteArray, address:String, port:Int, via:Null<TurnClient>, owned:Bool = false):Void {
 		var connection:ReliableDatagramSocket = __sessionAt(address, port);
@@ -1546,11 +1561,59 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		if (__decodedFrame == null) {
 			__decodedFrame = new ReliableDatagramFrame(ACK, 0, null, false);
 		}
-		var frame = ReliableDatagramProtocol.decodeInto(data, 0, data.length, owned, __decodedFrame);
+		// A payload that cannot be `data` itself is copied into the server's
+		// own, filled again for each, unless it is out.
+		var copy:ByteArray = null;
+		if (!owned && Arrivals.REUSE && !__copyOut) {
+			copy = __copy;
+			if (copy == null) {
+				copy = __copy = new ByteArray();
+			}
+		}
+		var frame = ReliableDatagramProtocol.decodeInto(data, 0, data.length, owned, __decodedFrame, false, copy);
 		if (frame == null) {
 			return;
 		}
 
+		// A payload copied out of `data` for this frame is this call's to
+		// finish with; one that is `data` itself is the socket's.
+		var payload:ByteArray = frame.payload;
+		if (payload == null || payload == data) {
+			__handleFrame(frame, connection, address, port, via);
+			return;
+		}
+		var pooled:Bool = payload == copy;
+		if (pooled) {
+			__copyOut = true;
+		}
+		try {
+			__handleFrame(frame, connection, address, port, via);
+		} catch (e:Dynamic) {
+			__handled(payload, pooled);
+			Arrivals.rethrow(e);
+		}
+		__handled(payload, pooled);
+	}
+
+	// The payload a frame is copied out into when it cannot take the
+	// datagram itself, an application's onDatagram, or the relay, saw it
+	// first, one for the server, filled again for each; and whether it is
+	// out, when a frame gets one of its own.
+	@:noCompletion private var __copy:ByteArray = null;
+	@:noCompletion private var __copyOut:Bool = false;
+
+	@:noCompletion private inline function __handled(payload:ByteArray, pooled:Bool):Void {
+		if (pooled) {
+			Arrivals.release(payload);
+			__copyOut = false;
+		} else {
+			Arrivals.done(payload);
+		}
+	}
+
+	/** One frame of `__handleDatagram`'s, for the session it is from, or for none yet. **/
+	@:noCompletion private function __handleFrame(frame:ReliableDatagramFrame, connection:Null<ReliableDatagramSocket>, address:String, port:Int,
+			via:Null<TurnClient>):Void {
 		if (connection != null) {
 			if (frame.type != ReliableDatagramFrameType.CONNECT || !__isAnotherAttempt(connection, frame)) {
 				connection.__acceptFrame(frame);
@@ -1594,6 +1657,12 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			return;
 		}
 
+		// Read before the hooks run: the frame is the one every datagram is
+		// decoded into, and a hook that pumps the runtime has the next one
+		// decoded over it.
+		var connectionId:Int = frame.sequence;
+		var bundles:Bool = frame.bundles;
+
 		var admitted:Bool = false;
 		try {
 			admitted = admit(address, port, payload);
@@ -1611,9 +1680,10 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 
 		payload.position = 0;
 		// Through the relay, when that is how the CONNECT came: the peer is
-		// somewhere nothing but the relay reaches.
-		connection = ReliableDatagramSocket.__createAccepted(__socket, address, port, this, socketMode, payload, congestion, frame.sequence, via);
-		connection.__peerTakesBundles = frame.bundles;
+		// somewhere nothing but the relay reaches. The session keeps a copy
+		// of the payload, which is the datagram's.
+		connection = ReliableDatagramSocket.__createAccepted(__socket, address, port, this, socketMode, payload, congestion, connectionId, via);
+		connection.__peerTakesBundles = bundles;
 		__file(address, port, connection);
 		__pending.set(__endpointKey(address, port), true);
 		__pendingCount++;
