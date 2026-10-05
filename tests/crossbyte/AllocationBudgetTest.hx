@@ -87,7 +87,7 @@ class AllocationBudgetTest extends utest.Test {
 	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [264, 264, 704], [400, 400, 944]);
 	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [504, 504, 1127], [696, 696, 1480]);
 	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 336], [8, 8, 488]);
-	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [0, 0, 592], [8, 8, 808]);
+	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [0, 0, 576], [8, 8, 784]);
 	// Over LinkedConnection, the in-memory pair, which copies each message
 	// into a buffer it keeps, as a socket's read does. A call's figure is its
 	// RPCResponse and what waiting on it takes; a frame costs nothing.

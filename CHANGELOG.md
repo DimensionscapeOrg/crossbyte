@@ -347,6 +347,16 @@ entry below says how:
   longer passes as one, build it from a literal.
 - A `Dynamic` value no longer converts to a `URL` on its own: cast it,
   `(value : String)`, or build `new URL(value)`.
+- `DatagramSocket.send` is `inline`, so a subclass can no longer override
+  it: an override does not compile. Every call compiles as it did, and
+  `socket.send` taken as a value, or called through `Reflect` or
+  `Dynamic`, works as before. Code that overrode `send`, to log, filter,
+  delay or drop datagrams, wraps the socket instead: a class of its own
+  that holds a `DatagramSocket`, does its work in a `send` of its own and
+  then calls the socket's, and hands the socket out (or forwards
+  `addEventListener`) for its events. Nothing in CrossByte sends through
+  an application's subclass: a reliable session, a server and the rtc
+  stack each make their own `DatagramSocket`.
 - `CrossByte.pump` is two inline overloads: every call compiles as it did,
   but `pump` is not a value any more, `var step = runtime.pump` and a
   call through `Dynamic` do not compile or find it. Wrap it,
@@ -1717,6 +1727,14 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- On the jvm `DatagramSocket.send` boxes nothing. Its optional arguments
+  were objects there, and `Integer` keeps only -128 to 127, so a send to a
+  real port allocated 16 bytes for the port, and 16 more each for a length
+  or an offset past 127: 184 to 216 bytes a send where 168 were the
+  socket's own (Oracle JRE 8 and Temurin 8 alike). `send` is an inline
+  forwarder now, over a method with every argument given; see Upgrading.
+  A 100-byte datagram sent and received allocates 576 bytes on the jvm,
+  where it allocated 592. Natively nothing was boxed.
 - On Linux, natively, a `DatagramSocket` that finds a second datagram
   waiting in a pass reads from then on in batches: one `recvmmsg` takes in
   up to 64, where each datagram took a `recvfrom` of its own and the pass
