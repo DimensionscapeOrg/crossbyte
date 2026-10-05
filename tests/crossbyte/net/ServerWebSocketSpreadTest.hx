@@ -355,7 +355,14 @@ class ServerWebSocketSpreadTest extends utest.Test {
 
 		var silent:Array<sys.net.Socket> = [for (_ in 0...4) SpreadSupport.connect(server.localPort)];
 		Assert.isTrue(SpreadSupport.waitFor(() -> server.pendingHandshakeCount() == 4, WAIT));
-		var perRuntime:Array<Int> = [for (replica in server.__spread.replicas) replica.__localPendingCount()];
+		// The server counts a session once it is accepted, a runtime once the
+		// session has reached it: until every one has arrived, the runtimes'
+		// counts read short of 4 (CI, eval and the jvm on Linux, 2026-10-04).
+		var perRuntime:Array<Int> = [];
+		SpreadSupport.waitFor(() -> {
+			perRuntime = [for (replica in server.__spread.replicas) replica.__localPendingCount()];
+			return perRuntime[0] + perRuntime[1] == 4;
+		}, WAIT);
 		Assert.same([2, 2], perRuntime, "the sessions upgrading were not shared between the runtimes");
 
 		SpreadSupport.on(acceptor, () -> server.stopAccepting());
