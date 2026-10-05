@@ -185,9 +185,10 @@ class EventDispatcherTest extends utest.Test {
 	}
 
 	public function testAListenerThatThrowsOutOfADispatchLeavesTheDispatcherCorrect():Void {
-		// The walk count stays raised when a listener's failure leaves
-		// dispatchEvent, so from then on every change copies, as every change
-		// once did, slower, and still right.
+		// A listener's failure leaves dispatchEvent with the walk over: the
+		// walk count stayed raised, so from then on every add and remove
+		// copied the dispatcher's listener array, still right, but each
+		// change paid for every listener, forever, after one throw.
 		var dispatcher = new EventDispatcher();
 		var calls:Array<String> = [];
 		var failing = true;
@@ -202,7 +203,13 @@ class EventDispatcherTest extends utest.Test {
 		});
 		dispatcher.addEventListener("demo", (_:Event) -> calls.push("second"));
 
-		Assert.raises(() -> dispatcher.dispatchEvent(new Event("demo")));
+		Assert.raises(() -> dispatcher.dispatchEvent(new Event("demo")), String);
+		Assert.equals(0, dispatcher.__walking, "the walk was left counted after a listener threw");
+		var walked = dispatcher.__eventMap.get("demo");
+		var other:Event->Void = (_:Event) -> {};
+		dispatcher.addEventListener("demo", other);
+		dispatcher.removeEventListener("demo", other);
+		Assert.isTrue(walked == dispatcher.__eventMap.get("demo"), "a change after the throw copied the listeners");
 		failing = false;
 
 		calls = [];

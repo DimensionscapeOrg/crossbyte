@@ -3516,6 +3516,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A listener that throws out of `dispatchEvent` no longer leaves its
+  dispatcher copying its listeners on every `addEventListener` and
+  `removeEventListener` after. A dispatch to two or more listeners counts
+  itself as walking the list, so that a change made meanwhile replaces the
+  list rather than changing it under the walk; a throw left the count
+  raised for good. Still right, but each change then cost every listener
+  the dispatcher had.
 - Reading an object bounds what it can make of its bytes. HXSF writes a
   run of nulls in an array as a count, so twelve bytes, `au100000000h`,
   made an array of 100,000,000 slots, 840 MB natively, through any
