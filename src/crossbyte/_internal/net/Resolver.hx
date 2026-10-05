@@ -154,11 +154,11 @@ class Resolver {
 		#if target.threaded
 		var waiter:Waiter = new Waiter(runtime, then, null);
 		var kept:Null<Answer> = __ask(host, waiter);
-		if (kept != null || waiter.answered) {
+		if (kept != null) {
 			// What was kept, or the refusal of a full queue: still later,
 			// never inside this call, as a lookup's answer is.
-			var found:Null<Host> = kept != null ? kept.host : null;
-			var failure:Null<String> = kept != null ? kept.failure : waiter.failure;
+			var found:Null<Host> = kept.host;
+			var failure:Null<String> = kept.failure;
 			runtime.__post(function():Void {
 				then(found, failure);
 			});
@@ -207,9 +207,6 @@ class Resolver {
 		var kept:Null<Answer> = __ask(host, waiter);
 		if (kept != null) {
 			return __hostOf(kept);
-		}
-		if (waiter.answered) {
-			throw waiter.failure;
 		}
 
 		var limit:Float = __timeout;
@@ -359,10 +356,16 @@ class Resolver {
 
 	#if target.threaded
 	/**
-		Files `waiter` for `name`. Answers what was kept for it, if anything;
-		otherwise adds it to the lookup under way or queues a new one, and
-		answers null, having answered `waiter` itself with a refusal if the
-		queue is full.
+		Files `waiter` for `name`. Answers what was kept for it, if anything,
+		or a refusal if the queue is full; otherwise adds it to the lookup
+		under way or queues a new one, and answers null.
+
+		The refusal is answered here, not on `waiter`: once filed, `waiter`
+		is a lookup thread's to answer, under the lock, and it may do so
+		before its caller is out of this call. The caller read whether it
+		had been answered without the lock, to catch the refusal, and a
+		thread answering sets that before what the answer is: a name that
+		had resolved threw `null`, and `resolve` called back twice.
 	**/
 	private static function __ask(name:String, waiter:Waiter):Null<Answer> {
 		var start:Bool = false;
@@ -376,10 +379,8 @@ class Resolver {
 		var lookup:Null<Lookup> = __pending.get(name);
 		if (lookup == null) {
 			if (__queue.length >= MAX_QUEUED) {
-				waiter.answered = true;
-				waiter.failure = "looking up " + name + " was refused: " + MAX_QUEUED + " names were already waiting to be looked up";
 				__lock.release();
-				return null;
+				return new Answer(null, "looking up " + name + " was refused: " + MAX_QUEUED + " names were already waiting to be looked up", 0);
 			}
 			lookup = new Lookup(name);
 			__pending.set(name, lookup);

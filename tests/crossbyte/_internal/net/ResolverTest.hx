@@ -349,6 +349,77 @@ class ResolverTest extends utest.Test {
 		});
 	}
 
+	/**
+		A name a lookup thread answers at once, while its caller is still
+		inside `lookup` or `resolve`, between filing the ask and starting
+		to wait, is answered once, and with the answer.
+
+		The caller read whether its ask had been answered without the lock,
+		to catch a full queue's refusal, and the thread answering sets that
+		before what the answer is: a caller that looked in between threw
+		`null` for a name that had resolved (natively on Linux and on the
+		jvm in CI, 2026-10-05), and `resolve` called back twice, with `null`
+		and no reason first.
+	**/
+	@:timeout(60000)
+	public function testANameAnsweredAtOnceIsAnsweredOnceAndRight(async:Async):Void {
+		var system = new FakeSystem();
+		Resolver.__system = system.lookUp;
+
+		var wrong:Array<String> = [];
+		for (_ in 0...ROUNDS) {
+			try {
+				var host:Host = Resolver.lookup(__name(), 5);
+				if (host == null || host.toString() != "127.0.0.1") {
+					wrong.push("lookup answered " + host);
+				}
+			} catch (e:Dynamic) {
+				wrong.push("lookup threw " + Std.string(e));
+			}
+			if (wrong.length >= 3) {
+				break;
+			}
+		}
+
+		// In batches the queue takes whole: past MAX_QUEUED waiting, a name
+		// is refused, rightly.
+		var answers:Map<String, Array<String>> = new Map();
+		var names:Array<String> = [];
+		function batch(left:Int):Void {
+			if (left <= 0) {
+				// A while longer, for a second answer to arrive.
+				NetPump.wait(0.2, () -> {
+					for (name in names) {
+						var those:Array<String> = answers.get(name);
+						if (those.length != 1 || those[0] != "127.0.0.1") {
+							wrong.push("resolve answered " + those);
+							if (wrong.length >= 6) {
+								break;
+							}
+						}
+					}
+					Assert.same([], wrong, "a name answered at once was answered wrongly: " + wrong);
+					async.done();
+				});
+				return;
+			}
+			var these:Array<String> = [for (_ in 0...BATCH) __name()];
+			for (name in these) {
+				var those:Array<String> = [];
+				answers.set(name, those);
+				names.push(name);
+				Resolver.resolve(name, (host, why) -> those.push(host != null ? host.toString() : "failed: " + why));
+			}
+			NetPump.until(() -> Lambda.foreach(these, name -> answers.get(name).length > 0), 10.0, _ -> batch(left - BATCH));
+		}
+		batch(ROUNDS);
+	}
+
+	// Asks of each kind: the race wants many, and each costs a hand-off to
+	// a lookup thread and back.
+	private static inline var ROUNDS:Int = 3000;
+	private static inline var BATCH:Int = 100;
+
 	private static function __failureOf(name:String):Null<String> {
 		try {
 			Resolver.lookup(name, 5);
