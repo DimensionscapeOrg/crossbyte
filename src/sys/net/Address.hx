@@ -32,6 +32,17 @@ class Address {
 
 	private var ipv6(default, null):haxe.io.BytesData;
 
+	#if ((java || jvm) && !macro)
+	// The jvm's form of this address, made by UdpSocket for the first send
+	// to it and kept for the next, with the host, port and IPv6 bytes it was
+	// made from: compared by value, so a change to any of them makes another
+	// rather than sending to where this used to point.
+	@:noCompletion public var __jvmAddress:Null<java.net.InetSocketAddress> = null;
+	@:noCompletion public var __jvmHost:Int = 0;
+	@:noCompletion public var __jvmPort:Int = 0;
+	@:noCompletion public var __jvmIpv6:Null<haxe.io.BytesData> = null;
+	#end
+
 	public function new() {
 		host = 0;
 		port = 0;

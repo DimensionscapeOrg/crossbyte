@@ -412,7 +412,10 @@ saying so: `BCrypt.hash`, PKCE, WebSocket clients, STUN, TURN, ICE and WebRTC.
 Both are IPv4 only. `LocalConnection`, `SharedChannel` and `SharedObject` and
 the libsodium, BLAKE3 and mbedTLS crypto are native features only; ALPN (so
 HTTP/2 over TLS) is native or jvm; and a datagram socket's buffers cannot be sized (`DatagramSocket.bufferSizeSupported`
-is false: they read 0 and setting them throws). On Linux, hl polls its sockets
+is false: they read 0 and setting them throws), so on macOS neither sends a
+datagram past 9,216 bytes, the send buffer it starts with, and a datagram
+refused for its size is named so only past 65,527 bytes, since both report
+every failed send alike. On Linux, hl polls its sockets
 through `select`, which cannot watch a descriptor numbered 1024 or above, and
 hl has no poll natives to move to: a server there fails its polling once that
 many descriptors are open. neko polls through its own natives and is not held

@@ -347,6 +347,16 @@ entry below says how:
   longer passes as one, build it from a literal.
 - A `Dynamic` value no longer converts to a `URL` on its own: cast it,
   `(value : String)`, or build `new URL(value)`.
+- `DatagramSocket.send` is `inline`, so a subclass can no longer override
+  it: an override does not compile. Every call compiles as it did, and
+  `socket.send` taken as a value, or called through `Reflect` or
+  `Dynamic`, works as before. Code that overrode `send`, to log, filter,
+  delay or drop datagrams, wraps the socket instead: a class of its own
+  that holds a `DatagramSocket`, does its work in a `send` of its own and
+  then calls the socket's, and hands the socket out (or forwards
+  `addEventListener`) for its events. Nothing in CrossByte sends through
+  an application's subclass: a reliable session, a server and the rtc
+  stack each make their own `DatagramSocket`.
 - `CrossByte.pump` is two inline overloads: every call compiles as it did,
   but `pump` is not a value any more, `var step = runtime.pump` and a
   call through `Dynamic` do not compile or find it. Wrap it,
@@ -1717,6 +1727,48 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- On the jvm a datagram socket allocates nothing to send a datagram, and
+  nothing to read one from the peer the last came from. Each send made a
+  view of the bytes (48 bytes) and the destination afresh, an
+  `InetSocketAddress`, an `InetAddress`, their holders and the address's
+  bytes, 120 more, and each read a view of the read buffer and a copy of
+  the sender's address bytes. A send now copies into a direct buffer the
+  socket keeps (the channel copied a heap buffer into one of its own
+  anyway), the destination is kept with the `sys.net.Address` it was made
+  from and made again only when its host, port or IPv6 bytes change, a
+  read reuses its view, and the sender's address is read once a run of
+  datagrams from it. This is reliable UDP's send and receive on the jvm
+  too: a 100-byte datagram sent and received allocates 312 bytes there,
+  where it allocated 576, and a reliable UDP message delivered and
+  acknowledged 464, where it allocated 992 (Oracle JRE 8; Temurin 8 248
+  and 464). A socket that sends holds a direct buffer the size of the
+  largest datagram it has sent, 2 KB at least.
+- On the jvm `DatagramSocket.send` boxes nothing. Its optional arguments
+  were objects there, and `Integer` keeps only -128 to 127, so a send to a
+  real port allocated 16 bytes for the port, and 16 more each for a length
+  or an offset past 127: 184 to 216 bytes a send where 168 were the
+  socket's own (Oracle JRE 8 and Temurin 8 alike). `send` is an inline
+  forwarder now, over a method with every argument given; see Upgrading.
+  A 100-byte datagram sent and received allocates 576 bytes on the jvm,
+  where it allocated 592. Natively nothing was boxed.
+- On Linux, natively, a `DatagramSocket` that finds a second datagram
+  waiting in a pass reads from then on in batches: one `recvmmsg` takes in
+  up to 64, where each datagram took a `recvfrom` of its own and the pass
+  one more to find the socket empty. Each is still handed out one at a
+  time, in the socket's reused payload, under the same 1,024-a-pass share;
+  datagrams a batch holds when a listener throws or stops the socket
+  receiving are handed out next, before anything read after them. A
+  reliable UDP server reading once a frame, as the `DEFAULT` loop does,
+  made 95% fewer system calls for its datagrams and spent 6 to 9% less
+  processor time, 5% less in the kernel, at 200 and 1,000 clients x 30 Hz
+  (WSL, 11 interleaved runs each); one woken for each arrival, as the
+  `POLL` loop is, reads a datagram or two at a time, made a third fewer
+  calls and spent the same. A batch's slots are 64 KB, past the largest
+  datagram, so none is cut short, and mapped, so the system commits only
+  the pages datagrams land in: a busy socket holds at most 4 MB of address
+  space and, for datagrams up to 4 KB, 256 KB of memory, until `close()`;
+  a socket that never has two datagrams waiting holds none. macOS, Windows
+  and the other targets read one datagram a call, as before.
 - `SQLiteConnection.busyTimeout` is 5,000 milliseconds as a connection
   opens, `DEFAULT_BUSY_TIMEOUT`, where it was SQLite's own 0: a write
   while another connection, in this process or another, held the write
@@ -3528,6 +3580,36 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On neko and HashLink on Linux, a `DatagramSocket` is never given a port
+  another socket holds. Their binds set SO_REUSEADDR, with which Linux lets
+  two datagram sockets share a port: a bind to port 0 could be handed one
+  already held, 18 in 1,000 binds, and the one of the two that got the
+  datagrams was not always the one they were for, and a bind to a port in
+  use succeeded. hxcpp's bind stopped setting it in round two; these
+  natives cannot be told not to, so the port is checked against
+  /proc/net/udp once bound: a port held is refused with an `IOError`, as
+  it is on every other target, and port 0 handed one is asked for again on
+  a socket of its own. It was a neko CI failure,
+  `testInterleavedSendersAreEachNamed` receiving none of six datagrams.
+- A datagram too large to send says so. `DatagramSocket.send`, and the
+  `ioError` event, said "Socket operation failed" for one, as for any other
+  failure, all CI's macOS leg reported for a 20,000-byte datagram, which
+  macOS refuses past the socket's send buffer, 9,216 bytes unless raised.
+  They now say "a datagram of N bytes is larger than this socket can send
+  (sendBufferSize M)", with UDP's limits: 65,507 bytes over IPv4 and
+  65,527 over IPv6 everywhere, and on macOS the send buffer. Natively, on
+  the jvm and on Node (as the event Node reports a send's failure in);
+  HashLink and Neko report every failed send alike, so there only a
+  datagram past 65,527 bytes is named so. A failed send on HashLink is
+  told to the `ioError` listeners too: it came as an `Eof`, which only the
+  caller heard. `send` and `sendBufferSize` say what the largest datagram
+  is on each system and how to raise it.
+- On Node, a `DatagramSocket`'s `receiveBufferSize` or `sendBufferSize`
+  set between `bind()` and Node binding the socket, `bind()` returns
+  first, is applied once Node has. It was applied to a handle with no
+  socket yet, which refused it (ENOTSOCK), and the `ioError` reporting
+  that also stopped the socket receiving. A size Node refuses is still
+  reported, and the socket goes on receiving.
 - A listener that throws out of `dispatchEvent` no longer leaves its
   dispatcher copying its listeners on every `addEventListener` and
   `removeEventListener` after. A dispatch to two or more listeners counts
