@@ -175,7 +175,15 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		return this.expose();
 	}
 
-	/** Sends a payload over the wrapped transport. */
+	/**
+		Sends `data`, all of its `length` bytes, over the wrapped transport.
+
+		`data` is the caller's again as soon as this returns: every transport
+		copies what it keeps to send later, so a buffer may be written over
+		and sent again at once, and a payload a listener was handed for its
+		call alone, a datagram's `event.data`, may be sent on from inside
+		it. See `INetConnection.send`.
+	**/
 	public inline function send(data:ByteArray):Void {
 		this.send(data);
 	}
