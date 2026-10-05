@@ -1410,10 +1410,10 @@ class DatagramSocketTest extends utest.Test {
 	}
 
 	private static function sendThroughDynamicConnected(socket:Dynamic, bytes:ByteArray):Void {
-		#if neko
-		// neko calls a function with exactly the arguments it takes, so one
-		// left out through Dynamic is an "Invalid call" there, whatever the
-		// function: it always was.
+		#if (neko || hl)
+		// neko and HashLink call any function through Dynamic with exactly
+		// the arguments it takes, so one left out is an error there:
+		// "Invalid call" on neko, "Missing arguments" on HashLink.
 		socket.send(bytes, 0, 0, null, 0);
 		#else
 		socket.send(bytes);
