@@ -26,7 +26,7 @@ import crossbyte.sys.Worker;
 import haxe.Json;
 import haxe.Serializer;
 import crossbyte._internal.serial.BoundedUnserializer;
-import crossbyte._internal.serial.JsonNesting;
+import crossbyte._internal.serial.BoundedJson;
 import haxe.io.Bytes;
 import haxe.io.BytesInput;
 import haxe.io.BytesOutput;
@@ -954,13 +954,11 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 
 	// Bounded as ByteArray's readObject is: a file's object can be anyone's,
 	// and natively one nested a few thousand deep overflowed the stack
-	// reading it and ended the process.
+	// reading it and ended the process. In nesting and in values, in either
+	// text encoding: a JSON one was bounded in nesting only.
 	@:noCompletion private function __parseObject(text:String):Dynamic {
 		if (objectEncoding == JSON) {
-			if (!JsonNesting.within(text, BoundedUnserializer.LIMIT)) {
-				throw new IOError('nested more than ${BoundedUnserializer.LIMIT} levels deep');
-			}
-			return Json.parse(text);
+			return BoundedJson.parse(text);
 		}
 		return BoundedUnserializer.run(text);
 	}

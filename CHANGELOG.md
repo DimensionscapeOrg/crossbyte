@@ -3532,7 +3532,7 @@ entry below says how:
   buffer or a vector of whatever length the bytes claimed before reading
   any of it: eight bytes asked for 2 GB. An object holding more than
   `ByteArray.maxObjectValues` values is refused with an `IOError`, in
-  HXSF, JSON and AMF; a negative length, or a run of no nulls, as
+  HXSF, JSON and AMF, and from a `FileStream` as from a socket; a negative length, or a run of no nulls, as
   malformed. AMF reads text, bytes and vectors as they arrive, an AMF
   object that runs out is an `EOFError` with `position` left where it
   was, as HXSF's and JSON's are, where it was a `haxe.io.Eof`, and AMF3
