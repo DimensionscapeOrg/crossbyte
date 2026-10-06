@@ -310,7 +310,15 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 
 		A cookie is no larger than the CONNECT it answers, a 1.0 peer pads
 		its CONNECT to whatever may be sent back, so it gives a sender who
-		names someone else's address nothing it could not send itself. It
+		names someone else's address nothing it could not send itself.
+
+		While joins are validated, every CONNECT is answered with a cookie,
+		without a limit, as SYN cookies, QUIC's Retry and DTLS's
+		HelloVerifyRequest answer every attempt. So what a flood past the
+		threshold costs the server is a keyed hash and a send per datagram,
+		about 14 microseconds on Windows, where a CONNECT past
+		`maxPendingConnections` was dropped for about 0.1, and that is the
+		price of real players still joining during the flood. It
 		is good for 10 to 20 seconds: the key it is made with is new every
 		10 seconds, and the one before is still accepted. Within that time
 		the same address, port and connection id can return it again, which
