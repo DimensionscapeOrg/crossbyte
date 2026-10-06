@@ -3680,6 +3680,17 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `DatagramSocket` keeps receiving when its datagrams' destinations
+  turn out unreachable. Windows reports a datagram's ICMP "port
+  unreachable" as a failed read on the socket that sent it, natively, and
+  the socket counted those as failed reads: at the 64th in a row it stopped
+  receiving for good. So anyone could deafen a reliable UDP server on
+  Windows to every session it had, 64 sockets each sending it a frame and
+  closing, its resets to them coming back that way. The reports are now
+  switched off on every datagram socket natively, and a read that meets one
+  anyway, or on another system a connected socket's refusal, is skipped
+  rather than counted. The jvm, Node, neko and the interpreter were not
+  affected.
 - On neko and HashLink on Linux, a `DatagramSocket` is never given a port
   another socket holds. Their binds set SO_REUSEADDR, with which Linux lets
   two datagram sockets share a port: a bind to port 0 could be handed one

@@ -1470,6 +1470,14 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 						__batchRefused = true;
 						continue;
 					}
+					if (taken == -3) {
+						// An earlier datagram's ICMP error, a connected
+						// socket's: skipped, as a single read skips it, and
+						// read again.
+						processed++;
+						asked = false;
+						continue;
+					}
 					if (taken < 0) {
 						return;
 					}
@@ -1501,6 +1509,19 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 					}
 					__onReadFailed(Std.string(e));
 					return;
+				}
+
+				// An earlier datagram's ICMP error, not a datagram (-3): its
+				// destination's port was unreachable. Nothing about this
+				// socket, so not a failed read. Counted as failed reads, 64 of
+				// them in a row stopped the socket receiving for good, on
+				// Windows, which reports them unless told not to, a reliable
+				// UDP server whose resets to strangers came back that way went
+				// deaf to every session. Skipped, and the pass reads on,
+				// within its share.
+				if (bytesReady == -3) {
+					processed++;
+					continue;
 				}
 
 				// Nothing waiting (-1), or the empty read readFrom ended the
@@ -2118,6 +2139,12 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		try {
 			__socket.setFastSend(true);
 		} catch (_:Dynamic) {}
+		#if cpp
+		// Windows reports a datagram's ICMP "port unreachable" as a failed
+		// read on the socket that sent it, unless told not to; see
+		// registryOnReadable.
+		crossbyte._internal.net.NativeSocketAddress.ignoreUnreachable(@:privateAccess __socket.__s);
+		#end
 		__socket.custom = this;
 		__closed = false;
 	}

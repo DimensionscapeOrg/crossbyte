@@ -384,6 +384,23 @@ static bool crossbyte_would_block() {
 #endif
 }
 
+// True when the last receive failed with an earlier datagram's ICMP error
+// rather than anything about this socket: on Windows a "port unreachable"
+// (WSAECONNRESET) or "TTL expired" (WSAENETRESET) for something this socket
+// sent, reported on whichever read comes next unless switched off (see
+// crossbyte_udp_ignore_unreachable); elsewhere the same for a connected
+// socket (ECONNREFUSED, and the unreachable host or network). Nothing was
+// received, and the socket is as good as before. Read, as the above,
+// inside the GC-free zone.
+static bool crossbyte_unreachable_report() {
+#if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
+	int error = WSAGetLastError();
+	return error == WSAECONNRESET || error == WSAENETRESET;
+#else
+	return errno == ECONNREFUSED || errno == EHOSTUNREACH || errno == ENETUNREACH;
+#endif
+}
+
 // True when the last send failed because its datagram is larger than the
 // socket can send (EMSGSIZE): past UDP's 65,507 bytes over IPv4 or 65,527
 // over IPv6 anywhere, and on macOS past the socket's send buffer, 9,216
@@ -549,9 +566,13 @@ int crossbyte_socket_try_recv_from(Dynamic socket, Array<unsigned char> buffer, 
 #endif
 	if (received == SOCKET_ERROR) {
 		bool wouldBlock = crossbyte_would_block();
+		bool unreachable = crossbyte_unreachable_report();
 		hx::ExitGCFreeZone();
 		if (wouldBlock) {
 			return -1;
+		}
+		if (unreachable) {
+			return -3;
 		}
 		hx::Throw(HX_CSTRING("Socket operation failed"));
 	}
@@ -559,6 +580,25 @@ int crossbyte_socket_try_recv_from(Dynamic socket, Array<unsigned char> buffer, 
 
 	crossbyte_sockaddr_to_dynamic(reinterpret_cast<sockaddr*>(&nativeAddress), nativeAddressLength, address);
 	return received;
+}
+
+/**
+	Stops Windows reporting an earlier datagram's ICMP error, a "port
+	unreachable" for something this socket sent, or "TTL expired", as a
+	failed receive on this socket: it does so unless told not to, on
+	whichever read comes next, though nothing is wrong with the socket. Elsewhere
+	an unconnected datagram socket is told nothing of them. Nothing to do,
+	and nothing reported, where the system refuses.
+**/
+void crossbyte_udp_ignore_unreachable(Dynamic socket) {
+#if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
+	SOCKET nativeSocket = crossbyte_val_sock(socket);
+	BOOL report = FALSE;
+	DWORD returned = 0;
+	// SIO_UDP_CONNRESET and SIO_UDP_NETRESET, from mstcpip.h.
+	WSAIoctl(nativeSocket, _WSAIOW(IOC_VENDOR, 12), &report, sizeof(report), 0, 0, &returned, 0, 0);
+	WSAIoctl(nativeSocket, _WSAIOW(IOC_VENDOR, 15), &report, sizeof(report), 0, 0, &returned, 0, 0);
+#endif
 }
 
 /**
@@ -968,12 +1008,16 @@ int crossbyte_udp_batch_receive(Dynamic socket, Dynamic batch, int max) {
 	if (received < 0) {
 		bool wouldBlock = crossbyte_would_block();
 		bool missing = errno == ENOSYS;
+		bool unreachable = crossbyte_unreachable_report();
 		hx::ExitGCFreeZone();
 		if (wouldBlock) {
 			return -1;
 		}
 		if (missing) {
 			return -2;
+		}
+		if (unreachable) {
+			return -3;
 		}
 		hx::Throw(HX_CSTRING("Socket operation failed"));
 	}

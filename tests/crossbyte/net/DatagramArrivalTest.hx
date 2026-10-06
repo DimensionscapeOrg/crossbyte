@@ -398,6 +398,68 @@ class DatagramArrivalTest extends utest.Test {
 		return bytes;
 	}
 
+	/**
+		A socket whose datagrams went to ports nobody holds still hears what
+		comes next.
+
+		Windows reports a datagram's ICMP "port unreachable" as a failed read
+		on the socket that sent it, and the socket counted those as failed
+		reads: at the 64th in a row it stopped receiving for good. So a
+		reliable UDP server whose resets to strangers came back that way went
+		deaf to every session it had, 64 sockets each sending it a frame and
+		closing were enough (found by RUDP-1, 2026-10-06).
+	**/
+	@:timeout(20000)
+	public function testDatagramsToPortsNobodyHoldsLeaveTheSocketHearing(async:Async):Void {
+		var pair = Pair.make(async);
+		if (pair == null) return;
+
+		var errors:Array<String> = [];
+		var seen:Array<String> = [];
+		pair.server.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent):Void {
+			errors.push(e.text);
+		});
+		pair.server.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
+			e.data.position = 0;
+			seen.push(e.data.readUTFBytes(e.data.length));
+		});
+
+		// Ports nobody holds: bound here, then let go.
+		var freed:Array<DatagramSocket> = [for (_ in 0...UNREACHED) new DatagramSocket()];
+		for (socket in freed) {
+			socket.bind(0, "127.0.0.1");
+		}
+		pair.whenReady(function():Void {
+			NetPump.until(() -> Lambda.foreach(freed, socket -> socket.localPort > 0), 5.0, function(_) {
+				var ports:Array<Int> = [for (socket in freed) socket.localPort];
+				for (socket in freed) {
+					socket.close();
+				}
+				var probe:ByteArray = new ByteArray();
+				probe.writeUTFBytes("anyone?");
+				for (port in ports) {
+					pair.server.send(probe, 0, 0, "127.0.0.1", port);
+				}
+
+				// Time for what comes back to come back, and be read.
+				NetPump.wait(0.5, function():Void {
+					var alive:ByteArray = new ByteArray();
+					alive.writeUTFBytes("alive");
+					pair.client.send(alive, 0, 0, "127.0.0.1", pair.server.localPort);
+					NetPump.until(() -> seen.length > 0, 5.0, function(_) {
+						Assert.same(["alive"], seen, "the socket stopped hearing after sending to ports nobody holds");
+						Assert.same([], errors, "the socket reported its sends' unreachable ports as its own failure");
+						pair.close();
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
+	// More than the 64 failed reads in a row a socket gave up at.
+	private static inline var UNREACHED:Int = 100;
+
 	/** The first byte not as `numbered` made it, -1 for none, -2 for the wrong length. **/
 	private static function wrongByte(bytes:ByteArray, length:Int, seed:Int):Int {
 		if (bytes == null || bytes.length != length) {
