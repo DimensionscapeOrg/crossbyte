@@ -482,7 +482,19 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		runtime may be one of them. A runtime that has exited is passed over,
 		and once every one has, each connection is closed as it is accepted
 		and that is logged once. The server never exits these runtimes: they
-		are the caller's.
+		are the caller's. One that exits while the server is open gives up
+		its share: what is still in its handshake there is dropped and
+		closed, and the places its connections held under `maxConnections`
+		are given back.
+
+		A runtime takes up what it is handed at its next pass, so only one
+		that is stalled, a handler that blocks, a long collection, falls
+		behind. One with 256 connections handed to it and not yet taken up
+		is passed over for the next in turn, and once every runtime is that
+		far behind, each connection is closed as it is accepted, counted in
+		`refusedConnections`, and that is logged once: a stalled runtime
+		holds a bounded number of sockets, where it was handed every
+		connection that came its way for as long as the stall lasted.
 
 		`admit`, `maxAcceptsPerTick` and `maxPendingHandshakes` hold for the
 		server as a whole: `admit` is asked, and `maxAcceptsPerTick` counted,
@@ -1627,6 +1639,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			spread.replicas.push(__makeReplica(runtime, spread));
 		}
 		__spread = spread;
+		spread.watchExits();
 		#end
 	}
 	#end
@@ -1841,6 +1854,25 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	}
 
 	/**
+		On a replica, on its runtime, as the runtime exits: it stops, as it
+		does when the front stops, what is still in its handshake here is
+		dropped and its socket closed, and the front's count of handshakes
+		told, and the places its open connections hold under
+		`maxConnections` are given back, since they will never be served
+		again.
+	**/
+	@:noCompletion public function __runtimeExited():Void {
+		if (!__closed) {
+			__stopReplica();
+		}
+		var shared:ServerSpread = __shared;
+		if (shared != null && __openCount > 0) {
+			shared.releaseConnections(__openCount);
+			__openCount = 0;
+		}
+	}
+
+	/**
 		A replica's own listener, with `reusePort`, closed once it has left
 		the poll set, which `__detachAcceptTick` takes it out of first.
 	**/
@@ -1886,8 +1918,13 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			spread.addInFlight(1, maxPendingHandshakes);
 		}
 		var address:String = crossbyte._internal.net.IPv6.compress(peer.host.toString());
-		if (spread.handOff(socket, peer, address)) {
+		var outcome:Int = spread.handOff(socket, peer, address);
+		if (outcome == ServerSpread.HANDED) {
 			return;
+		}
+		if (outcome == ServerSpread.ALL_FULL) {
+			// Every runtime that far behind: a limit of the server's.
+			__refusedConnections++;
 		}
 
 		if (tracked) {
@@ -1979,6 +2016,8 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			if (!__shared.claimConnection(limit)) {
 				return false;
 			}
+			// This runtime's share too, given back should the runtime exit.
+			__openCount++;
 			socket.__openCounter = this;
 			return true;
 		}
@@ -2020,7 +2059,10 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	@:noCompletion public function __releaseOpen():Void {
 		#if (target.threaded && !js)
 		if (__shared != null) {
-			__shared.releaseConnections(1);
+			if (__openCount > 0) {
+				__openCount--;
+				__shared.releaseConnections(1);
+			}
 			return;
 		}
 		#end

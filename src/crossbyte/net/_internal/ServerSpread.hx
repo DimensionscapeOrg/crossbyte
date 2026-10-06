@@ -4,6 +4,7 @@ package crossbyte.net._internal;
 // threads of their own, which neither has.
 #if (!js && target.threaded)
 import crossbyte.core.CrossByte;
+import crossbyte.events.Event;
 import crossbyte.net.ServerSocket;
 import sys.net.Host;
 import sys.net.Socket;
@@ -70,11 +71,37 @@ class ServerSpread {
 	// that is said once rather than for every one.
 	@:noCompletion private var __refusalSaid:Bool = false;
 
+	// Connections handed to each runtime and not yet taken up there, by
+	// index; and whether a refusal for every runtime being full has been
+	// said since one last had room.
+	@:noCompletion private var __waiting:Array<Int>;
+	@:noCompletion private var __fullSaid:Bool = false;
+
+	/**
+		The most connections one runtime may have handed to it and not yet
+		taken up, past which the next in turn is tried: four wakes' worth of
+		`maxAcceptsPerTick`. A runtime takes up what it is handed at its
+		next pass, so only one that is stalled, a handler that blocks, a
+		long collection, comes near it. A variable only so a test can
+		make it small.
+	**/
+	@:noCompletion public static var MAX_WAITING:Int = 256;
+
+	/** What `handOff` answers: handed over; refused, no runtime live; refused, every one full. **/
+	public static inline var HANDED:Int = 0;
+	public static inline var NO_RUNTIME:Int = 1;
+	public static inline var ALL_FULL:Int = 2;
+
+	// What each runtime's EXIT is answered with while the server is open,
+	// by index; see watchExits.
+	@:noCompletion private var __exitWatches:Array<Event->Void> = null;
+
 	public function new(front:ServerSocket, runtimes:Array<CrossByte>, owned:Bool) {
 		this.front = front;
 		this.runtimes = runtimes;
 		this.owned = owned;
 		replicas = [];
+		__waiting = [for (_ in runtimes) 0];
 	}
 
 	/**
@@ -87,11 +114,18 @@ class ServerSpread {
 
 	/**
 		Hands `socket`, just accepted on the front's runtime, to the runtime
-		`selectRuntime` names or to the next live one in turn. False when no
-		runtime would take it, which leaves the socket to the caller to close.
-		A `selectRuntime` that throws refuses the connection, as `admit` does.
+		`selectRuntime` names or to the next live one in turn, passing over
+		one with `MAX_WAITING` handed to it and not yet taken up. `HANDED`,
+		or why not, `NO_RUNTIME` when none is live, `ALL_FULL` when every
+		live one is that far behind, which leaves the socket to the caller
+		to close. A `selectRuntime` that throws refuses the connection, as
+		`admit` does, and answers `NO_RUNTIME`.
+
+		Without the bound a runtime that stalled was handed every connection
+		that came its way in turn, each a socket and its descriptor held in
+		its post queue, for as long as the stall lasted.
 	**/
-	public function handOff(socket:Socket, peer:{host:Host, port:Int}, address:String):Bool {
+	public function handOff(socket:Socket, peer:{host:Host, port:Int}, address:String):Int {
 		var chosen:Int = -1;
 		try {
 			var asked:Null<CrossByte> = front.selectRuntime(address, peer.port);
@@ -99,36 +133,100 @@ class ServerSpread {
 				chosen = runtimes.indexOf(asked);
 			}
 		} catch (_:Dynamic) {
-			return false;
+			return NO_RUNTIME;
 		}
 
-		// The runtime asked for, if it is live; then each in turn, starting
-		// from the next. One that has exited, or exits between the check and
-		// the post, is passed over.
-		if (chosen >= 0 && __handTo(chosen, socket, peer)) {
-			return true;
+		// The runtime asked for, if it is live and has room; then each in
+		// turn, starting from the next. One that has exited, or exits
+		// between the check and the post, is passed over, and so is one with
+		// as many waiting as it may have.
+		var live:Bool = false;
+		if (chosen >= 0) {
+			var outcome:Int = __handTo(chosen, socket, peer);
+			if (outcome == HANDED) {
+				return HANDED;
+			}
+			live = live || outcome == ALL_FULL;
 		}
 
 		var count:Int = replicas.length;
 		for (_ in 0...count) {
 			var index:Int = __next;
 			__next = (__next + 1) % count;
-			if (index != chosen && __handTo(index, socket, peer)) {
-				return true;
+			if (index == chosen) {
+				continue;
 			}
+			var outcome:Int = __handTo(index, socket, peer);
+			if (outcome == HANDED) {
+				return HANDED;
+			}
+			live = live || outcome == ALL_FULL;
 		}
 
+		if (live) {
+			__sayFull();
+			return ALL_FULL;
+		}
 		__sayRefused();
-		return false;
+		return NO_RUNTIME;
 	}
 
-	@:noCompletion private function __handTo(index:Int, socket:Socket, peer:{host:Host, port:Int}):Bool {
+	/**
+		Hands over to the runtime at `index`: `HANDED`; `ALL_FULL` when it is
+		live and has `MAX_WAITING` waiting; `NO_RUNTIME` when it has exited.
+		Counted as waiting from here until it runs there, whether it takes
+		the connection up or closes it.
+	**/
+	@:noCompletion private function __handTo(index:Int, socket:Socket, peer:{host:Host, port:Int}):Int {
 		var runtime:CrossByte = runtimes[index];
 		if (!isLive(runtime)) {
-			return false;
+			return NO_RUNTIME;
 		}
+		__lock.acquire();
+		if (__waiting[index] >= MAX_WAITING) {
+			__lock.release();
+			return ALL_FULL;
+		}
+		__waiting[index]++;
+		__fullSaid = false;
+		__lock.release();
+
 		var replica:ServerSocket = replicas[index];
-		return runtime.post(() -> replica.__adopt(socket, peer));
+		var spread:ServerSpread = this;
+		if (runtime.post(() -> {
+			spread.__arrived(index);
+			replica.__adopt(socket, peer);
+		})) {
+			return HANDED;
+		}
+		__arrived(index);
+		return NO_RUNTIME;
+	}
+
+	/** A hand-off to the runtime at `index` has run there, or never will. **/
+	@:noCompletion private function __arrived(index:Int):Void {
+		__lock.acquire();
+		if (__waiting[index] > 0) {
+			__waiting[index]--;
+		}
+		__lock.release();
+	}
+
+	/** Connections handed to the runtime at `index` and not yet taken up there. **/
+	public function waitingAt(index:Int):Int {
+		__lock.acquire();
+		var count:Int = __waiting[index];
+		__lock.release();
+		return count;
+	}
+
+	@:noCompletion private function __sayFull():Void {
+		if (__fullSaid) {
+			return;
+		}
+		__fullSaid = true;
+		crossbyte.utils.Logger.warn("Every runtime the server on port " + front.localPort + " spreads its connections over has " + MAX_WAITING
+			+ " connections handed to it and not yet taken up, so each it accepts is closed, and counted in refusedConnections, until one catches up.");
 	}
 
 	@:noCompletion private function __sayRefused():Void {
@@ -183,6 +281,43 @@ class ServerSpread {
 				replica.close();
 			} catch (_:Dynamic) {}
 		});
+		unwatchExits();
+	}
+
+	/**
+		Watches each runtime's EXIT, on its own thread, while the server is
+		open: a runtime that exits under a replica settles what the replica
+		holds of the server's counts, handshakes and upgrades under way,
+		which will never finish there, are dropped and their sockets closed,
+		and its open connections' places given back. They stayed counted in
+		`inFlight` and against `maxConnections` for as long as the server ran.
+	**/
+	public function watchExits():Void {
+		if (__exitWatches != null) {
+			return;
+		}
+		__exitWatches = [];
+		for (i in 0...replicas.length) {
+			var replica:ServerSocket = replicas[i];
+			var runtime:CrossByte = runtimes[i];
+			var watch:Event->Void = _ -> replica.__runtimeExited();
+			__exitWatches.push(watch);
+			runtime.post(() -> runtime.addEventListener(Event.EXIT, watch));
+		}
+	}
+
+	/** Stops watching the runtimes' EXIT: the server has closed. **/
+	public function unwatchExits():Void {
+		var watches:Array<Event->Void> = __exitWatches;
+		if (watches == null) {
+			return;
+		}
+		__exitWatches = null;
+		for (i in 0...watches.length) {
+			var runtime:CrossByte = runtimes[i];
+			var watch:Event->Void = watches[i];
+			runtime.post(() -> runtime.removeEventListener(Event.EXIT, watch));
+		}
 	}
 
 	public var stopped(get, never):Bool;
