@@ -12,6 +12,7 @@ int crossbyte_socket_try_send(Dynamic socket, Array<unsigned char> buffer, int p
 int crossbyte_socket_try_recv(Dynamic socket, Array<unsigned char> buffer, int position, int length);
 int crossbyte_socket_try_send_to(Dynamic socket, Array<unsigned char> buffer, int position, int length, Dynamic address);
 int crossbyte_socket_try_recv_from(Dynamic socket, Array<unsigned char> buffer, int position, int length, Dynamic address);
+void crossbyte_udp_ignore_unreachable(Dynamic socket);
 bool crossbyte_udp_batch_supported();
 Dynamic crossbyte_udp_batch_new(int capacity);
 int crossbyte_udp_batch_capacity(Dynamic batch);

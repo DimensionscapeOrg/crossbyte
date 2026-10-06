@@ -18,12 +18,21 @@ extern class NativeSocketAddress {
 		The transfers without an exception for "would block": -1 when the
 		socket has nothing to give or no room to take; a real failure still
 		throws, as the throwing forms do. `tryRecv` answers 0 at the end of
-		the stream.
+		the stream. `tryRecvFrom` answers -3 for a read that found an earlier
+		datagram's ICMP error instead, a destination's port unreachable,
+		which says nothing about this socket: nothing was received, and more
+		may be waiting.
 	**/
 	@:native("crossbyte_socket_try_send") public static function trySend(socket:Dynamic, buffer:haxe.io.BytesData, position:Int, length:Int):Int;
 	@:native("crossbyte_socket_try_recv") public static function tryRecv(socket:Dynamic, buffer:haxe.io.BytesData, position:Int, length:Int):Int;
 	@:native("crossbyte_socket_try_send_to") public static function trySendTo(socket:Dynamic, buffer:haxe.io.BytesData, position:Int, length:Int, address:Dynamic):Int;
 	@:native("crossbyte_socket_try_recv_from") public static function tryRecvFrom(socket:Dynamic, buffer:haxe.io.BytesData, position:Int, length:Int, address:Dynamic):Int;
+	/**
+		Stops Windows reporting an earlier datagram's ICMP error as a failed
+		receive on this datagram socket; nothing elsewhere, where an
+		unconnected socket is told nothing of them.
+	**/
+	@:native("crossbyte_udp_ignore_unreachable") public static function ignoreUnreachable(socket:Dynamic):Void;
 
 	/**
 		Datagrams received in batches, by one `recvmmsg` (Linux; see
@@ -31,7 +40,8 @@ extern class NativeSocketAddress {
 		any here; `batchNew` maps a batch of `capacity` slots of 64 KB, or
 		answers null; `batchReceive` takes in up to `max` waiting datagrams,
 		how many, -1 for none waiting, -2 for a kernel without the call,
-		and `batchTake`/`batchCopy` read datagram `index` of them: its
+		-3 for an earlier datagram's ICMP error, as `tryRecvFrom`, and
+		`batchTake`/`batchCopy` read datagram `index` of them: its
 		length and source, then its bytes. `batchFree` unmaps it now.
 	**/
 	@:native("crossbyte_udp_batch_supported") public static function batchSupported():Bool;
