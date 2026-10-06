@@ -479,12 +479,13 @@ class WebSocketConformanceTest extends utest.Test {
 	}
 
 	/**
-	 * A payload past `MAX_PAYLOAD` is refused as too big rather than
-	 * allocated.
+	 * A payload past the server's `maxMessageSize` is refused as too big
+	 * rather than allocated.
 	 */
 	public function testOversizedDataPayloadIsRejected():Void {
+		server.maxMessageSize = 64 * 1024;
 		var peer = connect();
-		peer.send(BINARY, Bytes.alloc(crossbyte._internal.websocket.WebSocket.MAX_PAYLOAD + 1));
+		peer.send(BINARY, Bytes.alloc(64 * 1024 + 1));
 
 		Assert.isTrue(pumpUntil(() -> closeCodes.length > 0), "session stayed open");
 		Assert.equals(1009, closeCodes[0]);

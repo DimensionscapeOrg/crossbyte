@@ -91,8 +91,12 @@ class WebSocket extends Socket {
 			// The server's, from the start: it was applied once the session
 			// opened, and only when the server's was not 0.
 			webSocket.__maxOutputBufferSize = server.maxOutputBufferSize;
+			webSocket.__maxMessageSize = server.maxMessageSize;
+			webSocket.__closeTimeout = server.closeTimeout;
 		}
 		webSocket.__webSocket.maxOutputBufferSize = webSocket.__maxOutputBufferSize;
+		webSocket.__webSocket.maxMessageSize = webSocket.__maxMessageSize;
+		webSocket.__webSocket.closeTimeout = webSocket.__closeTimeout;
 		if (server != null) {
 			webSocket.__webSocket.pingInterval = server.pingInterval;
 			webSocket.__webSocket.idleTimeout = server.idleTimeout;
@@ -115,6 +119,9 @@ class WebSocket extends Socket {
 	// Where the server keeps this session in its list of open ones, or -1
 	// while it is in none. See ServerWebSocket.__tracks.
 	@:noCompletion private var __serverSlot:Int = -1;
+	// The server this session is counted by against its maxConnections,
+	// until it closes.
+	@:noCompletion private var __countedBy:ServerWebSocket = null;
 
 	/**
 		The subprotocols a client asks for, most preferred first. Set before
@@ -162,6 +169,40 @@ class WebSocket extends Socket {
 	// in until there is a session to hand it to.
 	@:noCompletion private var __pingInterval:Float = -1;
 	@:noCompletion private var __idleTimeout:Float = -1;
+
+	/**
+		The largest message this session takes, in bytes: a frame that would
+		take its message past this is refused on its header, before anything
+		waits for its payload, and the session fails with 1009 (Message Too
+		Big), dispatching `close`; so is a compressed message that would
+		inflate past it. `0` or less takes messages of any size.
+
+		1 MiB by default, or on a server's sessions the server's
+		`maxMessageSize`. Each session has its own, and changing it holds
+		from the next frame. It was process-wide, with a limit on each frame
+		of 64 KiB besides that refused a browser's message of more than that,
+		a browser sends one of 100 KB as one frame, however large a
+		message was allowed.
+
+		What a peer can make a session hold while a message arrives is about
+		this much: set it to the largest message the application takes.
+	**/
+	public var maxMessageSize(get, set):Int;
+
+	@:noCompletion private var __maxMessageSize:Int = InternalWS.DEFAULT_MAX_MESSAGE_SIZE;
+
+	/**
+		How long a closing handshake is given, in seconds, `closeWith()`'s,
+		or one the peer began: for the peer to answer the close frame, and
+		for what was sent before it to drain. Past it the connection is
+		closed regardless, as 1006 if the peer never answered. Five by
+		default, or the server's `closeTimeout`.
+
+		@throws ArgumentError When not a number above 0.
+	**/
+	public var closeTimeout(get, set):Float;
+
+	@:noCompletion private var __closeTimeout:Float = InternalWS.DEFAULT_CLOSE_TIMEOUT;
 
 	/**
 		Whether `connect()` asks the server for permessage-deflate (RFC 7692):
@@ -474,7 +515,34 @@ class WebSocket extends Socket {
 		if (__webSocket != null) {
 			return __webSocket.pingInterval;
 		}
-		return __pingInterval >= 0 ? __pingInterval : InternalWS.PING_INTERVAL / 1000;
+		return __pingInterval >= 0 ? __pingInterval : InternalWS.DEFAULT_PING_INTERVAL;
+	}
+
+	@:noCompletion private function get_maxMessageSize():Int {
+		return __webSocket != null ? __webSocket.maxMessageSize : __maxMessageSize;
+	}
+
+	@:noCompletion private function set_maxMessageSize(value:Int):Int {
+		__maxMessageSize = value;
+		if (__webSocket != null) {
+			__webSocket.maxMessageSize = value;
+		}
+		return value;
+	}
+
+	@:noCompletion private function get_closeTimeout():Float {
+		return __webSocket != null ? __webSocket.closeTimeout : __closeTimeout;
+	}
+
+	@:noCompletion private function set_closeTimeout(value:Float):Float {
+		if (!(value > 0)) {
+			throw new ArgumentError('closeTimeout must be a number of seconds above 0, and was $value.');
+		}
+		__closeTimeout = value;
+		if (__webSocket != null) {
+			__webSocket.closeTimeout = value;
+		}
+		return value;
 	}
 
 	@:noCompletion private function set_pingInterval(value:Float):Float {
@@ -555,6 +623,8 @@ class WebSocket extends Socket {
 		// seconds of its own and never waited on the upgrade at all.
 		__webSocket.connectTimeout = timeout;
 		__webSocket.maxOutputBufferSize = __maxOutputBufferSize;
+		__webSocket.maxMessageSize = __maxMessageSize;
+		__webSocket.closeTimeout = __closeTimeout;
 		// Before the upgrade request goes, which is where it is asked for.
 		__webSocket.perMessageDeflate = perMessageDeflate;
 		__webSocket.compressionThreshold = compressionThreshold;
@@ -1078,6 +1148,13 @@ class WebSocket extends Socket {
 		__connected = false;
 		__webSocket = null;
 
+		// Its place among the server's sessions, for the next.
+		if (__countedBy != null) {
+			var counted:ServerWebSocket = __countedBy;
+			__countedBy = null;
+			@:privateAccess counted.__releaseSession();
+		}
+
 		// Ended before it opened: its server stops waiting on it, and counts
 		// it if it failed to arrive.
 		if (__server != null) {
@@ -1259,7 +1336,31 @@ class WebSocket extends Socket {
 				// Refused unless the hook says otherwise: one that throws
 				// refuses too.
 				__upgradeRefused = true;
-				var accepted:Bool = server.upgrade(request);
+				// A place among the server's open sessions first: at
+				// maxConnections the upgrade is answered 503, and the hook is
+				// not asked about a session that could not open.
+				if (!@:privateAccess server.__claimSession()) {
+					@:privateAccess server.__refusedConnections++;
+					request.status = 503;
+					return false;
+				}
+				var accepted:Bool = false;
+				try {
+					accepted = server.upgrade(request);
+				} catch (e:Dynamic) {
+					@:privateAccess server.__releaseSession();
+					#if cpp
+					cpp.Lib.rethrow(e);
+					#else
+					throw e;
+					#end
+				}
+				if (accepted) {
+					// Let go of as the session closes.
+					__countedBy = server;
+				} else {
+					@:privateAccess server.__releaseSession();
+				}
 				__upgradeRefused = !accepted;
 				return accepted;
 			};

@@ -78,8 +78,18 @@ class WirePeer {
 		out.addByte((fin ? 0x80 : 0x00) | (rsv1 ? 0x40 : 0x00) | opcode);
 		if (length < 126) {
 			out.addByte(0x80 | length);
-		} else {
+		} else if (length < 65536) {
 			out.addByte(0x80 | 126);
+			out.addByte((length >> 8) & 0xFF);
+			out.addByte(length & 0xFF);
+		} else {
+			// One frame however long, as a browser and Node's ws send one.
+			out.addByte(0x80 | 127);
+			for (_ in 0...4) {
+				out.addByte(0);
+			}
+			out.addByte((length >>> 24) & 0xFF);
+			out.addByte((length >> 16) & 0xFF);
 			out.addByte((length >> 8) & 0xFF);
 			out.addByte(length & 0xFF);
 		}
@@ -106,6 +116,9 @@ class WirePeer {
 					ended = true;
 					return;
 				}
+				// Full: the server, on this thread, has to read before there
+				// is room for the rest.
+				RawWebSocketClient.pumpRuntime(crossbyte.core.CrossByte.current());
 			}
 		}
 		#end

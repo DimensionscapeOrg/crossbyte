@@ -427,6 +427,17 @@ entry below says how:
 - A runtime-lane request for a number nobody registered is answered
   `RPCError.UNKNOWN_METHOD_MESSAGE`, where it was answered "Unsupported
   runtime RPC op: " and the number: compare an error with the constant.
+- The process-wide WebSocket settings are gone: set `maxMessageSize` or
+  `closeTimeout` on the `ServerWebSocket` or `WebSocket` where code set
+  `WebSocket.MAX_MESSAGE_SIZE` or `CLOSE_TIMEOUT`, and `pingInterval`
+  where it set `PING_INTERVAL`; `MAX_PAYLOAD` has no replacement, since a
+  frame may now be as long as a message.
+- A `ServerWebSocket` answers an upgrade 503 while 10,000 sessions are
+  open (`maxConnections`), and closes a connection from an address with 16
+  still upgrading once half of `maxPendingHandshakes` are taken
+  (`maxPendingHandshakesPerAddress`): raise the first for a server built
+  to hold more, and set the second to 0 behind a proxy that forwards
+  connections before their client speaks.
 - A `ServerWebSocket` closes a session with 1011 once 8 MiB wait for
   its peer (`maxOutputBufferSize`), where it held any amount: set a
   larger limit for a server that bursts more than that to one session,
@@ -436,6 +447,40 @@ entry below says how:
   clients carrying more cookies than that.
 
 ### Added
+- `ServerWebSocket.maxPendingHandshakesPerAddress`, 16 by default: once
+  half of `maxPendingHandshakes` are taken, a connection from an address
+  that already has that many still upgrading is closed as it is accepted,
+  before any TLS or upgrade work, and counted in `refusedConnections`. One
+  address opening connections that never spoke held all 256 places for
+  `handshakeTimeout` each, and every real client queued behind them:
+  natively, against 40 such connections a second for 40 s, a client from
+  another address joined 10 times, a median of 3.4 s and up to 7.3 s each;
+  now 38 times, 2.6 ms each and 4.1 ms at most, the flood holding 128
+  places. Only under pressure, where nginx's `limit_conn` refuses always,
+  so many clients behind one address, a carrier's NAT, an office, a
+  proxy, are not throttled while there is room; behind a proxy that
+  forwards connections before their client speaks, set it to 0. On a
+  server spread over `runtimes` the count is every runtime's; on Node it
+  counts sessions waiting for their upgrade once Node has done their TLS.
+  `ServerWebSocket`'s class doc now lists every limit on what a peer can
+  cost, and shows `admit` with a `RateLimiter`, which a public listener
+  keeps: these bound what a connection holds, not how often one comes.
+- `ServerWebSocket.maxConnections`, 10,000 by default as `HTTPServer`'s:
+  an upgrade arriving with that many sessions open is answered `503
+  Service Unavailable` and closed, `upgrade` not asked, counted in
+  `refusedConnections` and not in `handshakeFailures`, and a session's
+  place is given back when it closes, or when `upgrade` refuses it. Every
+  runtime's sessions together, on a spread server. There was no bound on
+  the sessions a `ServerWebSocket` held. Node's `net.Server` names the
+  same bound and closes the connection; a WebSocket client is told why.
+- `ServerWebSocket.refusedConnections`: the connections closed for the
+  two limits above, every runtime's together.
+- `maxMessageSize` and `closeTimeout` on `ServerWebSocket`, for its
+  sessions, and on `WebSocket`, each session's own: the largest message
+  taken (1 MiB) and the closing handshake's deadline (5 s). They were the
+  process-wide `MAX_MESSAGE_SIZE` and `CLOSE_TIMEOUT`, which one server, or
+  a client, changed for every session in the process. `closeTimeout`
+  refuses 0, NaN and negatives with an `ArgumentError`.
 - `ReliableDatagramServerSocket.allowRebind`, off unless set: a reliable
   UDP session that follows its player to a new address, a NAT that
   gives it a new port, a phone moving from Wi-Fi to a mobile network,
@@ -1760,6 +1805,13 @@ entry below says how:
 - accepted `wss://` sessions now run the deferred, timeout-guarded TLS handshake the client path already used; previously a server-side handshake happened implicitly on first read with no bound, so a peer that completed TCP then stalled mid-TLS held the socket indefinitely
 
 ### Removed
+- The process-wide WebSocket settings, from
+  `crossbyte._internal.websocket.WebSocket`: `MAX_PAYLOAD`, a limit on
+  every frame that refused what browsers send (see Changed);
+  `MAX_MESSAGE_SIZE` and `CLOSE_TIMEOUT`, now `maxMessageSize` and
+  `closeTimeout` on each server and session; `PING_INTERVAL`, which only
+  gave `pingInterval` its default (`DEFAULT_PING_INTERVAL`, 30 s, in
+  seconds); and `MASK_POOL_SIZE`, which nothing read.
 - `Http.MAX_REDIRECTS`, `MAX_BODY_SIZE`, `MAX_CHUNKED_BODY_SIZE`,
   `MAX_DECOMPRESSED_BODY_SIZE` and `MAX_RESPONSE_HEADER_BYTES`, statics of
   the native HTTP client that one caller changed for every request in the
@@ -1805,6 +1857,15 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A WebSocket frame is held to what is left of its message under
+  `maxMessageSize`, on its header, and not to 64 KiB besides. A browser
+  sends a message of 100 KB as one frame, Chrome, 102,400 bytes, and a
+  megabyte in frames of up to that, and Node's `ws` sends every message
+  as one, so each was refused with 1009 however large a message was
+  allowed. A frame that would take its message past the limit is still
+  refused before anything waits for its payload, which is all the frame
+  limit bounded. A session sends a message longer than 64 KiB in frames of
+  64 KiB (`FRAGMENT_SIZE`) as before, so a peer from before 1.0 takes it.
 - A `ServerWebSocket` bounds what may wait for each session at 8 MiB
   by default (`maxOutputBufferSize`, `DEFAULT_MAX_OUTPUT_BUFFER_SIZE`),
   as `HTTPServer` bounds a response's output, where it was 0, no limit:

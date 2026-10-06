@@ -390,12 +390,19 @@ class WebSocketTest extends utest.Test {
 		Assert.equals(129, received[129]);
 	}
 
-	public function testExtendedPayloadLength127DispatchesMaxPayload():Void {
+	/**
+		A frame longer than 64 KiB, in the 64-bit length form, is taken as a
+		message, as a browser and Node's `ws` send one: every frame was held
+		to 64 KiB, and a browser's message of 100 KB was refused, whatever a
+		message might be. (Just past it: building a frame of a megabyte a
+		byte at a time takes minutes on the interpreter.)
+	**/
+	public function testExtendedPayloadLength127DispatchesAFrameLongerThanSixtyFourKilobytes():Void {
 		var ws = openParser();
 		var received:ByteArray = null;
 		ws.onmessage = e -> received = kept(e.message);
 
-		var payload = Bytes.alloc(InternalWebSocket.MAX_PAYLOAD);
+		var payload = Bytes.alloc(InternalWebSocket.FRAGMENT_SIZE + 1);
 		payload.set(0, 0x41);
 		payload.set(payload.length - 1, 0x5A);
 
@@ -442,12 +449,14 @@ class WebSocketTest extends utest.Test {
 		Assert.equals("policy", closeReason);
 	}
 
+	/** A frame longer than the session's own `maxMessageSize` is refused as too big. **/
 	public function testOversizedPayloadClosesWithMessageTooBig():Void {
 		var ws = openParser();
+		ws.maxMessageSize = 1000;
 		var closeCode:Null<Int> = null;
 		ws.onclose = e -> closeCode = e.code;
 
-		var payload = Bytes.alloc(InternalWebSocket.MAX_PAYLOAD + 1);
+		var payload = Bytes.alloc(1001);
 		ws.__input = maskedFrame(0x02, payload);
 		ws.__onData();
 

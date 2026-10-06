@@ -42,10 +42,10 @@ class WebSocketFrameTest extends utest.Test {
 		var closeCode:Null<Int> = null;
 		ws.onclose = e -> closeCode = e.code;
 
-		// Drive MAX_MESSAGE_SIZE worth of full frames as continuation fragments,
+		// Drive maxMessageSize worth of full frames as continuation fragments,
 		// then one more byte to push the running total over the cap.
-		var frameSize:Int = WebSocket.MAX_PAYLOAD;
-		var frames:Int = Std.int(WebSocket.MAX_MESSAGE_SIZE / frameSize);
+		var frameSize:Int = WebSocket.FRAGMENT_SIZE;
+		var frames:Int = Std.int(WebSocket.DEFAULT_MAX_MESSAGE_SIZE / frameSize);
 
 		var buffer = new ByteArray();
 		buffer.endian = BIG_ENDIAN;
@@ -53,7 +53,7 @@ class WebSocketFrameTest extends utest.Test {
 			var opcode:Int = i == 0 ? 0x02 : 0x00;
 			buffer.writeBytes(unmaskedFrame(opcode, Bytes.alloc(frameSize), false));
 		}
-		// One trailing fragment of a single byte tips the total over MAX_MESSAGE_SIZE.
+		// One trailing fragment of a single byte tips the total over maxMessageSize.
 		buffer.writeBytes(unmaskedFrame(0x00, Bytes.alloc(1), true));
 		buffer.position = 0;
 
@@ -74,8 +74,8 @@ class WebSocketFrameTest extends utest.Test {
 		// dispatch because the cumulative counter resets when a message completes.
 		var buffer = new ByteArray();
 		buffer.endian = BIG_ENDIAN;
-		buffer.writeBytes(unmaskedFrame(0x02, Bytes.alloc(WebSocket.MAX_PAYLOAD), true));
-		buffer.writeBytes(unmaskedFrame(0x02, Bytes.alloc(WebSocket.MAX_PAYLOAD), true));
+		buffer.writeBytes(unmaskedFrame(0x02, Bytes.alloc(WebSocket.FRAGMENT_SIZE), true));
+		buffer.writeBytes(unmaskedFrame(0x02, Bytes.alloc(WebSocket.FRAGMENT_SIZE), true));
 		buffer.position = 0;
 
 		ws.__input = buffer;
