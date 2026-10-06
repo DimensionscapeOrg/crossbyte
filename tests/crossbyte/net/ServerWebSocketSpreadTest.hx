@@ -282,6 +282,92 @@ class ServerWebSocketSpreadTest extends utest.Test {
 	}
 
 	/**
+		`maxConnections` counts the sessions open on every runtime together:
+		past it an upgrade on any of them is answered 503, counted in the
+		server's `refusedConnections`, and a place a session leaves on one
+		runtime is taken by the next on another.
+	**/
+	@:timeout(30000)
+	public function testMaxConnectionsHoldsAcrossRuntimes():Void {
+		var acceptor:CrossByte = SpreadSupport.runtime();
+		var first:CrossByte = SpreadSupport.runtime();
+		var second:CrossByte = SpreadSupport.runtime();
+
+		var server:ServerWebSocket = SpreadSupport.on(acceptor, () -> {
+			var server = new ServerWebSocket();
+			server.runtimes = [first, second];
+			server.maxConnections = 3;
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, function(_) {});
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			return server;
+		});
+
+		var clients:Array<sys.net.Socket> = [];
+		for (i in 0...3) {
+			var client = WebSocketWire.open(server.localPort);
+			Assert.notNull(client, 'session $i was refused under the limit');
+			if (client != null) {
+				clients.push(client);
+			}
+		}
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.clientCount == 3, WAIT), 'clientCount is ${server.clientCount}, not 3');
+		Assert.isNull(WebSocketWire.open(server.localPort), "a fourth session opened past maxConnections across the runtimes");
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.refusedConnections == 1, WAIT), 'refusedConnections is ${server.refusedConnections}, not 1');
+
+		// One leaves, and its place is the next one's, whichever runtime.
+		WebSocketWire.sendClose(clients[0], 1000);
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.clientCount == 2, WAIT), "the session that left was still counted");
+		var next = WebSocketWire.open(server.localPort);
+		Assert.notNull(next, "a place freed on one runtime was not taken");
+		if (next != null) {
+			clients.push(next);
+		}
+
+		SpreadSupport.closeAll(clients);
+		SpreadSupport.on(acceptor, () -> server.close());
+		SpreadSupport.stop([acceptor, first, second]);
+	}
+
+	/**
+		`maxPendingHandshakesPerAddress` counts an address's connections
+		upgrading on every runtime together: one silent address takes half
+		the places and no more, and the rest of its connections are closed
+		as they are accepted.
+	**/
+	@:timeout(30000)
+	public function testOneAddressTakesHalfTheUpgradePlacesAcrossRuntimes():Void {
+		var acceptor:CrossByte = SpreadSupport.runtime();
+		var first:CrossByte = SpreadSupport.runtime();
+		var second:CrossByte = SpreadSupport.runtime();
+
+		var server:ServerWebSocket = SpreadSupport.on(acceptor, () -> {
+			var server = new ServerWebSocket();
+			server.runtimes = [first, second];
+			server.maxPendingHandshakes = 8;
+			server.maxPendingHandshakesPerAddress = 2;
+			server.handshakeTimeout = 30;
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, function(_) {});
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			return server;
+		});
+
+		var silent:Array<sys.net.Socket> = [];
+		for (_ in 0...10) {
+			silent.push(SpreadSupport.connect(server.localPort));
+			// Each taken before the next connects.
+			SpreadSupport.waitFor(() -> server.pendingHandshakeCount() + server.refusedConnections >= silent.length, WAIT);
+		}
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.refusedConnections == 6, WAIT), 'refusedConnections is ${server.refusedConnections}, not 6');
+		Assert.equals(4, server.pendingHandshakeCount(), "one address held other than half the places across the runtimes");
+
+		SpreadSupport.closeAll(silent);
+		SpreadSupport.on(acceptor, () -> server.close());
+		SpreadSupport.stop([acceptor, first, second]);
+	}
+
+	/**
 		`drain()` sends every session on every runtime its close frame, and
 		finishes on the server's runtime once all have gone; the runtimes
 		`runtimeCount` made exit with it.

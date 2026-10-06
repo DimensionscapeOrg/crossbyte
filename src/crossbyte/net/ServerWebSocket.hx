@@ -53,6 +53,43 @@ import sys.net.Host;
  * too. `stopAccepting()`, `drain()` and `close()` drop the sessions still in
  * it.
  *
+ * ## What one peer can cost, and the limits on it
+ *
+ * Each is on by default, and each says at its member what it bounds:
+ *
+ * - before a session opens: `maxPendingHandshakes` (256) places for
+ *   connections still upgrading, `maxPendingHandshakesPerAddress` (16) of
+ *   them for one address once half are taken, `handshakeTimeout` (10 s) to
+ *   finish, and `maxHeaderSize` (16 KiB) for the upgrade request;
+ * - once open: `maxConnections` (10,000) sessions, `maxMessageSize` (1 MiB)
+ *   for a message arriving, `maxOutputBufferSize` (8 MiB) waiting for a
+ *   peer that does not read, `idleTimeout` (60 s) of silence; and a peer's
+ *   pings are answered one at a time, the newest, however many it sends.
+ *
+ * What these do not bound is how often one address connects: a connection
+ * that upgrades and leaves at once passes every one of them. A listener open
+ * to the internet keeps a `RateLimiter` in `admit`, which is asked before
+ * any work is done for a connection:
+ *
+ * ```haxe
+ * // Given port:Int.
+ * var server = new ServerWebSocket();
+ * // A burst of 20 connections from one address, then one every 3 s.
+ * var joins = new RateLimiter(20, 60);
+ * server.admit = (address, _) -> joins.tryAcquire(RateLimiter.addressKey(address));
+ * // Sized to the application: a game's lobby holds more, and sends less.
+ * server.maxConnections = 50000;
+ * server.maxMessageSize = 16 * 1024;
+ * server.addEventListener(crossbyte.events.ServerSocketConnectEvent.CONNECT, e -> {});
+ * server.bind(port, "0.0.0.0");
+ * server.listen();
+ * ```
+ *
+ * `RateLimiter.addressKey` keys an IPv6 client by its /64, which is what one
+ * subscriber is given. Behind a proxy that forwards connections before their
+ * client has spoken, every connection has the proxy's address: there the
+ * proxy bounds each client, and `maxPendingHandshakesPerAddress` is set to 0.
+ *
  * @author Christopher Speciale
  */
 class ServerWebSocket extends ServerSocket {
@@ -115,7 +152,7 @@ class ServerWebSocket extends ServerSocket {
 		`WebSocket.pingInterval` for each session this server accepts, in
 		seconds; zero for none. Set before the sessions it is for arrive.
 	**/
-	public var pingInterval:Float = crossbyte._internal.websocket.WebSocket.PING_INTERVAL / 1000;
+	public var pingInterval:Float = crossbyte._internal.websocket.WebSocket.DEFAULT_PING_INTERVAL;
 
 	/**
 		`WebSocket.idleTimeout` for each session this server accepts, in
@@ -166,6 +203,130 @@ class ServerWebSocket extends ServerSocket {
 		`handshakeTimeout` ended it.
 	**/
 	public var maxHeaderSize:Int = crossbyte._internal.websocket.WebSocket.DEFAULT_MAX_HEADER_SIZE;
+
+	/**
+		`WebSocket.maxMessageSize` for each session this server accepts: the
+		largest message a peer may send, in bytes. A frame that would take
+		its message past it is refused on its header, and the session fails
+		with 1009. `0` or less takes messages of any size. Read as each
+		session is accepted.
+
+		1 MiB by default. A peer can make a session hold about this much
+		while a message arrives, 50 sessions each part way through one
+		held 62 MB, so set it to the largest message the application
+		takes. It was process-wide, and every frame was held besides to
+		64 KiB, which refused a browser's messages of more than that: a
+		browser sends one of 100 KB as a single frame.
+	**/
+	public var maxMessageSize:Int = crossbyte._internal.websocket.WebSocket.DEFAULT_MAX_MESSAGE_SIZE;
+
+	/**
+		`WebSocket.closeTimeout` for each session this server accepts: how
+		long, in seconds, a closing handshake is given before the
+		connection is closed regardless. Five by default. Read as each
+		session is accepted.
+	**/
+	public var closeTimeout:Float = crossbyte._internal.websocket.WebSocket.DEFAULT_CLOSE_TIMEOUT;
+
+	/**
+		The most sessions this server keeps open at once. An upgrade
+		arriving while it has this many is answered `503 Service
+		Unavailable` and its connection closed, counted in
+		`refusedConnections` and not in `handshakeFailures`, and `upgrade`
+		is not asked. `0` or less keeps no count. Connections still
+		upgrading are bounded apart from these, by `maxPendingHandshakes`.
+
+		10,000 by default, as `HTTPServer` holds its connections: an idle
+		session costs about 9.5 KB natively, so the default is under 100 MB
+		of sessions, where a flood of connections that each upgraded was
+		held without bound. A server built to hold more, a game server's
+		lobby, a feed with many quiet subscribers, raises it, and the
+		process's descriptor limit with it.
+
+		Node's `net.Server.maxConnections` names the same bound, and
+		refuses past it by closing the connection; a WebSocket client is
+		told why instead, as an HTTP server tells an HTTP client.
+
+		On a server spread over `runtimes`, every runtime's sessions
+		together.
+	**/
+	public var maxConnections:Int = DEFAULT_MAX_CONNECTIONS;
+
+	/** The default `maxConnections`: 10,000. **/
+	public static inline var DEFAULT_MAX_CONNECTIONS:Int = 10000;
+
+	/**
+		The most connections one address may have still upgrading, in TLS
+		or the HTTP upgrade, once half of `maxPendingHandshakes` are taken.
+		A connection past it is closed as soon as it is accepted, before any
+		TLS or upgrade work, and counted in `refusedConnections`. `0` or less
+		sets no limit per address. With `maxPendingHandshakes` negative, no
+		limit overall, it holds at all times.
+
+		16 by default. One address opening connections and saying nothing
+		held every one of the 256 places for upgrades, each for
+		`handshakeTimeout`, and every real client waited in the kernel's
+		queue behind them: joins took 8-9 s for as long as the flood went
+		on, from one address at 40 connections a second. Here it holds at
+		most half the places before the rest are shared out 16 to an
+		address, and a client from anywhere else is taken at once.
+
+		Only under pressure, where a per-address limit, nginx's
+		`limit_conn`, HAProxy's `src_conn_cur`, refuses at all times: many
+		real clients can share an address, a carrier's NAT, an office, a
+		proxy in front of this server, and one that is not crowding
+		anyone out is let in. Behind a proxy that forwards connections
+		before their client has spoken, every connection has the proxy's
+		address: set it to 0 there, and bound what each client can cost at
+		the proxy.
+
+		Keep `admit` too: a `RateLimiter` keyed by address bounds how often
+		one address connects, which this does not.
+
+		On a server spread over `runtimes`, the count is every runtime's.
+		On Node, which completes TLS handshakes itself, it counts sessions
+		waiting for their upgrade once Node has handed them over.
+	**/
+	public var maxPendingHandshakesPerAddress:Int = DEFAULT_MAX_PENDING_HANDSHAKES_PER_ADDRESS;
+
+	/** The default `maxPendingHandshakesPerAddress`: 16. **/
+	public static inline var DEFAULT_MAX_PENDING_HANDSHAKES_PER_ADDRESS:Int = 16;
+
+	/**
+		Connections this server closed for its own limits: past
+		`maxPendingHandshakesPerAddress` as they were accepted, and past
+		`maxConnections` as their upgrade arrived. Counted rather than
+		reported one by one, since under a flood each would be a line in the
+		log; `admit`'s refusals are the application's own, and not counted.
+
+		On a server spread over `runtimes`, every runtime's together.
+	**/
+	public var refusedConnections(get, never):Int;
+
+	@:noCompletion private var __refusedConnections:Int = 0;
+
+	@:noCompletion private function get_refusedConnections():Int {
+		var count:Int = __refusedConnections;
+		#if (target.threaded && !js)
+		if (__spread != null) {
+			for (replica in __spread.replicas) {
+				count += (cast replica : ServerWebSocket).__refusedConnections;
+			}
+		}
+		#end
+		return count;
+	}
+
+	// Connections still upgrading, by address; shared with every replica of
+	// a spread server. See maxPendingHandshakesPerAddress.
+	@:noCompletion private var __addressCounts:crossbyte._internal.websocket.AddressCounts = new crossbyte._internal.websocket.AddressCounts();
+
+	// Sessions open, or opening, counted against maxConnections where the
+	// server is on one runtime; a spread server counts in its ServerSpread.
+	@:noCompletion private var __sessionsCounted:Int = 0;
+
+	// The address `admit` was last asked about and agreed to.
+	@:noCompletion private var __admittedAddress:String = null;
 
 	/**
 		Decides, once a client's upgrade request has arrived and before the
@@ -495,10 +656,78 @@ class ServerWebSocket extends ServerSocket {
 		for (pending in __pendingUpgrades) {
 			if (pending.session == session) {
 				__pendingUpgrades.remove(pending);
+				__addressCounts.release(pending.address);
 				return true;
 			}
 		}
 		return false;
+	}
+
+	/**
+		Counts a connection from `address` as arriving, unless the address
+		has `maxPendingHandshakesPerAddress` arriving already while half the
+		places for upgrades are taken: whether it was counted.
+	**/
+	@:noCompletion private function __claimAddress(address:String):Bool {
+		if (address == null) {
+			return true;
+		}
+		var limit:Int = maxPendingHandshakesPerAddress;
+		if (limit > 0) {
+			// The front's limit and count: a replica accepting for itself,
+			// with reusePort, has none of its own.
+			var front:ServerSocket = __front != null ? __front : this;
+			var places:Int = front.maxPendingHandshakes;
+			if (places >= 0 && __pendingTotal() * 2 < places) {
+				// Room for everyone: counted, not held to the limit.
+				limit = 0;
+			}
+		}
+		return __addressCounts.claim(address, limit);
+	}
+
+	/** Connections upgrading on every runtime this server's listener feeds. **/
+	@:noCompletion private function __pendingTotal():Int {
+		#if (target.threaded && !js)
+		if (__spread != null) {
+			return __spread.inFlight;
+		}
+		if (__shared != null) {
+			return __shared.inFlight;
+		}
+		#end
+		return __pendingUpgrades.length;
+	}
+
+	/**
+		Counts a session about to open against `maxConnections`: whether
+		there was room. Every runtime's together, on a spread server.
+	**/
+	@:noCompletion private function __claimSession():Bool {
+		var limit:Int = maxConnections > 0 ? maxConnections : 0x7FFFFFFF;
+		#if (target.threaded && !js)
+		if (__shared != null) {
+			return __shared.claimConnection(limit);
+		}
+		#end
+		if (__sessionsCounted >= limit) {
+			return false;
+		}
+		__sessionsCounted++;
+		return true;
+	}
+
+	/** A session counted by `__claimSession` has closed, or did not open. **/
+	@:noCompletion private function __releaseSession():Void {
+		#if (target.threaded && !js)
+		if (__shared != null) {
+			__shared.releaseConnections(1);
+			return;
+		}
+		#end
+		if (__sessionsCounted > 0) {
+			__sessionsCounted--;
+		}
 	}
 
 	/**
@@ -553,6 +782,7 @@ class ServerWebSocket extends ServerSocket {
 		var dropped:Array<PendingUpgrade> = __pendingUpgrades;
 		__pendingUpgrades = [];
 		for (pending in dropped) {
+			__addressCounts.release(pending.address);
 			if (pending.session != null) {
 				try {
 					pending.session.close();
@@ -586,6 +816,7 @@ class ServerWebSocket extends ServerSocket {
 			// dispatches CONNECT. What is left for here is a session that went
 			// away on its own, which is what `registryClosed` says.
 			if (pending.session == null || pending.session.registryClosed) {
+				__addressCounts.release(pending.address);
 				continue;
 			}
 
@@ -597,6 +828,7 @@ class ServerWebSocket extends ServerSocket {
 			if (expired == null) {
 				expired = [];
 			}
+			__addressCounts.release(pending.address);
 			expired.push(pending.session);
 		}
 
@@ -847,8 +1079,9 @@ class ServerWebSocket extends ServerSocket {
 		Pairs with `ProcessLifecycle`:
 
 		```haxe
-		ProcessLifecycle.onShutdown(() -> server.drain());
-		ProcessLifecycle.installDefaultHandlers();
+		// Given server:ServerWebSocket.
+		crossbyte.sys.ProcessLifecycle.onShutdown(() -> server.drain());
+		crossbyte.sys.ProcessLifecycle.installDefaultHandlers();
 		```
 
 		It may be called from any thread, as `close()` may: from one that is
@@ -1180,9 +1413,21 @@ class ServerWebSocket extends ServerSocket {
 				continue;
 			}
 
+			// One address past its share of the places for upgrades, while
+			// they are crowded: closed before any work is done for it.
+			var address:String = __admittedAddress;
+			if (!__claimAddress(address)) {
+				__refusedConnections++;
+				try {
+					socket.close();
+				} catch (_:Dynamic) {}
+				continue;
+			}
+
 			#if (target.threaded && !js)
 			if (__spread != null) {
 				// Another runtime's from here: its TLS, its upgrade, its life.
+				// It lets go of the address's count once its upgrade ends.
 				var peer = __admittedPeer;
 				__admittedPeer = null;
 				__handOff(socket, peer);
@@ -1193,7 +1438,9 @@ class ServerWebSocket extends ServerSocket {
 			var accepted = __fromSockettoWebsocket(socket);
 
 			if (accepted != null) {
-				__pendingUpgrades.push({session: accepted, deadline: __upgradeDeadline(haxe.Timer.stamp())});
+				__pendingUpgrades.push({session: accepted, deadline: __upgradeDeadline(haxe.Timer.stamp()), address: address});
+			} else {
+				__addressCounts.release(address);
 			}
 		}
 		__syncListenerWatch();
@@ -1226,14 +1473,21 @@ class ServerWebSocket extends ServerSocket {
 	**/
 	@:noCompletion private function __askAdmit(socket:FlexSocket):Bool {
 		__admittedPeer = null;
+		__admittedAddress = null;
 		try {
 			// Null for a peer already gone; see ServerSocket.__fromSocket.
 			var peer = socket.peer();
-			if (peer == null || !admit(crossbyte._internal.net.IPv6.compress(peer.host.toString()), peer.port)) {
+			if (peer == null) {
 				return false;
 			}
-			// Kept for the hand-off to another runtime.
+			var address:String = crossbyte._internal.net.IPv6.compress(peer.host.toString());
+			if (!admit(address, peer.port)) {
+				return false;
+			}
+			// Kept for the hand-off to another runtime, and for the count of
+			// those arriving from the address.
 			__admittedPeer = peer;
+			__admittedAddress = address;
 			return true;
 		} catch (_:Dynamic) {
 			return false;
@@ -1332,6 +1586,12 @@ class ServerWebSocket extends ServerSocket {
 		perMessageDeflate = front.perMessageDeflate;
 		compressionThreshold = front.compressionThreshold;
 		maxHeaderSize = front.maxHeaderSize;
+		maxMessageSize = front.maxMessageSize;
+		closeTimeout = front.closeTimeout;
+		maxConnections = front.maxConnections;
+		maxPendingHandshakesPerAddress = front.maxPendingHandshakesPerAddress;
+		// One count of each address's connections, for every runtime.
+		__addressCounts = front.__addressCounts;
 		handshakeTimeout = front.handshakeTimeout;
 		__metrics = front.__metrics;
 		__acceptedTotal = front.__acceptedTotal;
@@ -1345,8 +1605,12 @@ class ServerWebSocket extends ServerSocket {
 	@:noCompletion override private function __adoptConnection(socket:sys.net.Socket, peer:{host:Host, port:Int}):Void {
 		__takeSettings(cast __front);
 		var accepted:WebSocket = __fromSockettoWebsocket(socket);
+		// Counted by the front as it accepted it, under this address.
+		var address:String = peer == null ? null : crossbyte._internal.net.IPv6.compress(peer.host.toString());
 		if (accepted != null) {
-			__pendingUpgrades.push({session: accepted, deadline: __upgradeDeadline(haxe.Timer.stamp())});
+			__pendingUpgrades.push({session: accepted, deadline: __upgradeDeadline(haxe.Timer.stamp()), address: address});
+		} else {
+			__addressCounts.release(address);
 		}
 		// Counted in flight as it was handed over; counted here now.
 		__publishPending(1);
@@ -1543,6 +1807,14 @@ class ServerWebSocket extends ServerSocket {
 				return;
 			}
 
+			// One address past its share of the places, while they are crowded.
+			var address:String = connection.remoteAddress == null ? null : crossbyte._internal.net.IPv6.compress(connection.remoteAddress);
+			if (!__claimAddress(address)) {
+				__refusedConnections++;
+				connection.destroy();
+				return;
+			}
+
 			connection.setNoDelay(true);
 			var accepted = __fromSockettoWebsocket(connection);
 
@@ -1551,7 +1823,9 @@ class ServerWebSocket extends ServerSocket {
 			// the descriptor for as long as it liked, the native path has been
 			// closing those for a while, and Node was the one serving the web.
 			if (accepted != null) {
-				__pendingUpgrades.push({session: accepted, deadline: __upgradeDeadline(__acceptedAt(connection))});
+				__pendingUpgrades.push({session: accepted, deadline: __upgradeDeadline(__acceptedAt(connection)), address: address});
+			} else {
+				__addressCounts.release(address);
 			}
 		};
 
@@ -1680,5 +1954,7 @@ class ServerWebSocket extends ServerSocket {
 private typedef PendingUpgrade = {
 	var session:WebSocket;
 	var deadline:Float;
+	// The peer's address, as counted in __addressCounts; null if it had none.
+	var address:Null<String>;
 }
 #end

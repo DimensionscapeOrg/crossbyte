@@ -215,6 +215,7 @@ class WebSocketDeflateTest extends utest.Test {
 	public function testDataThatIsNotDeflateIsRefused(async:Async):Void {
 		var server = new ServerWebSocket();
 		server.perMessageDeflate = true;
+		server.maxMessageSize = 64 * 1024;
 		var closes:Array<Int> = [];
 		var heard:Int = 0;
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
@@ -256,9 +257,6 @@ class WebSocketDeflateTest extends utest.Test {
 	**/
 	@:timeout(30000)
 	public function testAMessageThatInflatesTooFarIsRefused(async:Async):Void {
-		var ceiling:Int = crossbyte._internal.websocket.WebSocket.MAX_MESSAGE_SIZE;
-		crossbyte._internal.websocket.WebSocket.MAX_MESSAGE_SIZE = 64 * 1024;
-
 		var zeros:ByteArray = new ByteArray();
 		zeros.length = 256 * 1024;
 		zeros.compress(crossbyte.utils.CompressionAlgorithm.DEFLATE);
@@ -267,6 +265,7 @@ class WebSocketDeflateTest extends utest.Test {
 
 		var server = new ServerWebSocket();
 		server.perMessageDeflate = true;
+		server.maxMessageSize = 64 * 1024;
 		var closes:Array<Int> = [];
 		var heard:Int = 0;
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
@@ -289,7 +288,6 @@ class WebSocketDeflateTest extends utest.Test {
 			}, 5.0, function(_) {
 				peer.sendFrame(WirePeer.BINARY, bomb, true);
 				NetPump.until(() -> closes.length > 0, 10.0, function(_) {
-					crossbyte._internal.websocket.WebSocket.MAX_MESSAGE_SIZE = ceiling;
 					Assert.isTrue(bomb.length < 4096, "the test's bomb is not small: " + bomb.length);
 					Assert.same([1009], closes, "a message inflating past the limit was not refused as too big");
 					Assert.equals(0, heard);

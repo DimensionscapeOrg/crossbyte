@@ -48,30 +48,54 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	public static inline var CONNECTING:Int = 0;
 	public static inline var OPEN:Int = 1;
 
-	// Max payload size in bytes
-	public static var MAX_PAYLOAD:Int = 65536;
-
-	// Max cumulative reassembled message size across fragments, in bytes
-	public static var MAX_MESSAGE_SIZE:Int = 16 * 65536;
-
-	// Retained for compatibility; clients now generate a fresh mask per frame.
-	public static var MASK_POOL_SIZE:Int = 64;
+	/** The default `maxMessageSize`: 1 MiB. **/
+	public static inline var DEFAULT_MAX_MESSAGE_SIZE:Int = 1024 * 1024;
 
 	/**
-	 * The ping interval a session starts with, in milliseconds; 0 for none.
-	 * See `pingInterval`, which each session carries and can change.
-	 */
-	public static var PING_INTERVAL:Int = 30000;
+		The largest frame this side sends: a message longer is sent in frames
+		of this many bytes. 64 KiB, the most a peer from before 1.0 took in
+		one frame. What this side takes in one is bounded by
+		`maxMessageSize` alone.
+	**/
+	public static inline var FRAGMENT_SIZE:Int = 64 * 1024;
+
+	/** The ping interval a session starts with, in seconds; see `pingInterval`. **/
+	public static inline var DEFAULT_PING_INTERVAL:Float = 30.0;
 
 	/** The idle timeout a session starts with, in seconds; see `idleTimeout`. **/
 	public static inline var DEFAULT_IDLE_TIMEOUT:Float = 60.0;
 
+	/** The closing handshake's deadline a session starts with, in seconds; see `closeTimeout`. **/
+	public static inline var DEFAULT_CLOSE_TIMEOUT:Float = 5.0;
+
 	/**
-	 * How long a closing handshake is given, in seconds: for the peer to answer
-	 * a close frame, and for what was queued before it to drain. Past it the
-	 * connection is closed regardless.
-	 */
-	public static var CLOSE_TIMEOUT:Float = 5.0;
+		The largest message this session takes, in bytes: a frame whose
+		length would take the message it belongs to past this is refused on
+		its header, before anything waits for its payload, and the session
+		fails with 1009 (Message Too Big); so is a compressed message that
+		would inflate past it. `0` or less takes messages of any size.
+
+		1 MiB by default. A frame may be as long as the message: a browser
+		sends one of 100 KB as a single frame, and Node's `ws` sends every
+		message as one. There was a limit on each frame too, 64 KiB, and
+		with it a browser's message of more than that was refused whatever
+		this said; it bounded nothing this does not, now that a frame is
+		held to what is left of the message on its header.
+
+		These were process-wide (`MAX_MESSAGE_SIZE`, `MAX_PAYLOAD`): a
+		second server, or a client, setting one changed it for every session
+		in the process.
+	**/
+	public var maxMessageSize:Int = DEFAULT_MAX_MESSAGE_SIZE;
+
+	/**
+		How long a closing handshake is given, in seconds: for the peer to
+		answer a close frame, and for what was queued before it to drain.
+		Past it the connection is closed regardless, as 1006 when the peer
+		never answered. Five by default. It was process-wide
+		(`CLOSE_TIMEOUT`).
+	**/
+	public var closeTimeout:Float = DEFAULT_CLOSE_TIMEOUT;
 
 	private static inline var WS:String = "ws";
 	private static inline var WSS:String = "wss";
@@ -1634,18 +1658,25 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 				}
 
 				// A frame is refused on its header alone, before the wait below for a
-				// payload that may never arrive. These three checks used to sit after
-				// that wait, and so ten bytes claiming a two-gigabyte length put the
-				// session into a wait for a frame MAX_PAYLOAD would have refused the
-				// moment it completed.
+				// payload that may never arrive. These checks used to sit after that
+				// wait, and so ten bytes claiming a two-gigabyte length put the
+				// session into a wait for a frame it would have refused the moment it
+				// completed. A data frame is held to what is left of its message
+				// under maxMessageSize, so nothing waits for more than a message.
 				var isControl:Bool = opCode >= WebSocketOpcode.CLOSE;
 				if (isControl && (!isFinal || payloadLength > 125)) {
 					__fail(1002);
 					return;
 				}
-				if (!isControl && payloadLength > MAX_PAYLOAD) {
-					__fail(1009);
-					return;
+				if (!isControl) {
+					var limit:Int = maxMessageSize;
+					// A continuation adds to the message under way; with none
+					// under way it is refused below, as a protocol error.
+					var before:Int = opCode == WebSocketOpcode.CONTINUATION && __incomingOpcode != -1 ? __incomingMessageSize : 0;
+					if (limit > 0 && payloadLength > limit - before) {
+						__fail(1009);
+						return;
+					}
 				}
 
 				if (opCode != WebSocketOpcode.CONTINUATION
@@ -1718,12 +1749,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 					__incomingCompressed = reserved != 0;
 				}
 
-				// Cap the cumulative reassembled message size across fragments.
+				// What the message has come to, held to maxMessageSize on each
+				// frame's header above.
 				__incomingMessageSize += payloadLength;
-				if (__incomingMessageSize > MAX_MESSAGE_SIZE) {
-					__fail(1009);
-					return;
-				}
 
 				// Read straight into the message the frame belongs to, unmasked
 				// where it lands: a message's first frame takes the buffer it
@@ -2560,7 +2588,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	/**
 		A whole compressed message, inflated in place of what arrived. Fails
-		the connection, 1009 past `MAX_MESSAGE_SIZE`, which bounds what a
+		the connection, 1009 past `maxMessageSize`, which bounds what a
 		small message can inflate into, 1007 for data that is not DEFLATE,
 		and answers false.
 	**/
@@ -2575,7 +2603,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 
 		try {
-			stream.uncompress(crossbyte.utils.CompressionAlgorithm.DEFLATE, MAX_MESSAGE_SIZE);
+			stream.uncompress(crossbyte.utils.CompressionAlgorithm.DEFLATE, maxMessageSize > 0 ? maxMessageSize : 0);
 		} catch (e:Dynamic) {
 			__fail(Std.string(e).indexOf("exceeded") >= 0 ? 1009 : 1007);
 			return false;
@@ -2911,7 +2939,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * and anything still waiting to go out before it. Now the code and reason
 	 * are in the frame, the connection stays up for the peer's answer, and
 	 * closes once that arrives and everything queued has gone, or after
-	 * `CLOSE_TIMEOUT` regardless. `onclose` reports the code and reason the
+	 * `closeTimeout` regardless. `onclose` reports the code and reason the
 	 * peer answered with, or 1006 when it never did.
 	 *
 	 * A session not yet open has nobody to say anything to, and closes at
@@ -2986,7 +3014,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		if (__closeDeadlineArmed) {
 			return;
 		}
-		__closeDeadline = __timers().setTimeout(CLOSE_TIMEOUT, function():Void {
+		__closeDeadline = __timers().setTimeout(closeTimeout > 0 ? closeTimeout : DEFAULT_CLOSE_TIMEOUT, function():Void {
 			__closeDeadlineArmed = false;
 			if (readyState == CLOSED) {
 				return;
@@ -3142,7 +3170,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	// ---- Heartbeat ---------------------------------------------------------
 
 	private function get_pingInterval():Float {
-		return __pingInterval < 0 ? PING_INTERVAL / 1000 : __pingInterval;
+		return __pingInterval < 0 ? DEFAULT_PING_INTERVAL : __pingInterval;
 	}
 
 	private function set_pingInterval(value:Float):Float {
@@ -3267,7 +3295,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	**/
 	private function __sendAsciiText(data:String):Bool {
 		var length:Int = data.length;
-		if (readyState != OPEN || length > MAX_PAYLOAD || (__deflateSend && length >= compressionThreshold)) {
+		if (readyState != OPEN || length > FRAGMENT_SIZE || (__deflateSend && length >= compressionThreshold)) {
 			return false;
 		}
 		#if cpp
@@ -3331,7 +3359,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 
 		// handles fragmentation of message into multiple frames
-		if (data.length > MAX_PAYLOAD) {
+		if (data.length > FRAGMENT_SIZE) {
 			var firstFrame:Bool = true;
 			while (data.position != data.length) {
 				var fin:Bool;
@@ -3340,9 +3368,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 				var remaining:Int = data.length - data.position;
 
-				if (remaining > MAX_PAYLOAD) {
+				if (remaining > FRAGMENT_SIZE) {
 					fin = false;
-					length = MAX_PAYLOAD;
+					length = FRAGMENT_SIZE;
 					fragmentOpcode = firstFrame ? opcode : WebSocketOpcode.CONTINUATION;
 				} else {
 					fin = true;

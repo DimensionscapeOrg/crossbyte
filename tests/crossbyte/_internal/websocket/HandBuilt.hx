@@ -24,7 +24,10 @@ class HandBuilt {
 		ws.__pongUntil = 0;
 		ws.__pongOwed = false;
 		ws.__control = null;
+		ws.maxMessageSize = WebSocket.DEFAULT_MAX_MESSAGE_SIZE;
+		ws.closeTimeout = WebSocket.DEFAULT_CLOSE_TIMEOUT;
 		#end
+		ws.__incomingMessageSize = 0;
 		ws.__writeQueued = false;
 		ws.__passFlushQueued = false;
 		ws.__pendingSent = 0;

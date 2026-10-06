@@ -427,8 +427,8 @@ class WebSocketSessionTest extends utest.Test {
 			ascii("abc", 300) + "é",
 			"é" + ascii("abc", 300),
 			ascii("xyz ", 5000),
-			ascii("m", crossbyte._internal.websocket.WebSocket.MAX_PAYLOAD),
-			ascii("n", crossbyte._internal.websocket.WebSocket.MAX_PAYLOAD + 1)
+			ascii("m", crossbyte._internal.websocket.WebSocket.FRAGMENT_SIZE),
+			ascii("n", crossbyte._internal.websocket.WebSocket.FRAGMENT_SIZE + 1)
 		];
 		__serve(null, function(server, sessions, finish) {
 			var client = new WebSocket();
@@ -767,10 +767,7 @@ class WebSocketSessionTest extends utest.Test {
 
 	@:timeout(15000)
 	public function testAClosePeerNeverAnswersEndsAtTheDeadlineAs1006(async:Async):Void {
-		var deadline:Float = crossbyte._internal.websocket.WebSocket.CLOSE_TIMEOUT;
-		crossbyte._internal.websocket.WebSocket.CLOSE_TIMEOUT = 0.5;
-
-		__serve(null, function(server, sessions, finish) {
+		__serve(server -> server.closeTimeout = 0.5, function(server, sessions, finish) {
 			var peer = new WirePeer(server.localPort);
 			peer.upgrade("/");
 
@@ -796,7 +793,6 @@ class WebSocketSessionTest extends utest.Test {
 					peer.poll();
 					return code != -1;
 				}, 5.0, function(_) {
-					crossbyte._internal.websocket.WebSocket.CLOSE_TIMEOUT = deadline;
 					Assert.equals(1006, code, "a close the peer never answered did not end at the deadline");
 					peer.close();
 					finish();

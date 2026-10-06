@@ -273,7 +273,338 @@ class ServerWebSocketLimitsTest extends utest.Test {
 	}
 	#end
 
+	// ---- maxPendingHandshakesPerAddress ----------------------------------
+
+	#if !ws_before
+	public function testTheDefaultsAreSixteenAnAddressAndTenThousandSessions():Void {
+		var server = new ServerWebSocket();
+		Assert.equals(16, server.maxPendingHandshakesPerAddress);
+		Assert.equals(10000, server.maxConnections);
+		Assert.equals(1024 * 1024, server.maxMessageSize);
+		Assert.equals(0, server.refusedConnections);
+	}
+	#end
+
+	/**
+		One address opening connections and saying nothing takes half the
+		places for upgrades and no more: past that, each of its connections
+		is closed as it is accepted, and the other half is there for every
+		other address. It took every place, and every real client waited
+		behind it, 8-9 s a join, for as long as it went on.
+	**/
+	@:timeout(20000)
+	public function testOneSilentAddressTakesHalfThePlacesAndNoMore(async:Async):Void {
+		var server = new ServerWebSocket();
+		server.maxPendingHandshakes = 8;
+		#if !ws_before
+		server.maxPendingHandshakesPerAddress = 2;
+		#end
+		server.handshakeTimeout = 30;
+		server.addEventListener(crossbyte.events.ServerSocketConnectEvent.CONNECT, _ -> {});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			var peers:Array<WirePeer> = [];
+			var opened:Int = 0;
+			// One at a time, each taken before the next, so the order the
+			// limits apply in is the order they connected in.
+			NetPump.until(() -> {
+				for (peer in peers) {
+					peer.poll();
+				}
+				if (opened < 10 && (peers.length == 0 || __pending(server) + __ended(peers) >= opened)) {
+					peers.push(new WirePeer(server.localPort));
+					opened++;
+				}
+				return opened >= 10 && __pending(server) + __ended(peers) >= 10;
+			}, 10.0, function(_) {
+				Assert.equals(4, __pending(server), "one address held other than half the places");
+				Assert.equals(6, __ended(peers), "its connections past half the places were not closed");
+				#if !ws_before
+				Assert.equals(6, server.refusedConnections);
+				Assert.equals(0, server.handshakeFailures, "a refusal was counted as a failed handshake");
+				// Another address is taken while this one is held to its share,
+				// and counted; this one is not.
+				Assert.isTrue(@:privateAccess server.__claimAddress("192.0.2.7"), "another address was refused");
+				Assert.isFalse(@:privateAccess server.__claimAddress("127.0.0.1"), "the crowding address was taken again");
+				@:privateAccess server.__addressCounts.release("192.0.2.7");
+				#end
+				for (peer in peers) {
+					peer.close();
+				}
+				server.close();
+				async.done();
+			});
+		});
+	}
+
+	/**
+		While the places are not crowded, one address is not limited: many
+		clients can share one, a carrier's NAT, an office, a proxy.
+	**/
+	@:timeout(20000)
+	public function testWhileThePlacesAreNotCrowdedOneAddressIsNotLimited(async:Async):Void {
+		var server = new ServerWebSocket();
+		#if !ws_before
+		server.maxPendingHandshakesPerAddress = 2;
+		#end
+		server.handshakeTimeout = 30;
+		server.addEventListener(crossbyte.events.ServerSocketConnectEvent.CONNECT, _ -> {});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			var peers:Array<WirePeer> = [for (_ in 0...20) new WirePeer(server.localPort)];
+			NetPump.until(() -> __pending(server) + __ended(peers) >= 20, 10.0, function(_) {
+				Assert.equals(20, __pending(server), "connections were refused with 236 of 256 places free");
+				Assert.equals(0, __ended(peers));
+				for (peer in peers) {
+					peer.close();
+				}
+				server.close();
+				async.done();
+			});
+		});
+	}
+
+	#if !ws_before
+	/**
+		An address's count goes down as each of its connections stops
+		arriving, upgraded, gone, or given up on at `handshakeTimeout`,
+		and the address is forgotten at none.
+	**/
+	@:timeout(20000)
+	public function testAnAddressIsCountedOnlyWhileItsConnectionsArrive(async:Async):Void {
+		var server = new ServerWebSocket();
+		server.handshakeTimeout = 1.5;
+		server.addEventListener(crossbyte.events.ServerSocketConnectEvent.CONNECT, _ -> {});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			var peers:Array<WirePeer> = [for (_ in 0...3) new WirePeer(server.localPort)];
+			NetPump.until(() -> __pending(server) >= 3, 5.0, function(_) {
+				Assert.equals(3, __counted(server));
+				peers[0].upgrade();
+				peers[1].close();
+				NetPump.until(() -> {
+					for (peer in peers) {
+						peer.poll();
+					}
+					return __counted(server) <= 1;
+				}, 5.0, function(_) {
+					Assert.equals(1, __counted(server), "an upgraded or vanished connection was still counted");
+					// The last says nothing until its deadline.
+					NetPump.until(() -> __counted(server) == 0, 5.0, function(_) {
+						Assert.equals(0, __counted(server), "a connection given up on was still counted");
+						for (peer in peers) {
+							peer.close();
+						}
+						server.close();
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
+	// ---- maxConnections --------------------------------------------------
+
+	/**
+		With `maxConnections` open, an upgrade is answered 503 and its
+		connection closed, `upgrade` not asked, counted as refused and not
+		as a failed handshake; once a session closes, the next is taken.
+	**/
+	@:timeout(20000)
+	public function testPastMaxConnectionsAnUpgradeIsAnswered503(async:Async):Void {
+		var asked:Int = 0;
+		__openSession(async, function(server) {
+			server.maxConnections = 2;
+			server.upgrade = function(request) {
+				asked++;
+				return true;
+			};
+		}, function(server, first, peer, done) {
+			var second = new WirePeer(server.localPort);
+			second.upgrade();
+			NetPump.until(() -> {
+				second.poll();
+				return second.head() != null;
+			}, 5.0, function(_) {
+				Assert.isTrue(second.head() != null && second.head().indexOf(" 101 ") > 0, "the second session was refused: " + second.head());
+				var third = new WirePeer(server.localPort);
+				third.upgrade();
+				NetPump.until(() -> {
+					third.poll();
+					return third.head() != null && third.ended;
+				}, 5.0, function(_) {
+					Assert.isTrue(third.head() != null && third.head().indexOf(" 503 ") > 0, "the third session was not answered 503: " + third.head());
+					Assert.isTrue(third.ended, "the refused connection was left open");
+					Assert.equals(2, server.clientCount);
+					Assert.equals(2, asked, "upgrade was asked about a session that could not open");
+					Assert.equals(1, server.refusedConnections);
+					Assert.equals(0, server.handshakeFailures, "a refusal was counted as a failed handshake");
+
+					// One goes, and the next is taken.
+					first.close();
+					var fourth = new WirePeer(server.localPort);
+					NetPump.until(() -> server.clientCount < 2, 5.0, function(_) {
+						fourth.upgrade();
+						NetPump.until(() -> {
+							fourth.poll();
+							return fourth.head() != null;
+						}, 5.0, function(_) {
+							Assert.isTrue(fourth.head() != null && fourth.head().indexOf(" 101 ") > 0, "a place freed was not taken: " + fourth.head());
+							second.close();
+							third.close();
+							fourth.close();
+							done();
+						});
+					});
+				});
+			});
+		});
+	}
+
+	/** An upgrade `upgrade` refuses gives back the place it was counted in. **/
+	@:timeout(20000)
+	public function testARefusedUpgradeGivesItsPlaceBack(async:Async):Void {
+		var server = new ServerWebSocket();
+		server.maxConnections = 1;
+		var refuse:Bool = true;
+		server.upgrade = function(request) {
+			if (refuse) {
+				refuse = false;
+				request.status = 403;
+				return false;
+			}
+			return true;
+		};
+		server.addEventListener(crossbyte.events.ServerSocketConnectEvent.CONNECT, _ -> {});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			var refused = new WirePeer(server.localPort);
+			refused.upgrade();
+			NetPump.until(() -> {
+				refused.poll();
+				return refused.head() != null;
+			}, 5.0, function(_) {
+				Assert.isTrue(refused.head() != null && refused.head().indexOf(" 403 ") > 0, "the first was not refused: " + refused.head());
+				var taken = new WirePeer(server.localPort);
+				taken.upgrade();
+				NetPump.until(() -> {
+					taken.poll();
+					return taken.head() != null;
+				}, 5.0, function(_) {
+					Assert.isTrue(taken.head() != null && taken.head().indexOf(" 101 ") > 0, "the place a refusal held was not given back: " + taken.head());
+					Assert.equals(0, server.refusedConnections);
+					refused.close();
+					taken.close();
+					server.close();
+					async.done();
+				});
+			});
+		});
+	}
+	#end
+
+	// ---- maxMessageSize: each server's, and each session's ----------------
+
+	/**
+		A message of 100 KB in one frame, as a browser sends one, is taken.
+		Every frame was held to 64 KiB, so it was refused with 1009 however
+		large a message might be.
+	**/
+	#if !eval
+	@:timeout(20000)
+	public function testAMessageOfOneHundredKilobytesInOneFrameIsTaken(async:Async):Void {
+		var got:Int = -1;
+		var code:Int = -1;
+		__openSession(async, null, function(server, session, peer, done) {
+			session.addEventListener(crossbyte.events.WebSocketMessageEvent.MESSAGE, (e:crossbyte.events.WebSocketMessageEvent) -> got = e.data.length);
+			session.addEventListener(crossbyte.events.Event.CLOSE, function(e:crossbyte.events.Event) {
+				var close = Std.downcast(e, crossbyte.events.WebSocketCloseEvent);
+				code = close == null ? 0 : close.code;
+			});
+			peer.sendFrame(WirePeer.BINARY, Bytes.alloc(100 * 1024));
+			NetPump.until(() -> got >= 0 || code >= 0, 10.0, function(_) {
+				Assert.equals(100 * 1024, got, 'a 100 KB frame was not taken (closed with $code)');
+				done();
+			});
+		});
+	}
+	#end
+
+	#if !ws_before
+	/**
+		Each server holds its sessions to its own `maxMessageSize`: one set
+		lower in the same process refuses what another takes. It was one
+		limit for the whole process.
+	**/
+	@:timeout(20000)
+	public function testEachServerHasItsOwnMessageLimit(async:Async):Void {
+		var other = new ServerWebSocket();
+		other.maxMessageSize = 1000;
+		Assert.equals(1024 * 1024, new ServerWebSocket().maxMessageSize, "one server's limit changed another's");
+
+		var got:Int = -1;
+		var code:Int = -1;
+		__openSession(async, server -> server.maxMessageSize = 1000, function(server, session, peer, done) {
+			Assert.equals(1000, session.maxMessageSize, "the session did not take its server's limit");
+			session.addEventListener(crossbyte.events.WebSocketMessageEvent.MESSAGE, (e:crossbyte.events.WebSocketMessageEvent) -> got = e.data.length);
+			session.addEventListener(crossbyte.events.Event.CLOSE, function(e:crossbyte.events.Event) {
+				var close = Std.downcast(e, crossbyte.events.WebSocketCloseEvent);
+				code = close == null ? 0 : close.code;
+			});
+			peer.sendFrame(WirePeer.BINARY, Bytes.alloc(1000));
+			NetPump.until(() -> got >= 0, 5.0, function(_) {
+				Assert.equals(1000, got, "a message at the limit was not taken");
+				// Two frames of 600: the second takes the message past the limit.
+				peer.sendFrame(WirePeer.BINARY, Bytes.alloc(600), false, false);
+				peer.sendFrame(0x0, Bytes.alloc(600));
+				NetPump.until(() -> code >= 0, 5.0, function(_) {
+					Assert.equals(1009, code, "a message past its server's limit was not refused as too big");
+					done();
+				});
+			});
+		});
+	}
+
+	/** `closeTimeout` must be a number of seconds above 0. **/
+	public function testACloseTimeoutThatIsNoTimeIsRefused():Void {
+		var socket = new WebSocket();
+		Assert.raises(() -> socket.closeTimeout = 0, crossbyte.errors.ArgumentError);
+		Assert.raises(() -> socket.closeTimeout = Math.NaN, crossbyte.errors.ArgumentError);
+		socket.closeTimeout = 0.25;
+		Assert.equals(0.25, socket.closeTimeout);
+	}
+	#end
+
 	// ------------------------------------------------------------- helpers
+
+	private static function __pending(server:ServerWebSocket):Int {
+		return @:privateAccess server.__pendingUpgrades.length;
+	}
+
+	#if !ws_before
+	private static function __counted(server:ServerWebSocket):Int {
+		return @:privateAccess server.__addressCounts.count("127.0.0.1");
+	}
+	#end
+
+	private static function __ended(peers:Array<WirePeer>):Int {
+		var count:Int = 0;
+		for (peer in peers) {
+			peer.poll();
+			if (peer.ended) {
+				count++;
+			}
+		}
+		return count;
+	}
 
 	/**
 		A session upgraded by a `WirePeer`, on a server set up by `configure`:
