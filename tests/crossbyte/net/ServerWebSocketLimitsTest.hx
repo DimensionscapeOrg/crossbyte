@@ -249,8 +249,15 @@ class ServerWebSocketLimitsTest extends utest.Test {
 					Assert.isTrue(grew <= 12, '$pings pings left $grew bytes of answers waiting for a peer reading nothing');
 					Assert.isTrue(longest < 1.0, 'a pass took ${Math.round(longest * 1000)} ms while the pings were read');
 
-					// The peer reads at last: its data, then one or two pongs,
-					// the last answering the last ping.
+					// The peer reads at last: its data, then the pongs, the last
+					// answering the last ping. One is owed at a time, and goes
+					// whenever the socket takes more: on Windows not once while
+					// the peer reads nothing, so one or two pongs in all; on
+					// Linux, whose send buffer grows as it is used, now and then
+					// during the flood, 14 in WSL. At most two a pass that read
+					// a batch (the one going, and the newest kept, if the socket
+					// took both), and two after: every ping had a pong of its
+					// own.
 					peer.resume();
 					NetPump.until(() -> {
 						peer.poll();
@@ -259,7 +266,8 @@ class ServerWebSocketLimitsTest extends utest.Test {
 						NetPump.wait(0.3, function() {
 							peer.poll();
 							var pongs = peer.framesOf(WirePeer.PONG);
-							Assert.isTrue(pongs.length >= 1 && pongs.length <= 2, '${pongs.length} pongs answered $pings pings');
+							var most:Int = 2 * Std.int(pings / 1000) + 2;
+							Assert.isTrue(pongs.length >= 1 && pongs.length <= most, '${pongs.length} pongs answered $pings pings in ${Std.int(pings / 1000)} batches');
 							if (pongs.length > 0) {
 								var lastPong = pongs[pongs.length - 1].payload;
 								Assert.equals(pings - 1, lastPong.length == 4 ? lastPong.getInt32(0) : -1, "the last pong did not answer the last ping");
