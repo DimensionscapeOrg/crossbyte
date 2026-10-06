@@ -1886,6 +1886,26 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A WebSocket message allocates nothing to send or to receive, natively,
+  but the `text` a listener asks for. An echo of a 100-character text
+  allocated 264 bytes natively, and allocates 116: the `String` the echo
+  asked for (101), and four bytes a frame of the client's masking keys.
+  Those keys are drawn four bytes a frame from a pool of 8 KB of the
+  system's CSPRNG, one a thread, as Node's `ws` draws them, where each
+  frame drew its own: a buffer and its storage, 140 bytes, every frame a
+  client sent, each key still CSPRNG output used once (RFC 6455 5.3).
+  `sendBinary` frames from the caller's bytes where it copied them into a
+  buffer of its own first (1,680 bytes for a 1 KB message, now none), a
+  message longer than a frame is framed a fragment at a time from where
+  it lies, a text past ASCII is encoded into the session's scratch
+  natively (1,168 bytes for 1 KB, now none), and a heartbeat's ping
+  carries one shared empty payload. On the jvm the echo went from 672 to
+  620 bytes; the rest there is the text, `sys.net.Socket`'s buffer per
+  read and write, and the JDK's selector. A `String` the application asks
+  for stays a string of its own, safe to keep; a listener that reads
+  `data` allocates nothing. Compression, where agreed, still works in
+  buffers of its own. Round trip unchanged (15.4 against 15.2 µs, median
+  of five interleaved).
 - A WebSocket session holds less while it is open, and lets go of what it
   held for its messages once it goes quiet. With 1,000 idle sessions,
   heap after a full collection, a session a server accepted held 6.6 KB

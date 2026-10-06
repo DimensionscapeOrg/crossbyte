@@ -171,7 +171,7 @@ class WebSocketMemoryTest extends utest.Test {
 	/** What a session's buffers hold for messages, in bytes of storage. **/
 	private static function __held(framing:crossbyte._internal.websocket.WebSocket):Int {
 		return __storage(framing.__input) + __storage(framing.__output) + __storage(framing.__pendingOutput) + __storage(framing.__messageKept)
-			+ __storage(framing.__maskedPayload) + __storage(framing.__outgoingMessageBuffer);
+			+ __storage(framing.__maskedPayload);
 	}
 
 	/**

@@ -58,6 +58,22 @@ import haxe.io.Error;
 	  frame. `shutdown()` throws, and `peerShutdownPolicy` is not consulted,
 	  a peer that shuts its side ends the session, as 1006.
 
+	**What a message costs.** Receiving one allocates nothing, text or
+	binary: its bytes and its `WebSocketMessageEvent` are the session's
+	own, filled again for each (see `Event`), and are valid only during the
+	listener's call. Its `text` is a `String` made when asked for, and is
+	the one allocation left on a message: a string cannot change, so it
+	cannot be a view of a buffer filled again with the next, and it is safe
+	to keep, as a map key or in a log. A listener reading `data`, a
+	protocol of its own, a command matched by its bytes, allocates
+	nothing. Sending allocates nothing either, natively, for `sendText` (up
+	to a frame, 64 KiB), `sendBinary` and `sendPrepared`; on the jvm a text
+	of more than 256 characters is encoded by the platform, into a buffer
+	of its own. A client draws each frame's masking key from a pool of
+	random bytes, 8 KB from the system's CSPRNG at a time, four bytes a
+	frame. Compression, where agreed, works in buffers of its own per
+	message.
+
 	@event connect  Dispatched when the session has opened: the upgrade is
 	                done, and messages can be sent.
 	@event close    Dispatched when the session ends, as a
@@ -421,7 +437,10 @@ class WebSocket extends Socket {
 	/**
 		Sends `length` bytes of `bytes` from `offset` as one binary message, at
 		once rather than when the socket is next flushed. A `length` of 0 sends
-		everything from `offset`.
+		everything from `offset`. The bytes are framed from where they lie and
+		copied before this returns, so the buffer is the caller's again, a
+		message event's payload included, and, uncompressed, nothing is
+		allocated for them.
 
 		@throws IOError if the session is not open, or, under the `THROW`
 			`outputOverflowPolicy`, if more than `maxOutputBufferSize` is
@@ -437,9 +456,10 @@ class WebSocket extends Socket {
 			length = bytes.length - offset;
 		}
 
-		var message:ByteArray = new ByteArray();
-		message.writeBytes(bytes, offset, length);
-		__webSocket.sendBytes(message);
+		// Framed from where the bytes lie, which copies them before this
+		// returns. They were copied into a ByteArray of their own first, and
+		// framed from that: a buffer and its storage every message.
+		__webSocket.sendRange(bytes, offset, length);
 		__checkOutputLimit();
 	}
 
