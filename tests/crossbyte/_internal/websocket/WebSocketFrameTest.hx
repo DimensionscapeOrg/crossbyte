@@ -261,7 +261,7 @@ class WebSocketFrameTest extends utest.Test {
 	}
 
 	private static function emptyWebSocket():WebSocket {
-		return Type.createEmptyInstance(WebSocket);
+		return HandBuilt.session();
 	}
 
 	/**

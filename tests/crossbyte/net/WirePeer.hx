@@ -121,6 +121,18 @@ class WirePeer {
 		#end
 	}
 
+	/** Reads again after `pause()`. **/
+	public function resume():Void {
+		#if nodejs
+		__socket.resume();
+		#end
+	}
+
+	/** How many bytes have arrived, from the first. **/
+	public function receivedLength():Int {
+		return received.length;
+	}
+
 	/** Takes in whatever has arrived, where arriving is not Node's doing. **/
 	public function poll():Void {
 		#if !nodejs

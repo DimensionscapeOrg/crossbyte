@@ -511,7 +511,6 @@ class WebSocketTest extends utest.Test {
 		var ws = emptyWebSocket();
 		ws.readyState = InternalWebSocket.CONNECTING;
 		ws.__key = "test-key";
-		ws.__handshakeBuffer = "";
 		ws.__input = new ByteArray();
 		ws.__input.endian = BIG_ENDIAN;
 		ws.__incomingMessageBuffer = new ByteArray();
@@ -565,8 +564,11 @@ class WebSocketTest extends utest.Test {
 		ws.__onData();
 
 		Assert.equals(0, opened);
-		Assert.isTrue(ws.__handshakeBuffer.length > 0);
+		// Held where it arrived until the head is whole.
+		Assert.isTrue(ws.__input.length > 0);
 
+		// Appended after what is held, as the read loop appends.
+		ws.__input.position = ws.__input.length;
 		writeRawBytes(ws.__input, Bytes.ofString(response.substr(splitAt)));
 		ws.__input.writeBytes(unmaskedFrame(0x02, Bytes.ofString("after")));
 		ws.__input.position = 0;
@@ -643,7 +645,7 @@ class WebSocketTest extends utest.Test {
 	#end
 
 	private static function emptyWebSocket():InternalWebSocket {
-		return Type.createEmptyInstance(InternalWebSocket);
+		return crossbyte._internal.websocket.HandBuilt.session();
 	}
 
 	/**
@@ -698,7 +700,6 @@ class WebSocketTest extends utest.Test {
 		var ws = emptyWebSocket();
 		ws.readyState = InternalWebSocket.CONNECTING;
 		ws.__key = "test-key";
-		ws.__handshakeBuffer = "";
 		ws.__input = new ByteArray();
 		ws.__input.endian = BIG_ENDIAN;
 		ws.__incomingMessageBuffer = new ByteArray();

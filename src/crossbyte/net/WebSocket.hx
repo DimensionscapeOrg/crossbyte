@@ -87,6 +87,11 @@ class WebSocket extends Socket {
 		// Said, as a socket a secure ServerSocket accepted says it: every
 		// session a secure server accepted read false.
 		webSocket.secure = server != null ? server.secure : @:privateAccess webSocket.__webSocket.__tls;
+		if (server != null) {
+			// The server's, from the start: it was applied once the session
+			// opened, and only when the server's was not 0.
+			webSocket.__maxOutputBufferSize = server.maxOutputBufferSize;
+		}
 		webSocket.__webSocket.maxOutputBufferSize = webSocket.__maxOutputBufferSize;
 		if (server != null) {
 			webSocket.__webSocket.pingInterval = server.pingInterval;
@@ -94,6 +99,7 @@ class WebSocket extends Socket {
 			// Before the upgrade request can arrive, which is what it answers.
 			webSocket.__webSocket.perMessageDeflate = server.perMessageDeflate;
 			webSocket.__webSocket.compressionThreshold = server.compressionThreshold;
+			webSocket.__webSocket.maxHeaderSize = server.maxHeaderSize;
 		}
 		webSocket.__init();
 
@@ -206,6 +212,12 @@ class WebSocket extends Socket {
 		A peer that stops reading, a slept phone, a half-open connection,
 		leaves everything sent to it buffered with nothing to reclaim it.
 		Frames are never dropped to stay under the limit.
+
+		A session a `ServerWebSocket` accepted starts with the server's
+		`maxOutputBufferSize`, 8 MiB unless changed; a client starts with
+		`0`. Answers to the peer's pings never pile up here whatever the
+		limit: a session owes at most one, the newest ping's (RFC 6455
+		5.5.3), while the last has not gone.
 
 		Overrides `Socket.maxOutputBufferSize` to bound the session's frame
 		buffer instead of the base socket's. A WebSocket writes through its

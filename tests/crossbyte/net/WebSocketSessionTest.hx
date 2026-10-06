@@ -48,7 +48,7 @@ class WebSocketSessionTest extends utest.Test {
 			},
 			writableLength: 0
 		};
-		var ws:crossbyte._internal.websocket.WebSocket = Type.createEmptyInstance(crossbyte._internal.websocket.WebSocket);
+		var ws:crossbyte._internal.websocket.WebSocket = crossbyte._internal.websocket.HandBuilt.session();
 		ws.readyState = crossbyte._internal.websocket.WebSocket.OPEN;
 		ws.__socket = socket;
 		ws.__connected = true;

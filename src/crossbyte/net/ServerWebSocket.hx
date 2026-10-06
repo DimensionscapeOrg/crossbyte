@@ -83,17 +83,33 @@ class ServerWebSocket extends ServerSocket {
 
 	/**
 		Applied to every session this server accepts as its
-		`WebSocket.maxOutputBufferSize`, or `0` to leave sessions unbounded.
+		`WebSocket.maxOutputBufferSize`: the most a session may have waiting
+		to go to a peer that is not reading, in bytes, before it is closed
+		with 1011 and an `ioError` saying why (or, under the session's `THROW`
+		`outputOverflowPolicy`, before the send throws). `0` leaves sessions
+		unbounded.
+
+		8 MiB by default, as `HTTPServer` bounds a response's output: room for
+		the largest message a session takes (1 MiB, `maxMessageSize`) several
+		times over, behind a peer that has fallen seconds behind; and what a
+		peer that never reads can make this server hold. It was 0, so one
+		such peer, a phone asleep, a client that stopped reading, grew
+		without bound everything sent to it, and a server broadcasting to it
+		held every message.
 
 		Set here rather than per session because an application never sees an
 		accepted socket before the handshake response is written to it, so a
 		per-connection limit is only reachable from the server that accepted
-		it. Existing sessions are unaffected; assign before `listen()`.
+		it. Read as each session is accepted; a session's own can be changed
+		once it is open.
 
-		Size it to the largest message this server legitimately sends, with
-		headroom.
+		Size it to the largest burst this server legitimately sends one
+		session, with headroom.
 	**/
-	public var maxOutputBufferSize:Int = 0;
+	public var maxOutputBufferSize:Int = DEFAULT_MAX_OUTPUT_BUFFER_SIZE;
+
+	/** The default `maxOutputBufferSize`: 8 MiB. **/
+	public static inline var DEFAULT_MAX_OUTPUT_BUFFER_SIZE:Int = 8 * 1024 * 1024;
 
 	/**
 		`WebSocket.pingInterval` for each session this server accepts, in
@@ -128,6 +144,28 @@ class ServerWebSocket extends ServerSocket {
 		messages shorter than this many bytes go uncompressed.
 	**/
 	public var compressionThreshold:Int = crossbyte._internal.websocket.WebSocket.DEFAULT_COMPRESSION_THRESHOLD;
+
+	/**
+		The largest upgrade request this server reads, in bytes: the request
+		line and every header, to the blank line that ends them. A request
+		past it is answered `431 Request Header Fields Too Large` and its
+		connection closed, counted in `handshakeFailures`, as soon as that
+		many bytes have arrived without an end, rather than once its peer
+		stops. `0` or less reads requests of any size. Set before the
+		sessions it is for arrive.
+
+		16 KiB by default, as Node's HTTP parser has it, and so the `ws`
+		library and most Node WebSocket servers: a browser's upgrade request
+		is a few hundred bytes, a few kilobytes with its cookies. What a
+		silent or slow peer can make this server hold is this times
+		`maxPendingHandshakes`: 4 MB at the defaults. Raise it for clients
+		that carry larger cookies.
+
+		There was no limit: one connection sending a header without end made
+		a server hold 221 MB in 10 s, with single passes of a second, until
+		`handshakeTimeout` ended it.
+	**/
+	public var maxHeaderSize:Int = crossbyte._internal.websocket.WebSocket.DEFAULT_MAX_HEADER_SIZE;
 
 	/**
 		Decides, once a client's upgrade request has arrived and before the
@@ -595,10 +633,6 @@ class ServerWebSocket extends ServerSocket {
 		// And a listener set aside at the limit can take the next.
 		__syncListenerWatch();
 		#end
-
-		if (maxOutputBufferSize > 0) {
-			client.maxOutputBufferSize = maxOutputBufferSize;
-		}
 
 		@:privateAccess client.__serverSlot = __clients.length;
 		__clients.push(client);
@@ -1297,6 +1331,7 @@ class ServerWebSocket extends ServerSocket {
 		idleTimeout = front.idleTimeout;
 		perMessageDeflate = front.perMessageDeflate;
 		compressionThreshold = front.compressionThreshold;
+		maxHeaderSize = front.maxHeaderSize;
 		handshakeTimeout = front.handshakeTimeout;
 		__metrics = front.__metrics;
 		__acceptedTotal = front.__acceptedTotal;

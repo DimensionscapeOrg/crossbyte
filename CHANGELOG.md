@@ -427,6 +427,13 @@ entry below says how:
 - A runtime-lane request for a number nobody registered is answered
   `RPCError.UNKNOWN_METHOD_MESSAGE`, where it was answered "Unsupported
   runtime RPC op: " and the number: compare an error with the constant.
+- A `ServerWebSocket` closes a session with 1011 once 8 MiB wait for
+  its peer (`maxOutputBufferSize`), where it held any amount: set a
+  larger limit for a server that bursts more than that to one session,
+  or 0 for none.
+- A `ServerWebSocket` refuses an upgrade request of more than 16 KiB
+  with 431, where it read one of any size: raise `maxHeaderSize` for
+  clients carrying more cookies than that.
 
 ### Added
 - `ReliableDatagramServerSocket.allowRebind`, off unless set: a reliable
@@ -1798,6 +1805,16 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A `ServerWebSocket` bounds what may wait for each session at 8 MiB
+  by default (`maxOutputBufferSize`, `DEFAULT_MAX_OUTPUT_BUFFER_SIZE`),
+  as `HTTPServer` bounds a response's output, where it was 0, no limit:
+  a peer that stopped reading, a phone asleep, a client stuck, made
+  the server hold everything sent to it, and a server broadcasting to it
+  every message. Past the limit the session dispatches `ioError` saying
+  the peer is not reading and closes with 1011, letting go of what
+  waited. The server's limit now applies from the moment a session is
+  accepted, and when it is 0; it applied once a session opened, and only
+  when it was not 0.
 - The reliable UDP wire, for join cookies (see `joinValidation` under
   Added). A 1.0 CONNECT sets the flag bit 0x08 (`CONNECT_EXTENDED_MASK`,
   graceful on a FIN), and its payload starts with an extension ahead of
@@ -3680,6 +3697,42 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A WebSocket session answers a flood of pings with one pong, not one
+  each. A peer sending pings and reading nothing was answered with a
+  frame per ping, each offered to the full socket as it was made, a
+  refused write and an exception apiece, and kept: natively 32 MB of
+  pongs waited after 10 s, single passes took 1.4 s, and another session
+  on the runtime waited 380 ms for each echo. A session now owes at most
+  one answer at a time, the newest ping's, as RFC 6455 5.5.3 allows and
+  libwebsockets does: while the last pong has not gone, a later ping's
+  payload is kept in its place (125 bytes at most) and answered once it
+  has, so the last ping is always the one last answered. Under the same
+  flood nothing waits, and the other session's echo takes 7 ms, where a
+  flood of as many small messages costs it 15 ms. A frame sent while the
+  socket is full is added to what waits rather than offered again, for
+  every frame, and a control frame's payload is read into one buffer per
+  session rather than one per frame. HTTP/2 bounds the same flood with a
+  budget of replies (`maxControlReplies`) and closes past it, because it
+  must answer every PING; WebSocket need not, so there is nothing to
+  close or tune.
+- A WebSocket upgrade is read to 16 KiB at most, the head of the
+  request a server session reads and of the answer a client reads.
+  There was no limit: each arrival was appended to a string, copied
+  whole every time, and the whole of it searched again for the blank
+  line, so one connection sending a header without end made a server
+  hold 221 MB in 10 s, with single passes of the runtime taking a
+  second, until `handshakeTimeout` closed it, and a few such
+  connections could exhaust its memory inside that window. A server now
+  answers a request past `ServerWebSocket.maxHeaderSize` (new; 16 KiB,
+  Node's limit, which the `ws` library inherits) with `431 Request
+  Header Fields Too Large` as soon as that much has arrived without an
+  end, counts it in `handshakeFailures`, and drops whatever else the
+  peer sends; a client gives up on an answer past it with an `ioError`
+  saying so and `close` 1006, where it waited out its `timeout`. The
+  head stays where it arrived and each arrival is searched once. A
+  server session also answers a request that is not a `GET` with 400,
+  and a client takes an answer that is not HTTP as a failed connect;
+  both waited for their deadline.
 - A `DatagramSocket` keeps receiving when its datagrams' destinations
   turn out unreachable. Windows reports a datagram's ICMP "port
   unreachable" as a failed read on the socket that sent it, natively, and

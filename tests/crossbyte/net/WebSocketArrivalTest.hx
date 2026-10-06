@@ -503,7 +503,7 @@ class WebSocketArrivalTest extends utest.Test {
 
 	/** A framing layer open as a client's is, reading what `append` gives it. **/
 	private static function openParser():crossbyte._internal.websocket.WebSocket {
-		var parser:crossbyte._internal.websocket.WebSocket = Type.createEmptyInstance(crossbyte._internal.websocket.WebSocket);
+		var parser:crossbyte._internal.websocket.WebSocket = crossbyte._internal.websocket.HandBuilt.session();
 		parser.readyState = crossbyte._internal.websocket.WebSocket.OPEN;
 		parser.__isClient = true;
 		parser.__input = new ByteArray();

@@ -247,6 +247,69 @@ class WebSocketClientTest extends utest.Test {
 			});
 		});
 	}
+
+	/**
+		A server whose answer to the upgrade never ends is given up on once
+		16 KiB of it have arrived (`maxHeaderSize`), not at `timeout`: the
+		client held every byte of it, copied whole with each arrival, for as
+		long as the connect's deadline allowed.
+	**/
+	@:timeout(20000)
+	public function testAnAnswerWithoutEndIsGivenUpOnAtTheLimit(async:Async):Void {
+		var server = new ServerSocket();
+		var held:Array<Socket> = [];
+		var pad = new StringBuf();
+		for (_ in 0...64 * 1024) {
+			pad.add("a");
+		}
+		var endless:String = "HTTP/1.1 101 Switching Protocols\r\nX-Endless: " + pad.toString();
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
+			var socket:Socket = e.socket;
+			held.push(socket);
+			// Once the request has come: a head of 64 KiB with no end.
+			socket.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(_) {
+				if (socket.bytesAvailable > 0) {
+					var discard = new crossbyte.io.ByteArray();
+					socket.readBytes(discard, 0, socket.bytesAvailable);
+					socket.writeUTFBytes(endless);
+					socket.flush();
+				}
+			});
+		});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		var client = new WebSocket();
+		client.timeout = 15000;
+		var connected:Bool = false;
+		var closed:Bool = false;
+		var failure:String = null;
+		var started:Float = 0.0;
+		var took:Float = -1.0;
+		client.addEventListener(Event.CONNECT, function(_) connected = true);
+		client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) failure = e.text);
+		client.addEventListener(Event.CLOSE, function(_) {
+			closed = true;
+			took = haxe.Timer.stamp() - started;
+		});
+
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			started = haxe.Timer.stamp();
+			client.connect("127.0.0.1", server.localPort);
+			NetPump.until(() -> closed || connected, 8.0, function(_) {
+				Assert.isFalse(connected, "an answer without end was taken for an upgrade");
+				Assert.isTrue(closed, "a client reading an answer without end was never given up on");
+				Assert.isTrue(took >= 0 && took < 5.0, 'gave up after $took s, against a timeout of 15 s');
+				Assert.isTrue(failure != null && failure.indexOf("maxHeaderSize") >= 0, "the failure did not say the answer was too large: " + failure);
+				for (socket in held) {
+					try socket.close() catch (_:Dynamic) {}
+				}
+				try client.close() catch (_:Dynamic) {}
+				try server.close() catch (_:Dynamic) {}
+				async.done();
+			});
+		});
+	}
 	#end
 }
 
