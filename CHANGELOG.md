@@ -102,6 +102,12 @@ entry below says how:
   `abort()` is the old immediate close. Its FIN holds a place in the
   sequence, which a peer from before 1.0 does not know, so both ends need
   1.0 for what was sent before a close to arrive before it.
+- A reliable datagram client on 1.0.0-rc.1 cannot return a join cookie:
+  while a 1.0 server validates joins, once `joinValidationThreshold`
+  sessions are pending, by default, its CONNECTs are dropped, and it
+  joins once fewer are pending, or never under `JoinValidation.ALWAYS`.
+  Set `joinValidation = NEVER` on a server that must take such clients
+  under any load. A 1.0 client joins a server on rc.1 as before.
 - `DatagramSocket.timeout` is gone; it did nothing, so delete what sets it.
 - A closed `DataChannel` resets its SCTP stream, so the peer's end closes
   too. That needs RE-CONFIG at both ends: a peer on 1.0.0-rc.1 does not
@@ -423,6 +429,71 @@ entry below says how:
   runtime RPC op: " and the number: compare an error with the constant.
 
 ### Added
+- `ReliableDatagramServerSocket.allowRebind`, off unless set: a reliable
+  UDP session that follows its player to a new address, a NAT that
+  gives it a new port, a phone moving from Wi-Fi to a mobile network,
+  where it was reset and the player cut off. Each session a 1.0 peer opens
+  is given a 16-byte random rebind key in the server's HANDSHAKE; when the
+  peer's frames then come from an address with no session, the server's
+  reset carries a challenge, a keyed hash of the new address and port
+  made as a join cookie is, and the peer's live session answers it from
+  there with a REBIND: its connection id, the challenge, and a keyed hash
+  of the two with the session's key. The server moves the session, its
+  endpoint maps, its host's count, its relay path, `remoteAddress` and
+  `remotePort`: answers with a REBOUND, and both sides send again at
+  once what went out while the peer could not be reached. The same session
+  object goes on; through a NAT written for the tests, every message both
+  ways arrived once and in order, under 15% loss too, and traffic resumed
+  0.2 ms after the client's first frame from its new port over loopback
+  (0.35 ms on the jvm), where the session had been reset. Refused: a wrong proof, a challenge
+  made for another address or more than 10 to 20 s old, a session not
+  connected or closing, and a second move within a second; at most 16
+  REBINDs are checked a pass. A client gives up after its `timeout`, with
+  an `ioError` naming the failed rebind. Without encryption the key crosses
+  the network in the clear, so someone on the path when a session began
+  could move it later: use it with encryption, or where no one hostile
+  shares the path. Nothing per packet, and nothing at all while off; no
+  key is given on a target with no secure random source (neko, HashLink).
+  TCP and WebSocket connections cannot follow an address, and reconnect
+  and resume, as `ReliableDatagramServerSocket`'s "Resuming a player"
+  shows.
+- "Resuming a player", in `ReliableDatagramServerSocket`'s class doc: how a
+  game takes back a player whose session was reset, a peer from before
+  1.0, a server without `allowRebind`, any TCP or WebSocket connection,
+  with a single-use resume token in its `connect` payload, checked by
+  `admit` and put back on the new session by its handler, which ends the
+  one left behind; a server and a client, compiled with the doc examples.
+- `ReliableDatagramServerSocket.joinValidation` (`JoinValidation`:
+  `UNDER_PRESSURE` unless changed, `ALWAYS`, `NEVER`) and
+  `joinValidationThreshold` (64): a stateless cookie for reliable UDP
+  joins, as TCP's SYN cookies, QUIC's Retry and DTLS's HelloVerifyRequest
+  do. A pending session was held for 20 seconds on the word of a source
+  address UDP lets a sender write, so about 13 forged CONNECTs a second
+  kept all 256 `maxPendingConnections` slots full and no real player could
+  join. Once `joinValidationThreshold` sessions are pending, or always,
+  under `ALWAYS`, a CONNECT is answered with a cookie instead: a keyed
+  hash (SipHash-2-4) of its address, port, connection id and the time,
+  for which the server keeps nothing, under a key made at random and
+  turned over every 10 seconds with the one before still accepted. Only a
+  CONNECT that returns it, from the address and port it was made for, goes
+  on to `admit` and a session. A 1.0 client returns it by itself, at once:
+  a join under a flood costs one more round trip, and an ordinary one
+  nothing. In a test, 1,040 forged CONNECTs from 200 addresses held 8
+  slots under a threshold of 8 where they had held all 16, and a real
+  client joined through them, where it could not. A cookie is never
+  larger than the CONNECT it answers: a 1.0 CONNECT is padded to 29
+  bytes, the largest anything is sent back to one. See Changed for the
+  wire, and Upgrading for peers on 1.0.0-rc.1.
+- `ReliableDatagramServerSocket.maxResetsPerSecond`, 1,000 unless changed:
+  the resets every reliable datagram server in the process may send
+  together in a second, from one allowance that holds a second's worth and
+  fills at that rate; negative is no limit and 0 sends none. A reset is
+  the FIN a server answers a frame from an address with no session with,
+  and one went out for every such frame however many came, so a sender
+  writing someone else's address could have the server send that address
+  a datagram for each of its own: 600 stranger frames drew 600 FINs, and
+  draw 50 under an allowance of 50. Past the allowance a frame is dropped
+  unanswered.
 - `ByteArray.maxObjectValues`: the most values one object read may make,
   1,000,000 unless changed, for the whole process; zero or less is no
   limit. See the fix below.
@@ -1727,6 +1798,35 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- The reliable UDP wire, for join cookies (see `joinValidation` under
+  Added). A 1.0 CONNECT sets the flag bit 0x08 (`CONNECT_EXTENDED_MASK`,
+  graceful on a FIN), and its payload starts with an extension ahead of
+  what `connect` passed: one byte, the extension's length after it; one
+  byte of features (0x01 a cookie follows, 0x02 the sender answers a
+  rebind challenge); the 8-byte cookie when it has one; zero padding until
+  the datagram is 29 bytes. A CONNECT with the bit and fewer than 29
+  bytes, or an extension past its end, is not a frame. Frame type 7,
+  `PATH`, is new: its payload's first byte says what it is, and a server
+  answers a CONNECT it validates with kind 1, the cookie, the sequence
+  field echoing the connection id, then 8 bytes, 16 in all, whose top bit
+  says which of the server's two keys made it. A peer on 1.0.0-rc.1 drops
+  type 7 and ignores the flag and the payload, as it ignored every CONNECT
+  payload. For `allowRebind`: every 1.0 CONNECT declares feature 0x02; a
+  server session given a key sends HANDSHAKEs of 22 payload bytes (the six
+  of 1.0, then the key) until its peer has shown it took one; a reset (a
+  FIN without the graceful bit) carries the challenge in its sequence
+  field, where it carried 0, and stays 7 bytes; `PATH` kind 2, REBIND, is
+  20 bytes (connection id in the sequence field, the 4-byte challenge, an
+  8-byte proof), and kind 3, REBOUND, 12 (connection id, the challenge).
+  A peer from before 1.0, or with no key, takes a reset with a challenge
+  as any reset.
+- A session a `ReliableDatagramServerSocket` accepts or dials makes no
+  socket of its own. Its constructor made one, a system socket, its
+  buffers asked for, a 64 KB read buffer, that the server closed at
+  once, for every join and every CONNECT below the validation threshold:
+  an accepted CONNECT allocated 88,080 bytes and took 45.9 us on the jvm,
+  and allocates 21,352 and takes 8.9 us; natively its large objects fell
+  from 86,004 bytes to 12,292.
 - On the jvm a datagram socket allocates nothing to send a datagram, and
   nothing to read one from the peer the last came from. Each send made a
   view of the bytes (48 bytes) and the destination afresh, an
