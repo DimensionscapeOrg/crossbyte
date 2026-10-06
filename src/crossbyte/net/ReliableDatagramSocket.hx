@@ -1059,9 +1059,15 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		objectEncoding = ObjectEncoding.DEFAULT;
 		__input = __createBuffer();
 		__output = __createBuffer();
-		__transport = new DatagramSocket();
-		__reserveWindow(__transport);
-		__prepareTransportListener();
+		// A session a server makes takes the server's socket, and makes no
+		// socket of its own: each made one, a system socket, its buffers
+		// asked for, its read buffer, that the server closed at once, about
+		// 27 of the 45 microseconds a join cost the server (jvm).
+		if (!__takeAdopting()) {
+			__transport = new DatagramSocket();
+			__reserveWindow(__transport);
+			__prepareTransportListener();
+		}
 		__resetSequences();
 
 		if (host != null || port != 0) {
@@ -1805,6 +1811,47 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__output.writeUTFBytes(value);
 	}
 
+	// Set on the thread making a session for a server, around its
+	// constructor, which then makes no transport: the server's is the
+	// session's. One a thread, since a server on one runtime and a socket
+	// made on another may be constructed at once.
+	#if (target.threaded && !js)
+	@:noCompletion private static final __adopting:sys.thread.Tls<Bool> = new sys.thread.Tls();
+	#else
+	@:noCompletion private static var __adopting:Bool = false;
+	#end
+
+	/** A session for a server, made with no transport of its own. **/
+	@:noCompletion private static function __adopted():ReliableDatagramSocket {
+		#if (target.threaded && !js)
+		__adopting.value = true;
+		#else
+		__adopting = true;
+		#end
+		var socket = new ReliableDatagramSocket();
+		// Taken by the constructor; cleared again whatever it did.
+		#if (target.threaded && !js)
+		__adopting.value = false;
+		#else
+		__adopting = false;
+		#end
+		return socket;
+	}
+
+	/** Whether this constructor is a server's, and clears it. **/
+	@:noCompletion private static inline function __takeAdopting():Bool {
+		#if (target.threaded && !js)
+		var adopting:Bool = __adopting.value == true;
+		if (adopting) {
+			__adopting.value = false;
+		}
+		#else
+		var adopting:Bool = __adopting;
+		__adopting = false;
+		#end
+		return adopting;
+	}
+
 	@:noCompletion private static function __createAccepted(
 		transport:DatagramSocket,
 		remoteAddress:String,
@@ -1817,17 +1864,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		?relay:TurnClient,
 		?rebindKey:haxe.io.Bytes
 	):ReliableDatagramSocket {
-		var socket = new ReliableDatagramSocket();
+		var socket = __adopted();
 		// Before the handshake, whose HANDSHAKE gives the peer the key.
 		socket.__rebindKey = rebindKey;
 		socket.__offersRebind = rebindKey != null;
 		if (congestion != null) {
 			socket.__congestion = congestion;
-		}
-		var temporaryTransport = socket.__transport;
-		socket.__teardownTransportListener();
-		if (temporaryTransport != null) {
-			temporaryTransport.close();
 		}
 		socket.__ownsTransport = false;
 		socket.__incoming = true;
@@ -1882,18 +1924,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private static function __createDialed(transport:DatagramSocket, remoteAddress:Null<String>, remotePort:Int,
 			server:ReliableDatagramServerSocket, mode:ReliableDatagramSocketMode, timeoutMs:Int, payload:ByteArray,
 			congestion:CongestionControl, ?relay:TurnClient):ReliableDatagramSocket {
-		var socket = new ReliableDatagramSocket();
+		var socket = __adopted();
 		if (congestion != null) {
 			socket.__congestion = congestion;
 		}
 		// Before the handshake, whose first CONNECT goes through it.
 		socket.__relay = relay;
-		var temporaryTransport = socket.__transport;
-		socket.__teardownTransportListener();
-
-		if (temporaryTransport != null) {
-			temporaryTransport.close();
-		}
 
 		// Set before the handshake begins, or the first retransmission window
 		// is measured against the default rather than what the caller asked
