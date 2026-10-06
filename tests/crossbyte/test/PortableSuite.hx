@@ -110,6 +110,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.SocketObjectTest());
 		// What Socket's documentation promises: ranges, ports, timeouts, close.
 		runner.addCase(new crossbyte.net.SocketContractTest());
+		// A buffer size asked of a socket Node gives no way to size: refused.
+		runner.addCase(new crossbyte.net.SocketBufferSizeTest());
 		// A connection replaced, whose socket still reports on Node.
 		runner.addCase(new crossbyte.net.SocketReconnectTest());
 		runner.addCase(new crossbyte.net.NameLookupTest());

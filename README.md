@@ -446,6 +446,28 @@ with a key of its own, so a client's `sendPrepared` shares the encoding and
 frames it itself. Each session still writes once a pass, however many
 messages it was sent in it.
 
+## TCP servers: what a peer can cost
+
+**The kernel's buffers.** Much of what a connection costs is not in the
+heap but in the kernel: what has arrived and not been read, and what has
+been written and not acknowledged. Left to itself the system grows both
+with use, Linux to 6 MB received and 4 MB sent a connection, Windows by
+the connection's bandwidth, so a peer that sends and does not read, or
+reads nothing, makes the kernel hold that much for it. `receiveBufferSize`
+and `sendBufferSize` fix them, on a `Socket` before it connects or on a
+`ServerSocket` for every connection it accepts (natively and on the jvm):
+
+```haxe
+var server = new ServerSocket();
+server.receiveBufferSize = 64 * 1024; // before listen(): the window starts there
+server.sendBufferSize = 64 * 1024;
+```
+
+What the system will not take waits in the socket's own output buffer
+instead, where `bytesPending` counts it and `maxOutputBufferSize` bounds it.
+A smaller buffer is cheaper and slower over a long path: a connection moves
+at most one buffer per round trip.
+
 ## Extensions
 
 CrossByte's extension story is intentional: features that benefit from native backends or external platform libraries can live in sibling haxelibs instead of bloating the core.

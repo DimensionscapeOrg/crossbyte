@@ -447,6 +447,28 @@ entry below says how:
   clients carrying more cookies than that.
 
 ### Added
+- `Socket.receiveBufferSize` and `sendBufferSize`, and the same on
+  `ServerSocket` for every connection it accepts: the kernel's buffers for
+  a TCP connection (`SO_RCVBUF`, `SO_SNDBUF`), as `DatagramSocket` has
+  them for UDP. Asked for, a size is fixed and the system's own growing
+  turned off for the socket: that bounds what a peer can make the kernel
+  hold for one connection while the application is not reading, where
+  a server holding many connections keeps most of their memory, and
+  moves a slow peer's backlog into the socket's own output buffer, where
+  `bytesPending` counts it and `maxOutputBufferSize` bounds it. A client
+  asks before `connect()`, which is when the window a connection starts
+  with is agreed; a server asks before `listen()`, and its listener and
+  each connection it accepts take it. Natively and on the jvm
+  (`Socket.bufferSizeSupported`); Node gives a TCP socket no way to size
+  them, and the interpreter, HashLink and Neko none to ask, so asking
+  there throws `IllegalOperationError`. Linux keeps twice what is asked
+  and reports that. With them `HTTPStreamingTest`'s held-response cases
+  make their stall rather than assume it: they failed about 1 run in 6
+  alone, "the responses never waited on their client", when Windows'
+  loopback buffers grew to take all 64 MB a case sent; the client's
+  receive buffer and the server's send buffer are now fixed at 64 KB
+  where they can be, and answers go eight at a time, then more, until the
+  server's socket parks, so a target that cannot be asked is sent more.
 - `PreparedMessage`, `WebSocket.sendPrepared` and
   `ServerWebSocket.broadcast`: one WebSocket message made ready once and
   sent to many sessions, a chat room's line, a match's state, a
