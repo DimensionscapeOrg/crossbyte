@@ -450,8 +450,33 @@ entry below says how:
   inherit that: build with `-D crossbyte_keep_nofile` to keep the limit
   it was started with, for children that `select()` on descriptors under
   1,024.
+- A `Socket` stops reading once 16 MiB have arrived that its application
+  has not read (`maxInputBufferSize`, `PAUSE`), and goes on once it reads:
+  an application that waits for a whole message larger than that before
+  reading any raises the limit, or sets it to 0 for none.
 
 ### Added
+- `Socket.maxInputBufferSize` and `inputOverflowPolicy` (with
+  `InputOverflowPolicy`): what a peer can make a connection hold that its
+  application has not read, as `maxOutputBufferSize` bounds what waits for
+  a peer. There was no limit: one peer sending to a connection whose
+  application read a message a tick made a server hold 664 MB in a
+  second. `PAUSE`, the default, stops reading at the limit until the
+  application has read below it, natively the socket leaves the poll
+  set's reads and its registry asks it once a pass whether to go on; on
+  Node, Node's socket is paused, and what arrives meanwhile waits in the
+  kernel until TCP's window holds the peer back: backpressure, nothing
+  lost. `CLOSE` closes the connection, with an `ioError` naming the limit,
+  as soon as a byte arrives past it. The default limit,
+  `DEFAULT_MAX_INPUT_BUFFER_SIZE`, is 16 MiB: twice the largest message
+  any CrossByte transport takes by default (8 MiB RPC frames and reliable
+  UDP messages), so an application waiting for a whole one is never held
+  short; HTTP, WebSocket, RPC and `NetConnection` read what arrives as it
+  arrives and never reach it. A 4 MB send to a connection reading nothing
+  was held whole; it now holds 64 KB at a 64 KB limit and arrives whole
+  once read. A secure socket reads a whole TLS record or none, so a TLS
+  read stopped at the limit leaves nothing decrypted where no poll can
+  see it.
 - `Socket.receiveBufferSize` and `sendBufferSize`, and the same on
   `ServerSocket` for every connection it accepts: the kernel's buffers for
   a TCP connection (`SO_RCVBUF`, `SO_SNDBUF`), as `DatagramSocket` has

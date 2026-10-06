@@ -52,6 +52,10 @@ final class SocketRegistry {
 	**/
 	@:noCompletion public var __moreToRead:Bool = false;
 
+	// Sockets that stopped reading at their input limit, asked once a pass
+	// whether to read again; null until one does. See InputPauseCheck.
+	@:noCompletion private var __pausedInput:Array<InputPauseCheck> = null;
+
 	private inline function get_capacity():Int {
 		return __capacity;
 	}
@@ -82,6 +86,7 @@ final class SocketRegistry {
 
 	public inline function clear():Void {
 		__set.clear();
+		__pausedInput = null;
 		__deregisterQueue.clear(true);
 		__deregisterPending.clear();
 		__writableQueue.clear();
@@ -140,10 +145,38 @@ final class SocketRegistry {
 			__set.remove(s);
 		}
 	}
+	/**
+		`socket` has stopped reading at its input limit, and left the poll
+		set's reads: from the next pass it is asked, once a pass, whether to
+		read again, until it says no.
+	**/
+	public function watchInputPause(socket:InputPauseCheck):Void {
+		if (__pausedInput == null) {
+			__pausedInput = [];
+		}
+		__pausedInput.push(socket);
+	}
+
+	@:noCompletion private function __checkPausedInput():Void {
+		var paused:Array<InputPauseCheck> = __pausedInput;
+		var kept:Int = 0;
+		for (i in 0...paused.length) {
+			var socket:InputPauseCheck = paused[i];
+			if (socket.__inputStillPaused()) {
+				paused[kept++] = socket;
+			}
+		}
+		paused.resize(kept);
+	}
+
 	// No default for `timeout`: on the jvm an argument with one is an
 	// object, boxed by every call, and this is called every frame.
 	public #if final inline #end function update(timeout:Float):Void {
 		__moreToRead = false;
+		if (__pausedInput != null && __pausedInput.length > 0) {
+			// Before the poll: one that reads again is in this pass's set.
+			__checkPausedInput();
+		}
 		if (!__writableQueue.isEmpty) {
 			// Swapped before draining: a socket that is still blocked
 			// re-queues itself from inside this dispatch, and clearing the
