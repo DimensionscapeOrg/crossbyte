@@ -445,6 +445,11 @@ entry below says how:
 - A `ServerWebSocket` refuses an upgrade request of more than 16 KiB
   with 431, where it read one of any size: raise `maxHeaderSize` for
   clients carrying more cookies than that.
+- Natively on Linux and macOS a process raises its soft limit on open
+  descriptors to its hard limit as it starts, and the children it starts
+  inherit that: build with `-D crossbyte_keep_nofile` to keep the limit
+  it was started with, for children that `select()` on descriptors under
+  1,024.
 
 ### Added
 - `Socket.receiveBufferSize` and `sendBufferSize`, and the same on
@@ -3852,6 +3857,29 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A server out of descriptors no longer spins. A peer that opened
+  connections past the process's descriptor limit left the listener
+  readable with a connection the system would not hand over, so a server
+  polled it on every pass and failed: natively on Linux 380,000 accepts a
+  second at a whole core (474,000 with an accept made to fail, 118,000 on
+  the jvm), and nothing else served meanwhile. After a failed accept the
+  listener is now set aside for 5 ms, twice as long after each failure
+  that follows, at most a second, and back to 5 ms once a connection is
+  taken, Go's `net/http` schedule; libuv, Netty and nginx set the
+  listener aside the same way, so a second out of descriptors costs
+  about seven accepts and no measurable processor time, and the waiting
+  connection is taken once a descriptor frees. `ServerSocket` and
+  `ServerWebSocket` alike; `acceptFailures` still counts every one and
+  the first of a run is still an `ioError`. HashLink's accept answers
+  nothing for any failure, which read as nothing waiting: a listener still
+  readable after it is now counted as a failure too. And natively on Linux
+  and macOS the process's soft limit on open descriptors is raised to its
+  hard one as it starts, as Go and the JVM do, so a shell's 1,024 no
+  longer stops a server near a thousand connections; `-D
+  crossbyte_keep_nofile` keeps the limit it started with, and the first
+  server to listen warns, once, where the limit is still under 4,096.
+  Tests: `ServerSocketAcceptBackoffTest`, every threaded target, and
+  natively on Linux out of descriptors for real.
 - A WebSocket session answers a flood of pings with one pong, not one
   each. A peer sending pings and reading nothing was answered with a
   frame per ping, each offered to the full socket as it was made, a

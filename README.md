@@ -448,6 +448,20 @@ messages it was sent in it.
 
 ## TCP servers: what a peer can cost
 
+**Out of descriptors.** Each connection is a descriptor, and a process may
+hold only so many (`RLIMIT_NOFILE` on Linux and macOS). Natively CrossByte
+raises its soft limit to the hard one as the process starts, as Go and the
+JVM do: a shell's soft limit of 1,024 would stop a server near a thousand
+connections whatever the hard limit allowed, and the first server to listen
+says so, once, where the limit is still below 4,096. Past the limit an
+accept fails and the connection waits in the kernel's queue. The server sets
+its listener aside for 5 ms, then twice as long after each failure that
+follows, at most a second, Go's `net/http` schedule, and what libuv, Netty
+and nginx do, and takes the connection once a descriptor frees.
+`acceptFailures` counts the failures, and the first of a run is reported as
+an `ioError`. A listener polled on every pass instead spun a core: 380,000
+failed accepts a second natively on Linux, measured, against seven now.
+
 **The kernel's buffers.** Much of what a connection costs is not in the
 heap but in the kernel: what has arrived and not been read, and what has
 been written and not acknowledged. Left to itself the system grows both
@@ -495,6 +509,7 @@ All optional, all off unless you pass them.
 | `crossbyte_no_http2` | Do not auto-register the bundled HTTP/2 backend. A backend registered explicitly through `HTTPBackendRegistry` still wins either way; this only stops the bundled one from being picked up on its own. |
 | `crossbyte_check_events` | Find code that keeps an event, or the received bytes one carries, past its listener call (see `Event`): every event and payload handed out for an arrival is made afresh and killed once the call returns, bytes overwritten with `0xDB`, length and position 0, fields cleared, so the line that kept one reads poison or throws. For tests and debugging. |
 | `crossbyte_fresh_events` | Make every event and payload handed out for an arrival afresh, as before 1.0, where a released build hands out one of each per socket, session or connection again for every arrival: the workaround for code that keeps them, until it copies what it keeps. |
+| `crossbyte_keep_nofile` | Keep the process's limit on open descriptors as it started, natively on Linux and macOS, rather than raise the soft limit to the hard one as the process starts (see "TCP servers: what a peer can cost"). For a process that starts children which `select()` on descriptors below 1,024. |
 | `http_debug` | Log each response line the HTTP client reads, through `Logger`, so it honours the configured level and sink. |
 | `crossbyte_debug` | Keep `crossbyte.io.File` out of `@:noDebug`, so its frames appear in stack traces. |
 

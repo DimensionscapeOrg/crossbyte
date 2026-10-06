@@ -73,6 +73,20 @@ final class NativeSocketRegistry {
 		return __set.length;
 	}
 
+	#if (cpp && !crossbyte_keep_nofile)
+	/**
+		As the process starts, its soft limit on open descriptors is raised
+		to the hard one, natively on Linux and macOS, as Go and the JVM do:
+		a shell's soft limit of 1,024 stopped a server near a thousand
+		connections whatever its hard limit allowed. Nothing on Windows,
+		which has no such limit. `-D crossbyte_keep_nofile` keeps the limit
+		the process started with; see `ServerSocket.acceptFailures`.
+	**/
+	static function __init__():Void {
+		crossbyte._internal.socket.NativeSocketOptions.raiseDescriptorLimit();
+	}
+	#end
+
 	public inline function new(capacity:Int) {
 		__capacity = capacity;
 		__set = new DenseSet();
