@@ -368,6 +368,43 @@ class ServerWebSocketSpreadTest extends utest.Test {
 	}
 
 	/**
+		A connection the front counted under its address as it accepted it,
+		and handed to a runtime that closes it without taking it up, the
+		server stopping there, or the runtime exiting, while it was on its
+		way, is let go of from that count. It stayed counted for as long as
+		the server ran.
+	**/
+	@:timeout(30000)
+	public function testAHandOffClosedWithoutBeingTakenUpLetsGoOfItsAddress():Void {
+		var acceptor:CrossByte = SpreadSupport.runtime();
+		var first:CrossByte = SpreadSupport.runtime();
+
+		var server:ServerWebSocket = SpreadSupport.on(acceptor, () -> {
+			var server = new ServerWebSocket();
+			server.runtimes = [first];
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, function(_) {});
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			return server;
+		});
+		var replica:ServerWebSocket = cast server.__spread.replicas[0];
+
+		// Counted as the front accepts it, then handed to a runtime whose share
+		// of the server has stopped.
+		Assert.isTrue(SpreadSupport.on(acceptor, () -> server.__claimAddress("192.0.2.9")));
+		Assert.equals(1, server.__addressCounts.count("192.0.2.9"));
+		var count:Int = SpreadSupport.on(first, () -> {
+			replica.__stopReplica();
+			replica.__adopt(new sys.net.Socket(), {host: new sys.net.Host("192.0.2.9"), port: 40000});
+			return server.__addressCounts.count("192.0.2.9");
+		});
+		Assert.equals(0, count, "a hand-off closed without being taken up stayed counted under its address");
+
+		SpreadSupport.on(acceptor, () -> server.close());
+		SpreadSupport.stop([acceptor, first]);
+	}
+
+	/**
 		`drain()` sends every session on every runtime its close frame, and
 		finishes on the server's runtime once all have gone; the runtimes
 		`runtimeCount` made exit with it.

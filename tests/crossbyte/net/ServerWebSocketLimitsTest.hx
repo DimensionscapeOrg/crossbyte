@@ -581,6 +581,21 @@ class ServerWebSocketLimitsTest extends utest.Test {
 		socket.closeTimeout = 0.25;
 		Assert.equals(0.25, socket.closeTimeout);
 	}
+
+	/**
+		A server's `closeTimeout` is refused for no time too, as its
+		sessions' is: it took 0, NaN or a negative number without a word,
+		and its sessions waited five seconds whatever it said.
+	**/
+	public function testAServersCloseTimeoutThatIsNoTimeIsRefused():Void {
+		var server = new ServerWebSocket();
+		Assert.raises(() -> server.closeTimeout = 0, crossbyte.errors.ArgumentError);
+		Assert.raises(() -> server.closeTimeout = -1, crossbyte.errors.ArgumentError);
+		Assert.raises(() -> server.closeTimeout = Math.NaN, crossbyte.errors.ArgumentError);
+		Assert.equals(5.0, server.closeTimeout, "a refused closeTimeout was kept");
+		server.closeTimeout = 0.25;
+		Assert.equals(0.25, server.closeTimeout);
+	}
 	#end
 
 	// ------------------------------------------------------------- helpers

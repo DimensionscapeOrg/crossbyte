@@ -370,6 +370,38 @@ follow an address: those players reconnect and resume, as
 `ReliableDatagramServerSocket`'s class doc shows under "Resuming a player",
 which is also the fallback for a peer from before 1.0.
 
+## WebSocket servers: what a peer can cost
+
+Every limit on a `ServerWebSocket` is on by default, and each is the
+server's own, one server, or a client, setting its limits changes no other
+in the process:
+
+| On the server | Default | Bounds |
+| --- | --- | --- |
+| `maxPendingHandshakes` | 256 | connections still upgrading, TLS and the HTTP upgrade together; more wait in the kernel's queue |
+| `maxPendingHandshakesPerAddress` | 16 | one address's share of those, once half are taken; past it a connection is closed as it is accepted |
+| `handshakeTimeout` | 10 s | each upgrade, from accept |
+| `maxHeaderSize` | 16 KiB | the upgrade request's head, answered `431` past it |
+| `maxConnections` | 10,000 | sessions open at once, answered `503` past it |
+| `maxMessageSize` | 1 MiB | one message arriving, its frames together, refused on a frame's header with 1009 |
+| `maxOutputBufferSize` | 8 MiB | what waits for a peer that is not reading, closed with 1011 past it |
+| `idleTimeout` | 60 s | silence from the peer, a ping sent every `pingInterval` (30 s) meanwhile |
+| `closeTimeout` | 5 s | the closing handshake |
+
+A peer's pings are answered one at a time, the newest, RFC 6455 lets a
+pong answer only the latest ping, so a peer that pings and reads nothing
+is owed one pong however many it sends. `refusedConnections` counts the
+connections the two connection limits closed, and `handshakeFailures` the
+upgrades that never finished.
+
+None of these bounds how often one address connects: a connection that
+upgrades and leaves at once passes all of them. A listener open to the
+internet keeps a `RateLimiter` in `admit`, which is asked before any work is
+done for a connection, `ServerWebSocket`'s class doc shows one. Behind a
+proxy that forwards connections before their client has spoken, every
+connection has the proxy's address: set `maxPendingHandshakesPerAddress` to
+0 there, and bound each client at the proxy.
+
 ## Extensions
 
 CrossByte's extension story is intentional: features that benefit from native backends or external platform libraries can live in sibling haxelibs instead of bloating the core.

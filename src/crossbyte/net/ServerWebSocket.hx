@@ -225,8 +225,22 @@ class ServerWebSocket extends ServerSocket {
 		long, in seconds, a closing handshake is given before the
 		connection is closed regardless. Five by default. Read as each
 		session is accepted.
+
+		Refused for 0, as a session's is, rather than read as no deadline: a
+		closing handshake that waited for good would hold every peer that
+		never answers its close frame. It took 0, NaN or a negative number
+		without a word, and its sessions waited the default five seconds.
+
+		@throws ArgumentError When not a number above 0.
 	**/
-	public var closeTimeout:Float = crossbyte._internal.websocket.WebSocket.DEFAULT_CLOSE_TIMEOUT;
+	public var closeTimeout(default, set):Float = crossbyte._internal.websocket.WebSocket.DEFAULT_CLOSE_TIMEOUT;
+
+	@:noCompletion private function set_closeTimeout(value:Float):Float {
+		if (!(value > 0)) {
+			throw new ArgumentError('closeTimeout must be a number of seconds above 0, and was $value.');
+		}
+		return closeTimeout = value;
+	}
 
 	/**
 		The most sessions this server keeps open at once. An upgrade
@@ -1602,7 +1616,27 @@ class ServerWebSocket extends ServerSocket {
 		On a replica, on its runtime: a connection handed over becomes a
 		session of this runtime's, whose TLS handshake and upgrade run here.
 	**/
+	/**
+		On a replica, on its runtime: a connection the front handed over, which
+		the front counted under its address as it accepted it. One closed here
+		without being taken up, the server stopping, or this runtime exiting,
+		while the hand-off was on its way, is let go of from that count too:
+		it stayed counted for as long as the server ran, and an address with
+		sixteen such was refused whenever the places were crowded.
+	**/
+	@:noCompletion override private function __adopt(socket:sys.net.Socket, peer:{host:Host, port:Int}):Void {
+		__adopted = false;
+		super.__adopt(socket, peer);
+		if (!__adopted && peer != null) {
+			__addressCounts.release(crossbyte._internal.net.IPv6.compress(peer.host.toString()));
+		}
+	}
+
+	// Whether the hand-off __adopt is taking was taken up.
+	@:noCompletion private var __adopted:Bool = false;
+
 	@:noCompletion override private function __adoptConnection(socket:sys.net.Socket, peer:{host:Host, port:Int}):Void {
+		__adopted = true;
 		__takeSettings(cast __front);
 		var accepted:WebSocket = __fromSockettoWebsocket(socket);
 		// Counted by the front as it accepted it, under this address.
