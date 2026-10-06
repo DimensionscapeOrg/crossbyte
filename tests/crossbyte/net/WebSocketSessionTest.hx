@@ -62,8 +62,6 @@ class WebSocketSessionTest extends utest.Test {
 		ws.__output.endian = BIG_ENDIAN;
 		ws.__pendingOutput = new ByteArray();
 		ws.__pendingOutput.endian = BIG_ENDIAN;
-		ws.__outgoingMessageBuffer = new ByteArray();
-		ws.__outgoingMessageBuffer.endian = BIG_ENDIAN;
 		ws.__runtime = CrossByte.current();
 
 		for (i in 0...10) {

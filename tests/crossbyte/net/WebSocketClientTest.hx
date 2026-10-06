@@ -310,6 +310,103 @@ class WebSocketClientTest extends utest.Test {
 			});
 		});
 	}
+
+	/**
+		Each frame a client sends has a masking key of its own, drawn from a
+		pool of random bytes four at a time: across more frames than one pool
+		holds (2,048), no key is the one before it, nearly all are distinct,
+		and every frame unmasks to what was sent. A key reused, or a pool
+		refilled with what it held, would show here.
+	**/
+	@:timeout(30000)
+	public function testEveryFrameAClientSendsHasAKeyOfItsOwn(async:Async):Void {
+		var frames:Int = 3000;
+		var server = new ServerSocket();
+		var held:Array<Socket> = [];
+		var received = new crossbyte.io.ByteArray();
+		var answered:Bool = false;
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
+			var socket:Socket = e.socket;
+			held.push(socket);
+			socket.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(_) {
+				socket.readBytes(received, received.length, socket.bytesAvailable);
+				if (!answered) {
+					// The request whole: answered as a server answers it.
+					var request:String = received.toString();
+					var end:Int = request.indexOf("\r\n\r\n");
+					if (end < 0) {
+						return;
+					}
+					var keyMatch = ~/Sec-WebSocket-Key: ([^\r]+)/;
+					var key:String = keyMatch.match(request) ? keyMatch.matched(1) : "";
+					var accept:String = haxe.crypto.Base64.encode(haxe.crypto.Sha1.make(haxe.io.Bytes.ofString(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
+					socket.writeUTFBytes("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept
+						+ "\r\n\r\n");
+					socket.flush();
+					answered = true;
+					// What follows the request is frames.
+					var rest = new crossbyte.io.ByteArray();
+					rest.writeBytes(received, end + 4, received.length - end - 4);
+					received = rest;
+				}
+			});
+		});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		var client = new WebSocket();
+		var connected:Bool = false;
+		client.addEventListener(Event.CONNECT, function(_) connected = true);
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			client.connect("127.0.0.1", server.localPort);
+			NetPump.until(() -> connected, 5.0, function(_) {
+				Assert.isTrue(connected, "the client never opened");
+				for (i in 0...frames) {
+					client.sendText("frame " + i);
+				}
+				// Each frame: 2 bytes of header, 4 of key, the text.
+				var expected:Int = 0;
+				for (i in 0...frames) {
+					expected += 6 + ("frame " + i).length;
+				}
+				NetPump.until(() -> received.length >= expected, 10.0, function(_) {
+					var keys = new Map<Int, Bool>();
+					var at:Int = 0;
+					var previous:Null<Int> = null;
+					var repeats:Int = 0;
+					var wrong:Int = 0;
+					var bytes:haxe.io.Bytes = received;
+					for (i in 0...frames) {
+						var length:Int = bytes.get(at + 1) & 0x7F;
+						var key:Int = bytes.getInt32(at + 2);
+						if (previous != null && key == previous) {
+							repeats++;
+						}
+						previous = key;
+						keys.set(key, true);
+						var text = new StringBuf();
+						for (j in 0...length) {
+							text.addChar(bytes.get(at + 6 + j) ^ bytes.get(at + 2 + (j & 3)));
+						}
+						if (text.toString() != "frame " + i) {
+							wrong++;
+						}
+						at += 6 + length;
+					}
+					var distinct:Int = Lambda.count(keys);
+					Assert.equals(0, repeats, "a frame had the key of the one before it");
+					Assert.isTrue(distinct >= frames - 3, '$distinct distinct keys across $frames frames');
+					Assert.equals(0, wrong, "frames did not unmask to what was sent");
+					for (socket in held) {
+						try socket.close() catch (_:Dynamic) {}
+					}
+					try client.close() catch (_:Dynamic) {}
+					try server.close() catch (_:Dynamic) {}
+					async.done();
+				});
+			});
+		});
+	}
 	#end
 }
 

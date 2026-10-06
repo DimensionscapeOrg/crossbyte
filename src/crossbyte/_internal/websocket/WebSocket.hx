@@ -478,7 +478,6 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	private var __refusing:Bool = false;
 
 	private var __maskedPayload:ByteArray;
-	private var __outgoingMessageBuffer:ByteArray;
 	// A control frame's payload, read in; see __onData. Made with the first.
 	private var __control:ByteArray = null;
 
@@ -585,10 +584,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		__incomingMessageBuffer = null;
 
 		// Made when first needed, and let go of when the session goes quiet:
-		// a message longer than a frame's, and a client's masked payload or
-		// a text message written in place (see __scratchPayload). Most
-		// sessions on a server never need the first.
-		__outgoingMessageBuffer = null;
+		// a client's masked payload, or a text message written in place
+		// (see __scratchPayload).
 		__maskedPayload = null;
 
 		__timestamp = haxe.Timer.stamp();
@@ -2296,7 +2293,6 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			__letGo(__pendingOutput);
 			__pendingSent = 0;
 			__letGo(__output);
-			__outgoingMessageBuffer = null;
 			__maskedPayload = null;
 			if (!__pongOwed) {
 				__pongNext = null;
@@ -3432,16 +3428,26 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	}
 
 	public function sendBytes(data:ByteArray):Void {
-		__prepareMessage(data, WebSocketOpcode.BINARY);
+		sendRange(data, 0, data.length);
+	}
+
+	/**
+		Sends `length` bytes of `data` from `offset` as one binary message,
+		framed from where they lie: `crossbyte.net.WebSocket.sendBinary`'s,
+		which copied them into a ByteArray of their own first, every message.
+	**/
+	public function sendRange(data:ByteArray, offset:Int, length:Int):Void {
+		__prepareMessage(data, offset, length, WebSocketOpcode.BINARY);
 	}
 
 	public function sendString(data:String):Void {
 		#if (cpp || jvm)
-		if (__sendAsciiText(data)) {
+		if (__sendTextDirect(data)) {
 			return;
 		}
 		#end
-		__prepareMessage(crossbyte._internal.Utf8.bytesOf(data), WebSocketOpcode.TEXT);
+		var bytes:ByteArray = crossbyte._internal.Utf8.bytesOf(data);
+		__prepareMessage(bytes, 0, bytes.length, WebSocketOpcode.TEXT);
 	}
 
 	#if (cpp || jvm)
@@ -3453,32 +3459,25 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		session's payload scratch instead, which `__sendFrame` frames as it
 		does any payload.
 
-		Natively when the string is held a byte a character, whose bytes are
-		its UTF-8 as they stand, what `Bytes.ofString` copies, and on the
-		jvm when it is ASCII and short: a loop over the characters there is
-		no faster than the platform's encoder past a few hundred. Not when
-		the message is to be compressed or fragmented.
+		Natively for any string: one held a byte a character is its UTF-8 as
+		it stands, and is copied whole; one held in UTF-16, any character
+		past ASCII, is encoded a character at a time, where it was encoded
+		into a buffer of its own every message. On the jvm when it is short:
+		a loop over the characters there is no faster than the platform's
+		encoder past a few hundred. Not when the message is to be compressed
+		or is longer than a frame.
 
 		@return Whether it went; false leaves it to the general path, which
 		        sends what this does not and refuses a session not open.
 	**/
-	private function __sendAsciiText(data:String):Bool {
+	private function __sendTextDirect(data:String):Bool {
 		var length:Int = data.length;
 		if (readyState != OPEN || length > FRAGMENT_SIZE || (__deflateSend && length >= compressionThreshold)) {
 			return false;
 		}
-		#if cpp
-		if (untyped __cpp__("{0}.isUTF16Encoded()", data)) {
-			return false;
-		}
-		#else
+		#if !cpp
 		if (length > DIRECT_TEXT_LIMIT) {
 			return false;
-		}
-		for (i in 0...length) {
-			if (StringTools.fastCodeAt(data, i) >= 0x80) {
-				return false;
-			}
 		}
 		#end
 
@@ -3486,61 +3485,127 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		// which with the payload already here copies it onto itself.
 		var payload:ByteArray = __scratchPayload();
 		payload.length = 0;
-		@:privateAccess (payload : ByteArrayData).__resize(length, 0);
-		if (length > 0) {
-			#if cpp
-			untyped __cpp__("memcpy((char *){0}->GetBase(), {1}.raw_ptr(), {2})", (payload : ByteArrayData).getData(), data, length);
-			#else
-			var bytes:ByteArrayData = payload;
-			for (i in 0...length) {
-				bytes.set(i, StringTools.fastCodeAt(data, i));
+		var bytes:ByteArrayData = payload;
+		#if cpp
+		if (!untyped __cpp__("{0}.isUTF16Encoded()", data)) {
+			@:privateAccess bytes.__resize(length, 0);
+			if (length > 0) {
+				untyped __cpp__("memcpy((char *){0}->GetBase(), {1}.raw_ptr(), {2})", bytes.getData(), data, length);
 			}
-			#end
+			payload.position = 0;
+			__sendFrame(payload, WebSocketOpcode.TEXT, true, false);
+			return true;
+		}
+		#end
+		var written:Int = __encodeUtf8(data, payload);
+		if (written > FRAGMENT_SIZE) {
+			// Longer than a frame once encoded: the general path fragments it.
+			return false;
 		}
 		payload.position = 0;
 		__sendFrame(payload, WebSocketOpcode.TEXT, true, false);
 		return true;
 	}
 
+	/**
+		`text` as UTF-8 into `out`, from its start, which is left exactly as
+		long as what was written: what `Bytes.ofString` makes, without a
+		`Bytes` of its own. A surrogate pair is one character of four bytes;
+		a surrogate without its other half, which no valid UTF-8 can carry,
+		is U+FFFD. Answers how many bytes were written.
+	**/
+	private static function __encodeUtf8(text:String, into:ByteArray):Int {
+		var count:Int = text.length;
+		var out:ByteArrayData = into;
+		// Three bytes a code unit at most: a pair of them is four.
+		@:privateAccess out.__resize(count * 3, 0);
+		var at:Int = 0;
+		var i:Int = 0;
+		while (i < count) {
+			var c:Int = StringTools.fastCodeAt(text, i++);
+			if (c < 0x80) {
+				out.set(at++, c);
+				continue;
+			}
+			if (c < 0x800) {
+				out.set(at++, 0xC0 | (c >> 6));
+				out.set(at++, 0x80 | (c & 0x3F));
+				continue;
+			}
+			if (c >= 0xD800 && c <= 0xDFFF) {
+				var low:Int = i < count ? StringTools.fastCodeAt(text, i) : 0;
+				if (c <= 0xDBFF && low >= 0xDC00 && low <= 0xDFFF) {
+					i++;
+					var code:Int = 0x10000 + ((c - 0xD800) << 10) + (low - 0xDC00);
+					out.set(at++, 0xF0 | (code >> 18));
+					out.set(at++, 0x80 | ((code >> 12) & 0x3F));
+					out.set(at++, 0x80 | ((code >> 6) & 0x3F));
+					out.set(at++, 0x80 | (code & 0x3F));
+					continue;
+				}
+				c = 0xFFFD;
+			} else if (c > 0xFFFF) {
+				// A target whose strings hold whole code points.
+				out.set(at++, 0xF0 | (c >> 18));
+				out.set(at++, 0x80 | ((c >> 12) & 0x3F));
+				out.set(at++, 0x80 | ((c >> 6) & 0x3F));
+				out.set(at++, 0x80 | (c & 0x3F));
+				continue;
+			}
+			out.set(at++, 0xE0 | (c >> 12));
+			out.set(at++, 0x80 | ((c >> 6) & 0x3F));
+			out.set(at++, 0x80 | (c & 0x3F));
+		}
+		into.length = at;
+		return at;
+	}
+
 	#if !cpp
-	/** The longest text the jvm writes into the frame itself; see __sendAsciiText. **/
+	/** The longest text the jvm writes into the frame itself; see __sendTextDirect. **/
 	private static inline var DIRECT_TEXT_LIMIT:Int = 256;
 	#end
 	#end
 
-	private function __prepareMessage(data:ByteArray, opcode:Int):Void {
+	/**
+		`length` bytes of `data` from `offset` sent as one message: compressed
+		where that was agreed and the message is worth it, and sent as it
+		is when compressing did not make it smaller, which RFC 7692 leaves to
+		each message. Neither `data` nor its `position` is changed.
+	**/
+	private function __prepareMessage(data:ByteArray, offset:Int, length:Int, opcode:Int):Void {
 		if (readyState != OPEN) {
 			throw "WebSocket is not open";
 		}
-		data.position = 0;
 
-		// Compressed where that was agreed and the message is worth it, and
-		// sent as it is when compressing did not make it smaller, which RFC
-		// 7692 leaves to each message.
-		var compressed:Bool = false;
-		if (__deflateSend && data.length >= compressionThreshold) {
-			var deflated:ByteArray = __deflateOutgoing(data);
-			if (deflated.length < data.length) {
-				data = deflated;
-				compressed = true;
+		if (__deflateSend && length >= compressionThreshold) {
+			var whole:ByteArray = data;
+			if (offset != 0 || length != data.length) {
+				// Compressing makes buffers of its own anyway.
+				whole = new ByteArray();
+				whole.writeBytes(data, offset, length);
 			}
-			data.position = 0;
+			var deflated:ByteArray = __deflateOutgoing(whole);
+			if (deflated.length < length) {
+				__sendPayload(deflated, 0, deflated.length, opcode, true);
+				return;
+			}
 		}
 
-		__sendPayload(data, opcode, compressed);
+		__sendPayload(data, offset, length, opcode, false);
 	}
 
 	/**
-		Sends `data` whole as one message, framed as this side frames: in
-		frames of at most `FRAGMENT_SIZE`, RSV1 on the first where it is
-		`compressed`. Read by offset, never moving its `position`, so a
-		prepared message's payload can be sent by every session that holds
-		it.
+		Sends `length` bytes of `data` from `offset` as one message, framed as
+		this side frames: in frames of at most `FRAGMENT_SIZE`, RSV1 on the
+		first where it is `compressed`. Each frame is made from where its
+		bytes lie, read by offset, never moving `position`, so a prepared
+		message's payload is sent by every session that holds it, and a
+		message longer than a frame is no longer copied a fragment at a time
+		into a buffer of its own first.
 	**/
-	private function __sendPayload(data:ByteArray, opcode:Int, compressed:Bool):Void {
-		var total:Int = data.length;
+	private function __sendPayload(data:ByteArray, offset:Int, total:Int, opcode:Int, compressed:Bool):Void {
 		if (total <= FRAGMENT_SIZE) {
-			__sendFrame(data, opcode, true, compressed);
+			__sendFrameOf(data, offset, total, opcode, true, compressed);
 			return;
 		}
 
@@ -3550,19 +3615,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		while (at < total) {
 			var length:Int = total - at > FRAGMENT_SIZE ? FRAGMENT_SIZE : total - at;
 			var first:Bool = at == 0;
-
-			var fragment:ByteArray = __outgoingMessageBuffer;
-			if (fragment == null) {
-				fragment = __outgoingMessageBuffer = new ByteArray();
-				fragment.endian = BIG_ENDIAN;
-			}
-			fragment.length = 0;
-			fragment.position = 0;
-			fragment.writeBytes(data, at, length);
-			fragment.position = 0;
-
+			__sendFrameOf(data, offset + at, length, first ? opcode : WebSocketOpcode.CONTINUATION, at + length >= total, compressed && first);
 			at += length;
-			__sendFrame(fragment, first ? opcode : WebSocketOpcode.CONTINUATION, at >= total, compressed && first);
 		}
 	}
 
@@ -3589,7 +3643,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			__queueOutput(frames, frames.length);
 			return;
 		}
-		__sendPayload(compress ? deflated : @:privateAccess message.__payload, opcode, compress);
+		var payload:ByteArray = compress ? deflated : @:privateAccess message.__payload;
+		__sendPayload(payload, 0, payload.length, opcode, compress);
 	}
 
 	/**
@@ -3628,14 +3683,54 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		return __deflateOutgoing(data);
 	}
 
-	private static function __generateMaskBytes():ByteArray {
-		return SecureRandom.getSecureRandomBytes(4);
+	// ---- Masks -------------------------------------------------------------
+
+	/**
+		How many random bytes a client's masks are drawn from at a time: 8 KB,
+		two thousand frames' worth, as Node's `ws` keeps its pool.
+	**/
+	private static inline var MASK_POOL:Int = 8 * 1024;
+
+	#if target.threaded
+	// One pool a thread, so a runtime's sessions draw from theirs without a
+	// lock, and no two threads ever take the same bytes.
+	private static var __maskPools:sys.thread.Tls<MaskPool> = new sys.thread.Tls();
+	#else
+	private static var __maskPoolOnly:Null<MaskPool> = null;
+	#end
+
+	/**
+		Where the next four bytes of this thread's mask pool start, refilling
+		it from the platform's CSPRNG when it has run out; the pool is
+		`__maskBytes()`.
+
+		RFC 6455 5.3 asks each frame's masking key to be fresh and
+		unpredictable, from a strong source of entropy. Each key here is four
+		bytes the CSPRNG made, used for one frame and never again, what a
+		key drawn for each frame alone is, drawn a pool at a time, as `ws`
+		draws them, where each frame drew its own four bytes: a ByteArray and
+		its storage for every frame a client sent, 140 bytes natively.
+	**/
+	private static inline function __maskPool():MaskPool {
+		#if target.threaded
+		var pool:Null<MaskPool> = __maskPools.value;
+		if (pool == null) {
+			pool = new MaskPool();
+			__maskPools.value = pool;
+		}
+		#else
+		var pool:Null<MaskPool> = __maskPoolOnly;
+		if (pool == null) {
+			pool = __maskPoolOnly = new MaskPool();
+		}
+		#end
+		return pool;
 	}
 
 	/**
 		The session's scratch for a payload on its way into a frame: a
 		client's, masked there, and a text message written in place (see
-		`__sendAsciiText`). Made on first use, and let go of when the session
+		`__sendTextDirect`). Made on first use, and let go of when the session
 		goes quiet.
 	**/
 	private inline function __scratchPayload():ByteArray {
@@ -3648,6 +3743,11 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	}
 
 	private inline function __sendFrame(payload:ByteArray, opcode:Int, isFinal:Bool, compressed:Bool = false):Void {
+		__sendFrameOf(payload, 0, payload.length, opcode, isFinal, compressed);
+	}
+
+	/** `length` bytes of `payload` from `offset`, as one frame. **/
+	private function __sendFrameOf(payload:ByteArray, offset:Int, length:Int, opcode:Int, isFinal:Bool, compressed:Bool):Void {
 		if (__socket == null) {
 			return;
 		}
@@ -3656,14 +3756,18 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		var fin:Int = isFinal ? WebSocketHeaderMask.FIN : 0;
 		__output.clear();
 		__output.writeByte(fin | (compressed ? WebSocketHeaderMask.RSV1 : 0) | opcode);
-		var length:Int = payload.length;
 
 		if (__isClient == false) {
 			__writePayloadLength(length);
-			__output.writeBytes(payload);
+			if (length > 0) {
+				__output.writeBytes(payload, offset, length);
+			}
 		} else {
 			__writePayloadLength(length, WebSocketHeaderMask.MASK);
-			var frameMask:ByteArray = __generateMaskBytes();
+			// Four bytes of this thread's pool, used for this frame alone.
+			var pool:MaskPool = __maskPool();
+			var keyAt:Int = pool.take();
+			var key:ByteArray = pool.bytes;
 
 			// Copy in bulk, then mask in place with the same XOR the inbound
 			// path uses, rather than a per-byte writeByte through the
@@ -3672,12 +3776,12 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			masked.length = length;
 			masked.position = 0;
 			if (length > 0) {
-				(masked : Bytes).blit(0, payload, 0, length);
-				__applyMask(masked, length, frameMask);
+				(masked : Bytes).blit(0, payload, offset, length);
+				__applyMask(masked, length, key, keyAt);
 			}
 
 			// Write the masked payload
-			__output.writeBytes(frameMask);
+			__output.writeBytes(key, keyAt, 4);
 			__output.writeBytes(masked);
 		}
 		// Hand the frame to the pending buffer rather than writing it
@@ -3728,14 +3832,27 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	private function __pong(?payload:ByteArray):Void {
 		if (payload == null) {
-			payload = new ByteArray();
+			payload = __noPayload();
 		}
 		__sendFrame(payload, WebSocketOpcode.PONG, true);
 	}
 
+	// A control frame with nothing in it, as every heartbeat's ping is: one
+	// empty buffer, never written to, where each ping made one. Only read,
+	// framed from, by offset, so any thread may share it.
+	private static var __empty:Null<ByteArray> = null;
+
+	private static inline function __noPayload():ByteArray {
+		var empty:Null<ByteArray> = __empty;
+		if (empty == null) {
+			empty = __empty = new ByteArray();
+		}
+		return empty;
+	}
+
 	private static function __controlPayload(payload:Null<ByteArray>):ByteArray {
 		if (payload == null) {
-			return new ByteArray();
+			return __noPayload();
 		}
 		if (payload.length > 125) {
 			throw new crossbyte.errors.ArgumentError("A ping or pong carries at most 125 bytes, and this one is " + payload.length + ".");
@@ -3772,6 +3889,33 @@ enum abstract WebSocketOpcode(Int) from Int to Int {
 	public static inline var CLOSE:Int = 0x08;
 	public static inline var PING:Int = 0x09;
 	public static inline var PONG:Int = 0x0A;
+}
+
+/**
+	Random bytes for a client's frame masks, from the platform's CSPRNG, four
+	taken for each frame and none taken twice; refilled, a new block, when
+	used up. One a thread: see `WebSocket.__maskPool`.
+**/
+@:noCompletion class MaskPool {
+	public var bytes(default, null):ByteArray = null;
+	private var __at:Int = 0;
+
+	public function new() {}
+
+	/** Where the next four bytes start, in `bytes`. **/
+	public inline function take():Int {
+		if (bytes == null || __at + 4 > bytes.length) {
+			__refill();
+		}
+		var at:Int = __at;
+		__at = at + 4;
+		return at;
+	}
+
+	private function __refill():Void {
+		bytes = SecureRandom.getSecureRandomBytes(@:privateAccess WebSocket.MASK_POOL);
+		__at = 0;
+	}
 }
 
 @:private @:noCompletion class AcceptedWebSocket extends WebSocket {

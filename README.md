@@ -413,6 +413,13 @@ before, after one 16 KB message each way a session held 97 KB for as long
 as it lasted, and holds 4.6 KB once quiet, and output that waited for a
 slow peer goes as soon as it drains.
 
+**What a message costs.** Natively a message sent or received allocates
+nothing but the `text` a listener asks for, a `String` of its own that is
+safe to keep; a listener that reads `data` allocates nothing. Its bytes and
+its event are the session's own, filled again for the next message, and
+valid only during the listener's call (see `Event`). A client draws its
+masking keys from a pool of random bytes, 8 KB at a time.
+
 ### One message to many sessions
 
 A chat room's line, a match's state, a dashboard's update: the same message
