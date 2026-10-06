@@ -447,6 +447,35 @@ entry below says how:
   clients carrying more cookies than that.
 
 ### Added
+- `PreparedMessage`, `WebSocket.sendPrepared` and
+  `ServerWebSocket.broadcast`: one WebSocket message made ready once and
+  sent to many sessions, a chat room's line, a match's state, a
+  dashboard's update. `PreparedMessage.text` and `.binary` encode and
+  frame the message as a server sends it, unmasked; each session it goes
+  to copies those frames into what its pass sends, where a `sendText` or
+  `sendBinary` per session encoded, framed and copied it again for every
+  one. `broadcast(message)` sends it to every session a server has open,
+  each runtime's own on a spread server, and `broadcast(message,
+  sessions)` to the ones the application chose; who receives stays the
+  application's, as in Go's gorilla/websocket (`PreparedMessage`), which
+  this follows. Made with `compress`, it holds a compressed form too,
+  compressed once, for every session that agreed to permessage-deflate
+  (each compresses a message on its own, so one form serves them all).
+  TLS encrypts per session, so it shares the framing only; a client masks
+  each frame with its own key, so a client's `sendPrepared` shares the
+  encoding and frames it itself. Preparing copies the bytes: the buffer
+  is the caller's again at once, a message event's payload included, and
+  the message never changes after, so it can be kept and sent from any
+  runtime. A session still writes once a pass however many messages it
+  was sent in it. One 1 KB message to 1,000 sessions, natively, the
+  send and the pass that writes it: 9.6 ms in a loop of `sendText` and
+  9.3 ms prepared, the writing of it, 1,000 system calls either way,
+  most of the time; with compression agreed, 17.3 ms and 9.2 ms,
+  compressed once rather than 1,000 times. What the send
+  allocates: in a loop of `sendBinary` 1.7 MB, with compression 5 MB,
+  prepared 3.6 KB and 7.7 KB, made once (a native `sendText` of ASCII
+  allocated nothing already); on the jvm 4.2 MB in a loop of `sendText`
+  and 16 MB with compression, prepared 6 KB and 19 KB.
 - `ServerWebSocket.maxPendingHandshakesPerAddress`, 16 by default: once
   half of `maxPendingHandshakes` are taken, a connection from an address
   that already has that many still upgrading is closed as it is accepted,

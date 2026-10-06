@@ -3527,44 +3527,105 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			data.position = 0;
 		}
 
-		// handles fragmentation of message into multiple frames
-		if (data.length > FRAGMENT_SIZE) {
-			var firstFrame:Bool = true;
-			while (data.position != data.length) {
-				var fin:Bool;
-				var fragmentOpcode:Int;
-				var length:Int;
+		__sendPayload(data, opcode, compressed);
+	}
 
-				var remaining:Int = data.length - data.position;
-
-				if (remaining > FRAGMENT_SIZE) {
-					fin = false;
-					length = FRAGMENT_SIZE;
-					fragmentOpcode = firstFrame ? opcode : WebSocketOpcode.CONTINUATION;
-				} else {
-					fin = true;
-					length = remaining;
-					fragmentOpcode = firstFrame ? opcode : WebSocketOpcode.CONTINUATION;
-				}
-				// RSV1 on the first frame alone.
-				var marked:Bool = compressed && firstFrame;
-				firstFrame = false;
-
-				var fragment:ByteArray = __outgoingMessageBuffer;
-				if (fragment == null) {
-					fragment = __outgoingMessageBuffer = new ByteArray();
-					fragment.endian = BIG_ENDIAN;
-				}
-				fragment.length = length;
-				fragment.position = 0;
-
-				data.readBytes(fragment, 0, length);
-
-				__sendFrame(fragment, fragmentOpcode, fin, marked);
-			}
-		} else {
+	/**
+		Sends `data` whole as one message, framed as this side frames: in
+		frames of at most `FRAGMENT_SIZE`, RSV1 on the first where it is
+		`compressed`. Read by offset, never moving its `position`, so a
+		prepared message's payload can be sent by every session that holds
+		it.
+	**/
+	private function __sendPayload(data:ByteArray, opcode:Int, compressed:Bool):Void {
+		var total:Int = data.length;
+		if (total <= FRAGMENT_SIZE) {
 			__sendFrame(data, opcode, true, compressed);
+			return;
 		}
+
+		// A message longer than a frame, in frames: the first carries the
+		// opcode, and RSV1 when compressed; the rest are continuations.
+		var at:Int = 0;
+		while (at < total) {
+			var length:Int = total - at > FRAGMENT_SIZE ? FRAGMENT_SIZE : total - at;
+			var first:Bool = at == 0;
+
+			var fragment:ByteArray = __outgoingMessageBuffer;
+			if (fragment == null) {
+				fragment = __outgoingMessageBuffer = new ByteArray();
+				fragment.endian = BIG_ENDIAN;
+			}
+			fragment.length = 0;
+			fragment.position = 0;
+			fragment.writeBytes(data, at, length);
+			fragment.position = 0;
+
+			at += length;
+			__sendFrame(fragment, first ? opcode : WebSocketOpcode.CONTINUATION, at >= total, compressed && first);
+		}
+	}
+
+	// ---- One message to many ------------------------------------------------
+
+	/**
+		Sends a prepared message: on a server, its frames as they were made,
+		copied into what the pass sends this session, or, 64 KB or more with
+		nothing waiting ahead of them, offered to the socket straight from
+		where they lie; on a client, its payload framed and masked as every
+		client's must be. The compressed form where this session agreed to
+		permessage-deflate, the message holds one, and it is at least this
+		session's `compressionThreshold`.
+	**/
+	@:noCompletion public function __sendPrepared(message:crossbyte.net.PreparedMessage):Void {
+		if (readyState != OPEN) {
+			throw "WebSocket is not open";
+		}
+		var deflated:Null<ByteArray> = @:privateAccess message.__deflated;
+		var compress:Bool = __deflateSend && deflated != null && message.length >= compressionThreshold;
+		var opcode:Int = message.isText ? WebSocketOpcode.TEXT : WebSocketOpcode.BINARY;
+		if (__isClient == false) {
+			var frames:ByteArray = compress ? @:privateAccess message.__deflatedFrames : @:privateAccess message.__frames;
+			__queueOutput(frames, frames.length);
+			return;
+		}
+		__sendPayload(compress ? deflated : @:privateAccess message.__payload, opcode, compress);
+	}
+
+	/**
+		`length` bytes of `payload` from `offset`, written into `out` as the
+		frames a server sends them in: unmasked, `FRAGMENT_SIZE` at most each,
+		RSV1 on the first where `compressed`. What `PreparedMessage` holds.
+	**/
+	@:noCompletion public static function __writeServerFrames(out:ByteArray, payload:ByteArray, offset:Int, length:Int, opcode:Int, compressed:Bool):Void {
+		out.endian = BIG_ENDIAN;
+		var at:Int = 0;
+		do {
+			var size:Int = length - at > FRAGMENT_SIZE ? FRAGMENT_SIZE : length - at;
+			var first:Bool = at == 0;
+			var last:Bool = at + size >= length;
+			out.writeByte((last ? WebSocketHeaderMask.FIN : 0) | (compressed && first ? WebSocketHeaderMask.RSV1 : 0)
+				| (first ? opcode : WebSocketOpcode.CONTINUATION));
+			if (size > 65535) {
+				out.writeByte(127);
+				out.writeUnsignedInt(0);
+				out.writeUnsignedInt(size);
+			} else if (size > 125) {
+				out.writeByte(126);
+				out.writeShort(size);
+			} else {
+				out.writeByte(size);
+			}
+			if (size > 0) {
+				out.writeBytes(payload, offset + at, size);
+			}
+			at += size;
+		} while (at < length);
+	}
+
+	/** `data` compressed as a message of its own, for `PreparedMessage`. **/
+	@:noCompletion public static inline function __deflateMessage(data:ByteArray):ByteArray {
+		return __deflateOutgoing(data);
 	}
 
 	private static function __generateMaskBytes():ByteArray {

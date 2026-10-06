@@ -365,6 +365,109 @@ class ServerWebSocket extends ServerSocket {
 		return true;
 	}
 
+	/**
+		Sends `message` to every session this server has open, or, given
+		`sessions`, to each of those that is open: one message made ready once
+		(see `PreparedMessage`) and copied into what each session's pass
+		sends, where a `sendText` per session encoded and framed it again for
+		every one. Who receives, a room, a topic, an area of interest, is
+		the application's to say with `sessions`.
+
+		Each session goes on as `WebSocket.sendPrepared` would have it: one
+		write a pass however many messages it was sent in that pass, its
+		compressed form to a session that agreed to permessage-deflate where
+		the message holds one, and closed with 1011 past its
+		`maxOutputBufferSize`. Nothing is thrown for one session: one not
+		open, or closing, is passed over, and one under the `THROW`
+		`outputOverflowPolicy` is not thrown for, its `outputBufferLength`
+		says what waits. A session that closes during the broadcast is passed
+		over, and the others are each sent the message once.
+
+		On a server spread over `runtimes`, without `sessions` each runtime
+		sends to its own, on its own thread, after this returns: the message
+		is never changed once made, so they share it. `sessions` are sent to
+		on the calling thread, as a send on each would be: on a spread server
+		pass the sessions of the runtime it is called on, or hand the
+		broadcast to each runtime with `CrossByte.post`.
+
+		@throws ArgumentError If `message` is `null`.
+	**/
+	public function broadcast(message:PreparedMessage, ?sessions:Array<WebSocket>):Void {
+		if (message == null) {
+			throw new ArgumentError("broadcast needs a message.");
+		}
+		if (sessions != null) {
+			for (session in sessions) {
+				__sendPreparedTo(session, message);
+			}
+			return;
+		}
+
+		#if (target.threaded && !js)
+		if (__spread != null) {
+			__spread.each(replica -> (cast replica : ServerWebSocket).broadcast(message));
+			return;
+		}
+		#end
+
+		// From a list of its own: a session closing as it is sent to, past
+		// its output limit, or a close listener closing another, comes off
+		// __clients, whose last session takes its place, which would be sent
+		// to twice or passed over. The list is kept for the next broadcast;
+		// one inside another, from a close listener, takes a copy.
+		var count:Int = __clients.length;
+		var nested:Bool = __broadcasting;
+		var list:Array<WebSocket> = nested ? __clients.copy() : __broadcastList;
+		if (!nested) {
+			for (i in 0...count) {
+				list[i] = __clients[i];
+			}
+			__broadcasting = true;
+		}
+		try {
+			for (i in 0...count) {
+				__sendPreparedTo(list[i], message);
+			}
+		} catch (e:Dynamic) {
+			__broadcastDone(nested, count);
+			#if cpp
+			cpp.Lib.rethrow(e);
+			#else
+			throw e;
+			#end
+		}
+		__broadcastDone(nested, count);
+	}
+
+	// The sessions a broadcast walks, copied from __clients and kept from one
+	// to the next; and whether a broadcast is walking it.
+	@:noCompletion private var __broadcastList:Array<WebSocket> = [];
+	@:noCompletion private var __broadcasting:Bool = false;
+
+	@:noCompletion private inline function __broadcastDone(nested:Bool, count:Int):Void {
+		if (!nested) {
+			// Let go of, so a session that closed is not kept by the list.
+			var list:Array<WebSocket> = __broadcastList;
+			for (i in 0...count) {
+				list[i] = null;
+			}
+			__broadcasting = false;
+		}
+	}
+
+	/** `message` to `session`, if it is open: whether it went. **/
+	@:noCompletion private static function __sendPreparedTo(session:WebSocket, message:PreparedMessage):Bool {
+		if (session == null) {
+			return false;
+		}
+		var framing = @:privateAccess session.__webSocket;
+		if (framing == null || framing.readyState != crossbyte._internal.websocket.WebSocket.OPEN) {
+			return false;
+		}
+		framing.__sendPrepared(message);
+		return true;
+	}
+
 	@:noCompletion private var __metrics:crossbyte.metrics.Metrics;
 	@:noCompletion private var __acceptedTotal:crossbyte.metrics.Counter;
 	@:noCompletion private var __closedTotal:crossbyte.metrics.Counter;

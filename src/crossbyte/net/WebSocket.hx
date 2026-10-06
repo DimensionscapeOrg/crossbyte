@@ -444,6 +444,29 @@ class WebSocket extends Socket {
 	}
 
 	/**
+		Sends a message made ready for many sessions, see `PreparedMessage`,
+		at once rather than when the socket is next flushed. A session a
+		server accepted copies the message's frames as they were made into
+		what its pass sends, and is sent its compressed form where it agreed
+		to permessage-deflate and the message holds one; a client frames and
+		masks it as `sendBinary` does. `ServerWebSocket.broadcast` sends one
+		to a server's sessions, or a list of them.
+
+		@throws IOError if the session is not open, or, under the `THROW`
+			`outputOverflowPolicy`, if more than `maxOutputBufferSize` is
+			left waiting; the message is sent all the same.
+		@throws ArgumentError If `message` is `null`.
+	**/
+	public function sendPrepared(message:PreparedMessage):Void {
+		if (message == null) {
+			throw new ArgumentError("sendPrepared needs a message.");
+		}
+		__requireOpen();
+		__webSocket.__sendPrepared(message);
+		__checkOutputLimit();
+	}
+
+	/**
 		`THROW`'s half of `outputOverflowPolicy`, after a send: anything the
 		pass is holding is offered to the socket at once, as a `Socket`'s
 		flush offers its buffer before it measures, and if more than
