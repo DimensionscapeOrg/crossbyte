@@ -354,6 +354,10 @@ class TestSuites {
 		// Also in PortableSuite: most of it is Node's listener.
 		runner.addCase(new crossbyte.net.ServerSocketListenTest());
 		runner.addCase(new crossbyte.net.ServerSocketBacklogTest());
+		// An accept that fails sets the listener aside rather than spinning:
+		// every threaded target, and natively on Linux and macOS out of
+		// descriptors for real.
+		runner.addCase(new crossbyte.net.ServerSocketAcceptBackoffTest());
 		// A child runtime's real POLL loop, so every threaded target.
 		runner.addCase(new crossbyte.net.SocketReadinessTest());
 		// One listener's connections on several runtimes: every threaded

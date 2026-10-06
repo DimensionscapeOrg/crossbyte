@@ -237,13 +237,21 @@ class Socket {
 		went on to be registered as a connection.
 
 		hl's accept answers null for any failure, so a real one, a process
-		out of descriptors, reads as nothing waiting too. The connection stays
-		queued and is asked for again, which is all a caller could do anyway.
+		out of descriptors, read as nothing waiting too: the server never
+		counted it, and polled the listener, still readable, on every pass. A
+		listener still readable after an accept that found nothing has a
+		connection the system would not hand over, which is a failure; one
+		not readable had nothing waiting, or a connection that left first.
 	**/
 	public function accept():Socket {
 		var c = socket_accept(__s);
-		if (c == null)
+		if (c == null) {
+			var waiting:Bool = try select([this], [], [], 0).read.length > 0 catch (_:Dynamic) false;
+			if (waiting) {
+				throw Custom("Accept failed: the system would not hand over a waiting connection (out of descriptors?)");
+			}
 			throw Blocked;
+		}
 		var s:Socket = Type.createEmptyInstance(Socket);
 		s.__s = c;
 		s.input = new SocketInput(s);

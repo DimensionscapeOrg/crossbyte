@@ -259,18 +259,43 @@ class ServerSocket extends EventDispatcher {
 	/**
 		Connections this server failed to take from the listen queue, for a
 		reason other than there being none to take: the process out of
-		descriptors (`EMFILE`), the system out of memory. The server goes on
-		listening and trying; the connection waits in the kernel's queue
-		meanwhile.
+		descriptors (`EMFILE`, `ENFILE`), the system out of memory. The server
+		goes on listening; the connection waits in the kernel's queue
+		meanwhile, and is taken once the system will hand it over.
+
+		After a failure the listener is set aside, not polled, for a
+		while, then asked again: 5 ms after the first, twice as long after
+		each failure that follows, at most a second, and back to 5 ms once a
+		connection is taken. That is what Go's `net/http` does, and libuv,
+		Netty and nginx each set the listener aside the same way. A listener
+		with a connection it cannot take stays readable, so a server out of
+		descriptors that polled it on every pass spent a whole core failing,
+		85,000 to 95,000 accepts a second, measured, and served nothing
+		else meanwhile.
 
 		The first failure after a success is also dispatched as an `ioError`
-		event, so a run of them is reported once rather than every tick. Each
-		used to be swallowed natively, no event, no count, and a server out
-		of descriptors looked idle, or, on the jvm and Node, closed the
-		server.
+		event, and logged, so a run of them is reported once rather than
+		every pass. Each used to be swallowed natively, no event, no count,
+		and a server out of descriptors looked idle, or, on the jvm and
+		Node, closed the server. On HashLink, whose accept answers nothing
+		for any failure, a listener still readable after an accept that
+		found nothing is taken for one.
+
+		The descriptors a process may hold are its `RLIMIT_NOFILE` on Linux
+		and macOS. Natively there CrossByte raises its soft limit to the hard
+		one as the process starts, as Go and the JVM (`-XX:+MaxFDLimit`) do:
+		a shell's soft limit of 1,024 would otherwise stop a server near a
+		thousand connections whatever its hard limit allowed. A child process
+		inherits the raised limit. Build with `-D crossbyte_keep_nofile` to
+		keep the limit the process was started with. Where the limit is still
+		below 4,096, the first server to listen logs a warning saying so,
+		once. The JVM raises it itself; on Node, the interpreter, HashLink and
+		Neko it is the process's as started (`ulimit -n`, systemd's
+		`LimitNOFILE`). Windows has no such limit.
 
 		On a server spread over `runtimes` with `reusePort`, where each
-		runtime accepts for itself, the count is theirs together.
+		runtime accepts for itself, the count is theirs together, and each
+		runtime's listener is set aside on its own.
 	**/
 	@:isVar public var acceptFailures(get, null):Int = 0;
 
@@ -495,6 +520,23 @@ class ServerSocket extends EventDispatcher {
 	#end
 	// Whether the last accept failed, so a run of failures is reported once.
 	@:noCompletion private var __acceptFailing:Bool = false;
+	#if !nodejs
+	// The accept back-off (see acceptFailures): how long the listener was
+	// last set aside, 0 while connections are being taken; whether it is set
+	// aside now; the timer that brings it back, -1 for none; and what that
+	// timer calls, made once.
+	@:noCompletion private var __acceptBackoff:Float = 0;
+	@:noCompletion private var __acceptPaused:Bool = false;
+	@:noCompletion private var __acceptResumeTimer:Int = -1;
+	@:noCompletion private var __acceptResumeRuntime:CrossByte = null;
+	@:noCompletion private var __acceptResume:Void->Void = null;
+	// The first wait after an accept fails, and the longest.
+	@:noCompletion private static inline var ACCEPT_BACKOFF_FIRST:Float = 0.005;
+	@:noCompletion private static inline var ACCEPT_BACKOFF_MOST:Float = 1.0;
+	// Below this many descriptors the first server to listen says so.
+	@:noCompletion private static inline var LOW_DESCRIPTOR_LIMIT:Int = 4096;
+	@:noCompletion private static var __descriptorLimitChecked:Bool = false;
+	#end
 	@:noCompletion private var __hasCertificate:Bool = false;
 	#if !nodejs
 	@:noCompletion private var __pendingHandshakes:Array<PendingHandshake>;
@@ -1201,6 +1243,7 @@ class ServerSocket extends EventDispatcher {
 			listening = true;
 			#else
 			__checkSpread();
+			__checkDescriptorLimit();
 			if (reusePort) {
 				__listenOnEachRuntime(backlog);
 				return;
@@ -2081,6 +2124,9 @@ class ServerSocket extends EventDispatcher {
 	**/
 	@:noCompletion private function __onAcceptFailed(error:Dynamic):Void {
 		acceptFailures++;
+		#if !nodejs
+		__backOffAccepting();
+		#end
 
 		if (__acceptFailing) {
 			return;
@@ -2088,7 +2134,7 @@ class ServerSocket extends EventDispatcher {
 		__acceptFailing = true;
 
 		var message:String = "Could not accept a connection waiting on port " + localPort + ": " + Std.string(error)
-			+ ". The server is still listening, and takes it once the system will hand it over.";
+			+ ". The server is still listening, and takes it once the system will hand it over" + __descriptorNote() + ".";
 		crossbyte.utils.Logger.warn(message);
 		#if (target.threaded && !js)
 		var front:ServerSocket = __front;
@@ -2104,6 +2150,85 @@ class ServerSocket extends EventDispatcher {
 		#end
 		dispatchEvent(new crossbyte.events.IOErrorEvent(crossbyte.events.IOErrorEvent.IO_ERROR, message));
 	}
+
+	/**
+		Where the system can say, how many descriptors the process may hold,
+		for the warning a failed accept logs: the likeliest reason.
+	**/
+	@:noCompletion private static function __descriptorNote():String {
+		#if cpp
+		var limit:Int = crossbyte._internal.socket.NativeSocketOptions.descriptorLimit();
+		if (limit > 0) {
+			return " (this process may hold " + limit + " descriptors: see ServerSocket.acceptFailures)";
+		}
+		#end
+		return "";
+	}
+
+	#if !nodejs
+	/**
+		An accept failed: the listener leaves the poll set for a while, and a
+		timer brings it back. A listener with a connection the system will
+		not hand over stays readable, and polled on every pass it spun the
+		runtime; see `acceptFailures`.
+	**/
+	@:noCompletion private function __backOffAccepting():Void {
+		var runtime:Null<CrossByte> = __acceptRuntime != null ? __acceptRuntime : __cbInstance;
+		if (runtime == null) {
+			return;
+		}
+		__acceptBackoff = __acceptBackoff <= 0 ? ACCEPT_BACKOFF_FIRST : Math.min(ACCEPT_BACKOFF_MOST, __acceptBackoff * 2);
+		__acceptPaused = true;
+		__unwatchListener();
+		if (__acceptResumeTimer >= 0) {
+			return;
+		}
+		if (__acceptResume == null) {
+			__acceptResume = __resumeAccepting;
+		}
+		__acceptResumeRuntime = runtime;
+		__acceptResumeTimer = @:privateAccess runtime.__timer.setTimeout(__acceptBackoff, __acceptResume);
+	}
+
+	/** The back-off is over: the listener is polled again, and asked. **/
+	@:noCompletion private function __resumeAccepting():Void {
+		__acceptResumeTimer = -1;
+		__acceptResumeRuntime = null;
+		__acceptPaused = false;
+		__syncListenerWatch();
+	}
+
+	/** Ends a back-off under way, with the listener: it is closing. **/
+	@:noCompletion private function __cancelAcceptBackoff():Void {
+		if (__acceptResumeTimer >= 0 && __acceptResumeRuntime != null) {
+			@:privateAccess __acceptResumeRuntime.__timer.clear(__acceptResumeTimer);
+		}
+		__acceptResumeTimer = -1;
+		__acceptResumeRuntime = null;
+		__acceptPaused = false;
+		__acceptBackoff = 0;
+	}
+
+	/**
+		Once per process, as a server starts listening: a warning where the
+		descriptors the process may hold are fewer than a server is likely to
+		need. Natively on Linux and macOS, where the limit was raised to the
+		hard one as the process started; see `acceptFailures`.
+	**/
+	@:noCompletion private static function __checkDescriptorLimit():Void {
+		if (__descriptorLimitChecked) {
+			return;
+		}
+		__descriptorLimitChecked = true;
+		#if cpp
+		var limit:Int = crossbyte._internal.socket.NativeSocketOptions.descriptorLimit();
+		if (limit > 0 && limit < LOW_DESCRIPTOR_LIMIT) {
+			crossbyte.utils.Logger.warn("This process may hold at most " + limit
+				+ " descriptors (RLIMIT_NOFILE, its hard limit): a server here fails to accept connections past about that many. Raise the hard limit (ulimit -Hn, or systemd's LimitNOFILE) to hold more.");
+		}
+		#end
+	}
+	#end
 
 	override public function addEventListener<T>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
 		super.addEventListener(type, listener, priority);
@@ -2183,6 +2308,7 @@ class ServerSocket extends EventDispatcher {
 		which every caller does after this.
 	**/
 	@:noCompletion private function __detachAcceptTick():Void {
+		__cancelAcceptBackoff();
 		if (__acceptRuntime == null) {
 			return;
 		}
@@ -2256,7 +2382,12 @@ class ServerSocket extends EventDispatcher {
 			}
 		}
 		#end
-		if (__acceptRuntime != null && !__closed && listening && !__handshakesFull()) {
+		if (!__acceptFailing) {
+			// A connection was taken: the next failure waits the shortest
+			// time again.
+			__acceptBackoff = 0;
+		}
+		if (__acceptRuntime != null && !__closed && listening && !__acceptPaused && !__handshakesFull()) {
 			__watchListener(__acceptRuntime);
 		} else {
 			__unwatchListener();
