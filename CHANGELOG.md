@@ -1820,6 +1820,13 @@ entry below says how:
   8-byte proof), and kind 3, REBOUND, 12 (connection id, the challenge).
   A peer from before 1.0, or with no key, takes a reset with a challenge
   as any reset.
+- A session a `ReliableDatagramServerSocket` accepts or dials makes no
+  socket of its own. Its constructor made one, a system socket, its
+  buffers asked for, a 64 KB read buffer, that the server closed at
+  once, for every join and every CONNECT below the validation threshold:
+  an accepted CONNECT allocated 88,080 bytes and took 45.9 us on the jvm,
+  and allocates 21,352 and takes 8.9 us; natively its large objects fell
+  from 86,004 bytes to 12,292.
 - On the jvm a datagram socket allocates nothing to send a datagram, and
   nothing to read one from the peer the last came from. Each send made a
   view of the bytes (48 bytes) and the destination afresh, an

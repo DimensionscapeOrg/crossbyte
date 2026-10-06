@@ -437,6 +437,81 @@ class ReliableDatagramJoinTest extends utest.Test {
 		closeServerQuietly(bob);
 	}
 
+	/**
+		A session the server opens takes the server's socket. Its
+		constructor made a socket of its own all the same, a system socket,
+		its buffers asked for, a 64 KB read buffer, which the server closed
+		at once: every join paid for one, and a flood below the threshold
+		paid for one a CONNECT. Natively and on the jvm, where allocation can
+		be counted.
+	**/
+	public function testAnAcceptedSessionMakesNoSocketOfItsOwn():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+		try {
+			server.bind(0, "127.0.0.1");
+			server.joinValidation = NEVER;
+			server.maxPendingConnections = -1;
+			server.listen();
+
+			var port:Int = 20000;
+			var connect = ReliableDatagramProtocol.encodeConnect(0x4242);
+			var packet = new ByteArray();
+			function accept():Void {
+				packet.length = 0;
+				packet.writeBytes(connect, 0, connect.length);
+				packet.position = 0;
+				port = port >= 60000 ? 20000 : port + 1;
+				server.__receiveDatagram(packet, "127.0.0.1", port);
+				var session = server.__sessionAt("127.0.0.1", port);
+				if (session != null) {
+					session.__dispose(false);
+				}
+			}
+
+			inject(server, connect, "127.0.0.1", 19999);
+			var first = Require.notNull(server.__sessionAt("127.0.0.1", 19999), "the CONNECT opened no session");
+			Assert.isTrue(first.__transport == server.__socket, "an accepted session's transport is not the server's");
+			first.__dispose(false);
+			for (_ in 0...200) {
+				accept();
+			}
+			#if jvm
+			var reading = crossbyte.test.AllocationMeter.measure(accept, 500);
+			if (Sys.getEnv("CB_ALLOC_REPORT") != null) {
+				Sys.println('[ALLOC] accepted CONNECT: $reading');
+			}
+			Assert.isTrue(reading.perOperation < 32768, 'an accepted CONNECT allocated ${reading.perOperation} B: a socket of its own, read buffer and all ($reading)');
+			#elseif cpp
+			// A session's objects cross the collector's holes, which the meter
+			// cannot read across; the read buffer is a large object, which the
+			// collector counts exactly with collection off.
+			cpp.vm.Gc.run(true);
+			cpp.vm.Gc.enable(false);
+			var largeBefore:Float = cpp.vm.Gc.memInfo64(cpp.vm.Gc.MEM_INFO_LARGE);
+			for (_ in 0...200) {
+				accept();
+			}
+			var large:Float = (cpp.vm.Gc.memInfo64(cpp.vm.Gc.MEM_INFO_LARGE) - largeBefore) / 200;
+			cpp.vm.Gc.enable(true);
+			if (Sys.getEnv("CB_ALLOC_REPORT") != null) {
+				Sys.println('[ALLOC] accepted CONNECT: $large B of large objects');
+			}
+			Assert.isTrue(large < 32768, 'an accepted CONNECT allocated $large B of large objects: a socket of its own, read buffer and all');
+			#end
+
+			// And a socket made by hand on the same thread afterwards has its own.
+			var own = new ReliableDatagramSocket();
+			Assert.notNull(own.__transport, "a socket made after the server's sessions had no transport");
+			own.close();
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		closeServerQuietly(server);
+	}
+
 	// ------------------------------------------------------------- resets
 
 	/**
