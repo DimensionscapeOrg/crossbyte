@@ -454,8 +454,45 @@ entry below says how:
   has not read (`maxInputBufferSize`, `PAUSE`), and goes on once it reads:
   an application that waits for a whole message larger than that before
   reading any raises the limit, or sets it to 0 for none.
+- A raw `ServerSocket`, and a `NetHost` on one, closes a connection
+  arriving while 10,000 are open (`maxConnections`), and a TLS one closes
+  a connection from an address with 16 handshakes under way once half of
+  `maxPendingHandshakes` are taken (`maxPendingHandshakesPerAddress`):
+  raise the first for a server built to hold more, and set the second to 0
+  behind a proxy.
+- `NetHost.maxConnections` (`INetHost`) is the most connections a host
+  serves, 10,000 by default, where it was the listen backlog: code that set
+  it as a backlog now caps its connections at that number, remove the
+  line, or set the cap it wants. A host asks for the system's largest
+  backlog. A class implementing `INetHost` declares `maxConnections` as
+  `(get, set)` and adds `refusedConnections(get, never)`.
 
 ### Added
+- `ServerSocket.maxConnections` (10,000, `DEFAULT_MAX_CONNECTIONS`),
+  `maxPendingHandshakesPerAddress` (16) and `refusedConnections`, the
+  names and shapes `ServerWebSocket` had, moved up to the class every
+  server is built on. A raw `ServerSocket`, and a `NetHost` on one,
+  which a game server builds on, accepted without bound; at its limit a
+  connection is now closed as it is accepted, before any TLS handshake or
+  `connect` event, and counted. Its peer sees the connection accepted and
+  closed at once, an end of stream (or a reset if it had sent something),
+  as Node's `net.Server.maxConnections` refuses; nginx and HAProxy leave
+  such a connection in the kernel's queue, which suits a cap that frees
+  in milliseconds, but a server's places free on the scale of sessions,
+  and a client queued behind them would wait without a word. A TLS
+  connection is counted once its handshake is done, and one arriving at
+  the limit is refused before a handshake is spent on it. A TLS server
+  also holds one address to 16 handshakes under way once half of
+  `maxPendingHandshakes` are taken, as `ServerWebSocket` does, refusing
+  past it as accepted: one address opening TLS connections and saying
+  nothing held every place, and every real client waited behind it. The
+  counts are every runtime's on a spread server, and a place is given back
+  however its connection ends. `ServerWebSocket` answers 503 at the limit,
+  as before; `HTTPServer` takes its limit from
+  `HTTPServerConfig.maxConnections` into this field and counts its
+  refusals here too. `NetHost.maxConnections` is its server's, and a
+  reliable UDP host counts its sessions itself, closing one accepted past
+  the limit before `onAccept`; `INetHost.refusedConnections` says how many.
 - `Socket.maxInputBufferSize` and `inputOverflowPolicy` (with
   `InputOverflowPolicy`): what a peer can make a connection hold that its
   application has not read, as `maxOutputBufferSize` bounds what waits for

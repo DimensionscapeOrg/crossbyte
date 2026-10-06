@@ -356,6 +356,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	// Whether reading has stopped at maxInputBufferSize, waiting for the
 	// application to read; see __pauseInput.
 	@:noCompletion private var __inputPaused:Bool = false;
+	// The server that counted this connection against its maxConnections,
+	// told once as it closes; null for one no server counts.
+	@:noCompletion private var __openCounter:crossbyte._internal.socket.OpenCounter = null;
 	#if nodejs
 	// The tick a paused Node socket is asked on, made once.
 	@:noCompletion private var __inputPauseTick:TickEvent->Void = null;
@@ -763,6 +766,15 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 		__closeAnnounced = true;
 		__dispatchPooledSimpleEvent(Event.CLOSE);
+	}
+
+	/** The server that counted this connection is told it has closed, once. **/
+	@:noCompletion private inline function __releaseCount():Void {
+		if (__openCounter != null) {
+			var counter:crossbyte._internal.socket.OpenCounter = __openCounter;
+			__openCounter = null;
+			counter.__releaseOpen();
+		}
 	}
 	// The socket's connect, close, ioError and socketData events, one of each,
 	// made when first dispatched and handed out again for every dispatch
@@ -2076,6 +2088,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__connected = false;
 		__isDirty = false;
 		flushFull = false;
+		__releaseCount();
 		#if (js && !nodejs)
 		CrossByte.current().removeEventListener(TickEvent.TICK, this_onTick);
 		#elseif nodejs
@@ -2523,6 +2536,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	**/
 	@:noCompletion private function __releaseNode():Void {
 		__stopConnecting();
+		__releaseCount();
 		__clearNodeConnectDeadline();
 		__cbInstance = null;
 		__socket = null;
