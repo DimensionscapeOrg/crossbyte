@@ -413,6 +413,32 @@ before, after one 16 KB message each way a session held 97 KB for as long
 as it lasted, and holds 4.6 KB once quiet, and output that waited for a
 slow peer goes as soon as it drains.
 
+### One message to many sessions
+
+A chat room's line, a match's state, a dashboard's update: the same message
+to many sessions. `PreparedMessage` makes it ready once, encoded, framed as
+a server sends it, and each session copies the frames into what its pass
+sends, where a `sendText` per session encoded, framed and copied it again for
+every one:
+
+```haxe
+// Given server:ServerWebSocket, room:Array<WebSocket>.
+var update = PreparedMessage.text('{"type":"move","x":12,"y":40}');
+server.broadcast(update);       // every session the server has open
+server.broadcast(update, room); // or the ones the application chose
+```
+
+Who receives, rooms, topics, areas of interest, stays the application's.
+Preparing copies the bytes, so the buffer it was made from is the caller's
+again at once, a message event's payload included; the message itself never
+changes, and may be kept and sent again from any runtime. Made with
+`compress`, it holds a compressed form too, compressed once, for the
+sessions that agreed to permessage-deflate. A secure session still encrypts
+on its own, so TLS shares the framing only; and a client masks each frame
+with a key of its own, so a client's `sendPrepared` shares the encoding and
+frames it itself. Each session still writes once a pass, however many
+messages it was sent in it.
+
 ## Extensions
 
 CrossByte's extension story is intentional: features that benefit from native backends or external platform libraries can live in sibling haxelibs instead of bloating the core.

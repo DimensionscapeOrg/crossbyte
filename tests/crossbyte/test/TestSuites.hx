@@ -455,6 +455,9 @@ class TestSuites {
 		// What a session holds while it is open, and once it has gone quiet.
 		// Also in PortableSuite, for Node.
 		runner.addCase(new crossbyte.net.WebSocketMemoryTest());
+		// One message made ready once and sent to many sessions. Also in
+		// PortableSuite, for Node.
+		runner.addCase(new crossbyte.net.WebSocketBroadcastTest());
 		// Also in PortableSuite: the host a page's Socket dials is read the
 		// same way.
 		runner.addCase(new crossbyte.net.WebSocketIPv6Test());
