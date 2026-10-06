@@ -401,10 +401,44 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	private var __port:Int;
 	private var __key:String;
 
-	private var __handshakeBuffer:String = "";
+	/**
+		The largest opening handshake this session reads, in bytes: a server
+		session's upgrade request, or a client's answer to its own, from the
+		request or status line to the blank line that ends the head. Past it
+		a server answers `431 Request Header Fields Too Large` and closes; a
+		client gives up, with an error saying so, and closes with 1006. `0`
+		or less reads one of any size.
+
+		16 KiB by default, as Node's HTTP parser, and so the `ws` library
+		on it, has it: a browser's upgrade request is a few hundred bytes
+		with its cookies, a few kilobytes at most, and the server holds what
+		has arrived of each one still upgrading, so this times
+		`maxPendingHandshakes` is what silent peers can make it hold.
+
+		There was no limit. Each arrival was appended to a string, copied
+		whole every time, and the whole of it searched again for the end of
+		the head: one connection sending a header without end made a server
+		hold 221 MB in 10 s, single passes of the runtime took a second, and
+		only `handshakeTimeout` ended it.
+	**/
+	public var maxHeaderSize:Int = DEFAULT_MAX_HEADER_SIZE;
+
+	/** The default `maxHeaderSize`: 16 KiB, as Node's. **/
+	public static inline var DEFAULT_MAX_HEADER_SIZE:Int = 16 * 1024;
+
+	// How far the search for the end of the opening handshake's head has
+	// got in __input, so each arrival is searched once rather than the
+	// whole head again with every byte that arrives.
+	private var __headScanned:Int = 0;
+
+	// Whether this server session refused its upgrade: what still arrives
+	// from the peer is read and dropped until the answer has gone.
+	private var __refusing:Bool = false;
 
 	private var __maskedPayload:ByteArray;
 	private var __outgoingMessageBuffer:ByteArray;
+	// A control frame's payload, read in; see __onData. Made with the first.
+	private var __control:ByteArray = null;
 
 	// Kept for the parser tests, which set it directly: a pong clears it.
 	private var __hasTimeoutPotential:Bool = false;
@@ -949,6 +983,13 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 				// ByteArray, and one was made around the scratch every read.
 				@:privateAccess (__input : ByteArrayData).__writeRange(scratch, 0, nBytes);
 
+				// An opening handshake already past what this side reads of
+				// one is not read further: the parse refuses it next, and
+				// what is in the kernel is not this session's to hold.
+				if (readyState == CONNECTING && maxHeaderSize > 0 && __input.length > maxHeaderSize) {
+					break;
+				}
+
 				// A pass's share, as Socket's (see READ_BUDGET there): what
 				// is left stays in the kernel, which reports the socket
 				// readable again next pass. It read for as long as reads came
@@ -1147,6 +1188,19 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		if (data != null && length > 0 && __socket != null) {
 			var pending:Int = __pendingOutput.length - __pendingSent;
 			#if !nodejs
+			// The socket is full and the registry will say when it has room:
+			// added to what waits, and not offered until then. Each frame was
+			// offered at once past 64 KB waiting, a write the system refused
+			// and an exception, per frame, while the peer read nothing.
+			if (__writeQueued && pending > 0) {
+				__pendingOutput.position = __pendingOutput.length;
+				__pendingOutput.writeBytes(data, 0, length);
+				var waiting:Int = pending + length;
+				if (maxOutputBufferSize > 0 && waiting > maxOutputBufferSize) {
+					__overflow(waiting);
+				}
+				return;
+			}
 			// Nothing queued ahead of it, and too large to be worth holding, so it
 			// is offered to the socket straight from where it was built, and only
 			// what the socket does not take is copied into the pending buffer.
@@ -1257,8 +1311,18 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		// would let the next frame overwrite the one still queued for sending.
 		var frame:ByteArray = new ByteArray();
 		frame.writeBytes(__pendingOutput, __pendingSent, pending);
+		// A write carrying the end of the last answer to a ping tells this
+		// side when it has gone, so the answer kept for a newer ping can
+		// follow it; see __answerPing.
+		var written:Null<Void->Void> = onprogress;
+		if (__pongOwed || (__pongUntil > bytesSent && __pongUntil <= bytesSent + pending)) {
+			if (__pongWritten == null) {
+				__pongWritten = __onPongWritten;
+			}
+			written = __pongWritten;
+		}
 		try {
-			__socket.write(Buffer.hxFromBytes(frame), null, onprogress);
+			__socket.write(Buffer.hxFromBytes(frame), null, written);
 		} catch (e:Dynamic) {
 			__close(1006, null);
 			return;
@@ -1297,6 +1361,11 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			// A close that was waiting for this to go.
 			if (__closeWhenDrained) {
 				__close(__drainedCode, __drainedReason);
+				return;
+			}
+			// And an answer to a ping that was waiting for the last.
+			if (__pongOwed) {
+				__settlePong();
 			}
 			return;
 		}
@@ -1313,6 +1382,10 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			__pendingSent = 0;
 		}
 		__afterPartialWrite();
+		// What the socket took may have been the last answer to a ping.
+		if (accepted > 0 && __pongOwed) {
+			__settlePong();
+		}
 		#end
 	}
 
@@ -1357,12 +1430,105 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		return true;
 	}
 
+	// ---- Answering pings ---------------------------------------------------
+
+	// What the socket will have taken, counted as `bytesSent` counts, once
+	// the last answer to a ping has gone; 0 before the first. And the
+	// payload of the newest ping since, still owed an answer, with whether
+	// one is.
+	private var __pongUntil:Float = 0;
+	private var __pongOwed:Bool = false;
+	private var __pongNext:ByteArray = null;
+
+	/**
+		Answers a ping, or, while the answer to an earlier one has not yet
+		gone, keeps this one's payload to answer once it has, in place of
+		any kept before it.
+
+		RFC 6455 5.5.3 allows exactly this: a pong for only the most recent
+		ping, where pings arrive faster than they can be answered. So the
+		answers a session owes are never more than two, one going, one
+		kept, at most 125 bytes, however many pings arrive; and the last
+		ping is always the one last answered. libwebsockets answers so.
+
+		Every ping was answered with a pong of its own. A peer sending pings
+		and reading nothing piled them up without end: 32 MB of pongs in
+		10 s natively, each written as a frame and offered to a full socket,
+		single passes of the runtime taking 1.4 s, every other session on
+		it waiting that long. HTTP/2 meets the same flood with a budget of
+		replies over a window (`maxControlReplies`) and closes past it,
+		because it must answer every PING; WebSocket need not, so nothing
+		here has to be closed or tuned.
+	**/
+	private function __answerPing(payload:ByteArray):Void {
+		if (__pongUnsent()) {
+			var next:ByteArray = __pongNext;
+			if (next == null) {
+				next = __pongNext = new ByteArray();
+				next.endian = BIG_ENDIAN;
+			}
+			next.length = 0;
+			if (payload.length > 0) {
+				next.writeBytes(payload, 0, payload.length);
+			}
+			next.position = 0;
+			__pongOwed = true;
+			return;
+		}
+		__pongOwed = false;
+		__sendPong(payload);
+	}
+
+	/** Sends a pong answering a ping, and notes where it ends. **/
+	private function __sendPong(payload:ByteArray):Void {
+		__sendFrame(payload, WebSocketOpcode.PONG, true);
+		__pongUntil = bytesSent + ownPending;
+	}
+
+	/** Whether the last answer to a ping is still waiting to go. **/
+	private function __pongUnsent():Bool {
+		if (__pongUntil <= 0 || __socket == null) {
+			return false;
+		}
+		#if nodejs
+		// Node's queue is the backlog: what it still holds has not gone.
+		return bytesSent - __socket.writableLength < __pongUntil;
+		#else
+		return bytesSent < __pongUntil;
+		#end
+	}
+
+	/**
+		The answer kept for the newest ping goes, once the one before it has:
+		told when the socket takes more.
+	**/
+	private function __settlePong():Void {
+		if (__pongOwed && readyState == OPEN && !__pongUnsent()) {
+			__pongOwed = false;
+			__sendPong(__pongNext);
+		}
+	}
+
+	#if nodejs
+	// What Node is asked to call once a write carrying an answer to a ping
+	// has gone; see __flushPendingOutput. Made once.
+	private var __pongWritten:Null<Void->Void> = null;
+
+	private function __onPongWritten():Void {
+		var progress = onprogress;
+		if (progress != null) {
+			progress();
+		}
+		__settlePong();
+	}
+	#end
+
 	private function __handleControlFrame(opcode:WebSocketOpcode, payload:ByteArray):Void {
 		switch (opcode) {
 			case PING:
 				// A ping is answered in any state but closed: a peer waiting on
 				// the close handshake may still be checking this side is there.
-				__pong(payload);
+				__answerPing(payload);
 			case PONG:
 				__hasTimeoutPotential = false;
 			case CLOSE:
@@ -1404,6 +1570,14 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	}
 
 	private function __onData():Void {
+		if (__refusing) {
+			// An upgrade refused: nothing the peer sends after it is anything
+			// this side will act on, and it goes rather than piling up while
+			// the answer drains.
+			__input.clear();
+			__inputPosition = 0;
+			return;
+		}
 		if (readyState == OPEN || readyState == CLOSING) {
 			while (__input.bytesAvailable > 0) {
 				var frameStart:Int = __input.position;
@@ -1498,8 +1672,18 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 				}
 
 				if (isControl) {
-					// At most 125 bytes, and rare: a buffer of its own.
-					var control:ByteArray = new ByteArray(payloadLength);
+					// At most 125 bytes, into one buffer the session keeps for
+					// them: nothing hands a control frame's payload out, a
+					// ping's is copied into its answer, a close's read in the
+					// call, and a peer sending a stream of pings made a buffer
+					// for every one.
+					var control:ByteArray = __control;
+					if (control == null) {
+						control = __control = new ByteArray();
+						control.endian = BIG_ENDIAN;
+					}
+					control.length = payloadLength;
+					control.position = 0;
 					if (payloadLength > 0) {
 						__input.readBytes(control, 0, payloadLength);
 					}
@@ -1589,74 +1773,118 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		} else if (readyState == CONNECTING) {
 			var raw:Bytes = __input;
 			var start:Int = __input.position;
-			var endIndex:Int = __findHeaderEnd(raw, start, __input.length);
-			if (endIndex > -1) {
-				// received entire header
-				var headerLength:Int = endIndex - start + 4;
-				var headerData:String = __handshakeBuffer + raw.getString(start, headerLength);
-				__handshakeBuffer = "";
-				var extraStart:Int = start + headerLength;
-				var extraLength:Int = Std.int(__input.length) - extraStart;
-				var extra:Bytes = extraLength > 0 ? raw.sub(extraStart, extraLength) : null;
-				var lines:Array<String> = headerData.split(CRLF);
-				var headers:StringMap<String>;
-
-				if (lines[0].indexOf(GET) == 0) {
-					headers = __parseHeaders(lines);
-					if (!__acceptUpgrade(lines[0], headers)) {
-						return;
-					}
-				} else if (lines[0].indexOf("HTTP") == 0) {
-					headers = __parseHeaders(lines);
-					if (lines[0].indexOf("101") > -1) {
-						headers.set("status", "101");
-					} else {
-						// A failed connect, as a browser reports one: the
-						// answer said, then 1006 (see __close). It closed with
-						// 1002 and no error, as if an open session had broken
-						// the protocol.
-						__onError("The server refused the WebSocket upgrade: " + lines[0]);
-						__close(1006);
-						return;
-					}
-
-					if (__validateResponseHandshake(headers)) {
-						// handshake complete, is ready
-						__disarmOpenDeadline();
-						readyState = OPEN;
-						__startHeartbeat();
-						onopen(new WebsocketEvent(WebsocketEvent.OPEN, this));
-					} else {
-						__onError("The server's answer to the WebSocket upgrade was not valid: " + lines[0]);
-						__close(1006);
-						return;
-					}
+			// Searched from where the last arrival's search stopped, less the
+			// three bytes a CRLFCRLF split between arrivals can start in.
+			var from:Int = __headScanned - 3;
+			if (from < start) {
+				from = start;
+			}
+			var endIndex:Int = __findHeaderEnd(raw, from, __input.length);
+			var limit:Int = maxHeaderSize;
+			if (endIndex < 0) {
+				__headScanned = __input.length;
+				// Held where it arrived, as bytes, until the head is whole: it
+				// was moved into a string, copied whole with every arrival.
+				if (limit > 0 && __input.length - start > limit) {
+					__headTooLarge(limit);
 				}
+				return;
+			}
+			__headScanned = 0;
 
-				if (readyState == OPEN) {
-					// The handshake was parsed with getString, which does not
-					// move the cursor, so those bytes are still sitting in the
-					// buffer. They have to be dropped explicitly: anything left
-					// here is parsed as the start of the first frame, and the
-					// 'G' of "GET" (0x47) has RSV1 set, so the peer's first
-					// real message was rejected as a protocol error.
-					__input.clear();
-					__inputPosition = 0;
+			// The whole head has arrived.
+			var headerLength:Int = endIndex - start + 4;
+			// A head that did end is held to the same limit as one still
+			// arriving, as the HTTP server holds its requests.
+			if (limit > 0 && headerLength > limit) {
+				__headTooLarge(limit);
+				return;
+			}
+			var headerData:String = raw.getString(start, headerLength);
+			var extraStart:Int = start + headerLength;
+			var extraLength:Int = Std.int(__input.length) - extraStart;
+			var extra:Bytes = extraLength > 0 ? raw.sub(extraStart, extraLength) : null;
+			var lines:Array<String> = headerData.split(CRLF);
+			var headers:StringMap<String>;
 
-					if (extra != null && extra.length > 0) {
-						__appendBytes(__input, extra);
-						__input.position = 0;
-						__onData();
-					}
+			// Read as what the session's role expects: a request on a server,
+			// an answer on a client. Anything else was left where it lay,
+			// found again with every arrival, until a deadline ended it.
+			if (__isClient == false) {
+				if (lines[0].indexOf(GET) != 0) {
+					__refuseUpgrade(400, null);
+					return;
 				}
-				// is it the client handshake or server response?
+				headers = __parseHeaders(lines);
+				if (!__acceptUpgrade(lines[0], headers)) {
+					return;
+				}
 			} else {
-				// received partial header, buffer it and wait.
-				__handshakeBuffer += raw.getString(start, __input.bytesAvailable);
+				if (lines[0].indexOf(HTTP) != 0) {
+					__onError("The server's answer to the WebSocket upgrade was not HTTP: " + lines[0]);
+					__close(1006);
+					return;
+				}
+				headers = __parseHeaders(lines);
+				if (lines[0].indexOf("101") > -1) {
+					headers.set("status", "101");
+				} else {
+					// A failed connect, as a browser reports one: the
+					// answer said, then 1006 (see __close). It closed with
+					// 1002 and no error, as if an open session had broken
+					// the protocol.
+					__onError("The server refused the WebSocket upgrade: " + lines[0]);
+					__close(1006);
+					return;
+				}
+
+				if (__validateResponseHandshake(headers)) {
+					// handshake complete, is ready
+					__disarmOpenDeadline();
+					readyState = OPEN;
+					__startHeartbeat();
+					onopen(new WebsocketEvent(WebsocketEvent.OPEN, this));
+				} else {
+					__onError("The server's answer to the WebSocket upgrade was not valid: " + lines[0]);
+					__close(1006);
+					return;
+				}
+			}
+
+			if (readyState == OPEN) {
+				// The handshake was parsed with getString, which does not
+				// move the cursor, so those bytes are still sitting in the
+				// buffer. They have to be dropped explicitly: anything left
+				// here is parsed as the start of the first frame, and the
+				// 'G' of "GET" (0x47) has RSV1 set, so the peer's first
+				// real message was rejected as a protocol error.
 				__input.clear();
 				__inputPosition = 0;
+
+				if (extra != null && extra.length > 0) {
+					__appendBytes(__input, extra);
+					__input.position = 0;
+					__onData();
+				}
 			}
 		}
+	}
+
+	/**
+		The opening handshake's head has run past `maxHeaderSize`: a server
+		session answers 431, as the HTTP server answers a request whose head
+		is too large, and a client gives up on a server that will not stop.
+	**/
+	private function __headTooLarge(limit:Int):Void {
+		__headScanned = 0;
+		if (__isClient == false) {
+			__refuseUpgrade(431, null);
+			return;
+		}
+		__input.clear();
+		__inputPosition = 0;
+		__onError('The server\'s answer to the WebSocket upgrade ran past $limit bytes without ending (maxHeaderSize).');
+		__close(1006);
 	}
 
 	/**
@@ -1724,6 +1952,10 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * Answers an upgrade with a refusal, and closes once the answer has gone.
 	 */
 	private function __refuseUpgrade(status:Int, extraHeaders:Null<Array<String>>):Void {
+		// What the request left, and whatever follows it, is not read on.
+		__refusing = true;
+		__input.clear();
+		__inputPosition = 0;
 		var lines:Array<String> = ['HTTP/1.1 $status ${__statusText(status)}', "Connection: close", "Content-Length: 0"];
 		if (extraHeaders != null) {
 			for (line in extraHeaders) {
@@ -1744,6 +1976,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			case 404: "Not Found";
 			case 426: "Upgrade Required";
 			case 429: "Too Many Requests";
+			case 431: "Request Header Fields Too Large";
 			case 500: "Internal Server Error";
 			case 503: "Service Unavailable";
 			default: "Refused";
