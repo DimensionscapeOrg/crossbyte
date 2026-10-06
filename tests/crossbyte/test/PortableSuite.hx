@@ -78,6 +78,7 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.ServerWebSocketUpgradeLifecycleTest());
 		// What one peer can make a server hold or do: Node's sessions too.
 		runner.addCase(new crossbyte.net.ServerWebSocketLimitsTest());
+		runner.addCase(new crossbyte.net.WebSocketMemoryTest());
 		// And a plain Socket over Node's TLS, checked the same way.
 		runner.addCase(new crossbyte.net.SocketTLSClientTest());
 		runner.addCase(new crossbyte.net.WebSocketClientTest());

@@ -1857,6 +1857,29 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A WebSocket session holds less while it is open, and lets go of what it
+  held for its messages once it goes quiet. With 1,000 idle sessions,
+  heap after a full collection, a session a server accepted held 6.6 KB
+  natively and 5.0 KB on the jvm, now 3.8 and 3.1 KB; a client 5.0 and
+  3.9 KB, now 4.1 and 3.4 KB. After one 16 KB message each way a server's
+  session held 97 KB natively (95 KB on the jvm) for as long as it
+  lasted; it holds 4.6 KB (3.3 KB) once it has been quiet for a beat of
+  its heartbeat. What went: the upgrade request's parsed headers, a
+  third of an idle session, which `WebSocket.request` now reads again,
+  the first time it is asked after the session opened, from the head it
+  keeps; the close listener a server hung on each of its sessions; six
+  closures the framing layer was given by its socket, now typed calls;
+  and what only a client or a TLS handshake uses, made there alone. A
+  session's buffers let their storage go once it has heard nothing and
+  sent nothing since the last beat (`pingInterval`, 30 s by default), and
+  past 64 KB as soon as they empty, where each kept the largest it had
+  ever needed. A busy session is never quiet for a beat, so nothing is
+  let go of under load: the echo of a 100-byte text took 15.4 µs per
+  round trip natively before and 15.3 after (median of five interleaved),
+  allocating the same. In the soak (1,000 sessions, a message each way
+  at 30 Hz) a busy session held 9.5 KB natively and holds 7.3 KB, and
+  collections fell from 39 a minute to 33 (4 to 2 with 200 MB of world
+  live); the longest stall did not move.
 - A WebSocket frame is held to what is left of its message under
   `maxMessageSize`, on its header, and not to 64 KiB besides. A browser
   sends a message of 100 KB as one frame, Chrome, 102,400 bytes, and a

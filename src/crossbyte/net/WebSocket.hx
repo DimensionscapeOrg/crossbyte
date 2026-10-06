@@ -122,6 +122,9 @@ class WebSocket extends Socket {
 	// The server this session is counted by against its maxConnections,
 	// until it closes.
 	@:noCompletion private var __countedBy:ServerWebSocket = null;
+	// The server that lists this session among its open ones, told as it
+	// closes; see ServerWebSocket.__trackClient.
+	@:noCompletion private var __trackedBy:ServerWebSocket = null;
 
 	/**
 		The subprotocols a client asks for, most preferred first. Set before
@@ -141,6 +144,11 @@ class WebSocket extends Socket {
 		The upgrade request a server's session was opened by: its path and
 		query, headers, cookies, `Origin` and the subprotocols offered. `null`
 		on a client.
+
+		Kept as the head it arrived as once the session has opened and its
+		`connect` listeners have run: its headers are read from that again
+		the first time they are asked for afterwards, and kept from then on.
+		The parsed headers were a third of what an idle session held.
 	**/
 	public var request(get, never):Null<WebSocketRequest>;
 
@@ -150,6 +158,13 @@ class WebSocket extends Socket {
 		proxy between the two does not close the connection as idle, or, on
 		a server's sessions, the server's `pingInterval`. Can be changed at any
 		time.
+
+		The same beat lets a quiet session go of its memory: one that has
+		heard nothing and sent nothing since the last beat lets go of the
+		storage its buffers held for the messages before, and holds its
+		objects alone, about 4 KB natively, where it kept the largest each
+		buffer had needed, some 95 KB after one 16 KB message each way. With
+		this and `idleTimeout` both zero there is no beat, and it keeps them.
 	**/
 	public var pingInterval(get, set):Float;
 
@@ -1150,6 +1165,18 @@ class WebSocket extends Socket {
 	}
 
 	@:noCompletion override private function socket_onClose(event):Void {
+		var code:Int = 0;
+		var reason:String = null;
+		var closed:WebsocketEvent = Std.downcast(event, WebsocketEvent);
+		if (closed != null) {
+			code = closed.code;
+			reason = closed.reason;
+		}
+		__framingClosed(code, reason);
+	}
+
+	/** The session underneath has closed, with `code` and `reason`. **/
+	@:noCompletion private function __framingClosed(code:Int, reason:Null<String>):Void {
 		__connected = false;
 		__webSocket = null;
 
@@ -1158,6 +1185,14 @@ class WebSocket extends Socket {
 			var counted:ServerWebSocket = __countedBy;
 			__countedBy = null;
 			@:privateAccess counted.__releaseSession();
+		}
+		// And off the server's list of open sessions, before anything that
+		// listens for the close below runs, as it was when the server heard
+		// of it through a close listener of its own added first.
+		if (__trackedBy != null) {
+			var tracker:ServerWebSocket = __trackedBy;
+			__trackedBy = null;
+			@:privateAccess tracker.__sessionClosed(this);
 		}
 
 		// Ended before it opened: its server stops waiting on it, and counts
@@ -1173,32 +1208,24 @@ class WebSocket extends Socket {
 		// could not tell a peer disconnecting from a peer being dropped for
 		// a protocol violation. Dispatched under the Event.CLOSE type, so
 		// listeners that only care *that* it closed are unaffected.
-		var code:Int = 0;
-		var reason:String = null;
-
-		var closed:WebsocketEvent = Std.downcast(event, WebsocketEvent);
-		if (closed != null) {
-			code = closed.code;
-			reason = closed.reason;
-		}
-
 		dispatchEvent(new WebSocketCloseEvent(Event.CLOSE, code, reason));
 	}
 
 	@:noCompletion override private function socket_onError(e):Void {
+		var failed:WebsocketEvent = Std.downcast(e, WebsocketEvent);
+		__framingFailed(failed != null ? failed.text : null, failed != null ? failed.errorID : 0);
+	}
+
+	/** The session underneath has failed, saying `text`. **/
+	@:noCompletion private function __framingFailed(text:Null<String>, errorID:Int):Void {
 		// An IOErrorEvent carrying what went wrong. This dispatched a bare
 		// Event of the ioError type, so a listener typed for IOErrorEvent got
 		// something else, and a refused certificate or a connect that failed
 		// arrived with no account of which it was.
-		var text:String = "";
-		var failed:WebsocketEvent = Std.downcast(e, WebsocketEvent);
-		if (failed != null && failed.text != null) {
-			text = failed.text;
-		}
-
+		//
 		// A deadline that passed says so with its id, which a NetConnection
 		// over this socket reports as Reason.Timeout.
-		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text, failed != null ? failed.errorID : 0));
+		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text == null ? "" : text, errorID));
 	}
 
 	@:noCompletion override private function socket_onMessage(msg:Dynamic):Void {
@@ -1322,14 +1349,11 @@ class WebSocket extends Socket {
 		__input.endian = __endian;
 
 		__webSocket.binaryType = "arraybuffer";
-		__webSocket.onopen = socket_onOpen;
-		__webSocket.onmessage = socket_onMessage;
-		// Messages come straight here, typed, with no event between the
-		// layers: one was made for each, and dispatched to this alone.
-		__webSocket.__onMessage = __messageArrived;
-		__webSocket.onclose = socket_onClose;
-		__webSocket.onerror = socket_onError;
-		__webSocket.onoverflow = __overflowCloses;
+		// The session tells this of its opening, its messages, its errors,
+		// its close and its overflow by typed calls, with no event between
+		// the layers. It was given a closure for each, six a session, kept
+		// for as long as it lasted.
+		__webSocket.__owner = this;
 		__syncProgressHook();
 
 		// A server's session asks its server about its upgrade, through

@@ -167,10 +167,13 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	// Whether what this side sends may go compressed: only where its peer
 	// agreed to inflate each message on its own; see __takeDeflateAnswer.
 	private var __deflateSend:Bool = false;
-	public var onclose:WebsocketEvent->Void = (e:WebsocketEvent) -> {};
-	public var onerror:WebsocketEvent->Void = (e:WebsocketEvent) -> {};
-	public var onmessage:WebsocketEvent->Void = (e:WebsocketEvent) -> {};
-	public var onopen:WebsocketEvent->Void = (e:WebsocketEvent) -> {};
+	// Asked where there is no `__owner`; null is no one. Each started as a
+	// closure that did nothing, four made for every session and dropped as
+	// its owner set its own.
+	public var onclose:Null<WebsocketEvent->Void> = null;
+	public var onerror:Null<WebsocketEvent->Void> = null;
+	public var onmessage:Null<WebsocketEvent->Void> = null;
+	public var onopen:Null<WebsocketEvent->Void> = null;
 
 	/**
 	 * A server session's say over its own upgrade, asked once the request has
@@ -212,6 +215,17 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		hand-off. `message` is valid only during the call; see `Arrivals`.
 	**/
 	@:noCompletion public var __onMessage:Null<(message:ByteArray, isText:Bool) -> Void> = null;
+
+	/**
+		The `crossbyte.net.WebSocket` this session frames for, where it has
+		one: told of its opening, its messages, its errors, its close and its
+		overflow by typed calls, in place of `onopen`, `__onMessage`,
+		`onerror`, `onclose` and `onoverflow`, which are not asked then. Each
+		of those was a closure the owner made and the session kept for as
+		long as it lasted, six a session, 190 bytes natively, besides the
+		do-nothing ones each started with and the event made for each call.
+	**/
+	@:noCompletion public var __owner:Null<crossbyte.net.WebSocket> = null;
 	private var __incomingOpcode:Int = -1;
 	private var __incomingMessageSize:Int = 0;
 	private var __output:ByteArray;
@@ -345,7 +359,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	private var __timestamp:Float;
 
 	private var __origin:String;
-	private var __protocols:Array<String> = [];
+	// A client's, as asked for; null for none, and on every server session.
+	private var __protocols:Null<Array<String>> = null;
 	private var __secure:Bool;
 
 	// Whether the transport is TLS, whichever side made it.
@@ -396,6 +411,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	private var __idleTimeout:Float = DEFAULT_IDLE_TIMEOUT;
 	private var __heard:Bool = false;
 	private var __silentFor:Float = 0;
+	// What had been sent or queued at the last beat, for whether the session
+	// has sent anything since; see __trimWhenQuiet.
+	private var __sentAtBeat:Float = 0;
 	private var __heartbeat:Int = 0;
 	private var __heartbeatArmed:Bool = false;
 
@@ -479,13 +497,14 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 *        the system's store, or `null` for the system's.
 	 */
 	public function new(url:String, ?protocols:Array<String>, ?origin:String, verifyCert:Bool = true, ?certAuthority:crossbyte.net.Certificate) {
-		#if !nodejs
-		__tickConnectListener = __onTickConnect;
-		__tickSSLHandshakeListener = __onTickSSLHandshake;
-		#end
-
 		if (__isClient == null) {
 			__isClient = true;
+			#if !nodejs
+			// A client's alone, which connects from the tick: every session
+			// a server accepted made it too, and the handshake's below, and
+			// kept both for as long as it lasted. See __initSSLHandshake.
+			__tickConnectListener = __onTickConnect;
+			#end
 			// A client's alone: a server answers the key it is sent, and needs
 			// no randomness of its own. This was drawn before the question was
 			// asked, so every session a server accepted drew one too, and
@@ -565,11 +584,12 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		// Taken when a message's first frame arrives (see __takeMessage).
 		__incomingMessageBuffer = null;
 
-		__outgoingMessageBuffer = new ByteArray();
-		__outgoingMessageBuffer.endian = BIG_ENDIAN;
-
-		__maskedPayload = new ByteArray();
-		__maskedPayload.endian = BIG_ENDIAN;
+		// Made when first needed, and let go of when the session goes quiet:
+		// a message longer than a frame's, and a client's masked payload or
+		// a text message written in place (see __scratchPayload). Most
+		// sessions on a server never need the first.
+		__outgoingMessageBuffer = null;
+		__maskedPayload = null;
 
 		__timestamp = haxe.Timer.stamp();
 
@@ -1352,7 +1372,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			return;
 		}
 		bytesSent += pending;
-		__pendingOutput.clear();
+		__emptied(__pendingOutput);
 		__pendingSent = 0;
 
 		// So a peer that is not reading shows in Node's own queue, and the
@@ -1379,7 +1399,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 
 		if (accepted >= pending) {
-			__pendingOutput.clear();
+			// Emptied, and past KEEP its storage let go: what a backlog grew
+			// it to was kept for the rest of the session.
+			__emptied(__pendingOutput);
 			__pendingSent = 0;
 
 			// A close that was waiting for this to go.
@@ -1442,7 +1464,12 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		Node's queue waiting on that same peer.
 	**/
 	private function __overflow(waiting:Int):Bool {
-		if (onoverflow != null && !onoverflow()) {
+		var owner = __owner;
+		if (owner != null) {
+			if (!@:privateAccess owner.__overflowCloses()) {
+				return false;
+			}
+		} else if (onoverflow != null && !onoverflow()) {
 			return false;
 		}
 
@@ -1844,7 +1871,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 					return;
 				}
 				headers = __parseHeaders(lines);
-				if (!__acceptUpgrade(lines[0], headers)) {
+				if (!__acceptUpgrade(lines[0], headers, headerData)) {
 					return;
 				}
 			} else {
@@ -1871,7 +1898,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 					__disarmOpenDeadline();
 					readyState = OPEN;
 					__startHeartbeat();
-					onopen(new WebsocketEvent(WebsocketEvent.OPEN, this));
+					__opened();
 				} else {
 					__onError("The server's answer to the WebSocket upgrade was not valid: " + lines[0]);
 					__close(1006);
@@ -1886,7 +1913,10 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 				// here is parsed as the start of the first frame, and the
 				// 'G' of "GET" (0x47) has RSV1 set, so the peer's first
 				// real message was rejected as a protocol error.
-				__input.clear();
+				//
+				// And the storage the head was read into goes with them: a
+				// session that opens and says nothing kept it for good.
+				__letGo(__input);
 				__inputPosition = 0;
 
 				if (extra != null && extra.length > 0) {
@@ -1925,7 +1955,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * owner's `onupgrade` decides on it, and the subprotocol accepted is
 	 * echoed.
 	 */
-	private function __acceptUpgrade(requestLine:String, headers:StringMap<String>):Bool {
+	private function __acceptUpgrade(requestLine:String, headers:StringMap<String>, ?head:String):Bool {
 		if (!__validateRequestHandshake(headers)) {
 			// Answered rather than dropped, so a client learns why. A version
 			// this side does not speak is answered with the one it does, as
@@ -1936,12 +1966,16 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 
 		__noteEndpoints();
-		request = new WebSocketRequest(requestLine, headers, __remoteAddress, __remotePort);
+		request = new WebSocketRequest(requestLine, headers, __remoteAddress, __remotePort, head);
 
 		var accepted:Bool = true;
-		if (onupgrade != null) {
+		var hook = onupgrade;
+		// Asked once: the hook is let go of here, rather than held for the
+		// life of the session with everything it reaches.
+		onupgrade = null;
+		if (hook != null) {
 			try {
-				accepted = onupgrade(request);
+				accepted = hook(request);
 			} catch (e:Dynamic) {
 				// A hook that throws refuses, as `admit` does, and as a
 				// server's fault, not the client's.
@@ -1972,7 +2006,13 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 		readyState = OPEN;
 		__startHeartbeat();
-		onopen(new WebsocketEvent(WebsocketEvent.OPEN, this));
+		__opened();
+		// The server's connect listeners have read the request by now, if
+		// they were going to: it keeps its head, and lets the parsed headers
+		// go (see WebSocketRequest.__settle).
+		if (request != null) {
+			@:privateAccess request.__settle();
+		}
 		return readyState == OPEN;
 	}
 
@@ -2179,12 +2219,89 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 */
 	private function __validateInputPosition():Void {
 		if (__input.bytesAvailable <= 0) {
-			__input.clear();
+			__emptied(__input);
 			__inputPosition = 0;
 			return;
 		}
 
 		__inputPosition = __input.position;
+	}
+
+	// ---- Memory a session keeps --------------------------------------------
+
+	/**
+		The most storage a buffer keeps once it has emptied: 64 KB, what a
+		pass reads of a socket into it at once and what it batches for one.
+		A busy session fills and empties its buffers within that every pass,
+		allocating nothing; past it a buffer has held a backlog, a burst
+		read in one pass, output behind a peer that stopped reading, and
+		lets the storage go as it empties, where it kept the largest it had
+		ever needed for as long as the session lasted, up to the 8 MiB a
+		server lets wait for one peer.
+	**/
+	private static inline var KEEP:Int = 64 * 1024;
+
+	// What a buffer let go of is given in place of its storage: nothing is
+	// ever written into a buffer of no length, so one serves every session.
+	private static var __nothing:Null<Bytes> = null;
+
+	/** Empties `buffer`, letting its storage go past `KEEP`. **/
+	private static inline function __emptied(buffer:ByteArray):Void {
+		buffer.clear();
+		if (@:privateAccess (buffer : ByteArrayData).__length > KEEP) {
+			__letGo(buffer);
+		}
+	}
+
+	/** Empties `buffer` and lets its storage go, however little it is. **/
+	private static function __letGo(buffer:Null<ByteArray>):Void {
+		if (buffer == null) {
+			return;
+		}
+		buffer.clear();
+		var data:ByteArrayData = buffer;
+		if (@:privateAccess data.__length > 0) {
+			var nothing:Null<Bytes> = __nothing;
+			if (nothing == null) {
+				nothing = __nothing = Bytes.alloc(0);
+			}
+			@:privateAccess data.__setData(nothing);
+		}
+	}
+
+	/**
+		Lets go of every buffer a session holds between messages, once it has
+		been quiet for a beat of its heartbeat: nothing heard, for what it
+		reads, and nothing sent, for what it writes. An idle session then
+		holds its objects and no storage, what it took in and sent before
+		it went quiet, up to `KEEP` a buffer and 16 KB of message, was held
+		for as long as it lasted. A session that is busy is never quiet for a
+		beat, so this costs it nothing; one that wakes allocates again what
+		its first messages need.
+	**/
+	private function __trimWhenQuiet(heard:Bool, sent:Bool):Void {
+		if (!heard) {
+			if (__input != null && __input.length == 0) {
+				__letGo(__input);
+				__inputPosition = 0;
+			}
+			// Its storage, not the buffer: the owner's reused event still
+			// points at the buffer, emptied, and would keep the storage too.
+			if (__incomingOpcode == -1 && !__messageOut) {
+				__letGo(__messageKept);
+			}
+			__control = null;
+		}
+		if (!sent && ownPending == 0) {
+			__letGo(__pendingOutput);
+			__pendingSent = 0;
+			__letGo(__output);
+			__outgoingMessageBuffer = null;
+			__maskedPayload = null;
+			if (!__pongOwed) {
+				__pongNext = null;
+			}
+		}
 	}
 
 	/**
@@ -2210,7 +2327,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 		var remaining:Int = __input.length - consumed;
 		if (remaining <= 0) {
-			__input.clear();
+			__emptied(__input);
 			__inputPosition = 0;
 			return;
 		}
@@ -2255,10 +2372,13 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			__messageOut = true;
 		}
 		try {
+			var owner = __owner;
 			var direct = __onMessage;
-			if (direct != null) {
+			if (owner != null) {
+				@:privateAccess owner.__messageArrived(message, isText);
+			} else if (direct != null) {
 				direct(message, isText);
-			} else {
+			} else if (onmessage != null) {
 				var event = new WebsocketEvent(WebsocketEvent.MESSAGE, this, message);
 				event.isText = isText;
 				onmessage(event);
@@ -2333,6 +2453,16 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	}
 
 	private function __parseHeaders(lines:Array<String>):StringMap<String> {
+		return __parseHeaderLines(lines);
+	}
+
+	/**
+		The header lines of a head, after its first, by lower-cased name: a
+		header sent more than once folded into one value. Shared with
+		`WebSocketRequest`, which reads its headers again from the head a
+		session keeps.
+	**/
+	@:noCompletion public static function __parseHeaderLines(lines:Array<String>):StringMap<String> {
 		var headers:StringMap<String> = new StringMap();
 
 		// Skip the first line, since it contains the request method or status code
@@ -2674,6 +2804,10 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 
 		#if !nodejs
+		// Neither tick has anything left to step: the connect and the TLS
+		// handshake are done.
+		__tickConnectListener = null;
+		__tickSSLHandshakeListener = null;
 		__socket.custom = this;
 		@:privateAccess __runtime.registerSocket(__socket);
 		__registered = true;
@@ -2862,6 +2996,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	private function __initSSLHandshake():Void {
 		__handshaking = true;
 
+		if (__tickSSLHandshakeListener == null) {
+			__tickSSLHandshakeListener = __onTickSSLHandshake;
+		}
 		__runtime.removeEventListener(Event.TICK, __tickConnectListener);
 		__runtime.addEventListener(Event.TICK, __tickSSLHandshakeListener);
 
@@ -2924,9 +3061,30 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	private function __onError(errorMessage:String, errorID:Int = 0):Void {
 		__errorReported = true;
-		var event = new WebsocketEvent(WebsocketEvent.ERROR, this, null, errorMessage);
-		event.errorID = errorID;
-		onerror(event);
+		var owner = __owner;
+		if (owner != null) {
+			@:privateAccess owner.__framingFailed(errorMessage, errorID);
+			return;
+		}
+		var listener = onerror;
+		if (listener != null) {
+			var event = new WebsocketEvent(WebsocketEvent.ERROR, this, null, errorMessage);
+			event.errorID = errorID;
+			listener(event);
+		}
+	}
+
+	/** The session has opened: its owner told, or `onopen`. **/
+	private function __opened():Void {
+		var owner = __owner;
+		if (owner != null) {
+			@:privateAccess owner.socket_onOpen(null);
+			return;
+		}
+		var listener = onopen;
+		if (listener != null) {
+			listener(new WebsocketEvent(WebsocketEvent.OPEN, this));
+		}
 	}
 
 	/**
@@ -3153,7 +3311,12 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		__detachTickListeners();
 
 		__closeReported = true;
-		onclose(new WebsocketEvent(WebsocketEvent.CLOSE, this, null, null, code, reason));
+		var owner = __owner;
+		if (owner != null) {
+			@:privateAccess owner.__framingClosed(code, reason);
+		} else if (onclose != null) {
+			onclose(new WebsocketEvent(WebsocketEvent.CLOSE, this, null, null, code, reason));
+		}
 
 		__socket = null;
 	}
@@ -3219,6 +3382,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 		__heard = false;
 		__silentFor = 0;
+		__sentAtBeat = bytesSent + ownPending;
 		__heartbeat = __timers().setInterval(period, period, __onHeartbeat);
 		__heartbeatArmed = true;
 	}
@@ -3242,6 +3406,10 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 
 		var period:Float = __heartbeatPeriod();
+		// Quiet since the last beat, either way: what it held for messages
+		// goes, before the ping below asks the peer whether it is there.
+		var sent:Bool = bytesSent + ownPending != __sentAtBeat;
+		__trimWhenQuiet(__heard, sent);
 		if (__heard) {
 			__silentFor = 0;
 		} else {
@@ -3260,6 +3428,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		if (pingInterval > 0 && __silentFor > 0) {
 			ping();
 		}
+		__sentAtBeat = bytesSent + ownPending;
 	}
 
 	public function sendBytes(data:ByteArray):Void {
@@ -3315,7 +3484,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 		// __sendFrame copies a client's payload into this scratch to mask it,
 		// which with the payload already here copies it onto itself.
-		var payload:ByteArray = __maskedPayload;
+		var payload:ByteArray = __scratchPayload();
 		payload.length = 0;
 		@:privateAccess (payload : ByteArrayData).__resize(length, 0);
 		if (length > 0) {
@@ -3381,12 +3550,17 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 				var marked:Bool = compressed && firstFrame;
 				firstFrame = false;
 
-				__outgoingMessageBuffer.length = length;
-				__outgoingMessageBuffer.position = 0;
+				var fragment:ByteArray = __outgoingMessageBuffer;
+				if (fragment == null) {
+					fragment = __outgoingMessageBuffer = new ByteArray();
+					fragment.endian = BIG_ENDIAN;
+				}
+				fragment.length = length;
+				fragment.position = 0;
 
-				data.readBytes(__outgoingMessageBuffer, 0, length);
+				data.readBytes(fragment, 0, length);
 
-				__sendFrame(__outgoingMessageBuffer, fragmentOpcode, fin, marked);
+				__sendFrame(fragment, fragmentOpcode, fin, marked);
 			}
 		} else {
 			__sendFrame(data, opcode, true, compressed);
@@ -3395,6 +3569,21 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	private static function __generateMaskBytes():ByteArray {
 		return SecureRandom.getSecureRandomBytes(4);
+	}
+
+	/**
+		The session's scratch for a payload on its way into a frame: a
+		client's, masked there, and a text message written in place (see
+		`__sendAsciiText`). Made on first use, and let go of when the session
+		goes quiet.
+	**/
+	private inline function __scratchPayload():ByteArray {
+		var scratch:Null<ByteArray> = __maskedPayload;
+		if (scratch == null) {
+			scratch = __maskedPayload = new ByteArray();
+			scratch.endian = BIG_ENDIAN;
+		}
+		return scratch;
 	}
 
 	private inline function __sendFrame(payload:ByteArray, opcode:Int, isFinal:Bool, compressed:Bool = false):Void {
@@ -3418,16 +3607,17 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			// Copy in bulk, then mask in place with the same XOR the inbound
 			// path uses, rather than a per-byte writeByte through the
 			// ByteArray write path.
-			__maskedPayload.length = length;
-			__maskedPayload.position = 0;
+			var masked:ByteArray = __scratchPayload();
+			masked.length = length;
+			masked.position = 0;
 			if (length > 0) {
-				(__maskedPayload : Bytes).blit(0, payload, 0, length);
-				__applyMask(__maskedPayload, length, frameMask);
+				(masked : Bytes).blit(0, payload, 0, length);
+				__applyMask(masked, length, frameMask);
 			}
 
 			// Write the masked payload
 			__output.writeBytes(frameMask);
-			__output.writeBytes(__maskedPayload);
+			__output.writeBytes(masked);
 		}
 		// Hand the frame to the pending buffer rather than writing it
 		// directly: a momentarily full socket is a normal condition, and
