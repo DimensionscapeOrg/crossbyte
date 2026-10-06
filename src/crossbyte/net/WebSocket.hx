@@ -196,7 +196,9 @@ class WebSocket extends Socket {
 		or one the peer began: for the peer to answer the close frame, and
 		for what was sent before it to drain. Past it the connection is
 		closed regardless, as 1006 if the peer never answered. Five by
-		default, or the server's `closeTimeout`.
+		default, or the server's `closeTimeout`. 0 is refused rather than
+		read as no deadline: a closing handshake that waited for good would
+		hold a peer that never answers its close frame.
 
 		@throws ArgumentError When not a number above 0.
 	**/
@@ -256,9 +258,12 @@ class WebSocket extends Socket {
 
 		A session a `ServerWebSocket` accepted starts with the server's
 		`maxOutputBufferSize`, 8 MiB unless changed; a client starts with
-		`0`. Answers to the peer's pings never pile up here whatever the
-		limit: a session owes at most one, the newest ping's (RFC 6455
-		5.5.3), while the last has not gone.
+		`0`, as a browser's WebSocket has no limit on its `bufferedAmount`:
+		what a client holds is only what its own application sent, which it
+		can watch in `outputBufferLength`, where a server holds what it sends
+		every peer, the slowest included. Answers to the peer's pings never
+		pile up here whatever the limit: a session owes at most one, the
+		newest ping's (RFC 6455 5.5.3), while the last has not gone.
 
 		Overrides `Socket.maxOutputBufferSize` to bound the session's frame
 		buffer instead of the base socket's. A WebSocket writes through its
