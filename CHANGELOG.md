@@ -1975,6 +1975,11 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- On the jvm a TCP socket reads and writes through one `ByteBuffer` per
+  array, moved to each range, where it wrapped a new one for every read
+  and every write. A 100-byte TCP echo allocated 336 bytes and allocates
+  144; the same reads and writes lighten a WebSocket echo (620 -> 428), an
+  HTTP/1.1 GET (3,920 -> 3,728) and a POST (8,896 -> 8,704), Oracle's JRE 8.
 - A WebSocket message allocates nothing to send or to receive, natively,
   but the `text` a listener asks for. An echo of a 100-character text
   allocated 264 bytes natively, and allocates 116: the `String` the echo

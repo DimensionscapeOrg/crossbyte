@@ -1877,6 +1877,10 @@ private class SocketInput extends haxe.io.Input {
 	/** Seconds a blocking read waits for data before giving up; 0 waits for ever. **/
 	public var timeout:Float = 0.0;
 
+	// The read loops read into one buffer a thread: wrapped once, not per
+	// read. See ArrayView; made at the first read.
+	var __view:ArrayView = null;
+
 	public function new(channel:SocketChannel) {
 		this.channel = channel;
 	}
@@ -1925,7 +1929,10 @@ private class SocketInput extends haxe.io.Input {
 		if (channel == null)
 			throw "Invalid handle";
 		__awaitReadable();
-		var bb = ByteBuffer.wrap(buf.getData(), pos, len);
+		if (__view == null) {
+			__view = new ArrayView();
+		}
+		var bb:ByteBuffer = __view.over(buf, pos, len);
 		var n:Int = try {
 			channel.read(bb);
 		} catch (e:Dynamic) {
@@ -1944,8 +1951,40 @@ private class SocketInput extends haxe.io.Input {
 	}
 }
 
+/**
+	A ByteBuffer over the array last read into or written from, moved to
+	each range asked: one made per array rather than one per call.
+	ByteBuffer.wrap on every read and write was about 190 bytes of garbage
+	a TCP round trip; a socket reads into its thread's one read buffer, and
+	writes from its own output, so the array is the same call after call.
+**/
+private final class ArrayView {
+	var of:haxe.io.BytesData = null;
+	var buffer:ByteBuffer = null;
+
+	public function new() {}
+
+	public inline function over(buf:haxe.io.Bytes, pos:Int, len:Int):ByteBuffer {
+		var data:haxe.io.BytesData = buf.getData();
+		var view:ByteBuffer = buffer;
+		if (view == null || of != data) {
+			view = ByteBuffer.wrap(data);
+			buffer = view;
+			of = data;
+		}
+		// The limit first: a position may not pass it.
+		view.clear();
+		view.limit(pos + len);
+		view.position(pos);
+		return view;
+	}
+}
+
 private class SocketOutput extends haxe.io.Output {
 	var channel:SocketChannel;
+
+	// As SocketInput's: the array last written from, wrapped once.
+	var __view:ArrayView = null;
 
 	public function new(channel:SocketChannel) {
 		this.channel = channel;
@@ -1977,7 +2016,10 @@ private class SocketOutput extends haxe.io.Output {
 	public function tryWriteBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
 		if (channel == null)
 			throw "Invalid handle";
-		var bb = ByteBuffer.wrap(buf.getData(), pos, len);
+		if (__view == null) {
+			__view = new ArrayView();
+		}
+		var bb:ByteBuffer = __view.over(buf, pos, len);
 		var n:Int = try {
 			channel.write(bb);
 		} catch (e:Dynamic) {
