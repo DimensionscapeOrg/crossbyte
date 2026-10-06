@@ -52,7 +52,14 @@ class HTTPServer extends ServerSocket {
 	// be counted by nothing, timed by nothing and drained by nothing, so six
 	// silent sockets all got in past a limit of two and outlived drain().
 	private var __sniffing:ObjectMap<CBSocket, Float>;
-	private var __maxConnections:Int;
+	// ServerSocket.maxConnections, which the configuration sets: the front's,
+	// on a server spread over runtimes; 0 or less for no count.
+	private var __maxConnections(get, never):Int;
+
+	private inline function get___maxConnections():Int {
+		var limit:Int = (__front != null ? __front : this).maxConnections;
+		return limit > 0 ? limit : 0x7FFFFFFF;
+	}
 	private var __connections:Int;
 	private var docRoot:String;
 	private var autoIndex:Array<String>;
@@ -136,7 +143,7 @@ class HTTPServer extends ServerSocket {
 		__active = new ObjectMap();
 		__activeHttp2 = new ObjectMap();
 		__sniffing = new ObjectMap();
-		__maxConnections = config.maxConnections;
+		maxConnections = config.maxConnections;
 
 		if (__config.phpEnabled) {
 			var mode:PHPMode = switch (__config.phpMode) {
@@ -509,6 +516,7 @@ class HTTPServer extends ServerSocket {
 		#if (target.threaded && !js)
 		if (__shared != null) {
 			if (!__shared.claimConnection(__maxConnections)) {
+				__refusedConnections++;
 				return false;
 			}
 			__connections++;
@@ -516,6 +524,7 @@ class HTTPServer extends ServerSocket {
 		}
 		#end
 		if (__connections >= __maxConnections) {
+			__refusedConnections++;
 			return false;
 		}
 		__connections++;

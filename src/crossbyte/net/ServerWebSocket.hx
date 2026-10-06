@@ -244,99 +244,16 @@ class ServerWebSocket extends ServerSocket {
 		return closeTimeout = value;
 	}
 
-	/**
-		The most sessions this server keeps open at once. An upgrade
-		arriving while it has this many is answered `503 Service
-		Unavailable` and its connection closed, counted in
-		`refusedConnections` and not in `handshakeFailures`, and `upgrade`
-		is not asked. `0` or less keeps no count. Connections still
-		upgrading are bounded apart from these, by `maxPendingHandshakes`.
-
-		10,000 by default, as `HTTPServer` holds its connections: an idle
-		session holds about 4 KB natively and 3 KB on the jvm (measured with
-		1,000, heap after a full collection; the kernel's socket buffers
-		besides), so the default is about 40 MB of sessions, where a flood of
-		connections that each upgraded was held without bound. A server built to hold more, a game server's
-		lobby, a feed with many quiet subscribers, raises it, and the
-		process's descriptor limit with it.
-
-		Node's `net.Server.maxConnections` names the same bound, and
-		refuses past it by closing the connection; a WebSocket client is
-		told why instead, as an HTTP server tells an HTTP client.
-
-		On a server spread over `runtimes`, every runtime's sessions
-		together.
-	**/
-	public var maxConnections:Int = DEFAULT_MAX_CONNECTIONS;
+	// maxConnections, maxPendingHandshakesPerAddress and refusedConnections
+	// are ServerSocket's, which every server built on it shares; their docs
+	// say what a ServerWebSocket does at each (a 503 at maxConnections, as an
+	// upgrade arrives). Kept here too, as WebSocket names for them.
 
 	/** The default `maxConnections`: 10,000. **/
-	public static inline var DEFAULT_MAX_CONNECTIONS:Int = 10000;
-
-	/**
-		The most connections one address may have still upgrading, in TLS
-		or the HTTP upgrade, once half of `maxPendingHandshakes` are taken.
-		A connection past it is closed as soon as it is accepted, before any
-		TLS or upgrade work, and counted in `refusedConnections`. `0` or less
-		sets no limit per address. With `maxPendingHandshakes` negative, no
-		limit overall, it holds at all times.
-
-		16 by default. One address opening connections and saying nothing
-		held every one of the 256 places for upgrades, each for
-		`handshakeTimeout`, and every real client waited in the kernel's
-		queue behind them: joins took 8-9 s for as long as the flood went
-		on, from one address at 40 connections a second. Here it holds at
-		most half the places before the rest are shared out 16 to an
-		address, and a client from anywhere else is taken at once.
-
-		Only under pressure, where a per-address limit, nginx's
-		`limit_conn`, HAProxy's `src_conn_cur`, refuses at all times: many
-		real clients can share an address, a carrier's NAT, an office, a
-		proxy in front of this server, and one that is not crowding
-		anyone out is let in. Behind a proxy that forwards connections
-		before their client has spoken, every connection has the proxy's
-		address: set it to 0 there, and bound what each client can cost at
-		the proxy.
-
-		Keep `admit` too: a `RateLimiter` keyed by address bounds how often
-		one address connects, which this does not.
-
-		On a server spread over `runtimes`, the count is every runtime's.
-		On Node, which completes TLS handshakes itself, it counts sessions
-		waiting for their upgrade once Node has handed them over.
-	**/
-	public var maxPendingHandshakesPerAddress:Int = DEFAULT_MAX_PENDING_HANDSHAKES_PER_ADDRESS;
+	public static inline var DEFAULT_MAX_CONNECTIONS:Int = ServerSocket.DEFAULT_MAX_CONNECTIONS;
 
 	/** The default `maxPendingHandshakesPerAddress`: 16. **/
-	public static inline var DEFAULT_MAX_PENDING_HANDSHAKES_PER_ADDRESS:Int = 16;
-
-	/**
-		Connections this server closed for its own limits: past
-		`maxPendingHandshakesPerAddress` as they were accepted, and past
-		`maxConnections` as their upgrade arrived. Counted rather than
-		reported one by one, since under a flood each would be a line in the
-		log; `admit`'s refusals are the application's own, and not counted.
-
-		On a server spread over `runtimes`, every runtime's together.
-	**/
-	public var refusedConnections(get, never):Int;
-
-	@:noCompletion private var __refusedConnections:Int = 0;
-
-	@:noCompletion private function get_refusedConnections():Int {
-		var count:Int = __refusedConnections;
-		#if (target.threaded && !js)
-		if (__spread != null) {
-			for (replica in __spread.replicas) {
-				count += (cast replica : ServerWebSocket).__refusedConnections;
-			}
-		}
-		#end
-		return count;
-	}
-
-	// Connections still upgrading, by address; shared with every replica of
-	// a spread server. See maxPendingHandshakesPerAddress.
-	@:noCompletion private var __addressCounts:crossbyte._internal.websocket.AddressCounts = new crossbyte._internal.websocket.AddressCounts();
+	public static inline var DEFAULT_MAX_PENDING_HANDSHAKES_PER_ADDRESS:Int = ServerSocket.DEFAULT_MAX_PENDING_HANDSHAKES_PER_ADDRESS;
 
 	// Sessions open, or opening, counted against maxConnections where the
 	// server is on one runtime; a spread server counts in its ServerSpread.

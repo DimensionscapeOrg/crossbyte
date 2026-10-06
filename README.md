@@ -448,6 +448,32 @@ messages it was sent in it.
 
 ## TCP servers: what a peer can cost
 
+A `ServerSocket`, and a `NetHost` built on one, and the `HTTPServer` and
+`ServerWebSocket` built on it, holds each of these by default, and each is
+the server's own:
+
+| On the server | Default | Bounds |
+| --- | --- | --- |
+| `maxConnections` | 10,000 | connections open at once; one more is closed as it is accepted, and counted in `refusedConnections` |
+| `maxPendingHandshakes` | 256 | TLS handshakes under way; more wait in the kernel's queue |
+| `maxPendingHandshakesPerAddress` | 16 | one address's share of those, once half are taken; past it a connection is closed as it is accepted |
+| `handshakeTimeout` | 10 s | each TLS handshake, from accept |
+| `maxAcceptsPerTick` | 64 | connections taken from the queue in one wake |
+| `receiveBufferSize`, `sendBufferSize` | the system's | the kernel's buffers for each connection |
+
+and each `Socket` it accepts holds `maxInputBufferSize` (16 MiB) unread and
+`maxOutputBufferSize` (none by default; HTTP and WebSocket servers set 8
+MiB) unsent. A raw connection refused at `maxConnections` is accepted and
+closed at once, its peer reads an end of stream, or a reset if it had sent
+something, as Node's `net.Server.maxConnections` does: a server's places
+free on the scale of sessions, so a client left queued in the kernel would
+wait without a word. A `ServerWebSocket` answers its upgrade 503 instead,
+and an `HTTPServer` (its limit from `HTTPServerConfig.maxConnections`) its
+request. A `NetHost`'s `maxConnections` is its server's, and a reliable UDP
+host counts its sessions itself. None of these bounds how often one address
+connects: keep a `RateLimiter` in `admit`, as `ServerWebSocket`'s class doc
+shows.
+
 **Out of descriptors.** Each connection is a descriptor, and a process may
 hold only so many (`RLIMIT_NOFILE` on Linux and macOS). Natively CrossByte
 raises its soft limit to the hard one as the process starts, as Go and the

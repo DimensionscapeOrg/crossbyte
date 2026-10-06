@@ -114,6 +114,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.SocketBufferSizeTest());
 		// An unread connection held at its limit, by pausing Node's socket.
 		runner.addCase(new crossbyte.net.SocketInputLimitTest());
+		// A raw server's connection limit, on Node's listener.
+		runner.addCase(new crossbyte.net.ServerSocketLimitsTest());
 		// A connection replaced, whose socket still reports on Node.
 		runner.addCase(new crossbyte.net.SocketReconnectTest());
 		runner.addCase(new crossbyte.net.NameLookupTest());

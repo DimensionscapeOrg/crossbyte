@@ -202,10 +202,25 @@ private class BaseNetHost<TServer:ServerSocket> implements INetHost {
 	public var localPort(get, never):Int;
 	public var isRunning(get, null):Bool = false;
 	public var protocol(default, null):Protocol;
-	public var maxConnections:Int = 0;
+	/** The server's `maxConnections`; see `INetHost.maxConnections`. **/
+	public var maxConnections(get, set):Int;
+	/** The server's `refusedConnections`. **/
+	public var refusedConnections(get, never):Int;
 	public var onAccept(get, set):INetConnection->Void;
 	public var onDisconnect(get, set):DisconnectHandler;
 	public var onError(get, set):Reason->Void;
+
+	@:noCompletion private inline function get_maxConnections():Int {
+		return __server.maxConnections;
+	}
+
+	@:noCompletion private inline function set_maxConnections(value:Int):Int {
+		return __server.maxConnections = value;
+	}
+
+	@:noCompletion private inline function get_refusedConnections():Int {
+		return __server.refusedConnections;
+	}
 
 	@:noCompletion private var __server:TServer;
 	@:noCompletion private var __onAccept:INetConnection->Void = __noopAccept;
@@ -228,7 +243,9 @@ private class BaseNetHost<TServer:ServerSocket> implements INetHost {
 			return;
 		}
 
-		__server.listen(maxConnections);
+		// The system's largest backlog: maxConnections is what the host
+		// serves, which the server holds it to, not a queue's length.
+		__server.listen();
 		__ensureListeningHooks();
 	}
 
@@ -405,7 +422,29 @@ private class RUDPHost implements INetHost {
 	public var localPort(get, never):Int;
 	public var isRunning(get, never):Bool;
 	public var protocol(default, null):Protocol = RUDP;
-	public var maxConnections:Int = 0;
+	/**
+		The most sessions the host keeps open at once, counted here: one
+		accepted at the limit is closed before `onAccept`, and its peer sees
+		it connect and then close. See `INetHost.maxConnections`.
+	**/
+	public var maxConnections(get, set):Int;
+	public var refusedConnections(get, never):Int;
+
+	@:noCompletion private var __maxConnections:Int = ServerSocket.DEFAULT_MAX_CONNECTIONS;
+	@:noCompletion private var __open:Int = 0;
+	@:noCompletion private var __refused:Int = 0;
+
+	@:noCompletion private inline function get_maxConnections():Int {
+		return __maxConnections;
+	}
+
+	@:noCompletion private inline function set_maxConnections(value:Int):Int {
+		return __maxConnections = value;
+	}
+
+	@:noCompletion private inline function get_refusedConnections():Int {
+		return __refused;
+	}
 	public var onAccept(get, set):INetConnection->Void;
 	public var onDisconnect(get, set):DisconnectHandler;
 	public var onError(get, set):Reason->Void;
@@ -493,9 +532,22 @@ private class RUDPHost implements INetHost {
 	}
 
 	@:noCompletion private function __onConnect(event:ReliableDatagramSocketConnectEvent):Void {
+		if (__maxConnections > 0 && __open >= __maxConnections) {
+			__refused++;
+			try {
+				event.socket.close();
+			} catch (_:Dynamic) {}
+			return;
+		}
+		__open++;
 		var connection = NetConnection.fromReliableDatagramSocket(event.socket);
 		var wrapped:INetConnection = connection;
-		connection.onClose = reason -> __onDisconnect(wrapped, reason);
+		connection.onClose = reason -> {
+			if (__open > 0) {
+				__open--;
+			}
+			__onDisconnect(wrapped, reason);
+		};
 		connection.onError = reason -> __onError(reason);
 		__onAccept(wrapped);
 	}

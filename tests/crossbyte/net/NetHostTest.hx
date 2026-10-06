@@ -364,7 +364,8 @@ private class RelayingHost implements INetHost {
 	public var localPort(get, never):Int;
 	public var isRunning(get, never):Bool;
 	public var protocol(default, null):Protocol = RUDP;
-	public var maxConnections:Int = 0;
+	public var maxConnections(get, set):Int;
+	public var refusedConnections(get, never):Int;
 	public var onAccept(get, set):INetConnection->Void;
 	public var onDisconnect(get, set):(INetConnection, Reason) -> Void;
 	public var onError(get, set):Reason->Void;
@@ -404,6 +405,20 @@ private class RelayingHost implements INetHost {
 	public function listen():Void {}
 
 	public function close():Void {}
+
+	private var __maxConnections:Int = 0;
+
+	private function get_maxConnections():Int {
+		return __maxConnections;
+	}
+
+	private function set_maxConnections(value:Int):Int {
+		return __maxConnections = value;
+	}
+
+	private function get_refusedConnections():Int {
+		return 0;
+	}
 
 	private function get_localAddress():String {
 		return "127.0.0.1";

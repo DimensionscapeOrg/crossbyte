@@ -23,14 +23,26 @@ interface INetHost {
 	/** Transport protocol served by this host. */
 	public var protocol(default, null):Protocol;
 	/**
-		The backlog a TCP or WebSocket host asks `listen()` for: how many
-		connections the system holds waiting to be accepted, 0 for the
-		system's own maximum. Despite its name it does not limit how many
-		connections the host serves at once, count them in `onAccept`, or
-		refuse with `ServerSocket.admit` or a `ConcurrencyLimiter`. A reliable
-		datagram host has no backlog, and does not read it.
+		The most connections the host serves at once; `0` or less keeps no
+		count. 10,000 by default (`ServerSocket.DEFAULT_MAX_CONNECTIONS`).
+		A TCP or WebSocket host's is its server's `maxConnections`: a TCP
+		connection arriving at the limit is closed as it is accepted, before
+		`onAccept`: its peer sees the connection accepted and closed at
+		once, and a WebSocket upgrade is answered 503. A reliable datagram
+		host counts its sessions itself, and closes one accepted at the limit
+		before `onAccept`: its peer sees it connect and then close. Either
+		way the refusal is counted in `refusedConnections`.
+
+		It was the backlog a host asked `listen()` for, and limited nothing
+		it served; a host now asks for the system's largest backlog.
 	**/
-	public var maxConnections:Int;
+	public var maxConnections(get, set):Int;
+	/**
+		Connections the host closed for its own limits: `maxConnections`,
+		and a TCP or WebSocket host's server's other limits (see
+		`ServerSocket.refusedConnections`).
+	**/
+	public var refusedConnections(get, never):Int;
 	/** Called for each accepted connection. */
 	public var onAccept(get, set):INetConnection->Void;
 	/** Called when an accepted connection later closes. */

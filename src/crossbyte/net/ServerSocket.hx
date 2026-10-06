@@ -73,7 +73,7 @@ import crossbyte._internal.socket.AlpnSocket;
 // @:fileXml('tags="haxe,release"')
 // @:noDebug
 @:access(crossbyte.net.Socket)
-class ServerSocket extends EventDispatcher {
+class ServerSocket extends EventDispatcher implements crossbyte._internal.socket.OpenCounter {
 	/**
 		Indicates whether the socket is bound to a local address and port.
 	**/
@@ -155,6 +155,123 @@ class ServerSocket extends EventDispatcher {
 		Always inert on Node, which completes its own handshakes.
 	**/
 	public var maxPendingHandshakes:Int = 256;
+
+	/**
+		The most connections this server keeps open at once. `0` or less
+		keeps no count. 10,000 by default.
+
+		A connection arriving while this many are open is closed as soon as
+		it is accepted, before any TLS handshake, before a `Socket` is made
+		for it, before a `connect` event, and counted in
+		`refusedConnections`. Its peer sees its connection accepted and then
+		closed at once: an end of stream, or a reset if it had already sent
+		something the server never read. Node's `net.Server.maxConnections`
+		refuses the same way. nginx and HAProxy leave such a connection in
+		the kernel's queue instead, which suits a cap that frees in
+		milliseconds; a server's connections free on the scale of sessions,
+		so a client queued behind them would wait without a word and time
+		out, where one refused can go elsewhere or try again. A connection
+		still in its TLS handshake is counted once the handshake is done, and
+		meanwhile is bounded apart, by `maxPendingHandshakes`.
+
+		The servers built on this one hold their own connections to it, each
+		in its protocol's terms: a `ServerWebSocket` counts sessions, and
+		answers an upgrade arriving at the limit `503 Service Unavailable`,
+		without asking `upgrade`; an `HTTPServer` counts connections, takes
+		its limit from `HTTPServerConfig.maxConnections` and answers an
+		HTTP/1.1 request at the limit 503 too.
+
+		10,000, as `HTTPServer` has always held its connections: an idle
+		connection holds 1.5 to 2 KB of heap natively (measured with 1,000,
+		heap after a full collection), and the kernel's buffers besides,
+		see `receiveBufferSize`, so the default bounds what a flood of
+		connections can hold, where a raw server accepted without bound. A
+		server built to hold more, a game server's lobby, a feed with many
+		quiet subscribers, raises it, and the process's descriptor limit
+		with it (see `acceptFailures`).
+
+		On a server spread over `runtimes`, every runtime's connections
+		together.
+	**/
+	public var maxConnections:Int = DEFAULT_MAX_CONNECTIONS;
+
+	/** The default `maxConnections`: 10,000. **/
+	public static inline var DEFAULT_MAX_CONNECTIONS:Int = 10000;
+
+	/**
+		The most connections one address may have still in their handshake,
+		a TLS server's TLS handshake; a `ServerWebSocket`'s TLS and HTTP
+		upgrade together, once half of `maxPendingHandshakes` are taken. A
+		connection past it is closed as soon as it is accepted, before any
+		handshake work, and counted in `refusedConnections`. `0` or less
+		sets no limit per address. With `maxPendingHandshakes` negative, no
+		limit overall, it holds at all times. A plain server waits on no
+		handshake, and never reads it.
+
+		16 by default. One address opening connections and saying nothing
+		held every one of the 256 places, each for `handshakeTimeout`, and
+		every real client waited in the kernel's queue behind them: joins
+		took 8-9 s for as long as the flood went on, from one address at 40
+		connections a second. Here it holds at most half the places before
+		the rest are shared out 16 to an address, and a client from anywhere
+		else is taken at once.
+
+		Only under pressure, where a per-address limit, nginx's
+		`limit_conn`, HAProxy's `src_conn_cur`, refuses at all times: many
+		real clients can share an address, a carrier's NAT, an office, a
+		proxy in front of this server, and one that is not crowding anyone
+		out is let in. Behind a proxy that forwards connections before their
+		client has spoken, every connection has the proxy's address: set it
+		to 0 there, and bound what each client can cost at the proxy.
+
+		Keep `admit` too: a `RateLimiter` keyed by address bounds how often
+		one address connects, which this does not.
+
+		On a server spread over `runtimes`, the count is every runtime's.
+		Not on a plain TLS server on Node, which completes its handshakes
+		itself without saying how many are under way; a `ServerWebSocket`
+		there counts the sessions waiting for their upgrade once Node has
+		handed them over.
+	**/
+	public var maxPendingHandshakesPerAddress:Int = DEFAULT_MAX_PENDING_HANDSHAKES_PER_ADDRESS;
+
+	/** The default `maxPendingHandshakesPerAddress`: 16. **/
+	public static inline var DEFAULT_MAX_PENDING_HANDSHAKES_PER_ADDRESS:Int = 16;
+
+	/**
+		Connections this server closed for its own limits: past
+		`maxPendingHandshakesPerAddress` as they were accepted, and past
+		`maxConnections`: as they were accepted, as a TLS handshake
+		finished, or as a `ServerWebSocket`'s upgrade or an `HTTPServer`'s
+		request arrived. Counted rather than reported one by one, since under
+		a flood each would be a line in the log; `admit`'s refusals are the
+		application's own, and not counted.
+
+		On a server spread over `runtimes`, every runtime's together.
+	**/
+	public var refusedConnections(get, never):Int;
+
+	@:noCompletion private var __refusedConnections:Int = 0;
+
+	@:noCompletion private function get_refusedConnections():Int {
+		var count:Int = __refusedConnections;
+		#if (target.threaded && !js)
+		if (__spread != null) {
+			for (replica in __spread.replicas) {
+				count += replica.__refusedConnections;
+			}
+		}
+		#end
+		return count;
+	}
+
+	// Connections still in their handshake, by address; shared with every
+	// replica of a spread server. See maxPendingHandshakesPerAddress.
+	@:noCompletion private var __addressCounts:crossbyte._internal.websocket.AddressCounts = new crossbyte._internal.websocket.AddressCounts();
+
+	// Connections open, counted against maxConnections where this server
+	// counts them itself and is on one runtime; see __countsOpen.
+	@:noCompletion private var __openCount:Int = 0;
 
 	/**
 		`Socket.receiveBufferSize` for the listener and every connection this
@@ -952,7 +1069,16 @@ class ServerSocket extends EventDispatcher {
 			}
 
 			__acceptFailing = false;
+			// As many open as the server keeps: closed, and counted.
+			if (__atOpenLimit()) {
+				__refusedConnections++;
+				connection.destroy();
+				return;
+			}
 			var socket:CBSocket = @:privateAccess CBSocket.__adoptNodeSocket(connection, __cbInstance);
+			if (__countsOpen()) {
+				__claimOpen(socket);
+			}
 			// Said, as a native server's accepted socket says it: on Node one
 			// a TLS listener accepted reported false.
 			socket.secure = secure;
@@ -1536,6 +1662,8 @@ class ServerSocket extends EventDispatcher {
 		replica.maxAcceptsPerTick = maxAcceptsPerTick;
 		// The limit is the front's, over every runtime together.
 		replica.maxPendingHandshakes = -1;
+		// One count of each address's handshakes, for every runtime.
+		replica.__addressCounts = __addressCounts;
 		// Asked by a replica only when it accepts for itself, with reusePort:
 		// the front's hook, as it stands when each connection arrives.
 		var front:ServerSocket = this;
@@ -1569,6 +1697,9 @@ class ServerSocket extends EventDispatcher {
 			if (tracked) {
 				shared.addInFlight(-1, __front.maxPendingHandshakes);
 			}
+			// Counted under its address as the front accepted it, and never
+			// taken up: let go of here, or it stays counted for good.
+			__releaseAddressClaim(socket);
 			try {
 				socket.close();
 			} catch (_:Dynamic) {}
@@ -1588,6 +1719,9 @@ class ServerSocket extends EventDispatcher {
 			socket.setBlocking(false);
 			var pending:PendingHandshake = new PendingHandshake(this, socket,
 				handshakeTimeout > 0 ? haxe.Timer.stamp() + handshakeTimeout : Math.POSITIVE_INFINITY, peer);
+			// The front counted it under its address; let go of as the
+			// handshake ends, here.
+			pending.address = __takeAddressClaim(socket);
 			__pendingHandshakes.push(pending);
 			socket.custom = pending;
 			pending.runtime = __cbInstance;
@@ -1606,6 +1740,9 @@ class ServerSocket extends EventDispatcher {
 			try {
 				socket.close();
 			} catch (_:Dynamic) {}
+			return;
+		}
+		if (!__countOpen(cbSocket)) {
 			return;
 		}
 		__announceHere(cbSocket);
@@ -1756,9 +1893,28 @@ class ServerSocket extends EventDispatcher {
 		if (tracked) {
 			spread.addInFlight(-1, maxPendingHandshakes);
 		}
+		__releaseAddressClaim(socket);
 		try {
 			socket.close();
 		} catch (_:Dynamic) {}
+	}
+
+	/** The address a hand-off was counted under by the front, taken off it; null for none. **/
+	@:noCompletion private static function __takeAddressClaim(socket:Socket):Null<String> {
+		if (!Std.isOfType(socket.custom, AddressClaim)) {
+			return null;
+		}
+		var claim:AddressClaim = cast socket.custom;
+		socket.custom = null;
+		return claim.address;
+	}
+
+	/** A hand-off that will not be taken up lets go of its address's count. **/
+	@:noCompletion private function __releaseAddressClaim(socket:Socket):Void {
+		var address:Null<String> = __takeAddressClaim(socket);
+		if (address != null) {
+			__addressCounts.release(address);
+		}
 	}
 	#end
 
@@ -1777,6 +1933,129 @@ class ServerSocket extends EventDispatcher {
 		#else
 		return __pendingHandshakes == null ? 0 : __pendingHandshakes.length;
 		#end
+	}
+
+	/**
+		Whether this server holds its connections to `maxConnections` here,
+		as each is announced: a server whose own class takes each connection
+		as it is announced, an `HTTPServer`, a `ServerWebSocket`, counts
+		them in its protocol's terms instead.
+	**/
+	@:noCompletion private inline function __countsOpen():Bool {
+		var front:ServerSocket = __front != null ? __front : this;
+		return front.__ownConnect == null && front.maxConnections > 0;
+	}
+
+	/**
+		Whether as many connections are open as `maxConnections` allows:
+		asked as one is accepted, before any work is done for it. Counted
+		for good by `__claimOpen` as it is announced.
+	**/
+	@:noCompletion private function __atOpenLimit():Bool {
+		if (!__countsOpen()) {
+			return false;
+		}
+		var front:ServerSocket = __front != null ? __front : this;
+		#if (target.threaded && !js)
+		var spread:ServerSpread = __spread != null ? __spread : __shared;
+		if (spread != null) {
+			return spread.connections >= front.maxConnections;
+		}
+		#end
+		return __openCount >= front.maxConnections;
+	}
+
+	/**
+		Counts a connection about to be announced against `maxConnections`:
+		whether there was room. On a spread server checked and counted in one
+		step, across every runtime, so two cannot take the last place. The
+		socket tells this server when it closes.
+	**/
+	@:noCompletion private function __claimOpen(socket:CBSocket):Bool {
+		var front:ServerSocket = __front != null ? __front : this;
+		var limit:Int = front.maxConnections;
+		#if (target.threaded && !js)
+		if (__shared != null) {
+			if (!__shared.claimConnection(limit)) {
+				return false;
+			}
+			socket.__openCounter = this;
+			return true;
+		}
+		#end
+		if (__openCount >= limit) {
+			return false;
+		}
+		__openCount++;
+		socket.__openCounter = this;
+		return true;
+	}
+
+	/**
+		Counts `socket`, about to be announced, against `maxConnections`
+		where this server counts its connections: whether it may be
+		announced. One past the limit is closed, unannounced, and counted in
+		`refusedConnections`.
+	**/
+	@:noCompletion private function __countOpen(socket:CBSocket):Bool {
+		if (!__countsOpen() || __claimOpen(socket)) {
+			return true;
+		}
+		__refusedConnections++;
+		@:privateAccess socket.__cleanSocket();
+		return false;
+	}
+
+	#if !nodejs
+	/** A connection a limit refuses as it is accepted: closed, and counted. **/
+	@:noCompletion private function __refuseAccepted(accepted:Socket):Void {
+		__refusedConnections++;
+		try {
+			accepted.close();
+		} catch (_:Dynamic) {}
+	}
+	#end
+
+	/** A connection counted by `__claimOpen` has closed. **/
+	@:noCompletion public function __releaseOpen():Void {
+		#if (target.threaded && !js)
+		if (__shared != null) {
+			__shared.releaseConnections(1);
+			return;
+		}
+		#end
+		if (__openCount > 0) {
+			__openCount--;
+		}
+	}
+
+	/**
+		Counts a connection from `address` as in its handshake, unless the
+		address has `maxPendingHandshakesPerAddress` already while half the
+		places are taken: whether it was counted. The front's limits, and on
+		a spread server every runtime's handshakes.
+	**/
+	@:noCompletion private function __claimPendingAddress(address:String):Bool {
+		if (address == null) {
+			return true;
+		}
+		var front:ServerSocket = __front != null ? __front : this;
+		var limit:Int = front.maxPendingHandshakesPerAddress;
+		if (limit > 0) {
+			var places:Int = front.maxPendingHandshakes;
+			var pending:Int = __localPendingCount();
+			#if (target.threaded && !js)
+			var spread:ServerSpread = __spread != null ? __spread : __shared;
+			if (spread != null) {
+				pending = spread.inFlight;
+			}
+			#end
+			if (places >= 0 && pending * 2 < places) {
+				// Room for everyone: counted, not held to the limit.
+				limit = 0;
+			}
+		}
+		return __addressCounts.claim(address, limit);
 	}
 
 	/**
@@ -2021,11 +2300,30 @@ class ServerSocket extends EventDispatcher {
 				return true;
 			}
 
+			// The server's own limits, before any work is done for it: as many
+			// open as it keeps, or its address crowding the handshakes.
+			if (__atOpenLimit()) {
+				__refuseAccepted(sysSocket);
+				return true;
+			}
+			var address:Null<String> = null;
+			if (__tracksHandshakes() && __admittedPeer != null) {
+				address = crossbyte._internal.net.IPv6.compress(__admittedPeer.host.toString());
+				if (!__claimPendingAddress(address)) {
+					__refuseAccepted(sysSocket);
+					return true;
+				}
+			}
+
 			#if (target.threaded && !js)
 			if (__spread != null) {
-				// Another runtime's from here, TLS handshake and all.
+				// Another runtime's from here, TLS handshake and all; it lets
+				// go of the address's count once the handshake ends.
 				var peer = __admittedPeer;
 				__admittedPeer = null;
+				if (address != null) {
+					sysSocket.custom = new AddressClaim(address);
+				}
 				__handOff(sysSocket, peer);
 				return true;
 			}
@@ -2037,6 +2335,7 @@ class ServerSocket extends EventDispatcher {
 				sysSocket.setBlocking(false);
 				var pending:PendingHandshake = new PendingHandshake(this, sysSocket,
 					handshakeTimeout > 0 ? haxe.Timer.stamp() + handshakeTimeout : Math.POSITIVE_INFINITY, sysSocket.peer());
+				pending.address = address;
 				__pendingHandshakes.push(pending);
 
 				// In the poll set, so each flight the peer sends steps the
@@ -2058,6 +2357,9 @@ class ServerSocket extends EventDispatcher {
 				try {
 					sysSocket.close();
 				} catch (_:Dynamic) {}
+				return true;
+			}
+			if (!__countOpen(socket)) {
 				return true;
 			}
 			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
@@ -2606,12 +2908,16 @@ class ServerSocket extends EventDispatcher {
 	/** A completed handshake becomes a connection, and is announced. **/
 	@:noCompletion private function __promoteHandshake(pending:PendingHandshake):Void {
 		pending.settled = true;
+		__handshakeEnded(pending);
 		try {
 			// Its socket stays in the poll set, answering to the connection
 			// from here on.
 			var cbSocket:Null<CBSocket> = __fromSocket(pending.socket, pending.peer);
 			if (cbSocket == null) {
 				__closeHandshake(pending);
+				return;
+			}
+			if (!__countOpen(cbSocket)) {
 				return;
 			}
 			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, cbSocket));
@@ -2623,8 +2929,17 @@ class ServerSocket extends EventDispatcher {
 	/** A handshake that failed or ran out of time is counted and closed. **/
 	@:noCompletion private function __abandonHandshake(pending:PendingHandshake):Void {
 		pending.settled = true;
+		__handshakeEnded(pending);
 		handshakeFailures++;
 		__closeHandshake(pending);
+	}
+
+	/** A handshake has ended, one way or the other: its address is counted no more. **/
+	@:noCompletion private function __handshakeEnded(pending:PendingHandshake):Void {
+		if (pending.address != null) {
+			__addressCounts.release(pending.address);
+			pending.address = null;
+		}
 	}
 
 	/** Out of the poll set, and then closed. **/
@@ -2647,6 +2962,7 @@ class ServerSocket extends EventDispatcher {
 		__pendingHandshakes = [];
 		for (pending in dropped) {
 			pending.settled = true;
+			__handshakeEnded(pending);
 			__closeHandshake(pending);
 		}
 	}
@@ -2680,6 +2996,10 @@ final class PendingHandshake implements IPollableSocket {
 	// Promoted, failed or dropped: nothing more for the poll set to do.
 	public var settled:Bool = false;
 
+	// The address it is counted under for maxPendingHandshakesPerAddress,
+	// until the handshake ends; null for none.
+	public var address:Null<String> = null;
+
 	public var registryClosed(get, never):Bool;
 
 	@:noCompletion private var __server:ServerSocket;
@@ -2703,6 +3023,20 @@ final class PendingHandshake implements IPollableSocket {
 
 	public function registryHasBufferedInput():Bool {
 		return false;
+	}
+}
+
+/**
+	A connection the front of a spread server counted under its address for
+	`maxPendingHandshakesPerAddress`, on its way to a runtime: carried as the
+	socket's `custom` until the runtime takes it up, or lets go of it.
+**/
+@:noCompletion
+private final class AddressClaim {
+	public final address:String;
+
+	public function new(address:String) {
+		this.address = address;
 	}
 }
 
