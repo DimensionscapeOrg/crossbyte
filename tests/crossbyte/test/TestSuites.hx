@@ -501,6 +501,8 @@ class TestSuites {
 		// What a peer can make a connection hold that its application has
 		// not read. Also in PortableSuite, for Node's pause and resume.
 		runner.addCase(new crossbyte.net.SocketInputLimitTest());
+		// What a connection holds once its traffic is over.
+		runner.addCase(new crossbyte.net.SocketMemoryTest());
 	}
 
 	/**

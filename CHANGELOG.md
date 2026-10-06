@@ -1975,6 +1975,22 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A TCP connection lets go of its buffers' storage once it has gone
+  quiet. Each buffer kept the largest it had needed for as long as the
+  connection was open: after one 16 KB message each way an idle accepted
+  connection held 51 KB natively and on the jvm (1,000 of them, heap after
+  a full collection), where it held 1.5 KB before any. It now keeps its
+  storage while busy, a message read or written still allocates
+  nothing; the TCP echo budget is unchanged at 0 bytes natively, and its
+  time with it (14.6 us), and its runtime's socket registry asks the
+  connections holding storage every five seconds whether they have read
+  or written since; one that has not lets go of everything not waiting to
+  be read or sent, and its pooled events, which leaves 1.7 KB (natively;
+  jvm 1.7 KB, a client 1.9 and 2.2). A buffer grown past 64 KB lets go as
+  soon as it empties. On the jvm the socket's views over that storage go
+  with it. The one-byte buffer each system socket kept for `readByte` is
+  made at the first one: an idle connection 1,513 -> 1,464 bytes natively.
+  Node's sockets keep their storage, as before.
 - On the jvm a TCP socket reads and writes through one `ByteBuffer` per
   array, moved to each range, where it wrapped a new one for every read
   and every write. A 100-byte TCP echo allocated 336 bytes and allocates

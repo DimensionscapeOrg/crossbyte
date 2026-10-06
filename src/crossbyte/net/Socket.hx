@@ -78,7 +78,7 @@ import sys.net.Socket as SysSocket;
 @:fileXml('tags="haxe,release"')
 @:noDebug
 #end
-class Socket extends EventDispatcher implements IDataInput implements IDataOutput implements IPollableSocket implements crossbyte._internal.socket.InputPauseCheck #if nodejs implements crossbyte.core._internal.PassFlush #end {
+class Socket extends EventDispatcher implements IDataInput implements IDataOutput implements IPollableSocket implements crossbyte._internal.socket.InputPauseCheck implements crossbyte._internal.socket.QuietRelease #if nodejs implements crossbyte.core._internal.PassFlush #end {
 	/**
 		A slot for whatever the application wants this connection to carry.
 
@@ -359,6 +359,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	// The server that counted this connection against its maxConnections,
 	// told once as it closes; null for one no server counts.
 	@:noCompletion private var __openCounter:crossbyte._internal.socket.OpenCounter = null;
+	// Whether the registry asks this socket, every few seconds, whether it
+	// has been quiet; and whether it has read or written since it was last
+	// asked. See __releaseIfQuiet.
+	@:noCompletion private var __holdingStorage:Bool = false;
+	@:noCompletion private var __touched:Bool = false;
 	#if nodejs
 	// The tick a paused Node socket is asked on, made once.
 	@:noCompletion private var __inputPauseTick:TickEvent->Void = null;
@@ -635,6 +640,16 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private static inline var OUTPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
 
 	/**
+	 * Storage past which a buffer lets go as soon as it empties, rather than
+	 * once the connection has gone quiet: what a large message made it grow
+	 * to is not kept for the small ones that follow. Below it the storage is
+	 * kept while the connection is busy, so a message read or written
+	 * allocates nothing, and let go of once it has been quiet for a sweep of
+	 * its registry (see `__releaseIfQuiet`).
+	 */
+	@:noCompletion private static inline var KEEP_WHILE_BUSY:Int = 64 * 1024;
+
+	/**
 	 * One read buffer per thread rather than one per socket.
 	 *
 	 * It holds bytes only between a `readBytes` and the append that follows
@@ -668,8 +683,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		if (consumed >= __input.length) {
-			__input.clear();
-			__input.endian = __endian;
+			if (@:privateAccess (__input : ByteArrayData).__length > KEEP_WHILE_BUSY) {
+				__input = __emptyBuffer();
+			} else {
+				__input.clear();
+				__input.endian = __endian;
+			}
 			return;
 		}
 
@@ -2264,7 +2283,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private function __retainPendingOutput(bytesWritten:Int, pendingLength:Int):Void {
 		if (bytesWritten >= pendingLength) {
 			__isDirty = false;
-			__output.clear();
+			if (@:privateAccess (__output : ByteArrayData).__length > KEEP_WHILE_BUSY) {
+				__output = __emptyBuffer();
+			} else {
+				__output.clear();
+			}
 			__outputSent = 0;
 			return;
 		}
@@ -2299,6 +2322,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		#else
 		if (__cbInstance == null) {
 			return;
+		}
+		__touched = true;
+		if (!__holdingStorage) {
+			__holdStorage();
 		}
 		if (__isDirty == false) {
 			__isDirty = true;
@@ -2912,6 +2939,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			}
 		}
 
+		if (bLength > 0) {
+			__touched = true;
+			if (!__holdingStorage) {
+				__holdStorage();
+			}
+		}
 		if (appending) {
 			// Restored whether the loop ended cleanly, at EOF, or on a throw:
 			// leaving the write cursor in place would make the next read look
@@ -3067,6 +3100,86 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 	}
 	#end
+
+	/** A buffer of no storage, in this socket's byte order. **/
+	@:noCompletion private inline function __emptyBuffer():ByteArray {
+		var empty:ByteArray = new ByteArray();
+		empty.endian = __endian;
+		return empty;
+	}
+
+	/**
+		This socket's buffers hold storage from its traffic: its registry
+		asks it every few seconds whether it has been quiet. Natively and on
+		the jvm; Node's sockets, which no registry holds, keep theirs.
+	**/
+	@:noCompletion private function __holdStorage():Void {
+		#if !js
+		if (__cbInstance != null) {
+			__holdingStorage = true;
+			@:privateAccess __cbInstance.__socketRegistry.watchQuiet(this);
+		}
+		#end
+	}
+
+	/**
+		Asked by the registry every few seconds while this socket holds
+		buffer storage. One that has read and written nothing since it was
+		last asked lets go of what its buffers hold, an idle connection
+		kept the largest message it had ever sent and received, about 49 KB
+		after one of 16 KB each way, for as long as it was open, unless
+		the application has left something unread or the peer has not taken
+		something written. Its pooled events go too. False once there is
+		nothing more to let go of, or the socket has closed.
+	**/
+	@:noCompletion public function __releaseIfQuiet():Bool {
+		if (__socket == null) {
+			__holdingStorage = false;
+			return false;
+		}
+		if (__touched) {
+			__touched = false;
+			return true;
+		}
+		var kept:Bool = false;
+		if (__input != null) {
+			if (__input.position >= __input.length) {
+				if (@:privateAccess (__input : ByteArrayData).__length > 0) {
+					__input = __emptyBuffer();
+				}
+			} else {
+				kept = true;
+			}
+		}
+		if (__output != null) {
+			if (__output.length <= __outputSent && !flushFull) {
+				if (@:privateAccess (__output : ByteArrayData).__length > 0) {
+					__output = __emptyBuffer();
+					__outputSent = 0;
+				}
+			} else {
+				kept = true;
+			}
+		}
+		#if ((java || jvm) && !macro)
+		// The jvm socket's views over the storage let go of, or they keep it.
+		@:privateAccess __socket.__forgetViews();
+		#end
+		if (!__pooledConnectEventInUse) {
+			__pooledConnectEvent = null;
+		}
+		if (!__pooledCloseEventInUse) {
+			__pooledCloseEvent = null;
+		}
+		if (!__pooledSocketDataEventInUse) {
+			__pooledSocketDataEvent = null;
+		}
+		if (!__pooledIOErrorEventInUse) {
+			__pooledIOErrorEvent = null;
+		}
+		__holdingStorage = kept;
+		return kept;
+	}
 
 	/**
 		How many bytes this pass may read with `held` unread, under

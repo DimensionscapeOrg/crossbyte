@@ -507,6 +507,17 @@ server.addEventListener(ServerSocketConnectEvent.CONNECT, e -> {
 });
 ```
 
+**What a connection holds.** An idle connection a `ServerSocket` accepted
+holds about 1.5 KB of heap natively and 1.6 KB on the jvm (1,000 of them,
+heap after a full collection; a client about 2 KB), with the listeners the
+application adds, two cost about 450 bytes, and the kernel's buffers
+besides. Its buffers keep their storage while the connection is busy, so a
+message read or written allocates nothing, and let go of it once it has
+read and written nothing for one of its runtime's sweeps, every five
+seconds: after one 16 KB message each way a connection held 51 KB for as
+long as it was open, and holds 1.7 KB once quiet. A buffer grown past 64 KB
+lets go as soon as it empties. On Node a socket keeps its buffers' storage.
+
 **The kernel's buffers.** Much of what a connection costs is not in the
 heap but in the kernel: what has arrived and not been read, and what has
 been written and not acknowledged. Left to itself the system grows both

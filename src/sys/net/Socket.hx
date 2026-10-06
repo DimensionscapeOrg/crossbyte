@@ -77,7 +77,9 @@ private class SocketOutput extends haxe.io.Output {
 @:access(sys.net.Socket)
 private class SocketInput extends haxe.io.Input {
 	var sock:Socket;
-	var one:haxe.io.Bytes = haxe.io.Bytes.alloc(1);
+	// Made at the first readByte: a socket a server holds rarely reads one
+	// byte at a time, and kept a buffer for it all the same.
+	var one:haxe.io.Bytes = null;
 
 	public function new(s) {
 		sock = s;
@@ -89,6 +91,9 @@ private class SocketInput extends haxe.io.Input {
 		a peer that finished from one that was cut off.
 	**/
 	public override function readByte():Int {
+		if (one == null) {
+			one = haxe.io.Bytes.alloc(1);
+		}
 		readBytes(one, 0, 1);
 		return one.get(0);
 	}
@@ -490,7 +495,9 @@ private class SocketOutput extends haxe.io.Output {
 
 private class SocketInput extends haxe.io.Input {
 	var __s:SocketHandle;
-	var one:haxe.io.Bytes = haxe.io.Bytes.alloc(1);
+	// Made at the first readByte: a socket a server holds rarely reads one
+	// byte at a time, and kept a buffer for it all the same.
+	var one:haxe.io.Bytes = null;
 
 	public function new(s) {
 		__s = s;
@@ -503,6 +510,9 @@ private class SocketInput extends haxe.io.Input {
 		peer that had finished.
 	**/
 	public override function readByte():Int {
+		if (one == null) {
+			one = haxe.io.Bytes.alloc(1);
+		}
 		readBytes(one, 0, 1);
 		return one.get(0);
 	}
@@ -761,7 +771,9 @@ import crossbyte._internal.net.NativeSocketAddress;
 
 private class SocketInput extends haxe.io.Input {
 	var __s:Dynamic;
-	var one:haxe.io.Bytes = haxe.io.Bytes.alloc(1);
+	// Made at the first readByte: a socket a server holds rarely reads one
+	// byte at a time, and kept a buffer for it all the same.
+	var one:haxe.io.Bytes = null;
 
 	public function new(s:Dynamic) {
 		__s = s;
@@ -774,6 +786,9 @@ private class SocketInput extends haxe.io.Input {
 		connection reset partway through read as one that ended cleanly.
 	**/
 	public override function readByte() {
+		if (one == null) {
+			one = haxe.io.Bytes.alloc(1);
+		}
 		readBytes(one, 0, 1);
 		return one.get(0);
 	}
@@ -1437,7 +1452,9 @@ private class SocketOutput extends haxe.io.Output {
 private class SocketInput extends haxe.io.Input {
 	var socket:NativeSocket;
 	var owner:Socket;
-	var one:haxe.io.Bytes = haxe.io.Bytes.alloc(1);
+	// Made at the first readByte: a socket a server holds rarely reads one
+	// byte at a time, and kept a buffer for it all the same.
+	var one:haxe.io.Bytes = null;
 
 	public function new(socket:NativeSocket, owner:Socket) {
 		this.socket = socket;
@@ -1450,6 +1467,9 @@ private class SocketInput extends haxe.io.Input {
 		waiting for a delimiter at the end of a connection read zeros for ever.
 	**/
 	public override function readByte() {
+		if (one == null) {
+			one = haxe.io.Bytes.alloc(1);
+		}
 		readBytes(one, 0, 1);
 		return one.get(0);
 	}
@@ -2241,6 +2261,22 @@ class Socket {
 				sc.shutdownOutput();
 		} catch (e:Dynamic)
 			throw e;
+	}
+
+	/**
+		Lets go of the ByteBuffers kept over the arrays last read into and
+		written from (see ArrayView): for `crossbyte.net.Socket` letting go
+		of its buffers' storage, which a kept view would hold on to.
+	**/
+	@:noCompletion private function __forgetViews():Void {
+		var reader:Null<SocketInput> = Std.downcast(input, SocketInput);
+		if (reader != null) {
+			@:privateAccess reader.__view = null;
+		}
+		var writer:Null<SocketOutput> = Std.downcast(output, SocketOutput);
+		if (writer != null) {
+			@:privateAccess writer.__view = null;
+		}
 	}
 
 	// The buffer sizes asked for, 0 for none: kept for a listener, whose

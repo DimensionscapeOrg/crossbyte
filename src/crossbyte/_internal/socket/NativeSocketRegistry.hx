@@ -65,6 +65,18 @@ final class NativeSocketRegistry {
 	// whether to read again; null until one does. See InputPauseCheck.
 	@:noCompletion private var __pausedInput:Array<InputPauseCheck> = null;
 
+	// Sockets holding buffer storage from their traffic, asked every
+	// QUIET_SWEEP seconds whether they have been quiet; see QuietRelease.
+	@:noCompletion private var __holders:Array<QuietRelease> = null;
+	@:noCompletion private var __nextQuietSweep:Float = 0;
+
+	/**
+		How often the sockets holding storage are asked whether they have
+		been quiet: one that read and wrote nothing for a whole interval lets
+		go, five to ten seconds after it went quiet.
+	**/
+	@:noCompletion public static inline var QUIET_SWEEP:Float = 5.0;
+
 	private inline function get_capacity():Int {
 		return __capacity;
 	}
@@ -108,6 +120,7 @@ final class NativeSocketRegistry {
 	public inline function clear():Void {
 		__set.clear();
 		__pausedInput = null;
+		__holders = null;
 		__poll.dispose();
 		__deregisterQueue.clear(true);
 		__deregisterPending.clear();
@@ -190,6 +203,27 @@ final class NativeSocketRegistry {
 		set's reads: from the next pass it is asked, once a pass, whether to
 		read again, until it says no.
 	**/
+	/** `socket` holds buffer storage: asked from the next sweep whether it has been quiet. **/
+	public function watchQuiet(socket:QuietRelease):Void {
+		if (__holders == null) {
+			__holders = [];
+			__nextQuietSweep = haxe.Timer.stamp() + QUIET_SWEEP;
+		}
+		__holders.push(socket);
+	}
+
+	@:noCompletion private function __sweepQuiet():Void {
+		var holders:Array<QuietRelease> = __holders;
+		var kept:Int = 0;
+		for (i in 0...holders.length) {
+			var socket:QuietRelease = holders[i];
+			if (socket.__releaseIfQuiet()) {
+				holders[kept++] = socket;
+			}
+		}
+		holders.resize(kept);
+	}
+
 	public function watchInputPause(socket:InputPauseCheck):Void {
 		if (__pausedInput == null) {
 			__pausedInput = [];
@@ -213,6 +247,14 @@ final class NativeSocketRegistry {
 	// object, boxed by every call, and this is called every frame.
 	public #if final inline #end function update(timeout:Float):Void {
 		__moreToRead = false;
+		if (__holders != null && __holders.length > 0) {
+			// The clock read only while a socket holds storage.
+			var now:Float = haxe.Timer.stamp();
+			if (now >= __nextQuietSweep) {
+				__nextQuietSweep = now + QUIET_SWEEP;
+				__sweepQuiet();
+			}
+		}
 		if (__pausedInput != null && __pausedInput.length > 0) {
 			// Before the poll: one that reads again is in this pass's set.
 			__checkPausedInput();
