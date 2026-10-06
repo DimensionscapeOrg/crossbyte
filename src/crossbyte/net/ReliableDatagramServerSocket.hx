@@ -25,6 +25,8 @@ import crossbyte.events.ReliableDatagramSocketConnectEvent;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrame;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrameType;
+import crossbyte.net._internal.reliable.ResetBudget;
+import crossbyte.net._internal.reliable.SipHash;
 import haxe.ds.StringMap;
 import crossbyte._internal.net.IPv6;
 #if !nodejs
@@ -49,12 +51,147 @@ import sys.net.Host;
 	its session. To use more cores, run a server per runtime, each on a port
 	of its own, and send each client to one of them.
 
+	**Resuming a player.** A player whose address changes, a NAT that
+	hands it a new port, a phone moving from Wi-Fi to a mobile network,
+	sends from an address with no session, and is reset. `allowRebind`
+	moves the session instead, where the server allows it and both ends are
+	on 1.0. Where that cannot be, a peer from before 1.0, a server that
+	leaves it off, and every TCP and WebSocket connection, which no change
+	of address survives, the game resumes the player itself:
+
+	- the server hands each player a resume token over its session, and
+	  keeps the player's state under it;
+	- a client that is reset, or times out, connects again with the token
+	  as its `connect` payload;
+	- `admit` checks the token, a lookup, since it is asked for every
+	  CONNECT, and the handler of the new session puts the player's state
+	  back on it, ending the session it left behind, which the server would
+	  otherwise notice only at its `idleTimeout`.
+
+	The token crosses the network in the clear, in the CONNECT, and anyone
+	who saw it can send it: make it single-use, give a new one at every
+	join, and forget it soon after the player leaves, as below. A quiet
+	player does not need any of this to keep its address: a session's
+	keepalive, every 15 seconds (`keepAliveInterval`), keeps a NAT's mapping
+	for it open.
+
+	```haxe
+	import crossbyte.net.ReliableDatagramSocket;
+
+	class Player {
+		// What the game keeps of a player: its state, and the token it
+		// may come back with.
+		public var name:String;
+		public var token:String = null;
+		public var session:ReliableDatagramSocket = null;
+
+		public function new(name:String) {
+			this.name = name;
+		}
+	}
+	```
+
+	```haxe
+	// Given server:ReliableDatagramServerSocket.
+	import crossbyte.crypto.SecureRandom;
+	import crossbyte.ds.ExpiringMap;
+	import crossbyte.events.Event;
+	import crossbyte.events.ReliableDatagramSocketConnectEvent;
+	import crossbyte.io.ByteArray;
+
+	// Tokens of the players here, and of those gone, for a minute.
+	var here = new Map<String, Player>();
+	var gone = new ExpiringMap<String, Player>(60);
+
+	// A lookup, and nothing more: this is asked for every CONNECT.
+	server.admit = function(address:String, port:Int, payload:ByteArray):Bool {
+		var said:String = payload.readUTFBytes(payload.length);
+		if (!StringTools.startsWith(said, "resume:")) {
+			return true;
+		}
+		var token:String = said.substr(7);
+		return here.exists(token) || gone.exists(token);
+	};
+
+	server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, function(e:ReliableDatagramSocketConnectEvent):Void {
+		var session:ReliableDatagramSocket = e.socket;
+		var said:String = session.connectPayload.readUTFBytes(session.connectPayload.length);
+		var player:Player = null;
+		if (StringTools.startsWith(said, "resume:")) {
+			// Spent: a token resumes once.
+			var token:String = said.substr(7);
+			player = here.exists(token) ? here.get(token) : gone.get(token);
+			here.remove(token);
+			gone.remove(token);
+		}
+		if (player == null) {
+			player = new Player(said);
+		}
+		// The session it left behind, at the address it left.
+		var left:ReliableDatagramSocket = player.session;
+		player.session = session;
+		if (left != null) {
+			left.abort();
+		}
+
+		var raw:haxe.io.Bytes = SecureRandom.getSecureRandomBytes(16);
+		player.token = raw.toHex();
+		here.set(player.token, player);
+		var message = new ByteArray();
+		message.writeUTFBytes("token:" + player.token);
+		session.send(message);
+
+		session.addEventListener(Event.CLOSE, function(_:Event):Void {
+			// Ended, and not because the player came back on another.
+			if (player.session == session) {
+				player.session = null;
+				here.remove(player.token);
+				gone.set(player.token, player);
+			}
+		});
+	});
+	```
+
+	And a client that comes back by itself, with the latest token it was
+	given:
+
+	```haxe
+	// Given host:String, port:Int.
+	import crossbyte.events.DatagramSocketDataEvent;
+	import crossbyte.events.Event;
+	import crossbyte.io.ByteArray;
+
+	var token:String = null;
+	var leaving:Bool = false;
+
+	function join():Void {
+		var socket = new ReliableDatagramSocket();
+		socket.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
+			var text:String = e.data.readUTFBytes(e.data.length);
+			if (StringTools.startsWith(text, "token:")) {
+				token = text.substr(6);
+			}
+		});
+		// Reset, timed out, or the server gone: back in, as itself if it can.
+		socket.addEventListener(Event.CLOSE, function(_:Event):Void {
+			if (!leaving) {
+				join();
+			}
+		});
+		var hello = new ByteArray();
+		hello.writeUTFBytes(token != null ? "resume:" + token : "player one");
+		socket.connect(host, port, hello);
+	}
+
+	join();
+	```
+
 	@event close Dispatched when the server socket is closed.
 	@event connect Dispatched when a session a peer opened completes its
 	       handshake. A session this server dials, with `connect` or
 	       `connectRelayed`, dispatches `Event.CONNECT` itself instead.
 **/
-class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.net._internal.DatagramReceiver {
+class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.net._internal.DatagramReceiver implements crossbyte.core._internal.PassFlush {
 	/**
 		Indicates whether reliable UDP server sockets are supported by the current target.
 	**/
@@ -138,8 +275,194 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 
 		Dropped rather than refused, because a refusal is itself a datagram to
 		an address that may never have asked for one.
+
+		CONNECTs from forged addresses could fill every slot on their own;
+		`joinValidation` keeps them to `joinValidationThreshold` of them, and
+		the rest for joins that show where they came from.
 	**/
 	public var maxPendingConnections:Int = DEFAULT_MAX_PENDING_CONNECTIONS;
+
+	/** `joinValidationThreshold` unless changed. **/
+	public static inline var DEFAULT_JOIN_VALIDATION_THRESHOLD:Int = 64;
+
+	/**
+		When a CONNECT from an address with no session must show it came from
+		there before a session is opened for it: `UNDER_PRESSURE` unless
+		changed, which is once `joinValidationThreshold` sessions are waiting
+		to finish their handshakes; or `ALWAYS`, or `NEVER`.
+
+		A session waiting for its handshake is held for the CONNECT's word
+		alone, an address and port UDP lets a sender write for itself,
+		so a few CONNECTs a second from forged addresses kept all
+		`maxPendingConnections` slots full, at about 13 a second for the
+		default 256 held 20 seconds each, and no real player could join; an
+		`admit` that checks tokens bound to the player's address stops that,
+		and a server without them had nothing. A join that must show where
+		it came from is answered with a cookie instead, as a TCP stack
+		answers with a SYN cookie: the server's keyed hash of the address,
+		the port, the CONNECT's connection id and the time, for which it
+		keeps nothing. Only a CONNECT that returns it within its time, from
+		the address and port it was made for, goes on to `admit` and a
+		session. A forged address never receives its cookie, so a flood of
+		them holds no slot past the threshold, and a real join costs one
+		more round trip. `maxPendingConnections` still bounds the sessions
+		such joins open, and `admit` still decides on each.
+
+		A cookie is no larger than the CONNECT it answers, a 1.0 peer pads
+		its CONNECT to whatever may be sent back, so it gives a sender who
+		names someone else's address nothing it could not send itself.
+
+		While joins are validated, every CONNECT is answered with a cookie,
+		without a limit, as SYN cookies, QUIC's Retry and DTLS's
+		HelloVerifyRequest answer every attempt. So what a flood past the
+		threshold costs the server is a keyed hash and a send per datagram,
+		about 14 microseconds on Windows, where a CONNECT past
+		`maxPendingConnections` was dropped for about 0.1, and that is the
+		price of real players still joining during the flood. It
+		is good for 10 to 20 seconds: the key it is made with is new every
+		10 seconds, and the one before is still accepted. Within that time
+		the same address, port and connection id can return it again, which
+		opens nothing a CONNECT from there could not.
+
+		A peer on 1.0 or later returns a cookie by itself. A peer from
+		before 1.0 cannot: while joins are validated its CONNECTs are
+		dropped, and it joins once fewer than the threshold are waiting
+		(under `UNDER_PRESSURE`), or never (under `ALWAYS`). The keys come
+		from the secure random source; on a target without one, neko,
+		HashLink, from the ordinary one, which someone able to predict it
+		could forge cookies with: hardening there, as the sequence numbers
+		are, rather than a boundary.
+
+		Read for each CONNECT, so a change takes effect at the next.
+	**/
+	public var joinValidation:JoinValidation = UNDER_PRESSURE;
+
+	/**
+		How many sessions may be waiting to finish their handshakes before a
+		join must show where it came from, under `joinValidation`'s
+		`UNDER_PRESSURE`: 64 unless changed, a quarter of the default
+		`maxPendingConnections`, so a flood of forged CONNECTs holds at most
+		that many slots and leaves the rest to joins that show they are
+		real. 0 validates every join, as `ALWAYS` does. Keep it below
+		`maxPendingConnections`, or the slots fill before it is reached.
+	**/
+	public var joinValidationThreshold:Int = DEFAULT_JOIN_VALIDATION_THRESHOLD;
+
+	/**
+		Whether a session follows its peer to a new address: off unless set.
+
+		A session is found by its peer's address and port, so a player whose
+		address changed was lost: a NAT that gave it a new port, a phone
+		that moved from Wi-Fi to a mobile network. Its frames came from an
+		address with no session, were answered with a reset, and the player
+		was cut off and had to join again (or resume, as the class doc's
+		"Resuming a player" shows).
+
+		With this on, each session a peer on 1.0 or later opens is given a
+		rebind key, 16 random bytes, in the server's HANDSHAKE. When that
+		peer's frames then arrive from an address with no session, the reset
+		sent back carries a challenge: the server's keyed hash of the new
+		address and port and the time, made like a join cookie, for which it
+		keeps nothing. The peer's session, if it is live, does not close on
+		it: it answers from its new address with a REBIND, its connection
+		id, the challenge, and its keyed hash of the two with the session's
+		key, and the server, finding all three right, moves the session
+		there: in every map it is filed in, its relay path if it reached the
+		peer through `relay`, and `remoteAddress` and `remotePort`, which
+		read the new address from then on. The same session object goes on;
+		what it sent while the peer could not be reached is sent again, as
+		after any loss. In a test over a NAT that changed the client's port,
+		traffic resumed a round trip after the client's first frame from the
+		new port. Nothing on the client needs to be set: a 1.0 client always
+		answers, and gives up after its `timeout` (20 s unless set), closing
+		with an `ioError` that says the rebind failed. `admit` is not asked
+		again; a rebind is the same session, at another address.
+
+		Refused, with the session left where it was: a wrong proof; a
+		challenge made for another address or port, or more than 10 to 20
+		seconds old; a session not yet connected, or closing; and more than
+		one move a second for a session. A REBIND for a session already at
+		the address it came from moves nothing and is answered, harmlessly.
+		The server checks at most 16 REBINDs a pass, so a flood of forged
+		ones costs a lookup each and little more; a peer whose session is
+		gone is told with a reset that carries no challenge.
+
+		**Without encryption, the key is only as secret as the HANDSHAKE.**
+		It crosses the network in the clear, so anyone on the path when the
+		session began can later move it to an address of their own, taking
+		over what the server sends the player. Turn this on with encryption,
+		where the session's own key keys the proof, or for a game whose
+		players' paths nobody hostile shares. And every reset carries a
+		challenge while this is on, made per reset within
+		`maxResetsPerSecond`.
+
+		Only reliable UDP can do this. A TCP connection, and a WebSocket over
+		one, is its addresses and ports: when either changes the connection
+		is gone, and the player reconnects and resumes, as the class doc
+		shows. That is also the fallback here, for a peer from before 1.0 or
+		a server without this.
+
+		It costs nothing while off, and no session accepted while it was off
+		gets a key; set it before `listen`. On, a session holds its 16-byte
+		key and an entry in a map by connection id; nothing per packet. On a
+		target with no secure random source, neko, HashLink, no session
+		is given a key, since one guessed would let anyone move it.
+	**/
+	public var allowRebind(default, set):Bool = false;
+
+	@:noCompletion private function set_allowRebind(value:Bool):Bool {
+		if (!value) {
+			// Nothing kept for a feature that is off.
+			__byConnectionId = null;
+		}
+		return allowRebind = value;
+	}
+
+	// The sessions that may rebind, by their peers' connection ids: what a
+	// REBIND names. Kept only while rebinding is allowed.
+	@:noCompletion private var __byConnectionId:haxe.ds.IntMap<ReliableDatagramSocket> = null;
+
+	// REBINDs checked this pass, and whether this server has asked to be
+	// told when the pass ends.
+	@:noCompletion private var __rebindChecks:Int = 0;
+
+	/** The most REBINDs a server checks in one pass of its runtime's loop. **/
+	@:noCompletion private static inline var MAX_REBIND_CHECKS_PER_PASS:Int = 16;
+
+	/** The least time between two moves of one session, in seconds. **/
+	@:noCompletion private static inline var MIN_REBIND_INTERVAL:Float = 1.0;
+
+	/** What a rebind challenge's hash starts with, so it can pass for no other. **/
+	@:noCompletion private static inline var CHALLENGE_DOMAIN:Int = 0x42;
+
+	/** `maxResetsPerSecond` unless changed. **/
+	public static inline var DEFAULT_MAX_RESETS_PER_SECOND:Int = 1000;
+
+	/**
+		How many resets every reliable datagram server in this process may
+		send, together, in a second: 1,000 unless changed. Negative is no
+		limit, and 0 sends none.
+
+		A reset is the FIN a server answers a frame with when it holds no
+		session for the address the frame came from, a peer whose session
+		it closed, a server that restarted, a player whose address changed.
+		Each is a datagram to an address that has proved
+		nothing, since UDP lets a sender write whatever it likes in the
+		source field; it is no larger than the frame that drew it, but one
+		was sent for every such frame however many came, so a server could be
+		made to send as many datagrams as it was sent to whoever an attacker
+		named. Past the allowance a frame is dropped unanswered, and its
+		sender, if it is a real peer, hears at its next frame, or at its own
+		`idleTimeout`.
+
+		One allowance for the process, shared by every server in it on every
+		runtime: it holds up to one second's worth and fills at this rate, so
+		a burst of resets after a restart goes out at once and a flood gets
+		no more than this. At 1,000 that is at most about 35 KB a second of
+		7-byte frames and their headers. Read whenever a reset is due, so a
+		change takes effect at the next one.
+	**/
+	public static var maxResetsPerSecond:Int = DEFAULT_MAX_RESETS_PER_SECOND;
 
 	/**
 		The operating system's receive buffer, in bytes, for the one socket
@@ -199,9 +522,11 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		network in the clear, so anyone who saw it can send it again: a token
 		this checks should be one only this side could have issued, and short
 		lived, or bound to the address it was issued to. This runs for every
-		CONNECT from a new address, which is the packet a flood is made of, so
-		keep it cheap, or put a `RateLimiter` in front of anything that is
-		not, such as checking a signature.
+		CONNECT from a new address, while joins are validated (see
+		`joinValidation`), only for one that has returned its cookie, and so
+		shown it receives at that address, which is the packet a flood is
+		made of, so keep it cheap, or put a `RateLimiter` in front of
+		anything that is not, such as checking a signature.
 
 		A hook that throws refuses the CONNECT.
 	**/
@@ -436,6 +761,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		__byHostCount = new StringMap();
 		__pending = new StringMap();
 		__pendingCount = 0;
+		__byConnectionId = null;
 
 		// Aborted, not just disposed: abort() tells the peer, which disposing
 		// did not, so every client of a server that shut down went on
@@ -1614,6 +1940,12 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	/** One frame of `__handleDatagram`'s, for the session it is from, or for none yet. **/
 	@:noCompletion private function __handleFrame(frame:ReliableDatagramFrame, connection:Null<ReliableDatagramSocket>, address:String, port:Int,
 			via:Null<TurnClient>):Void {
+		// A REBIND names its session by connection id, wherever it comes from.
+		if (frame.type == ReliableDatagramFrameType.PATH && (frame.payload : haxe.io.Bytes).get(0) == ReliableDatagramProtocol.PATH_REBIND) {
+			__acceptRebind(frame, connection, address, port, via);
+			return;
+		}
+
 		if (connection != null) {
 			if (frame.type != ReliableDatagramFrameType.CONNECT || !__isAnotherAttempt(connection, frame)) {
 				connection.__acceptFrame(frame);
@@ -1638,6 +1970,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		}
 
 		if (frame.type != ReliableDatagramFrameType.CONNECT) {
+			// A cookie or a rebind's answer is a server's to send, not to
+			// take, and from an address with no session it is a stranger's.
 			__resetStranger(frame, address, port, via);
 			return;
 		}
@@ -1646,9 +1980,13 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			return;
 		}
 
-		if (maxPendingConnections >= 0 && __pendingCount >= maxPendingConnections) {
-			return;
-		}
+		// Read before the hooks run: the frame is the one every datagram is
+		// decoded into, and a hook that pumps the runtime has the next one
+		// decoded over it.
+		var connectionId:Int = frame.sequence;
+		var bundles:Bool = frame.bundles;
+		var extended:Bool = frame.extended;
+		var canRebind:Bool = extended && (frame.features & ReliableDatagramProtocol.FEATURE_REBIND) != 0;
 
 		// No connect() sends more than a frame, and each pending session
 		// keeps what its CONNECT carried, so a larger one is not held.
@@ -1657,11 +1995,22 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			return;
 		}
 
-		// Read before the hooks run: the frame is the one every datagram is
-		// decoded into, and a hook that pumps the runtime has the next one
-		// decoded over it.
-		var connectionId:Int = frame.sequence;
-		var bundles:Bool = frame.bundles;
+		// Shown to come from where it says, or asked to show it: see
+		// `joinValidation`. A cookie that does not check out is no cookie,
+		// and the CONNECT is taken as one without.
+		if (!(frame.hasCookie && __cookieChecks(frame.cookieHigh, frame.cookieLow, address, port, connectionId)) && __joinsMustShowAddress()) {
+			// A peer from before 1.0 cannot answer a cookie, and its CONNECT
+			// is too short for one to be sent back: dropped, as at
+			// `maxPendingConnections`. A 1.0 CONNECT is padded past a cookie.
+			if (extended) {
+				__sendCookie(connectionId, address, port, via);
+			}
+			return;
+		}
+
+		if (maxPendingConnections >= 0 && __pendingCount >= maxPendingConnections) {
+			return;
+		}
 
 		var admitted:Bool = false;
 		try {
@@ -1679,11 +2028,17 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		}
 
 		payload.position = 0;
+		// A key to rebind with, for a peer that can, while it is allowed.
+		var rebindKey:Null<haxe.io.Bytes> = canRebind ? __newRebindKey(connectionId) : null;
 		// Through the relay, when that is how the CONNECT came: the peer is
 		// somewhere nothing but the relay reaches. The session keeps a copy
 		// of the payload, which is the datagram's.
-		connection = ReliableDatagramSocket.__createAccepted(__socket, address, port, this, socketMode, payload, congestion, connectionId, via);
+		connection = ReliableDatagramSocket.__createAccepted(__socket, address, port, this, socketMode, payload, congestion, connectionId, via,
+			rebindKey);
 		connection.__peerTakesBundles = bundles;
+		if (rebindKey != null) {
+			__byConnectionId.set(connectionId, connection);
+		}
 		__file(address, port, connection);
 		__pending.set(__endpointKey(address, port), true);
 		__pendingCount++;
@@ -1725,6 +2080,330 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		return false;
 	}
 
+	/** Whether a CONNECT from an address with no session must show it receives there; see `joinValidation`. **/
+	@:noCompletion private inline function __joinsMustShowAddress():Bool {
+		return switch (joinValidation) {
+			case ALWAYS: true;
+			case NEVER: false;
+			default: __pendingCount >= joinValidationThreshold;
+		}
+	}
+
+	// The keys cookies, and rebind challenges, are made with: the one in
+	// use, and the one before it, which is still accepted. Made when first
+	// needed, and turned over every `__pathKeyPeriod` seconds; a cookie says
+	// which of the two made it in its top bit, the turnover's parity.
+	@:noCompletion private var __pathKey:SipHash = null;
+	@:noCompletion private var __pathKeyBefore:SipHash = null;
+	@:noCompletion private var __pathGeneration:Int = 0;
+	@:noCompletion private var __pathKeyMadeAt:Float = 0;
+
+	/** How long a key is in use; a cookie made with it is good for once to twice this. **/
+	@:noCompletion private static inline var PATH_KEY_PERIOD:Float = 10.0;
+
+	@:noCompletion private var __pathKeyPeriod:Float = PATH_KEY_PERIOD;
+
+	// What a key hashes, written here, and the answer: nothing allocated per
+	// CONNECT or per reset.
+	@:noCompletion private var __macInput:haxe.io.Bytes = null;
+	@:noCompletion private var __macHigh:Int = 0;
+	@:noCompletion private var __macLow:Int = 0;
+
+	// The frames this server sends about an address, cookies, rebinds'
+	// answers, written here.
+	@:noCompletion private var __pathScratch:ByteArray = null;
+
+	/** What each kind of keyed hash starts with, so one can never pass for another. **/
+	@:noCompletion private static inline var COOKIE_DOMAIN:Int = 0x43;
+
+	/** The keys as they are at `now`: made, or turned over once their time is up. **/
+	@:noCompletion private function __pathKeys(now:Float):Void {
+		if (__pathKey == null) {
+			__pathKey = __newPathKey();
+			__pathKeyBefore = __newPathKey();
+			__pathKeyMadeAt = now;
+			return;
+		}
+		var age:Float = now - __pathKeyMadeAt;
+		if (age < 0) {
+			// The time of day, set back (hl, neko, the interpreter): the key
+			// in use starts its period again.
+			__pathKeyMadeAt = now;
+			return;
+		}
+		if (age < __pathKeyPeriod) {
+			return;
+		}
+		if (age < __pathKeyPeriod * 2) {
+			__pathKeyBefore = __pathKey;
+			__pathKey = __newPathKey();
+			__pathGeneration++;
+		} else {
+			// Both are past their time: neither is accepted any more, and the
+			// parity is kept, so a cookie two turnovers old reads as the
+			// current key's and fails against it.
+			__pathKeyBefore = __newPathKey();
+			__pathKey = __newPathKey();
+			__pathGeneration += 2;
+		}
+		__pathKeyMadeAt = now;
+	}
+
+	@:noCompletion private static function __newPathKey():SipHash {
+		var key = haxe.io.Bytes.alloc(SipHash.KEY_SIZE);
+		if (crossbyte.crypto.SecureRandom.isSupported) {
+			try {
+				var random:ByteArray = crossbyte.crypto.SecureRandom.getSecureRandomBytes(SipHash.KEY_SIZE);
+				key.blit(0, random, 0, SipHash.KEY_SIZE);
+				return new SipHash(key);
+			} catch (_:Dynamic) {}
+		}
+		// No secure source (neko, HashLink, the interpreter): the ordinary
+		// one, as the sequence numbers fall back to; see `joinValidation`.
+		for (i in 0...SipHash.KEY_SIZE) {
+			key.set(i, Std.random(256));
+		}
+		return new SipHash(key);
+	}
+
+	/**
+		The keyed hash of `domain`, `port`, `value` and `address` under `key`,
+		left in `__macHigh` and `__macLow`.
+	**/
+	@:noCompletion private function __mac(key:SipHash, domain:Int, address:String, port:Int, value:Int):Void {
+		var length:Int = 7 + address.length;
+		if (__macInput == null || __macInput.length < length) {
+			__macInput = haxe.io.Bytes.alloc(length < 64 ? 64 : length);
+		}
+		var input:haxe.io.Bytes = __macInput;
+		input.set(0, domain);
+		input.set(1, (port >>> 8) & 0xFF);
+		input.set(2, port & 0xFF);
+		input.set(3, value >>> 24);
+		input.set(4, (value >>> 16) & 0xFF);
+		input.set(5, (value >>> 8) & 0xFF);
+		input.set(6, value & 0xFF);
+		// An address is ASCII: digits, dots, colons, hex, and a zone's name.
+		for (i in 0...address.length) {
+			input.set(7 + i, StringTools.fastCodeAt(address, i) & 0xFF);
+		}
+		key.hash(input, 0, length);
+		__macHigh = key.high;
+		__macLow = key.low;
+	}
+
+	/**
+		Whether a cookie is the one this server made for a CONNECT with
+		`connectionId` from `address`:`port`, with the key in use or the one
+		before it.
+	**/
+	@:noCompletion private function __cookieChecks(high:Int, low:Int, address:String, port:Int, connectionId:Int):Bool {
+		__pathKeys(haxe.Timer.stamp());
+		var parity:Int = high >>> 31;
+		__mac(parity == (__pathGeneration & 1) ? __pathKey : __pathKeyBefore, COOKIE_DOMAIN, address, port, connectionId);
+		// Every bit compared, whichever differs first.
+		return (((__macHigh & 0x7FFFFFFF) ^ (high & 0x7FFFFFFF)) | (__macLow ^ low)) == 0;
+	}
+
+	/**
+		Answers a CONNECT with its cookie: a PATH frame, 16 bytes, echoing the
+		connection id, sent back the way the CONNECT came. Nothing is kept.
+	**/
+	@:noCompletion private function __sendCookie(connectionId:Int, address:String, port:Int, via:Null<TurnClient>):Void {
+		__pathKeys(haxe.Timer.stamp());
+		__mac(__pathKey, COOKIE_DOMAIN, address, port, connectionId);
+		var high:Int = (__macHigh & 0x7FFFFFFF) | ((__pathGeneration & 1) << 31);
+		var scratch:ByteArray = __pathFrame(ReliableDatagramFrameType.PATH, connectionId, ReliableDatagramProtocol.PATH_COOKIE);
+		var bytes:haxe.io.Bytes = scratch;
+		var at:Int = ReliableDatagramProtocol.HEADER_SIZE + 1;
+		__setInt(bytes, at, high);
+		__setInt(bytes, at + 4, __macLow);
+		__sendScratch(ReliableDatagramProtocol.COOKIE_FRAME_SIZE, address, port, via);
+	}
+
+	/**
+		A rebind key for the session a peer with `connectionId` is opening,
+		filed by that id; null, the session cannot rebind, while rebinding
+		is not allowed, with no secure random source, or when another session
+		that may rebind has the same id, which 32 random bits make rare.
+	**/
+	@:noCompletion private function __newRebindKey(connectionId:Int):Null<haxe.io.Bytes> {
+		if (!allowRebind || connectionId == 0 || !crossbyte.crypto.SecureRandom.isSupported) {
+			return null;
+		}
+		if (__byConnectionId == null) {
+			__byConnectionId = new haxe.ds.IntMap();
+		} else if (__byConnectionId.exists(connectionId)) {
+			return null;
+		}
+		try {
+			var random:ByteArray = crossbyte.crypto.SecureRandom.getSecureRandomBytes(ReliableDatagramProtocol.REBIND_KEY_SIZE);
+			var key = haxe.io.Bytes.alloc(ReliableDatagramProtocol.REBIND_KEY_SIZE);
+			key.blit(0, random, 0, ReliableDatagramProtocol.REBIND_KEY_SIZE);
+			return key;
+		} catch (_:Dynamic) {
+			return null;
+		}
+	}
+
+	/** The challenge a reset to `address`:`port` carries: never 0, which is a reset with none. **/
+	@:noCompletion private function __challengeFor(address:String, port:Int):Int {
+		__pathKeys(haxe.Timer.stamp());
+		return __challengeWith(__pathKey, __pathGeneration & 1, address, port);
+	}
+
+	@:noCompletion private function __challengeWith(key:SipHash, parity:Int, address:String, port:Int):Int {
+		__mac(key, CHALLENGE_DOMAIN, address, port, 0);
+		var challenge:Int = (__macHigh & 0x7FFFFFFF) | (parity << 31);
+		return challenge == 0 ? 1 : challenge;
+	}
+
+	/** Whether `challenge` is one this server made for `address`:`port`, with the key in use or the one before. **/
+	@:noCompletion private function __challengeChecks(challenge:Int, address:String, port:Int):Bool {
+		__pathKeys(haxe.Timer.stamp());
+		var parity:Int = challenge >>> 31;
+		var key:SipHash = parity == (__pathGeneration & 1) ? __pathKey : __pathKeyBefore;
+		return (__challengeWith(key, parity, address, port) ^ challenge) == 0;
+	}
+
+	/**
+		A REBIND: a peer whose address changed, answering the challenge this
+		server's reset sent to the new one, with its connection id and its
+		proof. See `allowRebind` for what is checked, and why each refusal
+		is answered as it is. Everything is read off the frame first: it is
+		the one every datagram is decoded into.
+	**/
+	@:noCompletion private function __acceptRebind(frame:ReliableDatagramFrame, connection:Null<ReliableDatagramSocket>, address:String, port:Int,
+			via:Null<TurnClient>):Void {
+		var payload:ByteArray = frame.payload;
+		if (payload.length < 1 + ReliableDatagramProtocol.CHALLENGE_SIZE + ReliableDatagramProtocol.REBIND_PROOF_SIZE) {
+			return;
+		}
+		var id:Int = frame.sequence;
+		var bytes:haxe.io.Bytes = payload;
+		var challenge:Int = __getInt(bytes, 1);
+		var proofHigh:Int = __getInt(bytes, 5);
+		var proofLow:Int = __getInt(bytes, 9);
+
+		var session:Null<ReliableDatagramSocket> = __byConnectionId != null ? __byConnectionId.get(id) : null;
+		if (!allowRebind || session == null || session.__closed || session.__closing || !session.__connected) {
+			// Nothing here to move. A peer sending from an address with no
+			// session is told so, as any stranger is, by a reset that
+			// carries no challenge, which it takes as the end.
+			if (connection == null) {
+				__resetStranger(null, address, port, via, false);
+			}
+			return;
+		}
+
+		if (session == connection) {
+			// At that address already: its REBOUND was lost, or it never
+			// moved. Answered again, and nothing moves.
+			session.__sendRebound(challenge);
+			return;
+		}
+
+		// Another session's address, or past what a pass checks.
+		if (connection != null || !__mayCheckRebind()) {
+			return;
+		}
+
+		if (!__challengeChecks(challenge, address, port)) {
+			// Made for another address or port, or past its time: a fresh one,
+			// for whoever is at this address, as any reset there would carry.
+			__resetStranger(null, address, port, via, true);
+			return;
+		}
+
+		if (!session.__rebindProofChecks(challenge, proofHigh, proofLow)) {
+			return;
+		}
+
+		var now:Float = haxe.Timer.stamp();
+		if (session.__reboundAt >= 0 && now - session.__reboundAt < MIN_REBIND_INTERVAL) {
+			return;
+		}
+
+		__moveSession(session, address, port, via);
+		session.__rebound(challenge, now);
+	}
+
+	/**
+		Whether another REBIND may be checked this pass, a keyed hash for
+		the challenge and another for the proof, counting it if so. The
+		count starts again when the runtime's pass ends.
+	**/
+	@:noCompletion private function __mayCheckRebind():Bool {
+		if (__rebindChecks == 0) {
+			var runtime:Null<CrossByte> = @:privateAccess __socket.__cbInstance;
+			if (runtime != null && !@:privateAccess runtime.__didExit) {
+				@:privateAccess runtime.__queuePassFlush(this);
+			}
+		}
+		if (__rebindChecks >= MAX_REBIND_CHECKS_PER_PASS) {
+			return false;
+		}
+		__rebindChecks++;
+		return true;
+	}
+
+	/** The runtime's call at the end of a pass in which REBINDs were checked. **/
+	@:noCompletion public function __flushPass():Void {
+		__rebindChecks = 0;
+	}
+
+	/**
+		Files `session` under the address and port its peer is at now, out of
+		everything it was filed under at the old one, the endpoint maps, the
+		host's count, the pending set, and through `via`, the relay it now
+		reaches its peer through, or none.
+	**/
+	@:noCompletion private function __moveSession(session:ReliableDatagramSocket, address:String, port:Int, via:Null<TurnClient>):Void {
+		var wasPending:Bool = __pending.remove(__endpointKey(session.__remoteAddress, session.__remotePort));
+		__unfile(session.__remoteAddress, session.__remotePort);
+		session.__remoteAddress = address;
+		session.__remotePort = port;
+		session.__remoteResponsePort = 0;
+		session.__relay = via;
+		__file(address, port, session);
+		if (wasPending) {
+			__pending.set(__endpointKey(address, port), true);
+		}
+	}
+
+	@:noCompletion private static inline function __getInt(bytes:haxe.io.Bytes, at:Int):Int {
+		return (bytes.get(at) << 24) | (bytes.get(at + 1) << 16) | (bytes.get(at + 2) << 8) | bytes.get(at + 3);
+	}
+
+	/** A frame's header and its first payload byte, written into `__pathScratch`. **/
+	@:noCompletion private function __pathFrame(type:ReliableDatagramFrameType, sequence:Int, kind:Int):ByteArray {
+		if (__pathScratch == null) {
+			__pathScratch = new ByteArray();
+			__pathScratch.length = 64;
+		}
+		var written:Int = ReliableDatagramProtocol.encodeInto(__pathScratch, type, sequence, null, 0, 0, false, 0, false, false);
+		(__pathScratch : haxe.io.Bytes).set(written, kind);
+		return __pathScratch;
+	}
+
+	/** `length` bytes of `__pathScratch` to a peer, back the way it reached this server. **/
+	@:noCompletion private function __sendScratch(length:Int, address:String, port:Int, via:Null<TurnClient>):Void {
+		try {
+			if (via != null) {
+				__sendRelayed(via, __pathScratch, 0, length, address, port);
+			} else {
+				__socket.send(__pathScratch, 0, length, address, port);
+			}
+		} catch (_:Dynamic) {}
+	}
+
+	@:noCompletion private static inline function __setInt(bytes:haxe.io.Bytes, at:Int, value:Int):Void {
+		bytes.set(at, value >>> 24);
+		bytes.set(at + 1, (value >>> 16) & 0xFF);
+		bytes.set(at + 2, (value >>> 8) & 0xFF);
+		bytes.set(at + 3, value & 0xFF);
+	}
+
 	/**
 		Tells a peer sending as though it had a session here that it has none,
 		with a FIN, which ends the session on its side at once.
@@ -1739,9 +2418,19 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		answered, since its sender waits for an acknowledgement nothing here
 		will give, often from a session that took the FIN and went, its
 		answer lost on the way.
+
+		Sent only within the process's allowance, `maxResetsPerSecond`: one
+		was sent for every frame from a stranger, however many came.
 	**/
-	@:noCompletion private function __resetStranger(frame:Null<ReliableDatagramFrame>, address:String, port:Int, via:Null<TurnClient>):Void {
+	@:noCompletion private function __resetStranger(frame:Null<ReliableDatagramFrame>, address:String, port:Int, via:Null<TurnClient>,
+			withChallenge:Bool = true):Void {
 		if (frame != null && frame.type == ReliableDatagramFrameType.FIN && !frame.graceful) {
+			return;
+		}
+
+		// Within the process's allowance, which every server shares; see
+		// `maxResetsPerSecond`.
+		if (!ResetBudget.take(maxResetsPerSecond, haxe.Timer.stamp())) {
 			return;
 		}
 
@@ -1750,7 +2439,12 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			__resetScratch.length = ReliableDatagramProtocol.HEADER_SIZE;
 		}
 
-		var length:Int = ReliableDatagramProtocol.encodeInto(__resetScratch, ReliableDatagramFrameType.FIN, 0, null, 0, 0, false, 0, false, false);
+		// Where a session may follow its peer, the challenge it answers from
+		// its new address, in the sequence field a reset leaves at 0: the
+		// reset is no larger for it. See `allowRebind`.
+		var challenge:Int = withChallenge && allowRebind ? __challengeFor(address, port) : 0;
+		var length:Int = ReliableDatagramProtocol.encodeInto(__resetScratch, ReliableDatagramFrameType.FIN, challenge, null, 0, 0, false, 0, false,
+			false);
 		try {
 			// Back the way it came: a frame from a peer only the relay reaches
 			// is answered through the relay.
@@ -1766,6 +2460,9 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		var key:String = __endpointKey(socket.remoteAddress, socket.remotePort);
 		__unfile(socket.remoteAddress, socket.remotePort);
 		__releasePending(key);
+		if (__byConnectionId != null && socket.__offersRebind && __byConnectionId.get(socket.__peerConnectionId) == socket) {
+			__byConnectionId.remove(socket.__peerConnectionId);
+		}
 		// One closed while its peer's name was looked up was filed only
 		// here; its answer, when it comes, finds it gone.
 		if (__dialling != null) {

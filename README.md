@@ -318,6 +318,58 @@ and `phpMaxExchanges` (64) the requests a runtime has with its PHP backend
 at once; more wait their turn within `phpTimeout`, and past 1,024 waiting
 a request is refused.
 
+## Reliable UDP: joins, resets, and players who move
+
+A `ReliableDatagramServerSocket` opens a session for a CONNECT and holds it
+while the handshake finishes, on the strength of a source address UDP lets
+any sender write. What that costs the server, and what it sends to addresses
+nobody has proved, is bounded:
+
+| On the server | Default | Bounds |
+| --- | --- | --- |
+| `maxPendingConnections` | 256 | sessions waiting to finish their handshakes |
+| `joinValidation` | `UNDER_PRESSURE` | when a join must show it receives at its address before a session is opened |
+| `joinValidationThreshold` | 64 | pending sessions past which `UNDER_PRESSURE` validates |
+| `maxResetsPerSecond` (static) | 1,000 | FINs every server in the process sends, together, to addresses with no session |
+| `allowRebind` | off | whether a session follows its player to a new address |
+
+**The handshake.** A client sends CONNECT, its connection id, and the
+payload its `connect` passed, for `admit`, every three seconds until the
+server's HANDSHAKE arrives; each side's HANDSHAKE says where its sequence
+starts, and the client's answer completes it. A validated join has one step
+more: the server answers the first CONNECT with a cookie, its keyed hash of
+the address, port, connection id and time, keeping nothing, and the client
+sends the CONNECT again at once with the cookie in it. Only a CONNECT that
+returns its cookie, from where the cookie was sent, reaches `admit`. So a
+flood of CONNECTs from forged addresses holds at most the threshold's worth
+of slots, and a real player joins through it a round trip later; an
+ordinary join, below the threshold, costs nothing extra. A 1.0 client pads
+its CONNECT to 29 bytes, so nothing the server sends back to one is larger,
+and a CONNECT from 1.0.0-rc.1, which cannot return a cookie, joins only
+while joins are not validated.
+
+**Resets.** A frame from an address with no session, a peer whose session
+the server closed, or one that has restarted, is answered with a FIN that
+ends the peer's session at once, so it stops sending into nothing. All the
+servers of a process share one allowance of them, `maxResetsPerSecond`,
+which holds a second's worth.
+
+**Players who move.** A session is found by its peer's address and port, so
+a player whose address changes, a NAT that hands out a new port, a phone
+moving from Wi-Fi to a mobile network, arrives as a stranger and is
+reset. With `allowRebind` on, the server gives each session a key in its
+HANDSHAKE, and the reset it sends a stranger carries a challenge for the
+stranger's address. The player's session, still live, answers from its new
+address with a REBIND proving it holds the key; the server moves the
+session there, on the same object, and both sides send again what was lost
+meanwhile: over loopback, traffic resumed 0.2 ms after the first frame from
+the new port natively, 0.35 ms on the jvm, a round trip. Without encryption the key crosses the
+network in the clear, so turn it on with encryption, or where nobody
+hostile shares the players' paths. TCP and WebSocket connections cannot
+follow an address: those players reconnect and resume, as
+`ReliableDatagramServerSocket`'s class doc shows under "Resuming a player",
+which is also the fallback for a peer from before 1.0.
+
 ## Extensions
 
 CrossByte's extension story is intentional: features that benefit from native backends or external platform libraries can live in sibling haxelibs instead of bloating the core.
