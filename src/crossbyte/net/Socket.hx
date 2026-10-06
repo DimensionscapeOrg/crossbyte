@@ -310,6 +310,137 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	public var outputOverflowPolicy:OutputOverflowPolicy = CLOSE;
 
 	/**
+		Whether `receiveBufferSize` and `sendBufferSize` reach the operating
+		system here: natively and on the jvm. Node gives a TCP socket no way
+		to size them, and the interpreter, HashLink and Neko none to ask; a
+		page's connection is a WebSocket the browser holds.
+	**/
+	public static var bufferSizeSupported(default, null):Bool = #if (cpp || java || jvm) true #else false #end;
+
+	/**
+		How many bytes arriving for this connection the operating system holds
+		until the application reads them (`SO_RCVBUF`), which sets the window
+		TCP offers the peer: once it is full, the peer stops sending. `0`
+		until one is asked for, when the system's own applies, Linux starts
+		at 128 KB and grows it as the connection is used, to 6 MB by default
+		(`net.ipv4.tcp_rmem`); Windows grows its window the same way.
+
+		Asking for a size fixes it, and turns the system's growing off for
+		this socket. That bounds what a peer can make the kernel hold for the
+		connection while the application is not reading, the memory of a
+		server with many connections lies mostly here, outside the heap,
+		and how far ahead of the reader it can send. Smaller is cheaper and
+		slower over a long path: a connection moves at most one buffer per
+		round trip.
+
+		Set it before `connect()`: the window a connection starts with is
+		agreed as it connects, and a receive buffer asked for afterwards
+		changes what is held but not the window's scale. A socket a
+		`ServerSocket` accepted takes its server's `receiveBufferSize`.
+
+		What is granted may not be what was asked. Linux keeps twice what is
+		asked, counting its own bookkeeping, and reports that; every system
+		rounds and caps it (Linux at `net.core.rmem_max`). Read it once
+		connected to know: before then it reads what was asked.
+
+		@throws RangeError If set below 1.
+		@throws IOError If the system refuses it.
+		@throws IllegalOperationError Where `bufferSizeSupported` is false.
+	**/
+	public var receiveBufferSize(get, set):Int;
+
+	/**
+		How many bytes written to this connection the operating system holds
+		until the peer has acknowledged them (`SO_SNDBUF`). What the system
+		will not hold waits in this socket's own output buffer, see
+		`bytesPending` and `maxOutputBufferSize`, so a smaller one moves the
+		backlog of a slow peer from the kernel to where the application can
+		see and bound it. `0` until one is asked for, when the system's own
+		applies: Linux starts at 16 KB and grows it to 4 MB
+		(`net.ipv4.tcp_wmem`); Windows grows it with the connection's
+		bandwidth.
+
+		As `receiveBufferSize`, set it before `connect()`, read it back to
+		know what was granted, and a socket a `ServerSocket` accepted takes
+		its server's.
+
+		@throws RangeError If set below 1.
+		@throws IOError If the system refuses it.
+		@throws IllegalOperationError Where `bufferSizeSupported` is false.
+	**/
+	public var sendBufferSize(get, set):Int;
+
+	// The buffer sizes asked for, 0 for none: applied to each socket this
+	// one makes, as it makes it.
+	@:noCompletion private var __receiveBufferRequest:Int = 0;
+	@:noCompletion private var __sendBufferRequest:Int = 0;
+
+	@:noCompletion private function get_receiveBufferSize():Int {
+		return __bufferSize(true);
+	}
+
+	@:noCompletion private function set_receiveBufferSize(value:Int):Int {
+		__setBufferSize(true, value);
+		return value;
+	}
+
+	@:noCompletion private function get_sendBufferSize():Int {
+		return __bufferSize(false);
+	}
+
+	@:noCompletion private function set_sendBufferSize(value:Int):Int {
+		__setBufferSize(false, value);
+		return value;
+	}
+
+	@:noCompletion private function __bufferSize(receive:Bool):Int {
+		#if ((cpp || java || jvm) && !macro)
+		if (__socket != null) {
+			var size:Int = @:privateAccess __socket.__grantedBufferSize(receive);
+			if (size > 0) {
+				return size;
+			}
+		}
+		#end
+		return receive ? __receiveBufferRequest : __sendBufferRequest;
+	}
+
+	@:noCompletion private function __setBufferSize(receive:Bool, value:Int):Void {
+		if (value < 1) {
+			throw new RangeError('A socket buffer holds at least one byte, not $value.');
+		}
+		var which:String = receive ? "receive" : "send";
+		#if ((cpp || java || jvm) && !macro)
+		if (receive) {
+			__receiveBufferRequest = value;
+		} else {
+			__sendBufferRequest = value;
+		}
+		if (__socket != null && !@:privateAccess __socket.__askBufferSize(receive, value)) {
+			throw new IOError('The system refused a $which buffer of $value bytes.');
+		}
+		#else
+		throw new IllegalOperationError('This target cannot size a TCP socket\'s $which buffer: check Socket.bufferSizeSupported.');
+		#end
+	}
+
+	#if ((cpp || java || jvm) && !macro)
+	/**
+		Gives `socket`, just made for this connection, the buffer sizes asked
+		for. Quiet about a refusal: the request was taken when it was made,
+		and reading the size says what was granted.
+	**/
+	@:noCompletion private function __applyBufferRequests(socket:SysSocket):Void {
+		if (__receiveBufferRequest > 0) {
+			@:privateAccess socket.__askBufferSize(true, __receiveBufferRequest);
+		}
+		if (__sendBufferRequest > 0) {
+			@:privateAccess socket.__askBufferSize(false, __sendBufferRequest);
+		}
+	}
+	#end
+
+	/**
 		What happens when the peer stops sending, see `PeerShutdownPolicy`.
 
 		Defaults to `CLOSE`, which is what this has always done. Set
@@ -872,6 +1003,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__socket = new SysSocket();
 		#else
 		__socket = secure ? __newTlsSocket(host) : new SysSocket();
+		#if (cpp || java || jvm)
+		// Before the connect, to set the window it starts with.
+		__applyBufferRequests(__socket);
+		#end
 		#end
 		@:privateAccess
 		__cbInstance = CrossByte.current();
@@ -948,6 +1083,13 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			}
 		}
 
+		#if ((cpp || java || jvm) && !macro)
+		if (__receiveBufferRequest > 0 || __sendBufferRequest > 0) {
+			// Again: a connect to an IPv6 address natively makes the socket
+			// anew, and a TLS socket's does not carry them over.
+			__applyBufferRequests(__socket);
+		}
+		#end
 		__socket.custom = this;
 
 		#if eval

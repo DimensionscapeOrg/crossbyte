@@ -157,6 +157,106 @@ class ServerSocket extends EventDispatcher {
 	public var maxPendingHandshakes:Int = 256;
 
 	/**
+		`Socket.receiveBufferSize` for the listener and every connection this
+		server accepts: how many bytes arriving for a connection the operating
+		system holds until it is read, and so the window TCP offers its peer.
+		`0`, the default, asks for nothing, and the system's own applies,
+		growing with each connection's use (see `Socket.receiveBufferSize`).
+
+		Set it before `listen()`: a connection's window is agreed as the
+		system accepts it, from the listener's, which this sets as it is
+		asked. Set later, it reaches what is accepted from then on, its
+		window's scale aside.
+
+		A server holding many connections bounds the kernel's memory for each
+		with this and `sendBufferSize`: a connection whose application is not
+		reading holds up to this much in the kernel, on top of what its
+		`Socket` holds.
+
+		@throws RangeError If set below 1.
+		@throws IllegalOperationError Where `Socket.bufferSizeSupported` is
+			false: on Node, which gives a server no way to size them.
+	**/
+	public var receiveBufferSize(get, set):Int;
+
+	/**
+		`Socket.sendBufferSize` for every connection this server accepts:
+		how many bytes written to a connection the operating system holds
+		until its peer has them. `0`, the default, asks for nothing, and the
+		system's own applies. A smaller one keeps a slow peer's backlog in the
+		connection's own output buffer, where `bytesPending` counts it and
+		`maxOutputBufferSize` bounds it, rather than in the kernel.
+
+		Natively a connection also takes it from the listener, which this sets
+		as it is asked; on the jvm, whose listener has no send buffer, it is
+		set on each connection as it is accepted, on a `ServerWebSocket`'s
+		sessions there, not at all.
+
+		@throws RangeError If set below 1.
+		@throws IllegalOperationError Where `Socket.bufferSizeSupported` is
+			false.
+	**/
+	public var sendBufferSize(get, set):Int;
+
+	@:noCompletion private var __receiveBufferRequest:Int = 0;
+	@:noCompletion private var __sendBufferRequest:Int = 0;
+
+	@:noCompletion private function get_receiveBufferSize():Int {
+		return __receiveBufferRequest;
+	}
+
+	@:noCompletion private function set_receiveBufferSize(value:Int):Int {
+		__requestBuffer(true, value);
+		return value;
+	}
+
+	@:noCompletion private function get_sendBufferSize():Int {
+		return __sendBufferRequest;
+	}
+
+	@:noCompletion private function set_sendBufferSize(value:Int):Int {
+		__requestBuffer(false, value);
+		return value;
+	}
+
+	@:noCompletion private function __requestBuffer(receive:Bool, value:Int):Void {
+		if (value < 1) {
+			throw new RangeError('A socket buffer holds at least one byte, not $value.');
+		}
+		#if ((cpp || java || jvm) && !macro)
+		if (receive) {
+			__receiveBufferRequest = value;
+		} else {
+			__sendBufferRequest = value;
+		}
+		var listener:Null<Socket> = __listenerSocket();
+		if (listener != null) {
+			// What the listener refuses, each connection is asked again.
+			@:privateAccess listener.__askBufferSize(receive, value);
+		}
+		#else
+		throw new IllegalOperationError("This target cannot size a TCP socket's " + (receive ? "receive" : "send")
+			+ " buffer: check Socket.bufferSizeSupported.");
+		#end
+	}
+
+	#if ((cpp || java || jvm) && !macro)
+	/**
+		Gives a connection just accepted the buffer sizes the server, the
+		front, on a server spread over runtimes, was asked for.
+	**/
+	@:noCompletion private function __applyAcceptedBuffers(accepted:Socket):Void {
+		var source:ServerSocket = __front != null ? __front : this;
+		if (source.__receiveBufferRequest > 0) {
+			@:privateAccess accepted.__askBufferSize(true, source.__receiveBufferRequest);
+		}
+		if (source.__sendBufferRequest > 0) {
+			@:privateAccess accepted.__askBufferSize(false, source.__sendBufferRequest);
+		}
+	}
+	#end
+
+	/**
 		Connections this server failed to take from the listen queue, for a
 		reason other than there being none to take: the process out of
 		descriptors (`EMFILE`), the system out of memory. The server goes on
@@ -1296,6 +1396,14 @@ class ServerSocket extends EventDispatcher {
 		for (setting in __tlsReplay) {
 			setting(listener);
 		}
+		#if ((cpp || java || jvm) && !macro)
+		if (__receiveBufferRequest > 0) {
+			@:privateAccess listener.__askBufferSize(true, __receiveBufferRequest);
+		}
+		if (__sendBufferRequest > 0) {
+			@:privateAccess listener.__askBufferSize(false, __sendBufferRequest);
+		}
+		#end
 		return listener;
 	}
 
@@ -1860,6 +1968,11 @@ class ServerSocket extends EventDispatcher {
 				return false;
 			}
 			__acceptFailing = false;
+			#if ((cpp || java || jvm) && !macro)
+			if (__receiveBufferRequest > 0 || __sendBufferRequest > 0 || __front != null) {
+				__applyAcceptedBuffers(sysSocket);
+			}
+			#end
 
 			if (!__admits(sysSocket)) {
 				return true;

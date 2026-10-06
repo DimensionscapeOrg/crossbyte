@@ -18,12 +18,20 @@ class HTTPStreamingTest extends utest.Test {
 	// end of the transfer cannot hide behind a size that divides evenly.
 	private static inline var LARGE_SIZE:Int = 2 * 1024 * 1024 + 137;
 
-	// What the held-response cases below send: HELD_PIECES pipelined answers
-	// of HELD_PIECE bytes each, written whole, see __serveHeld, under an
-	// output cap raised past their total.
+	// What the held-response cases below send: pipelined answers of
+	// HELD_PIECE bytes each, written whole, HELD_WAVE at a time until the
+	// server's socket parks, see __serveHeld, under an output cap raised
+	// past what a wave and the system can hold.
 	private static inline var HELD_PIECE:Int = 512 * 1024;
-	private static inline var HELD_PIECES:Int = 128;
+	private static inline var HELD_WAVE:Int = 8;
+	// 256 MB of answers: more than any system was seen to take before it
+	// stopped, and still a bound on the case.
+	private static inline var HELD_MOST:Int = 512;
 	private static inline var HELD_CAP:Int = 96 * 1024 * 1024;
+	// The kernel's buffers for the held connection, where the system can be
+	// asked for them: what the client's end holds unread and what the
+	// server's holds unsent, fixed, so the server parks after one wave.
+	private static inline var HELD_KERNEL_BUFFER:Int = 64 * 1024;
 
 	// What the last __serveHeld saw while it waited, for a precondition that
 	// fails: whether the server answered at all, and what it held.
@@ -392,7 +400,7 @@ class HTTPStreamingTest extends utest.Test {
 		__serveHeld(config -> {
 			config.requestTimeout = 0;
 			config.keepAliveTimeout = 0;
-		}, "", function(server:HTTPServer, client:sys.net.Socket, parked:Bool):Void {
+		}, "", function(server:HTTPServer, client:sys.net.Socket, parked:Bool, pieces:Int):Void {
 			if (parked) {
 				// The sweep, once now, seeing where the parked responses stand,
 				// Linux's buffers go on taking a little after they are
@@ -419,15 +427,15 @@ class HTTPStreamingTest extends utest.Test {
 		// cut off at that deadline as though the connection sat idle, the
 		// client got Content-Lengths promised and part of the bodies. A
 		// connection is idle from when what it sent has gone.
-		__serveHeld(config -> config.keepAliveTimeout = 0.5, "", function(server:HTTPServer, client:sys.net.Socket, parked:Bool):Void {
+		__serveHeld(config -> config.keepAliveTimeout = 0.5, "", function(server:HTTPServer, client:sys.net.Socket, parked:Bool, pieces:Int):Void {
 			// Twice the idle allowance, reading nothing.
 			var resumeAt:Float = haxe.Timer.stamp() + 1.0;
 			HTTPTestSupport.pumpWallUntilAsync(() -> haxe.Timer.stamp() >= resumeAt, 3.0, function(_):Void {
-				__readRaw(client, false, function(whole:Int, closed:Bool):Void {
+				__readRaw(client, false, pieces, function(whole:Int, closed:Bool):Void {
 					try client.close() catch (_:Dynamic) {}
 					try server.close() catch (_:Dynamic) {}
 					Assert.isTrue(parked, "the responses never waited on their client, so this shows nothing" + __heldSaw);
-					Assert.equals(HELD_PIECES, whole, "the responses were cut off");
+					Assert.equals(pieces, whole, "the responses were cut off");
 					async.done();
 				});
 			});
@@ -440,12 +448,12 @@ class HTTPStreamingTest extends utest.Test {
 		// was written, and closing throws away whatever the system had not
 		// taken yet: the responses still waiting reached the client cut off.
 		// It closes once all of them have gone.
-		__serveHeld(_ -> {}, "Connection: close\r\n", function(server:HTTPServer, client:sys.net.Socket, parked:Bool):Void {
-			__readRaw(client, true, function(whole:Int, closed:Bool):Void {
+		__serveHeld(_ -> {}, "Connection: close\r\n", function(server:HTTPServer, client:sys.net.Socket, parked:Bool, pieces:Int):Void {
+			__readRaw(client, true, pieces, function(whole:Int, closed:Bool):Void {
 				try client.close() catch (_:Dynamic) {}
 				try server.close() catch (_:Dynamic) {}
 				Assert.isTrue(parked, "the responses never waited on their client, so this shows nothing" + __heldSaw);
-				Assert.equals(HELD_PIECES, whole, "the responses were cut off by the close");
+				Assert.equals(pieces, whole, "the responses were cut off by the close");
 				Assert.isTrue(closed, "the connection was not closed after the response");
 				async.done();
 			});
@@ -457,15 +465,15 @@ class HTTPStreamingTest extends utest.Test {
 		// with nothing in flight, except the responses still going out to a
 		// client reading them slowly, cut off by the close. It closes once
 		// they have gone.
-		__serveHeld(_ -> {}, "", function(server:HTTPServer, client:sys.net.Socket, parked:Bool):Void {
+		__serveHeld(_ -> {}, "", function(server:HTTPServer, client:sys.net.Socket, parked:Bool, pieces:Int):Void {
 			var drained:Bool = false;
 			server.drain(10.0, () -> drained = true);
-			__readRaw(client, true, function(whole:Int, closed:Bool):Void {
+			__readRaw(client, true, pieces, function(whole:Int, closed:Bool):Void {
 				HTTPTestSupport.pumpWallUntilAsync(() -> drained, 3.0, function(_):Void {
 					try client.close() catch (_:Dynamic) {}
 					try server.close() catch (_:Dynamic) {}
 					Assert.isTrue(parked, "the responses never waited on their client, so this shows nothing" + __heldSaw);
-					Assert.equals(HELD_PIECES, whole, "the responses were cut off by the drain");
+					Assert.equals(pieces, whole, "the responses were cut off by the drain");
 					Assert.isTrue(closed, "the drain did not close the connection");
 					Assert.isTrue(drained, "the drain did not finish once the responses had gone");
 					async.done();
@@ -475,27 +483,33 @@ class HTTPStreamingTest extends utest.Test {
 	}
 
 	/**
-		Serves `HELD_PIECES` pipelined requests, each answered with a body of
-		`HELD_PIECE` bytes written whole, to a plain socket the runtime does
-		not read, which reads nothing. `lastFields` goes on the last request.
-		Continues once the server's socket is parked, bytes waiting it
-		cannot send, the same count for fifty passes, or after ten seconds
-		without, saying which.
+		Serves pipelined requests, each answered with a body of `HELD_PIECE`
+		bytes written whole, to a plain socket the runtime does not read,
+		which reads nothing, until the server's socket parks: bytes waiting
+		it cannot send, the same count for fifty passes. Continues with the
+		number of requests sent, `lastFields` on the last of them, once it
+		has parked, or once `HELD_MOST` have not made it park, saying so.
+
+		The stall is made, not assumed. It used to send 128 answers, 64 MB,
+		and take for granted that the system would stop taking them: late in
+		a full suite Windows' loopback buffers grew to take all of it, so
+		nothing was held and four cases failed "the responses never waited
+		on their client", 1 run in 6 alone (2026-10-04). Now:
+
+		- where the system can be asked (`Socket.bufferSizeSupported`,
+		  natively and on the jvm), the connection's kernel buffers are fixed
+		  small at both ends, the client's receive buffer before it
+		  connects, and the server's send buffer, so a wave or two parks
+		  it;
+		- and everywhere, answers go `HELD_WAVE` at a time until it has
+		  parked, so a system that takes more, neko and HashLink, which
+		  cannot be asked, is sent more.
 
 		Many answers, not one large one: Windows takes a single send whole,
-		however large, while what it holds is under its limit, so on neko and
-		native there it took 24 MB in one send and held none of it back, where
-		Linux's buffers stop at about 10 MB and the jvm's writes at its own.
-		Sends of this size it stops taking, as it stops taking a file pumped
-		out in bursts.
-
-		And more of them than the system will take: late in a full suite,
-		Windows' loopback buffers had grown to take all 24 MB of the 48
-		answers this sent, so nothing was held (5,751 samples of 0 bytes,
-		2026-10-03) where alone it holds 21.5 MB at once. 64 MB now.
+		however large, while what it holds is under its limit.
 	**/
 	private static function __serveHeld(configure:HTTPServerConfig->Void, lastFields:String,
-			then:(HTTPServer, sys.net.Socket, Bool) -> Void):Void {
+			then:(HTTPServer, sys.net.Socket, Bool, Int) -> Void):Void {
 		var body = new ByteArray();
 		body.length = HELD_PIECE;
 		var handler:HTTPRequestHandler = null;
@@ -509,20 +523,34 @@ class HTTPStreamingTest extends utest.Test {
 		var server = new HTTPServer(config);
 
 		var client = new sys.net.Socket();
-		client.connect(new sys.net.Host("127.0.0.1"), server.localPort);
-		var requests = new StringBuf();
-		for (i in 0...HELD_PIECES) {
-			requests.add("GET /piece HTTP/1.1\r\nHost: localhost\r\n" + (i == HELD_PIECES - 1 ? lastFields : "") + "\r\n");
+		#if (cpp || jvm)
+		if (crossbyte.net.Socket.bufferSizeSupported) {
+			server.sendBufferSize = HELD_KERNEL_BUFFER;
+			// Before connecting, so the window the connection starts with is
+			// this small too.
+			@:privateAccess client.__askBufferSize(true, HELD_KERNEL_BUFFER);
 		}
-		client.output.writeString(requests.toString());
-		client.output.flush();
+		#end
+		client.connect(new sys.net.Host("127.0.0.1"), server.localPort);
+
+		var sent:Int = 0;
+		function send(count:Int, fields:String):Void {
+			var requests = new StringBuf();
+			for (i in 0...count) {
+				requests.add("GET /piece HTTP/1.1\r\nHost: localhost\r\n" + (i == count - 1 ? fields : "") + "\r\n");
+			}
+			client.output.writeString(requests.toString());
+			client.output.flush();
+			sent += count;
+		}
 
 		var pending:Int = -1;
 		var still:Int = 0;
 		var samples:Int = 0;
+		var waves:Int = 0;
 		var started:Float = haxe.Timer.stamp();
 		var handled:Float = -1;
-		HTTPTestSupport.pumpWallUntilAsync(function():Bool {
+		function parked():Bool {
 			if (handler == null) {
 				return false;
 			}
@@ -538,20 +566,40 @@ class HTTPStreamingTest extends utest.Test {
 				pending = now;
 			}
 			return still >= 50;
-		}, 10.0, function(parked:Bool):Void {
-			__heldSaw = " (first request handled after " + (handled < 0 ? "never" : Std.string(Math.round(handled * 1000)) + " ms")
-				+ "; " + samples + " samples, last held " + pending + " bytes, " + still + " unchanged)";
-			then(server, client, parked);
-		});
+		}
+		function finish(held:Bool):Void {
+			if (lastFields != "") {
+				// The last request, with its fields, behind the held answers.
+				send(1, lastFields);
+			}
+			__heldSaw = " (" + sent + " requests in " + waves + " waves; first handled after "
+				+ (handled < 0 ? "never" : Std.string(Math.round(handled * 1000)) + " ms") + "; " + samples + " samples, last held " + pending
+				+ " bytes, " + still + " unchanged)";
+			then(server, client, held, sent);
+		}
+		function wave():Void {
+			waves++;
+			// Doubling, so a system that takes a lot is sent it in few waves.
+			var count:Int = HELD_WAVE << (waves - 1 < 3 ? waves - 1 : 3);
+			send(sent + count > HELD_MOST ? HELD_MOST - sent : count, "");
+			HTTPTestSupport.pumpWallUntilAsync(parked, waves == 1 ? 10.0 : 1.5, function(held:Bool):Void {
+				if (held || sent >= HELD_MOST) {
+					finish(held);
+				} else {
+					wave();
+				}
+			});
+		}
+		wave();
 	}
 
 	/**
-		Reads `client`, pumping between reads, until `HELD_PIECES` responses
-		of `HELD_PIECE` bytes have all come, and with `untilClosed`, until
-		the server has closed the connection too, then continues with how
-		many came whole and whether the server closed it.
+		Reads `client`, pumping between reads, until `pieces` responses of
+		`HELD_PIECE` bytes have all come, and with `untilClosed`, until the
+		server has closed the connection too, then continues with how many
+		came whole and whether the server closed it.
 	**/
-	private static function __readRaw(client:sys.net.Socket, untilClosed:Bool, then:(Int, Bool) -> Void):Void {
+	private static function __readRaw(client:sys.net.Socket, untilClosed:Bool, pieces:Int, then:(Int, Bool) -> Void):Void {
 		var received = new ByteArray();
 		var closed:Bool = false;
 		var chunk = haxe.io.Bytes.alloc(64 * 1024);
@@ -595,7 +643,7 @@ class HTTPStreamingTest extends utest.Test {
 			if (grew) {
 				count();
 			}
-			return closed || (!untilClosed && whole >= HELD_PIECES);
+			return closed || (!untilClosed && whole >= pieces);
 		}, 15.0, _ -> then(whole, closed));
 	}
 

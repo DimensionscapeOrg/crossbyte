@@ -488,6 +488,9 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.ReliableDatagramRebindTest());
 		// Real sockets: a raw Bytes write, and a burst taken within one pass.
 		runner.addCase(new crossbyte.net.SocketPassTest());
+		// A socket's kernel buffers, natively and on the jvm; elsewhere, that
+		// asking for one says it cannot be done. Also in PortableSuite, for Node.
+		runner.addCase(new crossbyte.net.SocketBufferSizeTest());
 	}
 
 	/**

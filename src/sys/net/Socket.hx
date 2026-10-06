@@ -862,12 +862,38 @@ class Socket {
 	private var __blocking:Bool = true;
 	private var __fastSend:Bool = false;
 
+	// The buffer sizes asked for, 0 for none, restored with the rest: a
+	// receive buffer has to be on the socket before it connects, or listens,
+	// to set the window the connection starts with.
+	private var __receiveBuffer:Int = 0;
+	private var __sendBuffer:Int = 0;
+
 	public var input(default, null):haxe.io.Input;
 	public var output(default, null):haxe.io.Output;
 	public var custom:Dynamic;
 
 	public function new():Void {
 		init();
+	}
+
+	/**
+		Asks the system for a send or receive buffer of `size` bytes, now if
+		the socket is open and again whenever it is made anew; false if the
+		system refused. For `crossbyte.net.Socket.receiveBufferSize` and its
+		kind.
+	**/
+	@:noCompletion private function __askBufferSize(receive:Bool, size:Int):Bool {
+		if (receive) {
+			__receiveBuffer = size;
+		} else {
+			__sendBuffer = size;
+		}
+		return __s != null && crossbyte._internal.socket.NativeSocketOptions.setBufferSize(__s, receive, size);
+	}
+
+	/** One of the socket's buffer sizes as the system reports it, or -1. **/
+	@:noCompletion private function __grantedBufferSize(receive:Bool):Int {
+		return __s == null ? -1 : crossbyte._internal.socket.NativeSocketOptions.bufferSize(__s, receive);
 	}
 
 	/**
@@ -936,6 +962,12 @@ class Socket {
 		setTimeout(__timeout);
 		setBlocking(__blocking);
 		setFastSend(__fastSend);
+		if (__receiveBuffer > 0) {
+			crossbyte._internal.socket.NativeSocketOptions.setBufferSize(__s, true, __receiveBuffer);
+		}
+		if (__sendBuffer > 0) {
+			crossbyte._internal.socket.NativeSocketOptions.setBufferSize(__s, false, __sendBuffer);
+		}
 	}
 
 	public function close():Void {
@@ -2161,11 +2193,65 @@ class Socket {
 			throw e;
 	}
 
+	// The buffer sizes asked for, 0 for none: kept for a listener, whose
+	// channel bind() opens, and which takes a receive buffer to hand to the
+	// connections it accepts.
+	@:noCompletion private var __receiveBuffer:Int = 0;
+	@:noCompletion private var __sendBuffer:Int = 0;
+
+	/**
+		Asks the system for a send or receive buffer of `size` bytes: now, on
+		the channel there is, and on a listener's channel when bind() opens
+		it. False if the system refused. For
+		`crossbyte.net.Socket.receiveBufferSize` and its kind.
+	**/
+	@:noCompletion private function __askBufferSize(receive:Bool, size:Int):Bool {
+		if (receive) {
+			__receiveBuffer = size;
+		} else {
+			__sendBuffer = size;
+		}
+		try {
+			var option = receive ? java.net.StandardSocketOptions.SO_RCVBUF : java.net.StandardSocketOptions.SO_SNDBUF;
+			if (serverChannel != null) {
+				// A listener has no send buffer of its own to set.
+				if (receive) {
+					(cast serverChannel : java.nio.channels.NetworkChannel).setOption(cast java.net.StandardSocketOptions.SO_RCVBUF, cast java.lang.Integer.valueOf(size));
+				}
+				return true;
+			}
+			if (channel != null) {
+				(cast channel : java.nio.channels.NetworkChannel).setOption(cast option, cast java.lang.Integer.valueOf(size));
+				return true;
+			}
+		} catch (_:Dynamic) {}
+		return false;
+	}
+
+	/** One of the socket's buffer sizes as the system reports it, or -1. **/
+	@:noCompletion private function __grantedBufferSize(receive:Bool):Int {
+		try {
+			var option = receive ? java.net.StandardSocketOptions.SO_RCVBUF : java.net.StandardSocketOptions.SO_SNDBUF;
+			var network:java.nio.channels.NetworkChannel = serverChannel != null ? (receive ? cast serverChannel : null) : cast channel;
+			if (network == null) {
+				return -1;
+			}
+			var size:java.lang.Integer = cast network.getOption(cast option);
+			return size.intValue();
+		} catch (_:Dynamic) {
+			return -1;
+		}
+	}
+
 	public function bind(host:Host, port:Int):Void {
 		try {
 			if (serverChannel == null) {
 				serverChannel = ServerSocketChannel.open();
 				serverChannel.configureBlocking(__blocking);
+				if (__receiveBuffer > 0) {
+					// Before bind(), so the connections it accepts start with it.
+					(cast serverChannel : java.nio.channels.NetworkChannel).setOption(cast java.net.StandardSocketOptions.SO_RCVBUF, cast java.lang.Integer.valueOf(__receiveBuffer));
+				}
 			}
 			var addr = new InetSocketAddress(host.wrapped, port);
 			// The queue length has to be named here, because java.nio takes it
