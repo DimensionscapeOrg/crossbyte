@@ -112,6 +112,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.SocketContractTest());
 		// A buffer size asked of a socket Node gives no way to size: refused.
 		runner.addCase(new crossbyte.net.SocketBufferSizeTest());
+		// An unread connection held at its limit, by pausing Node's socket.
+		runner.addCase(new crossbyte.net.SocketInputLimitTest());
 		// A connection replaced, whose socket still reports on Node.
 		runner.addCase(new crossbyte.net.SocketReconnectTest());
 		runner.addCase(new crossbyte.net.NameLookupTest());

@@ -462,6 +462,25 @@ and nginx do, and takes the connection once a descriptor frees.
 an `ioError`. A listener polled on every pass instead spun a core: 380,000
 failed accepts a second natively on Linux, measured, against seven now.
 
+**What arrives and is not read.** A socket reads what arrives into a
+buffer of its own for the application to read from, and holds at most
+`maxInputBufferSize` of it unread: 16 MiB by default, twice the largest
+message any CrossByte transport takes. At the limit it stops reading
+(`inputOverflowPolicy = PAUSE`, the default) until the application reads,
+and what the peer sends waits in the kernel until TCP's window holds the
+peer back, nothing lost; or, with `CLOSE`, closes the connection as soon as
+a byte arrives past it. HTTP, WebSocket, RPC and `NetConnection` read as
+data arrives and never reach it. A game server that reads a message a tick
+sets it to a few of its messages, and above the largest it waits for whole,
+under `PAUSE` an application that waits for more than the limit before
+it reads anything waits for good:
+
+```haxe
+server.addEventListener(ServerSocketConnectEvent.CONNECT, e -> {
+	e.socket.maxInputBufferSize = 64 * 1024; // a few of this game's messages
+});
+```
+
 **The kernel's buffers.** Much of what a connection costs is not in the
 heap but in the kernel: what has arrived and not been read, and what has
 been written and not acknowledged. Left to itself the system grows both

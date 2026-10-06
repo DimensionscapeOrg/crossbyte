@@ -78,7 +78,7 @@ import sys.net.Socket as SysSocket;
 @:fileXml('tags="haxe,release"')
 @:noDebug
 #end
-class Socket extends EventDispatcher implements IDataInput implements IDataOutput implements IPollableSocket #if nodejs implements crossbyte.core._internal.PassFlush #end {
+class Socket extends EventDispatcher implements IDataInput implements IDataOutput implements IPollableSocket implements crossbyte._internal.socket.InputPauseCheck #if nodejs implements crossbyte.core._internal.PassFlush #end {
 	/**
 		A slot for whatever the application wants this connection to carry.
 
@@ -308,6 +308,58 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		without every call site having to handle an error.
 	**/
 	public var outputOverflowPolicy:OutputOverflowPolicy = CLOSE;
+
+	/**
+		The most bytes this socket holds that have arrived and that the
+		application has not read (`bytesAvailable`), before
+		`inputOverflowPolicy` decides what happens: by default it stops
+		reading until the application has read below this, and the peer is
+		held back by TCP's own window. `0` or less holds any amount.
+
+		`DEFAULT_MAX_INPUT_BUFFER_SIZE`, 16 MiB, by default: twice the largest
+		message any of CrossByte's transports takes as it comes (8 MiB, an
+		RPC frame or a reliable UDP message), so an application waiting for
+		a whole one is never held short. There was no limit: one peer
+		sending to a connection whose application read a message a tick made
+		a server hold 664 MB in a second. HTTP, WebSocket, RPC and
+		`NetConnection` read what arrives as it arrives, and never reach it.
+
+		Size it to the largest message the application waits for whole
+		before reading any, with room to spare: a game server that reads a
+		message a tick sets a few of its messages. What a peer can make this
+		socket hold is this, plus the system's receive buffer
+		(`receiveBufferSize`) beyond it.
+
+		A secure socket reads a whole TLS record at a time once it reads at
+		all, so it may pass the limit by up to one record, 16 KB; on Node by
+		up to one of Node's reads, 64 KB. In a browser, whose WebSocket
+		cannot be told to stop, a message past the limit closes the
+		connection whatever `inputOverflowPolicy` says. A `WebSocket` frames
+		its own input and is bounded by its `maxMessageSize` instead, and
+		does not read this.
+	**/
+	public var maxInputBufferSize:Int = DEFAULT_MAX_INPUT_BUFFER_SIZE;
+
+	/** The default `maxInputBufferSize`: 16 MiB. **/
+	public static inline var DEFAULT_MAX_INPUT_BUFFER_SIZE:Int = 16 * 1024 * 1024;
+
+	/**
+		What happens when what this socket holds unread reaches
+		`maxInputBufferSize`: `PAUSE`, the default, stops reading until the
+		application has read below it, and the peer waits on TCP's window,
+		nothing lost, nothing more held; `CLOSE` closes the connection, with
+		an `ioError` saying why, as soon as a byte arrives past it. See
+		`InputOverflowPolicy` for when each fits.
+	**/
+	public var inputOverflowPolicy:InputOverflowPolicy = PAUSE;
+
+	// Whether reading has stopped at maxInputBufferSize, waiting for the
+	// application to read; see __pauseInput.
+	@:noCompletion private var __inputPaused:Bool = false;
+	#if nodejs
+	// The tick a paused Node socket is asked on, made once.
+	@:noCompletion private var __inputPauseTick:TickEvent->Void = null;
+	#end
 
 	/**
 		Whether `receiveBufferSize` and `sendBufferSize` reach the operating
@@ -926,6 +978,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// again.
 		__closeAnnounced = false;
 		__peerShutdown = false;
+		__inputPaused = false;
 
 		__output = new ByteArray();
 		__output.endian = __endian;
@@ -2347,6 +2400,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		var arrived:Int = __input.length - before;
 		if (arrived > 0) {
 			__dispatchPooledSocketData(arrived, 0);
+			__checkInputLimit();
 		}
 		#elseif nodejs
 		if (__input.position == __input.length) {
@@ -2362,6 +2416,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		if (chunk.length > 0) {
 			__dispatchPooledSocketData(chunk.length, 0);
+			__checkInputLimit();
 		}
 		#end
 	}
@@ -2744,14 +2799,24 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		var bLength = 0;
 		var readPos:Int = 0;
 		var appending:Bool = false;
+		// What this pass may take under maxInputBufferSize.
+		var room:Int = 0x7FFFFFFF;
 
-		if ((connected || doConnect) && !__peerShutdown) {
+		if ((connected || doConnect) && !__peerShutdown && !__inputPaused) {
 			// Arrivals are appended to the existing buffer, which grows
 			// geometrically and keeps its capacity. This used to allocate a
 			// fresh Bytes per arrival and copy the whole unread backlog into
 			// it, so the buffer was rebuilt from scratch on every event.
 			__compactInput();
 			readPos = __input.position;
+			room = __inputRoom(__input.length - readPos);
+		}
+
+		if (room <= 0) {
+			// Full, and the application has not read: nothing more is read
+			// until it does, and TCP's window holds the peer back.
+			__pauseInput();
+		} else if ((connected || doConnect) && !__peerShutdown && !__inputPaused) {
 			__input.position = __input.length;
 			appending = true;
 
@@ -2759,12 +2824,26 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 			try {
 				var l:Int;
+				var want:Int;
 
 				do {
+					want = room - bLength;
+					if (want > scratch.length) {
+						want = scratch.length;
+					}
+					#if !eval
+					if (secure && want < TLS_RECORD) {
+						// A whole record or none: a TLS read asked for less
+						// leaves the rest of its record decrypted inside the
+						// session, where no poll can see it, and the socket
+						// would wait on the peer for bytes it already holds.
+						want = TLS_RECORD;
+					}
+					#end
 					// Nothing waiting is -1 rather than an exception: the read
 					// that finds the socket dry ends every pass that fills the
 					// buffer, and every TLS pass that ends on a whole record.
-					l = __tryRead(scratch, 0, scratch.length);
+					l = __tryRead(scratch, 0, want);
 					if (l < 0) {
 						break;
 					}
@@ -2787,8 +2866,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					// its pass, and an upload was read a record a pass. Not on
 					// eval, whose sockets block: a read past the last record
 					// there waits for the peer's next one.
-				} while (bLength < READ_BUDGET
-					&& (l == scratch.length #if !eval || (secure && l >= TLS_RECORD) #end)
+				} while (bLength < READ_BUDGET && bLength < room
+					&& (l == want #if !eval || (secure && l >= TLS_RECORD) #end)
 					#if eval && __evalShouldKeepReading() #end);
 			} catch (e:Eof) {
 				// The peer sent FIN. That is all this says: it will send no
@@ -2811,9 +2890,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				doClose = true;
 			}
 
-			// Stopped with its share of the pass taken: what is left is read
-			// before the loop waits, not after it.
-			if (bLength >= READ_BUDGET && !doClose && __cbInstance != null) {
+			// Stopped with its share of the pass taken, or at the input limit
+			// with the application perhaps about to read: what is left is
+			// read before the loop waits, not after it.
+			if ((bLength >= READ_BUDGET || bLength >= room) && !doClose && __cbInstance != null) {
 				@:privateAccess __cbInstance.__noteMoreToRead();
 			}
 		}
@@ -2894,6 +2974,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			}
 		}
 
+		if (bLength > 0 && !doClose && !__peerShutdown) {
+			// Once the application has had what arrived: still holding the
+			// limit unread, it is not reading.
+			if (__checkInputLimit()) {
+				return;
+			}
+		}
+
 		if (doClose) {
 			__cleanSocket();
 			if (closeWasConnected) {
@@ -2965,6 +3053,135 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 	}
 	#end
+
+	/**
+		How many bytes this pass may read with `held` unread, under
+		`maxInputBufferSize`: all it likes with no limit; 0 at the limit, to
+		stop reading (`PAUSE`); and at the limit under `CLOSE`, one, to see
+		whether the peer sent past it.
+	**/
+	@:noCompletion private inline function __inputRoom(held:Int):Int {
+		var limit:Int = maxInputBufferSize;
+		if (limit <= 0) {
+			return 0x7FFFFFFF;
+		}
+		if (held < limit) {
+			return limit - held;
+		}
+		return inputOverflowPolicy == CLOSE ? 1 : 0;
+	}
+
+	/**
+		Applies `maxInputBufferSize` once the application has had what
+		arrived: at it, reading stops (`PAUSE`); past it, the connection is
+		closed (`CLOSE`). True when the connection was closed.
+	**/
+	@:noCompletion private function __checkInputLimit():Bool {
+		var limit:Int = maxInputBufferSize;
+		if (limit <= 0 || __socket == null || __input == null) {
+			return false;
+		}
+		var held:Int = __input.length - __input.position;
+		#if (js && !nodejs)
+		// A page's WebSocket cannot be told to stop.
+		if (held > limit) {
+			__overflowInput(held, limit);
+			return true;
+		}
+		#else
+		if (inputOverflowPolicy == CLOSE) {
+			if (held > limit) {
+				__overflowInput(held, limit);
+				return true;
+			}
+		} else if (held >= limit) {
+			__pauseInput();
+		}
+		#end
+		return false;
+	}
+
+	/**
+		A peer sent past `maxInputBufferSize` under `CLOSE`: the owner is told
+		why, and the connection closed, what was written going first.
+	**/
+	@:noCompletion private function __overflowInput(held:Int, limit:Int):Void {
+		__dispatchPooledIOError('Socket input reached $held bytes unread, past its $limit byte limit (maxInputBufferSize): the application is not reading what arrives.');
+		if (__socket != null) {
+			close();
+		}
+	}
+
+	/**
+		Stops reading at `maxInputBufferSize` until the application has read
+		below it. Natively the socket leaves the poll set's reads, it would
+		be reported readable on every pass, with nothing read, and spin a POLL
+		loop, and its registry asks it once a pass whether to go on; on Node
+		Node's socket is paused, and asked each tick. What arrives meanwhile
+		waits in the system's buffer, and TCP's window holds the peer back.
+		What is written still goes: the writable queue does not ask the poll
+		set.
+	**/
+	@:noCompletion private function __pauseInput():Void {
+		if (__inputPaused || __socket == null) {
+			return;
+		}
+		__inputPaused = true;
+		#if nodejs
+		(__socket : NodeSocket).pause();
+		if (__inputPauseTick == null) {
+			__inputPauseTick = __nodeInputTick;
+		}
+		if (__nodeRuntime != null) {
+			__nodeRuntime.addEventListener(TickEvent.TICK, __inputPauseTick);
+		}
+		#elseif !js
+		__dropReadInterest();
+		if (__cbInstance != null) {
+			@:privateAccess __cbInstance.__socketRegistry.watchInputPause(this);
+		}
+		#end
+	}
+
+	#if nodejs
+	@:noCompletion private function __nodeInputTick(_:TickEvent):Void {
+		if (!__inputStillPaused() && __nodeRuntime != null) {
+			__nodeRuntime.removeEventListener(TickEvent.TICK, __inputPauseTick);
+		}
+	}
+	#end
+
+	/**
+		Whether reading still waits on the application: asked once a pass by
+		the registry, and on Node each tick. Below the limit again, or the
+		connection gone, it reads again, and says so.
+	**/
+	@:noCompletion public function __inputStillPaused():Bool {
+		if (!__inputPaused) {
+			return false;
+		}
+		if (__socket == null || __input == null) {
+			__inputPaused = false;
+			return false;
+		}
+		var limit:Int = maxInputBufferSize;
+		if (limit > 0 && __input.length - __input.position >= limit) {
+			return true;
+		}
+		__inputPaused = false;
+		#if nodejs
+		(__socket : NodeSocket).resume();
+		#elseif !js
+		if (__cbInstance != null && !__peerShutdown) {
+			// Back in the poll set, read in this pass's poll if anything is
+			// waiting, in the kernel, or on the jvm in the TLS session, which
+			// the registry asks every socket it polls about.
+			@:privateAccess __cbInstance.registerSocket(__socket);
+			@:privateAccess __cbInstance.__noteMoreToRead();
+		}
+		#end
+		return false;
+	}
 
 	/**
 		A flush that failed for a reason other than a full send buffer, from
