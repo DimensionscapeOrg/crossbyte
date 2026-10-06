@@ -3919,6 +3919,22 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A server spread over `runtimes` hands a stalled runtime a bounded
+  number of connections. Each accepted connection was posted to the next
+  runtime in turn whether or not it was taking up what it had been handed,
+  so a runtime stalled by a blocking handler or a long collection held
+  every connection that came its way, a socket and its descriptor each, for
+  as long as the stall lasted. A runtime with 256 handed to it and not yet
+  taken up is now passed over for the next in turn, and once every runtime
+  is that far behind a connection is closed as it is accepted, counted in
+  `refusedConnections`, and logged once. And a runtime that exits while the
+  server is open gives up its share: TLS handshakes and WebSocket upgrades
+  still under way there are dropped and their connections closed, where
+  they stayed open and counted in `pendingHandshakeCount()`, and against
+  `maxPendingHandshakes`: for as long as the server ran, and the places
+  its connections held under `maxConnections` are given back. Tests:
+  `ServerSpreadTest`, a stalled runtime and two, and an exit under a raw, a
+  TLS and a WebSocket server; each failed with the change switched off.
 - A server out of descriptors no longer spins. A peer that opened
   connections past the process's descriptor limit left the listener
   readable with a connection the system would not hand over, so a server
