@@ -113,11 +113,14 @@ class ReliableDatagramRebindTest extends utest.Test {
 
 	/** With rebinding off, a new port is a stranger: reset, and the client closes, as it always did. **/
 	public function testWithoutRebindTheResetEndsTheSessionAsBefore():Void {
+		if (!ReliableDatagramSocket.isSupported) {
+			// The interpreter: no UDP, which the flag says.
+			Assert.isFalse(ReliableDatagramSocket.isSupported);
+			return;
+		}
 		var pair = Pair.open(false);
 		if (pair == null) {
-			if (ReliableDatagramSocket.isSupported) {
-				Assert.fail("the pair never connected");
-			}
+			Assert.fail("the pair never connected");
 			return;
 		}
 
