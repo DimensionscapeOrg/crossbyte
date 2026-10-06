@@ -370,6 +370,82 @@ follow an address: those players reconnect and resume, as
 `ReliableDatagramServerSocket`'s class doc shows under "Resuming a player",
 which is also the fallback for a peer from before 1.0.
 
+## WebSocket servers: what a peer can cost
+
+Every limit on a `ServerWebSocket` is on by default, and each is the
+server's own, one server, or a client, setting its limits changes no other
+in the process:
+
+| On the server | Default | Bounds |
+| --- | --- | --- |
+| `maxPendingHandshakes` | 256 | connections still upgrading, TLS and the HTTP upgrade together; more wait in the kernel's queue |
+| `maxPendingHandshakesPerAddress` | 16 | one address's share of those, once half are taken; past it a connection is closed as it is accepted |
+| `handshakeTimeout` | 10 s | each upgrade, from accept |
+| `maxHeaderSize` | 16 KiB | the upgrade request's head, answered `431` past it |
+| `maxConnections` | 10,000 | sessions open at once, answered `503` past it |
+| `maxMessageSize` | 1 MiB | one message arriving, its frames together, refused on a frame's header with 1009 |
+| `maxOutputBufferSize` | 8 MiB | what waits for a peer that is not reading, closed with 1011 past it |
+| `idleTimeout` | 60 s | silence from the peer, a ping sent every `pingInterval` (30 s) meanwhile |
+| `closeTimeout` | 5 s | the closing handshake |
+
+A peer's pings are answered one at a time, the newest, RFC 6455 lets a
+pong answer only the latest ping, so a peer that pings and reads nothing
+is owed one pong however many it sends. `refusedConnections` counts the
+connections the two connection limits closed, and `handshakeFailures` the
+upgrades that never finished.
+
+None of these bounds how often one address connects: a connection that
+upgrades and leaves at once passes all of them. A listener open to the
+internet keeps a `RateLimiter` in `admit`, which is asked before any work is
+done for a connection, `ServerWebSocket`'s class doc shows one. Behind a
+proxy that forwards connections before their client has spoken, every
+connection has the proxy's address: set `maxPendingHandshakesPerAddress` to
+0 there, and bound each client at the proxy.
+
+**What a session holds.** An idle session a server accepted holds about
+4 KB of heap natively and 3 KB on the jvm (1,000 of them, heap after a full
+collection), the kernel's socket buffers besides; a client about the same.
+Its upgrade request is kept as the head it arrived as, its headers read from
+that again if they are asked for after the session opened. A session that
+has heard nothing and sent nothing for a beat of its heartbeat
+(`pingInterval`, 30 s) lets go of what its buffers held for the messages
+before, after one 16 KB message each way a session held 97 KB for as long
+as it lasted, and holds 4.6 KB once quiet, and output that waited for a
+slow peer goes as soon as it drains.
+
+**What a message costs.** Natively a message sent or received allocates
+nothing but the `text` a listener asks for, a `String` of its own that is
+safe to keep; a listener that reads `data` allocates nothing. Its bytes and
+its event are the session's own, filled again for the next message, and
+valid only during the listener's call (see `Event`). A client draws its
+masking keys from a pool of random bytes, 8 KB at a time.
+
+### One message to many sessions
+
+A chat room's line, a match's state, a dashboard's update: the same message
+to many sessions. `PreparedMessage` makes it ready once, encoded, framed as
+a server sends it, and each session copies the frames into what its pass
+sends, where a `sendText` per session encoded, framed and copied it again for
+every one:
+
+```haxe
+// Given server:ServerWebSocket, room:Array<WebSocket>.
+var update = PreparedMessage.text('{"type":"move","x":12,"y":40}');
+server.broadcast(update);       // every session the server has open
+server.broadcast(update, room); // or the ones the application chose
+```
+
+Who receives, rooms, topics, areas of interest, stays the application's.
+Preparing copies the bytes, so the buffer it was made from is the caller's
+again at once, a message event's payload included; the message itself never
+changes, and may be kept and sent again from any runtime. Made with
+`compress`, it holds a compressed form too, compressed once, for the
+sessions that agreed to permessage-deflate. A secure session still encrypts
+on its own, so TLS shares the framing only; and a client masks each frame
+with a key of its own, so a client's `sendPrepared` shares the encoding and
+frames it itself. Each session still writes once a pass, however many
+messages it was sent in it.
+
 ## Extensions
 
 CrossByte's extension story is intentional: features that benefit from native backends or external platform libraries can live in sibling haxelibs instead of bloating the core.

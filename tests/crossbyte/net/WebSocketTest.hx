@@ -390,12 +390,19 @@ class WebSocketTest extends utest.Test {
 		Assert.equals(129, received[129]);
 	}
 
-	public function testExtendedPayloadLength127DispatchesMaxPayload():Void {
+	/**
+		A frame longer than 64 KiB, in the 64-bit length form, is taken as a
+		message, as a browser and Node's `ws` send one: every frame was held
+		to 64 KiB, and a browser's message of 100 KB was refused, whatever a
+		message might be. (Just past it: building a frame of a megabyte a
+		byte at a time takes minutes on the interpreter.)
+	**/
+	public function testExtendedPayloadLength127DispatchesAFrameLongerThanSixtyFourKilobytes():Void {
 		var ws = openParser();
 		var received:ByteArray = null;
 		ws.onmessage = e -> received = kept(e.message);
 
-		var payload = Bytes.alloc(InternalWebSocket.MAX_PAYLOAD);
+		var payload = Bytes.alloc(InternalWebSocket.FRAGMENT_SIZE + 1);
 		payload.set(0, 0x41);
 		payload.set(payload.length - 1, 0x5A);
 
@@ -442,12 +449,14 @@ class WebSocketTest extends utest.Test {
 		Assert.equals("policy", closeReason);
 	}
 
+	/** A frame longer than the session's own `maxMessageSize` is refused as too big. **/
 	public function testOversizedPayloadClosesWithMessageTooBig():Void {
 		var ws = openParser();
+		ws.maxMessageSize = 1000;
 		var closeCode:Null<Int> = null;
 		ws.onclose = e -> closeCode = e.code;
 
-		var payload = Bytes.alloc(InternalWebSocket.MAX_PAYLOAD + 1);
+		var payload = Bytes.alloc(1001);
 		ws.__input = maskedFrame(0x02, payload);
 		ws.__onData();
 
@@ -511,7 +520,6 @@ class WebSocketTest extends utest.Test {
 		var ws = emptyWebSocket();
 		ws.readyState = InternalWebSocket.CONNECTING;
 		ws.__key = "test-key";
-		ws.__handshakeBuffer = "";
 		ws.__input = new ByteArray();
 		ws.__input.endian = BIG_ENDIAN;
 		ws.__incomingMessageBuffer = new ByteArray();
@@ -565,8 +573,11 @@ class WebSocketTest extends utest.Test {
 		ws.__onData();
 
 		Assert.equals(0, opened);
-		Assert.isTrue(ws.__handshakeBuffer.length > 0);
+		// Held where it arrived until the head is whole.
+		Assert.isTrue(ws.__input.length > 0);
 
+		// Appended after what is held, as the read loop appends.
+		ws.__input.position = ws.__input.length;
 		writeRawBytes(ws.__input, Bytes.ofString(response.substr(splitAt)));
 		ws.__input.writeBytes(unmaskedFrame(0x02, Bytes.ofString("after")));
 		ws.__input.position = 0;
@@ -643,7 +654,7 @@ class WebSocketTest extends utest.Test {
 	#end
 
 	private static function emptyWebSocket():InternalWebSocket {
-		return Type.createEmptyInstance(InternalWebSocket);
+		return crossbyte._internal.websocket.HandBuilt.session();
 	}
 
 	/**
@@ -684,8 +695,6 @@ class WebSocketTest extends utest.Test {
 		ws.__output.endian = BIG_ENDIAN;
 		ws.__pendingOutput = new ByteArray();
 		ws.__pendingOutput.endian = BIG_ENDIAN;
-		ws.__outgoingMessageBuffer = new ByteArray();
-		ws.__outgoingMessageBuffer.endian = BIG_ENDIAN;
 		// Text is framed from here natively, a server's as well as a client's.
 		ws.__maskedPayload = new ByteArray();
 		ws.__maskedPayload.endian = BIG_ENDIAN;
@@ -698,7 +707,6 @@ class WebSocketTest extends utest.Test {
 		var ws = emptyWebSocket();
 		ws.readyState = InternalWebSocket.CONNECTING;
 		ws.__key = "test-key";
-		ws.__handshakeBuffer = "";
 		ws.__input = new ByteArray();
 		ws.__input.endian = BIG_ENDIAN;
 		ws.__incomingMessageBuffer = new ByteArray();

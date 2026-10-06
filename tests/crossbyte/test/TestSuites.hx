@@ -449,6 +449,15 @@ class TestSuites {
 		// Sessions still upgrading when the server stops, drains or closes,
 		// and what it counts. Also in PortableSuite, for Node.
 		runner.addCase(new crossbyte.net.ServerWebSocketUpgradeLifecycleTest());
+		// What one peer can make a server hold or do, at each limit and past
+		// it. Also in PortableSuite, for Node.
+		runner.addCase(new crossbyte.net.ServerWebSocketLimitsTest());
+		// What a session holds while it is open, and once it has gone quiet.
+		// Also in PortableSuite, for Node.
+		runner.addCase(new crossbyte.net.WebSocketMemoryTest());
+		// One message made ready once and sent to many sessions. Also in
+		// PortableSuite, for Node.
+		runner.addCase(new crossbyte.net.WebSocketBroadcastTest());
 		// Also in PortableSuite: the host a page's Socket dials is read the
 		// same way.
 		runner.addCase(new crossbyte.net.WebSocketIPv6Test());
