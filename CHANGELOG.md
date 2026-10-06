@@ -427,8 +427,89 @@ entry below says how:
 - A runtime-lane request for a number nobody registered is answered
   `RPCError.UNKNOWN_METHOD_MESSAGE`, where it was answered "Unsupported
   runtime RPC op: " and the number: compare an error with the constant.
+- The process-wide WebSocket settings are gone: set `maxMessageSize` or
+  `closeTimeout` on the `ServerWebSocket` or `WebSocket` where code set
+  `WebSocket.MAX_MESSAGE_SIZE` or `CLOSE_TIMEOUT`, and `pingInterval`
+  where it set `PING_INTERVAL`; `MAX_PAYLOAD` has no replacement, since a
+  frame may now be as long as a message.
+- A `ServerWebSocket` answers an upgrade 503 while 10,000 sessions are
+  open (`maxConnections`), and closes a connection from an address with 16
+  still upgrading once half of `maxPendingHandshakes` are taken
+  (`maxPendingHandshakesPerAddress`): raise the first for a server built
+  to hold more, and set the second to 0 behind a proxy that forwards
+  connections before their client speaks.
+- A `ServerWebSocket` closes a session with 1011 once 8 MiB wait for
+  its peer (`maxOutputBufferSize`), where it held any amount: set a
+  larger limit for a server that bursts more than that to one session,
+  or 0 for none.
+- A `ServerWebSocket` refuses an upgrade request of more than 16 KiB
+  with 431, where it read one of any size: raise `maxHeaderSize` for
+  clients carrying more cookies than that.
 
 ### Added
+- `PreparedMessage`, `WebSocket.sendPrepared` and
+  `ServerWebSocket.broadcast`: one WebSocket message made ready once and
+  sent to many sessions, a chat room's line, a match's state, a
+  dashboard's update. `PreparedMessage.text` and `.binary` encode and
+  frame the message as a server sends it, unmasked; each session it goes
+  to copies those frames into what its pass sends, where a `sendText` or
+  `sendBinary` per session encoded, framed and copied it again for every
+  one. `broadcast(message)` sends it to every session a server has open,
+  each runtime's own on a spread server, and `broadcast(message,
+  sessions)` to the ones the application chose; who receives stays the
+  application's, as in Go's gorilla/websocket (`PreparedMessage`), which
+  this follows. Made with `compress`, it holds a compressed form too,
+  compressed once, for every session that agreed to permessage-deflate
+  (each compresses a message on its own, so one form serves them all).
+  TLS encrypts per session, so it shares the framing only; a client masks
+  each frame with its own key, so a client's `sendPrepared` shares the
+  encoding and frames it itself. Preparing copies the bytes: the buffer
+  is the caller's again at once, a message event's payload included, and
+  the message never changes after, so it can be kept and sent from any
+  runtime. A session still writes once a pass however many messages it
+  was sent in it. One 1 KB message to 1,000 sessions, natively, the
+  send and the pass that writes it: 9.6 ms in a loop of `sendText` and
+  9.3 ms prepared, the writing of it, 1,000 system calls either way,
+  most of the time; with compression agreed, 17.3 ms and 9.2 ms,
+  compressed once rather than 1,000 times. What the send
+  allocates: in a loop of `sendBinary` 1.7 MB, with compression 5 MB,
+  prepared 3.6 KB and 7.7 KB, made once (a native `sendText` of ASCII
+  allocated nothing already); on the jvm 4.2 MB in a loop of `sendText`
+  and 16 MB with compression, prepared 6 KB and 19 KB.
+- `ServerWebSocket.maxPendingHandshakesPerAddress`, 16 by default: once
+  half of `maxPendingHandshakes` are taken, a connection from an address
+  that already has that many still upgrading is closed as it is accepted,
+  before any TLS or upgrade work, and counted in `refusedConnections`. One
+  address opening connections that never spoke held all 256 places for
+  `handshakeTimeout` each, and every real client queued behind them:
+  natively, against 40 such connections a second for 40 s, a client from
+  another address joined 10 times, a median of 3.4 s and up to 7.3 s each;
+  now 38 times, 2.6 ms each and 4.1 ms at most, the flood holding 128
+  places. Only under pressure, where nginx's `limit_conn` refuses always,
+  so many clients behind one address, a carrier's NAT, an office, a
+  proxy, are not throttled while there is room; behind a proxy that
+  forwards connections before their client speaks, set it to 0. On a
+  server spread over `runtimes` the count is every runtime's; on Node it
+  counts sessions waiting for their upgrade once Node has done their TLS.
+  `ServerWebSocket`'s class doc now lists every limit on what a peer can
+  cost, and shows `admit` with a `RateLimiter`, which a public listener
+  keeps: these bound what a connection holds, not how often one comes.
+- `ServerWebSocket.maxConnections`, 10,000 by default as `HTTPServer`'s:
+  an upgrade arriving with that many sessions open is answered `503
+  Service Unavailable` and closed, `upgrade` not asked, counted in
+  `refusedConnections` and not in `handshakeFailures`, and a session's
+  place is given back when it closes, or when `upgrade` refuses it. Every
+  runtime's sessions together, on a spread server. There was no bound on
+  the sessions a `ServerWebSocket` held. Node's `net.Server` names the
+  same bound and closes the connection; a WebSocket client is told why.
+- `ServerWebSocket.refusedConnections`: the connections closed for the
+  two limits above, every runtime's together.
+- `maxMessageSize` and `closeTimeout` on `ServerWebSocket`, for its
+  sessions, and on `WebSocket`, each session's own: the largest message
+  taken (1 MiB) and the closing handshake's deadline (5 s). They were the
+  process-wide `MAX_MESSAGE_SIZE` and `CLOSE_TIMEOUT`, which one server, or
+  a client, changed for every session in the process. `closeTimeout`
+  refuses 0, NaN and negatives with an `ArgumentError`.
 - `ReliableDatagramServerSocket.allowRebind`, off unless set: a reliable
   UDP session that follows its player to a new address, a NAT that
   gives it a new port, a phone moving from Wi-Fi to a mobile network,
@@ -1753,6 +1834,13 @@ entry below says how:
 - accepted `wss://` sessions now run the deferred, timeout-guarded TLS handshake the client path already used; previously a server-side handshake happened implicitly on first read with no bound, so a peer that completed TCP then stalled mid-TLS held the socket indefinitely
 
 ### Removed
+- The process-wide WebSocket settings, from
+  `crossbyte._internal.websocket.WebSocket`: `MAX_PAYLOAD`, a limit on
+  every frame that refused what browsers send (see Changed);
+  `MAX_MESSAGE_SIZE` and `CLOSE_TIMEOUT`, now `maxMessageSize` and
+  `closeTimeout` on each server and session; `PING_INTERVAL`, which only
+  gave `pingInterval` its default (`DEFAULT_PING_INTERVAL`, 30 s, in
+  seconds); and `MASK_POOL_SIZE`, which nothing read.
 - `Http.MAX_REDIRECTS`, `MAX_BODY_SIZE`, `MAX_CHUNKED_BODY_SIZE`,
   `MAX_DECOMPRESSED_BODY_SIZE` and `MAX_RESPONSE_HEADER_BYTES`, statics of
   the native HTTP client that one caller changed for every request in the
@@ -1798,6 +1886,68 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A WebSocket message allocates nothing to send or to receive, natively,
+  but the `text` a listener asks for. An echo of a 100-character text
+  allocated 264 bytes natively, and allocates 116: the `String` the echo
+  asked for (101), and four bytes a frame of the client's masking keys.
+  Those keys are drawn four bytes a frame from a pool of 8 KB of the
+  system's CSPRNG, one a thread, as Node's `ws` draws them, where each
+  frame drew its own: a buffer and its storage, 140 bytes, every frame a
+  client sent, each key still CSPRNG output used once (RFC 6455 5.3).
+  `sendBinary` frames from the caller's bytes where it copied them into a
+  buffer of its own first (1,680 bytes for a 1 KB message, now none), a
+  message longer than a frame is framed a fragment at a time from where
+  it lies, a text past ASCII is encoded into the session's scratch
+  natively (1,168 bytes for 1 KB, now none), and a heartbeat's ping
+  carries one shared empty payload. On the jvm the echo went from 672 to
+  620 bytes; the rest there is the text, `sys.net.Socket`'s buffer per
+  read and write, and the JDK's selector. A `String` the application asks
+  for stays a string of its own, safe to keep; a listener that reads
+  `data` allocates nothing. Compression, where agreed, still works in
+  buffers of its own. Round trip unchanged (15.4 against 15.2 µs, median
+  of five interleaved).
+- A WebSocket session holds less while it is open, and lets go of what it
+  held for its messages once it goes quiet. With 1,000 idle sessions,
+  heap after a full collection, a session a server accepted held 6.6 KB
+  natively and 5.0 KB on the jvm, now 3.8 and 3.1 KB; a client 5.0 and
+  3.9 KB, now 4.1 and 3.4 KB. After one 16 KB message each way a server's
+  session held 97 KB natively (95 KB on the jvm) for as long as it
+  lasted; it holds 4.6 KB (3.3 KB) once it has been quiet for a beat of
+  its heartbeat. What went: the upgrade request's parsed headers, a
+  third of an idle session, which `WebSocket.request` now reads again,
+  the first time it is asked after the session opened, from the head it
+  keeps; the close listener a server hung on each of its sessions; six
+  closures the framing layer was given by its socket, now typed calls;
+  and what only a client or a TLS handshake uses, made there alone. A
+  session's buffers let their storage go once it has heard nothing and
+  sent nothing since the last beat (`pingInterval`, 30 s by default), and
+  past 64 KB as soon as they empty, where each kept the largest it had
+  ever needed. A busy session is never quiet for a beat, so nothing is
+  let go of under load: the echo of a 100-byte text took 15.4 µs per
+  round trip natively before and 15.3 after (median of five interleaved),
+  allocating the same. In the soak (1,000 sessions, a message each way
+  at 30 Hz) a busy session held 9.5 KB natively and holds 7.3 KB, and
+  collections fell from 39 a minute to 33 (4 to 2 with 200 MB of world
+  live); the longest stall did not move.
+- A WebSocket frame is held to what is left of its message under
+  `maxMessageSize`, on its header, and not to 64 KiB besides. A browser
+  sends a message of 100 KB as one frame, Chrome, 102,400 bytes, and a
+  megabyte in frames of up to that, and Node's `ws` sends every message
+  as one, so each was refused with 1009 however large a message was
+  allowed. A frame that would take its message past the limit is still
+  refused before anything waits for its payload, which is all the frame
+  limit bounded. A session sends a message longer than 64 KiB in frames of
+  64 KiB (`FRAGMENT_SIZE`) as before, so a peer from before 1.0 takes it.
+- A `ServerWebSocket` bounds what may wait for each session at 8 MiB
+  by default (`maxOutputBufferSize`, `DEFAULT_MAX_OUTPUT_BUFFER_SIZE`),
+  as `HTTPServer` bounds a response's output, where it was 0, no limit:
+  a peer that stopped reading, a phone asleep, a client stuck, made
+  the server hold everything sent to it, and a server broadcasting to it
+  every message. Past the limit the session dispatches `ioError` saying
+  the peer is not reading and closes with 1011, letting go of what
+  waited. The server's limit now applies from the moment a session is
+  accepted, and when it is 0; it applied once a session opened, and only
+  when it was not 0.
 - The reliable UDP wire, for join cookies (see `joinValidation` under
   Added). A 1.0 CONNECT sets the flag bit 0x08 (`CONNECT_EXTENDED_MASK`,
   graceful on a FIN), and its payload starts with an extension ahead of
@@ -3680,6 +3830,42 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A WebSocket session answers a flood of pings with one pong, not one
+  each. A peer sending pings and reading nothing was answered with a
+  frame per ping, each offered to the full socket as it was made, a
+  refused write and an exception apiece, and kept: natively 32 MB of
+  pongs waited after 10 s, single passes took 1.4 s, and another session
+  on the runtime waited 380 ms for each echo. A session now owes at most
+  one answer at a time, the newest ping's, as RFC 6455 5.5.3 allows and
+  libwebsockets does: while the last pong has not gone, a later ping's
+  payload is kept in its place (125 bytes at most) and answered once it
+  has, so the last ping is always the one last answered. Under the same
+  flood nothing waits, and the other session's echo takes 7 ms, where a
+  flood of as many small messages costs it 15 ms. A frame sent while the
+  socket is full is added to what waits rather than offered again, for
+  every frame, and a control frame's payload is read into one buffer per
+  session rather than one per frame. HTTP/2 bounds the same flood with a
+  budget of replies (`maxControlReplies`) and closes past it, because it
+  must answer every PING; WebSocket need not, so there is nothing to
+  close or tune.
+- A WebSocket upgrade is read to 16 KiB at most, the head of the
+  request a server session reads and of the answer a client reads.
+  There was no limit: each arrival was appended to a string, copied
+  whole every time, and the whole of it searched again for the blank
+  line, so one connection sending a header without end made a server
+  hold 221 MB in 10 s, with single passes of the runtime taking a
+  second, until `handshakeTimeout` closed it, and a few such
+  connections could exhaust its memory inside that window. A server now
+  answers a request past `ServerWebSocket.maxHeaderSize` (new; 16 KiB,
+  Node's limit, which the `ws` library inherits) with `431 Request
+  Header Fields Too Large` as soon as that much has arrived without an
+  end, counts it in `handshakeFailures`, and drops whatever else the
+  peer sends; a client gives up on an answer past it with an `ioError`
+  saying so and `close` 1006, where it waited out its `timeout`. The
+  head stays where it arrived and each arrival is searched once. A
+  server session also answers a request that is not a `GET` with 400,
+  and a client takes an answer that is not HTTP as a failed connect;
+  both waited for their deadline.
 - A `DatagramSocket` keeps receiving when its datagrams' destinations
   turn out unreachable. Windows reports a datagram's ICMP "port
   unreachable" as a failed read on the socket that sent it, natively, and
