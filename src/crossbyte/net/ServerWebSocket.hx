@@ -151,6 +151,8 @@ class ServerWebSocket extends ServerSocket {
 	/**
 		`WebSocket.pingInterval` for each session this server accepts, in
 		seconds; zero for none. Set before the sessions it is for arrive.
+		Its beat is also when a quiet session lets go of what its buffers
+		held for the messages before; see `WebSocket.pingInterval`.
 	**/
 	public var pingInterval:Float = crossbyte._internal.websocket.WebSocket.DEFAULT_PING_INTERVAL;
 
@@ -251,9 +253,10 @@ class ServerWebSocket extends ServerSocket {
 		upgrading are bounded apart from these, by `maxPendingHandshakes`.
 
 		10,000 by default, as `HTTPServer` holds its connections: an idle
-		session costs about 9.5 KB natively, so the default is under 100 MB
-		of sessions, where a flood of connections that each upgraded was
-		held without bound. A server built to hold more, a game server's
+		session holds about 4 KB natively and 3 KB on the jvm (measured with
+		1,000, heap after a full collection; the kernel's socket buffers
+		besides), so the default is about 40 MB of sessions, where a flood of
+		connections that each upgraded was held without bound. A server built to hold more, a game server's
 		lobby, a feed with many quiet subscribers, raises it, and the
 		process's descriptor limit with it.
 
@@ -886,12 +889,19 @@ class ServerWebSocket extends ServerSocket {
 			__acceptedTotal.inc();
 		}
 
-		client.addEventListener(Event.CLOSE, function(_) {
-			__untrack(client);
-			if (__closedTotal != null) {
-				__closedTotal.inc();
-			}
-		});
+		// Told as it closes, ahead of its own close listeners, by the session
+		// itself (see __sessionClosed). It was a close listener of the
+		// server's on every session, a map, a list, an entry and a closure
+		// each, 370 bytes natively, held for the session's life.
+		@:privateAccess client.__trackedBy = this;
+	}
+
+	/** One of this server's open sessions has closed: off the list, and counted. **/
+	@:noCompletion private function __sessionClosed(client:WebSocket):Void {
+		__untrack(client);
+		if (__closedTotal != null) {
+			__closedTotal.inc();
+		}
 	}
 
 	/**

@@ -402,6 +402,17 @@ proxy that forwards connections before their client has spoken, every
 connection has the proxy's address: set `maxPendingHandshakesPerAddress` to
 0 there, and bound each client at the proxy.
 
+**What a session holds.** An idle session a server accepted holds about
+4 KB of heap natively and 3 KB on the jvm (1,000 of them, heap after a full
+collection), the kernel's socket buffers besides; a client about the same.
+Its upgrade request is kept as the head it arrived as, its headers read from
+that again if they are asked for after the session opened. A session that
+has heard nothing and sent nothing for a beat of its heartbeat
+(`pingInterval`, 30 s) lets go of what its buffers held for the messages
+before, after one 16 KB message each way a session held 97 KB for as long
+as it lasted, and holds 4.6 KB once quiet, and output that waited for a
+slow peer goes as soon as it drains.
+
 ## Extensions
 
 CrossByte's extension story is intentional: features that benefit from native backends or external platform libraries can live in sibling haxelibs instead of bloating the core.

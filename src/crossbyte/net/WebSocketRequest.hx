@@ -90,11 +90,19 @@ final class WebSocketRequest {
 	**/
 	public var status:Int = 403;
 
-	@:noCompletion private var __headers:StringMap<String>;
+	// The headers, by lower-cased name: parsed as the request arrived, and
+	// let go of once the session has opened (see __settle), when they are
+	// read again from __head if they are asked for.
+	@:noCompletion private var __headers:Null<StringMap<String>>;
+
+	// The request's head as it arrived, from the request line to the blank
+	// line that ends it: what a session keeps of its request once open.
+	@:noCompletion private var __head:Null<String>;
 
 	@:allow(crossbyte._internal.websocket)
-	@:noCompletion private function new(requestLine:String, headers:StringMap<String>, remoteAddress:String, remotePort:Int) {
+	@:noCompletion private function new(requestLine:String, headers:StringMap<String>, remoteAddress:String, remotePort:Int, ?head:String) {
 		__headers = headers;
+		__head = head;
 		this.remoteAddress = remoteAddress;
 		this.remotePort = remotePort;
 
@@ -127,12 +135,12 @@ final class WebSocketRequest {
 		with `; `), as HTTP folds them.
 	**/
 	public function header(name:String):Null<String> {
-		return name == null ? null : __headers.get(name.toLowerCase());
+		return name == null ? null : __map().get(name.toLowerCase());
 	}
 
 	/** The names of every header sent, lower-cased. **/
 	public function headerNames():Iterator<String> {
-		return __headers.keys();
+		return __map().keys();
 	}
 
 	/**
@@ -140,7 +148,7 @@ final class WebSocketRequest {
 		by that name. The value as sent: not decoded.
 	**/
 	public function cookie(name:String):Null<String> {
-		var cookies:Null<String> = __headers.get("cookie");
+		var cookies:Null<String> = __map().get("cookie");
 		if (cookies == null || name == null) {
 			return null;
 		}
@@ -159,7 +167,35 @@ final class WebSocketRequest {
 	}
 
 	@:noCompletion private inline function get_origin():Null<String> {
-		return __headers.get("origin");
+		return __map().get("origin");
+	}
+
+	/**
+		The headers, parsed again from the head the session kept if they were
+		let go of, and kept from then on: a session that reads its request
+		after it opened pays for that once.
+	**/
+	@:noCompletion private function __map():StringMap<String> {
+		var headers:Null<StringMap<String>> = __headers;
+		if (headers == null) {
+			headers = __headers = crossbyte._internal.websocket.WebSocket.__parseHeaderLines(__head == null ? [] : __head.split("\r\n"));
+		}
+		return headers;
+	}
+
+	/**
+		The session has opened, and its `connect` listeners have run, which
+		is where a request is mostly read: the parsed headers go, and the head
+		they came from is what the session keeps, a single string, where
+		the map of every header and its name and value as strings of their
+		own was about a third of what an idle session held (2.2 KB of 6.6
+		natively, 1.8 of 5.1 on the jvm).
+	**/
+	@:allow(crossbyte._internal.websocket)
+	@:noCompletion private function __settle():Void {
+		if (__head != null) {
+			__headers = null;
+		}
 	}
 
 	@:noCompletion private function set_protocol(value:Null<String>):Null<String> {
