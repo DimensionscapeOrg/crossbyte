@@ -466,6 +466,10 @@ entry below says how:
   line, or set the cap it wants. A host asks for the system's largest
   backlog. A class implementing `INetHost` declares `maxConnections` as
   `(get, set)` and adds `refusedConnections(get, never)`.
+- `PeerConnection.readyTimeout = 0` is no deadline, where it failed the
+  connection at once, and NaN or a negative number throws
+  `ArgumentError`: code that set 0 to fail fast sets a small number of
+  seconds instead.
 
 ### Added
 - `ServerSocket.maxConnections` (10,000, `DEFAULT_MAX_CONNECTIONS`),
@@ -1977,6 +1981,16 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `PeerConnection.readyTimeout` reads 0 as no deadline, as
+  `IceAgent.timeout`, `Socket.timeout` and every other timeout here do;
+  it read 0 as a deadline already past, so a connection given 0 failed
+  `ready` at the first poll after `connect`, and an ICE restart was given
+  up at once. With no deadline only the agent's own `timeout` ends a
+  connect or restart that finds no path. NaN and negative values are
+  refused with `ArgumentError`: NaN compared false with every elapsed
+  time, so its deadline never came, and a negative one failed every
+  connection at once. Tests: `PeerConnectionTest`, a connect and a
+  restart given 0, and the values refused; each failed before.
 - A TCP connection lets go of its buffers' storage once it has gone
   quiet. Each buffer kept the largest it had needed for as long as the
   connection was open: after one 16 KB message each way an idle accepted
