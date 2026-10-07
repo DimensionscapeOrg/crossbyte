@@ -138,14 +138,36 @@ class IceAgent {
 		The most remote candidates one agent will hold: those the peer
 		advertised, and those learned from where its checks arrived.
 
-		Every remote candidate pairs with every local one, and `__rebuild`
-		scans the whole checklist for each pair it considers, so the work grows
+		Every remote candidate pairs with every local one, and each pair is
+		looked up in the checklist before it is added, so the work grows
 		faster than the list does, and the list is the peer's to choose. A
 		real peer offers a handful; RFC 8445 section 6.1.2.5 bounds the
 		checklist for the same reason. A check from a new place once the list
 		is full goes unanswered.
 	**/
 	public static inline var MAX_REMOTE_CANDIDATES:Int = 64;
+
+	/**
+		The most peer-reflexive local candidates one agent learns: places the
+		peer saw this agent's checks arrive from that it had no candidate for,
+		read from the answers (RFC 8445 section 7.2.5.3.1).
+
+		The answers are the peer's to write, so without a bound a peer that
+		named a new place in each answer grew the list for as long as it kept
+		answering, and every candidate learned re-paired the whole list: 2,000
+		answers took 137 seconds on the interpreter, 5.7 ms an answer on the
+		jvm by the end, with the runtime serving nothing else meanwhile. A
+		real peer teaches at most one per destination this agent checks, a
+		symmetric NAT maps each to a port of its own, so this is
+		`MAX_REMOTE_CANDIDATES`, as libwebrtc keeps one per connection. One
+		learned past it is not kept; the check it answered succeeds all the
+		same.
+
+		Learned candidates are not paired, as the RFC says: a check leaves
+		from the candidate's base, which is already paired with every remote
+		candidate, so pairing them added nothing but the work.
+	**/
+	public static inline var MAX_LEARNED_LOCAL_CANDIDATES:Int = MAX_REMOTE_CANDIDATES;
 
 	/**
 		The refusal one peer sends when both claim the same role, RFC 8445
@@ -272,7 +294,11 @@ class IceAgent {
 	**/
 	public dynamic function onSend(payload:ByteArray, address:String, port:Int):Void {}
 
+	/** This peer's own candidates, as `addLocalCandidate` gave them: the ones paired. **/
 	@:noCompletion private var __locals:Array<IceCandidate> = [];
+
+	/** Peer-reflexive candidates learned from answers, at most `MAX_LEARNED_LOCAL_CANDIDATES`, and not paired. **/
+	@:noCompletion private var __learned:Array<IceCandidate> = [];
 
 	/** How to send from a candidate that is not simply the shared socket. **/
 	@:noCompletion private var __senders:Array<{candidate:IceCandidate, send:(ByteArray, String, Int) -> Void}> = [];
@@ -346,7 +372,11 @@ class IceAgent {
 
 		if (!__known(__locals, candidate)) {
 			__locals.push(candidate);
-			__rebuild();
+
+			if (__pairing()) {
+				__pairLocal(candidate);
+				__sortChecks();
+			}
 		}
 	}
 
@@ -411,7 +441,12 @@ class IceAgent {
 		}
 
 		__remotes.push(candidate);
-		__rebuild();
+
+		if (__pairing()) {
+			__pairRemote(candidate);
+			__sortChecks();
+		}
+
 		return true;
 	}
 
@@ -1055,9 +1090,11 @@ class IceAgent {
 		var discovered = new IceCandidate(PEER_REFLEXIVE, mapped.address, mapped.port, remote.component, null,
 			IceCandidate.DEFAULT_LOCAL_PREFERENCE, base);
 
-		if (!__known(__locals, discovered)) {
-			__locals.push(discovered);
-			__rebuild();
+		// Kept, and not paired: it pairs as its base, which is paired already.
+		// Re-pairing the whole list for each one learned is what made a peer
+		// naming a new place in every answer cost more with each answer.
+		if (__learned.length < MAX_LEARNED_LOCAL_CANDIDATES && !__known(__locals, discovered) && !__known(__learned, discovered)) {
+			__learned.push(discovered);
 		}
 	}
 
@@ -1065,23 +1102,74 @@ class IceAgent {
 	// Bookkeeping
 	// ------------------------------------------------------------------
 
+	/**
+		Whether candidates are paired as they arrive. And once connected: a
+		candidate trickled after the path was found is somewhere the peer may
+		yet be reached, and pairing it is what lets a nomination from there be
+		followed. It was dropped into the list and never paired.
+	**/
+	@:noCompletion private inline function __pairing():Bool {
+		return state == CHECKING || state == CONNECTED;
+	}
+
+	/** Pairs every candidate held, once checking starts. **/
 	@:noCompletion private function __rebuild():Void {
-		// And once connected: a candidate trickled after the path was found is
-		// somewhere the peer may yet be reached, and pairing it is what lets a
-		// nomination from there be followed. It was dropped into the list and
-		// never paired.
-		if (state != CHECKING && state != CONNECTED) {
+		if (!__pairing()) {
 			return;
 		}
 
-		for (pair in IceCandidatePair.pair(__locals, __remotes, controlling)) {
-			if (__checkFor(pair) == null) {
-				__add(pair);
-			}
+		for (local in __locals) {
+			__pairLocal(local);
 		}
 
-		// Highest priority first, so `__nextWaiting` is a scan rather than a
-		// search and the order the two peers agreed on is the order used.
+		__sortChecks();
+	}
+
+	/**
+		Pairs one local candidate with every remote one, and one remote with
+		every local one: what `IceCandidatePair.pair` makes of the two lists,
+		a candidate at a time.
+
+		Each pair is made with the local half's base, as `pair` makes it
+		(RFC 8445 section 6.1.2.2), and one that is already checked, the
+		same base and the same remote, a reflexive candidate and its host,
+		is the redundant pair section 6.1.2.4 drops. Adding a candidate used
+		to pair both whole lists again and look each pair up, so the work of
+		each one grew with everything held before it.
+	**/
+	@:noCompletion private function __pairLocal(local:IceCandidate):Void {
+		for (remote in __remotes) {
+			__pairOne(local, remote);
+		}
+	}
+
+	@:noCompletion private function __pairRemote(remote:IceCandidate):Void {
+		for (local in __locals) {
+			__pairOne(local, remote);
+		}
+	}
+
+	@:noCompletion private function __pairOne(local:IceCandidate, remote:IceCandidate):Void {
+		var base = local.baseOrSelf();
+
+		// Both: a reflexive candidate whose base is of another family could
+		// not send to this remote from where it really leaves.
+		if (!local.canReach(remote) || !base.canReach(remote)) {
+			return;
+		}
+
+		var pair = new IceCandidatePair(base, remote, controlling);
+
+		if (__checkFor(pair) == null) {
+			__add(pair);
+		}
+	}
+
+	/**
+		Highest priority first, so `__nextWaiting` is a scan rather than a
+		search and the order the two peers agreed on is the order used.
+	**/
+	@:noCompletion private function __sortChecks():Void {
 		__checks.sort(function(a:IceCheck, b:IceCheck):Int {
 			return IceCandidatePair.__higherFirst(a.pair.priority, b.pair.priority);
 		});

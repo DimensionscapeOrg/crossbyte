@@ -563,6 +563,8 @@ peer on it.
 | On the connection | Default | Bounds |
 | --- | --- | --- |
 | `readyTimeout` | 30 s | `connect` until the whole stack is up, and an ICE restart; 0 for no deadline |
+| `IceAgent.MAX_REMOTE_CANDIDATES` | 64 | the peer's candidates, advertised and learned from where its checks arrive; past it a check from a new place goes unanswered |
+| `IceAgent.MAX_LEARNED_LOCAL_CANDIDATES` | 64 | places the peer's answers say it saw this end's checks come from; never paired, since a check leaves from their base |
 
 ## Extensions
 
