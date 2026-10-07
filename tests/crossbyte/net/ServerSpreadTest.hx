@@ -652,6 +652,194 @@ class ServerSpreadTest extends utest.Test {
 		SpreadSupport.stop(runtimes.concat([acceptor]));
 	}
 
+	/**
+		A runtime that has stalled, a handler blocking it, is handed at
+		most `ServerSpread.MAX_WAITING` connections it has not taken up; the
+		next go to the runtime after it, and once every runtime is that far
+		behind a connection is closed as it is accepted, and counted. Once the
+		runtimes catch up, what they were handed is taken up. A stalled
+		runtime was handed every connection that came its way in turn, each a
+		socket held in its post queue, for as long as the stall lasted.
+	**/
+	@:timeout(30000)
+	public function testAStalledRuntimeIsHandedABoundedNumberOfConnections():Void {
+		var limit:Int = crossbyte.net._internal.ServerSpread.MAX_WAITING;
+		crossbyte.net._internal.ServerSpread.MAX_WAITING = 2;
+		var acceptor:CrossByte = SpreadSupport.runtime();
+		var first:CrossByte = SpreadSupport.runtime();
+		var second:CrossByte = SpreadSupport.runtime();
+		var arrived:Deque<Arrival> = new Deque();
+
+		var server:ServerSocket = SpreadSupport.on(acceptor, () -> {
+			var server = new ServerSocket();
+			server.runtimes = [first, second];
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, e -> arrived.add(Arrival.of(e.socket)));
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			return server;
+		});
+
+		// Only the first stalls: what it cannot take goes to the second.
+		var firstStall:Lock = new Lock();
+		first.post(() -> firstStall.wait(10.0));
+		var clients:Array<sys.net.Socket> = [];
+		var landed:Array<Arrival> = [];
+		for (_ in 0...4) {
+			clients.push(SpreadSupport.connect(server.localPort));
+		}
+		// Two wait on the first; two, and the one passed over, are served.
+		for (_ in 0...2) {
+			var arrival:Null<Arrival> = SpreadSupport.pop(arrived, WAIT);
+			if (arrival != null) {
+				landed.push(arrival);
+			}
+		}
+		Assert.equals(2, landed.length, "the runtime that was not stalled was not handed what the stalled one could not take");
+		for (arrival in landed) {
+			Assert.isTrue(arrival.runtime == second, "a connection was announced on the stalled runtime");
+		}
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.__spread.waitingAt(0) == 2, WAIT), "the stalled runtime was not handed its share");
+		Assert.equals(0, server.refusedConnections, "a connection was refused with a runtime free");
+
+		// Now both stall: two more wait on the second, and the next two are
+		// refused.
+		var secondStall:Lock = new Lock();
+		second.post(() -> secondStall.wait(10.0));
+		Assert.isTrue(SpreadSupport.waitFor(() -> second.postQueueDepth == 0, WAIT));
+		crossbyte.sys.System.sleep(0.05);
+		var refused:Array<sys.net.Socket> = [];
+		for (i in 0...4) {
+			var client = SpreadSupport.connect(server.localPort);
+			if (i < 2) {
+				clients.push(client);
+			} else {
+				refused.push(client);
+			}
+			SpreadSupport.waitFor(() -> server.__spread.waitingAt(1) + server.refusedConnections > i, WAIT);
+		}
+		Assert.equals(2, server.__spread.waitingAt(0), "the first stalled runtime was handed past its bound");
+		Assert.equals(2, server.__spread.waitingAt(1), "the second stalled runtime was handed past its bound");
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.refusedConnections == 2, WAIT), 'with every runtime behind, ${server.refusedConnections} were refused, not 2');
+		for (client in refused) {
+			Assert.isTrue(SpreadSupport.ended(client), "a connection refused with every runtime behind was left open");
+		}
+
+		// Caught up: everything handed over is taken up.
+		firstStall.release();
+		secondStall.release();
+		for (_ in 0...4) {
+			var arrival:Null<Arrival> = SpreadSupport.pop(arrived, WAIT);
+			if (arrival != null) {
+				landed.push(arrival);
+			}
+		}
+		Assert.equals(6, landed.length, "what the stalled runtimes were handed was not taken up once they caught up");
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.__spread.waitingAt(0) == 0 && server.__spread.waitingAt(1) == 0, WAIT));
+
+		crossbyte.net._internal.ServerSpread.MAX_WAITING = limit;
+		SpreadSupport.closeAll(clients.concat(refused));
+		SpreadSupport.closeArrivals(landed);
+		SpreadSupport.on(acceptor, () -> server.close());
+		SpreadSupport.stop([acceptor, first, second]);
+	}
+
+	/**
+		`maxConnections` holds across the runtimes, and a runtime that exits
+		gives back the places its connections held: they will never be
+		served again.
+	**/
+	@:timeout(30000)
+	public function testTheConnectionLimitHoldsAcrossRuntimesAndAnExitGivesPlacesBack():Void {
+		var acceptor:CrossByte = SpreadSupport.runtime();
+		var first:CrossByte = SpreadSupport.runtime();
+		var second:CrossByte = SpreadSupport.runtime();
+		var arrived:Deque<Arrival> = new Deque();
+
+		var server:ServerSocket = SpreadSupport.on(acceptor, () -> {
+			var server = new ServerSocket();
+			server.runtimes = [first, second];
+			server.maxConnections = 3;
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, e -> arrived.add(Arrival.of(e.socket)));
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			return server;
+		});
+
+		var clients:Array<sys.net.Socket> = [];
+		var landed:Array<Arrival> = [];
+		for (_ in 0...3) {
+			clients.push(SpreadSupport.connect(server.localPort));
+			var arrival:Null<Arrival> = SpreadSupport.pop(arrived, WAIT);
+			if (arrival != null) {
+				landed.push(arrival);
+			}
+		}
+		Assert.equals(3, landed.length);
+		var past:sys.net.Socket = SpreadSupport.connect(server.localPort);
+		Assert.isTrue(SpreadSupport.ended(past), "a connection past the limit across the runtimes was left open");
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.refusedConnections == 1, WAIT), "the refusal was not counted");
+
+		// The first runtime held two of them; it exits.
+		var onFirst:Int = 0;
+		for (arrival in landed) {
+			if (arrival.runtime == first) {
+				onFirst++;
+			}
+		}
+		SpreadSupport.stop([first]);
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.__spread.connections == 3 - onFirst, WAIT),
+			'a runtime that exited kept its places: ${server.__spread.connections} counted');
+		clients.push(SpreadSupport.connect(server.localPort));
+		Assert.notNull(SpreadSupport.pop(arrived, WAIT), "a place given back by a runtime that exited was not taken");
+
+		SpreadSupport.closeAll(clients.concat([past]));
+		SpreadSupport.on(acceptor, () -> server.close());
+		SpreadSupport.stop([acceptor, second]);
+	}
+
+	/**
+		A runtime that exits with sessions still upgrading there drops them:
+		their connections are closed, and the server's count of upgrades
+		under way lets go of them. They stayed counted for as long as the
+		server ran, and held places `maxPendingHandshakes` gave out.
+	**/
+	@:timeout(30000)
+	public function testARuntimeThatExitsGivesUpWhatIsStillUpgrading():Void {
+		var acceptor:CrossByte = SpreadSupport.runtime();
+		var first:CrossByte = SpreadSupport.runtime();
+		var second:CrossByte = SpreadSupport.runtime();
+
+		var server:ServerWebSocket = SpreadSupport.on(acceptor, () -> {
+			var server = new ServerWebSocket();
+			server.runtimes = [first, second];
+			server.handshakeTimeout = 30;
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, function(_) {});
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			return server;
+		});
+
+		// Four that never send their upgrade: two on each runtime.
+		var silent:Array<sys.net.Socket> = [];
+		for (_ in 0...4) {
+			silent.push(SpreadSupport.connect(server.localPort));
+			var expected:Int = silent.length;
+			SpreadSupport.waitFor(() -> server.pendingHandshakeCount() == expected, WAIT);
+		}
+		Assert.equals(4, server.pendingHandshakeCount(), "the upgrades were not under way");
+
+		SpreadSupport.stop([first]);
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.pendingHandshakeCount() == 2, WAIT),
+			'upgrades on a runtime that exited stayed counted: ${server.pendingHandshakeCount()}');
+		// In turn: the first and third went to the runtime that exited.
+		Assert.isTrue(SpreadSupport.ended(silent[0]), "an upgrade on a runtime that exited was left open");
+		Assert.isTrue(SpreadSupport.ended(silent[2]), "an upgrade on a runtime that exited was left open");
+
+		SpreadSupport.closeAll(silent);
+		SpreadSupport.on(acceptor, () -> server.close());
+		SpreadSupport.stop([acceptor, second]);
+	}
+
 	#if (cpp || java || jvm)
 	/**
 		A TLS connection is handed over before its handshake, which runs on
@@ -775,6 +963,49 @@ class ServerSpreadTest extends utest.Test {
 		SpreadSupport.on(acceptor, () -> server.close());
 		SpreadSupport.stop([acceptor, first, second]);
 	}
+	/**
+		A runtime that exits with TLS handshakes under way there drops them,
+		closing their connections, and the count of handshakes in flight
+		lets go of them, and of their addresses.
+	**/
+	@:timeout(30000)
+	public function testARuntimeThatExitsGivesUpItsHandshakes():Void {
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			Assert.pass();
+			return;
+		}
+		var acceptor:CrossByte = SpreadSupport.runtime();
+		var first:CrossByte = SpreadSupport.runtime();
+		var second:CrossByte = SpreadSupport.runtime();
+		var server:ServerSocket = SpreadSupport.on(acceptor, () -> {
+			var server = new ServerSocket(true);
+			server.setCertificate(fixture.certificate, fixture.key);
+			server.runtimes = [first, second];
+			server.handshakeTimeout = 30;
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, function(_) {});
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			return server;
+		});
+		var silent:Array<sys.net.Socket> = [];
+		for (_ in 0...4) {
+			silent.push(SpreadSupport.connect(server.localPort));
+			var expected:Int = silent.length;
+			SpreadSupport.waitFor(() -> server.pendingHandshakeCount() == expected, WAIT);
+		}
+		Assert.equals(4, server.pendingHandshakeCount());
+		SpreadSupport.stop([first]);
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.pendingHandshakeCount() == 2, WAIT),
+			'handshakes on a runtime that exited stayed counted: ${server.pendingHandshakeCount()}');
+		Assert.isTrue(SpreadSupport.ended(silent[0]), "a handshake on a runtime that exited was left open");
+		Assert.isTrue(SpreadSupport.ended(silent[2]), "a handshake on a runtime that exited was left open");
+		Assert.equals(2, server.__addressCounts.count("127.0.0.1"), "the address kept the handshakes of a runtime that exited");
+		SpreadSupport.closeAll(silent);
+		SpreadSupport.on(acceptor, () -> server.close());
+		SpreadSupport.stop([acceptor, second]);
+	}
+
 	#end
 	#end
 }

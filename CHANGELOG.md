@@ -445,8 +445,97 @@ entry below says how:
 - A `ServerWebSocket` refuses an upgrade request of more than 16 KiB
   with 431, where it read one of any size: raise `maxHeaderSize` for
   clients carrying more cookies than that.
+- Natively on Linux and macOS a process raises its soft limit on open
+  descriptors to its hard limit as it starts, and the children it starts
+  inherit that: build with `-D crossbyte_keep_nofile` to keep the limit
+  it was started with, for children that `select()` on descriptors under
+  1,024.
+- A `Socket` stops reading once 16 MiB have arrived that its application
+  has not read (`maxInputBufferSize`, `PAUSE`), and goes on once it reads:
+  an application that waits for a whole message larger than that before
+  reading any raises the limit, or sets it to 0 for none.
+- A raw `ServerSocket`, and a `NetHost` on one, closes a connection
+  arriving while 10,000 are open (`maxConnections`), and a TLS one closes
+  a connection from an address with 16 handshakes under way once half of
+  `maxPendingHandshakes` are taken (`maxPendingHandshakesPerAddress`):
+  raise the first for a server built to hold more, and set the second to 0
+  behind a proxy.
+- `NetHost.maxConnections` (`INetHost`) is the most connections a host
+  serves, 10,000 by default, where it was the listen backlog: code that set
+  it as a backlog now caps its connections at that number, remove the
+  line, or set the cap it wants. A host asks for the system's largest
+  backlog. A class implementing `INetHost` declares `maxConnections` as
+  `(get, set)` and adds `refusedConnections(get, never)`.
 
 ### Added
+- `ServerSocket.maxConnections` (10,000, `DEFAULT_MAX_CONNECTIONS`),
+  `maxPendingHandshakesPerAddress` (16) and `refusedConnections`, the
+  names and shapes `ServerWebSocket` had, moved up to the class every
+  server is built on. A raw `ServerSocket`, and a `NetHost` on one,
+  which a game server builds on, accepted without bound; at its limit a
+  connection is now closed as it is accepted, before any TLS handshake or
+  `connect` event, and counted. Its peer sees the connection accepted and
+  closed at once, an end of stream (or a reset if it had sent something),
+  as Node's `net.Server.maxConnections` refuses; nginx and HAProxy leave
+  such a connection in the kernel's queue, which suits a cap that frees
+  in milliseconds, but a server's places free on the scale of sessions,
+  and a client queued behind them would wait without a word. A TLS
+  connection is counted once its handshake is done, and one arriving at
+  the limit is refused before a handshake is spent on it. A TLS server
+  also holds one address to 16 handshakes under way once half of
+  `maxPendingHandshakes` are taken, as `ServerWebSocket` does, refusing
+  past it as accepted: one address opening TLS connections and saying
+  nothing held every place, and every real client waited behind it. The
+  counts are every runtime's on a spread server, and a place is given back
+  however its connection ends. `ServerWebSocket` answers 503 at the limit,
+  as before; `HTTPServer` takes its limit from
+  `HTTPServerConfig.maxConnections` into this field and counts its
+  refusals here too. `NetHost.maxConnections` is its server's, and a
+  reliable UDP host counts its sessions itself, closing one accepted past
+  the limit before `onAccept`; `INetHost.refusedConnections` says how many.
+- `Socket.maxInputBufferSize` and `inputOverflowPolicy` (with
+  `InputOverflowPolicy`): what a peer can make a connection hold that its
+  application has not read, as `maxOutputBufferSize` bounds what waits for
+  a peer. There was no limit: one peer sending to a connection whose
+  application read a message a tick made a server hold 664 MB in a
+  second. `PAUSE`, the default, stops reading at the limit until the
+  application has read below it, natively the socket leaves the poll
+  set's reads and its registry asks it once a pass whether to go on; on
+  Node, Node's socket is paused, and what arrives meanwhile waits in the
+  kernel until TCP's window holds the peer back: backpressure, nothing
+  lost. `CLOSE` closes the connection, with an `ioError` naming the limit,
+  as soon as a byte arrives past it. The default limit,
+  `DEFAULT_MAX_INPUT_BUFFER_SIZE`, is 16 MiB: twice the largest message
+  any CrossByte transport takes by default (8 MiB RPC frames and reliable
+  UDP messages), so an application waiting for a whole one is never held
+  short; HTTP, WebSocket, RPC and `NetConnection` read what arrives as it
+  arrives and never reach it. A 4 MB send to a connection reading nothing
+  was held whole; it now holds 64 KB at a 64 KB limit and arrives whole
+  once read. A secure socket reads a whole TLS record or none, so a TLS
+  read stopped at the limit leaves nothing decrypted where no poll can
+  see it.
+- `Socket.receiveBufferSize` and `sendBufferSize`, and the same on
+  `ServerSocket` for every connection it accepts: the kernel's buffers for
+  a TCP connection (`SO_RCVBUF`, `SO_SNDBUF`), as `DatagramSocket` has
+  them for UDP. Asked for, a size is fixed and the system's own growing
+  turned off for the socket: that bounds what a peer can make the kernel
+  hold for one connection while the application is not reading, where
+  a server holding many connections keeps most of their memory, and
+  moves a slow peer's backlog into the socket's own output buffer, where
+  `bytesPending` counts it and `maxOutputBufferSize` bounds it. A client
+  asks before `connect()`, which is when the window a connection starts
+  with is agreed; a server asks before `listen()`, and its listener and
+  each connection it accepts take it. Natively and on the jvm
+  (`Socket.bufferSizeSupported`); Node gives a TCP socket no way to size
+  them, and the interpreter, HashLink and Neko none to ask, so asking
+  there throws `IllegalOperationError`. Linux keeps twice what is asked
+  and reports that. With them `HTTPStreamingTest`'s held-response cases
+  make their stall rather than assume it: they failed about 1 run in 6
+  alone, "the responses never waited on their client", when Windows'
+  loopback buffers grew to take all 64 MB a case sent; the client's
+  receive buffer and the server's send buffer are now fixed at 64 KB
+  where they can be, and answers go eight at a time, then more, until the
+  server's socket parks, so a target that cannot be asked is sent more.
 - `PreparedMessage`, `WebSocket.sendPrepared` and
   `ServerWebSocket.broadcast`: one WebSocket message made ready once and
   sent to many sessions, a chat room's line, a match's state, a
@@ -1886,6 +1975,27 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A TCP connection lets go of its buffers' storage once it has gone
+  quiet. Each buffer kept the largest it had needed for as long as the
+  connection was open: after one 16 KB message each way an idle accepted
+  connection held 51 KB natively and on the jvm (1,000 of them, heap after
+  a full collection), where it held 1.5 KB before any. It now keeps its
+  storage while busy, a message read or written still allocates
+  nothing; the TCP echo budget is unchanged at 0 bytes natively, and its
+  time with it (14.6 us), and its runtime's socket registry asks the
+  connections holding storage every five seconds whether they have read
+  or written since; one that has not lets go of everything not waiting to
+  be read or sent, and its pooled events, which leaves 1.7 KB (natively;
+  jvm 1.7 KB, a client 1.9 and 2.2). A buffer grown past 64 KB lets go as
+  soon as it empties. On the jvm the socket's views over that storage go
+  with it. The one-byte buffer each system socket kept for `readByte` is
+  made at the first one: an idle connection 1,513 -> 1,464 bytes natively.
+  Node's sockets keep their storage, as before.
+- On the jvm a TCP socket reads and writes through one `ByteBuffer` per
+  array, moved to each range, where it wrapped a new one for every read
+  and every write. A 100-byte TCP echo allocated 336 bytes and allocates
+  144; the same reads and writes lighten a WebSocket echo (620 -> 428), an
+  HTTP/1.1 GET (3,920 -> 3,728) and a POST (8,896 -> 8,704), Oracle's JRE 8.
 - A WebSocket message allocates nothing to send or to receive, natively,
   but the `text` a listener asks for. An echo of a 100-character text
   allocated 264 bytes natively, and allocates 116: the `String` the echo
@@ -3830,6 +3940,45 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A server spread over `runtimes` hands a stalled runtime a bounded
+  number of connections. Each accepted connection was posted to the next
+  runtime in turn whether or not it was taking up what it had been handed,
+  so a runtime stalled by a blocking handler or a long collection held
+  every connection that came its way, a socket and its descriptor each, for
+  as long as the stall lasted. A runtime with 256 handed to it and not yet
+  taken up is now passed over for the next in turn, and once every runtime
+  is that far behind a connection is closed as it is accepted, counted in
+  `refusedConnections`, and logged once. And a runtime that exits while the
+  server is open gives up its share: TLS handshakes and WebSocket upgrades
+  still under way there are dropped and their connections closed, where
+  they stayed open and counted in `pendingHandshakeCount()`, and against
+  `maxPendingHandshakes`: for as long as the server ran, and the places
+  its connections held under `maxConnections` are given back. Tests:
+  `ServerSpreadTest`, a stalled runtime and two, and an exit under a raw, a
+  TLS and a WebSocket server; each failed with the change switched off.
+- A server out of descriptors no longer spins. A peer that opened
+  connections past the process's descriptor limit left the listener
+  readable with a connection the system would not hand over, so a server
+  polled it on every pass and failed: natively on Linux 380,000 accepts a
+  second at a whole core (474,000 with an accept made to fail, 118,000 on
+  the jvm), and nothing else served meanwhile. After a failed accept the
+  listener is now set aside for 5 ms, twice as long after each failure
+  that follows, at most a second, and back to 5 ms once a connection is
+  taken, Go's `net/http` schedule; libuv, Netty and nginx set the
+  listener aside the same way, so a second out of descriptors costs
+  about seven accepts and no measurable processor time, and the waiting
+  connection is taken once a descriptor frees. `ServerSocket` and
+  `ServerWebSocket` alike; `acceptFailures` still counts every one and
+  the first of a run is still an `ioError`. HashLink's accept answers
+  nothing for any failure, which read as nothing waiting: a listener still
+  readable after it is now counted as a failure too. And natively on Linux
+  and macOS the process's soft limit on open descriptors is raised to its
+  hard one as it starts, as Go and the JVM do, so a shell's 1,024 no
+  longer stops a server near a thousand connections; `-D
+  crossbyte_keep_nofile` keeps the limit it started with, and the first
+  server to listen warns, once, where the limit is still under 4,096.
+  Tests: `ServerSocketAcceptBackoffTest`, every threaded target, and
+  natively on Linux out of descriptors for real.
 - A WebSocket session answers a flood of pings with one pong, not one
   each. A peer sending pings and reading nothing was answered with a
   frame per ping, each offered to the full socket as it was made, a

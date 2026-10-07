@@ -73,7 +73,7 @@ import crossbyte._internal.socket.AlpnSocket;
 // @:fileXml('tags="haxe,release"')
 // @:noDebug
 @:access(crossbyte.net.Socket)
-class ServerSocket extends EventDispatcher {
+class ServerSocket extends EventDispatcher implements crossbyte._internal.socket.OpenCounter {
 	/**
 		Indicates whether the socket is bound to a local address and port.
 	**/
@@ -157,20 +157,262 @@ class ServerSocket extends EventDispatcher {
 	public var maxPendingHandshakes:Int = 256;
 
 	/**
+		The most connections this server keeps open at once. `0` or less
+		keeps no count. 10,000 by default.
+
+		A connection arriving while this many are open is closed as soon as
+		it is accepted, before any TLS handshake, before a `Socket` is made
+		for it, before a `connect` event, and counted in
+		`refusedConnections`. Its peer sees its connection accepted and then
+		closed at once: an end of stream, or a reset if it had already sent
+		something the server never read. Node's `net.Server.maxConnections`
+		refuses the same way. nginx and HAProxy leave such a connection in
+		the kernel's queue instead, which suits a cap that frees in
+		milliseconds; a server's connections free on the scale of sessions,
+		so a client queued behind them would wait without a word and time
+		out, where one refused can go elsewhere or try again. A connection
+		still in its TLS handshake is counted once the handshake is done, and
+		meanwhile is bounded apart, by `maxPendingHandshakes`.
+
+		The servers built on this one hold their own connections to it, each
+		in its protocol's terms: a `ServerWebSocket` counts sessions, and
+		answers an upgrade arriving at the limit `503 Service Unavailable`,
+		without asking `upgrade`; an `HTTPServer` counts connections, takes
+		its limit from `HTTPServerConfig.maxConnections` and answers an
+		HTTP/1.1 request at the limit 503 too.
+
+		10,000, as `HTTPServer` has always held its connections: an idle
+		connection holds 1.5 to 2 KB of heap natively (measured with 1,000,
+		heap after a full collection), and the kernel's buffers besides,
+		see `receiveBufferSize`, so the default bounds what a flood of
+		connections can hold, where a raw server accepted without bound. A
+		server built to hold more, a game server's lobby, a feed with many
+		quiet subscribers, raises it, and the process's descriptor limit
+		with it (see `acceptFailures`).
+
+		On a server spread over `runtimes`, every runtime's connections
+		together.
+	**/
+	public var maxConnections:Int = DEFAULT_MAX_CONNECTIONS;
+
+	/** The default `maxConnections`: 10,000. **/
+	public static inline var DEFAULT_MAX_CONNECTIONS:Int = 10000;
+
+	/**
+		The most connections one address may have still in their handshake,
+		a TLS server's TLS handshake; a `ServerWebSocket`'s TLS and HTTP
+		upgrade together, once half of `maxPendingHandshakes` are taken. A
+		connection past it is closed as soon as it is accepted, before any
+		handshake work, and counted in `refusedConnections`. `0` or less
+		sets no limit per address. With `maxPendingHandshakes` negative, no
+		limit overall, it holds at all times. A plain server waits on no
+		handshake, and never reads it.
+
+		16 by default. One address opening connections and saying nothing
+		held every one of the 256 places, each for `handshakeTimeout`, and
+		every real client waited in the kernel's queue behind them: joins
+		took 8-9 s for as long as the flood went on, from one address at 40
+		connections a second. Here it holds at most half the places before
+		the rest are shared out 16 to an address, and a client from anywhere
+		else is taken at once.
+
+		Only under pressure, where a per-address limit, nginx's
+		`limit_conn`, HAProxy's `src_conn_cur`, refuses at all times: many
+		real clients can share an address, a carrier's NAT, an office, a
+		proxy in front of this server, and one that is not crowding anyone
+		out is let in. Behind a proxy that forwards connections before their
+		client has spoken, every connection has the proxy's address: set it
+		to 0 there, and bound what each client can cost at the proxy.
+
+		Keep `admit` too: a `RateLimiter` keyed by address bounds how often
+		one address connects, which this does not.
+
+		On a server spread over `runtimes`, the count is every runtime's.
+		Not on a plain TLS server on Node, which completes its handshakes
+		itself without saying how many are under way; a `ServerWebSocket`
+		there counts the sessions waiting for their upgrade once Node has
+		handed them over.
+	**/
+	public var maxPendingHandshakesPerAddress:Int = DEFAULT_MAX_PENDING_HANDSHAKES_PER_ADDRESS;
+
+	/** The default `maxPendingHandshakesPerAddress`: 16. **/
+	public static inline var DEFAULT_MAX_PENDING_HANDSHAKES_PER_ADDRESS:Int = 16;
+
+	/**
+		Connections this server closed for its own limits: past
+		`maxPendingHandshakesPerAddress` as they were accepted, and past
+		`maxConnections`: as they were accepted, as a TLS handshake
+		finished, or as a `ServerWebSocket`'s upgrade or an `HTTPServer`'s
+		request arrived. Counted rather than reported one by one, since under
+		a flood each would be a line in the log; `admit`'s refusals are the
+		application's own, and not counted.
+
+		On a server spread over `runtimes`, every runtime's together.
+	**/
+	public var refusedConnections(get, never):Int;
+
+	@:noCompletion private var __refusedConnections:Int = 0;
+
+	@:noCompletion private function get_refusedConnections():Int {
+		var count:Int = __refusedConnections;
+		#if (target.threaded && !js)
+		if (__spread != null) {
+			for (replica in __spread.replicas) {
+				count += replica.__refusedConnections;
+			}
+		}
+		#end
+		return count;
+	}
+
+	// Connections still in their handshake, by address; shared with every
+	// replica of a spread server. See maxPendingHandshakesPerAddress.
+	@:noCompletion private var __addressCounts:crossbyte._internal.websocket.AddressCounts = new crossbyte._internal.websocket.AddressCounts();
+
+	// Connections open, counted against maxConnections where this server
+	// counts them itself and is on one runtime; see __countsOpen.
+	@:noCompletion private var __openCount:Int = 0;
+
+	/**
+		`Socket.receiveBufferSize` for the listener and every connection this
+		server accepts: how many bytes arriving for a connection the operating
+		system holds until it is read, and so the window TCP offers its peer.
+		`0`, the default, asks for nothing, and the system's own applies,
+		growing with each connection's use (see `Socket.receiveBufferSize`).
+
+		Set it before `listen()`: a connection's window is agreed as the
+		system accepts it, from the listener's, which this sets as it is
+		asked. Set later, it reaches what is accepted from then on, its
+		window's scale aside.
+
+		A server holding many connections bounds the kernel's memory for each
+		with this and `sendBufferSize`: a connection whose application is not
+		reading holds up to this much in the kernel, on top of what its
+		`Socket` holds.
+
+		@throws RangeError If set below 1.
+		@throws IllegalOperationError Where `Socket.bufferSizeSupported` is
+			false: on Node, which gives a server no way to size them.
+	**/
+	public var receiveBufferSize(get, set):Int;
+
+	/**
+		`Socket.sendBufferSize` for every connection this server accepts:
+		how many bytes written to a connection the operating system holds
+		until its peer has them. `0`, the default, asks for nothing, and the
+		system's own applies. A smaller one keeps a slow peer's backlog in the
+		connection's own output buffer, where `bytesPending` counts it and
+		`maxOutputBufferSize` bounds it, rather than in the kernel.
+
+		Natively a connection also takes it from the listener, which this sets
+		as it is asked; on the jvm, whose listener has no send buffer, it is
+		set on each connection as it is accepted, on a `ServerWebSocket`'s
+		sessions there, not at all.
+
+		@throws RangeError If set below 1.
+		@throws IllegalOperationError Where `Socket.bufferSizeSupported` is
+			false.
+	**/
+	public var sendBufferSize(get, set):Int;
+
+	@:noCompletion private var __receiveBufferRequest:Int = 0;
+	@:noCompletion private var __sendBufferRequest:Int = 0;
+
+	@:noCompletion private function get_receiveBufferSize():Int {
+		return __receiveBufferRequest;
+	}
+
+	@:noCompletion private function set_receiveBufferSize(value:Int):Int {
+		__requestBuffer(true, value);
+		return value;
+	}
+
+	@:noCompletion private function get_sendBufferSize():Int {
+		return __sendBufferRequest;
+	}
+
+	@:noCompletion private function set_sendBufferSize(value:Int):Int {
+		__requestBuffer(false, value);
+		return value;
+	}
+
+	@:noCompletion private function __requestBuffer(receive:Bool, value:Int):Void {
+		if (value < 1) {
+			throw new RangeError('A socket buffer holds at least one byte, not $value.');
+		}
+		#if ((cpp || java || jvm) && !macro)
+		if (receive) {
+			__receiveBufferRequest = value;
+		} else {
+			__sendBufferRequest = value;
+		}
+		var listener:Null<Socket> = __listenerSocket();
+		if (listener != null) {
+			// What the listener refuses, each connection is asked again.
+			@:privateAccess listener.__askBufferSize(receive, value);
+		}
+		#else
+		throw new IllegalOperationError("This target cannot size a TCP socket's " + (receive ? "receive" : "send")
+			+ " buffer: check Socket.bufferSizeSupported.");
+		#end
+	}
+
+	#if ((cpp || java || jvm) && !macro)
+	/**
+		Gives a connection just accepted the buffer sizes the server, the
+		front, on a server spread over runtimes, was asked for.
+	**/
+	@:noCompletion private function __applyAcceptedBuffers(accepted:Socket):Void {
+		var source:ServerSocket = __front != null ? __front : this;
+		if (source.__receiveBufferRequest > 0) {
+			@:privateAccess accepted.__askBufferSize(true, source.__receiveBufferRequest);
+		}
+		if (source.__sendBufferRequest > 0) {
+			@:privateAccess accepted.__askBufferSize(false, source.__sendBufferRequest);
+		}
+	}
+	#end
+
+	/**
 		Connections this server failed to take from the listen queue, for a
 		reason other than there being none to take: the process out of
-		descriptors (`EMFILE`), the system out of memory. The server goes on
-		listening and trying; the connection waits in the kernel's queue
-		meanwhile.
+		descriptors (`EMFILE`, `ENFILE`), the system out of memory. The server
+		goes on listening; the connection waits in the kernel's queue
+		meanwhile, and is taken once the system will hand it over.
+
+		After a failure the listener is set aside, not polled, for a
+		while, then asked again: 5 ms after the first, twice as long after
+		each failure that follows, at most a second, and back to 5 ms once a
+		connection is taken. That is what Go's `net/http` does, and libuv,
+		Netty and nginx each set the listener aside the same way. A listener
+		with a connection it cannot take stays readable, so a server out of
+		descriptors that polled it on every pass spent a whole core failing,
+		85,000 to 95,000 accepts a second, measured, and served nothing
+		else meanwhile.
 
 		The first failure after a success is also dispatched as an `ioError`
-		event, so a run of them is reported once rather than every tick. Each
-		used to be swallowed natively, no event, no count, and a server out
-		of descriptors looked idle, or, on the jvm and Node, closed the
-		server.
+		event, and logged, so a run of them is reported once rather than
+		every pass. Each used to be swallowed natively, no event, no count,
+		and a server out of descriptors looked idle, or, on the jvm and
+		Node, closed the server. On HashLink, whose accept answers nothing
+		for any failure, a listener still readable after an accept that
+		found nothing is taken for one.
+
+		The descriptors a process may hold are its `RLIMIT_NOFILE` on Linux
+		and macOS. Natively there CrossByte raises its soft limit to the hard
+		one as the process starts, as Go and the JVM (`-XX:+MaxFDLimit`) do:
+		a shell's soft limit of 1,024 would otherwise stop a server near a
+		thousand connections whatever its hard limit allowed. A child process
+		inherits the raised limit. Build with `-D crossbyte_keep_nofile` to
+		keep the limit the process was started with. Where the limit is still
+		below 4,096, the first server to listen logs a warning saying so,
+		once. The JVM raises it itself; on Node, the interpreter, HashLink and
+		Neko it is the process's as started (`ulimit -n`, systemd's
+		`LimitNOFILE`). Windows has no such limit.
 
 		On a server spread over `runtimes` with `reusePort`, where each
-		runtime accepts for itself, the count is theirs together.
+		runtime accepts for itself, the count is theirs together, and each
+		runtime's listener is set aside on its own.
 	**/
 	@:isVar public var acceptFailures(get, null):Int = 0;
 
@@ -240,7 +482,19 @@ class ServerSocket extends EventDispatcher {
 		runtime may be one of them. A runtime that has exited is passed over,
 		and once every one has, each connection is closed as it is accepted
 		and that is logged once. The server never exits these runtimes: they
-		are the caller's.
+		are the caller's. One that exits while the server is open gives up
+		its share: what is still in its handshake there is dropped and
+		closed, and the places its connections held under `maxConnections`
+		are given back.
+
+		A runtime takes up what it is handed at its next pass, so only one
+		that is stalled, a handler that blocks, a long collection, falls
+		behind. One with 256 connections handed to it and not yet taken up
+		is passed over for the next in turn, and once every runtime is that
+		far behind, each connection is closed as it is accepted, counted in
+		`refusedConnections`, and that is logged once: a stalled runtime
+		holds a bounded number of sockets, where it was handed every
+		connection that came its way for as long as the stall lasted.
 
 		`admit`, `maxAcceptsPerTick` and `maxPendingHandshakes` hold for the
 		server as a whole: `admit` is asked, and `maxAcceptsPerTick` counted,
@@ -395,6 +649,23 @@ class ServerSocket extends EventDispatcher {
 	#end
 	// Whether the last accept failed, so a run of failures is reported once.
 	@:noCompletion private var __acceptFailing:Bool = false;
+	#if !nodejs
+	// The accept back-off (see acceptFailures): how long the listener was
+	// last set aside, 0 while connections are being taken; whether it is set
+	// aside now; the timer that brings it back, -1 for none; and what that
+	// timer calls, made once.
+	@:noCompletion private var __acceptBackoff:Float = 0;
+	@:noCompletion private var __acceptPaused:Bool = false;
+	@:noCompletion private var __acceptResumeTimer:Int = -1;
+	@:noCompletion private var __acceptResumeRuntime:CrossByte = null;
+	@:noCompletion private var __acceptResume:Void->Void = null;
+	// The first wait after an accept fails, and the longest.
+	@:noCompletion private static inline var ACCEPT_BACKOFF_FIRST:Float = 0.005;
+	@:noCompletion private static inline var ACCEPT_BACKOFF_MOST:Float = 1.0;
+	// Below this many descriptors the first server to listen says so.
+	@:noCompletion private static inline var LOW_DESCRIPTOR_LIMIT:Int = 4096;
+	@:noCompletion private static var __descriptorLimitChecked:Bool = false;
+	#end
 	@:noCompletion private var __hasCertificate:Bool = false;
 	#if !nodejs
 	@:noCompletion private var __pendingHandshakes:Array<PendingHandshake>;
@@ -810,7 +1081,16 @@ class ServerSocket extends EventDispatcher {
 			}
 
 			__acceptFailing = false;
+			// As many open as the server keeps: closed, and counted.
+			if (__atOpenLimit()) {
+				__refusedConnections++;
+				connection.destroy();
+				return;
+			}
 			var socket:CBSocket = @:privateAccess CBSocket.__adoptNodeSocket(connection, __cbInstance);
+			if (__countsOpen()) {
+				__claimOpen(socket);
+			}
 			// Said, as a native server's accepted socket says it: on Node one
 			// a TLS listener accepted reported false.
 			socket.secure = secure;
@@ -1101,6 +1381,7 @@ class ServerSocket extends EventDispatcher {
 			listening = true;
 			#else
 			__checkSpread();
+			__checkDescriptorLimit();
 			if (reusePort) {
 				__listenOnEachRuntime(backlog);
 				return;
@@ -1296,6 +1577,14 @@ class ServerSocket extends EventDispatcher {
 		for (setting in __tlsReplay) {
 			setting(listener);
 		}
+		#if ((cpp || java || jvm) && !macro)
+		if (__receiveBufferRequest > 0) {
+			@:privateAccess listener.__askBufferSize(true, __receiveBufferRequest);
+		}
+		if (__sendBufferRequest > 0) {
+			@:privateAccess listener.__askBufferSize(false, __sendBufferRequest);
+		}
+		#end
 		return listener;
 	}
 
@@ -1350,6 +1639,7 @@ class ServerSocket extends EventDispatcher {
 			spread.replicas.push(__makeReplica(runtime, spread));
 		}
 		__spread = spread;
+		spread.watchExits();
 		#end
 	}
 	#end
@@ -1385,6 +1675,8 @@ class ServerSocket extends EventDispatcher {
 		replica.maxAcceptsPerTick = maxAcceptsPerTick;
 		// The limit is the front's, over every runtime together.
 		replica.maxPendingHandshakes = -1;
+		// One count of each address's handshakes, for every runtime.
+		replica.__addressCounts = __addressCounts;
 		// Asked by a replica only when it accepts for itself, with reusePort:
 		// the front's hook, as it stands when each connection arrives.
 		var front:ServerSocket = this;
@@ -1418,6 +1710,9 @@ class ServerSocket extends EventDispatcher {
 			if (tracked) {
 				shared.addInFlight(-1, __front.maxPendingHandshakes);
 			}
+			// Counted under its address as the front accepted it, and never
+			// taken up: let go of here, or it stays counted for good.
+			__releaseAddressClaim(socket);
 			try {
 				socket.close();
 			} catch (_:Dynamic) {}
@@ -1437,6 +1732,9 @@ class ServerSocket extends EventDispatcher {
 			socket.setBlocking(false);
 			var pending:PendingHandshake = new PendingHandshake(this, socket,
 				handshakeTimeout > 0 ? haxe.Timer.stamp() + handshakeTimeout : Math.POSITIVE_INFINITY, peer);
+			// The front counted it under its address; let go of as the
+			// handshake ends, here.
+			pending.address = __takeAddressClaim(socket);
 			__pendingHandshakes.push(pending);
 			socket.custom = pending;
 			pending.runtime = __cbInstance;
@@ -1455,6 +1753,9 @@ class ServerSocket extends EventDispatcher {
 			try {
 				socket.close();
 			} catch (_:Dynamic) {}
+			return;
+		}
+		if (!__countOpen(cbSocket)) {
 			return;
 		}
 		__announceHere(cbSocket);
@@ -1553,6 +1854,25 @@ class ServerSocket extends EventDispatcher {
 	}
 
 	/**
+		On a replica, on its runtime, as the runtime exits: it stops, as it
+		does when the front stops, what is still in its handshake here is
+		dropped and its socket closed, and the front's count of handshakes
+		told, and the places its open connections hold under
+		`maxConnections` are given back, since they will never be served
+		again.
+	**/
+	@:noCompletion public function __runtimeExited():Void {
+		if (!__closed) {
+			__stopReplica();
+		}
+		var shared:ServerSpread = __shared;
+		if (shared != null && __openCount > 0) {
+			shared.releaseConnections(__openCount);
+			__openCount = 0;
+		}
+	}
+
+	/**
 		A replica's own listener, with `reusePort`, closed once it has left
 		the poll set, which `__detachAcceptTick` takes it out of first.
 	**/
@@ -1598,16 +1918,40 @@ class ServerSocket extends EventDispatcher {
 			spread.addInFlight(1, maxPendingHandshakes);
 		}
 		var address:String = crossbyte._internal.net.IPv6.compress(peer.host.toString());
-		if (spread.handOff(socket, peer, address)) {
+		var outcome:Int = spread.handOff(socket, peer, address);
+		if (outcome == ServerSpread.HANDED) {
 			return;
+		}
+		if (outcome == ServerSpread.ALL_FULL) {
+			// Every runtime that far behind: a limit of the server's.
+			__refusedConnections++;
 		}
 
 		if (tracked) {
 			spread.addInFlight(-1, maxPendingHandshakes);
 		}
+		__releaseAddressClaim(socket);
 		try {
 			socket.close();
 		} catch (_:Dynamic) {}
+	}
+
+	/** The address a hand-off was counted under by the front, taken off it; null for none. **/
+	@:noCompletion private static function __takeAddressClaim(socket:Socket):Null<String> {
+		if (!Std.isOfType(socket.custom, AddressClaim)) {
+			return null;
+		}
+		var claim:AddressClaim = cast socket.custom;
+		socket.custom = null;
+		return claim.address;
+	}
+
+	/** A hand-off that will not be taken up lets go of its address's count. **/
+	@:noCompletion private function __releaseAddressClaim(socket:Socket):Void {
+		var address:Null<String> = __takeAddressClaim(socket);
+		if (address != null) {
+			__addressCounts.release(address);
+		}
 	}
 	#end
 
@@ -1626,6 +1970,134 @@ class ServerSocket extends EventDispatcher {
 		#else
 		return __pendingHandshakes == null ? 0 : __pendingHandshakes.length;
 		#end
+	}
+
+	/**
+		Whether this server holds its connections to `maxConnections` here,
+		as each is announced: a server whose own class takes each connection
+		as it is announced, an `HTTPServer`, a `ServerWebSocket`, counts
+		them in its protocol's terms instead.
+	**/
+	@:noCompletion private inline function __countsOpen():Bool {
+		var front:ServerSocket = __front != null ? __front : this;
+		return front.__ownConnect == null && front.maxConnections > 0;
+	}
+
+	/**
+		Whether as many connections are open as `maxConnections` allows:
+		asked as one is accepted, before any work is done for it. Counted
+		for good by `__claimOpen` as it is announced.
+	**/
+	@:noCompletion private function __atOpenLimit():Bool {
+		if (!__countsOpen()) {
+			return false;
+		}
+		var front:ServerSocket = __front != null ? __front : this;
+		#if (target.threaded && !js)
+		var spread:ServerSpread = __spread != null ? __spread : __shared;
+		if (spread != null) {
+			return spread.connections >= front.maxConnections;
+		}
+		#end
+		return __openCount >= front.maxConnections;
+	}
+
+	/**
+		Counts a connection about to be announced against `maxConnections`:
+		whether there was room. On a spread server checked and counted in one
+		step, across every runtime, so two cannot take the last place. The
+		socket tells this server when it closes.
+	**/
+	@:noCompletion private function __claimOpen(socket:CBSocket):Bool {
+		var front:ServerSocket = __front != null ? __front : this;
+		var limit:Int = front.maxConnections;
+		#if (target.threaded && !js)
+		if (__shared != null) {
+			if (!__shared.claimConnection(limit)) {
+				return false;
+			}
+			// This runtime's share too, given back should the runtime exit.
+			__openCount++;
+			socket.__openCounter = this;
+			return true;
+		}
+		#end
+		if (__openCount >= limit) {
+			return false;
+		}
+		__openCount++;
+		socket.__openCounter = this;
+		return true;
+	}
+
+	/**
+		Counts `socket`, about to be announced, against `maxConnections`
+		where this server counts its connections: whether it may be
+		announced. One past the limit is closed, unannounced, and counted in
+		`refusedConnections`.
+	**/
+	@:noCompletion private function __countOpen(socket:CBSocket):Bool {
+		if (!__countsOpen() || __claimOpen(socket)) {
+			return true;
+		}
+		__refusedConnections++;
+		@:privateAccess socket.__cleanSocket();
+		return false;
+	}
+
+	#if !nodejs
+	/** A connection a limit refuses as it is accepted: closed, and counted. **/
+	@:noCompletion private function __refuseAccepted(accepted:Socket):Void {
+		__refusedConnections++;
+		try {
+			accepted.close();
+		} catch (_:Dynamic) {}
+	}
+	#end
+
+	/** A connection counted by `__claimOpen` has closed. **/
+	@:noCompletion public function __releaseOpen():Void {
+		#if (target.threaded && !js)
+		if (__shared != null) {
+			if (__openCount > 0) {
+				__openCount--;
+				__shared.releaseConnections(1);
+			}
+			return;
+		}
+		#end
+		if (__openCount > 0) {
+			__openCount--;
+		}
+	}
+
+	/**
+		Counts a connection from `address` as in its handshake, unless the
+		address has `maxPendingHandshakesPerAddress` already while half the
+		places are taken: whether it was counted. The front's limits, and on
+		a spread server every runtime's handshakes.
+	**/
+	@:noCompletion private function __claimPendingAddress(address:String):Bool {
+		if (address == null) {
+			return true;
+		}
+		var front:ServerSocket = __front != null ? __front : this;
+		var limit:Int = front.maxPendingHandshakesPerAddress;
+		if (limit > 0) {
+			var places:Int = front.maxPendingHandshakes;
+			var pending:Int = __localPendingCount();
+			#if (target.threaded && !js)
+			var spread:ServerSpread = __spread != null ? __spread : __shared;
+			if (spread != null) {
+				pending = spread.inFlight;
+			}
+			#end
+			if (places >= 0 && pending * 2 < places) {
+				// Room for everyone: counted, not held to the limit.
+				limit = 0;
+			}
+		}
+		return __addressCounts.claim(address, limit);
 	}
 
 	/**
@@ -1860,16 +2332,40 @@ class ServerSocket extends EventDispatcher {
 				return false;
 			}
 			__acceptFailing = false;
+			#if ((cpp || java || jvm) && !macro)
+			if (__receiveBufferRequest > 0 || __sendBufferRequest > 0 || __front != null) {
+				__applyAcceptedBuffers(sysSocket);
+			}
+			#end
 
 			if (!__admits(sysSocket)) {
 				return true;
 			}
 
+			// The server's own limits, before any work is done for it: as many
+			// open as it keeps, or its address crowding the handshakes.
+			if (__atOpenLimit()) {
+				__refuseAccepted(sysSocket);
+				return true;
+			}
+			var address:Null<String> = null;
+			if (__tracksHandshakes() && __admittedPeer != null) {
+				address = crossbyte._internal.net.IPv6.compress(__admittedPeer.host.toString());
+				if (!__claimPendingAddress(address)) {
+					__refuseAccepted(sysSocket);
+					return true;
+				}
+			}
+
 			#if (target.threaded && !js)
 			if (__spread != null) {
-				// Another runtime's from here, TLS handshake and all.
+				// Another runtime's from here, TLS handshake and all; it lets
+				// go of the address's count once the handshake ends.
 				var peer = __admittedPeer;
 				__admittedPeer = null;
+				if (address != null) {
+					sysSocket.custom = new AddressClaim(address);
+				}
 				__handOff(sysSocket, peer);
 				return true;
 			}
@@ -1881,6 +2377,7 @@ class ServerSocket extends EventDispatcher {
 				sysSocket.setBlocking(false);
 				var pending:PendingHandshake = new PendingHandshake(this, sysSocket,
 					handshakeTimeout > 0 ? haxe.Timer.stamp() + handshakeTimeout : Math.POSITIVE_INFINITY, sysSocket.peer());
+				pending.address = address;
 				__pendingHandshakes.push(pending);
 
 				// In the poll set, so each flight the peer sends steps the
@@ -1902,6 +2399,9 @@ class ServerSocket extends EventDispatcher {
 				try {
 					sysSocket.close();
 				} catch (_:Dynamic) {}
+				return true;
+			}
+			if (!__countOpen(socket)) {
 				return true;
 			}
 			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
@@ -1968,6 +2468,9 @@ class ServerSocket extends EventDispatcher {
 	**/
 	@:noCompletion private function __onAcceptFailed(error:Dynamic):Void {
 		acceptFailures++;
+		#if !nodejs
+		__backOffAccepting();
+		#end
 
 		if (__acceptFailing) {
 			return;
@@ -1975,7 +2478,7 @@ class ServerSocket extends EventDispatcher {
 		__acceptFailing = true;
 
 		var message:String = "Could not accept a connection waiting on port " + localPort + ": " + Std.string(error)
-			+ ". The server is still listening, and takes it once the system will hand it over.";
+			+ ". The server is still listening, and takes it once the system will hand it over" + __descriptorNote() + ".";
 		crossbyte.utils.Logger.warn(message);
 		#if (target.threaded && !js)
 		var front:ServerSocket = __front;
@@ -1991,6 +2494,85 @@ class ServerSocket extends EventDispatcher {
 		#end
 		dispatchEvent(new crossbyte.events.IOErrorEvent(crossbyte.events.IOErrorEvent.IO_ERROR, message));
 	}
+
+	/**
+		Where the system can say, how many descriptors the process may hold,
+		for the warning a failed accept logs: the likeliest reason.
+	**/
+	@:noCompletion private static function __descriptorNote():String {
+		#if cpp
+		var limit:Int = crossbyte._internal.socket.NativeSocketOptions.descriptorLimit();
+		if (limit > 0) {
+			return " (this process may hold " + limit + " descriptors: see ServerSocket.acceptFailures)";
+		}
+		#end
+		return "";
+	}
+
+	#if !nodejs
+	/**
+		An accept failed: the listener leaves the poll set for a while, and a
+		timer brings it back. A listener with a connection the system will
+		not hand over stays readable, and polled on every pass it spun the
+		runtime; see `acceptFailures`.
+	**/
+	@:noCompletion private function __backOffAccepting():Void {
+		var runtime:Null<CrossByte> = __acceptRuntime != null ? __acceptRuntime : __cbInstance;
+		if (runtime == null) {
+			return;
+		}
+		__acceptBackoff = __acceptBackoff <= 0 ? ACCEPT_BACKOFF_FIRST : Math.min(ACCEPT_BACKOFF_MOST, __acceptBackoff * 2);
+		__acceptPaused = true;
+		__unwatchListener();
+		if (__acceptResumeTimer >= 0) {
+			return;
+		}
+		if (__acceptResume == null) {
+			__acceptResume = __resumeAccepting;
+		}
+		__acceptResumeRuntime = runtime;
+		__acceptResumeTimer = @:privateAccess runtime.__timer.setTimeout(__acceptBackoff, __acceptResume);
+	}
+
+	/** The back-off is over: the listener is polled again, and asked. **/
+	@:noCompletion private function __resumeAccepting():Void {
+		__acceptResumeTimer = -1;
+		__acceptResumeRuntime = null;
+		__acceptPaused = false;
+		__syncListenerWatch();
+	}
+
+	/** Ends a back-off under way, with the listener: it is closing. **/
+	@:noCompletion private function __cancelAcceptBackoff():Void {
+		if (__acceptResumeTimer >= 0 && __acceptResumeRuntime != null) {
+			@:privateAccess __acceptResumeRuntime.__timer.clear(__acceptResumeTimer);
+		}
+		__acceptResumeTimer = -1;
+		__acceptResumeRuntime = null;
+		__acceptPaused = false;
+		__acceptBackoff = 0;
+	}
+
+	/**
+		Once per process, as a server starts listening: a warning where the
+		descriptors the process may hold are fewer than a server is likely to
+		need. Natively on Linux and macOS, where the limit was raised to the
+		hard one as the process started; see `acceptFailures`.
+	**/
+	@:noCompletion private static function __checkDescriptorLimit():Void {
+		if (__descriptorLimitChecked) {
+			return;
+		}
+		__descriptorLimitChecked = true;
+		#if cpp
+		var limit:Int = crossbyte._internal.socket.NativeSocketOptions.descriptorLimit();
+		if (limit > 0 && limit < LOW_DESCRIPTOR_LIMIT) {
+			crossbyte.utils.Logger.warn("This process may hold at most " + limit
+				+ " descriptors (RLIMIT_NOFILE, its hard limit): a server here fails to accept connections past about that many. Raise the hard limit (ulimit -Hn, or systemd's LimitNOFILE) to hold more.");
+		}
+		#end
+	}
+	#end
 
 	override public function addEventListener<T>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
 		super.addEventListener(type, listener, priority);
@@ -2070,6 +2652,7 @@ class ServerSocket extends EventDispatcher {
 		which every caller does after this.
 	**/
 	@:noCompletion private function __detachAcceptTick():Void {
+		__cancelAcceptBackoff();
 		if (__acceptRuntime == null) {
 			return;
 		}
@@ -2143,7 +2726,12 @@ class ServerSocket extends EventDispatcher {
 			}
 		}
 		#end
-		if (__acceptRuntime != null && !__closed && listening && !__handshakesFull()) {
+		if (!__acceptFailing) {
+			// A connection was taken: the next failure waits the shortest
+			// time again.
+			__acceptBackoff = 0;
+		}
+		if (__acceptRuntime != null && !__closed && listening && !__acceptPaused && !__handshakesFull()) {
 			__watchListener(__acceptRuntime);
 		} else {
 			__unwatchListener();
@@ -2362,12 +2950,16 @@ class ServerSocket extends EventDispatcher {
 	/** A completed handshake becomes a connection, and is announced. **/
 	@:noCompletion private function __promoteHandshake(pending:PendingHandshake):Void {
 		pending.settled = true;
+		__handshakeEnded(pending);
 		try {
 			// Its socket stays in the poll set, answering to the connection
 			// from here on.
 			var cbSocket:Null<CBSocket> = __fromSocket(pending.socket, pending.peer);
 			if (cbSocket == null) {
 				__closeHandshake(pending);
+				return;
+			}
+			if (!__countOpen(cbSocket)) {
 				return;
 			}
 			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, cbSocket));
@@ -2379,8 +2971,17 @@ class ServerSocket extends EventDispatcher {
 	/** A handshake that failed or ran out of time is counted and closed. **/
 	@:noCompletion private function __abandonHandshake(pending:PendingHandshake):Void {
 		pending.settled = true;
+		__handshakeEnded(pending);
 		handshakeFailures++;
 		__closeHandshake(pending);
+	}
+
+	/** A handshake has ended, one way or the other: its address is counted no more. **/
+	@:noCompletion private function __handshakeEnded(pending:PendingHandshake):Void {
+		if (pending.address != null) {
+			__addressCounts.release(pending.address);
+			pending.address = null;
+		}
 	}
 
 	/** Out of the poll set, and then closed. **/
@@ -2403,6 +3004,7 @@ class ServerSocket extends EventDispatcher {
 		__pendingHandshakes = [];
 		for (pending in dropped) {
 			pending.settled = true;
+			__handshakeEnded(pending);
 			__closeHandshake(pending);
 		}
 	}
@@ -2436,6 +3038,10 @@ final class PendingHandshake implements IPollableSocket {
 	// Promoted, failed or dropped: nothing more for the poll set to do.
 	public var settled:Bool = false;
 
+	// The address it is counted under for maxPendingHandshakesPerAddress,
+	// until the handshake ends; null for none.
+	public var address:Null<String> = null;
+
 	public var registryClosed(get, never):Bool;
 
 	@:noCompletion private var __server:ServerSocket;
@@ -2459,6 +3065,20 @@ final class PendingHandshake implements IPollableSocket {
 
 	public function registryHasBufferedInput():Bool {
 		return false;
+	}
+}
+
+/**
+	A connection the front of a spread server counted under its address for
+	`maxPendingHandshakesPerAddress`, on its way to a runtime: carried as the
+	socket's `custom` until the runtime takes it up, or lets go of it.
+**/
+@:noCompletion
+private final class AddressClaim {
+	public final address:String;
+
+	public function new(address:String) {
+		this.address = address;
 	}
 }
 

@@ -354,6 +354,13 @@ class TestSuites {
 		// Also in PortableSuite: most of it is Node's listener.
 		runner.addCase(new crossbyte.net.ServerSocketListenTest());
 		runner.addCase(new crossbyte.net.ServerSocketBacklogTest());
+		// An accept that fails sets the listener aside rather than spinning:
+		// every threaded target, and natively on Linux and macOS out of
+		// descriptors for real.
+		runner.addCase(new crossbyte.net.ServerSocketAcceptBackoffTest());
+		// A raw server's connection limit and a TLS server's handshakes per
+		// address, and a NetHost's. Also in PortableSuite, for Node.
+		runner.addCase(new crossbyte.net.ServerSocketLimitsTest());
 		// A child runtime's real POLL loop, so every threaded target.
 		runner.addCase(new crossbyte.net.SocketReadinessTest());
 		// One listener's connections on several runtimes: every threaded
@@ -488,6 +495,14 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.ReliableDatagramRebindTest());
 		// Real sockets: a raw Bytes write, and a burst taken within one pass.
 		runner.addCase(new crossbyte.net.SocketPassTest());
+		// A socket's kernel buffers, natively and on the jvm; elsewhere, that
+		// asking for one says it cannot be done. Also in PortableSuite, for Node.
+		runner.addCase(new crossbyte.net.SocketBufferSizeTest());
+		// What a peer can make a connection hold that its application has
+		// not read. Also in PortableSuite, for Node's pause and resume.
+		runner.addCase(new crossbyte.net.SocketInputLimitTest());
+		// What a connection holds once its traffic is over.
+		runner.addCase(new crossbyte.net.SocketMemoryTest());
 	}
 
 	/**

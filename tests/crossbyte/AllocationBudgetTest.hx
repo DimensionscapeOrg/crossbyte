@@ -86,7 +86,7 @@ class AllocationBudgetTest extends utest.Test {
 	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [1344, 1344, 10472], [1744, 1744, 13160]);
 	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [116, 116, 624], [216, 216, 848]);
 	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [504, 504, 528], [696, 696, 728]);
-	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 336], [8, 8, 488]);
+	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 144], [8, 8, 248]);
 	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [0, 0, 312], [8, 8, 456]);
 	// Over LinkedConnection, the in-memory pair, which copies each message
 	// into a buffer it keeps, as a socket's read does. A call's figure is its

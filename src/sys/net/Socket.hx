@@ -77,7 +77,9 @@ private class SocketOutput extends haxe.io.Output {
 @:access(sys.net.Socket)
 private class SocketInput extends haxe.io.Input {
 	var sock:Socket;
-	var one:haxe.io.Bytes = haxe.io.Bytes.alloc(1);
+	// Made at the first readByte: a socket a server holds rarely reads one
+	// byte at a time, and kept a buffer for it all the same.
+	var one:haxe.io.Bytes = null;
 
 	public function new(s) {
 		sock = s;
@@ -89,6 +91,9 @@ private class SocketInput extends haxe.io.Input {
 		a peer that finished from one that was cut off.
 	**/
 	public override function readByte():Int {
+		if (one == null) {
+			one = haxe.io.Bytes.alloc(1);
+		}
 		readBytes(one, 0, 1);
 		return one.get(0);
 	}
@@ -237,13 +242,21 @@ class Socket {
 		went on to be registered as a connection.
 
 		hl's accept answers null for any failure, so a real one, a process
-		out of descriptors, reads as nothing waiting too. The connection stays
-		queued and is asked for again, which is all a caller could do anyway.
+		out of descriptors, read as nothing waiting too: the server never
+		counted it, and polled the listener, still readable, on every pass. A
+		listener still readable after an accept that found nothing has a
+		connection the system would not hand over, which is a failure; one
+		not readable had nothing waiting, or a connection that left first.
 	**/
 	public function accept():Socket {
 		var c = socket_accept(__s);
-		if (c == null)
+		if (c == null) {
+			var waiting:Bool = try select([this], [], [], 0).read.length > 0 catch (_:Dynamic) false;
+			if (waiting) {
+				throw Custom("Accept failed: the system would not hand over a waiting connection (out of descriptors?)");
+			}
 			throw Blocked;
+		}
 		var s:Socket = Type.createEmptyInstance(Socket);
 		s.__s = c;
 		s.input = new SocketInput(s);
@@ -482,7 +495,9 @@ private class SocketOutput extends haxe.io.Output {
 
 private class SocketInput extends haxe.io.Input {
 	var __s:SocketHandle;
-	var one:haxe.io.Bytes = haxe.io.Bytes.alloc(1);
+	// Made at the first readByte: a socket a server holds rarely reads one
+	// byte at a time, and kept a buffer for it all the same.
+	var one:haxe.io.Bytes = null;
 
 	public function new(s) {
 		__s = s;
@@ -495,6 +510,9 @@ private class SocketInput extends haxe.io.Input {
 		peer that had finished.
 	**/
 	public override function readByte():Int {
+		if (one == null) {
+			one = haxe.io.Bytes.alloc(1);
+		}
 		readBytes(one, 0, 1);
 		return one.get(0);
 	}
@@ -753,7 +771,9 @@ import crossbyte._internal.net.NativeSocketAddress;
 
 private class SocketInput extends haxe.io.Input {
 	var __s:Dynamic;
-	var one:haxe.io.Bytes = haxe.io.Bytes.alloc(1);
+	// Made at the first readByte: a socket a server holds rarely reads one
+	// byte at a time, and kept a buffer for it all the same.
+	var one:haxe.io.Bytes = null;
 
 	public function new(s:Dynamic) {
 		__s = s;
@@ -766,6 +786,9 @@ private class SocketInput extends haxe.io.Input {
 		connection reset partway through read as one that ended cleanly.
 	**/
 	public override function readByte() {
+		if (one == null) {
+			one = haxe.io.Bytes.alloc(1);
+		}
 		readBytes(one, 0, 1);
 		return one.get(0);
 	}
@@ -862,12 +885,38 @@ class Socket {
 	private var __blocking:Bool = true;
 	private var __fastSend:Bool = false;
 
+	// The buffer sizes asked for, 0 for none, restored with the rest: a
+	// receive buffer has to be on the socket before it connects, or listens,
+	// to set the window the connection starts with.
+	private var __receiveBuffer:Int = 0;
+	private var __sendBuffer:Int = 0;
+
 	public var input(default, null):haxe.io.Input;
 	public var output(default, null):haxe.io.Output;
 	public var custom:Dynamic;
 
 	public function new():Void {
 		init();
+	}
+
+	/**
+		Asks the system for a send or receive buffer of `size` bytes, now if
+		the socket is open and again whenever it is made anew; false if the
+		system refused. For `crossbyte.net.Socket.receiveBufferSize` and its
+		kind.
+	**/
+	@:noCompletion private function __askBufferSize(receive:Bool, size:Int):Bool {
+		if (receive) {
+			__receiveBuffer = size;
+		} else {
+			__sendBuffer = size;
+		}
+		return __s != null && crossbyte._internal.socket.NativeSocketOptions.setBufferSize(__s, receive, size);
+	}
+
+	/** One of the socket's buffer sizes as the system reports it, or -1. **/
+	@:noCompletion private function __grantedBufferSize(receive:Bool):Int {
+		return __s == null ? -1 : crossbyte._internal.socket.NativeSocketOptions.bufferSize(__s, receive);
 	}
 
 	/**
@@ -936,6 +985,12 @@ class Socket {
 		setTimeout(__timeout);
 		setBlocking(__blocking);
 		setFastSend(__fastSend);
+		if (__receiveBuffer > 0) {
+			crossbyte._internal.socket.NativeSocketOptions.setBufferSize(__s, true, __receiveBuffer);
+		}
+		if (__sendBuffer > 0) {
+			crossbyte._internal.socket.NativeSocketOptions.setBufferSize(__s, false, __sendBuffer);
+		}
 	}
 
 	public function close():Void {
@@ -1397,7 +1452,9 @@ private class SocketOutput extends haxe.io.Output {
 private class SocketInput extends haxe.io.Input {
 	var socket:NativeSocket;
 	var owner:Socket;
-	var one:haxe.io.Bytes = haxe.io.Bytes.alloc(1);
+	// Made at the first readByte: a socket a server holds rarely reads one
+	// byte at a time, and kept a buffer for it all the same.
+	var one:haxe.io.Bytes = null;
 
 	public function new(socket:NativeSocket, owner:Socket) {
 		this.socket = socket;
@@ -1410,6 +1467,9 @@ private class SocketInput extends haxe.io.Input {
 		waiting for a delimiter at the end of a connection read zeros for ever.
 	**/
 	public override function readByte() {
+		if (one == null) {
+			one = haxe.io.Bytes.alloc(1);
+		}
 		readBytes(one, 0, 1);
 		return one.get(0);
 	}
@@ -1837,6 +1897,10 @@ private class SocketInput extends haxe.io.Input {
 	/** Seconds a blocking read waits for data before giving up; 0 waits for ever. **/
 	public var timeout:Float = 0.0;
 
+	// The read loops read into one buffer a thread: wrapped once, not per
+	// read. See ArrayView; made at the first read.
+	var __view:ArrayView = null;
+
 	public function new(channel:SocketChannel) {
 		this.channel = channel;
 	}
@@ -1885,7 +1949,10 @@ private class SocketInput extends haxe.io.Input {
 		if (channel == null)
 			throw "Invalid handle";
 		__awaitReadable();
-		var bb = ByteBuffer.wrap(buf.getData(), pos, len);
+		if (__view == null) {
+			__view = new ArrayView();
+		}
+		var bb:ByteBuffer = __view.over(buf, pos, len);
 		var n:Int = try {
 			channel.read(bb);
 		} catch (e:Dynamic) {
@@ -1904,8 +1971,40 @@ private class SocketInput extends haxe.io.Input {
 	}
 }
 
+/**
+	A ByteBuffer over the array last read into or written from, moved to
+	each range asked: one made per array rather than one per call.
+	ByteBuffer.wrap on every read and write was about 190 bytes of garbage
+	a TCP round trip; a socket reads into its thread's one read buffer, and
+	writes from its own output, so the array is the same call after call.
+**/
+private final class ArrayView {
+	var of:haxe.io.BytesData = null;
+	var buffer:ByteBuffer = null;
+
+	public function new() {}
+
+	public inline function over(buf:haxe.io.Bytes, pos:Int, len:Int):ByteBuffer {
+		var data:haxe.io.BytesData = buf.getData();
+		var view:ByteBuffer = buffer;
+		if (view == null || of != data) {
+			view = ByteBuffer.wrap(data);
+			buffer = view;
+			of = data;
+		}
+		// The limit first: a position may not pass it.
+		view.clear();
+		view.limit(pos + len);
+		view.position(pos);
+		return view;
+	}
+}
+
 private class SocketOutput extends haxe.io.Output {
 	var channel:SocketChannel;
+
+	// As SocketInput's: the array last written from, wrapped once.
+	var __view:ArrayView = null;
 
 	public function new(channel:SocketChannel) {
 		this.channel = channel;
@@ -1937,7 +2036,10 @@ private class SocketOutput extends haxe.io.Output {
 	public function tryWriteBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
 		if (channel == null)
 			throw "Invalid handle";
-		var bb = ByteBuffer.wrap(buf.getData(), pos, len);
+		if (__view == null) {
+			__view = new ArrayView();
+		}
+		var bb:ByteBuffer = __view.over(buf, pos, len);
 		var n:Int = try {
 			channel.write(bb);
 		} catch (e:Dynamic) {
@@ -2161,11 +2263,81 @@ class Socket {
 			throw e;
 	}
 
+	/**
+		Lets go of the ByteBuffers kept over the arrays last read into and
+		written from (see ArrayView): for `crossbyte.net.Socket` letting go
+		of its buffers' storage, which a kept view would hold on to.
+	**/
+	@:noCompletion private function __forgetViews():Void {
+		var reader:Null<SocketInput> = Std.downcast(input, SocketInput);
+		if (reader != null) {
+			@:privateAccess reader.__view = null;
+		}
+		var writer:Null<SocketOutput> = Std.downcast(output, SocketOutput);
+		if (writer != null) {
+			@:privateAccess writer.__view = null;
+		}
+	}
+
+	// The buffer sizes asked for, 0 for none: kept for a listener, whose
+	// channel bind() opens, and which takes a receive buffer to hand to the
+	// connections it accepts.
+	@:noCompletion private var __receiveBuffer:Int = 0;
+	@:noCompletion private var __sendBuffer:Int = 0;
+
+	/**
+		Asks the system for a send or receive buffer of `size` bytes: now, on
+		the channel there is, and on a listener's channel when bind() opens
+		it. False if the system refused. For
+		`crossbyte.net.Socket.receiveBufferSize` and its kind.
+	**/
+	@:noCompletion private function __askBufferSize(receive:Bool, size:Int):Bool {
+		if (receive) {
+			__receiveBuffer = size;
+		} else {
+			__sendBuffer = size;
+		}
+		try {
+			var option = receive ? java.net.StandardSocketOptions.SO_RCVBUF : java.net.StandardSocketOptions.SO_SNDBUF;
+			if (serverChannel != null) {
+				// A listener has no send buffer of its own to set.
+				if (receive) {
+					(cast serverChannel : java.nio.channels.NetworkChannel).setOption(cast java.net.StandardSocketOptions.SO_RCVBUF, cast java.lang.Integer.valueOf(size));
+				}
+				return true;
+			}
+			if (channel != null) {
+				(cast channel : java.nio.channels.NetworkChannel).setOption(cast option, cast java.lang.Integer.valueOf(size));
+				return true;
+			}
+		} catch (_:Dynamic) {}
+		return false;
+	}
+
+	/** One of the socket's buffer sizes as the system reports it, or -1. **/
+	@:noCompletion private function __grantedBufferSize(receive:Bool):Int {
+		try {
+			var option = receive ? java.net.StandardSocketOptions.SO_RCVBUF : java.net.StandardSocketOptions.SO_SNDBUF;
+			var network:java.nio.channels.NetworkChannel = serverChannel != null ? (receive ? cast serverChannel : null) : cast channel;
+			if (network == null) {
+				return -1;
+			}
+			var size:java.lang.Integer = cast network.getOption(cast option);
+			return size.intValue();
+		} catch (_:Dynamic) {
+			return -1;
+		}
+	}
+
 	public function bind(host:Host, port:Int):Void {
 		try {
 			if (serverChannel == null) {
 				serverChannel = ServerSocketChannel.open();
 				serverChannel.configureBlocking(__blocking);
+				if (__receiveBuffer > 0) {
+					// Before bind(), so the connections it accepts start with it.
+					(cast serverChannel : java.nio.channels.NetworkChannel).setOption(cast java.net.StandardSocketOptions.SO_RCVBUF, cast java.lang.Integer.valueOf(__receiveBuffer));
+				}
 			}
 			var addr = new InetSocketAddress(host.wrapped, port);
 			// The queue length has to be named here, because java.nio takes it

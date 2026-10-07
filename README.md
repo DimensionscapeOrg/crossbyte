@@ -446,6 +446,109 @@ with a key of its own, so a client's `sendPrepared` shares the encoding and
 frames it itself. Each session still writes once a pass, however many
 messages it was sent in it.
 
+## TCP servers: what a peer can cost
+
+A `ServerSocket`, and a `NetHost` built on one, and the `HTTPServer` and
+`ServerWebSocket` built on it, holds each of these by default, and each is
+the server's own:
+
+| On the server | Default | Bounds |
+| --- | --- | --- |
+| `maxConnections` | 10,000 | connections open at once; one more is closed as it is accepted, and counted in `refusedConnections` |
+| `maxPendingHandshakes` | 256 | TLS handshakes under way; more wait in the kernel's queue |
+| `maxPendingHandshakesPerAddress` | 16 | one address's share of those, once half are taken; past it a connection is closed as it is accepted |
+| `handshakeTimeout` | 10 s | each TLS handshake, from accept |
+| `maxAcceptsPerTick` | 64 | connections taken from the queue in one wake |
+| `receiveBufferSize`, `sendBufferSize` | the system's | the kernel's buffers for each connection |
+
+and each `Socket` it accepts holds `maxInputBufferSize` (16 MiB) unread and
+`maxOutputBufferSize` (none by default; HTTP and WebSocket servers set 8
+MiB) unsent. A raw connection refused at `maxConnections` is accepted and
+closed at once, its peer reads an end of stream, or a reset if it had sent
+something, as Node's `net.Server.maxConnections` does: a server's places
+free on the scale of sessions, so a client left queued in the kernel would
+wait without a word. A `ServerWebSocket` answers its upgrade 503 instead,
+and an `HTTPServer` (its limit from `HTTPServerConfig.maxConnections`) its
+request. A `NetHost`'s `maxConnections` is its server's, and a reliable UDP
+host counts its sessions itself. None of these bounds how often one address
+connects: keep a `RateLimiter` in `admit`, as `ServerWebSocket`'s class doc
+shows.
+
+**Out of descriptors.** Each connection is a descriptor, and a process may
+hold only so many (`RLIMIT_NOFILE` on Linux and macOS). Natively CrossByte
+raises its soft limit to the hard one as the process starts, as Go and the
+JVM do: a shell's soft limit of 1,024 would stop a server near a thousand
+connections whatever the hard limit allowed, and the first server to listen
+says so, once, where the limit is still below 4,096. Past the limit an
+accept fails and the connection waits in the kernel's queue. The server sets
+its listener aside for 5 ms, then twice as long after each failure that
+follows, at most a second, Go's `net/http` schedule, and what libuv, Netty
+and nginx do, and takes the connection once a descriptor frees.
+`acceptFailures` counts the failures, and the first of a run is reported as
+an `ioError`. A listener polled on every pass instead spun a core: 380,000
+failed accepts a second natively on Linux, measured, against seven now.
+
+**What arrives and is not read.** A socket reads what arrives into a
+buffer of its own for the application to read from, and holds at most
+`maxInputBufferSize` of it unread: 16 MiB by default, twice the largest
+message any CrossByte transport takes. At the limit it stops reading
+(`inputOverflowPolicy = PAUSE`, the default) until the application reads,
+and what the peer sends waits in the kernel until TCP's window holds the
+peer back, nothing lost; or, with `CLOSE`, closes the connection as soon as
+a byte arrives past it. HTTP, WebSocket, RPC and `NetConnection` read as
+data arrives and never reach it. A game server that reads a message a tick
+sets it to a few of its messages, and above the largest it waits for whole,
+under `PAUSE` an application that waits for more than the limit before
+it reads anything waits for good:
+
+```haxe
+server.addEventListener(ServerSocketConnectEvent.CONNECT, e -> {
+	e.socket.maxInputBufferSize = 64 * 1024; // a few of this game's messages
+});
+```
+
+**What a connection holds.** An idle connection a `ServerSocket` accepted
+holds about 1.5 KB of heap natively and 1.6 KB on the jvm (1,000 of them,
+heap after a full collection; a client about 2 KB), with the listeners the
+application adds, two cost about 450 bytes, and the kernel's buffers
+besides. Its buffers keep their storage while the connection is busy, so a
+message read or written allocates nothing, and let go of it once it has
+read and written nothing for one of its runtime's sweeps, every five
+seconds: after one 16 KB message each way a connection held 51 KB for as
+long as it was open, and holds 1.7 KB once quiet. A buffer grown past 64 KB
+lets go as soon as it empties. On Node a socket keeps its buffers' storage.
+
+**Many connections, mostly idle.** The built-in poll walks every connection
+on every pass of the runtime: natively on Linux about 77 ns a connection, so
+10,000 idle connections cost a pass 0.77 ms and a POLL runtime at rest 5% of
+a core at 12 ticks a second, 17% at 60 (measured in WSL, 4 CPUs). A busy
+server passes once per batch of arrivals, so the same 10,000 with traffic
+spread over 1,000 wakes a second spend most of a core in the poll alone.
+Past about 10% of a core, 10,000 connections at 130 passes a second, 2,000
+at 650, the `crossbyte-libuv` backend (see Extensions), whose pass costs
+what is ready rather than what is open, starts to pay; on Windows 8,000 idle
+connections cost 3% of a core on select and nothing measurable on libuv.
+
+**The kernel's buffers.** Much of what a connection costs is not in the
+heap but in the kernel: what has arrived and not been read, and what has
+been written and not acknowledged. Left to itself the system grows both
+with use, Linux to 6 MB received and 4 MB sent a connection, Windows by
+the connection's bandwidth, so a peer that sends and does not read, or
+reads nothing, makes the kernel hold that much for it. `receiveBufferSize`
+and `sendBufferSize` fix them, on a `Socket` before it connects or on a
+`ServerSocket` for every connection it accepts (natively and on the jvm):
+
+```haxe
+var server = new ServerSocket();
+server.receiveBufferSize = 64 * 1024; // before listen(): the window starts there
+server.sendBufferSize = 64 * 1024;
+```
+
+What the system will not take waits in the socket's own output buffer
+instead, where `bytesPending` counts it and `maxOutputBufferSize` bounds it.
+A smaller buffer is cheaper and slower over a long path: a connection moves
+at most one buffer per round trip.
+
 ## Extensions
 
 CrossByte's extension story is intentional: features that benefit from native backends or external platform libraries can live in sibling haxelibs instead of bloating the core.
@@ -473,6 +576,7 @@ All optional, all off unless you pass them.
 | `crossbyte_no_http2` | Do not auto-register the bundled HTTP/2 backend. A backend registered explicitly through `HTTPBackendRegistry` still wins either way; this only stops the bundled one from being picked up on its own. |
 | `crossbyte_check_events` | Find code that keeps an event, or the received bytes one carries, past its listener call (see `Event`): every event and payload handed out for an arrival is made afresh and killed once the call returns, bytes overwritten with `0xDB`, length and position 0, fields cleared, so the line that kept one reads poison or throws. For tests and debugging. |
 | `crossbyte_fresh_events` | Make every event and payload handed out for an arrival afresh, as before 1.0, where a released build hands out one of each per socket, session or connection again for every arrival: the workaround for code that keeps them, until it copies what it keeps. |
+| `crossbyte_keep_nofile` | Keep the process's limit on open descriptors as it started, natively on Linux and macOS, rather than raise the soft limit to the hard one as the process starts (see "TCP servers: what a peer can cost"). For a process that starts children which `select()` on descriptors below 1,024. |
 | `http_debug` | Log each response line the HTTP client reads, through `Logger`, so it honours the configured level and sink. |
 | `crossbyte_debug` | Keep `crossbyte.io.File` out of `@:noDebug`, so its frames appear in stack traces. |
 

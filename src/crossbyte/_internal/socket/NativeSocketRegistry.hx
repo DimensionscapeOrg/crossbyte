@@ -61,6 +61,23 @@ final class NativeSocketRegistry {
 	**/
 	@:noCompletion public var __moreToRead:Bool = false;
 
+	// Sockets that stopped reading at their input limit, asked once a pass
+	// whether to read again; null until one does. See InputPauseCheck.
+	@:noCompletion private var __pausedInput:Array<InputPauseCheck> = null;
+
+	// Sockets holding buffer storage from their traffic, asked every
+	// QUIET_SWEEP seconds whether they have been quiet; see QuietRelease.
+	@:noCompletion private var __holders:DenseSet<QuietRelease> = null;
+	@:noCompletion private var __quietLeaving:Array<QuietRelease> = null;
+	@:noCompletion private var __nextQuietSweep:Float = 0;
+
+	/**
+		How often the sockets holding storage are asked whether they have
+		been quiet: one that read and wrote nothing for a whole interval lets
+		go, five to ten seconds after it went quiet.
+	**/
+	@:noCompletion public static inline var QUIET_SWEEP:Float = 5.0;
+
 	private inline function get_capacity():Int {
 		return __capacity;
 	}
@@ -72,6 +89,20 @@ final class NativeSocketRegistry {
 	private inline function get_size():Int {
 		return __set.length;
 	}
+
+	#if (cpp && !crossbyte_keep_nofile)
+	/**
+		As the process starts, its soft limit on open descriptors is raised
+		to the hard one, natively on Linux and macOS, as Go and the JVM do:
+		a shell's soft limit of 1,024 stopped a server near a thousand
+		connections whatever its hard limit allowed. Nothing on Windows,
+		which has no such limit. `-D crossbyte_keep_nofile` keeps the limit
+		the process started with; see `ServerSocket.acceptFailures`.
+	**/
+	static function __init__():Void {
+		crossbyte._internal.socket.NativeSocketOptions.raiseDescriptorLimit();
+	}
+	#end
 
 	public inline function new(capacity:Int) {
 		__capacity = capacity;
@@ -89,6 +120,8 @@ final class NativeSocketRegistry {
 
 	public inline function clear():Void {
 		__set.clear();
+		__pausedInput = null;
+		__holders = null;
 		__poll.dispose();
 		__deregisterQueue.clear(true);
 		__deregisterPending.clear();
@@ -166,10 +199,80 @@ final class NativeSocketRegistry {
 			__set.remove(s);
 		}
 	}
+	/**
+		`socket` has stopped reading at its input limit, and left the poll
+		set's reads: from the next pass it is asked, once a pass, whether to
+		read again, until it says no.
+	**/
+	/** `socket` holds buffer storage: asked from the next sweep whether it has been quiet. **/
+	public function watchQuiet(socket:QuietRelease):Void {
+		if (__holders == null) {
+			__holders = new DenseSet();
+			__quietLeaving = [];
+			__nextQuietSweep = haxe.Timer.stamp() + QUIET_SWEEP;
+		}
+		__holders.add(socket);
+	}
+
+	/**
+		`socket` is closing: no longer asked, nor held here, a closed
+		connection kept in the list until the next sweep was kept from the
+		collector with all it carried.
+	**/
+	public function unwatchQuiet(socket:QuietRelease):Void {
+		if (__holders != null) {
+			__holders.remove(socket);
+		}
+	}
+
+	@:noCompletion private function __sweepQuiet():Void {
+		var leaving:Array<QuietRelease> = __quietLeaving;
+		for (socket in __holders) {
+			if (!socket.__releaseIfQuiet()) {
+				leaving.push(socket);
+			}
+		}
+		for (socket in leaving) {
+			__holders.remove(socket);
+		}
+		leaving.resize(0);
+	}
+
+	public function watchInputPause(socket:InputPauseCheck):Void {
+		if (__pausedInput == null) {
+			__pausedInput = [];
+		}
+		__pausedInput.push(socket);
+	}
+
+	@:noCompletion private function __checkPausedInput():Void {
+		var paused:Array<InputPauseCheck> = __pausedInput;
+		var kept:Int = 0;
+		for (i in 0...paused.length) {
+			var socket:InputPauseCheck = paused[i];
+			if (socket.__inputStillPaused()) {
+				paused[kept++] = socket;
+			}
+		}
+		paused.resize(kept);
+	}
+
 	// No default for `timeout`: on the jvm an argument with one is an
 	// object, boxed by every call, and this is called every frame.
 	public #if final inline #end function update(timeout:Float):Void {
 		__moreToRead = false;
+		if (__holders != null && __holders.length > 0) {
+			// The clock read only while a socket holds storage.
+			var now:Float = haxe.Timer.stamp();
+			if (now >= __nextQuietSweep) {
+				__nextQuietSweep = now + QUIET_SWEEP;
+				__sweepQuiet();
+			}
+		}
+		if (__pausedInput != null && __pausedInput.length > 0) {
+			// Before the poll: one that reads again is in this pass's set.
+			__checkPausedInput();
+		}
 		if (!__writableQueue.isEmpty) {
 			// Drained through a swap buffer, because a socket that is still
 			// blocked re-queues itself from inside this dispatch. Iterating
