@@ -58,7 +58,8 @@ final class SocketRegistry {
 
 	// Sockets holding buffer storage from their traffic, asked every
 	// QUIET_SWEEP seconds whether they have been quiet; see QuietRelease.
-	@:noCompletion private var __holders:Array<QuietRelease> = null;
+	@:noCompletion private var __holders:DenseSet<QuietRelease> = null;
+	@:noCompletion private var __quietLeaving:Array<QuietRelease> = null;
 	@:noCompletion private var __nextQuietSweep:Float = 0;
 
 	/**
@@ -166,22 +167,35 @@ final class SocketRegistry {
 	/** `socket` holds buffer storage: asked from the next sweep whether it has been quiet. **/
 	public function watchQuiet(socket:QuietRelease):Void {
 		if (__holders == null) {
-			__holders = [];
+			__holders = new DenseSet();
+			__quietLeaving = [];
 			__nextQuietSweep = haxe.Timer.stamp() + QUIET_SWEEP;
 		}
-		__holders.push(socket);
+		__holders.add(socket);
+	}
+
+	/**
+		`socket` is closing: no longer asked, nor held here, a closed
+		connection kept in the list until the next sweep was kept from the
+		collector with all it carried.
+	**/
+	public function unwatchQuiet(socket:QuietRelease):Void {
+		if (__holders != null) {
+			__holders.remove(socket);
+		}
 	}
 
 	@:noCompletion private function __sweepQuiet():Void {
-		var holders:Array<QuietRelease> = __holders;
-		var kept:Int = 0;
-		for (i in 0...holders.length) {
-			var socket:QuietRelease = holders[i];
-			if (socket.__releaseIfQuiet()) {
-				holders[kept++] = socket;
+		var leaving:Array<QuietRelease> = __quietLeaving;
+		for (socket in __holders) {
+			if (!socket.__releaseIfQuiet()) {
+				leaving.push(socket);
 			}
 		}
-		holders.resize(kept);
+		for (socket in leaving) {
+			__holders.remove(socket);
+		}
+		leaving.resize(0);
 	}
 
 	public function watchInputPause(socket:InputPauseCheck):Void {

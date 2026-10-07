@@ -2102,6 +2102,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__resolving = false;
 		__tlsHandshaking = false;
 
+		#if !js
+		if (__holdingStorage && __cbInstance != null) {
+			// Out of the registry's sweep now, or it keeps the connection
+			// until the next one.
+			__holdingStorage = false;
+			@:privateAccess __cbInstance.__socketRegistry.unwatchQuiet(this);
+		}
+		#end
 		__cbInstance = null;
 		__socket = null;
 		__connected = false;
