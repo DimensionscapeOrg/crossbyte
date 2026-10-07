@@ -524,7 +524,9 @@ entry below says how:
   moves a slow peer's backlog into the socket's own output buffer, where
   `bytesPending` counts it and `maxOutputBufferSize` bounds it. A client
   asks before `connect()`, which is when the window a connection starts
-  with is agreed; a server asks before `listen()`, and its listener and
+  with is agreed, and the size is asked for again once it is connected,
+  since macOS sizes a connecting socket's buffers from its route over
+  what was asked; a server asks before `listen()`, and its listener and
   each connection it accepts take it. Natively and on the jvm
   (`Socket.bufferSizeSupported`); Node gives a TCP socket no way to size
   them, and the interpreter, HashLink and Neko none to ask, so asking
