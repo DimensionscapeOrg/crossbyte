@@ -39,6 +39,67 @@ try {
   process.exit(2);
 }
 
+// A retransmitted Allocate, answered as RFC 5766 section 6.2 has it.
+//
+// node-turn (0.0.6) never finds the allocation a 5-tuple already has when an
+// Allocate arrives, the server attaches it to every other request, but not
+// to that one, so its branch for a retransmission is never taken, and each
+// one makes a second allocation and files it over the first. The client keeps
+// the address the first answer gave it, the one its peer is told about; the
+// server then installs permissions on, and sends from, the second. Data the
+// peer sends to the first is refused for want of a permission, and what this
+// end sends arrives from an address the peer was never told: "permission
+// fail" at each relayed address, from the other's, for as long as the run
+// lasts. An Allocate is retransmitted when its answer takes more than half a
+// second (RFC 8489's first RTO), which a loaded runner manages: under 64
+// spinning processes on this machine 16 runs in 30 failed so, every one with
+// four allocations granted for two clients, and none with this in place.
+//
+// So a retransmission is answered from the allocation the first made, or,
+// while that is still being made, dropped, the answer to the first answers
+// it. Its own branch for this is not used either: it refreshes the allocation
+// with an undefined lifetime, which expires it at once.
+let retransmittedAllocates = 0;
+
+{
+  const Allocate = require('node-turn/lib/methods/allocate');
+  const allocate = Allocate.prototype.allocate;
+  const making = new Set();
+
+  Allocate.prototype.allocate = function (msg, reply) {
+    const tuple = msg.transport.get5Tuple();
+    const existing = this.server.allocations[tuple];
+
+    if (existing) {
+      if (existing.transactionID !== msg.transactionID) {
+        return reply.reject(437, 'Allocation Mismatch');
+      }
+
+      reply.addAttribute('xor-relayed-address', existing.relayedTransportAddress);
+      reply.addAttribute('lifetime', existing.lifetime);
+      reply.addAttribute('xor-mapped-address', existing.mappedAddress);
+      reply.addAttribute('software', this.server.software);
+      reply.addAttribute('message-integrity');
+      retransmittedAllocates++;
+      return reply.resolve();
+    }
+
+    const key = tuple + ' ' + msg.transactionID;
+
+    if (making.has(key)) {
+      retransmittedAllocates++;
+      return;
+    }
+
+    making.add(key);
+    const resolve = reply.resolve;
+    const reject = reply.reject;
+    reply.resolve = function () { making.delete(key); return resolve.apply(this, arguments); };
+    reply.reject = function () { making.delete(key); return reject.apply(this, arguments); };
+    return allocate.call(this, msg, reply);
+  };
+}
+
 const peerPath = fs.existsSync(PEER) ? PEER : PEER.replace(/\.exe$/, '');
 
 if (!fs.existsSync(peerPath)) {
@@ -115,7 +176,10 @@ peer.on('exit', code => {
   // this repository rather than merely reported as granted.
   const granted = events.filter(line => /allocate success/i.test(line)).length;
 
-  if (granted < 2) {
+  // Exactly two: a third is a client's retransmission answered with an
+  // allocation of its own, which is the run failing for a reason that is the
+  // server's (see the top of this file).
+  if (granted !== 2) {
     failures.push('expected two allocations to be granted, the server logged ' + granted);
   }
 
@@ -133,6 +197,7 @@ peer.on('exit', code => {
   console.log('');
   console.log('the server logged ' + events.length + ' events, ' + granted + ' allocations granted');
   console.log('it forwarded ' + relayed + ' datagrams between the two peers');
+  console.log(retransmittedAllocates + ' retransmitted Allocate requests answered from the allocation already made');
 
   if (failures.length > 0 || code !== 0) {
     console.error('');
