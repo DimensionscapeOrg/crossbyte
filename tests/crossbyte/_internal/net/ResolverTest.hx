@@ -429,6 +429,44 @@ class ResolverTest extends utest.Test {
 		}
 	}
 
+	/**
+		An answer written out on the resolver's threads, several at once.
+		hxcpp formatted an address with `inet_ntoa`, whose buffer is one for
+		the whole process on macOS and the BSDs: a thread reading it while
+		another wrote read back "[inet_ntoa error]", the text it is filled
+		with first, where 127.0.0.1 was answered (macOS CI, the queued-lookup
+		case above). Glibc and Winsock keep it per thread, so this fails only
+		there.
+	**/
+	public function testAddressesWrittenOutOnManyThreadsAtOnceAreEachTheirOwn():Void {
+		var threads:Int = 8;
+		var rounds:Int = 20000;
+		var done = new sys.thread.Deque<String>();
+		for (t in 0...threads) {
+			var expected:String = "10.0." + t + "." + (t + 1);
+			var host = new Host(expected);
+			Thread.create(() -> {
+				var wrong:String = null;
+				for (_ in 0...rounds) {
+					var written:String = host.toString();
+					if (written != expected) {
+						wrong = written;
+						break;
+					}
+				}
+				done.add(wrong == null ? "" : expected + " was written out as " + wrong);
+			});
+		}
+		var wrong:Array<String> = [];
+		for (_ in 0...threads) {
+			var answer:String = done.pop(true);
+			if (answer != "") {
+				wrong.push(answer);
+			}
+		}
+		Assert.same([], wrong, wrong.join("; "));
+	}
+
 	private static function __name():String {
 		return "crossbyte-" + Std.random(0x3FFFFFFF) + "-" + Std.random(0x3FFFFFFF) + ".test";
 	}

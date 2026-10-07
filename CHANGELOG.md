@@ -3942,6 +3942,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Natively on macOS, an address written out on several threads at once
+  could read back as "[inet_ntoa error]": hxcpp formatted it with
+  `inet_ntoa`, whose buffer is one for the whole process there, filled
+  with that text before the address is written over it. The resolver
+  writes its answers out on its own threads, and CI read the text back
+  where 127.0.0.1 was answered. The fork now formats with `inet_ntop`
+  into a buffer of the caller's on every system but Windows, whose
+  Winsock keeps one per thread. Test: `ResolverTest`, eight threads
+  writing their own address 20,000 times each.
 - A server spread over `runtimes` hands a stalled runtime a bounded
   number of connections. Each accepted connection was posted to the next
   runtime in turn whether or not it was taking up what it had been handed,
@@ -3969,7 +3978,9 @@ entry below says how:
   taken, Go's `net/http` schedule; libuv, Netty and nginx set the
   listener aside the same way, so a second out of descriptors costs
   about seven accepts and no measurable processor time, and the waiting
-  connection is taken once a descriptor frees. `ServerSocket` and
+  connection is taken once a descriptor frees (on Linux: macOS drops a
+  connection whose accept found no descriptor, so its listener never
+  spun, and its client finds the connection closed). `ServerSocket` and
   `ServerWebSocket` alike; `acceptFailures` still counts every one and
   the first of a run is still an `ioError`. HashLink's accept answers
   nothing for any failure, which read as nothing waiting: a listener still
