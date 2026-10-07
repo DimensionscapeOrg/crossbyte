@@ -199,19 +199,24 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 		var cpu:Float = 0;
 		var lowered:Bool = false;
 		if (started.wait(5.0)) {
-			// Room for two to let go of and a few clients, and no more.
+			// Two to let go of and four clients made first, each a
+			// descriptor, then the limit lowered to what is open, so connecting
+			// them takes nothing and the accept of each finds no descriptor. Made
+			// before the limit, so other threads opening or closing descriptors
+			// meanwhile, late in a full suite there are some, cannot leave the
+			// server room it should not have.
+			for (_ in 0...2) {
+				ballast.push(new sys.net.Socket());
+			}
+			for (_ in 0...4) {
+				clients.push(new sys.net.Socket());
+			}
 			var open:Int = __openDescriptors();
-			lowered = open > 0 && crossbyte._internal.socket.NativeSocketOptions.setDescriptorLimit(open + 6);
+			// Less the one the directory listing itself held while it counted.
+			lowered = open > 1 && crossbyte._internal.socket.NativeSocketOptions.setDescriptorLimit(open - 1);
 			if (lowered) {
-				for (_ in 0...2) {
-					ballast.push(new sys.net.Socket());
-				}
-				// Clients until no descriptor is left: each one connected is
-				// queued for an accept that cannot have one.
 				try {
-					for (_ in 0...16) {
-						var client = new sys.net.Socket();
-						clients.push(client);
+					for (client in clients) {
 						client.connect(new sys.net.Host("127.0.0.1"), port);
 					}
 				} catch (_:Dynamic) {}
