@@ -998,6 +998,61 @@ class PeerConnectionTest extends utest.Test {
 	}
 
 	/**
+		A connection's channel limits reach the channels: set before `ready`,
+		they bound what the peer opens after, and what was refused is
+		counted.
+	**/
+	public function testAConnectionBoundsTheChannelsItsPeerOpens():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+		var accepted:Array<String> = [];
+
+		try {
+			Assert.equals(PeerConnection.DEFAULT_MAX_PEER_CHANNELS, alice.maxPeerChannels);
+			Assert.equals(PeerConnection.DEFAULT_MAX_LABEL_SIZE, alice.maxLabelSize);
+			Assert.equals(0, alice.refusedChannels);
+
+			alice.maxPeerChannels = 1;
+			alice.maxLabelSize = 4;
+			alice.onChannel = channel -> accepted.push(channel.label);
+
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			if (!alice.connected || !bob.connected) {
+				Assert.fail("the two never connected");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			var long = bob.createDataChannel("longer");
+			var first = bob.createDataChannel("one");
+			var second = bob.createDataChannel("two");
+
+			for (channel in [long, first, second]) {
+				channel.opened.then(_ -> {}, _ -> {});
+			}
+
+			pumpUntil(() -> alice.refusedChannels == 2 && first.open, 5.0);
+
+			Assert.equals("one", accepted.join(","), "the peer's channels taken were " + accepted.join(","));
+			Assert.equals(2, alice.refusedChannels);
+			Assert.isTrue(first.open && !long.open && !second.open);
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
 		Consent lost before the connection is ready ends it.
 
 		Consent was checked only once everything above ICE was up, so a peer

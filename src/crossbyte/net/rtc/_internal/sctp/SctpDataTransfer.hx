@@ -445,6 +445,9 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 	/** Streams this end has closed and not yet asked the peer to reset. **/
 	@:noCompletion private var __resetWanted:Array<Int> = [];
 
+	/** The same streams, to ask whether one is among them without a walk: a peer can make this end want thousands reset. **/
+	@:noCompletion private var __resetWantedSet:IntMap<Bool> = new IntMap();
+
 	/** Streams `resetStreams` has taken, ever: how a request from the peer learns whether it caused any. **/
 	@:noCompletion private var __resetsAsked:Int = 0;
 
@@ -820,8 +823,9 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		}
 
 		for (streamId in streams) {
-			if (__resetWanted.indexOf(streamId) < 0 && (__resetRequest == null || __resetRequest.streams.indexOf(streamId) < 0)) {
+			if (!__resetWantedSet.exists(streamId) && (__resetRequest == null || __resetRequest.streams.indexOf(streamId) < 0)) {
 				__resetWanted.push(streamId);
+				__resetWantedSet.set(streamId, true);
 				__resetsAsked++;
 			}
 		}
@@ -1988,11 +1992,16 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		// is no time to reconfigure it, and the channels go with it anyway.
 		if (association.state != SctpAssociationState.ESTABLISHED) {
 			__resetWanted.resize(0);
+			__resetWantedSet = new IntMap();
 		}
 
 		if (__resetWanted.length > 0 && __resetRequest == null && ((__taken - __resetAfter) | 0) >= 0) {
 			var count:Int = __resetWanted.length < MAX_RESET_STREAMS ? __resetWanted.length : MAX_RESET_STREAMS;
 			var streams:Array<Int> = __resetWanted.splice(0, count);
+
+			for (streamId in streams) {
+				__resetWantedSet.remove(streamId);
+			}
 
 			// Before anything more can be sent on them: what the next channel on
 			// one of these streams sends is its sequence zero.
@@ -2037,6 +2046,7 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		if (association.state != SctpAssociationState.ESTABLISHED) {
 			__resetRequest = null;
 			__resetWanted.resize(0);
+			__resetWantedSet = new IntMap();
 			return;
 		}
 
