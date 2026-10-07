@@ -53,8 +53,56 @@ class DataChannelSet {
 	/** The largest stream number SCTP can carry: the field is sixteen bits. **/
 	public static inline var MAX_STREAM_ID:Int = 65535;
 
+	/** The default `maxPeerChannels`: 512. **/
+	public static inline var DEFAULT_MAX_PEER_CHANNELS:Int = 512;
+
+	/** The default `maxLabelSize`: 1,024 bytes. **/
+	public static inline var DEFAULT_MAX_LABEL_SIZE:Int = 1024;
+
+	/** The most a label or protocol can be on the wire, whose length field is sixteen bits. **/
+	public static inline var MAX_NAME_SIZE:Int = 65535;
+
+	/**
+		The most channels the peer may have open at once that it opened
+		itself; 0 or less for no limit but the stream numbers of its parity,
+		32,768. Read as each OPEN arrives.
+
+		Each channel the peer opens is one this end keeps, the channel, its
+		label and protocol, a stream's sequence numbers each way, for as long
+		as the peer leaves it open, and opening one costs the peer an OPEN of
+		a few bytes: 3,000 opened with 1 KB labels held 3,000 channels and 3 MB
+		of labels, and nothing but the stream numbers stopped it. An OPEN past
+		this is refused the way RFC 8832 has a channel refused: no ACK, and the
+		stream reset, which closes the peer's end of it. Counted in
+		`refusedChannels`.
+
+		512 is what libwebrtc gives one side: its 1,024 SCTP streams
+		(`kMaxSctpStreams`), half of them each peer's, so no Chrome peer opens
+		more. Channels this end opens are the application's and not counted.
+	**/
+	public var maxPeerChannels:Int = DEFAULT_MAX_PEER_CHANNELS;
+
+	/**
+		The longest label, and the longest protocol, a channel the peer opens
+		may name, in UTF-8 bytes; 0 or less for no limit but the sixteen-bit
+		field's 65,535. Read as each OPEN arrives. An OPEN past it is refused
+		as one past `maxPeerChannels` is, and counted in `refusedChannels`.
+
+		The W3C API takes names to 65,535 bytes, and a peer that names each of
+		its channels so makes this end keep 64 KB twice over per channel. An
+		application names a channel for what it carries, "chat", "state",
+		so a kilobyte is far past any real name.
+	**/
+	public var maxLabelSize:Int = DEFAULT_MAX_LABEL_SIZE;
+
+	/** OPENs refused for `maxPeerChannels` or `maxLabelSize`. **/
+	public var refusedChannels(default, null):Int = 0;
+
 	@:noCompletion private var __channels:IntMap<DataChannel> = new IntMap();
 	@:noCompletion private var __nextId:Int;
+
+	/** Channels open that the peer opened. **/
+	@:noCompletion private var __peerChannels:Int = 0;
 
 	/** Set once the association is ending, when there is nobody left to reset a stream toward. **/
 	@:noCompletion private var __ending:Bool = false;
@@ -128,6 +176,13 @@ class DataChannelSet {
 			throw new ArgumentError("maxRetransmits and maxPacketLifeTime must be between 0 and 65535, or -1 for no limit.");
 		}
 
+		// The W3C API's TypeError: the OPEN carries each length in sixteen
+		// bits, and a longer one was written cut to its low bits, so the peer
+		// read a label short and the protocol out of the label's bytes.
+		if (__utf8Size(label) > MAX_NAME_SIZE || __utf8Size(protocol) > MAX_NAME_SIZE) {
+			throw new ArgumentError("A channel's label and protocol may be at most " + MAX_NAME_SIZE + " bytes each in UTF-8.");
+		}
+
 		var id:Int = __freeStreamId();
 
 		var channel = @:privateAccess new DataChannel(__transfer, id, label, ordered, protocol, maxRetransmits, maxPacketLifeTime);
@@ -147,6 +202,15 @@ class DataChannelSet {
 	/** The channel on a stream, or null. **/
 	public function channel(id:Int):Null<DataChannel> {
 		return __channels.get(id);
+	}
+
+	@:noCompletion private static function __utf8Size(value:String):Int {
+		return value == null || value.length == 0 ? 0 : crossbyte._internal.Utf8.bytesOf(value).length;
+	}
+
+	/** Whether a stream is one the peer opens channels on. **/
+	@:noCompletion private inline function __peerParity(streamId:Int):Bool {
+		return ((streamId % 2) == 0) != usesEvenStreams;
 	}
 
 	/**
@@ -194,13 +258,24 @@ class DataChannelSet {
 		// A peer opening a channel on a stream this side would have chosen is a
 		// peer that has the parity wrong, and answering would give two channels
 		// one number. Refused rather than accepted into a collision.
-		var even:Bool = (streamId % 2) == 0;
-
-		if (even == usesEvenStreams) {
+		if (!__peerParity(streamId)) {
 			return;
 		}
 
 		if (__channels.exists(streamId)) {
+			return;
+		}
+
+		// Past what this end keeps for a peer: refused as RFC 8832 refuses a
+		// channel, with no ACK and the stream reset, which closes the peer's
+		// end. Nothing is kept for it.
+		if ((maxPeerChannels > 0 && __peerChannels >= maxPeerChannels) || (maxLabelSize > 0 && message.nameSize > maxLabelSize)) {
+			refusedChannels++;
+
+			if (!__ending) {
+				__transfer.resetStreams([streamId], __transfer.association.clock);
+			}
+
 			return;
 		}
 
@@ -211,6 +286,7 @@ class DataChannelSet {
 		var channel = @:privateAccess new DataChannel(__transfer, streamId, message.label, !message.unordered, message.protocol,
 			message.maxRetransmits, message.maxPacketLifeTime);
 		__channels.set(streamId, channel);
+		__peerChannels++;
 		@:privateAccess channel.__onClosed = __release;
 
 		__transfer.send(streamId, DcepMessage.acknowledge().encode(), PPID_CONTROL, true, haxe.Timer.stamp());
@@ -267,6 +343,10 @@ class DataChannelSet {
 	@:noCompletion private function __release(channel:DataChannel):Void {
 		if (__channels.get(channel.id) == channel) {
 			__channels.remove(channel.id);
+
+			if (__peerParity(channel.id)) {
+				__peerChannels--;
+			}
 
 			if (!__ending) {
 				__transfer.resetStreams([channel.id], __transfer.association.clock);

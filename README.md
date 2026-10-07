@@ -563,6 +563,8 @@ peer on it.
 | On the connection | Default | Bounds |
 | --- | --- | --- |
 | `readyTimeout` | 30 s | `connect` until the whole stack is up, and an ICE restart; 0 for no deadline |
+| `maxPeerChannels` | 512 | channels the peer opened that are open at once, what libwebrtc's 1,024 streams give one side; past it an OPEN is refused (no ACK, the stream reset) and counted in `refusedChannels`; 0 for no limit |
+| `maxLabelSize` | 1 KiB | the label, and the protocol, of a channel the peer opens, in UTF-8 bytes; refused past it likewise; 0 for the wire's 65,535 |
 | `IceAgent.MAX_REMOTE_CANDIDATES` | 64 | the peer's candidates, advertised and learned from where its checks arrive; past it a check from a new place goes unanswered |
 | `IceAgent.MAX_LEARNED_LOCAL_CANDIDATES` | 64 | places the peer's answers say it saw this end's checks come from; never paired, since a check leaves from their base |
 

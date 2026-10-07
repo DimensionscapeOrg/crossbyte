@@ -470,8 +470,28 @@ entry below says how:
   connection at once, and NaN or a negative number throws
   `ArgumentError`: code that set 0 to fail fast sets a small number of
   seconds instead.
+- A `PeerConnection` refuses a channel its peer opens past 512 of the
+  peer's open at once (`maxPeerChannels`), or naming a label or protocol of
+  more than 1 KiB (`maxLabelSize`), and `createDataChannel` throws
+  `ArgumentError` for a label or protocol past 65,535 bytes: raise or zero
+  the limits for a peer that opens more, or names longer.
 
 ### Added
+- `PeerConnection.maxPeerChannels` (512) and `maxLabelSize` (1,024 bytes),
+  and `refusedChannels`: the channels a peer may have open that it opened
+  itself, and how long a name it may give one, where the stream numbers
+  were the only bound, 3,000 OPENs with 1 KB labels left 3,000 channels
+  and 3 MB of labels (512 and 512 KB now). An OPEN past either is refused
+  as RFC 8832 refuses a channel: no acknowledgement, and the stream reset,
+  which closes the peer's end; `onChannel` is not called. 512 is what
+  libwebrtc's 1,024 SCTP streams give one side; channels this end creates
+  are not counted. 0 lifts each. The same on `DataChannelSet`, with
+  `DEFAULT_MAX_PEER_CHANNELS` and `DEFAULT_MAX_LABEL_SIZE`. Tests:
+  `DataChannelTest` (the limits, a name measured in bytes, the next channel
+  taken once one closes, 0) and `PeerConnectionTest`; they failed before.
+  `createDataChannel` also refuses a label or protocol past the OPEN's
+  sixteen-bit length, as the W3C API does, where it wrote the length cut
+  short and the peer read the protocol out of the label.
 - `ServerSocket.maxConnections` (10,000, `DEFAULT_MAX_CONNECTIONS`),
   `maxPendingHandshakesPerAddress` (16) and `refusedConnections`, the
   names and shapes `ServerWebSocket` had, moved up to the class every
