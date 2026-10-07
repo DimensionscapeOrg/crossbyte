@@ -3976,6 +3976,19 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The TURN relay interoperability test (`ci/relay/run.js`) no longer
+  fails on a loaded runner. node-turn 0.0.6 never finds the allocation a
+  client already has when an Allocate arrives, so a retransmitted one,
+  sent when the first answer takes more than half a second, made a second
+  allocation and filed it over the first: the client advertised the first
+  address, the server installed permissions on and sent from the second,
+  and every datagram was refused ("permission fail") until the run gave
+  up, "the peers never connected through the relay". Under 64 spinning
+  processes it failed 16 runs in 30, each with four allocations for two
+  clients. The harness now answers a retransmission from the allocation
+  already made, as RFC 5766 section 6.2 has it, and requires exactly two:
+  30 in 30 under the same load (retransmissions answered in half of them),
+  200 in 200 without.
 - One SCTP packet from a connected WebRTC peer costs what its size
   allows, not what the peer sent before it. Measured on the jvm, each
   from one packet of 16 KB or less, the runtime serving nothing else
