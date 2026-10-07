@@ -566,6 +566,20 @@ peer on it.
 | `IceAgent.MAX_REMOTE_CANDIDATES` | 64 | the peer's candidates, advertised and learned from where its checks arrive; past it a check from a new place goes unanswered |
 | `IceAgent.MAX_LEARNED_LOCAL_CANDIDATES` | 64 | places the peer's answers say it saw this end's checks come from; never paired, since a check leaves from their base |
 
+Under the data channels, an SCTP association holds at most 2 MiB the
+application has not been given (the window it advertises), 1 MiB of one
+message being reassembled in at most 2,048 pieces, and 18,432 pieces in all,
+fragments and whole messages waiting their turn, every stream together,
+the most an honest peer can make it hold, giving back half of what it
+holds, unfinished messages dropped, past either total. What one
+packet can make it do is bounded by the packet: one SACK is read a packet,
+256 of its gap blocks; a FORWARD TSN finds the streams it gives up on by the
+TSN each starts at, and walks a stream by the shorter of the range it names
+and what the stream holds; HEARTBEATs and stream-reset requests draw one
+packet of answers; and no more than 16,384 fragments go past the peer's
+cumulative acknowledgement, the rest waiting where `bufferedAmount` counts
+them.
+
 ## Extensions
 
 CrossByte's extension story is intentional: features that benefit from native backends or external platform libraries can live in sibling haxelibs instead of bloating the core.
