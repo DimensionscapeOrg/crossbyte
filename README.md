@@ -518,6 +518,17 @@ seconds: after one 16 KB message each way a connection held 51 KB for as
 long as it was open, and holds 1.7 KB once quiet. A buffer grown past 64 KB
 lets go as soon as it empties. On Node a socket keeps its buffers' storage.
 
+**Many connections, mostly idle.** The built-in poll walks every connection
+on every pass of the runtime: natively on Linux about 77 ns a connection, so
+10,000 idle connections cost a pass 0.77 ms and a POLL runtime at rest 5% of
+a core at 12 ticks a second, 17% at 60 (measured in WSL, 4 CPUs). A busy
+server passes once per batch of arrivals, so the same 10,000 with traffic
+spread over 1,000 wakes a second spend most of a core in the poll alone.
+Past about 10% of a core, 10,000 connections at 130 passes a second, 2,000
+at 650, the `crossbyte-libuv` backend (see Extensions), whose pass costs
+what is ready rather than what is open, starts to pay; on Windows 8,000 idle
+connections cost 3% of a core on select and nothing measurable on libuv.
+
 **The kernel's buffers.** Much of what a connection costs is not in the
 heap but in the kernel: what has arrived and not been read, and what has
 been written and not acknowledged. Left to itself the system grows both
