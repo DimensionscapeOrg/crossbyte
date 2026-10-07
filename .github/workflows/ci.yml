@@ -708,8 +708,14 @@ jobs:
       # in package.json, so installing one of them separately uninstalls the
       # other, and the only reason that would not break the browser test is
       # the order these steps run in.
+      #
+      # Both pinned: unpinned, each run took whatever npm published last, so a
+      # new puppeteer, and the Chrome it downloads, could turn the browser
+      # and interop steps red with no change here. These are the versions the
+      # interop and browser suites are run against locally; raise them on
+      # purpose, in a commit of their own.
       - name: Install puppeteer and node-turn
-        run: npm install --no-save --no-audit --no-fund puppeteer node-turn
+        run: npm install --no-save --no-audit --no-fund puppeteer@25.9.0 node-turn@0.0.6
 
       - name: Build portable suite for the browser
         run: haxe ci/browser-tests.hxml
