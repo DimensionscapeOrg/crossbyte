@@ -174,7 +174,7 @@ class ResolverTest extends utest.Test {
 			}
 		}
 		Assert.equals(asked, got, "the names queued behind the first four were not all answered");
-		Assert.same([], failures);
+		Assert.same([], failures, "a queued name was not answered 127.0.0.1: " + failures.join("; "));
 		Assert.equals(asked, system.total(), "a name was looked up other than once");
 	}
 
