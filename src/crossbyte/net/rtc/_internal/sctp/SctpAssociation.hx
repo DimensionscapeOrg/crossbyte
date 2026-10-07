@@ -299,11 +299,17 @@ class SctpAssociation {
 		clock = now;
 
 		var passedUp:Bool = false;
+		var heartbeatAnswered:Bool = false;
 
 		for (chunk in packet.chunks) {
 			switch (chunk.type) {
 				case SctpPacket.CHUNK_INIT:
-					__onInit(chunk, packet, now);
+					// Alone in its packet, as RFC 9260 section 6.10 has an INIT
+					// travel. Each one is answered with an INIT ACK, so a packet
+					// of sixty drew sixty packets back.
+					if (packet.chunks.length == 1) {
+						__onInit(chunk, packet, now);
+					}
 				case SctpPacket.CHUNK_INIT_ACK:
 					__onInitAck(chunk, packet, now);
 				case SctpPacket.CHUNK_COOKIE_ECHO:
@@ -325,7 +331,12 @@ class SctpAssociation {
 					// that hears no answer counts a failed path, so a channel
 					// that only received, from a browser whose stack probes idle
 					// paths, was torn down after a few minutes of quiet.
-					if (__up() && __tagMatches(packet)) {
+					//
+					// One a packet. A peer probes its one path with one at a
+					// time, and each answer is a packet of its own, a DTLS
+					// record and a `sendto`, so a packet of 300 drew 300.
+					if (!heartbeatAnswered && __up() && __tagMatches(packet)) {
+						heartbeatAnswered = true;
 						onSend(packetFor([new SctpChunk(SctpPacket.CHUNK_HEARTBEAT_ACK, 0, chunk.value)]));
 					}
 				case SctpPacket.CHUNK_SHUTDOWN:

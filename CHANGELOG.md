@@ -3956,6 +3956,52 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- One SCTP packet from a connected WebRTC peer costs what its size
+  allows, not what the peer sent before it. Measured on the jvm, each
+  from one packet of 16 KB or less, the runtime serving nothing else
+  meanwhile:
+  - a SACK listing 4,000 gap blocks highest first took 84 ms to sort
+    (half a second on the interpreter), each block costing more the more
+    there were (3.1 -> 13.6 us a block from 500 to 4,000): the first 256 are
+    read now, as many as a SACK fits in the largest packet this end sends
+    (0.2 us a block at 4,000); and only the first SACK in a packet is
+    read, where a packet of a thousand walked everything outstanding a
+    thousand times (12 ms against 0.85 ms over 8,192 fragments);
+  - a FORWARD TSN naming a stream 500 times cost more with every message
+    the stream held (0.9 -> 7.8 ms over 1,000 to 8,000 held; 1.9 s for
+    2,000 entries over 8,000 on the interpreter): a stream costs the
+    shorter of the range an entry names and what it holds now (28 us at
+    every size);
+  - 200 FORWARD TSN chunks asked every stream reassembling for fragments to
+    drop (6.2 -> 22 ms over 1,000 to 8,000 streams; 1.6 s on the
+    interpreter): streams are found by the TSN each starts at now, so a
+    chunk costs what it drops (13 us at 8,000).
+  The association also holds at most 18,432 pieces, fragments and
+  messages waiting their turn, every stream together, the most an honest
+  peer can make it hold (`MAX_TSN_AHEAD` above the acknowledgement, one
+  message of `MAX_FRAGMENTS` below), where its bounds counted bytes alone
+  and pieces of no bytes pinned 20,000 objects and more with the window
+  untouched; past it, it gives back half, as past the window. Packets of
+  300 HEARTBEATs drew 300 answers and 60 INITs 60 INIT ACKs: one HEARTBEAT
+  is answered a packet, and an INIT not alone in its packet (RFC 9260
+  section 6.10) is not acted on. A packet of 800 stream-reset requests
+  built a 25,612-byte answer, past the largest datagram DTLS sends, which
+  threw and ended the connection: eight answers are owed at most, the rest
+  going as if lost. And no more than 16,384 fragments go past the peer's
+  cumulative acknowledgement: a peer acknowledging everything but the
+  first fragment made this end keep everything sent after it with
+  `bufferedAmount` at 0; past it what is sent waits where `bufferedAmount`
+  counts it. Tests: `SctpDataTransferTest` and `SctpAssociationTest`, each
+  attack at four sizes with the cost staying flat, and the bounds' edges;
+  all failed before.
+- A WebRTC message missing a fragment is no longer dropped when a later
+  message on its data channel completes first. Delivering a message took
+  every fragment of its stream before it too, so an earlier message
+  waiting on a retransmission lost what it had, and, ordered, the later
+  one then waited for good on a sequence that could no longer complete,
+  holding the channel. Test: `SctpDataTransferTest`, a message whose middle
+  fragment is retransmitted after the next message completes; failed
+  before.
 - An ICE agent's answers no longer cost more with each one. Each answer
   to a check names where the peer saw it arrive from, and one naming a
   place the agent had no candidate for made a peer-reflexive candidate of

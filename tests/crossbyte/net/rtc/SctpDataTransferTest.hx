@@ -60,6 +60,58 @@ class SctpDataTransferTest extends utest.Test {
 		return total;
 	}
 
+	/** Every piece the receiver is holding, fragments and waiting messages, walked rather than trusted. **/
+	private function walkedPieces(transfer:SctpDataTransfer):Int {
+		var total:Int = 0;
+
+		for (key in (@:privateAccess transfer.__partial).keys()) {
+			total += (@:privateAccess transfer.__partial).get(key).fragments.length;
+		}
+
+		for (streamId in (@:privateAccess transfer.__held).keys()) {
+			for (_ in (@:privateAccess transfer.__held).get(streamId).bySequence) {
+				total++;
+			}
+		}
+
+		return total;
+	}
+
+	/**
+		The least of three runs of `run`, in seconds: what it costs, with a
+		collection landing in one run not deciding the figure.
+	**/
+	private static function cheapest(run:Void->Void):Float {
+		var best:Float = Math.POSITIVE_INFINITY;
+
+		for (_ in 0...3) {
+			var start:Float = haxe.Timer.stamp();
+			run();
+			var elapsed:Float = haxe.Timer.stamp() - start;
+
+			if (elapsed < best) {
+				best = elapsed;
+			}
+		}
+
+		return best;
+	}
+
+	/**
+		Whether `costs`, the time one packet took at each size of an attack,
+		stays flat: the largest size's within twice the smallest's, with
+		`slack` seconds besides for a target fast enough that a collection is
+		most of a run. The sizes run over a factor of eight, and work that
+		grows with the attack grows eight times over them.
+	**/
+	private static function flat(costs:Array<Float>, slack:Float):Bool {
+		return costs[costs.length - 1] <= costs[0] * 2 + slack;
+	}
+
+	private static function microseconds(costs:Array<Float>):String {
+		return [for (cost in costs) Std.string(Math.round(cost * 1e7) / 10)].join(" / ") + " us";
+	}
+
 	/** What is really in the network: sent, and neither acknowledged nor found lost. **/
 	private function inFlight(transfer:SctpDataTransfer):Int {
 		var total:Int = 0;
@@ -825,6 +877,270 @@ class SctpDataTransferTest extends utest.Test {
 		Assert.equals((base + 5) | 0, @:privateAccess transfer.__cumulativeTsn);
 	}
 
+	/** A FORWARD TSN through `through`, naming each stream and sequence given. **/
+	private static function forwardTsn(through:Int, entries:Array<Int>):SctpChunk {
+		var value = new ByteArray();
+		value.endian = Endian.BIG_ENDIAN;
+		value.writeInt(through);
+
+		var i:Int = 0;
+
+		while (i + 1 < entries.length) {
+			value.writeShort(entries[i]);
+			value.writeShort(entries[i + 1]);
+			i += 2;
+		}
+
+		value.position = 0;
+		return new SctpChunk(SctpPacket.CHUNK_FORWARD_TSN, 0, value);
+	}
+
+	/**
+		A FORWARD TSN naming a stream many times costs what its entries do,
+		whatever the stream holds.
+
+		Each entry moving the stream on by one walked everything the stream
+		held: 2,000 entries over 8,000 messages held far ahead cost 1.9
+		seconds on the interpreter and 73 ms on the jvm, from one 8 KB packet,
+		and the same packet cost more with each message the peer had sent
+		before it. A stream now costs the smaller of the range an entry names
+		and what it holds.
+
+		The first size runs twice and the first run is dropped, here and in
+		the cases like it: a target compiling as it goes is slowest the first
+		time, which would flatter every size after it.
+	**/
+	public function testAForwardTsnNamingAStreamManyTimesCostsWhatItsEntriesDo():Void {
+		if (unsupported()) return;
+
+		var costs:Array<Float> = [];
+		var whole = SctpDataChunk.FLAG_BEGINNING | SctpDataChunk.FLAG_ENDING;
+		var entries:Int = 500;
+
+		for (held in [1000, 1000, 2000, 4000, 8000]) {
+			var best:Float = Math.POSITIVE_INFINITY;
+
+			for (_ in 0...3) {
+				var transfer = new SctpDataTransfer(new SctpAssociation());
+				var tsn:Int = (@:privateAccess transfer.__cumulativeTsn) + 1;
+
+				// Messages on stream 1, far ahead of the sequence it waits for.
+				for (i in 0...held) {
+					@:privateAccess transfer.__onData(new SctpDataChunk(tsn, 1, 20000 + i, SctpDataChunk.PPID_BINARY, new ByteArray(), whole).toChunk());
+					tsn = (tsn + 1) | 0;
+				}
+
+				var steps:Array<Int> = [];
+
+				for (i in 0...entries) {
+					steps.push(1);
+					steps.push(i);
+				}
+
+				// Only the FORWARD TSN is timed: the arrivals are set-up.
+				var chunk = forwardTsn(tsn, steps);
+				var start:Float = haxe.Timer.stamp();
+				@:privateAccess transfer.__onForwardTsn(chunk);
+				var spent:Float = haxe.Timer.stamp() - start;
+
+				if (spent < best) {
+					best = spent;
+				}
+
+				// The stream moved on through every entry, and what it holds is
+				// still ahead of it.
+				Assert.equals(entries, (@:privateAccess transfer.__expectedSequence).get(1));
+				Assert.equals(held, walkedPieces(transfer));
+			}
+
+			costs.push(best);
+		}
+
+		costs.shift();
+		Assert.isTrue(flat(costs, 0.0005), "a FORWARD TSN of 500 entries cost " + microseconds(costs) + " over 1,000, 2,000, 4,000 and 8,000 messages held");
+	}
+
+	/**
+		FORWARD TSN chunks over thousands of streams reassembling cost what
+		they drop, not a pass over every stream.
+
+		Each chunk asked every stream reassembling whether it held a
+		fragment the peer had given up on: 200 chunks over 8,000 streams
+		holding a fragment each, far ahead, cost 1.6 seconds on the
+		interpreter and 22 ms on the jvm, from one packet of 1,612 bytes.
+	**/
+	public function testForwardTsnChunksOverManyStreamsCostWhatTheyDrop():Void {
+		if (unsupported()) return;
+
+		var costs:Array<Float> = [];
+
+		for (streams in [1000, 1000, 2000, 4000, 8000]) {
+			var transfer = new SctpDataTransfer(new SctpAssociation());
+			var cumulative:Int = @:privateAccess transfer.__cumulativeTsn;
+
+			// One fragment flagged B on each stream, 8,000 past a hole.
+			for (s in 0...streams) {
+				@:privateAccess transfer.__onData(new SctpDataChunk((cumulative + 8001 + s) | 0, s, 0, SctpDataChunk.PPID_BINARY, new ByteArray(),
+					SctpDataChunk.FLAG_BEGINNING).toChunk());
+			}
+
+			// Each moves the acknowledgement on by one, into the hole: nothing
+			// held is given up.
+			var chunks:Array<SctpChunk> = [for (i in 0...200) forwardTsn((cumulative + 1 + i) | 0, [])];
+
+			var start:Float = haxe.Timer.stamp();
+
+			for (chunk in chunks) {
+				@:privateAccess transfer.__onForwardTsn(chunk);
+			}
+
+			costs.push(haxe.Timer.stamp() - start);
+
+			Assert.equals(streams, walkedPieces(transfer), "a FORWARD TSN through the hole dropped fragments past it");
+		}
+
+		costs.shift();
+		Assert.isTrue(flat(costs, 0.001), "200 FORWARD TSN chunks over 1,000, 2,000, 4,000 and 8,000 streams cost " + microseconds(costs));
+	}
+
+	/**
+		And a FORWARD TSN drops exactly what it gives up on, on whichever
+		streams hold it: every fragment at or below its TSN, and any left after
+		them that no longer begins a message, found now by the TSN each
+		stream starts at rather than by asking every stream.
+	**/
+	public function testAForwardTsnDropsWhatItGivesUpOnAcrossStreams():Void {
+		if (unsupported()) return;
+
+		var transfer = new SctpDataTransfer(new SctpAssociation());
+		var base:Int = @:privateAccess transfer.__cumulativeTsn;
+		var B = SctpDataChunk.FLAG_BEGINNING;
+		var E = SctpDataChunk.FLAG_ENDING;
+		var delivered:Array<String> = [];
+
+		transfer.onMessage = (streamId, payload, _) -> delivered.push(streamId + ":" + payload.length);
+
+		function fragment(offset:Int, stream:Int, flags:Int, size:Int):Void {
+			@:privateAccess transfer.__onData(new SctpDataChunk((base + offset) | 0, stream, 0, SctpDataChunk.PPID_BINARY, filled(size), flags).toChunk());
+		}
+
+		// Stream 2: a message wholly below the TSN given up through.
+		fragment(3, 2, B, 10);
+		fragment(4, 2, 0, 10);
+		// Stream 3: one straddling it, its tail past it goes too, since it
+		// no longer begins anything, and then a message wholly above.
+		fragment(8, 3, B, 10);
+		fragment(9, 3, 0, 10);
+		fragment(12, 3, 0, 10);
+		fragment(14, 3, B, 10);
+		// Stream 4: wholly above.
+		fragment(20, 4, B, 10);
+		// Stream 5: arrived out of order, so its first fragment is filed
+		// late, below where it began.
+		fragment(7, 5, 0, 10);
+		fragment(6, 5, B, 10);
+
+		Assert.equals(9, @:privateAccess transfer.__pieces);
+
+		@:privateAccess transfer.__onForwardTsn(forwardTsn((base + 10) | 0, []));
+
+		Assert.isNull((@:privateAccess transfer.__partial).get(2), "a message given up on was kept");
+		Assert.isNull((@:privateAccess transfer.__partial).get(5), "a message given up on, which arrived out of order, was kept");
+		Assert.equals(1, (@:privateAccess transfer.__partial).get(3).fragments.length, "stream 3 did not keep just the message past what was given up");
+		Assert.equals(1, (@:privateAccess transfer.__partial).get(4).fragments.length, "a message past what was given up was dropped");
+		Assert.equals(walkedPieces(transfer), @:privateAccess transfer.__pieces);
+		Assert.equals(walked(transfer), @:privateAccess transfer.__buffered);
+		Assert.equals(2, walkedPieces(transfer));
+
+		// What was kept still completes.
+		fragment(15, 3, E, 5);
+		fragment(21, 4, E, 5);
+		Assert.equals("3:15,4:15", delivered.join(","));
+		Assert.equals(0, @:privateAccess transfer.__pieces);
+	}
+
+	/**
+		What the association holds is bounded in pieces as well as bytes.
+
+		The byte bounds do not count a piece of no bytes, and the peer picks
+		the size. Fragments flagged B and never E on many streams held 20,000
+		objects with `RECEIVE_WINDOW` untouched, and as many more as the peer
+		sent; so did ordered messages behind a sequence never sent.
+	**/
+	public function testWhatIsHeldIsBoundedInPiecesAcrossEveryStream():Void {
+		if (unsupported()) return;
+
+		for (shape in ["fragments", "messages"]) {
+			var transfer = new SctpDataTransfer(new SctpAssociation());
+			var tsn:Int = (@:privateAccess transfer.__cumulativeTsn) + 1;
+			var failures:Int = 0;
+			var peak:Int = 0;
+			transfer.onFailure = _ -> failures++;
+
+			for (i in 0...(2 * SctpDataTransfer.MAX_HELD_PIECES + 1000)) {
+				var chunk = shape == "fragments" ? new SctpDataChunk(tsn, i % 400, 0, SctpDataChunk.PPID_BINARY, new ByteArray(), SctpDataChunk.FLAG_BEGINNING)
+					: new SctpDataChunk(tsn, 1, (i + 1) & 0xFFFF, SctpDataChunk.PPID_BINARY, new ByteArray(),
+						SctpDataChunk.FLAG_BEGINNING | SctpDataChunk.FLAG_ENDING);
+				@:privateAccess transfer.__onData(chunk.toChunk());
+				tsn = (tsn + 1) | 0;
+
+				var now:Int = @:privateAccess transfer.__pieces;
+
+				if (now > peak) {
+					peak = now;
+				}
+			}
+
+			Assert.isTrue(peak <= SctpDataTransfer.MAX_HELD_PIECES, shape + ": the receiver held " + peak + " pieces at once");
+			Assert.isTrue(failures > 0, shape + ": giving pieces back was not reported");
+			Assert.equals(walkedPieces(transfer), @:privateAccess transfer.__pieces, shape + ": the count drifted from what is held");
+			Assert.equals(0, @:privateAccess transfer.__buffered);
+		}
+
+		// The bound clears what an honest peer can make this end hold: every
+		// TSN it tracks past the acknowledgement, and one whole message below.
+		Assert.equals(SctpDataTransfer.MAX_TSN_AHEAD + SctpDataTransfer.MAX_FRAGMENTS, SctpDataTransfer.MAX_HELD_PIECES);
+	}
+
+	/**
+		A message missing a piece survives a later message on its stream
+		completing first.
+
+		Delivering a message took every fragment of the stream before it
+		too, so an earlier message still waiting on a retransmission lost
+		what it had, and, ordered, the later message then waited for good
+		on a sequence that could no longer complete.
+	**/
+	public function testAnEarlierMessageMissingAPieceSurvivesALaterOneCompleting():Void {
+		if (unsupported()) return;
+
+		var transfer = new SctpDataTransfer(new SctpAssociation());
+		var base:Int = @:privateAccess transfer.__cumulativeTsn;
+		var delivered:Array<Int> = [];
+		transfer.onMessage = (_, payload, _) -> delivered.push(payload.length);
+
+		function fragment(offset:Int, sequence:Int, flags:Int, size:Int):Void {
+			@:privateAccess transfer.__onData(new SctpDataChunk((base + offset) | 0, 7, sequence, SctpDataChunk.PPID_BINARY, filled(size), flags).toChunk());
+		}
+
+		// Sequence 0 in three fragments, its middle lost; sequence 1 in two.
+		fragment(1, 0, SctpDataChunk.FLAG_BEGINNING, 100);
+		fragment(3, 0, SctpDataChunk.FLAG_ENDING, 100);
+		fragment(4, 1, SctpDataChunk.FLAG_BEGINNING, 50);
+		fragment(5, 1, SctpDataChunk.FLAG_ENDING, 50);
+
+		Assert.equals(0, delivered.length, "sequence 1 went up before sequence 0");
+		Assert.equals(walked(transfer), @:privateAccess transfer.__buffered);
+
+		// The retransmission.
+		fragment(2, 0, 0, 100);
+
+		Assert.equals("300,100", delivered.join(","), "the two messages did not both go up, in order");
+		Assert.equals(0, @:privateAccess transfer.__buffered);
+		Assert.equals(0, @:privateAccess transfer.__pieces);
+		Assert.equals(0, walkedPieces(transfer));
+	}
+
 	private static function numberedByte(value:Int):ByteArray {
 		var out = new ByteArray();
 		out.writeByte(value);
@@ -1164,6 +1480,7 @@ class SctpDataTransferTest extends utest.Test {
 		thousand steps, which is well under a millisecond compiled; one pass
 		per block costs tens of millions. Best of three fresh pairs, so a
 		collection landing in one measurement does not decide the result.
+		The first `MAX_SACK_BLOCKS_READ` blocks are the ones read.
 	**/
 	public function testASackWithManyGapBlocksIsReadInOnePass():Void {
 		if (unsupported()) return;
@@ -1189,7 +1506,8 @@ class SctpDataTransferTest extends utest.Test {
 				best = elapsed;
 			}
 
-			Assert.equals(blocks, gapAcknowledged(pair.clientData), "the SACK did not acknowledge the fragments its blocks named");
+			Assert.equals(SctpDataTransfer.MAX_SACK_BLOCKS_READ, gapAcknowledged(pair.clientData),
+				"the SACK did not acknowledge the fragments its blocks named");
 		}
 
 		Assert.isTrue(best < allowed,
@@ -1237,6 +1555,102 @@ class SctpDataTransferTest extends utest.Test {
 
 		value.position = 0;
 		return new SctpChunk(SctpPacket.CHUNK_SACK, 0, value);
+	}
+
+	/**
+		A SACK listing thousands of gap blocks costs no more a block than one
+		listing a few hundred: the first `MAX_SACK_BLOCKS_READ` are read.
+
+		The count is the peer's to write, and a 16 KB DTLS record carries
+		4,000 blocks. Listed highest first, each one read was moved past every
+		one before it to sort them: 84 ms for one SACK on the jvm, half a
+		second on the interpreter, the cost of each block doubling with each
+		doubling of the count. A packet's bytes are decoded and checked
+		whatever they say, so the measure is the cost of a block, which stays
+		flat when nothing does more than read each one.
+	**/
+	public function testASackListingThousandsOfGapBlocksCostsWhatAFewHundredDo():Void {
+		if (unsupported()) return;
+
+		var outstanding:Int = 8192;
+		var costs:Array<Float> = [];
+
+		for (blocks in [500, 500, 1000, 2000, 4000]) {
+			var pair = outstandingPair(outstanding);
+			var first:Int = @:privateAccess pair.clientData.__unacknowledged[0].data.tsn;
+
+			// Every second fragment, each an island of one, listed highest
+			// first, acknowledging nothing cumulatively. Read afresh each run,
+			// since a block already read acknowledges nothing new.
+			var value = new ByteArray();
+			value.endian = Endian.BIG_ENDIAN;
+			value.writeInt((first - 1) | 0);
+			value.writeInt(0x3FFFFFFF);
+			value.writeShort(blocks);
+			value.writeShort(0);
+
+			for (g in 0...blocks) {
+				var offset:Int = 2 * (blocks - g);
+				value.writeShort(offset);
+				value.writeShort(offset);
+			}
+
+			value.position = 0;
+			var sack = new SctpChunk(SctpPacket.CHUNK_SACK, 0, value);
+
+			costs.push(cheapest(() -> pair.sackToClient(sack)) / blocks);
+
+			Assert.equals(SctpDataTransfer.MAX_SACK_BLOCKS_READ, gapAcknowledged(pair.clientData),
+				"a SACK of " + blocks + " blocks did not acknowledge the fragments of the blocks read");
+		}
+
+		costs.shift();
+		Assert.isTrue(flat(costs, 0.000001), "a gap block cost " + microseconds(costs) + " in SACKs of 500, 1,000, 2,000 and 4,000");
+	}
+
+	/**
+		Only the first SACK in a packet is read. Each walks what is
+		outstanding, and a packet of a thousand of them was a thousand walks
+		over thousands of fragments; two in one packet were written at the
+		same moment and have nothing to add to each other.
+	**/
+	public function testOnlyTheFirstSackInAPacketIsRead():Void {
+		if (unsupported()) return;
+
+		var pair = outstandingPair(64);
+		var first:Int = @:privateAccess pair.clientData.__unacknowledged[0].data.tsn;
+
+		function island(offset:Int):SctpChunk {
+			var value = new ByteArray();
+			value.endian = Endian.BIG_ENDIAN;
+			value.writeInt((first - 1) | 0);
+			value.writeInt(0x3FFFFFFF);
+			value.writeShort(1);
+			value.writeShort(0);
+			value.writeShort(offset);
+			value.writeShort(offset);
+			value.position = 0;
+			return new SctpChunk(SctpPacket.CHUNK_SACK, 0, value);
+		}
+
+		pair.client.receive(pair.server.packetFor([island(10), island(20), island(30)]), pair.now);
+		Assert.equals(1, gapAcknowledged(pair.clientData), "more than one SACK in a packet was read");
+		Assert.isTrue(@:privateAccess pair.clientData.__unacknowledged[9].acked, "the first SACK in the packet was not the one read");
+
+		// The next packet's is read.
+		pair.sackToClient(island(20));
+		Assert.equals(2, gapAcknowledged(pair.clientData), "the SACK in the next packet was not read");
+
+		// And a packet of a thousand costs what a packet of one does.
+		var big = outstandingPair(8192);
+		var bigFirst:Int = @:privateAccess big.clientData.__unacknowledged[0].data.tsn;
+		first = bigFirst;
+		var one = big.server.packetFor([island(8000)]);
+		var many = big.server.packetFor([for (_ in 0...1000) island(8000)]);
+		var costOne:Float = cheapest(() -> big.client.receive(one, big.now));
+		var costMany:Float = cheapest(() -> big.client.receive(many, big.now));
+
+		Assert.isTrue(flat([costOne, costMany], 0.002), "a packet of one SACK and of a thousand cost " + microseconds([costOne, costMany]));
 	}
 
 	private function gapAcknowledged(transfer:SctpDataTransfer):Int {
@@ -2031,6 +2445,129 @@ class SctpDataTransferTest extends utest.Test {
 
 		Assert.equals(first + ":1," + first + ":1," + ((first + 5) | 0) + ":5", answers.join(","),
 			"a request, its repeat and one out of sequence were answered " + answers.join(","));
+	}
+
+	/**
+		A packet of hundreds of reset requests is answered with a packet's
+		worth, and the connection stays up.
+
+		Every request was answered, all in one packet: 800 of them built a
+		25,612-byte answer, past the largest datagram DTLS sends, which threw
+		on the way out and ended the connection. Past eight answers owed the
+		rest go as if lost, and the one request in sequence is still acted on
+		when the peer repeats it.
+	**/
+	public function testAPacketOfManyResetRequestsIsAnsweredWithinADatagram():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var largest:Int = 0;
+		var answers:Int = 0;
+		pair.watchServer(function(packet:ByteArray):Void {
+			if (packet.length > largest) {
+				largest = packet.length;
+			}
+
+			for (found in reconfigIn(packet)) {
+				if (found.type == SctpParameter.RECONFIG_RESPONSE) {
+					answers++;
+				}
+			}
+		});
+
+		var first:Int = pair.client.localTsn;
+		var lastTsn:Int = (pair.client.localTsn - 1) | 0;
+
+		// Out of sequence, all but the last: each draws a Bad Sequence answer.
+		var requests:Array<SctpChunk> = [for (i in 0...800) reconfig(SctpParameter.OUTGOING_SSN_RESET, [(first + 100 + i) | 0, 0, lastTsn], [3])];
+		requests.push(reconfig(SctpParameter.OUTGOING_SSN_RESET, [first, (pair.server.localTsn - 1) | 0, lastTsn], [3]));
+
+		try {
+			pair.chunksToServer(requests);
+		} catch (e:Dynamic) {
+			Assert.fail("the answers to a packet of requests threw: " + Std.string(e));
+		}
+
+		Assert.equals(SctpAssociationState.ESTABLISHED, pair.server.state, "the requests ended the association");
+		Assert.isTrue(largest <= crossbyte.net.rtc.DtlsTransport.MAX_DATAGRAM, "the answers took a packet of " + largest + " bytes");
+		Assert.equals(8, answers, "a packet of 801 requests drew " + answers + " answers");
+
+		// The request in sequence, crowded out, is acted on when repeated.
+		var reset:Array<Int> = [];
+		pair.serverData.onStreamsReset = streams -> if (streams != null) for (s in streams) reset.push(s);
+		pair.chunksToServer([requests[800]]);
+		Assert.equals("3", reset.join(","), "the request in sequence was never acted on");
+	}
+
+	/**
+		A peer that acknowledges everything but the first fragment cannot make
+		this end keep everything it sends after.
+
+		Neither window counts what gap blocks acknowledged, and it is kept
+		until the cumulative acknowledgement passes it, so a peer that held
+		that back had this end keep every fragment the application sent,
+		5,000 fragments of a kilobyte, with `bufferedAmount` at 0 throughout,
+		so the application had nothing telling it to stop. Now no more than
+		`MAX_TSN_AHEAD` go past the peer's cumulative acknowledgement, and the
+		rest wait where `bufferedAmount` counts them.
+	**/
+	public function testAPeerHoldingBackItsAcknowledgementCannotMakeThisEndKeepEverything():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var transfer = pair.clientData;
+		var highest:Int = -1;
+		var first:Int = -1;
+
+		pair.client.onSend = function(payload:ByteArray):Void {
+			var packet = SctpPacket.decode(payload, false);
+
+			for (chunk in packet.chunks) {
+				if (chunk.type == SctpPacket.CHUNK_DATA) {
+					chunk.value.endian = Endian.BIG_ENDIAN;
+					chunk.value.position = 0;
+					var tsn:Int = chunk.value.readInt();
+
+					if (first < 0) {
+						first = tsn;
+					}
+
+					if (tsn - first > highest) {
+						highest = tsn - first;
+					}
+				}
+			}
+		};
+
+		@:privateAccess transfer.__peerWindow = 0x3FFFFFFF;
+
+		for (round in 0...60) {
+			for (_ in 0...500) {
+				transfer.send(0, filled(1), SctpDataChunk.PPID_BINARY, false, pair.now);
+			}
+
+			// Everything after the first fragment, gap-acknowledged; the first
+			// never.
+			if (highest >= 1) {
+				var value = new ByteArray();
+				value.endian = Endian.BIG_ENDIAN;
+				value.writeInt((first - 1) | 0);
+				value.writeInt(0x3FFFFFFF);
+				value.writeShort(1);
+				value.writeShort(0);
+				value.writeShort(2);
+				value.writeShort(highest + 1);
+				value.position = 0;
+				pair.sackToClient(new SctpChunk(SctpPacket.CHUNK_SACK, 0, value));
+			}
+
+			pair.now += 0.01;
+			transfer.poll(pair.now);
+		}
+
+		Assert.isTrue(transfer.outstandingCount() <= SctpDataTransfer.MAX_TSN_AHEAD,
+			"this end kept " + transfer.outstandingCount() + " fragments past a cumulative acknowledgement the peer held back");
+		Assert.isTrue(transfer.bufferedAmount > 0, "what could not be sent was not counted in bufferedAmount");
 	}
 
 	/**
