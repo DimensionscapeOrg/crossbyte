@@ -268,8 +268,28 @@ class PeerConnection {
 		another pair before this ends the connection, though the ICE agent on
 		its own would retry (its `timeout` is 80 s): raise this past 80 to
 		give it that chance on a lossy path.
+
+		0 for no deadline, as `IceAgent.timeout` and every other timeout here
+		read it. Then only the agent's own `timeout` ends a connect or a
+		restart that finds no path, and nothing ends one whose peer stops
+		after ICE, a DTLS server waiting for a ClientHello, an SCTP listener
+		for an INIT, so a connection given no deadline is one the
+		application closes itself. 0 used to fail the connection at the first
+		poll after `connect`.
+
+		@throws ArgumentError When negative or not a number. NaN compared
+		false with every elapsed time, so the deadline it was given never
+		came; a negative one failed every connection at once.
 	**/
-	public var readyTimeout:Float = DEFAULT_READY_TIMEOUT;
+	public var readyTimeout(default, set):Float = DEFAULT_READY_TIMEOUT;
+
+	@:noCompletion private function set_readyTimeout(value:Float):Float {
+		if (!(value >= 0)) {
+			throw new ArgumentError('readyTimeout must be a number of seconds, 0 for no deadline, and was $value.');
+		}
+
+		return readyTimeout = value;
+	}
 
 	/** Called when the peer opens a channel rather than answering one. **/
 	public dynamic function onChannel(channel:DataChannel):Void {}
@@ -976,7 +996,7 @@ class PeerConnection {
 			}
 
 			// Given as long to find its path as a connection is to come up.
-			if (__restartAgent != null && now - __restartStartedAt >= readyTimeout) {
+			if (__restartAgent != null && readyTimeout > 0 && now - __restartStartedAt >= readyTimeout) {
 				__abandonRestart("The ICE restart found no path to the peer within " + readyTimeout + " seconds.");
 
 				if (__closed) {
@@ -1002,7 +1022,7 @@ class PeerConnection {
 			return;
 		}
 
-		if (!connected && __connecting && now - __connectStartedAt >= readyTimeout) {
+		if (!connected && __connecting && readyTimeout > 0 && now - __connectStartedAt >= readyTimeout) {
 			__fail("The connection did not become ready within " + readyTimeout + " seconds: " + __phase() + ".");
 			return;
 		}

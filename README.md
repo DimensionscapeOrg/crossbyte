@@ -550,6 +550,20 @@ instead, where `bytesPending` counts it and `maxOutputBufferSize` bounds it.
 A smaller buffer is cheaper and slower over a long path: a connection moves
 at most one buffer per round trip.
 
+## WebRTC: what a peer can cost
+
+A `PeerConnectionHost` creates nothing for a datagram until it has proved
+who sent it, a STUN check is answered only once its MESSAGE-INTEGRITY
+checks against a connection's credentials, and DTLS is routed by an address
+ICE has proved, so there is no reflection and no half-open table to fill.
+What follows bounds a peer that has been through signalling: one that can
+send whatever it likes once connected, sharing a runtime with every other
+peer on it.
+
+| On the connection | Default | Bounds |
+| --- | --- | --- |
+| `readyTimeout` | 30 s | `connect` until the whole stack is up, and an ICE restart; 0 for no deadline |
+
 ## Extensions
 
 CrossByte's extension story is intentional: features that benefit from native backends or external platform libraries can live in sibling haxelibs instead of bloating the core.
