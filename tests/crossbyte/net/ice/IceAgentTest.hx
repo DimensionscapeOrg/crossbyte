@@ -272,7 +272,135 @@ class IceAgentTest extends utest.Test {
 
 		for (agent in [alice, bob]) {
 			var locals:Array<String> = [for (local in @:privateAccess agent.__locals) local.address];
+			var learned:Array<String> = [for (local in @:privateAccess agent.__learned) local.address];
 			Assert.equals(1, locals.length, "an agent learned " + locals.join(",") + " from answers over IPv6");
+			Assert.equals(0, learned.length, "an agent learned " + learned.join(",") + " from answers over IPv6");
+		}
+	}
+
+	/**
+		A peer naming a new place in every answer costs the agent the same for
+		each answer, and teaches it no more than `MAX_LEARNED_LOCAL_CANDIDATES`.
+
+		Each answer to a check says where the peer saw it arrive from, and one
+		naming a place the agent had no candidate for made a peer-reflexive
+		candidate of it, with no bound, and with the whole candidate list
+		paired again for each, so every answer cost more than the one before:
+		5.7 ms an answer on the jvm by the 2,000th, 137 seconds for answers
+		1,000 to 2,000 on the interpreter, the runtime serving nothing else
+		meanwhile. A role conflict after each answer is what lets the peer
+		have the check sent again, and answer it again.
+
+		Measured as a shape rather than a figure: the cost of an answer in the
+		last stretch against the first, which is flat when the work per answer
+		does not grow and doubles with each stretch when it does.
+	**/
+	public function testAPeerNamingANewPlaceInEveryAnswerCostsTheSameEachTime():Void {
+		if (unsupported()) return;
+
+		var peer = credentials("peer");
+		var agent = new IceAgent(false, credentials("agent"), Int64.make(0, 1));
+		var transaction:ByteArray = null;
+
+		agent.onSend = function(payload:ByteArray, _, _):Void {
+			var sent = StunMessage.decode(payload);
+
+			if (sent != null && sent.type == StunMessage.BINDING_REQUEST) {
+				transaction = sent.transactionId;
+			}
+		};
+
+		agent.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		agent.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		agent.start(peer, 0);
+		agent.poll(0);
+
+		var answered:Int = 0;
+		var perAnswer:Array<Float> = [];
+
+		for (upTo in [500, 1000, 2000, 4000]) {
+			var from:Int = answered;
+			var start:Float = haxe.Timer.stamp();
+
+			while (answered < upTo) {
+				var place:String = "10.9." + ((answered >> 8) & 255) + "." + (answered & 255);
+				var answer = new StunMessage(StunMessage.BINDING_SUCCESS, transaction, [StunMessage.xorMappedAddress(place, 1000 + answered)]);
+				agent.receive(answer.encodeSigned(peer.password), BOB_ADDRESS, PORT, 1.0);
+
+				var conflict = new StunMessage(StunMessage.BINDING_ERROR, transaction, [StunMessage.errorCode(IceAgent.ROLE_CONFLICT, "Role Conflict")]);
+				agent.receive(conflict.encodeSigned(peer.password), BOB_ADDRESS, PORT, 1.0);
+				answered++;
+			}
+
+			perAnswer.push((haxe.Timer.stamp() - start) / (upTo - from));
+		}
+
+		var learned:Int = @:privateAccess agent.__learned.length;
+		Assert.equals(IceAgent.MAX_LEARNED_LOCAL_CANDIDATES, learned, "the agent learned " + learned + " candidates from one peer's answers");
+		Assert.equals(1, @:privateAccess agent.__locals.length, "a learned candidate was added to the ones paired");
+		Assert.equals(1, @:privateAccess agent.__checks.length, "a learned candidate made a pair of its own");
+		Assert.equals(1, agent.validPairs().length, "the checks the answers answered did not succeed");
+
+		// Four times, and 20 us besides for a target fast enough that a
+		// collection in the last stretch is most of it. Growing work per
+		// answer was 23 times by the 2,000th on the jvm, and doubles again
+		// by the 4,000th.
+		var first:Float = perAnswer[0];
+		var last:Float = perAnswer[perAnswer.length - 1];
+		Assert.isTrue(last <= first * 4 + 0.00002,
+			"an answer cost " + Std.int(first * 1e6) + " us in the first 500 and " + Std.int(last * 1e6) + " us in the last 2,000");
+	}
+
+	/**
+		Pairing a candidate at a time makes the list pairing the two whole
+		lists makes: every reachable pair once, a reflexive candidate checked
+		from its base, highest priority first, whichever order the
+		candidates arrive in, before checking starts or after.
+	**/
+	public function testCandidatesPairedAsTheyArriveMakeTheListPairingMakes():Void {
+		if (unsupported()) return;
+
+		var host = IceCandidate.host(ALICE_ADDRESS, PORT);
+		var hostSix = IceCandidate.host("fe80::1", PORT);
+		var seen:ReflexiveAddress = {address: "203.0.113.7", port: 61000};
+		var reflexive = IceCandidate.serverReflexive(seen, IceCandidate.COMPONENT_RTP, IceCandidate.DEFAULT_LOCAL_PREFERENCE, host);
+		var relayed = new IceCandidate(RELAYED, "198.51.100.9", 3478);
+		var locals = [host, reflexive, hostSix, relayed];
+		var remotes = [
+			IceCandidate.host(BOB_ADDRESS, PORT),
+			IceCandidate.host("fe80::2", PORT),
+			new IceCandidate(SERVER_REFLEXIVE, "203.0.113.20", 50000),
+			new IceCandidate(RELAYED, "198.51.100.30", 3478)
+		];
+
+		var expected:Array<String> = [for (pair in IceCandidatePair.pair(locals, remotes, true)) pair.toString()];
+
+		// Some of each before checking starts, the rest after, locals and
+		// remotes interleaved.
+		var agent = new IceAgent(true, credentials("alice"));
+		agent.addRemoteCandidate(remotes[2]);
+		agent.addLocalCandidate(locals[1]);
+		agent.addLocalCandidate(locals[3]);
+		agent.start(credentials("bob"), 0);
+		agent.addRemoteCandidate(remotes[0]);
+		agent.addLocalCandidate(locals[0]);
+		agent.addRemoteCandidate(remotes[3]);
+		agent.addLocalCandidate(locals[2]);
+		agent.addRemoteCandidate(remotes[1]);
+
+		var checks = @:privateAccess agent.__checks;
+		var made:Array<String> = [for (check in checks) check.pair.toString()];
+
+		// Pairs of equal priority, an IPv4 host pair and an IPv6 one, may
+		// sort either way round, so the lists are compared as sets and the
+		// order by priority alone.
+		Assert.equals(expected.length, made.length, "pairing as they arrived made " + made.length + " pairs, pairing the lists " + expected.length);
+		expected.sort(Reflect.compare);
+		made.sort(Reflect.compare);
+		Assert.equals(expected.join("\n"), made.join("\n"));
+
+		for (i in 1...checks.length) {
+			Assert.isTrue(Int64.compare(checks[i - 1].pair.priority, checks[i].pair.priority) >= 0, "the checks are not highest priority first");
 		}
 	}
 

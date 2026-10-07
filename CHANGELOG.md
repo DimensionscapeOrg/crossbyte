@@ -3956,6 +3956,24 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An ICE agent's answers no longer cost more with each one. Each answer
+  to a check names where the peer saw it arrive from, and one naming a
+  place the agent had no candidate for made a peer-reflexive candidate of
+  it, with no bound, and paired the whole candidate list again: a peer
+  that named a new place in every answer (re-asked each time with a role
+  conflict) made the 2,000th answer cost 5.7 ms on the jvm, and answers
+  1,000 to 2,000 took 137 seconds on the interpreter, with the runtime
+  serving nothing else. An agent now learns at most
+  `IceAgent.MAX_LEARNED_LOCAL_CANDIDATES` (64, one per remote candidate,
+  as libwebrtc keeps one per connection) and never pairs them, RFC 8445
+  section 7.2.5.3.1: a check leaves from the candidate's base, already
+  paired, and a candidate added is paired with the other side alone
+  rather than both whole lists again. Answer 4,000 costs what answer 500
+  did (jvm: 13 us, from 9 ms). `PeerConnection` and
+  `ReliableDatagramServerSocket.attachIceAgent` both used it. Tests:
+  `IceAgentTest`, 4,000 answers each naming a new place (failed before:
+  165 us an answer in the first 500, 8,975 us in the last 2,000), and the
+  list paired a candidate at a time against `IceCandidatePair.pair`.
 - Natively on macOS, an address written out on several threads at once
   could read back as "[inet_ntoa error]": hxcpp formatted it with
   `inet_ntoa`, whose buffer is one for the whole process there, filled
