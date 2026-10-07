@@ -168,9 +168,17 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 	#if (cpp && !windows)
 	/**
 		The real thing, natively on Linux and macOS: the process's descriptor
-		limit lowered until an accept cannot have one. The connections wait
-		in the kernel's queue, the server sets its listener aside rather than
-		spin, and once two descriptors are let go of, two are taken.
+		limit lowered until an accept cannot have one.
+
+		On Linux the connections wait in the kernel's queue and the listener
+		stays readable: the server sets it aside rather than spin, and once
+		descriptors are let go of, a waiting connection is taken. macOS
+		instead drops each connection whose accept found no descriptor, so
+		its listener goes quiet after one failure a connection and nothing
+		waits (measured on CI's macOS runner: four failed accepts, then
+		nothing readable and nothing left to take). There the failures are
+		counted, nothing spins, and a client connecting once descriptors are
+		free is taken.
 	**/
 	@:timeout(30000)
 	public function testOutOfDescriptorsAServerWaitsThenServes():Void {
@@ -196,6 +204,7 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 		var ballast:Array<sys.net.Socket> = [];
 		var clients:Array<sys.net.Socket> = [];
 		var attempts:Int = -1;
+		var failures:Int = 0;
 		var cpu:Float = 0;
 		var lowered:Bool = false;
 		if (started.wait(5.0)) {
@@ -217,7 +226,7 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 			if (lowered) {
 				// The limit bounds descriptor numbers, not how many are open:
 				// one closed earlier in the suite leaves a hole below it, and
-				// the accept takes that (macOS CI: no accept failed at all).
+				// the accept takes that.
 				// Take every number left, so the condition is made, not assumed.
 				// Natively a socket made with none left throws: caught, since
 				// escaping here would leave the limit lowered for every later
@@ -242,14 +251,29 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 				crossbyte.sys.System.sleep(1.0);
 				attempts = server.acceptFailures - before;
 				cpu = Sys.cpuTime() - cpuBefore;
+				failures = server.acceptFailures;
 				for (socket in ballast) {
 					try socket.close() catch (_:Dynamic) {}
 				}
+				#if !mac
 				__waitFor(() -> accepted >= 1, 3.0);
+				#end
 			}
 		}
 
 		crossbyte._internal.socket.NativeSocketOptions.setDescriptorLimit(original);
+		#if mac
+		if (lowered) {
+			// macOS dropped the connections it could not hand over: one made
+			// now shows the server serving again.
+			var late = new sys.net.Socket();
+			try {
+				late.connect(new sys.net.Host("127.0.0.1"), port);
+				clients.push(late);
+			} catch (_:Dynamic) {}
+			__waitFor(() -> accepted >= 1, 3.0);
+		}
+		#end
 		__stop(child, () -> {
 			if (server != null) {
 				try server.close() catch (_:Dynamic) {}
@@ -260,7 +284,12 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 		}
 
 		Assert.isTrue(lowered, "the descriptor limit could not be lowered");
+		#if mac
+		Assert.isTrue(failures >= 1, "no accept failed out of descriptors");
+		Assert.isTrue(attempts <= 20, "the server tried " + attempts + " accepts in a second out of descriptors");
+		#else
 		Assert.isTrue(attempts >= 1 && attempts <= 20, "the server tried " + attempts + " accepts in a second out of descriptors");
+		#end
 		Assert.isTrue(cpu < 0.5, "the process spent " + cpu + " s of processor time in a second out of descriptors");
 		Assert.isTrue(accepted >= 1, "nothing was taken once descriptors were let go of");
 	}

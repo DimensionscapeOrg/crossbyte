@@ -377,8 +377,11 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		Connections this server failed to take from the listen queue, for a
 		reason other than there being none to take: the process out of
 		descriptors (`EMFILE`, `ENFILE`), the system out of memory. The server
-		goes on listening; the connection waits in the kernel's queue
-		meanwhile, and is taken once the system will hand it over.
+		goes on listening. On Linux the connection waits in the kernel's
+		queue meanwhile, and is taken once the system will hand it over;
+		macOS drops a connection whose accept found no descriptor, so its
+		client finds it closed, and each failure there costs one connection
+		rather than a spinning listener.
 
 		After a failure the listener is set aside, not polled, for a
 		while, then asked again: 5 ms after the first, twice as long after

@@ -480,10 +480,11 @@ raises its soft limit to the hard one as the process starts, as Go and the
 JVM do: a shell's soft limit of 1,024 would stop a server near a thousand
 connections whatever the hard limit allowed, and the first server to listen
 says so, once, where the limit is still below 4,096. Past the limit an
-accept fails and the connection waits in the kernel's queue. The server sets
-its listener aside for 5 ms, then twice as long after each failure that
+accept fails; on Linux the connection waits in the kernel's queue (macOS
+drops it instead, so its client finds it closed). The server sets its
+listener aside for 5 ms, then twice as long after each failure that
 follows, at most a second, Go's `net/http` schedule, and what libuv, Netty
-and nginx do, and takes the connection once a descriptor frees.
+and nginx do, and takes a waiting connection once a descriptor frees.
 `acceptFailures` counts the failures, and the first of a run is reported as
 an `ioError`. A listener polled on every pass instead spun a core: 380,000
 failed accepts a second natively on Linux, measured, against seven now.
