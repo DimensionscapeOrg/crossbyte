@@ -395,7 +395,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		Set it before `connect()`: the window a connection starts with is
 		agreed as it connects, and a receive buffer asked for afterwards
-		changes what is held but not the window's scale. A socket a
+		changes what is held but not the window's scale. The size is asked
+		for again once the connection is up, since macOS sizes a connecting
+		socket's buffers from its route over what was asked. A socket a
 		`ServerSocket` accepted takes its server's `receiveBufferSize`.
 
 		What is granted may not be what was asked. Linux keeps twice what is
@@ -2985,6 +2987,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (doConnect) {
 			__connected = true;
 			__stopConnecting();
+			#if ((cpp || java || jvm) && !macro)
+			if (__receiveBufferRequest > 0 || __sendBufferRequest > 0) {
+				// Once more, now the handshake is done: macOS sizes a socket's
+				// buffers from its route as it connects, over what was asked
+				// before (loopback: 326,640 B where 24 KB was asked).
+				__applyBufferRequests(__socket);
+			}
+			#end
 			@:privateAccess
 			__cbInstance.registerSocket(__socket);
 			// Connected: from here it is watched for reading only.
