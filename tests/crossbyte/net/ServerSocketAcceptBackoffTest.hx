@@ -215,6 +215,22 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 			// Less the one the directory listing itself held while it counted.
 			lowered = open > 1 && crossbyte._internal.socket.NativeSocketOptions.setDescriptorLimit(open - 1);
 			if (lowered) {
+				// The limit bounds descriptor numbers, not how many are open:
+				// one closed earlier in the suite leaves a hole below it, and
+				// the accept takes that (macOS CI: no accept failed at all).
+				// Take every number left, so the condition is made, not assumed.
+				// Natively a socket made with none left throws: caught, since
+				// escaping here would leave the limit lowered for every later
+				// test (the Linux suite hung in SharedChannelTest).
+				try {
+					for (_ in 0...65536) {
+						var filler = new sys.net.Socket();
+						if (@:privateAccess filler.__s == null) {
+							break;
+						}
+						ballast.push(filler);
+					}
+				} catch (_:Dynamic) {}
 				try {
 					for (client in clients) {
 						client.connect(new sys.net.Host("127.0.0.1"), port);
