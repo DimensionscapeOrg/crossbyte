@@ -313,6 +313,26 @@ other version answers as for a method it does not have. Its name is not: a
 class and a typedef with the same fields are one layout, and the two ends of a
 call can use one each.
 
+**Against packing by hand.** The `PlayerState` above, with eight inventory
+slots, sent one-way and read into a `PlayerState` on the other side, both ends
+(`RpcGameBench`): natively 130 ns and 592 bytes allocated, against 274 ns and
+1,704 bytes when the same values are packed into a `Bytes` by hand, sent as a
+`Bytes` argument and unpacked by hand, 105 ns of which is the packing alone;
+on the jvm 189-205 ns and 544 bytes against 261-289 ns and 920. The frame is
+99 bytes, against 102. With `Slot` a class rather than a typedef, as above,
+natively; as a typedef the call is 181 ns and 1,296 bytes.
+
+**With hxwire.** A class can implement both `hxwire.WireObject` and
+`RPCStruct`: hxwire keeps its JSON and binary for storage, and RPC generates
+its own writer and reader, which stream into the frame where hxwire's would
+make a `Bytes` of their own. RPC reads `@:field(n)` and orders fields as
+hxwire does, so for fields both carry and that cannot be absent, `Int`,
+`Float`, `Bool`, `String`, `Bytes`, arrays of them, nested structures, the
+call's arguments are byte for byte what hxwire's `toBinary()` makes. (A field
+that may be absent differs: hxwire's byte says it is null, RPC's that it is
+there.) Fields hxwire leaves alone, RPC has to be told to: mark them
+`@:rpcSkip`. CrossByte does not depend on hxwire.
+
 ### Enums
 
 A simple enum is its constructor's index: one byte, or two for an enum of more

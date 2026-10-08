@@ -477,6 +477,17 @@ entry below says how:
   the limits for a peer that opens more, or names longer.
 
 ### Added
+- What the compiled RPC lane's new types are worth against packing by
+  hand, in the RPC guide ("Against packing by hand"): a player state,
+  an id, position and velocity as `Float32`s, flags, a name, eight
+  inventory slots, sent one-way and read into an object, natively 130 ns
+  and 592 bytes allocated, both ends, against 274 ns and 1,704 bytes for
+  the same values packed into `Bytes` by hand; on the jvm 189-205 ns and
+  544 bytes against 261-289 ns and 920. A class that is both an
+  `hxwire.WireObject` and an `RPCStruct` sends, for fields that cannot be
+  absent, exactly the bytes hxwire's `toBinary()` makes, with no
+  dependency on hxwire. The compact integers also take a `Float` (or
+  `Float32`) on the other side of an operator, as an `Int` does.
 - `Null<T>` of every kind the compiled RPC lane now carries, compact
   numbers, arrays, structures, enums, as an argument (or `?name`), an
   answer, an array element, a structure's field or an enum constructor's
