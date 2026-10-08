@@ -734,6 +734,60 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	/**
+		A one-way runtime call written value by value into this session's
+		frame, with no array and no boxing; see `RPCCallWriter`.
+
+		```haxe
+		// Given session:RPCSession<Dynamic, Dynamic>.
+		session.runtimeCall(102).float(1.5).float(2.5).send();
+		```
+
+		Valid until it is sent: send it, or `cancel()` it.
+	**/
+	public function runtimeCall(op:Int):RPCCallWriter {
+		return new RPCCallWriter(__startWriting(op, 0));
+	}
+
+	/**
+		A runtime request written value by value into this session's frame;
+		see `RPCRequestWriter`. Its `send()` returns the `RPCResponse<T>`, as
+		`request` does.
+
+		```haxe
+		// Given session:RPCSession<Dynamic, Dynamic>.
+		session.runtimeRequest(101).int(7).int(35).send().then(sum -> trace(sum));
+		```
+	**/
+	public function runtimeRequest<T>(op:Int):RPCRequestWriter<T> {
+		return new RPCRequestWriter<T>(__startWriting(op, __nextRuntimeRequestId()));
+	}
+
+	/** A frame begun for a writer: the session's, or a fresh one while that is taken. Its count goes in the byte kept after the head. **/
+	@:noCompletion private function __startWriting(op:Int, requestId:Int):RPCFrame {
+		final framed:RPCFrame = __takeFrame(RUNTIME_ROOM, RPCWire.FLAG_RUNTIME | (requestId != 0 ? RPCWire.FLAG_REQUEST : 0), op, requestId);
+		framed.building = true;
+		framed.owner = cast this;
+		framed.op = op;
+		framed.requestId = requestId;
+		framed.count = 0;
+		framed.countAt = framed.position;
+		framed.putByte(0);
+		return framed;
+	}
+
+	/** Sends a request a writer framed, waiting for its answer as `request` does. **/
+	@:noCompletion private function __sendWrittenRequest<T>(requestId:Int, op:Int, framed:RPCFrame):RPCResponse<T> {
+		final response = new RPCResponse<T>(requestId, op);
+		response.__session = cast this;
+		__trackRuntimeResponse(requestId, cast response);
+		if (callTimeout > 0) {
+			__queueDeadline(cast response, callTimeout);
+		}
+		__sendRequestFrame(response, framed);
+		return response;
+	}
+
+	/**
 		Sends a one-way runtime RPC call on the dynamic lane. Each argument is
 		`null`, a `Bool`, an `Int`, a `Float`, a `String` or `haxe.io.Bytes`,
 		a `ByteArray` among them, sent as its `length` bytes, and arrives

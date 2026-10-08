@@ -477,6 +477,19 @@ entry below says how:
   the limits for a peer that opens more, or names longer.
 
 ### Added
+- Typed calls on the RPC runtime lane: `RPCSession.runtimeCall(op)` and
+  `runtimeRequest(op)` give an `RPCCallWriter` / `RPCRequestWriter<T>` that
+  writes each value, `.int(7).float(1.5).string("x").bool(true)
+  .bytes(b).nullValue().value(v)`, straight into the session's frame and
+  `send()`s it, with no array and no boxing; a request's `send()` returns
+  its `RPCResponse<T>`. The frame is the one `call`/`request` send (a Float
+  always under the Float tag), so either side may be either kind. Valid
+  until sent: a writer used after `send()` or `cancel()` throws
+  `IllegalOperationError`; one taken while another is being written is
+  framed apart. Natively a one-way call of three Floats so written takes
+  105 ns and 184 bytes to an `Array<Dynamic>` handler (the handler's
+  array), where `call` takes 155 ns and 368 (RpcLaneBench). Tests:
+  `RPCCallWriterTest`.
 - What the compiled RPC lane's new types are worth against packing by
   hand, in the RPC guide ("Against packing by hand"): a player state,
   an id, position and velocity as `Float32`s, flags, a name, eight
