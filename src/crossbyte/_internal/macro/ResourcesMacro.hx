@@ -27,12 +27,6 @@ class ResourcesMacro {
 	/**
 		Copies the project's `resources` beside the program the build writes,
 		which is where `Resources` looks for it: `File.applicationDirectory`.
-
-		It went to the working directory, onto itself, except for a
-		Windows native build, which got `bin/windows/bin/`, a layout from an
-		older build tool that nothing writes a program into now. `Resources`
-		read the working directory's, so a program found its files only when
-		started from the project.
 	**/
 	private static function onAfterGenerate():Void {
 		if (projectDirectory == null) {

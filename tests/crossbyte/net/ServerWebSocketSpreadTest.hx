@@ -16,8 +16,8 @@ using StringTools;
 	upgrade, messages and close on the runtime it was handed to; the limits,
 	counts and drain of the server across all of them.
 
-	The clients are written by hand, an upgrade request and masked frames
-	over a blocking socket, so these run where no WebSocket client can:
+	The clients are written by hand (an upgrade request and masked frames
+	over a blocking socket), so these run where no WebSocket client can:
 	the interpreter, hl and neko have no secure random source for a client's
 	key.
 **/
@@ -369,10 +369,10 @@ class ServerWebSocketSpreadTest extends utest.Test {
 
 	/**
 		A connection the front counted under its address as it accepted it,
-		and handed to a runtime that closes it without taking it up, the
+		and handed to a runtime that closes it without taking it up (the
 		server stopping there, or the runtime exiting, while it was on its
-		way, is let go of from that count. It stayed counted for as long as
-		the server ran.
+		way), is let go of from that count, rather than staying counted for as
+		long as the server ran.
 	**/
 	@:timeout(30000)
 	public function testAHandOffClosedWithoutBeingTakenUpLetsGoOfItsAddress():Void {
@@ -480,7 +480,7 @@ class ServerWebSocketSpreadTest extends utest.Test {
 		Assert.isTrue(SpreadSupport.waitFor(() -> server.pendingHandshakeCount() == 4, WAIT));
 		// The server counts a session once it is accepted, a runtime once the
 		// session has reached it: until every one has arrived, the runtimes'
-		// counts read short of 4 (CI, eval and the jvm on Linux, 2026-10-04).
+		// counts can read short of 4, so the case waits for them.
 		var perRuntime:Array<Int> = [];
 		SpreadSupport.waitFor(() -> {
 			perRuntime = [for (replica in server.__spread.replicas) replica.__localPendingCount()];

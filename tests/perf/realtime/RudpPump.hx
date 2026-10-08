@@ -11,7 +11,7 @@ import haxe.Timer;
 /**
 	Reliable UDP over real loopback sockets, closed loop, in one process:
 	a server with `sessions` accepted sessions and as many clients, all on
-	one host-driven runtime. A round is what a game tick is, the server
+	one host-driven runtime. A round is what a game tick is: the server
 	sends each session one reliable message (`rel` bytes) and one sequenced
 	one (`seq` bytes), each client sends one reliable input (`input` bytes),
 	and the runtime is pumped until all of it has arrived.
@@ -183,7 +183,7 @@ class RudpPump extends HostApplication {
 		}
 
 		// Allocation: collection off, some rounds, the growth in what the
-		// collector has reserved, with nothing collected, every allocation
+		// collector has reserved: with nothing collected, every allocation
 		// takes new room, and the room is counted in blocks, so enough rounds
 		// that a block is small beside the total.
 		cpp.vm.Gc.run(true);

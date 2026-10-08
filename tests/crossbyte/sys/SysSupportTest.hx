@@ -38,36 +38,35 @@ class SysSupportTest extends utest.Test {
 	public function testThePlatformIsIdentifiedAtRuntimeAndNotByTheCompiler():Void {
 		// `#if windows` names the target the compiler was aimed at. Haxe sets
 		// it for cpp, hl and neko and does not set it for eval, the JVM or
-		// Node, so on Windows those three answered every platform question
-		// with the branch written for POSIX. It was invisible because the
-		// tests asked the same broken way.
+		// Node, so on Windows those three would answer every platform question
+		// with the branch written for POSIX, and tests asking the same way
+		// would not see it.
 		//
-		// "undefined" is the old System.PLATFORM's signature on exactly those
+		// "undefined" is what a compile-time PLATFORM gives on exactly those
 		// targets, and the only value that cannot be right anywhere.
 		Assert.notEquals("undefined", System.PLATFORM);
 		Assert.equals(System.PLATFORM == "windows", System.isWindows);
 		Assert.equals(Sys.systemName() == "Windows", System.isWindows);
 
-		// Derived from the same question, and wrong in the same places: File
-		// joins every path it builds on this, so on eval and Node under
-		// Windows it produced forward slashes against an OS handing it
-		// backslashes.
+		// Derived from the same question: File joins every path it builds on
+		// this, so asked at compile time, on eval and Node under Windows it
+		// would produce forward slashes against an OS handing it backslashes.
 		Assert.equals(System.isWindows ? "\\" : "/", File.separator);
 		// Escapes, not newlines typed inside the quotes. Written the second
 		// way each branch is whatever line ending this file happens to be
-		// saved with, so both sides always agreed and the assertion could
-		// not fail, and any tool that rewrote the file flipped them
+		// saved with, so both sides would always agree and the assertion could
+		// not fail, and any tool that rewrote the file would flip them
 		// invisibly, because .gitattributes normalises endings so a diff
 		// shows nothing.
 		Assert.equals(System.isWindows ? "\r\n" : "\n", File.lineEnding);
 	}
 
 	public function testTheStorageDirectoryDoesNotDependOnHOME():Void {
-		// This is where Store keeps its files. Under Windows the old
-		// conditional was false on Node, so it read HOME: the profile root
-		// when Git Bash had set it, a different location than a native build
-		// uses, for the same data, and null when nothing had, which reached
-		// callers as a relative directory named "undefined".
+		// This is where Store keeps its files. Under Windows a compile-time
+		// conditional would be false on Node, so it would read HOME: the
+		// profile root when Git Bash has set it (a different location than a
+		// native build uses, for the same data), and null when nothing has,
+		// which would reach callers as a relative directory named "undefined".
 		//
 		// The path, not the directory: asking for appStorageDir creates it, and
 		// this run would leave one in the account's application data.
@@ -86,10 +85,10 @@ class SysSupportTest extends utest.Test {
 	}
 
 	public function testSystemDirectoryGettersStayDistinctAndCached():Void {
-		// Runtime, like the code under test. This assertion used `#if windows`
-		// too, so on eval, which does not set that define even on Windows,
-		// it expected HOME and got HOME, and the two were wrong together. A
-		// test that reproduces the bug it is checking for cannot see it.
+		// Runtime, like the code under test. Asked with `#if windows`, on eval
+		// (which does not set that define even on Windows) this would expect
+		// HOME and get HOME, and the two would be wrong together: a test that
+		// reproduces the bug it is checking for cannot see it.
 		var expectedUser = System.isWindows ? Sys.getEnv("USERPROFILE") : Sys.getEnv("HOME");
 		// Linux's xdg-user-dirs when the user has one; SystemTest reads it.
 		var xdgDesktop:Null<String> = @:privateAccess System.__xdgUserDir("XDG_DESKTOP_DIR");
@@ -114,9 +113,8 @@ class SysSupportTest extends utest.Test {
 
 	public function testProcessorCountIsAnswerableOnEverySupportedNativePlatform():Void {
 		#if (cpp && (windows || linux || mac || macos))
-		// Zero means the query fell through to the dispatcher's default rather
-		// than reaching a platform that can answer it, which is what macOS did
-		// before it had an implementation of its own.
+		// Zero would mean the query fell through to the dispatcher's default
+		// rather than reaching a platform that can answer it.
 		Assert.isTrue(System.processorCount >= 1, "expected at least one processor, got " + System.processorCount);
 		#else
 		Assert.pass();
@@ -130,10 +128,10 @@ class SysSupportTest extends utest.Test {
 		Assert.notNull(affinity);
 		Assert.equals(System.processorCount, affinity.length);
 		#elseif (cpp && (mac || macos))
-		// macOS has no process-level affinity, there is no
+		// macOS has no process-level affinity (there is no
 		// sched_setaffinity, and thread_policy_set is a per-thread hint the
-		// scheduler may ignore, and says so: an empty mask read as "no
-		// processor usable".
+		// scheduler may ignore), and says so, rather than answering an empty
+		// mask read as "no processor usable".
 		Assert.raises(() -> {
 			var mask = System.processAffinity;
 		}, crossbyte.errors.IllegalOperationError);
@@ -145,8 +143,8 @@ class SysSupportTest extends utest.Test {
 	}
 
 	public function testSystemFallbackPropertiesStaySafeOnNonCppTargets():Void {
-		// Every target reports at least one processor. It was 0 everywhere but
-		// native, and a TaskPool sized by it threw.
+		// Every target reports at least one processor; a TaskPool sized by
+		// 0 would throw.
 		Assert.isTrue(System.processorCount >= 1, "processorCount is " + System.processorCount);
 		#if cpp
 		if (System.PLATFORM == "mac") {
@@ -158,16 +156,16 @@ class SysSupportTest extends utest.Test {
 			Assert.notNull(System.processAffinity);
 			Assert.isTrue(System.processAffinity.length >= 0);
 		}
-		// The collector's 64-bit figure: the 32-bit one wrapped past 2GiB.
+		// The collector's 64-bit figure: the 32-bit one wraps past 2GiB.
 		Assert.isTrue(System.memoryUsage() > 0, "memoryUsage is " + System.memoryUsage());
 		#else
 		// Affinity is refused off native, and SystemTest checks the device
-		// id: these pinned the placeholders, [false] and "".
+		// id, rather than placeholders such as [false] and "".
 		Assert.raises(() -> {
 			var mask = System.processAffinity;
 		}, crossbyte.errors.IllegalOperationError);
 		#if (java || jvm || nodejs)
-		// It was 0 everywhere but native.
+		// Non-zero on every target, not only native.
 		Assert.isTrue(System.memoryUsage() > 0, "memoryUsage is " + System.memoryUsage());
 		#else
 		Assert.equals(0.0, System.memoryUsage());

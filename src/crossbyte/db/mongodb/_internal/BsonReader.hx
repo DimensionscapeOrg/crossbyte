@@ -26,8 +26,8 @@ import haxe.io.Bytes;
 
 	Documents become anonymous objects, or `BsonDocument`s with `ordered`.
 	A field name is interned: a result set's documents almost always share
-	their names, and a small table of those already made, checked against
-	the bytes before it is trusted, spares a string per field per document.
+	their names, and a small table of those already made (checked against
+	the bytes before it is trusted) spares a string per field per document.
 	On hxcpp a document of a shape met before is made with fixed slots, as
 	an object literal is; see `__shapedDocument`.
 **/
@@ -71,8 +71,8 @@ class BsonReader {
 			throw e;
 		} catch (e:Dynamic) {
 			// Whatever a target's string decoding throws at bytes that are not
-			// UTF-8, a RangeError on JavaScript, is the same malformed
-			// input, and reads as it. One handler per document, not per string.
+			// UTF-8 (a RangeError on JavaScript) is the same malformed input, and
+			// reads as it. One handler per document, not per string.
 			__bytes = null;
 			throw new IOError("Malformed BSON: " + Std.string(e));
 		}
@@ -180,18 +180,18 @@ class BsonReader {
 	/**
 		A plain document, made the way hxcpp makes an object literal: its
 		fields in fixed slots, found by a binary search, rather than in a hash
-		map allocated beside it and searched by hash, reading a field of one
+		map allocated beside it and searched by hash: reading a field of one
 		costs a third to a half less. The fields are read first, and the
 		document is made once their names are known.
 
-		The slot order is worked out once per shape, a list of names, and
+		The slot order is worked out once per shape (a list of names) and
 		kept per depth: a reply's envelope, a batch's documents and their
 		sub-documents each find theirs at the head of their depth's list. A
 		shape is kept only once it has been met twice running at its depth,
 		so documents of ever-new shapes, as a hostile server could send, cost
 		a comparison of names each, never a new shape each; and only shapes
 		of at most SHAPED_FIELDS names of at most SHAPED_NAME bytes, whose
-		names AnonBuilder keeps for good. Anything else is made as before.
+		names AnonBuilder keeps for good. Anything else uses the hash map.
 	**/
 	@:noCompletion private function __shapedDocument(start:Int, end:Int, depth:Int):Dynamic {
 		var bytes:Bytes = __bytes;

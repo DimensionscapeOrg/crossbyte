@@ -13,9 +13,9 @@ import haxe.io.Bytes;
 /**
 	An address on a relay, for when no direct path exists.
 
-	ICE tries every direct route first and usually finds one. When it does not,
-	symmetric NAT at both ends, a corporate firewall that permits only
-	outbound TCP, a mobile carrier's CGNAT, there is no packet either peer can
+	ICE tries every direct route first and usually finds one. When it does not
+	(symmetric NAT at both ends, a corporate firewall that permits only
+	outbound TCP, a mobile carrier's CGNAT), there is no packet either peer can
 	send that the other will receive, and no amount of hole punching invents
 	one. TURN is the answer to that: a server both peers *can* reach agrees to
 	forward between them.
@@ -76,18 +76,17 @@ import haxe.io.Bytes;
 	## A relay named by hostname is resolved once
 
 	The first request goes to `serverAddress` as given, and the relay's first
-	answer fixes where every later one goes: the address it came from. A name
-	sent to for the life of an allocation was looked up again under it,
-	natively every minute, on Node for every datagram, and a round-robin pool
-	of relays answers each lookup with another member, which knows neither the
-	allocation nor the nonce: 96,000 stale-nonce refusals in eleven seconds, and
-	nothing allocated.
+	answer fixes where every later one goes: the address it came from. A
+	name looked up again for the life of an allocation (natively every
+	minute, on Node for every datagram) would reach another member of a
+	round-robin pool of relays at each lookup, one that knows neither the
+	allocation nor the nonce, and nothing would be allocated.
 
 	## Over TCP, over IPv6, and RFC 8489's credentials
 
 	A network that lets nothing out but TCP blocks the UDP a relay is usually
 	reached by; `transport` reaches it over a TCP or TLS connection instead,
-	with every message framed for a stream (RFC 8656 section 3.1), hand
+	with every message framed for a stream (RFC 8656 section 3.1); hand
 	what arrives to `receiveStream`, and `streamClosed` when the connection
 	ends. `requestIPv6` asks for an IPv6 relayed address, for peers on IPv6.
 	A relay that offers RFC 8489's password algorithms is answered with
@@ -99,10 +98,10 @@ import haxe.io.Bytes;
 	Each request is a transaction of its own, matched to its answer by its id,
 	and several can be outstanding at once, up to `MAX_IN_FLIGHT`, with up to
 	`MAX_QUEUED` more waiting for room. A refresh never waits: it goes the
-	moment it is due. It used to be sent only when nothing else was in flight,
-	so a caller asking for permissions faster than the relay answered them kept
-	it waiting until the allocation expired. Asking for a permission that is
-	already in place, or already being asked for, sends nothing.
+	moment it is due, so a caller asking for permissions faster than the
+	relay answers them cannot keep it waiting until the allocation expires.
+	Asking for a permission that is already in place, or already being asked
+	for, sends nothing.
 
 	## Channels, and why they are off unless asked for
 
@@ -114,8 +113,8 @@ import haxe.io.Bytes;
 
 	`useChannels` turns it on, and it is off by default because getting it
 	wrong is not a slower connection but a dead one. A `ChannelData` message is
-	not STUN, its first two bits are not zero, which is exactly how it is told
-	apart, so a relay that binds a channel and then drops what it is sent over
+	not STUN (its first two bits are not zero, which is exactly how it is told
+	apart), so a relay that binds a channel and then drops what it is sent over
 	it has no way to say so. UDP reports nothing, the datagrams stop, and there
 	is nothing to fall back from.
 
@@ -131,7 +130,7 @@ import haxe.io.Bytes;
 	Once on, it happens on its own. The first datagram `sendTo` sends to a
 	peer goes as an indication and asks for a channel at the same time; once
 	the relay agrees, the rest go as `ChannelData`. A relay that refuses the
-	bind outright is the safe case, the indications simply keep working.
+	bind outright is the safe case: the indications simply keep working.
 	The peer still needs `permit`, since the indications meanwhile do.
 
 	Channels last ten minutes and are rebound at eight. A rebind the relay
@@ -159,8 +158,7 @@ class TurnClient {
 		RFC 8489's Rm of sixteen times the first timeout.
 
 		So a request nothing answers is given up on 39.5 seconds after it was
-		first sent, which is what section 6.2.1 works out. It waited one more
-		doubling instead, and gave up at 63.5.
+		first sent, which is what section 6.2.1 works out.
 	**/
 	public static inline var FINAL_WAIT:Float = 8.0;
 
@@ -174,10 +172,10 @@ class TurnClient {
 	/**
 		Stale-nonce refusals one request takes before it is given up on.
 
-		A 438 is ordinary, a relay rotates its nonces, and is answered by
+		A 438 is ordinary (a relay rotates its nonces) and is answered by
 		asking again with the new one. A relay that refuses the new one too,
 		and the next, is not rotating anything, and asking without a limit
-		asked it some nine thousand times a second.
+		would ask it some nine thousand times a second.
 	**/
 	public static inline var MAX_STALE_NONCES:Int = 3;
 
@@ -291,11 +289,12 @@ class TurnClient {
 		relay refused or never answered, a permission it never answered or
 		answered by saying it holds no such allocation, or a refresh answered
 		with a lifetime of zero. Not called for `close()`, nor for one peer the
-		relay would not let through, see `onPermissionRefused`.
+		relay would not let through (see `onPermissionRefused`).
 
 		`allocated` resolved long before, so it cannot say this, and `active`
-		going false is a flag nothing is obliged to read. A connection whose
-		path ran through the relay otherwise went silent with no reason given.
+		going false is a flag nothing is obliged to read; without this, a
+		connection whose path ran through the relay would go silent with no
+		reason given.
 	**/
 	public dynamic function onLost(reason:String):Void {}
 
@@ -304,12 +303,13 @@ class TurnClient {
 		answered with an error, 403 most often. The allocation carries on for
 		every other peer, and that one is not asked for again.
 
-		A refusal is ordinary, and it used to end the whole allocation. A
-		hardened relay refuses private and loopback addresses, coturn's
-		`denied-peer-ip`: and ICE pairs a relayed candidate with every one of
+		A refusal is ordinary, and does not end the whole allocation. A
+		hardened relay refuses private and loopback addresses (coturn's
+		`denied-peer-ip`), and ICE pairs a relayed candidate with every one of
 		the peer's candidates, host addresses first, so the permission asked for
-		first was often one the relay would never grant: the relay was torn
-		down before the relayed pair that would have worked was tried.
+		first is often one the relay will never grant; ending the allocation
+		there would tear the relay down before the relayed pair that would
+		work was tried.
 
 		@param code The relay's error code, such as 403, or 0 when it gave none.
 	**/
@@ -341,7 +341,7 @@ class TurnClient {
 	#if !macro
 	/**
 		For a relay reached over TLS: the authority its certificate must chain
-		to, where that is not one the system trusts, a private relay's own.
+		to, where that is not one the system trusts (a private relay's own).
 		As `Socket.certAuthority`; `null` trusts the system's.
 	**/
 	public var certAuthority:Null<Certificate> = null;
@@ -372,7 +372,7 @@ class TurnClient {
 		The host a stream to the relay is opened to, for a `transport` of TCP
 		or TLS: `serverAddress`, unless a 300 Try Alternate over TLS named the
 		alternate's domain (ALTERNATE-DOMAIN), which its certificate is checked
-		against, a relay's certificate rarely names its address.
+		against: a relay's certificate rarely names its address.
 	**/
 	@:noCompletion @:allow(crossbyte.net._internal.stun.TurnStream) private var __streamHost:String;
 
@@ -413,8 +413,8 @@ class TurnClient {
 	@:noCompletion private var __clock:Float = 0;
 
 	/**
-		RFC 8489's password algorithm the key is derived with, MD5 unless the
-		relay offered SHA-256, and the PASSWORD-ALGORITHMS it offered, echoed
+		RFC 8489's password algorithm the key is derived with (MD5 unless the
+		relay offered SHA-256), and the PASSWORD-ALGORITHMS it offered, echoed
 		in every request as it came, or null when it offered none.
 	**/
 	@:noCompletion private var __algorithm:Int = StunMessage.PASSWORD_ALGORITHM_MD5;
@@ -453,7 +453,7 @@ class TurnClient {
 	@:noCompletion private var __indicationAt:Int = 0;
 
 	/**
-		@param username Long-term credentials, which a relay always requires,
+		@param username Long-term credentials, which a relay always requires:
 		it is forwarding somebody's traffic and needs to know whose.
 		@param transport How the relay is reached; UDP when left out.
 	**/
@@ -490,20 +490,20 @@ class TurnClient {
 	/**
 		Replaces the credentials requests are signed with from now on.
 
-		For a credential that expires, the TURN REST convention, where a
-		relay's operator hands out a password good for an hour, or one that
+		For a credential that expires (the TURN REST convention, where a
+		relay's operator hands out a password good for an hour), or one that
 		is rotated. A request already signed with the old ones and refused with
 		401 is retried with these, which RFC 8489 allows a client to do only
 		when something about its credentials has changed.
 
 		A relay ties an allocation to the username that made it and refuses a
 		request on it signed with another (441), so a new username is for the
-		next allocation, another client, and a new password for the same
+		next allocation (another client), and a new password for the same
 		username applies to this one.
 
 		@throws ArgumentError When either is null, or when `username` is not
-		the one an allocation held or being made was signed with. It was taken,
-		and the relay refused the next Refresh with 441, ending the allocation.
+		the one an allocation held or being made was signed with: the relay
+		would refuse the next Refresh with 441, ending the allocation.
 	**/
 	public function setCredentials(username:String, password:String):Void {
 		if (username == null || password == null) {
@@ -536,7 +536,7 @@ class TurnClient {
 		moves the 5-tuple the relay knows this client by, answers the next
 		refresh with 437, and waiting up to five minutes to hear that is
 		five minutes of advertising a relayed address nothing reaches. A lost
-		allocation is reported through `onLost` as ever.
+		allocation is reported through `onLost` as usual.
 	**/
 	public function refresh(now:Float):Void {
 		if (__closed || !active || __refreshing) {
@@ -579,13 +579,12 @@ class TurnClient {
 		A relay drops anything from an address it has not been told to expect,
 		which is what stops an allocation being an open forwarder for whoever
 		finds it. A permission lasts five minutes, and refreshing the allocation
-		does not renew it (RFC 5766 section 8), `poll` asks again well inside
+		does not renew it (RFC 5766 section 8); `poll` asks again well inside
 		that, the way it does for a channel.
 
 		Cheap to call as often as a datagram is sent: a permission already in
 		place, or already being asked for, sends nothing, and neither does one
-		the relay has refused. It used to ask again on every call, and a caller
-		doing that had requests queued by the thousand.
+		the relay has refused.
 
 		@throws ArgumentError When `peerAddress` is not an address of the
 		allocation's own family: an IPv4 allocation reaches IPv4 peers, an IPv6
@@ -601,7 +600,7 @@ class TurnClient {
 		var permission = __permissions.get(peerAddress);
 
 		if (permission == null) {
-			// Before it is kept, or `poll` would renew it, and throw, for good.
+			// Before it is kept, or `poll` would renew it (and throw) for good.
 			__requirePeer(peerAddress);
 			permission = new TurnPermission(peerAddress);
 			__permissions.set(peerAddress, permission);
@@ -626,7 +625,7 @@ class TurnClient {
 		Sends a datagram to a peer through the relay.
 
 		Wrapped in a Send indication, which is not acknowledged and not
-		retransmitted, the relay forwards it or it does not, exactly as a
+		retransmitted: the relay forwards it or it does not, exactly as a
 		datagram sent directly would arrive or not.
 
 		@param offset Where in `payload` the datagram starts.
@@ -655,8 +654,7 @@ class TurnClient {
 		}
 
 		// With channels on, the first datagram to a peer asks for one, as the
-		// class documentation says it happens: on its own. Only callers that
-		// asked themselves ever got one, this client never did.
+		// class documentation says it happens: on its own.
 		if (useChannels && (channel == null || (!channel.bound && !channel.pending && !channel.refused))) {
 			bindChannel(peerAddress, peerPort, __clock);
 		}
@@ -737,10 +735,10 @@ class TurnClient {
 		IPv4 for an IPv4 allocation, IPv6 for an IPv6 one, as RFC 8656 section
 		9.1 has a relay refuse the rest with 443.
 
-		An IPv4 peer's octets were read with `Std.parseInt` and written modulo
-		256, so 1.2.3.999 was permitted as 1.2.3.231 and an IPv6 address as
-		whatever its first group read as, the relay then forwarding to a host
-		nobody named.
+		Without it, an IPv4 peer's octets read with `Std.parseInt` and written
+		modulo 256 would permit 1.2.3.999 as 1.2.3.231, and an IPv6 address
+		as whatever its first group read as, the relay then forwarding to a
+		host nobody named.
 	**/
 	@:noCompletion private function __requirePeer(peerAddress:String):Void {
 		if (__relayedIPv6) {
@@ -756,7 +754,7 @@ class TurnClient {
 		A peer's address as the relay will report it: an IPv6 one in canonical
 		form, so the Data indications it forwards find the permission asked for
 		under whatever spelling. An IPv4 one, or anything that is not an IPv6
-		address, as it is, the check that refuses it comes after.
+		address, as it is: the check that refuses it comes after.
 	**/
 	@:noCompletion private inline function __spelled(address:String):String {
 		if (!__relayedIPv6 || address.indexOf(":") < 0) {
@@ -907,10 +905,9 @@ class TurnClient {
 			}
 		}
 
-		// And every permission well inside its five minutes. Nothing did this:
-		// the allocation was refreshed and the channels were, but a permission
-		// simply lapsed, after which the relay drops that peer's traffic
-		// without saying so.
+		// And every permission well inside its five minutes: refreshing the
+		// allocation does not renew one, and a permission that lapses has the
+		// relay drop that peer's traffic without saying so.
 		if (active) {
 			for (permission in __permissions) {
 				if (permission.granted && !permission.pending && !permission.refused && now - permission.grantedAt >= PERMISSION_REFRESH) {
@@ -929,7 +926,7 @@ class TurnClient {
 		that: a socket that TURN shares with ICE decodes each datagram once and
 		offers the message to both, rather than having each decode it again.
 		@return Whether it was TURN traffic. Anything else belongs to whatever
-		shares the socket, an ICE check, or a session already running.
+		shares the socket: an ICE check, or a session already running.
 	**/
 	public function receive(payload:ByteArray, fromAddress:String, fromPort:Int, now:Float, ?message:StunMessage):Bool {
 		// A relay reached over a stream says everything over the stream.
@@ -939,13 +936,12 @@ class TurnClient {
 
 		__clock = now;
 
-		// Only the relay speaks for the relay. Relayed data and answers were
-		// taken from any sender: anyone who could reach the socket could hand
-		// the application a datagram as though a peer had sent it, on the
-		// first channel number or wrapped as a Data indication. Once the relay
-		// has an address, given as one, or the first answer's, nothing from
-		// anywhere else is TURN traffic, and it is left for whoever else is on
-		// the socket.
+		// Only the relay speaks for the relay; anyone else who could reach the
+		// socket could otherwise hand the application a datagram as though a
+		// peer had sent it, on the first channel number or wrapped as a Data
+		// indication. Once the relay has an address (given as one, or the
+		// first answer's), nothing from anywhere else is TURN traffic, and it
+		// is left for whoever else is on the socket.
 		if (fromPort != serverPort || (__pinned && fromAddress != serverAddress)) {
 			return false;
 		}
@@ -956,8 +952,8 @@ class TurnClient {
 	/**
 		Offers bytes that arrived on the stream to the relay, when `transport`
 		is TCP or TLS: any amount, split anywhere. Whole messages are taken out
-		as they complete, a STUN message by the length in its header, a
-		ChannelData message by its own, padded to four bytes, and the rest
+		as they complete (a STUN message by the length in its header, a
+		ChannelData message by its own, padded to four bytes), and the rest
 		kept for the next call.
 
 		A stream that carries something that is neither ends the allocation:
@@ -1032,8 +1028,8 @@ class TurnClient {
 
 	/**
 		Says the stream to the relay has ended, when `transport` is TCP or TLS.
-		The allocation ends with it, a relay deletes an allocation whose
-		connection closes, and is reported the way any other loss is.
+		The allocation ends with it (a relay deletes an allocation whose
+		connection closes) and is reported the way any other loss is.
 	**/
 	public function streamClosed(reason:String):Void {
 		if (__closed || transport == UDP) {
@@ -1084,9 +1080,9 @@ class TurnClient {
 
 		// An answer that fails its checks is dropped as though it never came,
 		// and the request goes on being retransmitted: RFC 8489 section 9.2.5.
-		// A signed request's answer was believed without its integrity being
-		// looked at, so whoever saw a request go by could answer it, with a
-		// relayed address of their own choosing.
+		// Believed without its integrity being looked at, a signed request's
+		// answer could come from whoever saw the request go by, with a relayed
+		// address of their own choosing.
 		if (!__authentic(request, message)) {
 			request.discarded++;
 			return true;
@@ -1192,12 +1188,12 @@ class TurnClient {
 
 		The telling is a Refresh with a lifetime of zero, which is how RFC 8656
 		deletes an allocation, sent once and not retransmitted: nothing is left
-		to hear the answer. Without it the relay held the allocation and its
-		port for as long as it had been granted, an hour on some relays,
-		so the next client on the same socket was refused with 437, and an
-		application that reconnected ran into the relay's quota. Sent too when
-		the Allocate is still unanswered but signed, since the relay may have
-		granted it already.
+		to hear the answer. Without it the relay would hold the allocation and
+		its port for as long as it had been granted (an hour on some relays),
+		so the next client on the same socket would be refused with 437, and
+		an application that reconnected would run into the relay's quota.
+		Sent too when the Allocate is still unanswered but signed, since the
+		relay may have granted it already.
 	**/
 	public function close():Void {
 		if (__closed) {
@@ -1234,7 +1230,7 @@ class TurnClient {
 
 		An Allocate and a Refresh are never queued. Nothing else can be in
 		flight before the Allocate is answered, and a Refresh queued behind
-		permissions was how an allocation expired while the client was busy
+		permissions could let the allocation expire while the client is busy
 		asking for them.
 	**/
 	@:noCompletion private function __start(request:TurnTransaction, now:Float):Void {
@@ -1309,8 +1305,8 @@ class TurnClient {
 			];
 
 			// And where it offered password algorithms, the one chosen, the list
-			// echoed as it came, which is what tells the relay nothing
-			// stripped it on the way, and SHA-256 integrity alone, as RFC 8489
+			// echoed as it came (which is what tells the relay nothing
+			// stripped it on the way), and SHA-256 integrity alone, as RFC 8489
 			// section 9.2.5 has it.
 			if (__offeredAlgorithms != null) {
 				credentials.push(StunMessage.passwordAlgorithm(__algorithm));
@@ -1331,10 +1327,10 @@ class TurnClient {
 		Moves a request to a new transaction and sends it, remembering the old.
 
 		RFC 8489 section 9.2.5: a request retried with credentials, or with a
-		fresh nonce, is a new transaction. Retrying under the old one meant a
-		second answer to the first attempt, a 401 to an unsigned request that
-		had been retransmitted, because its answer was slow, matched the
-		signed retry and read as the credentials being rejected.
+		fresh nonce, is a new transaction. Under the old one, a second answer
+		to the first attempt (a 401 to an unsigned request that had been
+		retransmitted because its answer was slow) would match the signed
+		retry and read as the credentials being rejected.
 	**/
 	@:noCompletion private function __retry(request:TurnTransaction, now:Float):Void {
 		__retired.push(request.message.transactionId);
@@ -1433,9 +1429,9 @@ class TurnClient {
 		// 401 the first time, 438 when the nonce a request was signed against
 		// has expired. Both mean the same thing: take the credentials offered
 		// and ask again, as a new transaction. For any request, a ChannelBind
-		// included, which was not retried, so a nonce that went stale between
-		// refreshes left the channel marked bound while the relay dropped
-		// everything sent on it.
+		// included: otherwise a nonce that went stale between refreshes would
+		// leave the channel marked bound while the relay dropped everything
+		// sent on it.
 		if (code == StunMessage.UNAUTHORIZED || code == StunMessage.STALE_NONCE) {
 			var realm = message.textOf(StunMessage.ATTR_REALM);
 			var nonce = message.textOf(StunMessage.ATTR_NONCE);
@@ -1446,7 +1442,7 @@ class TurnClient {
 			}
 
 			// Only once for 401, so a relay that keeps refusing cannot hold
-			// this in a loop: a signed request refused is refused credentials,
+			// this in a loop: a signed request refused is refused credentials
 			// unless they have been replaced since it was signed, which is
 			// the one change RFC 8489 lets a client retry a 401 for.
 			if (code == StunMessage.UNAUTHORIZED && request.signed && request.generation == __generation) {
@@ -1465,8 +1461,8 @@ class TurnClient {
 
 			// RFC 8489's security features, which the nonce declares. A nonce
 			// saying the relay offers password algorithms, on an answer that
-			// lists none, is the list stripped on the way, a downgrade to
-			// MD5, and section 9.2.5 has the client not retry at all.
+			// lists none, is the list stripped on the way (a downgrade to
+			// MD5), and section 9.2.5 has the client not retry at all.
 			var features:Int = StunMessage.nonceFeatures(nonce);
 			var offered = message.attribute(StunMessage.ATTR_PASSWORD_ALGORITHMS);
 
@@ -1498,7 +1494,7 @@ class TurnClient {
 				copy.blit(0, offered, 0, offered.length);
 				__offeredAlgorithms = copy;
 			} else if (code == StunMessage.UNAUTHORIZED) {
-				// A relay from before RFC 8489: MD5, SHA-1 integrity, as ever.
+				// A relay from before RFC 8489: MD5, and SHA-1 integrity.
 				algorithm = StunMessage.PASSWORD_ALGORITHM_MD5;
 				__offeredAlgorithms = null;
 			}
@@ -1539,20 +1535,19 @@ class TurnClient {
 		Follows a 300 Try Alternate: the Allocate goes to the server it names,
 		as a new transaction, with the same credentials (RFC 8489 section 10).
 
-		It was a failure like any other, so a relay deployment that balanced
-		its load by redirecting turned every client away from all of it. A
-		server already asked is not asked again, RFC 8489 has a redirection
-		back to one ignored and the transaction failed, which is what stops two
-		relays sending a client back and forth for good, and neither is a
-		fifth, however many different ones are named.
+		Without this, a relay deployment that balanced its load by
+		redirecting would turn every client away from all of it. A server
+		already asked is not asked again (RFC 8489 has a redirection back to
+		one ignored and the transaction failed, which is what stops two relays
+		sending a client back and forth for good), and neither is a fifth,
+		however many different ones are named.
 
 		Over TCP or TLS the alternate is reached over a connection of its own,
 		which the stream carrying this client opens when the retry is sent to
-		an address that is not the one it is connected to: the request went
-		down the old connection to the server that had redirected it, and was
-		redirected again. Over TLS the alternate's certificate is checked
-		against its ALTERNATE-DOMAIN when the relay gave one, and its address
-		otherwise.
+		an address that is not the one it is connected to, rather than going
+		down the old connection to the server that redirected it. Over TLS the
+		alternate's certificate is checked against its ALTERNATE-DOMAIN when
+		the relay gave one, and its address otherwise.
 
 		@param domain The ALTERNATE-DOMAIN, or null.
 	**/
@@ -1679,8 +1674,8 @@ class TurnClient {
 		Unwraps a `ChannelData` message, if that is what this is.
 
 		@return Whether it was. A channel number is one this client handed out,
-		so anything else, including a datagram that merely starts in the same
-		byte range, is left for whoever else is on the socket.
+		so anything else (including a datagram that merely starts in the same
+		byte range) is left for whoever else is on the socket.
 	**/
 	@:noCompletion private function __deliverChannelData(payload:ByteArray):Bool {
 		if (payload.length < CHANNEL_HEADER) {

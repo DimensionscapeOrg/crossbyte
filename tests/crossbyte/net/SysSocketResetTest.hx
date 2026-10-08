@@ -13,12 +13,12 @@ import utest.Async;
 	the caller can catch, on every target, and a socket call that fails
 	otherwise does too.
 
-	On eval a failed `send`, `recv`, `shutdown` or `bind` was an error that
-	passed every Haxe `catch` and ended the interpreter, and on Linux a write
-	to a connection the peer had closed ended it with SIGPIPE: a development
-	server ended over one client's reset, and a `ServerSocket.bind` to a
-	port in use ended the program it was meant to report to. Each case
-	ended the process there; here it has to come back.
+	On eval a failed `send`, `recv`, `shutdown` or `bind` must not be an
+	error that passes every Haxe `catch` and ends the interpreter, and on
+	Linux a write to a connection the peer had closed must not end it with
+	SIGPIPE: a development server would end over one client's reset, and
+	a `ServerSocket.bind` to a port in use would end the program it was
+	meant to report to. Each case has to come back.
 **/
 class SysSocketResetTest extends utest.Test {
 	#if (sys && !(js || php))
@@ -31,7 +31,7 @@ class SysSocketResetTest extends utest.Test {
 		}
 
 		// Twice: on Linux the second meets a connection whose error the
-		// first took, and was SIGPIPE.
+		// first took, which is where SIGPIPE comes from.
 		for (attempt in 0...2) {
 			var thrown:Dynamic = null;
 			try {
@@ -64,8 +64,8 @@ class SysSocketResetTest extends utest.Test {
 	/**
 		An orderly close by the peer, then writes: the first reaches the
 		peer's system, which answers it with a reset, and a later one has to
-		fail, on eval, on Windows, with an error that passed every catch,
-		and on Linux with SIGPIPE.
+		fail with an error that can be caught, not one past every catch (eval
+		on Windows) or SIGPIPE (Linux).
 	**/
 	public function testWritesToAConnectionThePeerClosedThrow():Void {
 		var server = new sys.net.Socket();
@@ -98,7 +98,7 @@ class SysSocketResetTest extends utest.Test {
 		try server.close() catch (_:Dynamic) {}
 	}
 
-	/** On Linux a shutdown of a reset connection failed past every catch on eval. **/
+	/** A shutdown of a reset connection fails with an error that can be caught, on eval on Linux too. **/
 	public function testAShutdownOfAResetConnectionComesBack():Void {
 		var pair = __resetPair();
 		if (pair == null) {
@@ -159,9 +159,9 @@ class SysSocketResetTest extends utest.Test {
 	}
 
 	/**
-		A select that names a closed socket comes back, with an error, or
-		without the socket, rather than ending the process, as it did on
-		eval. eval and hxcpp throw; hl leaves a closed socket out.
+		A select that names a closed socket comes back (with an error, or
+		without the socket) rather than ending the process. eval and hxcpp
+		throw; hl leaves a closed socket out.
 	**/
 	public function testASelectOnAClosedSocketComesBack():Void {
 		var socket = new sys.net.Socket();
@@ -179,7 +179,7 @@ class SysSocketResetTest extends utest.Test {
 	/**
 		A server whose client resets: the connection's `close` is dispatched
 		and the runtime goes on, on every target. On eval the read the reset
-		made ready ended the interpreter.
+		made ready must not end the interpreter.
 	**/
 	@:timeout(20000)
 	public function testAServerGoesOnPastAClientThatResets(async:Async):Void {

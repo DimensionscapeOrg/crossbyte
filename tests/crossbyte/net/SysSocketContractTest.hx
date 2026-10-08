@@ -11,16 +11,17 @@ import sys.net.UdpSocket;
 import utest.Assert;
 
 /**
-	The promises CrossByte's `sys.net` sockets keep on every target, including
-	the places hl's and neko's standard libraries kept a different one.
+	The promises CrossByte's `sys.net` sockets keep on every target,
+	including the places hl's and neko's standard libraries keep a
+	different one.
 
-	CrossByte replaces `sys.net.Socket` and `sys.net.UdpSocket` on every target,
-	and hl and neko had no branch of their own until they were given their
-	standard implementations. Those differed from the other targets in small
-	ways that callers here had been written against: an idle accept that
-	answered null, a peer with no name, a second close that threw, a reset that
-	read as an ending. Each case runs everywhere the promise can be kept, so a
-	target that drifts fails here rather than in whatever it broke.
+	CrossByte replaces `sys.net.Socket` and `sys.net.UdpSocket` on every
+	target. hl's and neko's standard implementations differ from the other
+	targets in small ways that callers here are written against: an idle
+	accept that answers null, a peer with no name, a second close that
+	throws, a reset that reads as an ending. Each case runs everywhere the
+	promise can be kept, so a target that drifts fails here rather than in
+	whatever it broke.
 **/
 class SysSocketContractTest extends utest.Test {
 	#if (sys && !(js || php))
@@ -28,8 +29,8 @@ class SysSocketContractTest extends utest.Test {
 
 	#if !eval
 	/**
-		A would-block, as every other target reports it. hl's standard library
-		answered null, which ServerSocket went on to treat as a connection.
+		A would-block, as every other target reports it, not the null hl's
+		standard library answers, which ServerSocket would treat as a connection.
 
 		Not on eval, whose sockets cannot be made non-blocking: the accept
 		would wait for a connection that never comes.
@@ -57,9 +58,8 @@ class SysSocketContractTest extends utest.Test {
 	/**
 		Both ends name the other by its address, as text and in `host`.
 
-		hl's standard library left `host` null on the hosts it built here, and
-		so did eval's branch of this module; ServerWebSocket names a client by
-		`peer().host.host`.
+		hl's standard library leaves `host` null on the hosts it builds, and
+		ServerWebSocket names a client by `peer().host.host`.
 	**/
 	public function testAPeerIsNamedByItsAddress():Void {
 		var pair = connectedPair();
@@ -82,9 +82,8 @@ class SysSocketContractTest extends utest.Test {
 
 	/**
 		A second close does nothing. neko's native close throws when handed a
-		socket it already closed, and its standard library passed the same
-		handle every time; eval's branch of this module handed the second
-		close to the system, which threw "not a socket".
+		socket it already closed, and the system throws "not a socket" for a
+		second close handed to it, so neither may see one.
 	**/
 	public function testClosingTwiceIsHarmless():Void {
 		var pair = connectedPair();
@@ -109,8 +108,8 @@ class SysSocketContractTest extends utest.Test {
 
 	#if (hl || neko || java || jvm)
 	/**
-		Null, as on hl and the jvm. neko's natives throw instead, which the
-		standard library's own null check never saw.
+		Null, as on hl and the jvm, though neko's natives throw instead, past
+		the standard library's own null check.
 	**/
 	public function testASocketNeverConnectedHasNoPeer():Void {
 		var socket = new Socket();
@@ -135,14 +134,12 @@ class SysSocketContractTest extends utest.Test {
 		that was cut off, and a body delimited by its connection's end cannot
 		be told complete otherwise.
 
-		hl's standard library reported both as `Eof`, since its native read
-		answers -2 for each. neko's reported a reset seen by `readByte` as the
-		end too.
-
-		The cpp branch of this module reported every failure a byte read met as
-		`Eof`, as the standard library it came from does; it reads through
-		`readBytes` now, as the others do. On eval too, since its resets are
-		caught rather than ending the interpreter.
+		hl's standard library reports both as `Eof`, since its native read
+		answers -2 for each, and neko's reports a reset seen by `readByte` as
+		the end too. The cpp branch of this module reads through `readBytes`,
+		as the others do, rather than reporting every failure a byte read
+		meets as `Eof`, as the standard library it came from does. On eval
+		too, since its resets are caught rather than ending the interpreter.
 	**/
 	public function testAResetIsAFailureRatherThanAnEnd():Void {
 		for (byByte in [false, true]) {
@@ -189,10 +186,10 @@ class SysSocketContractTest extends utest.Test {
 	/**
 		A datagram's sender, by address and port, as text and in `host`.
 
-		On hl every datagram threw here before it was delivered: the Address
-		wrote an `ipv6` field into a Host that has none there. UDP, RUDP, STUN
-		and ICE received nothing at all. The targets without a native
-		conversion named every sender "0.0.0.0".
+		On hl the Address must not write an `ipv6` field into a Host that has
+		none there: every datagram would throw before it was delivered, and
+		UDP, RUDP, STUN and ICE would receive nothing at all. The targets
+		without a native conversion must not name every sender "0.0.0.0".
 	**/
 	public function testADatagramNamesItsSender():Void {
 		var receiver = new UdpSocket();

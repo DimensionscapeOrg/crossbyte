@@ -7,12 +7,11 @@ import sys.thread.Mutex;
 /**
  * Idle HTTP/1.1 connections, by origin, kept for the next request to it.
  *
- * `Http` asked for `Connection: close` on every request, so each one paid for
- * a new TCP connection, and over `https` a new TLS handshake: a hundred calls
- * a second to one API were a hundred handshakes. Now a connection whose
- * response was read to its framed end, from a server that did not ask to
- * close, comes back here, and the next request to the same scheme, host and
- * port takes it.
+ * Without it each request pays for a new TCP connection, and over `https` a
+ * new TLS handshake: a hundred calls a second to one API would be a hundred
+ * handshakes. A connection whose response was read to its framed end, from a
+ * server that did not ask to close, comes back here, and the next request to
+ * the same scheme, host and port takes it.
  *
  * Shared by every thread: each `URLLoader` load runs on a worker of its own,
  * so the table is behind a lock, and a connection is only ever in one
@@ -20,14 +19,14 @@ import sys.thread.Mutex;
  *
  * A server closes an idle connection when it likes, so what comes back out is
  * checked: one idle past `idleSeconds` is closed rather than trusted, and one
- * with anything waiting on it, all a server has to say to an idle
- * connection is that it is closing it, is dropped. What is left can still
+ * with anything waiting on it (all a server has to say to an idle
+ * connection is that it is closing it) is dropped. What is left can still
  * lose that race, so `Http` takes from here only for a request it may send
  * twice, and sends it again on a new connection if the reused one turns out
  * to be gone before any of the response arrives.
  *
  * On eval too, since a write or read on a connection the peer has reset
- * raises an error a catch can see there, where it ended the interpreter.
+ * raises an error a catch can see there.
  */
 class HttpConnectionPool {
 	/** Idle connections kept for one origin. */
@@ -61,7 +60,7 @@ class HttpConnectionPool {
 			__lock.acquire();
 			var list:Null<Array<IdleConnection>> = __idle.get(origin);
 			if (list != null) {
-				// The newest first, as before.
+				// The newest first.
 				var i:Int = list.length;
 				while (i-- > 0) {
 					if (crossbyte.http.HTTPTLSOptions.same(list[i].tls, tls)) {

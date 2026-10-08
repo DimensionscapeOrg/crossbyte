@@ -12,11 +12,11 @@ import haxe.ds.Vector;
  *
  * **Freed slots are reused oldest first.** A handle kept after its entry
  * died aliases whatever holds its slot once the slot's generation has come
- * round, after 2048 reuses of that slot. The free list handed back the slot
- * freed last, so one entity despawned and another spawned each tick reused
- * one slot every time and wrapped it in 34 seconds at 60 Hz. Now a slot waits
- * behind every other free one, and its generation comes round only after
- * 2048 times as many inserts as there are free slots.
+ * round, after 2048 reuses of that slot. A slot waits behind every other
+ * free one, so its generation comes round only after 2048 times as many
+ * inserts as there are free slots. Reusing the slot freed last instead,
+ * one entity despawned and another spawned each tick would wrap one slot
+ * in 34 seconds at 60 Hz.
  *
  * `null` is a value like any other: an entry inserted as `null` is held,
  * counted, visited by `forEach` and invalidated by `clear()`.
@@ -54,8 +54,8 @@ final class SlotMap<T> {
 	@:noCompletion private var __gen:Vector<Int>;
 	// Per slot: HELD, or for a free slot the one freed after it, -1 for the
 	// last. So the free slots queue in the order they were freed, and whether
-	// a slot is held does not depend on what value it holds, it did, and an
-	// entry inserted as null survived clear() with its handle still good.
+	// a slot is held does not depend on what value it holds: an entry
+	// inserted as null is cleared like any other.
 	@:noCompletion private var __link:Vector<Int>;
 	@:noCompletion private var __freeHead:Int = -1;
 	@:noCompletion private var __freeTail:Int = -1;
@@ -131,11 +131,9 @@ final class SlotMap<T> {
 		}
 
 		__values[i] = null;
-		// Wrapped inside the handle's generation field. Counting past it left
-		// the slot holding a number no handle could ever carry, so every
-		// later remove of that slot failed and the entry was never freed,
-		// a map that leaks one slot per 256 reuses, which on anything with
-		// entity churn is a leak that never stops.
+		// Wrapped inside the handle's generation field. Counted past it, the
+		// slot would hold a number no handle could ever carry, so every later
+		// remove of that slot would fail and the entry would never be freed.
 		__gen[i] = (__gen[i] + 1) & SlotHandle.GEN_MASK;
 		__queueFree(i);
 		length--;
@@ -206,10 +204,9 @@ final class SlotMap<T> {
 		for (i in 0...__capacity) {
 			if (__link[i] == HELD) {
 				// Kept inside the handle's generation field, as remove() keeps
-				// it. Counted past it here, a slot at the top of its range held
-				// a generation no handle could carry, so every entry put in it
-				// after the clear() could never be read or removed again, the
-				// leak remove() was fixed for, back by another door.
+				// it: counted past it, a slot at the top of its range would hold
+				// a generation no handle could carry, and every entry put in it
+				// after the clear() could never be read or removed again.
 				__gen[i] = (__gen[i] + 1) & SlotHandle.GEN_MASK;
 			}
 

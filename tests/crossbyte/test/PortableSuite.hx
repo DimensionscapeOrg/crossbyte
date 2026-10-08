@@ -7,17 +7,17 @@ import utest.Runner;
 	and so mean the same thing on every target CrossByte builds for,
 	including the browser and Node.
 
-	It exists because `JsTestMain` used to hand-list them. Two lists of one
-	thing drift, and this one drifted: `BloomFilterTest` was in the other one,
-	so the case whose index arithmetic differs between a 32-bit Int and a
-	double was precisely the case not running on the target with the double.
+	One list, so the portable set cannot drift: two lists of one thing drift,
+	and a case left off one (such as the one whose index arithmetic differs
+	between a 32-bit Int and a double) would not run on the target with the
+	double.
 
 	It is a class of its own rather than a group in `TestSuites`, and that is
 	not organisation for its own sake. Naming `TestSuites` compiles all of
 	`TestSuites`, including the groups that reference a listening socket and a
-	thread lock, so a JavaScript build that so much as mentioned it failed to
-	compile on types it was never going to run. A file this size pulls in only
-	what it lists.
+	thread lock, so a JavaScript build that so much as mentioned it would fail
+	to compile on types it was never going to run. A file this size pulls in
+	only what it lists.
 
 	Every case here is also reached by `TestSuites.addAll`, through its own
 	subsystem group; `SuiteCoverage` enforces that, so this cannot become a
@@ -27,8 +27,8 @@ import utest.Runner;
 class PortableSuite {
 	public static function add(runner:Runner):Void {
 		runner.addCase(new crossbyte.net.StunMessageTest());
-		// Owns no socket, a relay is talked to through one the caller
-		// supplies, so the whole exchange runs here, including on the
+		// Owns no socket (a relay is talked to through one the caller
+		// supplies), so the whole exchange runs here, including on the
 		// browser, where the relay itself could only ever be reached
 		// through RTCPeerConnection.
 		runner.addCase(new crossbyte.net.TurnClientTest());
@@ -46,7 +46,7 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.rtc.DataChannelTest());
 		runner.addCase(new crossbyte.net.rtc.SessionDescriptionTest());
 		// Arithmetic and ordering with no socket in it, so it belongs here for
-		// the same reason the STUN codec does, and it belongs on the browser
+		// the same reason the STUN codec does; and it belongs on the browser
 		// especially, which is the one target that will be talking ICE to a
 		// stack it did not write.
 		runner.addCase(new crossbyte.net.ice.IceCandidateTest());
@@ -63,8 +63,9 @@ class PortableSuite {
 		// It is worth having on Node specifically. That is where its least
 		// ordinary code lives: `DatagramSocket` emulates connect() rather than
 		// calling it, so `LocalAddress` reaches past it to the real one, and
+		// calling it, so `LocalAddress` reaches past it to the real one, and
 		// nothing else covers that path. It binds an ephemeral socket and
-		// closes it, no listener, no peer, and no traffic, because asking the
+		// closes it: no listener, no peer, and no traffic, because asking the
 		// routing table sends none.
 		#if !(js && !nodejs)
 		runner.addCase(new crossbyte.net.LocalAddressTest());
@@ -93,8 +94,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.WebSocketReuseTest());
 		// RPC arguments and a NetConnection's input kept past their calls.
 		runner.addCase(new crossbyte.net.TransportArrivalTest());
-		// permessage-deflate on Node's sessions, and zlib, what a browser
-		// inflates with, reading what a server compressed.
+		// permessage-deflate on Node's sessions, and zlib (what a browser
+		// inflates with) reading what a server compressed.
 		runner.addCase(new crossbyte.net.WebSocketDeflateTest());
 		runner.addCase(new crossbyte.net.SocketOutputTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramLifecycleTest());
@@ -134,7 +135,7 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.ServerSocketListenTest());
 		// On Node, a server spread over runtimes refused.
 		runner.addCase(new crossbyte.net.ServerSpreadTest());
-		// What printing a key shows, which on Node was all of it.
+		// What printing a key shows, which is not its PEM, on Node too.
 		runner.addCase(new crossbyte.net.KeyTest());
 		// A NetConnection dialled over TCP, and an RPC call over one.
 		runner.addCase(new crossbyte.net.NetConnectionTcpTest());
@@ -157,12 +158,12 @@ class PortableSuite {
 		// Also in `addUtils`, the way HpackTest is in two places: twelve cases
 		// registered here call `Require.notNull`, so the mechanism they depend
 		// on has to be checked on the targets that reach them. It needs
-		// nothing, a null check and a throw, so it runs everywhere,
+		// nothing (a null check and a throw), so it runs everywhere,
 		// browser included.
 		runner.addCase(new crossbyte.test.RequireTest());
 		runner.addCase(new crossbyte.FutureTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
-		// Typed pairs, callbacks and a typed SwitchTable, where Dynamic used to be.
+		// Typed pairs, callbacks and a typed SwitchTable, rather than Dynamic.
 		runner.addCase(new crossbyte.ds.TypedShapesTest());
 		// Event-type constants that refuse a listener of the wrong event.
 		runner.addCase(new crossbyte.events.EventTypesTest());
@@ -179,14 +180,14 @@ class PortableSuite {
 		// Sequence numbers wrapping past 2^31 - 1, likewise.
 		runner.addCase(new crossbyte.ds.SequenceRingTest());
 		runner.addCase(new crossbyte.ds.InterestSetTest());
-		// Vectors with counts where arrays boxed on the jvm and lost their
+		// Vectors with counts, where arrays would box on the jvm and lose their
 		// store to V8 each round.
 		runner.addCase(new crossbyte.ds.IdListTest());
 		runner.addCase(new crossbyte.ds.QuadTreeTest());
 		// Float cell arithmetic and Vector storage, which differ by target.
 		runner.addCase(new crossbyte.ds.SpatialGridTest());
 		runner.addCase(new crossbyte.ds.SpatialGrid3DTest());
-		// Not portable in the sense of needing nothing, it needs a backend,
+		// Not portable in the sense of needing nothing (it needs a backend),
 		// but portable in the sense that matters: the same assertions run
 		// against IndexedDB here and a directory of files everywhere else, so
 		// neither backend grades its own homework.
@@ -197,7 +198,7 @@ class PortableSuite {
 		runner.addCase(new crossbyte._internal.compression.CompressionRoundTripTest());
 		runner.addCase(new crossbyte._internal.compression.BrotliCodecTest());
 		runner.addCase(new crossbyte._internal.compression.CodecFormatsTest());
-		// Nothing here owns a socket, every parser is handed bytes, so it
+		// Nothing here owns a socket (every parser is handed bytes), so it
 		// runs wherever the code it fuzzes can be compiled, which is everywhere.
 		runner.addCase(new crossbyte.fuzz.ParserFuzzTest());
 		// The MongoDB driver's bytes: BSON, Extended JSON, SCRAM and connection
@@ -221,11 +222,11 @@ class PortableSuite {
 		// HS256 is pure Haxe, so tokens verify alike on every target.
 		runner.addCase(new crossbyte.auth.jwt.JWTTest());
 		runner.addCase(new crossbyte.auth.jwt.JWTVerifyTest());
-		// Times past 2038 and a 32-bit Int are where the targets disagreed.
+		// Times past 2038 and a 32-bit Int are where the targets would disagree.
 		runner.addCase(new crossbyte.auth.jwt.JWTClaimsTest());
 		// PKCE everywhere; the token exchange itself against Node's own http
-		// server, since a stalled provider never answering was a Node failure.
-		// The browser has no server to run it against and skips that part.
+		// server, where a provider that never answers must still end the
+		// exchange. The browser has no server to run it against and skips that part.
 		runner.addCase(new crossbyte.auth.OAuthExchangeTest());
 		// Pure rules, no socket: the host, Secure and deletion checks that
 		// decide whether a session cookie reaches someone else's server.
@@ -246,20 +247,20 @@ class PortableSuite {
 		// Its tick number wraps at 32 bits, and js is where an Int would not.
 		runner.addCase(new crossbyte.core.FixedStepTest());
 		// The runtime's own frame is a chain of platform timeouts here, and a
-		// throw out of one ended the chain, on Node, the process.
+		// throw out of one must not end the chain (on Node, the process).
 		runner.addCase(new crossbyte.core.UncaughtErrorTest());
 		// What post promises that needs no second thread: order, and a refusal
 		// once the runtime has exited rather than silence.
 		runner.addCase(new crossbyte.core.PostTest());
-		// A child runtime made once the program runs, which on Node never
-		// started, and whose loop took the program's timers when it did.
+		// A child runtime made once the program runs, which on Node must still
+		// start, and must leave the program's timers alone when it does.
 		runner.addCase(new crossbyte.core.ChildRuntimeTest());
 		// TaskPool and Worker with no threads: the work inline, what it
 		// reports in a later turn.
 		runner.addCase(new crossbyte.sys.BackgroundDeliveryTest());
-		// ServerApplication on Node, whose POLL loop threw at its first frame.
+		// ServerApplication on Node, whose POLL loop runs the DEFAULT one.
 		runner.addCase(new crossbyte.core.ApplicationTest());
-		// SIGTERM and SIGINT on Node, which exited without the drain.
+		// SIGTERM and SIGINT on Node, which run the drain rather than exiting.
 		runner.addCase(new crossbyte.sys.ProcessLifecycleTest());
 		// Loop lag and overruns as the JavaScript loop takes its turns, and
 		// the post queue's depth.
@@ -267,11 +268,9 @@ class PortableSuite {
 		// Listener lists changed in place outside a dispatch, and left alone
 		// while one walks them: every JavaScript component dispatches.
 		runner.addCase(new crossbyte.events.EventDispatcherTest());
-		// The rest of the ByteArray cases, which this file listed one of. None
-		// of them touches sys, so nothing kept them off js except not being
-		// written down, and js is the target where, as the note in
-		// JsTestMain records, every ByteArray read and write was once broken
-		// under a green build because nothing executed one.
+		// The rest of the ByteArray cases. None of them touches sys, and js
+		// is the target where every ByteArray read and write could break under a
+		// green build if nothing executed one.
 		runner.addCase(new crossbyte.io.ByteArrayCorrectnessTest());
 		runner.addCase(new crossbyte.io.ByteArrayTest());
 		runner.addCase(new crossbyte.io.ByteArrayInputTest());
@@ -325,7 +324,7 @@ class PortableSuite {
 		// Int64 arithmetic on an injected clock, which JavaScript does with
 		// two Ints of its own.
 		runner.addCase(new crossbyte.cluster.SnowflakeIdTest());
-		// The exposition's numbers: a whole number past 2^31 went through
+		// The exposition's numbers: a whole number past 2^31 must not go through
 		// Std.int, which wraps on JavaScript as it does on eval and cpp.
 		runner.addCase(new crossbyte.metrics.MetricsTest());
 		// Where a Haxe Int does not wrap at 32 bits by itself.

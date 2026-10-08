@@ -11,17 +11,16 @@
 // Answering a browser leaves CrossByte ICE-controlled and the DTLS client;
 // offering to one inverts both, so the browser opens the SCTP association and
 // takes the even data channel streams. A stack driving both roles from one bit
-// passes the first and cannot complete the second, which is exactly what it
-// did until the roles were separated.
+// passes the first and cannot complete the second.
 //
 // Both are run twice more, against a browser hiding its addresses and one not.
 // By default Chrome publishes every host candidate as a random .local mDNS
-// name, a privacy measure, so a page cannot fingerprint a visitor's network,
-// and nothing here resolves those. This test used to switch that off, which
-// made it a test of a browser no visitor runs. It is left on now, and what
-// carries the connection instead is asserted rather than assumed: the browser
-// can still reach CrossByte, whose addresses are real, and the check it sends
-// teaches CrossByte where it is. ICE calls that a peer-reflexive candidate.
+// name (a privacy measure, so a page cannot fingerprint a visitor's network),
+// and nothing here resolves those. Switching that off would make this a test
+// of a browser no visitor runs, so it is left on, and what carries the
+// connection instead is asserted rather than assumed: the browser can still
+// reach CrossByte, whose addresses are real, and the check it sends teaches
+// CrossByte where it is. ICE calls that a peer-reflexive candidate.
 //
 // Usage: node ci/interop/run.js
 // Needs puppeteer and the peer built by `haxe ci/browser-interop.hxml`.
@@ -35,8 +34,8 @@ const readline = require('readline');
 
 // Whatever the operating system hands out. A fixed number in the dynamic
 // range is one Windows may have reserved: Hyper-V and WinNAT exclude blocks of
-// it at boot, and on a machine where 50501-50600 is one of them, a fixed 50574
-// failed with "listen EACCES" before the browser was ever launched.
+// it at boot, and a fixed port in one fails with "listen EACCES" before the
+// browser is ever launched.
 let PORT = 0;
 const ROOT = __dirname;
 const PEER = path.join(__dirname, '..', '..', 'export', 'interop', 'BrowserInteropPeer.exe');
@@ -133,9 +132,8 @@ function startPeer(instruction) {
  *
  * A firewall that silently drops inbound UDP to a freshly built executable
  * looks exactly like an ICE bug from the inside. This separates the two before
- * the browser is involved, and it earned its place: the first run of this test
- * failed with no inbound traffic at all, and knowing loopback was equally
- * silent is what moved the search off the network and onto the socket.
+ * the browser is involved: knowing loopback is equally silent moves the
+ * search off the network and onto the socket.
  */
 async function probeReachable(sdp) {
   const targets = [];
@@ -164,7 +162,7 @@ async function probeReachable(sdp) {
  * With the browser hiding its addresses, every candidate it publishes is a
  * .local name that resolves to nothing here, so no pair built from its
  * description can be dialled. What is left is the check the browser sends to
- * CrossByte, whose addresses are real, and the source address on it, which
+ * CrossByte (whose addresses are real) and the source address on it, which
  * ICE turns into a peer-reflexive candidate. If that is the mechanism, the
  * selected pair says prflx; anything else means the connection was made some
  * way this test did not intend and does not describe.
@@ -209,10 +207,10 @@ function checkPath(ready, mdns, browserSdp, peerSdp) {
   // Everything above would hold for a peer reachable only over loopback, which
   // is a connection that works because both ends share a machine and would not
   // otherwise. Asserting the *selected* pair is not loopback would be checking
-  // something nobody here decides, both of CrossByte's candidates carry the
-  // same priority and the controlling agent picks, so what is asserted is
-  // what the peer offered. Gathering only toward the browser's candidates left
-  // it advertising 127.0.0.1 alone, and this is that regression.
+  // something nobody here decides (both of CrossByte's candidates carry the
+  // same priority and the controlling agent picks), so what is asserted is
+  // what the peer offered: gathering only toward the browser's candidates
+  // would leave it advertising 127.0.0.1 alone.
   const advertised = peerSdp.split(/\r?\n/)
     .filter(line => /^a=candidate:/.test(line))
     .map(line => line.split(' ')[4]);
@@ -258,8 +256,8 @@ async function waitForBrowserSession(page, ufrag, what) {
 /**
  * ICE restart from the browser, as it does when its network changes: new
  * credentials in a new offer, the DTLS session and every channel kept. The
- * answer has to state CrossByte's DTLS role, a browser refuses `actpass`
- * in an answer, and a message on the channel opened before the restart has
+ * answer has to state CrossByte's DTLS role (a browser refuses `actpass`
+ * in an answer), and a message on the channel opened before the restart has
  * to make the round trip after it.
  */
 async function restartFromBrowser(page, peer) {
@@ -314,7 +312,6 @@ async function restartTowardBrowser(page, peer) {
  * it sends on, and the other resets its own in answer. The browser's channel
  * finishes closing only when both have, so the browser is the judge of
  * whether CrossByte reads a reset, answers it, and makes one Chrome accepts.
- * Closing used to tell the peer nothing, and RE-CONFIG went unread.
  */
 async function closeBothWays(page, peer, browserCloses, crossbyteCloses) {
   peer.send({ close: true, theirs: browserCloses, ours: crossbyteCloses });
@@ -379,7 +376,7 @@ async function browserOffers(page, mdns, shared) {
     }
 
     // Binary, and empty binary. RFC 8831 gives a zero-length message a
-    // protocol id of its own, carried as one zero byte, a subtlety both ends
+    // protocol id of its own, carried as one zero byte: a subtlety both ends
     // of a homogeneous pair could get wrong together, which is why the browser
     // referees it.
     if (result.binaryEchoed !== '1,2,3,0,250,255') {
@@ -527,7 +524,7 @@ async function crossbyteOffers(page, mdns, shared) {
   // mDNS on is the browser everyone actually runs, and the harder case: no
   // address CrossByte can dial, so the path has to be learned from an incoming
   // check. Off is kept as well, because it is the only configuration where
-  // CrossByte's own checks reach a candidate the browser published, the
+  // CrossByte's own checks reach a candidate the browser published: the
   // sending half of ICE, which the other configuration never exercises.
   //
   // And once more with CrossByte's connection on a PeerConnectionHost, the

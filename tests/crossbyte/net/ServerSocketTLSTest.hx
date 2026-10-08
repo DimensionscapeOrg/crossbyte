@@ -37,12 +37,12 @@ class ServerSocketTLSTest extends utest.Test {
 	// The refusal itself is asserted in the #else at the end.
 	#if !eval
 	public function testServerWebSocketReportsItsOwnSecureFlag():Void {
-		// ServerWebSocket used to set a private __isSecure and then call
-		// super() with no argument, so the `secure` property it inherits read
-		// false on a server that was terminating TLS. Two fields for one fact,
-		// and the public one was the wrong one. It is here rather than beside
-		// the other WebSocket cases because what it is really asserting is
-		// that the flag ServerSocket exposes describes the subclass too.
+		// ServerWebSocket's inherited `secure` property describes it: two fields
+		// for one fact (a private __isSecure set, and super() called with no
+		// argument) would leave the public one reading false on a server that
+		// was terminating TLS. It is here rather than beside the other
+		// WebSocket cases because what it is really asserting is that the flag
+		// ServerSocket exposes describes the subclass too.
 		var plain = new ServerWebSocket();
 		Assert.isFalse(plain.secure);
 
@@ -125,10 +125,9 @@ class ServerSocketTLSTest extends utest.Test {
 
 	#else
 	public function testSecureServerIsRejectedOnEval():Void {
-		// Loudly, at construction, and saying which target and why. Before
-		// this it surfaced several calls later from inside the standard
-		// library as a bare "Not implemented", with nothing pointing at the
-		// target as the reason.
+		// Loudly, at construction, and saying which target and why, rather than
+		// several calls later from inside the standard library as a bare "Not
+		// implemented", with nothing pointing at the target as the reason.
 		Assert.raises(() -> new ServerSocket(true), CBError);
 
 		try {
@@ -144,8 +143,8 @@ class ServerSocketTLSTest extends utest.Test {
 	/**
 		A real handshake, against the JDK's own TLS client.
 
-		The peer is `javax.net.ssl.SSLSocket`, the blocking API this backend
-		deliberately does not use, so this proves the SSLEngine server
+		The peer is `javax.net.ssl.SSLSocket` (the blocking API this backend
+		deliberately does not use), so this proves the SSLEngine server
 		interoperates with an independent implementation rather than that two
 		halves of the same code agree.
 
@@ -164,7 +163,7 @@ class ServerSocketTLSTest extends utest.Test {
 		ALPN is negotiated, by server preference.
 
 		The client offers the reverse order, so agreement on `h2` cannot be an
-		echo of what it asked for first, the same trick the cpp case uses
+		echo of what it asked for first: the same trick the cpp case uses
 		against mbedTLS.
 	**/
 	public function testAlpnIsNegotiatedAgainstTheJdkClient():Void {
@@ -264,10 +263,9 @@ class ServerSocketTLSTest extends utest.Test {
 
 		Every other jvm case here stops once the handshake completes, and that
 		is the wrong place to stop: a connection can negotiate TLS perfectly and
-		then move nothing. It did. The certificate, ALPN, client-certificate and
-		SNI cases all passed while an HTTPS request over the same socket got a
-		completed handshake and no reply, because nothing had ever asked the
-		data path to do anything.
+		then move nothing, the certificate, ALPN, client-certificate and SNI
+		cases all passing while an HTTPS request over the same socket gets a
+		completed handshake and no reply.
 
 		The peer is the JDK's own blocking SSLSocket, so what is being checked
 		is a round trip through a foreign implementation rather than agreement
@@ -276,10 +274,10 @@ class ServerSocketTLSTest extends utest.Test {
 	#if (java || jvm)
 	/**
 		A TLS read with a timeout set gives up at the timeout on the jvm. A
-		blocking channel read has no timeout of its own and the TLS socket read
-		ciphertext that way, so an https response that stopped arriving, or
-		never started, was waited for for ever: the HTTP client's idle limit
-		never fired.
+		blocking channel read has no timeout of its own, so a TLS socket reading
+		ciphertext that way would wait for ever for an https response that
+		stopped arriving (or never started), and the HTTP client's idle limit
+		would never fire.
 	**/
 	public function testATlsReadGivesUpAtItsTimeout():Void {
 		var outcome = __readFromTlsServer(false, 0.3, null);
@@ -296,8 +294,8 @@ class ServerSocketTLSTest extends utest.Test {
 
 	/**
 		`DEFAULT_VERIFY_CERT` applies to a TLS socket that sets no `verifyCert`
-		of its own, as it does natively. The jvm never read it, so turning
-		verification off for every socket still refused a self-signed server.
+		of its own, as it does natively, so turning verification off for every
+		socket lets a self-signed server through.
 	**/
 	public function testTheDefaultVerifySettingIsHonoured():Void {
 		var previous = crossbyte._internal.socket.FlexSocket.DEFAULT_VERIFY_CERT;
@@ -318,10 +316,10 @@ class ServerSocketTLSTest extends utest.Test {
 
 	/**
 		The same default turned on is for the connections an application
-		makes, not for its servers. A jvm listener left its own `verifyCert`
-		unset, so once the default was honoured it followed it too, and a
-		server asked every client for a certificate, every browser refused,
-		where a native one asks only after `requireClientCertificate()`.
+		makes, not for its servers: a jvm listener that left its own
+		`verifyCert` unset and followed it would ask every client for a
+		certificate (every browser would refuse), where a native one asks only
+		after `requireClientCertificate()`.
 	**/
 	public function testTheDefaultVerifySettingLeavesServersAskingForNoCertificate():Void {
 		var previous = crossbyte._internal.socket.FlexSocket.DEFAULT_VERIFY_CERT;
@@ -552,9 +550,8 @@ class ServerSocketTLSTest extends utest.Test {
 	/**
 		The jvm client speaks TLS, and verifies what it is given.
 
-		`FlexSocket(true)` used to hand back a socket that did a plain TCP
-		connect and no TLS at all, which is why OAuth refused to run here. It now
-		terminates TLS as the client.
+		`FlexSocket(true)` terminates TLS as the client, not a plain TCP connect
+		and no TLS at all, under which OAuth could not run here.
 
 		Verification is asserted through its refusal. The server presents a
 		self-signed certificate, which is not in the JDK's default trust store,
@@ -579,9 +576,9 @@ class ServerSocketTLSTest extends utest.Test {
 		Assert.notNull(outcome.failure, "the client reported no failure");
 
 		// Specifically a failure from the TLS layer. Matching loosely on
-		// "certificate" was not enough: with the client's engine removed
-		// entirely, connect refused with "set a certificate before listening",
-		// which contains the word and passed a test that should have caught
+		// "certificate" is not enough: with the client's engine removed
+		// entirely, connect refuses with "set a certificate before listening",
+		// which contains the word and would pass a test that should catch
 		// exactly that.
 		Assert.isTrue(outcome.failure.indexOf("SSLHandshakeException") >= 0,
 			"the refusal did not come from the TLS layer: " + outcome.failure);
@@ -790,8 +787,8 @@ class ServerSocketTLSTest extends utest.Test {
 			// Replaced: the config points at the other list from here on.
 			Assert.equals(0, NativeAlpn.set(conf, ["h2"]));
 			// Cleared through the empty-list path, which must not hand NULL to
-			// mbedtls_ssl_conf_alpn_protocols, that walks the list before
-			// testing it and segfaults.
+			// mbedtls_ssl_conf_alpn_protocols: that walks the list before testing
+			// it and segfaults.
 			Assert.equals(0, NativeAlpn.set(conf, []));
 			Assert.equals(0, NativeAlpn.set(conf, ["h2"]));
 
@@ -874,14 +871,13 @@ class ServerSocketTLSTest extends utest.Test {
 	}
 
 	/**
-		A client that has been here before resumes its session.
-
-		The server issued no session tickets and kept no session cache, so
-		every connection paid a full handshake: a signature and a key exchange,
-		3.9 ms for ECDSA and 6.9 ms for RSA on an MSVC build, on the runtime's
-		own thread. A browser reconnects every time it comes back after the
-		keep-alive timeout. Node is the client here, since hxcpp's own has no
-		way to offer a session back; without it the case is skipped.
+		A client that has been here before resumes its session: the server
+		issues session tickets and keeps a session cache, so not every
+		connection pays a full handshake, a signature and a key exchange (3.9 ms
+		for ECDSA and 6.9 ms for RSA on an MSVC build) on the runtime's own
+		thread, as a browser reconnecting after the keep-alive timeout would.
+		Node is the client here, since hxcpp's own has no way to offer a session
+		back; without it the case is skipped.
 	**/
 	public function testAReturningClientResumesItsSession():Void {
 		var fixture = TLSTestFixture.selfSigned();

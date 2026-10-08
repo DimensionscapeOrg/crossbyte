@@ -8,11 +8,11 @@ import haxe.io.Bytes;
 
 	Haxe's `Bytes.ofString` for JavaScript walks the string a character at a
 	time, pushing each byte onto an Array, and then copies the Array into a
-	Uint8Array. A Node server answering `respond` with 64 KB of JSON spent
-	more than half its working time there. `TextEncoder` is native on Node
-	and in every browser, and writes the same bytes for any string that is
-	valid UTF-16. An unpaired surrogate becomes U+FFFD, where Haxe's encoder
-	took the next character into it, or wrote bytes UTF-8 does not allow.
+	Uint8Array, which is slow for a large string. `TextEncoder` is native on
+	Node and in every browser, and writes the same bytes for any string that
+	is valid UTF-16. An unpaired surrogate becomes U+FFFD, where Haxe's
+	encoder takes the next character into it, or writes bytes UTF-8 does not
+	allow.
 
 	Its `getString` adds to a string a character at a time, and stops at the
 	first NUL byte, which no other target does. `TextDecoder` reads every
@@ -47,9 +47,9 @@ class Utf8 {
 
 	#if hl
 	/**
-		HashLink's `getString` decodes a NUL-terminated copy, so it too stopped
+		HashLink's `getString` decodes a NUL-terminated copy, so it too stops
 		at the first NUL. UTF-8 puts no 0 byte inside a character, so the text
-		between NULs is decoded as it was and each NUL put back.
+		between NULs is decoded on its own and each NUL put back.
 	**/
 	static function __decodeAroundNuls(bytes:Bytes, pos:Int, len:Int):String {
 		// As getString refuses it, before anything is read.

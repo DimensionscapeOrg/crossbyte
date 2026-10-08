@@ -2,15 +2,15 @@
 
 // ALPN (RFC 7301) for the TLS sockets hxcpp already provides.
 //
-// mbedTLS has carried ALPN all along and hxcpp compiles it in, but nothing in
-// `sys.ssl.Socket` reaches it, which is what makes HTTP/2 over TLS
-// unreachable rather than merely unimplemented, since ALPN is the only way a
-// client says `h2` and there is no in-band upgrade to fall back on.
+// mbedTLS carries ALPN and hxcpp compiles it in, but nothing in
+// `sys.ssl.Socket` reaches it, which makes HTTP/2 over TLS unreachable
+// rather than merely unimplemented, since ALPN is the only way a client says
+// `h2` and there is no in-band upgrade to fall back on.
 //
 // This lives in CrossByte rather than as a patch to hxcpp's SSL.cpp on
 // purpose. A patch means every build needs a forked hxcpp, and a link error,
-// not a missing feature, for anyone using a stock one. The symbols here
-// are named `crossbyte_*` so they cannot collide if hxcpp later grows its own,
+// not a missing feature, for anyone using a stock one. The symbols here are
+// named `crossbyte_*` so they cannot collide if hxcpp later grows its own,
 // which is the intent upstream.
 //
 // Return values: 0 on success, negative on failure.
@@ -21,7 +21,7 @@
 // and the first thing on the include path is hxcpp's own __pch directory,
 // which holds hxcpp.h.gch rather than hxcpp.h, so the build stops at
 // "fatal error: .../__pch/haxe/hxcpp.h: No such file or directory". MSVC
-// resolves it differently, which is why this only ever broke on Linux.
+// resolves it differently, so this breaks on Linux only.
 #ifndef HXCPP_H
 #include <hxcpp.h>
 #endif

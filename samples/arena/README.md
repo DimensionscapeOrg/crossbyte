@@ -1,8 +1,8 @@
 # Arena
 
 `arena` is an authoritative game server and sixteen bots that play in it, in
-one process. It exists to show the game-server primitives working together,
-none of them is a game-server feature on its own, and it checks itself:
+one process. It exists to show the game-server primitives working together
+(none of them is a game-server feature on its own), and it checks itself:
 every snapshot a bot decodes is compared against a checksum of what the
 server built, and the run exits 1 on any difference.
 
@@ -20,7 +20,7 @@ It demonstrates:
   from one step to the next
 - a `SequenceRing` per client of the snapshots sent, and `ByteDelta`
   encoding each one against the last snapshot that client acknowledged,
-  or whole, when that has aged out
+  or whole when that has aged out
 - logins through a `ConcurrencyLimiter`, four at a time with the rest queued,
   and connections through `ServerSocket.admit`
 - `FrameCodec` for message boundaries over TCP

@@ -4,21 +4,21 @@
 	included ahead of every libsodium source there (NativeSodiumBuild.xml).
 	For MSVC, libsodium's private/common.h works the same out itself.
 
-	Without it, the curve25519 field, every X25519 key agreement and every
-	Ed25519 signature, was worked in 32-bit limbs where a 64-bit target
-	multiplies into 128 bits, Poly1305 likewise, and loads and stores went a
+	Without it, the curve25519 field (every X25519 key agreement and every
+	Ed25519 signature) is worked in 32-bit limbs where a 64-bit target
+	multiplies into 128 bits, Poly1305 likewise, and loads and stores go a
 	byte at a time; and on x86-64 none of libsodium's SSE, AVX2 or AVX-512
-	code was built, nor could it have been chosen, since nothing asked the
-	CPU what it has. On a Ryzen 9 9950X with gcc 13: an X25519 took 41
-	microseconds and takes 24; an Ed25519 signature 16 and takes 11, a
-	verification 48 and takes 29; Argon2id at its interactive limits about
-	72 ms and takes 45; XChaCha20-Poly1305 ran at 0.9 GB/s and runs at 1.9.
-	Every one of them answers byte for byte as the portable code does.
+	code is built, nor could it be chosen, since nothing asks the CPU what
+	it has. On a Ryzen 9 9950X with gcc 13: an X25519 takes 24 microseconds
+	rather than 41; an Ed25519 signature 11 rather than 16, a verification
+	29 rather than 48; Argon2id at its interactive limits 45 ms rather than
+	about 72; XChaCha20-Poly1305 runs at 1.9 GB/s rather than 0.9. Every one
+	of them answers byte for byte as the portable code does.
 
 	Two groups of sources are built with a switch of their own:
-	CROSSBYTE_SODIUM_SCALAR, BLAKE2b's, its SIMD compression ran at half
-	the speed of the portable one on that machine, AVX2 included, so it keeps
-	the portable one, and CROSSBYTE_SODIUM_RUNTIME, the CPU probe's.
+	CROSSBYTE_SODIUM_SCALAR, BLAKE2b's (its SIMD compression runs at half
+	the speed of the portable one on that machine, AVX2 included, so it
+	keeps the portable one), and CROSSBYTE_SODIUM_RUNTIME, the CPU probe's.
 */
 #ifndef CROSSBYTE_SODIUM_CONFIG_H
 #define CROSSBYTE_SODIUM_CONFIG_H
@@ -30,7 +30,7 @@
 
 /* A configure run also says how to make a variable thread-local, and with
    CONFIGURED set and no answer, randombytes_internal_random.c makes its
-   state one for the whole process. Thread-local, as it was without. */
+   state one for the whole process. Thread-local, as libsodium makes it. */
 #if !defined(TLS) && !defined(__STDC_NO_THREADS__) && defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 # define TLS _Thread_local
 #endif

@@ -82,9 +82,9 @@ class HTTPServerH2Test extends utest.Test {
 	public function testPathTraversalIsContainedOnTheHttp2Path(async:Async):Void {
 		// The containment lives in the HTTP/1.1 parser, so an HTTP/2 request
 		// reaching dispatch without it would escape the document root on one
-		// protocol and not the other. That is exactly what happened while this
-		// was being wired: the injection path set the file path straight from
-		// the request target, and the dispatch fallback serves that as-is.
+		// protocol and not the other: an injection path setting the file path
+		// straight from the request target would have the dispatch fallback
+		// serve it as-is.
 		exchange(async, "GET", "/../../../../../../etc/passwd", null, null, function(status, headers, body) {
 			// 400: a path climbing above the root is malformed, and refused
 			// before middleware, as over HTTP/1.1.
@@ -95,9 +95,9 @@ class HTTPServerH2Test extends utest.Test {
 
 	public function testSilentCleartextConnectionsAreCountedAndTimed(async:Async):Void {
 		// While the server waits to learn a cleartext connection's protocol it
-		// counted nothing and timed nothing: with maxConnections at 2 and
-		// requestTimeout at half a second, six silent sockets were all taken
-		// and all still open two seconds later.
+		// counts the connection and times it: otherwise, with maxConnections at
+		// 2 and requestTimeout at half a second, six silent sockets would all be
+		// taken and all still open two seconds later.
 		var config = new HTTPServerConfig("127.0.0.1", 0);
 		config.http2Enabled = true;
 		config.maxConnections = 2;
@@ -140,13 +140,13 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testDrainSendsGoAwayFirstAndLetsStreamsFinish(async:Async):Void {
-		// A GOAWAY came only at the drain's deadline, so clients kept opening
-		// streams on a connection about to close. Now it comes at once: a
-		// stream opened after the final one is refused, the one in flight
-		// finishes, and the drain ends with it rather than at the deadline.
-		// Answered by the test rather than by a timer: the harness pumps the
-		// runtime's clock faster than the wall clock, so a timed answer can land
-		// before the drain it is meant to straddle.
+		// The GOAWAY comes at once, not only at the drain's deadline, so
+		// clients stop opening streams on a connection about to close: a stream
+		// opened after the final one is refused, the one in flight finishes, and
+		// the drain ends with it rather than at the deadline. Answered by the
+		// test rather than by a timer: the harness pumps the runtime's clock
+		// faster than the wall clock, so a timed answer can land before the
+		// drain it is meant to straddle.
 		var working:HTTPRequestHandler = null;
 		var session = new H2Session(config -> {
 			config.middleware = [
@@ -196,8 +196,8 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testTheRateLimiterCountsHttp2Requests(async:Async):Void {
-		// Only the HTTP/1.1 parser asked the limiter, so six requests over
-		// HTTP/2 were all answered where HTTP/1.1 refused the fourth.
+		// The limiter is asked over HTTP/2 too, so six requests are not all
+		// answered where HTTP/1.1 refuses the fourth.
 		var session = new H2Session(config -> config.rateLimiter = new crossbyte.net.RateLimiter(3, 60));
 
 		session.start(() -> {
@@ -216,9 +216,9 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testAnHttp2BodyPastTheLimitIsRefused(async:Async):Void {
-		// DATA was appended with no limit while window kept being granted: a
-		// 3 MB upload reached a route HTTP/1.1 would have refused. Now it is
-		// answered 413, the stream is reset without error to stop the upload,
+		// DATA is not appended with no limit while window keeps being granted,
+		// where a 3 MB upload would reach a route HTTP/1.1 would have refused: it
+		// is answered 413, the stream is reset without error to stop the upload,
 		// and the connection carries on.
 		var reached:Bool = false;
 		var session = new H2Session(config -> {
@@ -292,7 +292,7 @@ class HTTPServerH2Test extends utest.Test {
 
 	public function testSplitCookiesJoinWithSemicolons(async:Async):Void {
 		// Browsers send each cookie as its own field over HTTP/2 (§8.2.3), and
-		// joining them with a comma made getCookie("sid") "abc123, theme=dark".
+		// joining them with a comma would make getCookie("sid") "abc123, theme=dark".
 		var session = new H2Session(config -> {
 			config.middleware = [
 				(handler, next) -> handler.respond(200, "text/plain", handler.getCookie("sid") + "|" + handler.getCookie("theme"))
@@ -310,11 +310,11 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testCredentialsInAResponseAreNeverIndexed(async:Async):Void {
-		// Every response field went into the HPACK dynamic table, session
-		// tokens in Set-Cookie included. RFC 7541 7.1.3: a credential in the
-		// table can be recovered from the compressed sizes of later responses
-		// an attacker can influence, and a table full of one-off tokens evicts
-		// what was worth keeping. The client already sent its own this way.
+		// Response fields carrying credentials, session tokens in Set-Cookie
+		// included, stay out of the HPACK dynamic table. RFC 7541 7.1.3: a
+		// credential in the table can be recovered from the compressed sizes of
+		// later responses an attacker can influence, and a table full of one-off
+		// tokens evicts what was worth keeping. The client sends its own this way.
 		var session = new H2Session(config -> {
 			config.middleware = [
 				(handler, next) -> handler.respond(401, "text/plain", "sign in", [
@@ -344,11 +344,11 @@ class HTTPServerH2Test extends utest.Test {
 
 	public function testAHeaderSectionPastTheLimitIsAnswered431(async:Async):Void {
 		// 3,000 one-byte references to a single cookie crumb: about three
-		// kilobytes on the wire, 117 KB by HPACK's accounting. It was taken
-		// whole, under an eight megabyte limit nobody advertised, and the
-		// crumbs joined one by one, at 200,000 of them that held the
-		// runtime's thread for 23.5 seconds. HTTP/1.1 answers the same section
-		// 431 at 64 KB, and so does HTTP/2 now, on that stream alone.
+		// kilobytes on the wire, 117 KB by HPACK's accounting. Taken whole under
+		// an unadvertised eight megabyte limit, with the crumbs joined one by one,
+		// 200,000 of them would hold the runtime's thread for over twenty seconds.
+		// HTTP/1.1 answers the same section 431 at 64 KB, and so does HTTP/2, on
+		// that stream alone.
 		var session = new H2Session(config -> {
 			config.middleware = [(handler, next) -> handler.respond(200, "text/plain", "cookie=" + (handler.getCookie("a") != null))];
 		});
@@ -422,7 +422,7 @@ class HTTPServerH2Test extends utest.Test {
 		// Larger than both the 65535-byte default window and the 256 KB
 		// streaming threshold, so this goes out through the file pump *and*
 		// has to stop and wait for WINDOW_UPDATEs on the way. Writing past the
-		// window is not a slow transfer, 6.9.1 makes it a FLOW_CONTROL_ERROR
+		// window is not a slow transfer: 6.9.1 makes it a FLOW_CONTROL_ERROR
 		// a real client answers by killing the connection.
 		var size = 300000;
 		exchange(async, "GET", "/big.bin", null, null, function(status, headers, body) {
@@ -449,9 +449,10 @@ class HTTPServerH2Test extends utest.Test {
 	// Only the jvm can make a file past 2 GB here without writing one: it
 	// asks for a sparse file, which takes no disk on NTFS, ext4 or APFS.
 	public function testAFileTooLargeToStateIsRefusedOverBothProtocols(async:Async):Void {
-		// File.size throws past 2 GB, since an Int cannot state the length.
-		// The handler did not catch it: HTTP/1.1 answered 500 only through its
-		// catch-all, and HTTP/2 reset the stream.
+		// File.size throws past 2 GB, since an Int cannot state the length. The
+		// handler catches it and refuses the file on both protocols, rather than
+		// HTTP/1.1 answering 500 only through its catch-all and HTTP/2 resetting
+		// the stream.
 		var made:Bool = false;
 		var session = new H2Session(config -> made = __makeSparseFile(config.rootDirectory.resolvePath("huge.bin").nativePath, 3221225473.0));
 		if (!made) {
@@ -500,9 +501,9 @@ class HTTPServerH2Test extends utest.Test {
 
 	public function testAThrowServingTheFirstHttp11RequestIsA500(async:Async):Void {
 		// A cleartext HTTP/2 listener reads the first bytes to tell the
-		// versions apart, and the handler it passed them to parsed them outside
-		// the catch every later read goes through: what serving that request
-		// threw went up through the socket's dispatch into the runtime's pump.
+		// versions apart, and the handler it passes them to parses them inside
+		// the catch every later read goes through, so what serving that request
+		// throws does not go up through the socket's dispatch into the runtime's pump.
 		var root = File.createTempDirectory();
 		var config = new HTTPServerConfig("127.0.0.1", 0, root);
 		config.http2Enabled = true;
@@ -518,8 +519,8 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testHttp11IsStillServedOnAnHttp2Listener(async:Async):Void {
-		// The listener offers both. A cleartext port cannot negotiate, RFC
-		// 9113 3.1 retired the h2c upgrade, so this is decided by looking at
+		// The listener offers both. A cleartext port cannot negotiate (RFC
+		// 9113 3.1 retired the h2c upgrade), so this is decided by looking at
 		// the first bytes, and an HTTP/1.1 request must come out the other
 		// side unharmed rather than being met with frames it cannot read.
 		var root = File.createTempDirectory();
@@ -569,15 +570,15 @@ class HTTPServerH2Test extends utest.Test {
 
 	// --------------------------------------------------- connection lifetime
 	//
-	// The sweep that closes quiet HTTP/2 connections measured the quiet as
-	// Sys.time() minus a haxe.Timer.stamp(). Those are one clock on hl, neko
-	// and jvm and two different ones on cpp and Node, where every connection
-	// read as idle since 1970 and was closed at the first sweep, a quarter
-	// second in, with a request in flight or without. Every exchange above is
-	// over before that sweep runs, so none of them could see it; each case here
-	// outlasts it. Each also sets the allowance it is not about so that judging
-	// by that one instead fails too: short where the connection must survive,
-	// long where it must be closed.
+	// The sweep that closes quiet HTTP/2 connections must measure the quiet
+	// on one clock. Sys.time() minus a haxe.Timer.stamp() is one clock on hl,
+	// neko and jvm and two different ones on cpp and Node, where every
+	// connection would read as idle since 1970 and be closed at the first
+	// sweep, a quarter second in, with a request in flight or without. Every
+	// exchange above is over before that sweep runs, so none of them could see
+	// it; each case here outlasts it. Each also sets the allowance it is not
+	// about so that judging by that one instead fails too: short where the
+	// connection must survive, long where it must be closed.
 
 	// Long enough to span several sweeps, which run every quarter second, and
 	// well short of the allowance the surviving cases are judged by.
@@ -694,11 +695,11 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testAnHttp2BodyTrickledInIsHeldToRequestTimeout(async:Async):Void {
-		// One byte of body every 0.4 s, under a requestTimeout of one second.
-		// Every frame read refreshed the connection's clock, so the request
-		// was still open at 3.6 s and answered 200, where HTTP/1.1 answered
-		// 408 at 1.05 s. The deadline is the stream's own now, set when its
-		// headers arrive, and nothing it sends moves it.
+		// One byte of body every 0.4 s, under a requestTimeout of one second. A
+		// frame read must not refresh the connection's clock, or the request
+		// would still be open at 3.6 s and answered 200, where HTTP/1.1 answers
+		// 408 at 1.05 s. The deadline is the stream's own, set when its headers
+		// arrive, and nothing it sends moves it.
 		var reached:Bool = false;
 		var session = new H2Session(config -> {
 			config.requestTimeout = 1;
@@ -739,8 +740,8 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testPingsDoNotKeepAnIdleHttp2ConnectionOpen(async:Async):Void {
-		// Any frame counted as activity, so a peer sending nothing but PING
-		// held a connection past keepAliveTimeout for as long as it liked.
+		// Not every frame counts as activity, or a peer sending nothing but PING
+		// could hold a connection past keepAliveTimeout for as long as it liked.
 		var session = new H2Session(config -> {
 			config.keepAliveTimeout = 1;
 			config.requestTimeout = 10;
@@ -770,14 +771,12 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testKeepAliveMaxRequestsEndsAnHttp2Connection(async:Async):Void {
-		// HTTP/2 took no notice of keepAliveMaxRequests, so a connection served
-		// requests for as long as its client kept it. The stream that reaches
-		// the limit now sends a GOAWAY as it opens, and the connection closes
-		// once the streams it took have ended. A stream the client had already
-		// sent is taken too, it was refused, REFUSED_STREAM, and a busy
-		// client lost requests that way at every limit, and only once the
-		// client has answered the PING after the first GOAWAY does the final
-		// one name the last stream.
+		// HTTP/2 honours keepAliveMaxRequests: the stream that reaches the
+		// limit sends a GOAWAY as it opens, and the connection closes once the
+		// streams it took have ended. A stream the client had already sent is
+		// taken too, not refused with REFUSED_STREAM, which would lose a busy
+		// client requests at every limit; and only once the client has answered
+		// the PING after the first GOAWAY does the final one name the last stream.
 		var session = new H2Session(config -> config.keepAliveMaxRequests = 2);
 
 		session.start(() -> {
@@ -883,8 +882,9 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testAnHttp2ContentLengthPastTheLimitIsRefusedAtItsHeaders(async:Async):Void {
-		// The limit was held per DATA frame only, so a request that declared
-		// a body far past it was invited to send the first megabyte of it.
+		// The limit is held against a request's declared body, not per DATA
+		// frame only, which would invite a request declaring a body far past it
+		// to send the first megabyte of it.
 		var reached:Bool = false;
 		var session = new H2Session(config -> {
 			config.maxRequestBodySize = 10;
@@ -915,9 +915,8 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testOnExpectContinueIsAskedOfAnHttp2Request(async:Async):Void {
-		// Only the HTTP/1.1 parser asked it. An HTTP/2 request reached the
-		// hook's job, refusing before the body is sent, only once the whole
-		// body had arrived, and never asked it at all.
+		// The hook is asked over HTTP/2 too, before the body is sent, which is
+		// its job, rather than only once the whole body had arrived, or never.
 		var asked:Int = 0;
 		var session = new H2Session(config -> {
 			config.onExpectContinue = handler -> {
@@ -970,9 +969,9 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testAnHttp2RequestIsTimedFromItsHeaders(async:Async):Void {
-		// The handler was made once the body had arrived, and the duration was
-		// measured from there, so an upload that took a second was recorded as
-		// taking none. HTTP/1.1 measures from the request's first byte.
+		// The duration is measured from the request's first byte, as HTTP/1.1
+		// measures it, not from when the body had arrived, which would record an
+		// upload that took a second as taking none.
 		var metrics = new crossbyte.metrics.Metrics();
 		var session = new H2Session(config -> {
 			config.metrics = metrics;
@@ -996,9 +995,9 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testAnHttp2MethodIsReadAsAnHttp11OneIs(async:Async):Void {
-		// The HTTP/1.1 parser upper-cases the method, as `method` says, and
-		// HTTP/2 took it as it came: "get" was refused 405 there and served
-		// over HTTP/1.1.
+		// The method is upper-cased, as the HTTP/1.1 parser does and `method`
+		// says, not taken as it came, which would refuse "get" 405 over HTTP/2
+		// and serve it over HTTP/1.1.
 		var seen:String = null;
 		var session = new H2Session(config -> {
 			config.middleware = [
@@ -1023,8 +1022,9 @@ class HTTPServerH2Test extends utest.Test {
 	public function testAnHttp2ProducerThatOutrunsItsClientHearsClose(async:Async):Void {
 		// At the output cap the stream is reset, which under HTTP/1.1 is the
 		// connection closing and so Event.CLOSE. Under HTTP/2 the connection
-		// stays, and the producer was never told: one writing on a timer kept
-		// writing into a stream that refused everything, for good.
+		// stays, so the producer is told by Event.CLOSE on its stream, or one
+		// writing on a timer would write into a stream that refused everything,
+		// for good.
 		var heardClose:Bool = false;
 		var accepted:Null<Bool> = null;
 		var session = new H2Session(config -> {
@@ -1061,11 +1061,12 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testAFileThatShrinksMidStreamEndsOnlyItsOwnStream(async:Async):Void {
-		// The file pump gave up on a file that came up short by closing the
-		// socket, which under HTTP/2 is the connection every other stream is
-		// on: one file changing under a download took down every request.
-		// A megabyte, so that most of it is still on disk, unread, when it is
-		// cut: the pump reads ahead only as far as its watermark.
+		// The file pump gives up on a file that comes up short by resetting
+		// its stream, not by closing the socket, which under HTTP/2 is the
+		// connection every other stream is on: one file changing under a
+		// download must not take down every request. A megabyte, so that most of
+		// it is still on disk, unread, when it is cut: the pump reads ahead only
+		// as far as its watermark.
 		var size:Int = 1024 * 1024;
 		var path:String = null;
 		var session = new H2Session(config -> {
@@ -1105,9 +1106,9 @@ class HTTPServerH2Test extends utest.Test {
 
 	public function testAnHttp2DownloadResetByItsClientLetsGoOfItsFile(async:Async):Void {
 		// The file pump resumes on its stream's writable callback, which a
-		// reset drops, and only the socket closing stopped it: a client
-		// resetting a large download left its file open, and its pump parked,
-		// for as long as the connection lived.
+		// reset drops, so a reset must stop it too: otherwise a client resetting
+		// a large download would leave its file open, and its pump parked, for as
+		// long as the connection lived.
 		var held:HTTPRequestHandler = null;
 		var session = new H2Session(config -> {
 			__bigFile(config, 1024 * 1024);
@@ -1141,9 +1142,9 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testAStalledHttp2DownloadIsEndedAtTheStallDeadline(async:Async):Void {
-		// The stall deadline, 30 s without the client taking a byte, was
-		// checked by the HTTP/1.1 sweep alone, so an HTTP/2 client that never
-		// opened its window held a file, and a pump, per stream, for good.
+		// The stall deadline (30 s without the client taking a byte) is checked
+		// for HTTP/2 too, or a client that never opened its window would hold a
+		// file, and a pump, per stream, for good.
 		var held:HTTPRequestHandler = null;
 		var session = new H2Session(config -> {
 			__bigFile(config, 1024 * 1024);
@@ -1179,10 +1180,10 @@ class HTTPServerH2Test extends utest.Test {
 	public function testAStalledHttp2DownloadIsEndedWithBothTimeoutsOff(async:Async):Void {
 		// requestTimeout and keepAliveTimeout at 0 set no deadline for what
 		// they bound, and the stall deadline is not theirs: a download whose
-		// client stops taking it is still ended. It was checked from the walk
-		// those two arm, so with both off nothing looked at it, and the file
-		// stayed open for as long as the connection did. The deadline is held
-		// in the past while this waits, as 30 s without a byte taken would
+		// client stops taking it is still ended, rather than checked only from
+		// the walk those two arm, which with both off would look at nothing and
+		// keep the file open for as long as the connection was. The deadline is
+		// held in the past while this waits, as 30 s without a byte taken would
 		// leave it: what is under test is whether the running server looks.
 		var held:HTTPRequestHandler = null;
 		var session = new H2Session(config -> {
@@ -1209,9 +1210,9 @@ class HTTPServerH2Test extends utest.Test {
 					}
 					return session.finished(1) || session.ended;
 				}, () -> {
-					// Room on the connection for the next answer, whose body
-					// would otherwise wait on the window the download spent,
-					// a response held, and so swept.
+					// Room on the connection for the next answer, whose body would
+					// otherwise wait on the window the download spent: a response held,
+					// and so swept.
 					session.windowUpdate(0, 1 << 20);
 					session.request(3, "GET", "/index.html", true);
 					session.until(() -> session.finished(3) || session.ended, () -> {
@@ -1234,14 +1235,13 @@ class HTTPServerH2Test extends utest.Test {
 
 	#if (cpp || neko || hl || jvm)
 	public function testAnHttp2ResponseStillGoingOutIsNotReapedAsIdle(async:Async):Void {
-		// An HTTP/2 connection was idle from when its last stream ended, and a
-		// stream ended once its last DATA was handed to the socket: for a
-		// client with a large window, at once, the whole response with it.
-		// One slower to read it than keepAliveTimeout had it cut off by the
-		// idle close. A connection is idle from when what it sent has gone.
-		// The client is a plain socket the runtime does not read, reading
-		// nothing until twice the idle allowance has passed. (Not on Node,
-		// which has no such socket.)
+		// An HTTP/2 connection is idle from when what it sent has gone, not from
+		// when its last stream ended, which for a client with a large window is
+		// as soon as the last DATA is handed to the socket, the whole response
+		// with it: a client slower to read it than keepAliveTimeout would have it
+		// cut off by the idle close. The client is a plain socket the runtime
+		// does not read, reading nothing until twice the idle allowance has
+		// passed. (Not on Node, which has no such socket.)
 		var size:Int = 24 * 1024 * 1024;
 		var body = new ByteArray();
 		body.length = size;
@@ -1368,14 +1368,14 @@ class HTTPServerH2Test extends utest.Test {
 	#end
 
 	public function testAnHttp2ResponseItsClientTakesNoneOfIsGivenUp(async:Async):Void {
-		// A response written whole, respond() with a body under the output
-		// cap, that its stream's window held back waited on its client's
-		// WINDOW_UPDATE with no deadline at all: a client that paused the
-		// stream, or never meant to read it, held a megabyte here for as long
-		// as the connection lasted. It is given up at the stall deadline, as a
-		// file the client takes nothing of is: the stream reset, its bytes let
+		// A response written whole (respond() with a body under the output cap)
+		// that its stream's window holds back must not wait on its client's
+		// WINDOW_UPDATE with no deadline at all, where a client that paused the
+		// stream, or never meant to read it, would hold a megabyte here for as
+		// long as the connection lasted. It is given up at the stall deadline, as
+		// a file the client takes nothing of is: the stream reset, its bytes let
 		// go, and the connection carrying on. Both timeouts are off, so nothing
-		// else could have ended it.
+		// else could end it.
 		var size:Int = 1024 * 1024;
 		var body = new ByteArray();
 		body.length = size;
@@ -1422,11 +1422,11 @@ class HTTPServerH2Test extends utest.Test {
 		// The same with no window opened at all: the first 64 KB spend the
 		// connection's window, and nothing on the connection can be sent
 		// again until the client gives more. At the stall deadline every
-		// response waiting on it is reset, and the requests waiting for room,
-		// the connection holds its cap, are refused, REFUSED_STREAM:
-		// never handed to the application, so safe to send again, rather
-		// than answered into a window that is not opening. The connection
-		// itself carries on, for a client that comes back to it.
+		// response waiting on it is reset, and the requests waiting for room
+		// (the connection holds its cap) are refused, REFUSED_STREAM: never
+		// handed to the application, so safe to send again, rather than
+		// answered into a window that is not opening. The connection itself
+		// carries on, for a client that comes back to it.
 		var size:Int = 1024 * 1024;
 		var body = new ByteArray();
 		body.length = size;
@@ -1475,10 +1475,9 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testTheOutputGaugesCountWhatAnHttp2StreamHolds(async:Async):Void {
-		// The output-buffer gauges counted each connection's socket, and an
-		// HTTP/2 connection holds most of what its client has not taken in its
-		// streams' queues, behind flow control: a megabyte waiting on a
-		// stream's window read as nothing.
+		// The output-buffer gauges count what an HTTP/2 connection holds in its
+		// streams' queues, behind flow control, not only its socket: a megabyte
+		// waiting on a stream's window must not read as nothing.
 		var size:Int = 1024 * 1024;
 		var body = new ByteArray();
 		body.length = size;
@@ -1514,14 +1513,13 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testAnHttp2ConnectionHoldsNoMoreThanItsOutputCap(async:Async):Void {
-		// maxOutputBufferSize is per connection, and over HTTP/2 nothing held
-		// a connection to it: each stream's response waited whole on its
-		// client's window, up to the cap apiece, so a client that opened 128
-		// streams and no window held 128 times the cap, a gigabyte at the
-		// default. Past the cap a connection's next requests wait to be
-		// handed to the application, as an HTTP/1.1 connection's next request
-		// waits behind the response going out, and go on as the client takes
-		// what is held.
+		// maxOutputBufferSize is per connection, and holds over HTTP/2 too:
+		// otherwise each stream's response would wait whole on its client's
+		// window, up to the cap apiece, so a client that opened 128 streams and
+		// no window would hold 128 times the cap (a gigabyte at the default).
+		// Past the cap a connection's next requests wait to be handed to the
+		// application, as an HTTP/1.1 connection's next request waits behind the
+		// response going out, and go on as the client takes what is held.
 		var size:Int = 100 * 1024;
 		var cap:Int = 256 * 1024;
 		var body = new ByteArray();
@@ -1569,12 +1567,12 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testALongPollOutlivesTheRequestTimeout(async:Async):Void {
-		// Every open stream counted as a request still arriving, so a long
-		// poll answered after requestTimeout found its connection closed with
-		// a GOAWAY, and every other stream on it gone too. A request that has
-		// arrived is the application's to answer, as over HTTP/1.1.
-		// Answered by the test rather than by a timer: the harness runs the
-		// runtime's clock faster than the wall clock the timeout is kept on.
+		// An open stream whose request has arrived does not count as a request
+		// still arriving, or a long poll answered after requestTimeout would find
+		// its connection closed with a GOAWAY, and every other stream on it gone
+		// too. A request that has arrived is the application's to answer, as
+		// over HTTP/1.1. Answered by the test rather than by a timer: the harness
+		// runs the runtime's clock faster than the wall clock the timeout is kept on.
 		var held:HTTPRequestHandler = null;
 		var session = new H2Session(config -> {
 			config.requestTimeout = 0.5;
@@ -1686,11 +1684,11 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testAProducerHearsTheServerResetItsStream(async:Async):Void {
-		// A stream the server resets is as over as one the client resets, but
-		// only the client's reset reached the producer: one the server reset
-		// for the client's protocol error, DATA on a stream the client had
-		// ended, STREAM_CLOSED, heard nothing until it next wrote, and one
-		// waiting on an event to write never did.
+		// A stream the server resets is as over as one the client resets, and
+		// the producer hears it the same way: otherwise one the server reset for
+		// the client's protocol error (DATA on a stream the client had ended,
+		// STREAM_CLOSED) would hear nothing until it next wrote, and one waiting
+		// on an event to write never would.
 		var closes:Int = 0;
 		var events:HTTPResponseStream = null;
 		var session = new H2Session(config -> {
@@ -1737,8 +1735,8 @@ class HTTPServerH2Test extends utest.Test {
 		// A download parked on the client's window, whose stream the server
 		// then resets for a WINDOW_UPDATE of nothing (PROTOCOL_ERROR). The
 		// reset drops the stream's writable callback, which is all the pump
-		// was waiting on, so it held the file until the stall deadline, and,
-		// with both timeouts off, for as long as the connection lived.
+		// was waiting on, so without more it would hold the file until the stall
+		// deadline, and, with both timeouts off, for as long as the connection lived.
 		var held:HTTPRequestHandler = null;
 		var closes:Int = 0;
 		var session = new H2Session(config -> {
@@ -1779,10 +1777,10 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testAThrowServingAnHttp2RequestIsAnswered500(async:Async):Void {
-		// What a request's serving throws outside any middleware, here the
-		// rate limiter's key, is answered 500 over HTTP/1.1. Over HTTP/2 the
-		// stream was reset INTERNAL_ERROR instead, so the client got no status
-		// at all for a request the server could still answer.
+		// What a request's serving throws outside any middleware (here the rate
+		// limiter's key) is answered 500, as over HTTP/1.1, not reset
+		// INTERNAL_ERROR, which would give the client no status at all for a
+		// request the server could still answer.
 		var session = new H2Session(config -> {
 			config.rateLimitKey = handler -> {
 				if (handler.requestPath == "/broken") {
@@ -1809,8 +1807,8 @@ class HTTPServerH2Test extends utest.Test {
 
 	public function testAThrowServingAnHttp2RequestAfterItsBodyIsAnswered500(async:Async):Void {
 		// The same for a request weighed at its headers and carried on when
-		// its body arrives: there it was reset too. The throw is a status
-		// listener's, on the response the request was first given.
+		// its body arrives. The throw is a status listener's, on the response
+		// the request was first given.
 		var thrown:Bool = false;
 		var session = new H2Session(config -> {
 			config.onExpectContinue = handler -> {
@@ -1841,10 +1839,9 @@ class HTTPServerH2Test extends utest.Test {
 
 	public function testAnHttp2ResponseCutShortIsResetNotAnsweredAgain():Void {
 		// A write that throws after a response's head has gone out leaves no
-		// status to say so with: a 500 now would go in behind the head. From a
-		// middleware, the 500's text went out as the 200's body, ended as
-		// though whole; from the files, outside any middleware, the stream
-		// was reset, which is what both do now.
+		// status to say so with: a 500 would go in behind the head, and from a
+		// middleware its text would go out as the 200's body, ended as though
+		// whole. The stream is reset, from a middleware or from the files.
 		for (routed in [true, false]) {
 			var frames:Array<H2Frame> = __servedThroughABreakingWrite(routed);
 			var types:Array<String> = [for (frame in frames) frame.type.toString()];
@@ -1858,12 +1855,11 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testAClientsGoAwayStillGetsTheResponsesItIsOwed(async:Async):Void {
-		// A client's GOAWAY was read as the end of the connection: nothing it
-		// sent after it was read, and no response went out after it, so a
-		// request still being answered got nothing, and one whose body was
-		// still arriving was never served. RFC 9113 6.8: the streams it opened
-		// still complete; it opens no more, and once they have, the connection
-		// closes.
+		// A client's GOAWAY is not the end of the connection: what it sends after
+		// it is still read, and responses still go out, so a request being
+		// answered gets its answer, and one whose body is still arriving is
+		// served. RFC 9113 6.8: the streams it opened still complete; it opens no
+		// more, and once they have, the connection closes.
 		var working:HTTPRequestHandler = null;
 		var session = new H2Session(config -> {
 			config.middleware = [
@@ -1911,8 +1907,8 @@ class HTTPServerH2Test extends utest.Test {
 
 	public function testAClientsGoAwayForAnErrorEndsTheConnection(async:Async):Void {
 		// A GOAWAY carrying an error says the client is closing: §5.4.1 has it
-		// close the connection once it has sent one. The server stopped
-		// reading, and kept the socket, with a stream open, for good.
+		// close the connection once it has sent one, so the server closes too,
+		// rather than keeping the socket, with a stream open, for good.
 		var working:HTTPRequestHandler = null;
 		var session = new H2Session(config -> {
 			config.middleware = [
@@ -1940,9 +1936,9 @@ class HTTPServerH2Test extends utest.Test {
 
 	public function testAMalformedGoAwayIsAConnectionError(async:Async):Void {
 		// §6.8: a GOAWAY belongs to the connection, stream 0, and carries at
-		// least eight bytes. One on a stream was taken as any other, the end
-		// of the connection, which the server then kept open, saying
-		// nothing; it is a PROTOCOL_ERROR, and the connection is closed.
+		// least eight bytes. One on a stream is a PROTOCOL_ERROR, and the
+		// connection is closed, not taken as the end of the connection and kept
+		// open, saying nothing.
 		var session = new H2Session(config -> {});
 
 		session.start(() -> {
@@ -1957,13 +1953,12 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testACloseListenerAddedAfterItsStreamWasResetHearsIt(async:Async):Void {
-		// A stream reset while nothing listened, by its client here, said
-		// nothing to a CLOSE listener added after it: the listener was
-		// registered for a stream already gone, and heard only the connection
-		// closing, whenever that came. The listener the HTTPResponseStream doc
-		// adds after beginResponse is one such, and its producer ran on. It
-		// is told now, once, in a later turn rather than from inside
-		// addEventListener.
+		// A stream reset while nothing listened (by its client here) is told to
+		// a CLOSE listener added after it, once, in a later turn rather than from
+		// inside addEventListener; otherwise the listener would be registered for
+		// a stream already gone, and hear only the connection closing, whenever
+		// that came. The listener the HTTPResponseStream doc adds after
+		// beginResponse is one such, and its producer would run on.
 		var held:HTTPRequestHandler = null;
 		var session = new H2Session(config -> {
 			config.middleware = [
@@ -2008,8 +2003,8 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testACloseListenerAddedAfterTheServerResetItsStreamHearsIt(async:Async):Void {
-		// The same for a stream the server reset, for DATA after the client
-		// had ended it, STREAM_CLOSED, before anything listened.
+		// The same for a stream the server reset (for DATA after the client
+		// had ended it, STREAM_CLOSED) before anything listened.
 		var held:HTTPRequestHandler = null;
 		var session = new H2Session(config -> {
 			config.middleware = [
@@ -2049,7 +2044,7 @@ class HTTPServerH2Test extends utest.Test {
 	public function testAListenerAddedAfterCloseWentOutHearsItOnce(async:Async):Void {
 		// One listener hears the reset as it happens; a second, added after,
 		// is told in a later turn, alone. The connection closing then tells
-		// neither again: the second's watch had the first hear CLOSE twice.
+		// neither again, nor does the second's watch make the first hear CLOSE twice.
 		var held:HTTPRequestHandler = null;
 		var first:Int = 0;
 		var session = new H2Session(config -> {
@@ -2088,11 +2083,11 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testARefusalWhoseAnswerThrowsIsResetAsAnError(async:Async):Void {
-		// A request refused at its headers, a Content-Length past the limit,
-		// whose 413 threw, and whose 500 then threw as well, had no answer
-		// at all, and its stream was reset NO_ERROR: §8.1's way of saying a
-		// response is complete and the rest of the body is not wanted. It is
-		// reset INTERNAL_ERROR, as one whose serving throws after its body is.
+		// A request refused at its headers (a Content-Length past the limit)
+		// whose 413 throws, and whose 500 then throws as well, has no answer at
+		// all, so its stream is reset INTERNAL_ERROR, as one whose serving throws
+		// after its body is, not NO_ERROR, which is §8.1's way of saying a
+		// response is complete and the rest of the body is not wanted.
 		var session = new H2Session(config -> {
 			config.maxRequestBodySize = 10;
 			config.rateLimitKey = handler -> {
@@ -2121,10 +2116,9 @@ class HTTPServerH2Test extends utest.Test {
 	public function testARefusalIsCompleteBeforeItsStreamIsReset(async:Async):Void {
 		// A refusal at the headers asks the client to stop sending its body
 		// with a reset, NO_ERROR, which §8.1 allows after a complete response.
-		// It went out straight after the answer was handed over, so an answer
-		// the client's window could not take whole, an errorDocument of 100
-		// KB, was cut off by the reset that followed its first 64 KB. The
-		// reset now waits for the answer to end.
+		// The reset waits for the answer to end: sent straight after the answer
+		// was handed over, it would cut off an answer the client's window could
+		// not take whole (an errorDocument of 100 KB) after its first 64 KB.
 		var page = new ByteArray();
 		for (i in 0...100 * 1024) {
 			page.writeByte(0x61 + (i % 26));
@@ -2331,10 +2325,9 @@ class HTTPServerH2Test extends utest.Test {
 					payload.addBytes(frame.payload, 0, frame.payload.length);
 					payloadLength += frame.payload.length;
 
-					// The client half of flow control, and only where a body
-					// actually needs it: without this a transfer past the
-					// opening window stops and never resumes, correctly,
-					// which is what makes it the thing under test.
+					// The client half of flow control, and only where a body actually
+					// needs it: without this a transfer past the opening window stops and
+					// never resumes (correctly, which is what makes it the thing under test).
 					if (largeFileSize > 0 && frame.payload.length > 0) {
 						pendingCredit += frame.payload.length;
 					}
@@ -2376,15 +2369,15 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testAnHttp2ConnectionHoldsNoMoreRequestBodyThanItsBudget(async:Async):Void {
-		// Each stream let its body grow to maxRequestBodySize, and both windows
-		// were opened again as each byte arrived, so a client uploading slowly
-		// on every stream made the server hold a megabyte apiece, 128 MB on
-		// 128 streams, and with requestTimeout off, for as long as it liked.
-		// Eight uploads of a megabyte, from a client keeping to the windows and
-		// stopping each a byte short: at the defaults the connection holds no
-		// more than its 4 MB budget and refuses none of them, and once the
-		// client goes on, every one arrives whole. They did not all fit at
-		// once, so some waited for window while the others went first.
+		// A body may not grow to maxRequestBodySize on every stream with both
+		// windows opened again as each byte arrives, or a client uploading
+		// slowly on every stream would make the server hold a megabyte apiece
+		// (128 MB on 128 streams) and, with requestTimeout off, for as long as it
+		// liked. Eight uploads of a megabyte, from a client keeping to the
+		// windows and stopping each a byte short: at the defaults the connection
+		// holds no more than its 4 MB budget and refuses none of them, and once
+		// the client goes on, every one arrives whole. They do not all fit at
+		// once, so some wait for window while the others go first.
 		var size:Int = 1024 * 1024;
 		var count:Int = 8;
 		var bodies:Map<Int, Bytes> = new Map();
@@ -2417,11 +2410,11 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	public function testDataPastAnHttp2StreamsWindowIsAFlowControlError(async:Async):Void {
-		// Nothing checked that a client kept to the windows the server opened:
-		// one that ignored them sent whatever it liked, and what the windows
-		// were holding the connection to meant nothing. A stream sent past its
-		// window is reset FLOW_CONTROL_ERROR, and the connection carries on.
-		// Its content-length is what its window is opened to.
+		// A client must keep to the windows the server opened: one that ignored
+		// them would send whatever it liked, and what the windows held the
+		// connection to would mean nothing. A stream sent past its window is
+		// reset FLOW_CONTROL_ERROR, and the connection carries on. Its
+		// content-length is what its window is opened to.
 		var session = new H2Session(config -> {});
 
 		session.start(() -> {
@@ -2448,8 +2441,8 @@ class HTTPServerH2Test extends utest.Test {
 		// stop coming it would wait for good: requestTimeout is off. Two
 		// megabyte uploads whose client sends nothing take the budget; two more
 		// spend their first windows and wait. At the stall deadline, nothing
-		// having moved, those two are refused with REFUSED_STREAM, never
-		// handed to the application, so safe to send again, and the two
+		// having moved, those two are refused with REFUSED_STREAM (never
+		// handed to the application, so safe to send again), and the two
 		// still holding windows are left be.
 		var size:Int = 1024 * 1024;
 		var session = new H2Session(config -> {
@@ -2574,11 +2567,10 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	/**
-		What one read asks for goes out in one write. Every frame was flushed
-		on its own, the SETTINGS, its acknowledgement, and each response's
-		HEADERS and DATA, a system call apiece, so an HTTP/2 request cost
-		two where HTTP/1.1 costs one: 47,800 a second over cleartext, where
-		Node's own http2 answered 111,000.
+		What one read asks for goes out in one write, rather than every frame
+		flushed on its own (the SETTINGS, its acknowledgement, and each
+		response's HEADERS and DATA), a system call apiece, which would cost an
+		HTTP/2 request two where HTTP/1.1 costs one.
 	**/
 	public function testWhatOneReadAsksForGoesOutInOneWrite():Void {
 		var config = new HTTPServerConfig("127.0.0.1", 0);
@@ -2906,7 +2898,7 @@ private class H2Session {
 	}
 
 	/**
-		Sends `bodies`, stream id to body, round robin, a frame at a time,
+		Sends `bodies` (stream id to body) round robin, a frame at a time,
 		only as fast as the server's windows allow, each stream ended with its
 		last byte; or, with `short` above 0, each stopped that many bytes short
 		of its end and left open, as a client uploading slowly leaves it.
@@ -2969,7 +2961,7 @@ private class H2Session {
 		// pingAcks as it stood when the PING asking whether more is coming
 		// went out, or -1 while none is out; and whether anything was sent
 		// since. One is sent only once no window has opened for a while: a
-		// PING each time this caught up with the windows was a PING flood,
+		// PING each time this caught up with the windows would be a PING flood,
 		// which the server ends the connection for.
 		var asked:Int = -1;
 		var movedSinceAsked:Bool = false;
@@ -3126,8 +3118,8 @@ private class H2Session {
 
 	/**
 		Sends a GOAWAY: `code`, NO_ERROR by default, and `lastStreamId`, the
-		last stream the server opened that this side will process, 0 for a
-		client, which is never pushed one.
+		last stream the server opened that this side will process (0 for a
+		client, which is never pushed one).
 	**/
 	public function goAway(code:Int = 0, lastStreamId:Int = 0):Void {
 		var payload:Bytes = Bytes.alloc(8);
@@ -3194,15 +3186,14 @@ private class H2Session {
 	 * Pumps for `seconds` without sending anything. Cut short if the server
 	 * ends the connection, since then there is nothing left to wait for.
 	 *
-	 * Each pump advances the runtime by the wall time it took. At the default
-	 * step of a sixtieth the runtime's clock ran about fifteen times faster
-	 * than the wall clock this waits on wherever a millisecond's sleep takes
-	 * one, Linux, not Windows, and utest's timeout runs on the runtime's
-	 * clock: the 1.5 s pause of the long poll case came to some 24 s of it,
-	 * and the case timed out on CI with its answer on the way. A step of a
-	 * millisecond, which mended that, ran it as much slower on Windows, where
-	 * the sleep takes a timer tick, so the server's sweep came seconds late to
-	 * a deadline a case was waiting on.
+	 * Each pump advances the runtime by the wall time it took. A fixed step
+	 * cannot keep to the wall: a sixtieth runs the runtime's clock about
+	 * fifteen times faster than the wall clock this waits on wherever a
+	 * millisecond's sleep takes one (Linux, not Windows), and utest's timeout
+	 * runs on the runtime's clock, so a 1.5 s pause would spend some 24 s of
+	 * it; a millisecond runs it as much slower on Windows, where the sleep
+	 * takes a timer tick, so the server's sweep would come seconds late to a
+	 * deadline a case was waiting on.
 	 */
 	public function pause(seconds:Float, then:Void->Void):Void {
 		var resumeAt:Float = haxe.Timer.stamp() + seconds;

@@ -16,9 +16,9 @@ class ProcessLifecycleTest extends utest.Test {
 
 	#if nodejs
 	public function testASigtermOnNodeLatchesTheRequest():Void {
-		// Node exited on SIGTERM and SIGINT, so docker stop or Ctrl+C on a
-		// Node service skipped the drain. Emitted rather than sent: a real
-		// SIGTERM on Windows ends a Node process whatever listens for it.
+		// Node exits on SIGTERM and SIGINT by default, so docker stop or Ctrl+C
+		// on a Node service would skip the drain. Emitted rather than sent: a
+		// real SIGTERM on Windows ends a Node process whatever listens for it.
 		var ran = false;
 		ProcessLifecycle.onShutdown(() -> ran = true);
 
@@ -32,10 +32,10 @@ class ProcessLifecycleTest extends utest.Test {
 
 	#if nodejs
 	/**
-		A SIGHUP on Node runs the same shutdown. Node ended the process on it,
-		a terminal gone, or on Windows a console window closing, which Node
-		delivers as SIGHUP, with no callbacks. On macOS, where Node cannot
-		see whether nohup ignored it, it is left to Node's default.
+		A SIGHUP on Node runs the same shutdown. By default Node ends the
+		process on it (a terminal gone, or on Windows a console window closing,
+		which Node delivers as SIGHUP) with no callbacks. On macOS, where Node
+		cannot see whether nohup ignored it, it is left to Node's default.
 	**/
 	public function testASighupOnNodeLatchesTheRequest():Void {
 		var ran = false;
@@ -57,8 +57,9 @@ class ProcessLifecycleTest extends utest.Test {
 
 	#if (java || jvm)
 	/**
-		A HUP on the jvm runs the same shutdown; the JVM halted on it. A JVM
-		on Windows has no HUP, and installing still arms TERM and INT there.
+		A HUP on the jvm runs the same shutdown, where by default the JVM halts
+		on it. A JVM on Windows has no HUP, and installing still arms TERM and
+		INT there.
 	**/
 	public function testAHangupOnTheJvmLatchesTheRequest():Void {
 		Assert.isTrue(ProcessLifecycle.installDefaultHandlers(), "this JVM has no signal hook");
@@ -76,7 +77,7 @@ class ProcessLifecycleTest extends utest.Test {
 
 	public function testASignalOnTheJvmLatchesTheRequest():Void {
 		// The JVM's default for SIGINT and SIGTERM halts it after its
-		// shutdown hooks, so a jvm service skipped the drain.
+		// shutdown hooks, so a jvm service would skip the drain.
 		if (!ProcessLifecycle.installDefaultHandlers()) {
 			Assert.fail("this JVM has no signal hook");
 			return;
@@ -95,9 +96,9 @@ class ProcessLifecycleTest extends utest.Test {
 	/**
 		A closing console window holds the close while the shutdown runs.
 		Windows ends the process as soon as the handler for a close, a logoff
-		or a shutdown returns, and the handler returned at once: the process
-		was gone before the runtime's next tick saw the request, so only
-		Ctrl+C and Ctrl+Break ran onShutdown. Delivered here as Windows
+		or a shutdown returns, so a handler that returned at once would let the
+		process go before the runtime's next tick saw the request, and only
+		Ctrl+C and Ctrl+Break would run onShutdown. Delivered here as Windows
 		delivers it, on a thread of its own, with a short hold.
 	**/
 	public function testAClosingConsoleWaitsForTheShutdown():Void {
@@ -124,11 +125,11 @@ class ProcessLifecycleTest extends utest.Test {
 
 	/**
 		A process that has loaded user32.dll hears of a logoff or a shutdown
-		through a window: Windows no longer calls its console handler for
-		them. A hidden one runs the shutdown and holds the session's end while
-		it runs, as the console handler holds a close. Such a process, a
-		GUI toolkit's, or one calling a Shell function, had no window, and
-		the session ended it with no onShutdown.
+		through a window: Windows does not call its console handler for them.
+		A hidden one runs the shutdown and holds the session's end while it
+		runs, as the console handler holds a close. Without it, such a process
+		(a GUI toolkit's, or one calling a Shell function) would have no window,
+		and the session would end it with no onShutdown.
 
 		user32 is loaded here as such a process loads it; the test process
 		loads none of it otherwise. The logoff is the one Windows sends:
@@ -165,10 +166,10 @@ class ProcessLifecycleTest extends utest.Test {
 
 	/**
 		Windows sends a logoff to services whenever anyone signs out, and does
-		not end them, so a process in session 0 ignores it. It shut down: a
-		service, or a process a service started, stopped serving whenever a
-		user went home. Delivered here as though in session 0 (a test hook),
-		and then outside it, where a logoff is still a shutdown.
+		not end them, so a process in session 0 ignores it; shutting down on it
+		would make a service, or a process a service started, stop serving
+		whenever a user went home. Delivered here as though in session 0 (a
+		test hook), and then outside it, where a logoff is still a shutdown.
 	**/
 	public function testALogoffInSessionZeroIsIgnored():Void {
 		Assert.isTrue(ProcessLifecycle.installDefaultHandlers());
@@ -206,9 +207,9 @@ class ProcessLifecycleTest extends utest.Test {
 	static inline var HANGUP:Int = 1;
 
 	/**
-		A SIGHUP, the terminal a server was started from going away, runs
-		the same shutdown as SIGTERM. Its default ended the process at once,
-		with no onShutdown and no drain.
+		A SIGHUP (the terminal a server was started from going away) runs the
+		same shutdown as SIGTERM, rather than its default, which ends the
+		process at once, with no onShutdown and no drain.
 	**/
 	public function testAHangupShutsDownGracefully():Void {
 		var ran = false;
@@ -216,8 +217,8 @@ class ProcessLifecycleTest extends utest.Test {
 		Assert.isTrue(ProcessLifecycle.installDefaultHandlers());
 
 		// Asked first, so that a hangup left at its default fails here rather
-		// than ending the suite: it did on macOS, where SIGHUP had been handled
-		// with SA_SIGINFO in the shell that started the run.
+		// than ending the suite, as it can on macOS where SIGHUP has been
+		// handled with SA_SIGINFO in the shell that started the run.
 		if (!crossbyte.sys._internal.NativeLifecycle.handlesForTest(HANGUP)) {
 			Assert.fail("SIGHUP was left at its default by installDefaultHandlers()");
 			return;
@@ -231,8 +232,8 @@ class ProcessLifecycleTest extends utest.Test {
 	/**
 		A SIGHUP at its default whose SA_SIGINFO flag is still set is handled
 		all the same. macOS keeps the flag across exec for a signal the parent
-		handled with it, and the install read the flag as some other handler
-		and left SIGHUP alone: on the CI runner it ended the whole suite.
+		handled with it, and an install that read the flag as some other
+		handler would leave SIGHUP alone, and a hangup would end the whole suite.
 	**/
 	public function testAHangupLeftWithSiginfoIsStillHandled():Void {
 		crossbyte.sys._internal.NativeLifecycle.uninstallForTest();
@@ -247,8 +248,8 @@ class ProcessLifecycleTest extends utest.Test {
 	}
 
 	/**
-		A SIGHUP ignored when the handlers are installed, nohup, which asks
-		for the process to outlive its terminal, stays ignored.
+		A SIGHUP ignored when the handlers are installed (nohup, which asks
+		for the process to outlive its terminal) stays ignored.
 	**/
 	public function testAHangupIgnoredByNohupStaysIgnored():Void {
 		crossbyte.sys._internal.NativeLifecycle.uninstallForTest();
@@ -303,7 +304,7 @@ class ProcessLifecycleTest extends utest.Test {
 		ProcessLifecycle.onShutdown(() -> throw "shutdown callback failure");
 		ProcessLifecycle.onShutdown(() -> order.push(3));
 
-		// Contained, and said: it was swallowed without a word.
+		// Contained, and said, not swallowed without a word.
 		var errors:Array<String> = [];
 		crossbyte.utils.Logger.recordSink = record -> {
 			if (record.level == crossbyte.utils.LogLevel.ERROR) {
@@ -372,10 +373,10 @@ class ProcessLifecycleTest extends utest.Test {
 
 	/**
 		A handshake timeout of 0 is none, as everywhere in CrossByte: the call
-		waits for the handshake to settle. It was read as "do not wait", and
-		answered while the handshake was still pending, so a process the
-		SCM did start could report itself a console run. Run alone, before
-		anything else here attaches, this read PENDING.
+		waits for the handshake to settle. Read as "do not wait", it would
+		answer while the handshake was still pending, so a process the SCM did
+		start could report itself a console run. Run alone, before anything
+		else here attaches, that would read PENDING.
 	**/
 	public function testServiceControlWithATimeoutOfZeroWaitsForTheHandshake():Void {
 		Assert.isFalse(ProcessLifecycle.installServiceControl("CrossByteTestService", 0));
@@ -416,9 +417,9 @@ class ProcessLifecycleTest extends utest.Test {
 
 		Assert.isFalse(ProcessLifecycle.shutdownRequested);
 
-		// Drives the real SERVICE_CONTROL_STOP handler, not a copy of it. This
-		// is the path that did not exist: a service stop reached no callback,
-		// so a drain registered here never ran and the SCM killed the process.
+		// Drives the real SERVICE_CONTROL_STOP handler, not a copy of it: a
+		// service stop reaches the callbacks, so a drain registered here runs
+		// before the SCM would kill the process.
 		crossbyte.sys._internal.NativeServiceControl.simulateStop();
 
 		Assert.isTrue(ProcessLifecycle.shutdownRequested);

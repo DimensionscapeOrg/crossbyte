@@ -6,9 +6,9 @@ import utest.Assert;
 	Where there are no threads, `openAsync` refuses to write rather than hang.
 
 	Its writer is a worker that waits for writes. On a target with no threads
-	the worker runs in the calling thread, so `openAsync(file, WRITE)` sat in
-	that wait, for writes its own caller could never make, and never
-	returned. Node is the target in the suites that has none.
+	the worker runs in the calling thread, so `openAsync(file, WRITE)` would
+	sit in that wait, for writes its own caller could never make, and never
+	return. Node is the target in the suites that has none.
 **/
 class FileStreamAsyncRefusalTest extends utest.Test {
 	#if (nodejs || (sys && !target.threaded))

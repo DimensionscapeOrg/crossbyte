@@ -11,19 +11,13 @@ import haxe.io.Eof;
  * Inflates a raw deflate stream (RFC 1951): through zlib natively (hxcpp's),
  * on Node (its own) and on the jvm (`java.util.zip`), and elsewhere through
  * `haxe.zip.InflateImpl`.
- *
- * It carried a decoder of its own beside that, Huffman tables in balanced
- * trees, a 32K-entry window, which nothing called any more, but whose window
- * every `new Inflater()` still allocated and cleared, and a CRC it computed
- * over every result for gzip's sake. Inflating an 846-byte message cost 96 us
- * on Node, 66 of them in the constructor. gzip computes its CRC itself now.
  */
 class Inflater {
 	/**
 		Bytes this will produce before giving up, or `0` for no limit.
 
-		Deflate has no bound on how far input expands, a megabyte of zeros
-		comes back as about a gigabyte, so anything inflating a stream it
+		Deflate has no bound on how far input expands (a megabyte of zeros
+		comes back as about a gigabyte), so anything inflating a stream it
 		did not author wants a ceiling. The check sits inside the read loop
 		rather than on the result, so the memory is never taken in the first
 		place.
@@ -41,10 +35,10 @@ class Inflater {
 	}
 
 	/**
-		Inflates the stream `input` is at, raw deflate, or zlib (RFC 1950)
-		when `zlib` is set, its header parsed and its Adler-32 checked, and
-		leaves `input` just past it, where gzip finds its trailer and any
-		member after it.
+		Inflates the stream `input` is at: raw deflate, or zlib (RFC 1950)
+		when `zlib` is set, its header parsed and its Adler-32 checked. Leaves
+		`input` just past it, where gzip finds its trailer and any member
+		after it.
 
 		@param maxOutputSize Bytes to produce before giving up, or `0` for no
 		       limit.
@@ -68,10 +62,10 @@ class Inflater {
 	#if cpp
 	/**
 		`inflate` through hxcpp's zlib, which every native build links for
-		`haxe.zip` already. The pure Haxe `InflateImpl` took 64-88 µs for a
-		437-byte WebSocket message and zlib takes 3.4-4.5 µs (the audit's
-		InflatePerf): it allocated a 64 KB window and built its Huffman tables
-		as objects for every call.
+		`haxe.zip` already. zlib takes 3.4-4.5 µs for a 437-byte WebSocket
+		message, where the pure Haxe `InflateImpl` takes 64-88 µs: it
+		allocates a 64 KB window and builds its Huffman tables as objects for
+		every call.
 
 		zlib is given the stream's bytes only, not what follows the input's
 		window in the array, and reports how much of them it read: the input
@@ -140,7 +134,7 @@ class Inflater {
 			stream.close();
 
 			if (at >= end && StringTools.startsWith(e, "ZLib Error -5")) {
-				// Z_BUF_ERROR: no progress, every byte read, a stream cut short.
+				// Z_BUF_ERROR with every byte read: no progress, so a stream cut short.
 				throw new IOError("Invalid " + format + " data: the stream ends early");
 			}
 
@@ -186,10 +180,8 @@ class Inflater {
 		var produced:Int = 0;
 
 		// InflateImpl says what is wrong with a stream by throwing a String,
-		// and that it ran out by letting Eof through, which is how a caller
-		// that has to tell a damaged body from a bug could not: they reached
-		// it as a bare string, and the HTTP client reported every one as an
-		// unsupported content coding.
+		// and that it ran out by letting Eof through. Both become IOErrors
+		// here, so a caller can tell a damaged body from a bug.
 		try {
 			var inflater = new haxe.zip.InflateImpl(input, zlib, zlib);
 			while (true) {

@@ -5,7 +5,7 @@ import crossbyte.net.rtc.PeerConnection;
 import haxe.Timer;
 
 /**
-	WebRTC data channel messages over the whole stack, ICE, DTLS, SCTP,
+	WebRTC data channel messages over the whole stack (ICE, DTLS, SCTP)
 	between two PeerConnections in one process over loopback. A round is a
 	game tick's worth: `burst` messages of `size` bytes sent one after the
 	other on one channel, then the runtime pumped until all have arrived.

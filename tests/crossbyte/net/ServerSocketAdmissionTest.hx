@@ -18,8 +18,8 @@ class ServerSocketAdmissionTest extends utest.Test {
 		} catch (_:Dynamic) {}
 	}
 
-	// The harness's runtime is driven by whoever pumps it, a loop here on
-	// native, event loop turns on Node, so every wait below is a pump.
+	// The harness's runtime is driven by whoever pumps it (a loop here on
+	// native, event loop turns on Node), so every wait below is a pump.
 	private static function afterListening(server:ServerSocket, then:Void->Void):Void {
 		HTTPTestSupport.pumpUntilAsync(() -> server.localPort != 0, 2.0, _ -> then());
 	}
@@ -112,11 +112,11 @@ class ServerSocketAdmissionTest extends utest.Test {
 		A client that connects and resets before the server takes it, and one
 		that connects after it. Linux hands the reset connection over all the
 		same, with no address for its peer: `peer()` answers null, and the
-		server read through it, asking `admit` and again naming the
-		connection. In a release build that ended the process, any client
-		could take a native server on Linux down by connecting and resetting
-		at once. macOS fails the accept instead, which the server reported as
-		its own failure.
+		server must not read through it, asking `admit` and naming the
+		connection, which in a release build would end the process: any client
+		could take a native server on Linux down by connecting and resetting at
+		once. macOS fails the accept instead, which the server must not report
+		as its own failure.
 
 		Only on cpp, the one target with a way to make a socket reset
 		(`ResetProbe`).
@@ -196,7 +196,7 @@ class ServerSocketAdmissionTest extends utest.Test {
 	}
 
 	public function testAQueuedBurstIsTakenInAFewTicks():Void {
-		// One a tick, as it was, this took a hundred ticks.
+		// Many a tick: one a tick would take a hundred ticks.
 		var ticks:Int = ticksToAccept(100, 64);
 		Assert.isTrue(ticks <= 3, 'a hundred waiting connections took $ticks ticks');
 	}

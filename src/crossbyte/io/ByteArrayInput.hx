@@ -80,10 +80,10 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 
 	@:noCompletion private inline function __need(n:Int):Void {
 		#if !final
-		// Against the bytes remaining rather than `position + n`. That sum
-		// overflows for a large n and wraps negative, so the comparison
-		// succeeded and the read went ahead, and readVarUTF can hand this
-		// a length the peer chose, up to 2^31-1.
+		// Against the bytes remaining rather than `position + n`: that sum
+		// overflows for a large n and wraps negative, so the comparison would
+		// succeed and the read go ahead, and readVarUTF can hand this a
+		// length the peer chose, up to 2^31-1.
 		if (n < 0 || n > this.length - this.position)
 			throw "ByteArrayInput underflow";
 		#end
@@ -287,8 +287,8 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 			var b:Int = this.get(at++);
 			if (shift == 28 && b > 0x0F) {
 				// The fifth byte carries the last four bits of 32 and has to
-				// end the varint. Bits above those were shifted off the top,
-				// 2^32 + 1 read as 1, and a continuation bit asks for a
+				// end the varint: bits above those would be shifted off the top
+				// (2^32 + 1 reading as 1), and a continuation bit asks for a
 				// sixth byte, which a 32-bit value never needs.
 				throw (b & 0x80) != 0 ? "varuint too long" : "varuint overflow";
 			}

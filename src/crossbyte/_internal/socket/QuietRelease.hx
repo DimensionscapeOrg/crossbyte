@@ -9,7 +9,7 @@ package crossbyte._internal.socket;
 interface QuietRelease {
 	/**
 		Asked once a sweep: lets go of the storage of a socket that has read
-		and written nothing since the sweep before. Whether to go on asking,
+		and written nothing since the sweep before. Whether to go on asking:
 		false once it holds nothing more, or has closed.
 	**/
 	function __releaseIfQuiet():Bool;

@@ -54,8 +54,8 @@ class HpackEncoder {
 	}
 
 	/**
-		`headers` as a header block, after `first` when one is given, a
-		response's `:status`, which must lead (RFC 9113 8.3.2), so the
+		`headers` as a header block, after `first` when one is given (a
+		response's `:status`, which must lead, RFC 9113 8.3.2), so the
 		caller need not build a list with it at the front.
 	**/
 	public function encode(headers:Array<HpackHeader>, ?first:HpackHeader):Bytes {

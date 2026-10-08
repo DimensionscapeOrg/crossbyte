@@ -8,9 +8,9 @@ class CollectionsTest extends utest.Test {
 	/**
 		A miss in a large `Map<Int, T>` costs what a hit does.
 
-		Haxe 4.3.7's `IntMap` for the java targets never stopped probing at an
-		empty bucket, so every miss read the whole table, 110us a miss at
-		100,000 entries, where a hit took nothing measurable. CrossByte puts a
+		Haxe 4.3.7's `IntMap` for the java targets never stops probing at an
+		empty bucket, so every miss reads the whole table: 110us a miss at
+		100,000 entries, where a hit takes nothing measurable. CrossByte puts a
 		fixed copy ahead of it there (`std/java`, through `StdOverrides`).
 		Timed against the hits rather than a clock limit, so a loaded machine
 		slows both sides alike.
@@ -230,11 +230,11 @@ class CollectionsTest extends utest.Test {
 	}
 
 	/**
-		A handle is not an id. It converted to an `Int` silently, so
-		`grid.set(entity.handle, x, y)` compiled where `entity.slot` was meant,
-		and worked until the slot's first reuse made the handle 1,048,576 or
-		more, when the grid grew five arrays of that length to fit it, 117
-		MB by the third reuse. Now it has to be asked for.
+		A handle is not an id, and does not convert to an `Int` silently:
+		otherwise `grid.set(entity.handle, x, y)` would compile where
+		`entity.slot` was meant, and work until the slot's first reuse made the
+		handle 1,048,576 or more, when the grid would grow five arrays of that
+		length to fit it (117 MB by the third reuse). It has to be asked for.
 	**/
 	public function testAHandleIsNotAnIdOfItsOwnAccord():Void {
 		var map = new SlotMap<String>(4);
@@ -277,9 +277,9 @@ class CollectionsTest extends utest.Test {
 	}
 
 	/**
-		Keys can be named constants, and a key no case matches can be handled.
-		Only literals were accepted, a table keyed on opcodes repeated their
-		numbers, and an unmatched key threw "Case not found".
+		Keys can be named constants, and a key no case matches can be handled,
+		rather than only literals (a table keyed on opcodes repeating their
+		numbers) and "Case not found" thrown for an unmatched key.
 	**/
 	public function testSwitchTableTakesNamedKeysAndAFallback():Void {
 		Assert.isNull(TypeCheck.errorOf(SwitchTable.make([{key: SwitchTableOpcodes.PING, handler: () -> {}}])), "a named constant was refused as a key");
@@ -328,8 +328,8 @@ class CollectionsTest extends utest.Test {
 	}
 
 	/**
-		The longest held key a path starts with: the route that serves it. A
-		radix tree could only answer exact keys.
+		The longest held key a path starts with: the route that serves it, not
+		only exact keys.
 	**/
 	public function testRadixTreeFindsTheLongestPrefix():Void {
 		var routes = new RadixTree<String>();
@@ -353,7 +353,7 @@ class CollectionsTest extends utest.Test {
 		Assert.equals(1, routes.longestPrefixLength("/nothing"));
 		Assert.equals(-1, routes.longestPrefixLength("nothing"));
 
-		// Exact lookups are unchanged by the split nodes between keys.
+		// Exact lookups are not changed by the split nodes between keys.
 		Assert.equals("users", routes.search("/api/v1/users"));
 		Assert.isNull(routes.search("/api/v1"));
 		Assert.isNull(routes.search("/api/v1/users/"));
@@ -361,9 +361,9 @@ class CollectionsTest extends utest.Test {
 
 	#if jvm
 	/**
-		A lookup allocates nothing. It built the common prefix of each label
-		and the key a character at a time, and a substring at every level:
-		7.6 KB per lookup on the jvm.
+		A lookup allocates nothing: it does not build the common prefix of each
+		label and the key a character at a time, nor a substring at every level,
+		which would cost 7.6 KB per lookup on the jvm.
 	**/
 	public function testRadixTreeLookupsAllocateNothing():Void {
 		var tree = new RadixTree<Int>();
@@ -419,9 +419,9 @@ class CollectionsTest extends utest.Test {
 	}
 
 	/**
-		`v[i]` reads and writes on every target. It was a class implementing
-		`ArrayAccess`, which only hxcpp honours: it threw on eval and the jvm,
-		and on JavaScript a write set a property and was lost.
+		`v[i]` reads and writes on every target. A class implementing
+		`ArrayAccess` would not: only hxcpp honours it, so it would throw on
+		eval and the jvm, and on JavaScript a write would set a property and be lost.
 	**/
 	public function testVectorIndexesOnEveryTarget():Void {
 		var vector = new Vector<Int>();
@@ -449,9 +449,9 @@ class CollectionsTest extends utest.Test {
 
 	/**
 		A callback is called once per element with as many of (item, index,
-		vector) as it takes. They were tried with two and, on a throw, with
-		one and then none, so a callback that threw ran again without its
-		index, three times on eval.
+		vector) as it takes, not tried with two and, on a throw, with one and
+		then none, which would run a callback that threw again without its
+		index (three times on eval).
 	**/
 	public function testVectorCallbacksRunOnceWithTheArgumentsTheyTake():Void {
 		var vector = new Vector<Int>();
@@ -486,7 +486,7 @@ class CollectionsTest extends utest.Test {
 
 	/**
 		A fixed Vector keeps its length: whatever would change it throws
-		`RangeError`, as in ActionScript. `fixed` was stored and ignored.
+		`RangeError`, as in ActionScript.
 	**/
 	public function testAFixedVectorKeepsItsLength():Void {
 		var vector = new Vector<Int>(2, true);
@@ -560,8 +560,7 @@ class CollectionsTest extends utest.Test {
 
 	/**
 		A deque walks front to back, grows through a wrapped ring without
-		losing order, and can be cleared and used again. It had no iterator
-		and no clear.
+		losing order, and can be cleared and used again.
 	**/
 	public function testDequeIteratesGrowsAndClears():Void {
 		var deque = new Deque<Int>(4);
@@ -596,8 +595,8 @@ class CollectionsTest extends utest.Test {
 
 	#if jvm
 	/**
-		Adding and taking allocates nothing once the ring has grown. It was a
-		linked list, which made a node for every item added.
+		Adding and taking allocates nothing once the ring has grown, where a
+		linked list would make a node for every item added.
 	**/
 	public function testADequeInSteadyStateAllocatesNothing():Void {
 		var deque = new Deque<String>();
@@ -713,10 +712,10 @@ class CollectionsTest extends utest.Test {
 	}
 
 	/**
-		`IndexedMap` swaps its last entry into a removed one's place too, and
-		its iterator was the array's: removing the entry a loop was on skipped
-		the one swapped in. Two keys hold the same value here, so the loop has
-		to tell entries apart by key.
+		`IndexedMap` swaps its last entry into a removed one's place too, so
+		its iterator cannot be the array's, which would skip the one swapped in
+		when the entry a loop is on is removed. Two keys hold the same value
+		here, so the loop has to tell entries apart by key.
 	**/
 	public function testIndexedMapRemovingWhileIteratingVisitsEachOnce():Void {
 		var map = new IndexedMap<String>();
@@ -751,10 +750,10 @@ class CollectionsTest extends utest.Test {
 	}
 
 	/**
-		`PackedSlotMap` moves its last entry into a removed one's place. Its
-		iterator was the value array's, which skipped the entry moved in, and
-		`forEach` counted the entries before it began and read past the end
-		once one was removed.
+		`PackedSlotMap` moves its last entry into a removed one's place. An
+		iterator over the value array would skip the entry moved in, and a
+		`forEach` that counted the entries before it began would read past the
+		end once one was removed.
 	**/
 	public function testPackedSlotMapRemovingWhileIteratingVisitsEachOnce():Void {
 		var map = new PackedSlotMap<String>(8);
@@ -844,9 +843,9 @@ class CollectionsTest extends utest.Test {
 
 	/**
 		Removing the entry a loop is on visits the one swapped into its place
-		next. The value iterator counted the entries when it was made, so it
-		read past the end and threw on every target; the pair iterator
-		re-read the count and skipped the entry moved into the gap.
+		next. A value iterator that counted the entries when it was made would
+		read past the end and throw on every target; a pair iterator that
+		re-read the count would skip the entry moved into the gap.
 	**/
 	public function testListedMapRemovingWhileIteratingVisitsEachOnce():Void {
 		var map = new ListedMap<String, Int>();
@@ -877,7 +876,7 @@ class CollectionsTest extends utest.Test {
 		pairs.sort((a, b) -> a - b);
 		Assert.same([0, 1, 2, 3, 4, 5], pairs);
 		Assert.equals(3, map.length);
-		// Without removals the order is insertion order, as before.
+		// Without removals the order is insertion order.
 		var fresh = new ListedMap<String, Int>();
 		for (i in 0...4) {
 			fresh.set('f$i', i);
@@ -886,8 +885,8 @@ class CollectionsTest extends utest.Test {
 	}
 
 	/**
-		The same for `DenseSet`, which walked its array directly: removing
-		every even element visited 4 of 6.
+		The same for `DenseSet`, whose array walked directly would visit 4 of 6
+		when every even element is removed.
 	**/
 	public function testDenseSetRemovingWhileIteratingVisitsEachOnce():Void {
 		var set = new DenseSet<Int>();
@@ -956,13 +955,13 @@ class CollectionsTest extends utest.Test {
 	/**
 		A slot survives being reused more times than its generation can count.
 
-		The generation field is `GEN_BITS` wide and the counter was not kept
-		inside it, so on the 256th reuse of a slot the handle carried a
-		truncated generation while the slot held the untruncated one. They
-		never compared equal again: `remove` returned false for ever, the
-		entry was never freed, and the map grew a permanent leak of one slot
-		per 256 reuses. Anything with entity churn passes 256 in seconds,
-		the soak harness reached it in twenty and kept climbing.
+		The generation field is `GEN_BITS` wide and the counter is kept inside
+		it. Kept outside, on the 256th reuse of a slot the handle would carry a
+		truncated generation while the slot held the untruncated one. They would
+		never compare equal again: `remove` would return false for ever, the
+		entry would never be freed, and the map would grow a permanent leak of
+		one slot per 256 reuses. Anything with entity churn passes 256 in
+		seconds.
 	**/
 	public function testASlotSurvivesMoreReusesThanItsGenerationCanCount():Void {
 		var map = new SlotMap<String>(4);
@@ -981,9 +980,9 @@ class CollectionsTest extends utest.Test {
 
 	/**
 		A handle kept after its entry died does not come to name whatever took
-		its slot. With an eight-bit generation it did, 256 reuses later, and
+		its slot, as it would with an eight-bit generation 256 reuses later; and
 		the free list hands the most recently freed slot back first, so those
-		256 reuses are one entity after another in the same place.
+		256 reuses would be one entity after another in the same place.
 	**/
 	public function testAStaleHandleStaysStaleThroughManyReuses():Void {
 		var entities = new SlotMap<String>(16);
@@ -1017,10 +1016,10 @@ class CollectionsTest extends utest.Test {
 		One entity despawned and another spawned every tick does not bring a
 		slot's generation round in 2048 ticks.
 
-		The free list handed back the slot freed last, so that churn reused
-		one slot every tick, and a handle kept to the first entity, a
-		missile's target, resolved to the 2048th newcomer 34 seconds later at
-		60 Hz. Freed slots now wait behind every other free one.
+		A free list handing back the slot freed last would make that churn
+		reuse one slot every tick, and a handle kept to the first entity (a
+		missile's target) would resolve to the 2048th newcomer 34 seconds later
+		at 60 Hz. Freed slots wait behind every other free one.
 	**/
 	public function testAChurnedSlotWaitsBehindTheOtherFreeOnes():Void {
 		var entities = new SlotMap<String>(16);
@@ -1058,10 +1057,10 @@ class CollectionsTest extends utest.Test {
 	}
 
 	/**
-		An entry inserted as null is held like any other. Whether a slot was
-		held was read from its value, so a null entry was skipped by forEach,
-		kept its generation through clear() and could still be written
-		through its old handle afterwards.
+		An entry inserted as null is held like any other. Read from its value,
+		whether a slot was held would skip a null entry in forEach, keep its
+		generation through clear() and let it still be written through its old
+		handle afterwards.
 	**/
 	public function testANullEntryIsHeldLikeAnyOther():Void {
 		var map = new SlotMap<String>(4);
@@ -1084,9 +1083,9 @@ class CollectionsTest extends utest.Test {
 	}
 
 	/**
-		A handle made up for a slot nobody holds cannot free it. It matched the
-		free slot's generation, so remove() freed it a second time: length went
-		to -1 and the slot was handed to two inserts.
+		A handle made up for a slot nobody holds cannot free it, even when it
+		matches the free slot's generation: remove() freeing it a second time
+		would take length to -1 and hand the slot to two inserts.
 	**/
 	public function testAHandleToAFreeSlotFreesNothing():Void {
 		var map = new SlotMap<String>(4);
@@ -1129,9 +1128,9 @@ class CollectionsTest extends utest.Test {
 	}
 
 	public function testAHandleIsNeverNegative():Void {
-		// The sign bit was part of the generation, so past its halfway point
-		// every handle was negative, and at the top index a live handle was
-		// the INVALID sentinel itself.
+		// The sign bit is not part of the generation: if it were, past its
+		// halfway point every handle would be negative, and at the top index a
+		// live handle would be the INVALID sentinel itself.
 		var map = new SlotMap<String>(4);
 		var negative = 0;
 		for (_ in 0...(1 << SlotHandle.GEN_BITS)) {
@@ -1146,8 +1145,8 @@ class CollectionsTest extends utest.Test {
 	}
 
 	public function testClearKeepsTheGenerationInRange():Void {
-		// clear() counted the generation without masking it, so a slot at the
-		// top of its range held a value no handle could carry, and every entry
+		// clear() counts the generation masked: unmasked, a slot at the top of
+		// its range would hold a value no handle could carry, and every entry
 		// put there afterwards could not be read back.
 		var map = new SlotMap<String>(4);
 		for (_ in 0...SlotHandle.GEN_MASK) {
@@ -1172,7 +1171,7 @@ class CollectionsTest extends utest.Test {
 		Assert.equals(0, map.length);
 	}
 
-	/** And the same for the packed variant, which counted the same way. **/
+	/** And the same for the packed variant, which counts the same way. **/
 	public function testAPackedSlotSurvivesMoreReusesThanItsGenerationCanCount():Void {
 		var map = new PackedSlotMap<String>(4);
 		var reuses:Int = 4 * (1 << SlotHandle.GEN_BITS);
@@ -1267,9 +1266,9 @@ class CollectionsTest extends utest.Test {
 	}
 
 	/**
-		The count bound is on unless asked off: 100,000 entries. A map made
-		with a ttl alone held whatever was put in it for as long as its ttl,
-		however fast that was.
+		The count bound is on unless asked off: 100,000 entries, so a map made
+		with a ttl alone does not hold whatever is put in it for as long as its
+		ttl, however fast that is.
 	**/
 	public function testAnExpiringMapIsBoundedByDefault():Void {
 		var map = new ExpiringMap<Int, Int>(3600);
@@ -1294,9 +1293,10 @@ class CollectionsTest extends utest.Test {
 	}
 
 	/**
-		Bounds that are not bounds are refused: a negative `maxSize` read as
-		no limit at all; a ttl of NaN kept every entry for good, since no
-		time is at or past it; and a ttl of 0 threw a String.
+		Bounds that are not bounds are refused with an error: a negative
+		`maxSize`, which would otherwise read as no limit at all; a ttl of NaN,
+		which would keep every entry for good, since no time is at or past it;
+		and a ttl of 0.
 	**/
 	public function testAnExpiringMapRefusesBoundsThatAreNotBounds():Void {
 		Assert.raises(() -> new ExpiringMap<String, Int>(10, -1), crossbyte.errors.ArgumentError);
@@ -1312,8 +1312,8 @@ class CollectionsTest extends utest.Test {
 
 	/**
 		`length` leaves out what has expired and not been swept, as its
-		documentation says. It counted them until a read or a sweep dropped
-		them.
+		documentation says, rather than counting them until a read or a sweep
+		drops them.
 	**/
 	public function testLengthLeavesOutWhatHasExpiredUnswept():Void {
 		var now:Float = 0;
@@ -1378,11 +1378,11 @@ class CollectionsTest extends utest.Test {
 
 	#if jvm
 	/**
-		Touching an entry costs nothing to hold. Every `set` and `touch` left
-		a queue position behind, collected only once everything ahead of it
-		had expired, so memory went with the touches times the ttl rather
-		than the entries: 1,000 sessions touched 20 times a second with a
-		120 s ttl held 2.4 million positions, 70 MB on the jvm.
+		Touching an entry costs nothing to hold. A queue position left behind
+		by every `set` and `touch`, collected only once everything ahead of it
+		had expired, would make memory go with the touches times the ttl rather
+		than the entries: 1,000 sessions touched 20 times a second with a 120 s
+		ttl would hold 2.4 million positions, 70 MB on the jvm.
 	**/
 	public function testTouchingAnEntryAllocatesNothing():Void {
 		var now:Float = 0;
@@ -1527,8 +1527,8 @@ class CollectionsTest extends utest.Test {
 	}
 
 	/**
-		Building a graph costs what its nodes do, not their square: each
-		lookup was a pass over every node, so 20,000 edges in a chain took
+		Building a graph costs what its nodes do, not their square: a lookup
+		that was a pass over every node would make 20,000 edges in a chain take
 		about ten seconds on eval.
 	**/
 	public function testWeightedGraphLookupIsNotAPassOverTheNodes():Void {

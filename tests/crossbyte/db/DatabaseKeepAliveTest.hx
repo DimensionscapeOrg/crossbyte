@@ -13,13 +13,13 @@ import crossbyte.db.mysql.MySQLError;
 #end
 
 /**
-	TCP keepalive on the database clients, so a server that has gone silent,
-	a partition, a host that died without closing, is noticed rather
+	TCP keepalive on the database clients, so a server that has gone silent
+	(a partition, a host that died without closing) is noticed rather
 	than waited on, and a pool worker waiting on it is let go.
 
-	MySQL's client set it, at 60/10/6; MongoDB's set none, and with no socket
-	timeout by default a read waiting on such a server waited for good.
-	Postgres's is libpq's, whose timings were the system's: two hours.
+	MySQL's client sets it at 60/10/6, and MongoDB's the same, since with no
+	socket timeout by default a read waiting on such a server would wait
+	for good. Postgres's is libpq's, whose timings are the system's: two hours.
 
 	A server that only stops answering does not show it: its system still
 	acknowledges every keepalive probe. `DeadPeerProbe` makes one that drops
@@ -89,9 +89,9 @@ class DatabaseKeepAliveTest extends utest.Test {
 
 	/**
 		A MongoDB server that falls silent mid-command, as a partitioned host
-		does, is found within the keepalive window, here a second idle, then
-		two probes a second apart, where the client waited until the server
-		itself gave up, 20 seconds on: for ever, with a real partition.
+		does, is found within the keepalive window (here a second idle, then
+		two probes a second apart), rather than when the server itself gives
+		up, 20 seconds on: for ever, with a real partition.
 	**/
 	public function testADeadMongoServerIsFoundWithinTheKeepAliveWindow():Void {
 		if (!DeadPeerProbe.isSupported) {
@@ -131,8 +131,8 @@ class DatabaseKeepAliveTest extends utest.Test {
 
 	#if cpp
 	/**
-		The same for MySQL, whose client has had keepalive at 60/10/6: the
-		model the others follow, shown working.
+		The same for MySQL, whose client keeps alive at 60/10/6: the model the
+		others follow, shown working.
 	**/
 	public function testADeadMySQLServerIsFoundWithinTheKeepAliveWindow():Void {
 		if (!DeadPeerProbe.isSupported) {

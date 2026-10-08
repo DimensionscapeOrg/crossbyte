@@ -1,6 +1,6 @@
 package crossbyte._internal.macro;
 
-// Macro-only: run from extraParams.hxml. Guarded so a build that includes every module, `--macro include('crossbyte')`, does not try to compile it for the target.
+// Macro-only: run from extraParams.hxml. Guarded so a build that includes every module (`--macro include('crossbyte')`) does not try to compile it for the target.
 #if macro
 import haxe.macro.Compiler;
 import haxe.macro.Context;
@@ -8,20 +8,18 @@ import haxe.macro.Context;
 /**
 	Says which OS a native build is for when nothing else has.
 
-	CrossByte's native code paths, processes, local IPC, thread priority,
-	hang off `windows`, `linux` and `mac`. Aedifex and Lime define one; plain
-	`haxe` does not, so a build from an .hxml compiled those paths out and
-	carried on: `NativeProcess.isSupported` was false on Windows, and nothing
-	said why. A native build that names no OS is taken to be for the machine
-	building it. Run from `extraParams.hxml`; a build that names its OS, or is
-	not native, is left as it is.
+	CrossByte's native code paths (processes, local IPC, thread priority)
+	hang off `windows`, `linux` and `mac`. Aedifex and Lime define one;
+	plain `haxe` does not, and a build from an .hxml would compile those
+	paths out without a word. A native build that names no OS is taken to
+	be for the machine building it. Run from `extraParams.hxml`; a build
+	that names its OS, or is not native, is left as it is.
 
 	hl and neko are left alone on purpose. Their bytecode runs unchanged on
 	any OS, so the machine that builds it says nothing about the one that
 	will run it, and a define taken from it would compile one OS's branch
-	into a file another runs. `NativeProcess`, which refused to start
-	anything there for want of one, runs on both without it, and what
-	differs by OS is asked while running (`System.isWindows`).
+	into a file another runs. `NativeProcess` runs on both without one, and
+	what differs by OS is asked while running (`System.isWindows`).
 **/
 class HostPlatform {
 	private static final __platforms:Array<String> = ["windows", "linux", "mac", "macos", "android", "ios", "iphoneos", "iphonesim", "tvos", "emscripten"];

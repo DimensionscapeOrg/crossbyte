@@ -140,9 +140,9 @@ class JWTTest extends utest.Test {
 	}
 
 	/**
-		A missing value matches nothing, itself included. `secureCompare` read
-		the length of whatever it was given, so a null, a header or cookie
-		that was not sent, threw from inside a check, and natively a null
+		A missing value matches nothing, itself included. `secureCompare` takes
+		a null (a header or cookie that was not sent) without reading its
+		length, which would throw from inside a check, and natively a null
 		dereference need not throw at all.
 	**/
 	public function testSecureCompareTakesNull():Void {

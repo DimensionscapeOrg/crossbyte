@@ -17,8 +17,7 @@ class SocketPassTest extends utest.Test {
 	#if (sys && !(js || php))
 	/**
 		A frame held as `Bytes` goes out as it is, with no ByteArray made around
-		it. HTTP/2 and the other framers wrapped every frame in one to write it.
-		Did not compile before: there was no such write.
+		it, as HTTP/2 and the other framers write their frames.
 	**/
 	public function testRawBytesGoOutAsWritten():Void {
 		var server = new ServerSocket();
@@ -68,12 +67,11 @@ class SocketPassTest extends utest.Test {
 	/**
 		Connections past 200 wait in the listen queue on Windows rather than
 		being refused. Windows grants 200 to a backlog asked as a number, the
-		default's included, and refused the 201st connection to arrive while
-		none had been accepted; asked as `SOMAXCONN_HINT`, it holds them all.
-		Before, the 201st connect here failed, natively and on neko.
+		default's included, and refuses the 201st connection to arrive while
+		none has been accepted; asked as `SOMAXCONN_HINT`, it holds them all.
 
-		Elsewhere the system's own limit applies, `somaxconn` on Linux, 128
-		on macOS, so only Windows is held to the number, and only where
+		Elsewhere the system's own limit applies (`somaxconn` on Linux, 128
+		on macOS), so only Windows is held to the number, and only where
 		`listen()` can ask Windows that way: not the jvm or eval.
 	**/
 	public function testABurstPastTwoHundredWaitsInTheListenQueue():Void {
@@ -92,7 +90,7 @@ class SocketPassTest extends utest.Test {
 			server.bind(0, "127.0.0.1");
 			server.listen();
 
-			// Nothing is accepted, the runtime is never pumped, so every
+			// Nothing is accepted (the runtime is never pumped), so every
 			// one of these waits in the queue.
 			for (_ in 0...300) {
 				var peer = new sys.net.Socket();

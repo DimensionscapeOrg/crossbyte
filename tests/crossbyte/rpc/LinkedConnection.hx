@@ -40,9 +40,9 @@ class LinkedConnection implements INetConnection {
 	public var peer:LinkedConnection;
 	@:noCompletion private var __pendingInputs:Array<ByteArray> = [];
 	// What a read is handed, reused from one read to the next as a socket's
-	// input is; a read arriving while one is being read, a call answered
-	// at once, whose answer calls again, gets a copy of its own. Each read
-	// was a ByteArray of its own, which every RPC allocation budget counted.
+	// input is; a read arriving while one is being read (a call answered at
+	// once, whose answer calls again) gets a copy of its own. A ByteArray of
+	// its own for each read would be counted by every RPC allocation budget.
 	@:noCompletion private var __input:ByteArray = new ByteArray();
 	@:noCompletion private var __reading:Bool = false;
 

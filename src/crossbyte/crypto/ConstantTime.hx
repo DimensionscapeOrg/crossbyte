@@ -16,7 +16,7 @@ import crossbyte.crypto._internal.SodiumGlue;
  *
  * On supported native `cpp` targets this delegates to libsodium's
  * `sodium_memcmp`; elsewhere a best-effort constant-time accumulation loop is
- * used. Length mismatch returns `false` immediately, hiding length is the
+ * used. Length mismatch returns `false` immediately; hiding length is the
  * caller's concern (compare digests of the values when lengths are secret).
  */
 class ConstantTime {

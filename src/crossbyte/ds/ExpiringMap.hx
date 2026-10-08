@@ -8,8 +8,9 @@ import crossbyte.errors.ArgumentError;
 	For the things a server keeps on behalf of someone who may never come
 	back: sessions, resumption tokens, pending handshakes, a cache of
 	something expensive. Nothing else in `ds` evicts, so holding any of those
-	meant a plain `Map` and a sweep the caller wrote, which is the shape that
-	keeps entries for the life of the process when the sweep is forgotten.
+	otherwise means a plain `Map` and a sweep the caller writes, which is the
+	shape that keeps entries for the life of the process when the sweep is
+	forgotten.
 
 	Bounded twice, and both matter. `ttl` bounds how long an entry stays;
 	`maxSize` bounds how many there are, because time alone is not a bound
@@ -19,16 +20,13 @@ import crossbyte.errors.ArgumentError;
 
 	Expiry is not a timer. Nothing happens on its own: `sweep` does the work
 	and a server calls it from its tick. Reading a single expired entry still
-	reports it gone, so correctness does not depend on how often you sweep,
+	reports it gone, so correctness does not depend on how often you sweep;
 	only memory does, and then only by the entries that have expired unswept.
 
 	What it holds is one object per entry and nothing per `touch`. The
 	entries are kept on a list in the order their deadlines fall, and a
-	`touch` moves one to the end. It used to leave a queue position behind
-	for every `set` and `touch`, collected only once everything ahead of it
-	had expired, so a map held its touches times its ttl rather than its
-	entries: 1,000 sessions touched 20 times a second with a 120 s ttl held
-	2.4 million positions, 70 MB on the jvm, however small `maxSize` was.
+	`touch` moves one to the end, so what the map holds follows its entries
+	rather than how often they are touched.
 
 	```haxe
 	var sessions = new ExpiringMap<String, Session>(120, 50000);
@@ -56,14 +54,13 @@ final class ExpiringMap<K:Dynamic, V> {
 		The most entries held at once: 100,000 unless the constructor was
 		given another, and zero for no limit.
 
-		A map like this holds what a peer makes it hold, a session for each
-		login, a token for each handshake, and holding one for every peer
-		that ever asked is how such a store outlives the process's memory. It
-		was unbounded unless told otherwise. 100,000 is `RateLimiter`'s bound
-		on the clients it tracks.
+		A map like this holds what a peer makes it hold (a session for each
+		login, a token for each handshake), and holding one for every peer
+		that ever asked is how such a store outlives the process's memory.
+		100,000 is `RateLimiter`'s bound on the clients it tracks.
 
-		What it costs a peer to fill: one entry, an object of its own, a
-		place in the map's index, and its key and value, for each `set` of
+		What it costs a peer to fill: one entry (an object of its own, a
+		place in the map's index, and its key and value) for each `set` of
 		a new key; besides the key and value, about 250 bytes natively and 80
 		on the jvm (measured with String keys and Int values), so the default
 		bound holds some 25 MB natively. Past the bound the entry closest to
@@ -102,9 +99,9 @@ final class ExpiringMap<K:Dynamic, V> {
 		       sends can add an entry.
 		@param clock Where the time comes from. Supply one in a test rather
 		       than sleeping.
-		@throws ArgumentError For a `ttl` that is not a positive number,
-		        zero, negative or NaN, which would keep every entry for good,
-		        and a negative `maxSize`, which read as no limit.
+		@throws ArgumentError For a `ttl` that is not a positive number
+		        (zero, negative or NaN, which would keep every entry for
+		        good) and a negative `maxSize`.
 	**/
 	public function new(ttl:Float, maxSize:Int = 100000, ?clock:Void->Float) {
 		if (Math.isNaN(ttl) || ttl <= 0) {
@@ -232,7 +229,7 @@ final class ExpiringMap<K:Dynamic, V> {
 		       asks that clock.
 		@return How many went.
 		@throws ArgumentError For a `now` of NaN, which no deadline is at or
-		        past: it swept nothing, without a word.
+		        past.
 	**/
 	public function sweep(?now:Float):Int {
 		var at:Float = now == null ? __clock() : now;

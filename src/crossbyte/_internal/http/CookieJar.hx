@@ -13,10 +13,8 @@ import crossbyte.utils.IntParse;
 	thing that is right beats a wider one that is nearly right.
 
 	What it is for: `followRedirects` is on by default, so a sign-in that
-	answers `302` with a session cookie was losing that cookie on the way to
-	the page it redirected to. The cookie was read off the wire and then
-	dropped with the rest of the response headers when the next hop reset
-	them.
+	answers `302` with a session cookie needs that cookie on the way to the
+	page it redirects to.
 
 	@see `crossbyte.url.URLRequest.manageCookies`, which turns this on and off.
 **/
@@ -26,10 +24,8 @@ class CookieJar {
 		Cookies kept for one host. Past it the oldest goes to make room, as a
 		browser's jar drops them; Chrome keeps the same number.
 
-		Nothing bounded the jar, and every request looked through all of it:
-		a server could set as many cookies as it cared to send, and 20,000
-		were kept, each request then spending half a millisecond on eval
-		reading them back for every thousand.
+		Without it a server could set as many cookies as it cared to send,
+		and every request reads them all back.
 	**/
 	public static inline var MAX_COOKIES_PER_HOST:Int = 180;
 
@@ -40,10 +36,9 @@ class CookieJar {
 	public static inline var MAX_COOKIE_LENGTH:Int = 4096;
 
 	// By host, lowercased, and within a host in the order the cookies were
-	// set. The jar was one map by name: a host's cookies went back in a map's
-	// iteration order, which differs by target, a second host setting a name
-	// replaced the first host's cookie of that name, and hosts were compared
-	// exactly, so Example.com's session was not sent to example.com.
+	// set: a host's cookies go back in that order on every target, a second
+	// host setting a name does not replace the first host's cookie of that
+	// name, and Example.com's session is sent to example.com.
 	private var __hosts:Map<String, Array<StoredCookie>> = new Map();
 
 	public function new() {}
@@ -151,10 +146,10 @@ class CookieJar {
 			if (StringTools.startsWith(lower, "max-age=")) {
 				// RFC 6265 5.2.2: digits, perhaps after a "-", and anything
 				// else is ignored. Zero or below deletes. Read through
-				// IntParse: Std.parseInt made 4294967296 a zero on Linux
-				// native, deleting a cookie meant to last a century, and threw
-				// out of the whole request on the jvm. Digits past an Int are
-				// still a number, a very long life, or long ago.
+				// IntParse, the same on every target: Std.parseInt reads
+				// 4294967296 as zero on Linux native and throws on the jvm.
+				// Digits past an Int are still a number: a very long life,
+				// or long ago.
 				var raw:String = StringTools.trim(attribute.substr(8));
 				var negative:Bool = StringTools.startsWith(raw, "-");
 				var digits:String = negative ? raw.substr(1) : raw;

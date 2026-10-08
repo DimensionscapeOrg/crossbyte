@@ -16,8 +16,8 @@ class TickEvent extends Event {
 	 * one and the right value for it is a property of that listener rather
 	 * than of the loop.
 	 *
-	 * Anything integrating against this, a renderer, a physics step, an
-	 * interpolation, should bound its own step, since one step of that size
+	 * Anything integrating against this (a renderer, a physics step, an
+	 * interpolation) should bound its own step, since one step of that size
 	 * passes through whatever it should have collided with:
 	 *
 	 * ```haxe
@@ -25,7 +25,7 @@ class TickEvent extends Event {
 	 * ```
 	 *
 	 * Note that a bound discards the excess rather than deferring it, so
-	 * anything measuring elapsed time, a timeout, a rate, a timer, should
+	 * anything measuring elapsed time (a timeout, a rate, a timer) should
 	 * accumulate this as it arrives and not bound it at all, or it runs slow
 	 * through a stall instead of catching up after one.
 	 *

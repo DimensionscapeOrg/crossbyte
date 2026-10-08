@@ -98,10 +98,10 @@ class ByteArrayOutputTest extends utest.Test {
 
 	public function testReserveThatFitsKeepsTheChunkItAlreadyHas():Void {
 		// reserve() takes a new chunk only when the active one cannot hold the
-		// bytes. It used to take one every time, the guard compared the
-		// request plus the total capacity against that same total, which is
-		// never smaller, so a codec reserving per value allocated per value
-		// and abandoned the free tail of the chunk it left behind.
+		// bytes. Taking one every time (a guard comparing the request plus the
+		// total capacity against that same total, which is never smaller) would
+		// make a codec reserving per value allocate per value and abandon the
+		// free tail of the chunk it left behind.
 		var output = new ByteArrayOutput(16);
 		output.writeByte(0x11);
 
@@ -133,8 +133,8 @@ class ByteArrayOutputTest extends utest.Test {
 		// The chunk holding the first byte of the patch does not have to hold
 		// the other three. A cached chunk is allocated to exactly what was
 		// written into it, so here the first is three bytes long and a patch at
-		// position 1 runs two bytes past its end, which setInt32 on that
-		// chunk did, into whatever the allocator had put next to it.
+		// position 1 would run two bytes past its end with setInt32 on that
+		// chunk, into whatever the allocator had put next to it.
 		var output = new ByteArrayOutput(3);
 		output.writeByte(0x11);
 		output.writeByte(0x22);
@@ -176,9 +176,9 @@ class ByteArrayOutputTest extends utest.Test {
 	}
 
 	public function testValidateSizeRejectsASizeThatWouldOverflowTheCheck():Void {
-		// The guard was `pos + size > current.length`. That sum wraps negative
-		// for a size near 2^31, and a negative is not greater than the length,
-		// so a write that could never fit was reported as valid.
+		// A guard of `pos + size > current.length` would wrap negative for a
+		// size near 2^31, and a negative is not greater than the length, so a
+		// write that could never fit would be reported as valid.
 		var output = new ByteArrayOutput(8);
 		output.writeByte(0x11);
 
@@ -193,10 +193,10 @@ class ByteArrayOutputTest extends utest.Test {
 
 	/**
 		Every writer makes room for what it writes, as the class doc says an
-		output grows. The fixed-size writers, byte, short, int, float,
-		double, bytes, only checked, outside `final`, and threw: a
-		`new ByteArrayOutput()` could not take `writeInt(1)` without a
-		`reserve(4)` first. In a `final` build they did not check at all.
+		output grows. The fixed-size writers (byte, short, int, float, double,
+		bytes) do not merely check, outside `final`, and throw: a
+		`new ByteArrayOutput()` takes `writeInt(1)` without a `reserve(4)`
+		first, in a `final` build as in any other.
 	**/
 	public function testFixedSizeWritersGrowTheOutput():Void {
 		var output = new ByteArrayOutput();
@@ -222,11 +222,11 @@ class ByteArrayOutputTest extends utest.Test {
 	}
 
 	/**
-		A reserve per value grows as a write does. Each reserve that did not
-		fit took a chunk of exactly its size, so a codec reserving before
-		every value, each varint and string writer here does, unless told
-		the room is reserved, made a chunk, and a copy, for each. 10,000
-		reserved ints took 10,000 chunks.
+		A reserve per value grows as a write does. A reserve that did not fit
+		taking a chunk of exactly its size would make a codec reserving before
+		every value (each varint and string writer here does, unless told the
+		room is reserved) make a chunk, and a copy, for each: 10,000 reserved
+		ints would take 10,000 chunks.
 	**/
 	@:access(crossbyte.io.ByteArrayDataOutput)
 	public function testReservingPerValueTakesFewChunks():Void {
@@ -263,7 +263,7 @@ class ByteArrayOutputTest extends utest.Test {
 	@:access(crossbyte.io.ByteArrayDataOutput)
 	public function testGrowingByItselfTakesFewChunks():Void {
 		// Grown as a ByteArray grows, by at least what it holds, so value after
-		// value without reserve() is not a chunk, an allocation and a copy,
+		// value without reserve() is not a chunk (an allocation and a copy)
 		// apiece.
 		var output = new ByteArrayOutput();
 		for (i in 0...10000) {
@@ -287,7 +287,7 @@ class ByteArrayOutputTest extends utest.Test {
 	}
 
 	public function testWriteUTFRefusesWhatItsLengthPrefixCannotState():Void {
-		// Sixteen bits of length; past 65535 it wrapped and desynchronised
+		// Sixteen bits of length; past 65535 it would wrap and desynchronise
 		// every read after the string.
 		var output = new ByteArrayOutput(8);
 		var raised:Dynamic = null;

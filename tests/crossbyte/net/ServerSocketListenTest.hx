@@ -11,15 +11,14 @@ import utest.Async;
 /**
 	What `listen()` promises, and what a Node listener reports.
 
-	Natively `listen()` on a socket never bound was left to the system:
-	Windows refused it, and Linux and macOS listened on a port of their own
-	choosing that `localPort` did not report. On Node a port already in use
-	ended the server with `close` and nothing saying why, as did a
-	connection Node could not accept once it was listening; a TLS listener
-	gave a client that never sent its handshake Node's own two minutes
-	rather than `handshakeTimeout`; and a handshake that finished after
-	`close()` was adopted, with no runtime, and announced to a server that
-	had stopped.
+	`listen()` on a socket never bound is refused natively rather than left
+	to the system, where Windows refuses it and Linux and macOS listen on a
+	port of their own choosing that `localPort` would not report. On Node a
+	port already in use, or a connection Node cannot accept once listening,
+	is reported, not a `close` with nothing saying why; a TLS listener gives
+	a client that never sends its handshake `handshakeTimeout`, not Node's
+	own two minutes; and a handshake that finishes after `close()` is not
+	adopted, with no runtime, and announced to a server that has stopped.
 **/
 class ServerSocketListenTest extends utest.Test {
 	public function testListenWithoutBindIsAnIOError():Void {

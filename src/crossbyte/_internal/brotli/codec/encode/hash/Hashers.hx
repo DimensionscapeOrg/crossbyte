@@ -24,11 +24,11 @@ class Hashers
   /*
    * The quick hashers, one set per thread, kept between calls.
    *
-   * Each is a table of 2^16 or 2^17 entries, which every call used to
-   * allocate and clear whatever it compressed: most of the cost of
-   * compressing a small response. Kept, a table only needs clearing where
-   * the next input will look (see HashLongestMatchQuickly.Prepare), and the
-   * output is the same as with a fresh one. Per thread because a compressor
+   * Each is a table of 2^16 or 2^17 entries, which would be most of the cost
+   * of compressing a small response if every call allocated and cleared one.
+   * Kept, a table only needs clearing where the next input will look (see
+   * HashLongestMatchQuickly.Prepare), and the output is the same as with a
+   * fresh one. Per thread because a compressor
    * uses its table throughout a call, and compressing is synchronous, so a
    * thread never has two calls using one table at once.
    *

@@ -14,9 +14,9 @@ import utest.Async;
 	`Socket.maxInputBufferSize`: what a peer can make a connection hold that
 	its application has not read.
 
-	There was no limit. One peer sending to a connection whose application
-	read a message a tick made a server hold 664 MB in a second; here a
-	connection holds its limit and no more, and under the default policy
+	Without a limit, one peer sending to a connection whose application
+	reads a message a tick can make a server hold 664 MB in a second; here
+	a connection holds its limit and no more, and under the default policy
 	the rest waits on the peer, TCP's window holding it back, and arrives
 	whole once the application reads.
 **/
@@ -127,7 +127,7 @@ class SocketInputLimitTest extends utest.Test {
 		}, async);
 	}
 
-	/** `0` holds whatever arrives, as before there was a limit. **/
+	/** `0` holds whatever arrives, with no limit. **/
 	@:timeout(30000)
 	public function testNoLimitHoldsWhatArrives(async:Async):Void {
 		var total:Int = 1024 * 1024;

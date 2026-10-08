@@ -19,7 +19,7 @@ class BCryptHardeningTest extends utest.Test {
 	static inline var COST_12_HASH:String = "$2b$12$R9h/cIPz0gi.URNNX3kh2OPST9/PgBkqquzi.Ss7KIUgO2t0jWMUW";
 
 	public function testNeedsRehashTracksCostFactor():Void {
-		// A cost-10 hash should be flagged for rehash against the new default cost 12.
+		// A cost-10 hash should be flagged for rehash against the default cost 12.
 		Assert.isTrue(BCrypt.needsRehash(COST_10_HASH));
 		Assert.isTrue(BCrypt.needsRehash(COST_10_HASH, 12));
 		// A cost-12 hash already matches the default; no rehash needed.
@@ -45,7 +45,7 @@ class BCryptHardeningTest extends utest.Test {
 
 	public function testDefaultCostIsTwelveAndRoundTrips():Void {
 		#if cpp
-		// No explicit cost: the default must now be 12. Parse the cost out of the
+		// No explicit cost: the default must be 12. Parse the cost out of the
 		// $2b$NN$ prefix rather than trusting the constant.
 		var defaultHash:String = BCrypt.hash("hunter2");
 		Assert.equals("$2b$12$", defaultHash.substr(0, 7));

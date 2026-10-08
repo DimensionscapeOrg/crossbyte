@@ -11,11 +11,11 @@ import utest.Assert;
  * it: the frame cost behind `cpuLoad`, the base both timer schedulers start
  * from, and the default seed `Random` falls back to when it is not given one.
  *
- * It reached Node returning a constant, and not one of those reported a
- * problem, an interval measured against a constant is just zero, and a seed
- * taken from one is just a fixed number. That is the reason this case exists
- * separately from `HaxeTimerTest`: it needs no runtime, so it can run on every
- * target including the JavaScript ones, which is where the clock was wrong.
+ * A clock returning a constant would go unreported by all of those: an
+ * interval measured against a constant is just zero, and a seed taken from
+ * one is just a fixed number. That is the reason this case exists
+ * separately from `HaxeTimerTest`: it needs no runtime, so it can run on
+ * every target including the JavaScript ones.
  */
 class TimerStampTest extends utest.Test {
 	public function testStampIsNotAConstantZero():Void {
@@ -36,7 +36,7 @@ class TimerStampTest extends utest.Test {
 
 		// Busy rather than sleeping, because this has to hold on a target with
 		// no sleep to call. The arithmetic is here so the loop cannot be folded
-		// away and so that enough wall time passes for a coarse clock, on a
+		// away and so that enough wall time passes for a coarse clock; on a
 		// fine one the first read already differs and the cap is never neared.
 		while (end == start && spins < 2000000) {
 			spins++;

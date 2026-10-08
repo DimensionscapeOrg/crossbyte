@@ -64,16 +64,16 @@ class Http {
 	/**
 	 * Bytes one chunk-size line may take, extensions included. A size is
 	 * seven hex digits at most here, and no extension anyone sends is long;
-	 * one that never ended was read for as long as the server kept it going.
+	 * one that never ended would be read for as long as the server kept it going.
 	 */
 	private static inline var MAX_CHUNK_LINE:Int = 4096;
 
 	/**
 		Bytes of a body allocated before any of it has arrived, at most. A body
 		of a declared length, or a chunk of one, is read into room that grows
-		with what arrives, by doubling, up to its length: allocated whole from
-		the header, one response declaring 64 MB cost 64 MB before a byte of it
-		came, on each of `URLLoader`'s threads.
+		with what arrives, by doubling, up to its length, so a response
+		declaring 64 MB does not cost 64 MB before a byte of it comes, on each
+		of `URLLoader`'s threads.
 	**/
 	private static inline var FIRST_ROOM:Int = 64 * 1024;
 
@@ -124,8 +124,8 @@ class Http {
 	public var maxDecompressedSize:Int = DEFAULT_MAX_DECOMPRESSED_SIZE;
 
 	/**
-		The most bytes a response body may take as it arrives, declared by
-		its `Content-Length`, in chunks, or until the connection closes; `<= 0`
+		The most bytes a response body may take as it arrives (declared by
+		its `Content-Length`, in chunks, or until the connection closes); `<= 0`
 		removes the limit. A declared length past it is refused before a byte
 		of the body is read. `URLRequest.maxBodySize` sets it, per load.
 	**/
@@ -138,26 +138,25 @@ class Http {
 	public var maxRedirects:Int = DEFAULT_MAX_REDIRECTS;
 
 	/**
-		Bytes a response's header section may take, its status line, its
-		header lines, and any informational (1xx) responses ahead of it, and,
-		separately, the trailers after a chunked body; `<= 0` removes the
+		Bytes a response's header section may take: its status line, its
+		header lines, and any informational (1xx) responses ahead of it; and,
+		separately, the trailers after a chunked body. `<= 0` removes the
 		limit. `URLRequest.maxResponseHeaderSize` sets it, per load.
 
-		Nothing bounded it once. The client read header lines for as long as a
-		server sent them, a single line for as long as it went without ending,
-		and 1xx responses for as long as they kept coming, so the server chose
-		how much memory and time the client spent before a byte of the body.
+		Without it the server would choose how much memory and time the
+		client spends before a byte of the body.
 	**/
 	public var maxResponseHeaderSize:Int = DEFAULT_MAX_RESPONSE_HEADER_SIZE;
 
 	/**
-		Milliseconds each response's head, its status line and header
-		fields, after any 1xx, has to arrive once its request has gone;
+		Milliseconds each response's head (its status line and header
+		fields, after any 1xx) has to arrive once its request has gone;
 		`0` or less is no deadline. `URLRequest.headTimeout` sets it, per
 		load.
 
-		Bytes trickled in reset an idle timeout, so a server sending its head
-		a byte at a time held the request for as long as it liked.
+		Bytes trickled in reset an idle timeout, so without this a server
+		sending its head a byte at a time could hold the request for as long
+		as it liked.
 	**/
 	public var headTimeout:Int = DEFAULT_HEAD_TIMEOUT;
 
@@ -173,8 +172,8 @@ class Http {
 
 	// This and __responseHeaders are null from the start, for neko, where an
 	// object gains a field when it is first set and can move its field
-	// table: the load thread set __responseHeaders first as a cancel set
-	// __aborted, and the cancel was lost.
+	// table: the load thread setting __responseHeaders first as a cancel set
+	// __aborted would lose the cancel.
 	private var __socket:FlexSocket = null;
 	private var __url:URL;
 	private var __headers:Array<String>;
@@ -273,9 +272,9 @@ class Http {
 		__redirect = false;
 
 		// A method is a token or it is not one, whichever version carries it.
-		// URLRequest.method takes any string, and HTTP/1.1 wrote it first on
-		// the request line as given: a "method" holding a line break and a
-		// request of its own put that request on the connection.
+		// URLRequest.method takes any string, and HTTP/1.1 writes it first on
+		// the request line: a "method" holding a line break and a request of
+		// its own would put that request on the connection.
 		if (!HttpSyntax.isToken(__method)) {
 			__settled = false;
 			__fail("Refused the request: its method is not an HTTP token");
@@ -297,8 +296,8 @@ class Http {
 		// underneath it. Crude next to an HTTP/2 stream reset, but HTTP/1.1
 		// has no in-band way to abandon a response: the connection is the
 		// unit, so the connection is what goes. Held in a local so the same
-		// closure is removed as was added, on eval and the jvm each read of
-		// a method is a new one, and tied to this load, so a cancel of an
+		// closure is removed as was added (on eval and the jvm each read of a
+		// method is a new one), and tied to this load, so a cancel of an
 		// earlier one running late cannot reach it.
 		var abort:Void->Void = () -> __abortSocket(generation);
 		cancelToken.onCancel(abort);
@@ -361,11 +360,11 @@ class Http {
 
 						// The caller's credentials were written for the origin it
 						// asked, and the response naming another is not the caller
-						// agreeing to hand them over: a 302 to another host
-						// delivered Authorization: Bearer ... to it. Dropped for
-						// the rest of the exchange, as browsers, curl and Go drop
-						// them, even should a later hop come back. Cookies the jar
-						// holds go only to the host that set them already.
+						// agreeing to hand them over: a 302 to another host would
+						// deliver Authorization: Bearer ... to it. Dropped for the
+						// rest of the exchange, as browsers, curl and Go drop them,
+						// even should a later hop come back. Cookies the jar holds go
+						// only to the host that set them already.
 						if (!credentialsDropped && __originOf(url) != origin) {
 							credentialsDropped = true;
 							__headers = __withoutCredentials(__headers);
@@ -399,9 +398,8 @@ class Http {
 				__tryRequest();
 			}
 
-			// Only when the budget ran out on a redirect. This tested the count
-			// alone, so ten redirects ending in a 200, a full budget, spent
-			// and done with, were reported as too many.
+			// Only when the budget ran out on a redirect: ten redirects ending
+			// in a 200 (a full budget, spent and done with) are not too many.
 			if (__connected && __isRedirect(__status) && (redirects.length - 1) >= allowed) {
 				__close();
 				__fail("Exceeded the number of allowed redirects");
@@ -423,8 +421,7 @@ class Http {
 	/**
 	 * The method a redirect's next hop is made with. A 301, 302 or 303 turns
 	 * the request into a GET, without its body, as browsers do, except a
-	 * HEAD, which asked for no body and gets none: it was turned into a GET,
-	 * which downloaded the body it had asked not to. A 307 or 308 keeps the
+	 * HEAD, which asked for no body and gets none. A 307 or 308 keeps the
 	 * request as it was.
 	 */
 	@:allow(crossbyte.http.HTTP2Backend)
@@ -508,26 +505,26 @@ class Http {
 	 * Ends a blocking read or write on `socket` from another thread, without
 	 * releasing anything that thread is using.
 	 *
-	 * Shut down, not closed. Closing from here was the old way, and it went
-	 * wrong in three ways. On Linux, native or eval, a close does not wake a
-	 * `recv` already waiting on the socket, and the peer is not told until that
-	 * read gives up: a cancelled load held its thread and its server for the
-	 * whole idle timeout. On eval the close failed the waiting read with a
-	 * native error no Haxe catch sees, which killed the thread, and the
-	 * reset it caused killed the reader on the peer's side too. And a TLS
-	 * socket's close frees its mbedTLS context while the loading thread may be
-	 * inside a read on it. A shutdown wakes the read everywhere with the end of
-	 * the stream, and tells the peer at once, and the loading thread closes
-	 * the socket itself on its way out.
+	 * Shut down, not closed, because a close goes wrong in three ways. On
+	 * Linux, native or eval, a close does not wake a `recv` already waiting
+	 * on the socket, and the peer is not told until that read gives up, so a
+	 * cancelled load would hold its thread and its server for the whole idle
+	 * timeout. On eval the close fails the waiting read with a native error
+	 * no Haxe catch sees, which kills the thread, and the reset it causes
+	 * kills the reader on the peer's side too. And a TLS socket's close frees
+	 * its mbedTLS context while the loading thread may be inside a read on
+	 * it. A shutdown wakes the read everywhere with the end of the stream,
+	 * and tells the peer at once, and the loading thread closes the socket
+	 * itself on its way out.
 	 *
 	 * Windows differs twice. A shutdown there does not wake a `recv` already
-	 * waiting on the same socket, only the peer answering the shutdown's
-	 * FIN does, where a close does; so natively a plain socket is closed as
+	 * waiting on the same socket (only the peer answering the shutdown's FIN
+	 * does), where a close does; so natively a plain socket is closed as
 	 * well, and a TLS one, for the reason above, is left to the peer. And a
 	 * `recv` begun after the reading side is shut down fails there with
-	 * WSAESHUTDOWN, which eval raises as a native error no catch sees, just
-	 * as it did the close; so on eval under Windows only the writing side is
-	 * shut down, and the read ends when the peer closes in answer.
+	 * WSAESHUTDOWN, which eval raises as a native error no catch sees, as it
+	 * does the close; so on eval under Windows only the writing side is shut
+	 * down, and the read ends when the peer closes in answer.
 	 */
 	@:allow(crossbyte.http.HTTP2Backend)
 	@:allow(crossbyte._internal.http.h2.H2ClientSession)
@@ -659,9 +656,9 @@ class Http {
 	}
 
 	private static function __unsupportedVersionMessage(version:HTTPVersion):String {
-		// Names the call rather than the concept. The previous wording said an
-		// HTTPBackend was needed without saying that one ships in this
-		// library, which read as "unsupported" when it meant "one line away".
+		// Names the call rather than the concept: a backend ships in this
+		// library, and the message says it is one line away rather than
+		// reading as "unsupported".
 		return version
 			+ " has no registered HTTPBackend. HTTP/2 ships with CrossByte and registers itself on demand; "
 			+ "if that was disabled, call HTTPBackendRegistry.register(new HTTP2Backend()).";
@@ -737,9 +734,9 @@ class Http {
 			// Only when chunked is the *final* coding, which is the test the
 			// server half already makes. RFC 9112 6.1: anything applied after
 			// it means the body is not framed by chunks, so reading it as
-			// though it were takes the next coding's bytes for chunk headers.
-			// A body that is not chunk-framed falls through to reading until
-			// the connection closes, which is what 6.1 prescribes.
+			// though it were would take the next coding's bytes for chunk
+			// headers. A body that is not chunk-framed falls through to reading
+			// until the connection closes, which is what 6.1 prescribes.
 			isChunked = encodings.length > 0 && StringTools.trim(encodings[encodings.length - 1]) == "chunked";
 		}
 
@@ -752,7 +749,7 @@ class Http {
 		}
 
 		// 0 for a length nobody declared, as HTTPRequestContext.onProgress says
-		// and the JavaScript clients report. It was -1, which reached
+		// and the JavaScript clients report; -1 would reach
 		// ProgressEvent.bytesTotal, a UInt, as 4294967295.
 		var bytesTotalForProgress:Int = (!isChunked && contentLength != null) ? contentLength : 0;
 
@@ -802,8 +799,8 @@ class Http {
 						try {
 							n = __readInto(data, offset, data.length - offset);
 						} catch (_:haxe.io.Eof) {
-							// Said below as what it is: a body cut short of
-							// its length, which read as "Eof".
+							// Said below as what it is, a body cut short of its
+							// length, rather than as "Eof".
 							n = 0;
 						}
 						if (n <= 0) {
@@ -838,12 +835,11 @@ class Http {
 						var hexStr:String = StringTools.trim(sizeLine);
 
 						// Hex digits only, and no more than seven significant
-						// ones, the same on every target. Std.parseInt stopped at
-						// the first character it could not use, so "10junk" read
-						// as 16, and past seven digits it answered differently on
-						// each target, on Node with a number too large for an
-						// Int, which walked past every check. 0xFFFFFFF is already
-						// far beyond the default maxBodySize.
+						// ones, the same on every target: Std.parseInt stops at
+						// the first character it cannot use, so "10junk" would
+						// read as 16, and past seven digits it answers differently
+						// on each target. 0xFFFFFFF is already far beyond the
+						// default maxBodySize.
 						var chunkSize:Int = IntParse.hex(hexStr, 0xFFFFFFF);
 						if (chunkSize < 0) {
 							throw "Invalid chunk size: " + hexStr;
@@ -851,8 +847,7 @@ class Http {
 
 						if (chunkSize == 0) {
 							// Trailers are a header section of their own, held to
-							// the same limit; they were read for as long as the
-							// server sent them.
+							// the same limit.
 							var budget:Int = maxResponseHeaderSize > 0 ? maxResponseHeaderSize : 0x7FFFFFFF;
 							var trailer:String = "";
 							do {
@@ -876,7 +871,8 @@ class Http {
 
 						// Read as it arrives, a piece at a time, rather than into
 						// room for the whole chunk: a chunk's size is the server's
-						// to say, and the room was allocated before a byte of it.
+						// to say, and room made for it would be taken before a
+						// byte of it arrived.
 						if (piece == null) {
 							piece = __room(FIRST_ROOM);
 						}
@@ -911,9 +907,9 @@ class Http {
 							// The connection closing is how this body ends.
 							n = 0;
 						} catch (e:Dynamic) {
-							// Anything else is the body being cut off: a reset, a
-							// timeout. Every error was read as the end and the
-							// response reported complete with part of its body.
+							// Anything else is the body being cut off (a reset, a
+							// timeout), not its end, which would report the response
+							// complete with part of its body.
 							throw "Connection lost before the body ended: " + Std.string(e);
 						}
 						if (n <= 0)
@@ -927,7 +923,7 @@ class Http {
 					}
 					// A cancel ends the stream the same way the server closing
 					// does, which here is how the body ends: without this, a
-					// body cut short by a cancel was delivered as complete.
+					// body cut short by a cancel would be delivered as complete.
 					if (__isAborted()) {
 						throw CANCELLED;
 					}
@@ -940,11 +936,9 @@ class Http {
 			}
 		} catch (e:Dynamic) {
 			__close();
-			// `e` was bound and then dropped, so every way a body can fail,
-			// a chunk size that is not one, a truncated chunk, a missing
-			// terminator, an early EOF, reached the caller as the same four
-			// words. The three messages above this one all name the thing that
-			// went wrong.
+			// With `e`, so every way a body can fail (a chunk size that is
+			// not one, a truncated chunk, a missing terminator, an early EOF)
+			// reaches the caller named.
 			__fail("Download failed: " + Std.string(e));
 			return;
 		}
@@ -957,8 +951,8 @@ class Http {
 				// Two different things reach here. A coding this build cannot
 				// decode is thrown as the token itself, a String; a body that
 				// decoded past its ceiling, or stacked more codings than are
-				// allowed, arrives as an exception. Reporting the second as an
-				// unsupported coding sent the caller looking in the wrong place.
+				// allowed, arrives as an exception, and is not an unsupported
+				// coding.
 				if (Std.isOfType(error, String)) {
 					__fail('Unsupported content encoding: ${error}', data);
 				} else {
@@ -979,8 +973,8 @@ class Http {
 			return;
 		}
 
-		// Released before the callback: what it does next, another request
-		// to the same origin, say, can then have the connection.
+		// Released before the callback: what it does next (another request
+		// to the same origin, say) can then have the connection.
 		__release(framed);
 
 		if (data != null) {
@@ -995,10 +989,9 @@ class Http {
 
 	/**
 	 * Undoes a response's content codings, within `MAX_CONTENT_CODINGS` and
-	 * `limit`: `DEFAULT_MAX_DECOMPRESSED_SIZE` unless given. Throws the
+	 * `limit` (`DEFAULT_MAX_DECOMPRESSED_SIZE` unless given). Throws the
 	 * coding's name, a `String`, for one this build cannot decode, and an
-	 * exception for a body past the limits. Shared with the HTTP/2 backend,
-	 * which did not decode at all.
+	 * exception for a body past the limits. Shared with the HTTP/2 backend.
 	 */
 	@:noCompletion public static function decodeResponseBody(data:Bytes, header:Null<String>, ?limit:Int):Bytes {
 		if (limit == null) {
@@ -1077,11 +1070,10 @@ class Http {
 
 		if (kept != null) {
 			// Every socket this request uses is published through __adopt, so
-			// a cancel landing anywhere before it, here, between redirect
-			// hops, while the pool is searched, is found rather than lost.
-			// It used to be lost: the cancel found no socket to close, the
-			// request went out regardless, and its thread waited out the
-			// whole idle timeout for an answer nobody wanted.
+			// a cancel landing anywhere before it (here, between redirect
+			// hops, while the pool is searched) is found rather than lost.
+			// Lost, the request would go out regardless, and its thread wait
+			// out the whole idle timeout for an answer nobody wanted.
 			if (!__adopt(kept)) {
 				__fail(CANCELLED);
 				return;
@@ -1116,36 +1108,33 @@ class Http {
 				__fail(CANCELLED);
 				return;
 			}
-			// Seconds, where `timeout` is milliseconds: it was passed as it came,
-			// so a 30 second idle timeout waited 30,000 seconds. The same
-			// conversion as the HTTP/2 backend's; see __idleSeconds.
+			// Seconds, where `timeout` is milliseconds. The same conversion as
+			// the HTTP/2 backend's; see __idleSeconds.
 			socket.setTimeout(__idleSeconds(__timeout));
 			if (hopTls != null) {
 				hopTls.configure(socket);
 			}
-			// The name through the resolver's threads, and the wait here: the
-			// system's lookup ran on this thread inside the connect, where
-			// nothing bounded it, a wedged resolver held the load for as long
-			// as it stayed wedged, and a cancel could not reach it. The wait
-			// ends at the idle timeout, the resolver's own limit, or a cancel;
-			// the host keeps the name, so TLS still asks for it and checks it.
+			// The name through the resolver's threads, and the wait here, so a
+			// wedged resolver cannot hold the load and a cancel can reach it.
+			// The wait ends at the idle timeout, the resolver's own limit, or a
+			// cancel; the host keeps the name, so TLS still asks for it and
+			// checks it.
 			var address:sys.net.Host = crossbyte._internal.net.Resolver.lookup(__url.host, __idleSeconds(__timeout), cancelToken);
 			socket.connectHost(address, __url.port);
 			__connected = true;
 		} catch (e:Dynamic) {
 			__close();
-			// With the reason. Every failure read "Connection Failed" alone,
-			// an untrusted, expired or misnamed certificate, a refused port,
-			// where the WebSocket client beside this one said which. A timeout
-			// is said as one: natively it would read "Blocked".
+			// With the reason (an untrusted, expired or misnamed certificate, a
+			// refused port), as the WebSocket client says it. A timeout is said
+			// as one: natively it would read "Blocked".
 			__fail("Connection Failed: "
 				+ (__isTimeout(e) ? '${__url.host}:${__url.port} did not answer' + (__timeout > 0 ? ' within ${__idleSeconds(__timeout)} s' : '') : __describe(e)));
 			return;
 		}
 
 		// A cancel while the connection was being made found nothing it could
-		// shut down, a socket not yet connected has no stream to end, so
-		// it is looked for again now there is one. From here on, a cancel
+		// shut down (a socket not yet connected has no stream to end), so it
+		// is looked for again now there is one. From here on, a cancel
 		// reaches the socket itself.
 		if (__isAborted()) {
 			__close();
@@ -1169,9 +1158,8 @@ class Http {
 
 	/**
 		The socket timeout, in seconds, for an idle timeout of `milliseconds`:
-		`0`, which a socket takes as none, for `0` or less. It was 30 seconds
-		here and none on JavaScript, so one setting meant two things; it is
-		none everywhere now, as `0` is on every socket and WebSocket.
+		`0`, which a socket takes as none, for `0` or less, as on every
+		socket and WebSocket.
 	**/
 	@:allow(crossbyte.http.HTTP2Backend)
 	private static inline function __idleSeconds(milliseconds:Int):Float {
@@ -1324,12 +1312,12 @@ class Http {
 		var line:String = '';
 		var first:Bool = true;
 		// What the section may still take. Interim responses count against it
-		// too: a server sending 1xx after 1xx held the client in this loop for
-		// as long as it liked, and the socket's idle timeout never fired,
-		// since the bytes kept coming.
+		// too: otherwise a server sending 1xx after 1xx would hold the client
+		// in this loop for as long as it liked, and the socket's idle timeout
+		// would never fire, since the bytes keep coming.
 		var budget:Int = maxResponseHeaderSize > 0 ? maxResponseHeaderSize : 0x7FFFFFFF;
-		// Repeats of one field, joined once the block ends. Appending each to
-		// the whole value so far was quadratic in the repeats, and the server
+		// Repeats of one field, joined once the block ends: appending each to
+		// the whole value so far is quadratic in the repeats, and the server
 		// chooses how many there are.
 		var repeats:Null<StringMap<Array<String>>> = null;
 		while (true) {
@@ -1407,8 +1395,7 @@ class Http {
 				// Only an HTTP/1.1 response keeps its connection by default.
 				__responseHttp11 = StringTools.startsWith(line, "HTTP/1.1");
 				// A 1xx is informational, and is not reported: the status that
-				// follows it is, as HTTPRequestContext says. A 100 Continue
-				// reached URLLoader's HTTP_STATUS ahead of the 200.
+				// follows it is, as HTTPRequestContext says.
 				if (code >= 200) {
 					onStatus(code);
 				}
@@ -1465,11 +1452,11 @@ class Http {
 
 	/**
 		What the connection has sent and the response not yet read: the bytes
-		of `__in` from `__inPos` to `__inEnd`. The head was read a byte at a
-		time, and a byte read from a socket is a `recv()`, a third of what a
-		small response cost the client, and more the longer its head. Now a
-		read takes what has arrived, up to `READ_AHEAD`, and the head's lines
-		and then the body come out of that before the socket is asked again.
+		of `__in` from `__inPos` to `__inEnd`. A read takes what has
+		arrived, up to `READ_AHEAD`, and the head's lines and then the body
+		come out of that before the socket is asked again. Read a byte at a
+		time, each byte would be a `recv()`: a third of what a small
+		response costs the client, and more the longer its head.
 
 		Emptied as each request is written, so only one response's bytes are
 		ever here; a connection with any left after its response is not kept
@@ -1497,8 +1484,8 @@ class Http {
 
 		While a head is read under its deadline, the read is held to what is
 		left of it as well: the socket's timeout is cut to that once it is
-		shorter than the idle timeout, a call to set it per read, made only
-		in the deadline's last stretch, and a deadline already past is not
+		shorter than the idle timeout (a call to set it per read, made only
+		in the deadline's last stretch), and a deadline already past is not
 		read at all.
 	**/
 	private function __fill():Void {
@@ -1571,16 +1558,14 @@ class Http {
 	/**
 	 * One line of the response without its line ending, or `Eof` when the
 	 * stream ends before any of it. Throws `LineTooLong` once more than
-	 * `limit` bytes have arrived without the line ending: this was
-	 * `Input.readLine`, which read a line for as long as the server kept it
-	 * going, into memory, with no bound at all.
+	 * `limit` bytes have arrived without the line ending, so a server cannot
+	 * keep one line going into memory without bound.
 	 *
 	 * Out of what was read ahead (`__in`), which keeps what follows the line
-	 * for whatever reads next, the next line, or the body. It was read a
-	 * byte at a time, a socket read each, so that nothing past the line was
-	 * taken from the body. (On eval a socket's `readByte` answers 0 at the end
-	 * of the stream rather than throwing, which a read of many bytes does not
-	 * share: it says so as `Eof`.)
+	 * for whatever reads next: the next line, or the body. (On eval a
+	 * socket's `readByte` answers 0 at the end of the stream rather than
+	 * throwing, which a read of many bytes does not share: it says so as
+	 * `Eof`.)
 	 */
 	private function __readLine(limit:Int):String {
 		var spill:Null<BytesBuffer> = null;
@@ -1644,9 +1629,7 @@ class Http {
 	 * The status code of an HTTP/1.x status line, or -1 when it is not one.
 	 *
 	 * `HTTP/` DIGITs `.` DIGITs, whitespace, then exactly three digits, as RFC
-	 * 9112 4 has it. This was `(\d+)` through Std.parseInt, compiled per
-	 * response, and a status of any length was read however the target read
-	 * it: "HTTP/1.1 4294967496 OK" was 200 on Linux native.
+	 * 9112 4 has it, read the same on every target.
 	 */
 	private static function __parseStatusLine(line:String):Int {
 		if (!StringTools.startsWith(line, "HTTP/")) {
@@ -1721,13 +1704,13 @@ class Http {
 
 			var path:String = (__url.path != null && __url.path.length > 0) ? __url.path : "/";
 			// Encoded, and the header values below sanitised, for the reason
-			// the caller's own header lines are: each was written as given, so
-			// a space ended the target early, and a CR or LF in any of them,
-			// the URL's path, the user agent, the content type, ended its
-			// line and began one of the value's choosing.
+			// the caller's own header lines are: a space would end the target
+			// early, and a CR or LF in any of them (the URL's path, the user
+			// agent, the content type) would end its line and begin one of the
+			// value's choosing.
 			var target:String = HttpSyntax.encodeRequestTarget(path + queryString);
-			// The head is built here and written once: each line was written as
-			// it was made, a send() apiece, and over TLS a record apiece.
+			// The head is built here and written once, not a send() per line
+			// (and over TLS a record per line).
 			var head:StringBuf = new StringBuf();
 			// Read ahead from the response before this one, if there was one:
 			// nothing, or the connection would not have been kept.
@@ -1780,7 +1763,7 @@ class Http {
 			if (!isHead) {
 				if (__data != null) {
 					// Text or bytes, decided as the request was made (see
-					// HTTPRequestBody): it was told apart again here.
+					// HTTPRequestBody).
 					if (__data.isText && __contentType == null) {
 						__contentType = "text/plain; charset=utf-8";
 					}
@@ -1795,8 +1778,8 @@ class Http {
 			}
 
 			if (body != null) {
-				// Bytes handed over with no type went out as "Content-Type:
-				// null"; a body with no Content-Type at all is the honest form.
+				// Bytes handed over with no type go out with no Content-Type at
+				// all, the honest form, rather than "Content-Type: null".
 				if (!hasContentType && __contentType != null) {
 					head.add('Content-Type: ${HttpSyntax.sanitizeHeaderValue(__contentType)}${CRLF}');
 				}
@@ -1811,8 +1794,8 @@ class Http {
 			if (body != null) {
 				// Full, not writeBytes: that writes what it can and says how
 				// much, and over TLS it can never take more than one record,
-				// 16 KB. The rest of a larger body was dropped, and the server
-				// waited for bytes that were never coming.
+				// 16 KB, so the rest of a larger body would be dropped and the
+				// server left waiting for it.
 				__socket.output.writeFullBytes(body, 0, body.length);
 			}
 
@@ -1848,10 +1831,10 @@ class Http {
 		}
 
 		for (header in __headers) {
-			// Through the sanitisers the server's response writer uses. These
-			// lines were written as given, so a CR or LF in a value, one
-			// forwarded from someone else, say, ended the header and began
-			// another, or a second request, on every hop of the exchange.
+			// Through the sanitisers the server's response writer uses, so a
+			// CR or LF in a value (one forwarded from someone else, say) cannot
+			// end the header and begin another, or a second request, on any hop
+			// of the exchange.
 			var colon:Int = header.indexOf(":");
 			if (colon <= 0) {
 				continue;
@@ -1869,10 +1852,11 @@ class Http {
 	/**
 	 * Reads a `Content-Length` field, or answers null when it is not one.
 	 *
-	 * Through `IntParse`, as the server reads the same field. `Std.parseInt`
-	 * is `strtol` cast to an `int` on Linux and macOS native, so a response
-	 * declaring 4294967296 bytes read as 0 there, an empty body, reported as
-	 * a complete download, and on the jvm the same header threw.
+	 * Through `IntParse`, as the server reads the same field, so it reads the
+	 * same on every target. `Std.parseInt` is `strtol` cast to an `int` on
+	 * Linux and macOS native, where a response declaring 4294967296 bytes
+	 * would read as 0 (an empty body, reported as a complete download), and
+	 * on the jvm the same header throws.
 	 */
 	private function __parseContentLength(header:String):Null<Int> {
 		if (header == null) {
@@ -1910,9 +1894,8 @@ class Http {
 
 		var scheme:String = base.scheme;
 		// Bracketed for an IPv6 host, and the port kept unless it is the
-		// scheme's own: the host went in bare, so a relative redirect from
-		// [::1]:8080 named http://::1:8080/, which is not a URL, and one from
-		// http://host:443/ lost its port.
+		// scheme's own, so a relative redirect from [::1]:8080 names
+		// http://[::1]:8080/, and one from http://host:443/ keeps its port.
 		var authority:String = HttpSyntax.authority(base.host, base.port, base.ssl ? 443 : 80);
 
 		if (StringTools.startsWith(loc, "//")) {

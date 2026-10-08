@@ -5,8 +5,8 @@ package crossbyte.io._internal;
 	disk.
 
 	Each function takes the platform's rules as an argument instead of asking
-	which machine it runs on, so the Windows forms, drive letters, UNC
-	shares, `\\?\`, are exercised on Linux too, and the POSIX ones on
+	which machine it runs on, so the Windows forms (drive letters, UNC
+	shares, `\\?\`) are exercised on Linux too, and the POSIX ones on
 	Windows.
 
 	`\` is read as a separator on every platform, as `File.nativePath` reads
@@ -16,15 +16,15 @@ package crossbyte.io._internal;
 **/
 class FilePath {
 	/**
-		Splits `path` into its root, what `..` can never climb past, and
+		Splits `path` into its root (what `..` can never climb past) and
 		the segments after it, with empty and `.` segments dropped. `..`
 		segments are kept as they are: `normalize` decides what they consume.
 
 		Roots, written with the platform's separator:
 
 		- POSIX: `/`. Anything else is relative, and its root is `""`.
-		- Windows: a drive, `C:\`, which `C:x`, relative to drive C's
-		  working directory, a per-process setting nothing here can see, is
+		- Windows: a drive, `C:\`, which `C:x` (relative to drive C's
+		  working directory, a per-process setting nothing here can see) is
 		  taken to mean as well; a share, `\\server\share\`, which covers
 		  `\\?\C:\` and `\\.\pipe\` too, since they have the same shape; and
 		  a bare `\`, the root of whatever drive is current.
@@ -86,8 +86,8 @@ class FilePath {
 		Applies `..` to `segments`, starting from `start` already in place:
 		each consumes the segment before it, and one with nothing left to
 		consume above `floor` is ignored. Except on a relative path with no
-		floor, whose `..` reaches somewhere the string cannot see, the
-		working directory's parent, and is kept.
+		floor, whose `..` reaches somewhere the string cannot see (the
+		working directory's parent), and is kept.
 
 		`stopAt`, when given, is a second floor that is raised as the walk
 		passes it: once the segments reach exactly `stopAt`, no `..` climbs
@@ -254,8 +254,8 @@ class FilePath {
 
 /**
 	A path split into its root and its segments. A class, built from a
-	literal as the structure it was: its two fields are read on every path
-	operation, by name, as an anonymous structure's are.
+	literal, so its two fields, read on every path operation, are read
+	directly rather than by name.
 **/
 @:structInit
 final class FilePathParts {

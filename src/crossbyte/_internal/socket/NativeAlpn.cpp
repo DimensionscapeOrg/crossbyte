@@ -60,21 +60,20 @@ mbedtls_ssl_context *contextOf(::Dynamic ssl) {
 
 // Every distinct list installed, kept for the life of the process.
 //
-// mbedTLS stores a config's list by reference, `conf->alpn_list = protos`,
+// mbedTLS stores a config's list by reference (`conf->alpn_list = protos`),
 // and a connection set up on the config keeps a pointer to the name its
 // handshake agreed on, which is what `mbedtls_ssl_get_alpn_protocol` hands
 // back, with no copy of its own. So a list has to outlive every connection
 // that agreed on one of its names, and those outlive the socket that
 // installed it: hxcpp shares a listener's config with every connection the
-// listener accepts, and keeps the config until the last of them has gone. A
-// list was freed when its socket closed, and a connection a server kept on
-// after `stopAccepting()` then read its protocol from freed memory, which
-// the next allocation of that size had taken over.
+// listener accepts, and keeps the config until the last of them has gone.
+// A list freed when its socket closed would leave a connection a server
+// kept on after `stopAccepting()` reading its protocol from freed memory.
 //
 // One copy of each distinct list rather than one per config keeps that
-// bounded. The lists come from the application, never from a peer, a
-// server's own, the HTTP/2 client's, so there are a handful, and a client
-// no longer allocates one for every connection it makes.
+// bounded. The lists come from the application, never from a peer (a
+// server's own, the HTTP/2 client's), so there are a handful, and a client
+// does not allocate one for every connection it makes.
 //
 // Guarded, because the HTTP/2 client pools connections across threads and each
 // one configures its own socket.
@@ -82,8 +81,8 @@ std::vector<char **> gInterned;
 
 #ifdef HX_WINDOWS
 // Initialised statically, as the pthread one is. A critical section has to be
-// initialised by a call, which the first lock made, and two threads making
-// their first HTTP/2 connections at once could both make it.
+// initialised by a call, and two threads making their first HTTP/2
+// connections at once could both make it.
 SRWLOCK gLock = SRWLOCK_INIT;
 
 void lockAcquire() {
@@ -227,9 +226,9 @@ void crossbyte_alpn_release(::Dynamic) {
 	// Nothing to give back: the list stays for the connections that agreed on
 	// one of its names (see gInterned). The config is left pointing at it,
 	// too, rather than cleared: a listener's is shared with the connections
-	// it accepted, and one of those may still be in its handshake, on
-	// another thread, under hxcpp's own sockets, reading the list as this
-	// runs. Kept so a socket closes the same way it always has.
+	// it accepted, and one of those may still be in its handshake (on
+	// another thread, under hxcpp's own sockets) reading the list as this
+	// runs.
 }
 
 ::String crossbyte_alpn_selected(::Dynamic ssl) {

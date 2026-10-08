@@ -27,8 +27,8 @@ import sys.thread.Tls;
  * consider using `crossbyte.utils.GlobalTimer` instead.
  *
  * **Handles.** A runtime numbers the timers it arms, so a handle is not given
- * again until 2^31 timers have been armed on that runtime, ten hours at
- * sixty thousand a second, and then only past handles still live. A handle
+ * again until 2^31 timers have been armed on that runtime (ten hours at
+ * sixty thousand a second), and then only past handles still live. A handle
  * kept after its timer fired or was cleared stays inert: `clear` answers
  * false and touches nothing else.
  *
@@ -41,10 +41,9 @@ import sys.thread.Tls;
 @:allow(crossbyte.core.CrossByte)
 @:allow(crossbyte.rpc.RPCHandler)
 class Timer {
-	// Per thread on every threaded target. It was one process-wide field off
-	// native, so on the jvm and the interpreter whichever runtime ran last
-	// owned every thread's timers: after CrossByte.make(), a timer the main
-	// thread armed ran on the child's thread.
+	// Per thread on every threaded target, so each runtime owns its own
+	// thread's timers. One process-wide field would hand every thread's timers
+	// to whichever runtime ran last.
 	#if target.threaded
 	@:noCompletion private static final __tls:Tls<TimerScheduler> = new Tls();
 	#else
@@ -73,7 +72,7 @@ class Timer {
 
 	// Out of line, so the inline path above stays a load and a test. An
 	// IllegalOperationError, as CrossByte.current() throws on the same
-	// thread; this was a bare String.
+	// thread.
 	@:noCompletion private static function __noScheduler():Void {
 		throw new IllegalOperationError("crossbyte.Timer needs a CrossByte runtime on this thread, and this thread has none. Use it from a runtime's thread, or hand the work to one with CrossByte.post().");
 	}
@@ -207,8 +206,8 @@ class Timer {
 	public static inline function stamp():Float {
 		final primordial:CrossByte = @:privateAccess CrossByte.__primordial;
 		if (primordial == null) {
-			// It read the primordial's uptime without looking, which is a
-			// null access, natively, in a release build, a crash.
+			// Checked, since reading the primordial's uptime when there is none is
+			// a null access: natively, in a release build, a crash.
 			__noApplication();
 		}
 		return primordial.uptime;
@@ -241,8 +240,8 @@ class Timer {
 	 * @return The corresponding virtual time in the scheduler.
 	 */
 	public static inline function fromWallClock(wallTime:Float):Float {
-		// The scheduler's time was counted on top of its start, so after an
-		// hour of running every answer was an hour late.
+		// Measured from now, not from the scheduler's start, which would make
+		// every answer late by however long the runtime has run.
 		return current().time + (wallTime - haxe.Timer.stamp());
 	}
 

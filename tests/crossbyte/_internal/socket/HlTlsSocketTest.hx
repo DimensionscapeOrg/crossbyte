@@ -15,10 +15,10 @@ import utest.Assert;
 	A thread waiting for a slow TLS server's answer does not stop the others.
 
 	HashLink's collector stops every thread, and waits for each to reach a safe
-	point or to have said it is blocked. Its TLS layer read the network without
-	saying so, so the first collection after a thread began waiting on an HTTPS
-	response held every thread until the response came: six seconds' wait on a
-	pool thread stopped the runtime for six.
+	point or to have said it is blocked. A TLS layer that reads the network
+	without saying so would let the first collection after a thread began
+	waiting on an HTTPS response hold every thread until the response came:
+	six seconds' wait on a pool thread would stop the runtime for six.
 **/
 class HlTlsSocketTest extends utest.Test {
 	#if hl
@@ -35,10 +35,10 @@ class HlTlsSocketTest extends utest.Test {
 	}
 
 	/**
-		The TLS client everything in CrossByte reads HTTPS through,
-		`URLLoader`, `Http`, the HTTP/2 backend, is `FlexSocket`'s, and it made
-		the standard library's socket on hl. So the stall this class is about
-		was still every HTTPS request's, however `HlTlsSocket` behaved alone.
+		The TLS client everything in CrossByte reads HTTPS through (`URLLoader`,
+		`Http`, the HTTP/2 backend) is `FlexSocket`'s, so on hl it must not make
+		the standard library's socket: the stall this class is about would then
+		be every HTTPS request's, however `HlTlsSocket` behaved alone.
 	**/
 	public function testAFlexSocketsTlsWaitDoesNotStopTheOtherThreads():Void {
 		__assertTheOthersRunWhileAClientWaits(port -> {

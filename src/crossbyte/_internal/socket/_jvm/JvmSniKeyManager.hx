@@ -53,8 +53,8 @@ class JvmSniKeyManager extends X509ExtendedKeyManager {
 
 	/**
 		Every certificate of `certificate`, typed the way a key manager hands
-		them over. An entry holding the leaf alone presented it without its
-		intermediate, which clients refuse.
+		them over. The leaf alone, without its intermediate, is refused by
+		clients.
 	**/
 	public static function chainOf(certificate:crossbyte._internal.socket._jvm.JvmSsl.JvmSslCertificate):java.NativeArray<X509Certificate> {
 		var chain:java.NativeArray<X509Certificate> = new java.NativeArray(certificate.chain.length);

@@ -10,9 +10,9 @@ import utest.Assert;
 /**
 	Asking a STUN server what address the world sees this host as.
 
-	`StunMessage` is pinned to RFC 5769's published vectors and `TurnClient` has
-	cases of its own, but the class a caller reaches for first had neither,
-	nothing in this repository named `StunClient` until now. What it does is
+	`StunMessage` is pinned to RFC 5769's published vectors and `TurnClient`
+	has cases of its own; these are for `StunClient`, the class a caller
+	reaches for first. What it does is
 	short, and every part of it is a thing that can be quietly wrong: a reply
 	meant for somebody else settling the question, a refusal reported as
 	silence, a success carrying no address at all.
@@ -20,7 +20,7 @@ import utest.Assert;
 	Against a server bound in the test rather than one on the internet. The
 	property is that the right question goes out and the right answer is
 	believed, which a real server would demonstrate no better while making the
-	suite depend on the network, and most of these a real server could not
+	suite depend on the network; and most of these a real server could not
 	demonstrate at all, since a refusal and a dropped request are not things one
 	can be asked for.
 
@@ -131,10 +131,9 @@ class StunClientTest extends utest.Test {
 
 	/**
 		A timeout of 0 sets no deadline, as it does for a connection: the
-		question is still being asked past the three seconds 0 used to mean.
-		Closing the socket it is asked through ends it at once, it ended
-		only at the next ask, whose send failed, and with no deadline the
-		gaps double out of reach.
+		question is still being asked past three seconds. Closing the socket
+		it is asked through ends it at once, rather than at the next ask,
+		whose send would fail; with no deadline the gaps double out of reach.
 	**/
 	public function testATimeoutOfZeroAsksUntilItsSocketCloses():Void {
 		if (unsupported()) return;
@@ -149,7 +148,7 @@ class StunClientTest extends utest.Test {
 			socket.bind(0, "127.0.0.1");
 
 			StunClient.discover("127.0.0.1", server.port, 0, socket).then(answer.succeed, answer.fail);
-			// Past the three seconds 0 meant, and the fourth ask, at 3.5 s.
+			// Past three seconds, and the fourth ask, at 3.5 s.
 			pumpUntil(answer.settled, 4.0);
 
 			Assert.isFalse(answer.settled(), "a question with no deadline was given up: " + answer.error);
@@ -169,8 +168,8 @@ class StunClientTest extends utest.Test {
 	}
 
 	/**
-		Classifying filtering needs a deadline, a filtering NAT answers with
-		silence, so a timeout of 0, which is none, fails at once, saying so,
+		Classifying filtering needs a deadline (a filtering NAT answers with
+		silence), so a timeout of 0, which is none, fails at once, saying so,
 		rather than waiting out such a NAT for good.
 	**/
 	public function testClassifyingFilteringWithNoDeadlineFailsAtOnce():Void {
@@ -190,9 +189,9 @@ class StunClientTest extends utest.Test {
 
 	/**
 		A server name that does not resolve fails the question at once. Names
-		are looked up off the runtime's thread now, so the failure arrives as
-		the socket's ioError after the send returns, and nothing listened
-		for it, so the question sat out its whole deadline.
+		are looked up off the runtime's thread, so the failure arrives as the
+		socket's ioError after the send returns, and the question listens for
+		it rather than sitting out its whole deadline.
 	**/
 	public function testANameThatDoesNotResolveFailsAtOnce():Void {
 		if (unsupported()) return;
@@ -338,7 +337,7 @@ class StunClientTest extends utest.Test {
 
 		The damaged one carries this question's transaction and an address of
 		its own, and a FINGERPRINT that does not match, which RFC 8489 has a
-		client drop. It was taken, so whatever a mangled datagram now said was
+		client drop; taken, it would make whatever a mangled datagram said
 		this host's address.
 	**/
 	public function testAnAnswerWithABadFingerprintIsNotBelieved():Void {
@@ -370,7 +369,7 @@ class StunClientTest extends utest.Test {
 	/**
 		Answers that only ever come damaged are reported as damaged. Silence
 		and a path that mangles every answer are different faults to go
-		looking for, and the deadline's message used to name only the first.
+		looking for, and the message says which it was.
 	**/
 	public function testAnswersThatOnlyComeDamagedAreSaidToBe():Void {
 		if (unsupported()) return;
@@ -402,8 +401,8 @@ class StunClientTest extends utest.Test {
 
 	/**
 		An answer requiring an attribute this client does not understand is
-		reported, not used. It was used, and the attribute, whatever it
-		changed about the answer, ignored.
+		reported, not used: using it would ignore the attribute, whatever it
+		changed about the answer.
 	**/
 	public function testAnAnswerRequiringAnUnknownAttributeIsNotUsed():Void {
 		if (unsupported()) return;
@@ -431,7 +430,7 @@ class StunClientTest extends utest.Test {
 		server.close();
 	}
 
-	/** An IPv6 address comes back as one, where it used to read as none. **/
+	/** An IPv6 address comes back as one, rather than as none. **/
 	public function testAnIPv6AddressIsReturned():Void {
 		if (unsupported()) return;
 
@@ -463,12 +462,12 @@ class StunClientTest extends utest.Test {
 	}
 
 	/**
-		Asked through one socket, two servers see one mapping, the socket's.
+		Asked through one socket, two servers see one mapping: the socket's.
 
-		Each question used to bind a socket of its own, so it answered for a
-		port nobody used, and two questions compared two mappings: through any
-		NAT, and on loopback too, every comparison read as a symmetric NAT.
-		The auditor's program printed exactly that.
+		A question asked through a socket of its own would answer for a port
+		nobody used, and two questions would compare two mappings: through any
+		NAT, and on loopback too, every comparison would read as a symmetric
+		NAT.
 
 		The servers report the source they see, so the answer is the socket's
 		real port, and the socket is left as it was found: open, and not
@@ -517,8 +516,8 @@ class StunClientTest extends utest.Test {
 	}
 
 	/**
-		A socket already receiving keeps receiving, and keeps its own listener,
-		which hears the answer too, as it hears every datagram.
+		A socket already receiving keeps receiving, and keeps its own
+		listener, which hears the answer too, as it hears every datagram.
 	**/
 	public function testACallersListenerIsLeftInPlace():Void {
 		if (unsupported()) return;
@@ -635,8 +634,8 @@ class StunClientTest extends utest.Test {
 
 		And a NAT that keeps the socket's port, asked through a socket of the
 		classification's own: endpoint-independent only if all three questions
-		go through that one socket, separate sockets, as there used to be,
-		made every NAT look symmetric.
+		go through that one socket, since separate sockets make every NAT look
+		symmetric.
 	**/
 	public function testMappingIsClassified():Void {
 		if (unsupported()) return;
@@ -652,15 +651,15 @@ class StunClientTest extends utest.Test {
 	/**
 		A host with no NAT whose source address follows the destination is
 		not behind one. RFC 5780 stops after the first question when the
-		server saw the socket as it is, the address it sent from, and its
-		port, and so does `classifyMapping` now. It went on, and reported
-		such a host address-dependent: its own two addresses taken for a NAT's
+		server saw the socket as it is (the address it sent from, and its
+		port), and so does `classifyMapping`; going on would report such a
+		host address-dependent, its own two addresses taken for a NAT's
 		mappings.
 
 		macOS is such a host on loopback, with an alias added: a datagram to
 		127.0.0.2 leaves from 127.0.0.2. Everywhere else loopback sends from
 		127.0.0.1 whatever the destination, so the server says what macOS's
-		would have seen, the address it was asked on, and this is the same
+		would have seen (the address it was asked on), and this is the same
 		on every system.
 	**/
 	public function testAHostWithASourceAddressPerDestinationIsNotBehindANat():Void {
@@ -804,10 +803,9 @@ class StunClientTest extends utest.Test {
 		Drives the runtime until something settles.
 
 		utest's own asynchrony is not enough here. Nothing pumps the runtime
-		while a fixture waits, so a future needing a datagram to come back never
-		resolves, and the runner exits having reported nothing at all, which
-		is how these cases first ran: silently, and completely.
-		`DatagramSocketTest` pumps for the same reason.
+		while a fixture waits, so a future needing a datagram to come back
+		would never resolve, and the runner would exit having reported nothing
+		at all. `DatagramSocketTest` pumps for the same reason.
 	**/
 	private static function pumpUntil(done:Void->Bool, timeout:Float):Void {
 		var runtime = CrossByte.current();

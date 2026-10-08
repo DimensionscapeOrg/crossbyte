@@ -9,9 +9,9 @@ import utest.Async;
 
 /**
  * `ServerWebSocket` accepts through a loop of its own, so the admission it
- * inherits from `ServerSocket` has to be proved here separately: before,
- * `admit` set on one compiled and was never asked, and it took one
- * connection a tick.
+ * inherits from `ServerSocket` has to be proved here separately: that
+ * `admit` set on one is asked, and that it takes more than one connection
+ * a tick.
  */
 class ServerWebSocketAdmissionTest extends utest.Test {
 	private static function pending(server:ServerWebSocket):Int {
@@ -88,8 +88,9 @@ class ServerWebSocketAdmissionTest extends utest.Test {
 	/**
 		A client that connects and resets before the server takes it, as in
 		ServerSocketAdmissionTest: on Linux it has no address, and asking
-		`admit` about it read through the null `peer()` and ended the process;
-		on macOS its accept fails, which the server counted as its own failure.
+		`admit` about it must not read through the null `peer()`, which would
+		end the process; on macOS its accept fails, which the server must not
+		count as its own failure.
 	**/
 	@:timeout(5000)
 	public function testAPeerGoneBeforeItIsTakenIsPassedOver(async:Async):Void {

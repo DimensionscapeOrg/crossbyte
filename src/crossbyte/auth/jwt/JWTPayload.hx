@@ -3,8 +3,8 @@ package crossbyte.auth.jwt;
 /**
  * Typed view over a JWT's claims.
  *
- * The registered claims have properties. Any other claim, an application's
- * `role`, an identity provider's `groups`, goes in the same object literal
+ * The registered claims have properties. Any other claim (an application's
+ * `role`, an identity provider's `groups`) goes in the same object literal
  * and is read back with `claim`:
  *
  * ```haxe
@@ -13,13 +13,11 @@ package crossbyte.auth.jwt;
  * ```
  *
  * Times are seconds since the epoch, as RFC 7519's NumericDate: a JSON number,
- * which may be fractional. They are `Float`s, and read back as `Float`s. A
- * literal may give them as `Int`s, as long as it gives every one of them so,
- * or every one as a `Float`; one mixing the two converts either side,
- * `now + 3600.0`, say, beside a `Float` `iat`. They were `Int`, so a time
- * after January 2038 did not fit, and adding the leeway to one near that
- * limit wrapped where an `Int` is 32 bits: one token was expired on the
- * interpreter and the jvm and valid on cpp and Node.
+ * which may be fractional. They are `Float`s, so a time after January 2038
+ * fits, and read back as `Float`s. A literal may give them as `Int`s, as
+ * long as it gives every one of them so, or every one as a `Float`; one
+ * mixing the two converts either side (`now + 3600.0`, say, beside a
+ * `Float` `iat`).
  *
  * The audience is a `JWTAudience`: one string or an array of them, asked
  * with `contains`.
@@ -142,8 +140,9 @@ abstract JWTPayload(JWTPayloadData) {
 	/**
 	 * A time as it reads back: the field itself, checked when the token was
 	 * decoded or made. Except on the interpreter and neko, where a `Float`
-	 * variable given an `Int` keeps doing `Int` arithmetic, the leeway
-	 * added to 2147483647 wrapped there, so an `Int` a literal gave is
+	 * decoded or made. Except on the interpreter and neko, where a `Float`
+	 * variable given an `Int` keeps doing `Int` arithmetic (the leeway
+	 * added to 2147483647 would wrap there), so an `Int` a literal gave is
 	 * converted as it is read.
 	 */
 	@:noCompletion private static inline function __time(value:Null<Float>):Null<Float> {
@@ -155,8 +154,8 @@ abstract JWTPayload(JWTPayloadData) {
 	}
 
 	/**
-	 * Seconds since the epoch from a claim as JSON gives it, an `Int` or a
-	 * `Float` depending on the target and the size of the number, or `null`
+	 * Seconds since the epoch from a claim as JSON gives it (an `Int` or a
+	 * `Float` depending on the target and the size of the number), or `null`
 	 * when it is absent or not a finite number.
 	 */
 	@:allow(crossbyte.auth.jwt.JWT)
@@ -195,8 +194,8 @@ abstract JWTPayload(JWTPayloadData) {
 	}
 
 	/**
-	 * `ofClaims` for a literal whose times are all `Int`s, `{sub: id, iat:
-	 * now, exp: now + 600}` with an `Int` `now`, which the `Float` fields
+	 * `ofClaims` for a literal whose times are all `Int`s (`{sub: id, iat:
+	 * now, exp: now + 600}` with an `Int` `now`), which the `Float` fields
 	 * refuse: a structure's field types have to match exactly. They are read
 	 * back as `Float`s, and written as integers.
 	 */
@@ -208,7 +207,7 @@ abstract JWTPayload(JWTPayloadData) {
 	 * Takes the registered claims alone.
 	 *
 	 * `JWTPayloadData` is a closed structure, so a literal carrying a claim of
-	 * an application's own, `{sub: id, exp: now + 600, role: "admin"}`,
+	 * an application's own (`{sub: id, exp: now + 600, role: "admin"}`)
 	 * does not compile here. Give such a literal where a `JWTPayload` is
 	 * expected, which converts it through `ofClaims`, or add the claim
 	 * afterwards with `setClaim`.

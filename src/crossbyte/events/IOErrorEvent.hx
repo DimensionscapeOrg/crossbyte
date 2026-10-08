@@ -15,8 +15,8 @@ class IOErrorEvent extends ErrorEvent {
 
 	/**
 		The `errorID` of an `ioError` that reports a deadline passing rather
-		than a refusal or a failure, a `Socket` connect not made within its
-		`timeout`, the name's lookup and the TLS handshake counted with it,
+		than a refusal or a failure (a `Socket` connect not made within its
+		`timeout`, the name's lookup and the TLS handshake counted with it),
 		so a listener can tell the two apart without reading `text`.
 		`NetConnection` reports one as `Reason.Timeout`. A socket's other
 		`ioError`s carry 0.

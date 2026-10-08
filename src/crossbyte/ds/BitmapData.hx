@@ -164,9 +164,7 @@ class BitmapData {
 		The test is `(pixel & mask) operation (threshold & mask)`, compared
 		as unsigned 32-bit values as ActionScript's `uint`s are, so an alpha
 		of 0xFF is above one of 0x7F rather than below it. It returns the
-		number of pixels that passed, which was 0 on every call: each case
-		of the operation ended in `break`, which in Haxe leaves the loop the
-		switch is in, so the first pixel of each row ended the row.
+		number of pixels that passed.
 
 		@param operation One of `<`, `<=`, `>`, `>=`, `==` and `!=`.
 		@throws ArgumentError For any other `operation`.

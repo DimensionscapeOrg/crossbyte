@@ -35,8 +35,8 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testATransactionBegunAsSqlIsSeen():Void {
-		// inTransaction changed only in begin(), commit() and rollback(), so
-		// a BEGIN sent as SQL read as no transaction at all.
+		// inTransaction follows SQLite, not only begin(), commit() and
+		// rollback(), so a BEGIN sent as SQL reads as a transaction.
 		var connection:SQLiteConnection = new SQLiteConnection();
 		connection.open(null, SQLiteMode.CREATE, false, 4096);
 
@@ -90,8 +90,8 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testIntegersAreReadAtSixtyFourBits():Void {
-		// Every INTEGER column was read with sqlite3_column_int, which keeps
-		// the low 32 bits: a millisecond timestamp, 1727600000000, came back
+		// An INTEGER column is not read with sqlite3_column_int, which keeps the
+		// low 32 bits: a millisecond timestamp, 1727600000000, would come back
 		// as 1023147008.
 		var connection:SQLiteConnection = new SQLiteConnection();
 		connection.open(null, SQLiteMode.CREATE, false, 4096);
@@ -118,9 +118,9 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testAnAsyncBeginImmediateTakesItsLockAtOnce():Void {
-		// The asynchronous begin() ignored its option and always began a
-		// deferred transaction, which takes no lock until its first write,
-		// and can fail with SQLITE_BUSY there, part way through.
+		// The asynchronous begin() honours its option, rather than always
+		// beginning a deferred transaction, which takes no lock until its first
+		// write and can fail with SQLITE_BUSY there, part way through.
 		var path:String = __path("async-immediate");
 		var setup:SQLiteConnection = new SQLiteConnection();
 		setup.open(path, SQLiteMode.CREATE, false, 4096);
@@ -163,11 +163,11 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testAFailedStatementDoesNotFailTheNextOne():Void {
-		// A statement whose step failed was finalized only when the next one
-		// replaced it, and finalize returned the old failure again, which was
-		// thrown as "Could not finalize request": after one constraint
-		// violation, the connection's next statement failed too, and so did
-		// close(). And the failure itself said only "SQL logic error".
+		// A statement whose step failed is finalized at once, not only when the
+		// next one replaces it, which would return the old failure again, thrown
+		// as "Could not finalize request": after one constraint violation, the
+		// connection's next statement would fail too, and so would close(). And
+		// the failure says what failed, not only "SQL logic error".
 		var connection:SQLiteConnection = new SQLiteConnection();
 		connection.open(null, SQLiteMode.CREATE, false, 4096);
 		connection.request("CREATE TABLE users (email TEXT UNIQUE)");
@@ -205,10 +205,10 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testASelectKeepsItsRowsOnceARowIdHasPassedThirtyTwoBits():Void {
-		// A statement read the connection's last rowid as soon as it had
-		// started, and past 2^31 that is a query of its own, which hxcpp's
-		// glue answers by finalizing the statement before it: every SELECT
-		// after the first rowid past 2^31 came back with its first row only.
+		// A statement must not read the connection's last rowid as soon as it
+		// has started: past 2^31 that is a query of its own, which hxcpp's glue
+		// answers by finalizing the statement before it, and every SELECT after
+		// the first rowid past 2^31 would come back with its first row only.
 		var connection:SQLiteConnection = new SQLiteConnection();
 		connection.open(null, SQLiteMode.CREATE, false, 4096);
 		connection.request("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)");
@@ -249,9 +249,9 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testAnAsynchronousFailureReachesItsListener():Void {
-		// Every failure on an asynchronous connection killed the process: the
-		// connection's own errors were taken for a statement's message, and a
-		// statement's error had its absent result set read.
+		// A failure on an asynchronous connection is reported, not fatal: the
+		// connection's own errors are not taken for a statement's message, and a
+		// statement's error does not have its absent result set read.
 		var connection:SQLiteConnection = new SQLiteConnection();
 		var events:Array<String> = [];
 
@@ -290,10 +290,11 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testAsynchronousStatementsQueuedTogetherEachGetEveryRow():Void {
-		// The worker handed each statement its result set and went on to the
-		// next statement, while the runtime's thread read the rows, and
-		// hxcpp's glue starts a statement by finalizing the one before it. Of
-		// two SELECTs of 5000 rows queued together, the first got one row.
+		// The worker reads each statement's rows before going on to the next:
+		// handing each its result set while the runtime's thread read the rows,
+		// with hxcpp's glue starting a statement by finalizing the one before
+		// it, the first of two SELECTs of 5000 rows queued together would get
+		// one row.
 		var connection:SQLiteConnection = new SQLiteConnection();
 		var opened:Bool = false;
 		connection.addEventListener(SQLEvent.OPEN, _ -> opened = true);
@@ -346,10 +347,10 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testOpeningAnOpenConnectionAgainIsRefused():Void {
-		// open() on an open connection replaced its handle and left the first
-		// open, unreachable, and holding whatever locks it had. AIR's open()
-		// throws IllegalOperationError then; so does this, and a statement
-		// kept across close() and open() runs on the open one.
+		// open() on an open connection must not replace its handle and leave
+		// the first open, unreachable and holding whatever locks it had. AIR's
+		// open() throws IllegalOperationError then; so does this, and a
+		// statement kept across close() and open() runs on the open one.
 		var path:String = __path("reopen");
 		var connection:SQLiteConnection = new SQLiteConnection();
 		connection.open(path, SQLiteMode.CREATE, false, 4096);
@@ -377,7 +378,7 @@ class SQLiteNativeTest extends utest.Test {
 		count.text = "SELECT COUNT(*) AS n FROM t";
 		connection.close();
 
-		// Closed: refused, where each dereferenced the connection it had not.
+		// Closed: refused, not a dereference of the connection it does not have.
 		Assert.raises(() -> count.execute(), IllegalOperationError);
 		Assert.raises(() -> connection.begin(), IllegalOperationError);
 		Assert.raises(() -> connection.request("SELECT 1"), IllegalOperationError);
@@ -415,8 +416,8 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testAWriteWaitsForAnotherConnectionsLockByDefault():Void {
-		// SQLite's own busy_timeout is 0, and a connection opened with it:
-		// a write while another connection was writing failed at once with
+		// SQLite's own busy_timeout is 0, and a connection opened with it would
+		// fail a write while another connection was writing at once with
 		// "database is locked", though the lock went a moment later.
 		var path:String = __path("busy-default");
 		var setup:SQLiteConnection = new SQLiteConnection();
@@ -429,7 +430,7 @@ class SQLiteNativeTest extends utest.Test {
 		holder.request("BEGIN IMMEDIATE");
 		holder.request("INSERT INTO t VALUES (1)");
 
-		// Told not to wait, as every connection was: refused at once.
+		// Told not to wait: refused at once.
 		var impatient:SQLiteConnection = new SQLiteConnection();
 		impatient.open(path, SQLiteMode.UPDATE, false, 4096);
 		impatient.busyTimeout = 0;
@@ -474,10 +475,10 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testDeanalyzeRemovesTheStatisticsAndKeepsTheConnection():Void {
-		// deanalyze() closed the connection and opened it again, and touched
-		// no statistics: an in-memory database lost every table, a file kept
-		// its sqlite_stat1, and what the session held, a transaction, an
-		// attached database, busy_timeout, was lost on the way.
+		// deanalyze() removes the statistics without closing and reopening the
+		// connection, which would lose every table of an in-memory database,
+		// keep a file's sqlite_stat1, and lose what the session held (a
+		// transaction, an attached database, busy_timeout) on the way.
 		var connection:SQLiteConnection = new SQLiteConnection();
 		var events:Array<String> = [];
 
@@ -516,9 +517,10 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testAnAsynchronousDeanalyzeReportsOnceItIsDone():Void {
-		// DEANALYZE was dispatched as the call returned, before any work, and
-		// the work then reopened the connection from the worker's thread,
-		// which has no runtime: nothing on the connection answered again.
+		// DEANALYZE is dispatched once the work is done, not as the call
+		// returns, and the work runs on the connection's own worker, not
+		// reopening it from a thread with no runtime, where nothing on the
+		// connection would answer again.
 		var path:String = __path("deanalyze");
 		var setup:SQLiteConnection = new SQLiteConnection();
 		setup.open(path, SQLiteMode.CREATE, false, 4096);
@@ -564,11 +566,11 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testCancelStopsTheWorkAndKeepsTheConnection():Void {
-		// cancel() cancelled the connection's worker: the statement running
-		// went on to its end with nothing left to report it, the work queued
-		// behind it was dropped without a word, CANCEL came at once, and
-		// close() never closed, the connection and its file were held for
-		// the life of the process.
+		// cancel() interrupts the statement running rather than cancelling the
+		// connection's worker, which would let the statement run on to its end
+		// with nothing left to report it, drop the work queued behind it
+		// without a word, send CANCEL at once, and leave close() never closing,
+		// the connection and its file held for the life of the process.
 		var path:String = __path("cancel");
 		var connection:SQLiteConnection = new SQLiteConnection();
 		var events:Array<String> = [];
@@ -629,7 +631,7 @@ class SQLiteNativeTest extends utest.Test {
 
 	public function testCancelInterruptsAStatementRunningOnAnotherThread():Void {
 		// A synchronous connection queues nothing, so cancel() has only the
-		// statement running, on whichever thread called it, to stop.
+		// statement running (on whichever thread called it) to stop.
 		var connection:SQLiteConnection = new SQLiteConnection();
 		connection.open(null, SQLiteMode.CREATE, false, 4096);
 		var cancels:Int = 0;
@@ -679,9 +681,9 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testAReadConnectionCannotWrite():Void {
-		// SQLiteMode.READ only checked that the file existed and then opened
-		// it read-write: an INSERT through it succeeded. AIR's READ is
-		// read-only.
+		// SQLiteMode.READ opens read-only, as AIR's READ is, rather than
+		// checking that the file exists and opening it read-write, where an
+		// INSERT through it would succeed.
 		var path:String = __path("read");
 		var setup:SQLiteConnection = new SQLiteConnection();
 		setup.open(path, SQLiteMode.CREATE, false, 4096);
@@ -715,11 +717,10 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testAutoCompactShrinksTheFileAsRowsGo():Void {
-		// autoCompact set auto_vacuum to INCREMENTAL, which gives nothing back
-		// until PRAGMA incremental_vacuum runs, and nothing ran it: after 200
-		// rows of 8 KiB were deleted the file stayed 1.6 MB, its pages free.
-		// AIR's autoCompact gives the space back at each commit, which is
-		// SQLite's FULL.
+		// autoCompact is SQLite's FULL, as AIR's autoCompact gives the space
+		// back at each commit, not INCREMENTAL, which gives nothing back until
+		// PRAGMA incremental_vacuum runs: with nothing running it, after 200
+		// rows of 8 KiB were deleted the file would stay 1.6 MB, its pages free.
 		var path:String = __path("compact");
 		var connection:SQLiteConnection = new SQLiteConnection();
 		connection.open(path, SQLiteMode.CREATE, true, 4096);
@@ -740,7 +741,7 @@ class SQLiteNativeTest extends utest.Test {
 		connection.close();
 
 		// A database that gives nothing back by itself does not say it does,
-		// an incremental one included, as earlier versions made them.
+		// an incremental one included.
 		var incremental:String = __path("incremental");
 		var plain:SQLiteConnection = new SQLiteConnection();
 		plain.open(incremental, SQLiteMode.CREATE, false, 4096);
@@ -752,8 +753,9 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testAForeignKeyViolationReportsItsWholeRowId():Void {
-		// The rowid was parsed into an Int: a violation at rowid 3,000,000,000
-		// was reported at 2147483647, the row a repair script would then touch.
+		// The rowid is read whole, not parsed into an Int: a violation at rowid
+		// 3,000,000,000 would be reported at 2147483647, the row a repair script
+		// would then touch.
 		var connection:SQLiteConnection = new SQLiteConnection();
 		connection.open(null, SQLiteMode.CREATE, false, 4096);
 		connection.request("CREATE TABLE parent (id INTEGER PRIMARY KEY)");
@@ -781,7 +783,7 @@ class SQLiteNativeTest extends utest.Test {
 
 	public function testWorkQueuedBehindAFailedOpenIsToldItWillNotRun():Void {
 		// An asynchronous open that fails leaves nothing for the work queued
-		// behind it to run on: each is refused, where it ran against no
+		// behind it to run on: each is refused, rather than run against no
 		// connection, and the connection can be opened again.
 		var missing:String = Path.join([Sys.getCwd(), "export", "sqlite-native-absent-" + Std.random(0x7FFFFFFF), "db.sqlite"]);
 		var connection:SQLiteConnection = new SQLiteConnection();
@@ -808,9 +810,9 @@ class SQLiteNativeTest extends utest.Test {
 	public function testAPagedStatementKeepsItsRowsWhenAnotherRunsBetweenPages():Void {
 		// hxcpp's glue keeps one live result per connection and finalizes it
 		// as the next request starts. A statement read a page at a time while
-		// others ran on the same connection, a cursor whose rows are each
-		// written elsewhere, stopped after its first page, and the rest was
-		// reported as an empty page, complete.
+		// others run on the same connection (a cursor whose rows are each written
+		// elsewhere) must not stop after its first page, with the rest reported
+		// as an empty page, complete.
 		var connection:SQLiteConnection = new SQLiteConnection();
 		connection.open(null, SQLiteMode.CREATE, false, 4096);
 		connection.request("CREATE TABLE t AS WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100) SELECT i FROM n");
@@ -879,7 +881,7 @@ class SQLiteNativeTest extends utest.Test {
 
 	public function testWhatSQLiteRefusesIsAnSQLError():Void {
 		// Against the engine itself: what hxcpp's glue throws is a String,
-		// which escaped as one, and nothing was dispatched.
+		// which arrives as an SQLError and is dispatched, not escaping as itself.
 		var connection:SQLiteConnection = new SQLiteConnection();
 		connection.open(null, SQLiteMode.CREATE, false, 4096);
 		var heard:Array<SQLError> = [];
@@ -929,11 +931,11 @@ class SQLiteNativeTest extends utest.Test {
 
 	public function testTheCallingThreadsReadsDoNotRaceTheWorker():Void {
 		// On an asynchronous connection request(), and the properties that ask
-		// SQLite, ran on the calling thread while the worker ran statements on
-		// the same connection, and hxcpp's glue keeps one live result per
-		// connection, finalized as the next request starts: a read on the
-		// calling thread stepped and finalized the statement the worker was
-		// reading.
+		// SQLite, run on the worker, not on the calling thread while the worker
+		// runs statements on the same connection: hxcpp's glue keeps one live
+		// result per connection, finalized as the next request starts, so a read
+		// on the calling thread would step and finalize the statement the worker
+		// was reading.
 		var connection:SQLiteConnection = new SQLiteConnection();
 		var opened:Bool = false;
 		var closed:Bool = false;
@@ -1001,9 +1003,9 @@ class SQLiteNativeTest extends utest.Test {
 
 	public function testACallOnAnAsynchronousConnectionAnswersInTurn():Void {
 		// What answers at once is run by the worker behind the work queued
-		// before it. It ran on the calling thread at once, on the connection
-		// as the worker had it then: right after openAsync() there was none
-		// ("not open"), and a statement queued just before had not run.
+		// before it, not on the calling thread at once, on the connection as the
+		// worker has it then: right after openAsync() there would be none ("not
+		// open"), and a statement queued just before would not have run.
 		var path:String = __path("in-turn");
 		var connection:SQLiteConnection = new SQLiteConnection();
 		var events:Array<String> = [];
@@ -1099,10 +1101,10 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testCancellingAStatementStopsItsWorkAndNothingElse():Void {
-		// SQLiteStatement.cancel() only reset the statement's own fields: the
-		// work queued for it still ran, an INSERT cancelled before its turn
-		// inserted, and a statement already running ran on to its end,
-		// holding up everything queued behind it.
+		// SQLiteStatement.cancel() cancels the statement's work, not only its
+		// own fields: an INSERT cancelled before its turn does not insert, and
+		// a statement already running is interrupted rather than running on to
+		// its end, holding up everything queued behind it.
 		var connection:SQLiteConnection = new SQLiteConnection();
 		var events:Array<String> = [];
 		var errors:Map<String, SQLError> = new Map();
@@ -1155,9 +1157,9 @@ class SQLiteNativeTest extends utest.Test {
 
 	public function testACancelLandingAsTheStatementStartsStillStopsIt():Void {
 		// SQLite clears an interrupt as a statement starts when no other is
-		// running, so a cancel() landing while the worker prepared the
-		// statement, execute() then cancel() on an idle connection, was
-		// lost, and the statement ran its hours. Swept across the window.
+		// running, so a cancel() landing while the worker prepares the statement
+		// (execute() then cancel() on an idle connection) must not be lost,
+		// leaving the statement to run its hours. Swept across the window.
 		var connection:SQLiteConnection = new SQLiteConnection();
 		var closed:Bool = false;
 		connection.addEventListener(SQLEvent.CLOSE, _ -> closed = true);
@@ -1201,8 +1203,8 @@ class SQLiteNativeTest extends utest.Test {
 
 	public function testAConnectionsCancelLandingAsAStatementStartsStillStopsIt():Void {
 		// The same window for the connection's own cancel(): its interrupt,
-		// landing while the worker prepared the statement, was cleared as the
-		// statement started, which then ran its hours.
+		// landing while the worker prepares the statement, must not be cleared
+		// as the statement starts, leaving it to run its hours.
 		var connection:SQLiteConnection = new SQLiteConnection();
 		var cancels:Int = 0;
 		var closed:Bool = false;
@@ -1242,10 +1244,10 @@ class SQLiteNativeTest extends utest.Test {
 
 	public function testCancellingAPagedStatementEndsItsRead():Void {
 		// A statement read a page at a time keeps SQLite's read open until its
-		// last row, and a writer elsewhere cannot commit past it. cancel()
-		// let it go on the calling thread only: the worker kept it live, the
-		// read held, and the next statement there read every row it had
-		// left first.
+		// last row, and a writer elsewhere cannot commit past it. cancel() lets
+		// it go on the worker too, not only on the calling thread: kept live
+		// there, the read would hold, and the next statement there would read
+		// every row it had left first.
 		var path:String = __path("paged-cancel");
 		var setup:SQLiteConnection = new SQLiteConnection();
 		setup.open(path, SQLiteMode.CREATE, false, 4096);
@@ -1298,14 +1300,14 @@ class SQLiteNativeTest extends utest.Test {
 
 	public function testACancelLandingAsARequestStartsOnAnotherThreadStillStopsIt():Void {
 		// On a synchronous connection a statement runs on the thread that asks
-		// for it, and another thread's cancel() interrupts it. SQLite clears
-		// an interrupt that lands as a statement starts, while no other is
-		// running, so a cancel() landing while the request was being prepared,
-		// up to about 12 microseconds after request() was called, here,
-		// was lost: an aggregate ran its hours, a SELECT read row by row gave
-		// every row, and a statement's own cancel() was lost the same way.
-		// Each is swept across the start, with work that never ends unless it
-		// is stopped.
+		// for it, and another thread's cancel() interrupts it. SQLite clears an
+		// interrupt that lands as a statement starts, while no other is
+		// running, so a cancel() landing while the request is being prepared
+		// (up to about 12 microseconds after request() is called, here) must
+		// not be lost: an aggregate would run its hours, a SELECT read row by row
+		// give every row, and a statement's own cancel() be lost the same way.
+		// Each is swept across the start, with work that never ends unless it is
+		// stopped.
 		var connection:SQLiteConnection = new SQLiteConnection();
 		connection.open(null, SQLiteMode.CREATE, false, 4096);
 		var hours:String = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100000000000) SELECT COUNT(*) AS c FROM n";
@@ -1339,19 +1341,18 @@ class SQLiteNativeTest extends utest.Test {
 
 	/**
 		Runs `ask` on another thread 150 times and calls `cancel` a little
-		later each time, up to about ten microseconds after the other thread
+		later each time (up to about ten microseconds after the other thread
 		has started its work: once `started` says so, or, without it, once its
 		request has read the count of cancels and gone on, which it shows by
-		numbering its run, and answers the rounds in which the work was not
+		numbering its run), and answers the rounds in which the work was not
 		interrupted: the first three.
 
 		The work never ends by itself, so a cancel that comes late still has
 		it to stop; and one that comes before the work has read the count is
 		not that work's to stop, so the sweep waits for it to have done so.
-		Going by the time instead, as this did, both read as lost cancels
-		under load: a thread descheduled between saying it was asking and
-		asking, and a cancel late enough to find the work done, 2 runs in
-		60 on four loaded cores on Linux, and once on the macOS runner.
+		Going by the time instead, both would read as lost cancels under load:
+		a thread descheduled between saying it was asking and asking, and a
+		cancel late enough to find the work done.
 	**/
 	private static function __sweepCancels(connection:SQLiteConnection, ask:Void->Void, started:Null<Void->Bool>, cancel:Void->Void):Array<String> {
 		var lost:Array<String> = [];
@@ -1451,10 +1452,10 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testCacheSizeSaysWhatSQLiteSays():Void {
-		// cacheSize was a UInt, and SQLite gives a cache size in KiB as a
-		// negative number, its own default is -2000, about 2 MB. -4096 set
-		// was written as 4294963200, which SQLite read as 0, and a negative
-		// size read back as four billion pages.
+		// cacheSize is not a UInt: SQLite gives a cache size in KiB as a
+		// negative number (its own default is -2000, about 2 MB), so -4096 set
+		// would be written as 4294963200, which SQLite reads as 0, and a
+		// negative size would read back as four billion pages.
 		var connection:SQLiteConnection = new SQLiteConnection();
 		connection.open(null, SQLiteMode.CREATE, false, 4096);
 		// As open() leaves it: 2000 pages, as AIR's does.
@@ -1479,10 +1480,10 @@ class SQLiteNativeTest extends utest.Test {
 
 	public function testWorkAskedOfAWorkerThatHasStoppedIsRefusedAtOnce():Void {
 		// An asynchronous open that fails stops the worker, which tells what
-		// was queued behind it that it will not run, but the calling thread
-		// learns of the failure only when its event is dispatched. A call
-		// made in between waited out queueTimeout for a worker that was gone,
-		// and a statement executed then never answered at all.
+		// was queued behind it that it will not run; but the calling thread
+		// learns of the failure only when its event is dispatched. A call made
+		// in between must not wait out queueTimeout for a worker that is gone,
+		// nor a statement executed then go unanswered.
 		var missing:String = Path.join([Sys.getCwd(), "export", "sqlite-native-absent-" + Std.random(0x7FFFFFFF), "db.sqlite"]);
 		var connection:SQLiteConnection = new SQLiteConnection();
 		var failures:Int = 0;
@@ -1520,16 +1521,16 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testWorkAskedAsTheWorkerStopsIsAnswered():Void {
-		// Work asked for was refused at once once the worker had marked its
-		// queue gone, and otherwise queued, but work that found the queue
-		// not yet gone, and reached it only after the worker's last pass had
-		// found it empty, sat there with nothing left to run it: a statement
-		// or a begin() was neither refused nor answered, ever, and a close()
-		// left the connection refusing every open after it. Each round opens
-		// a missing file, waits for the open to fail, and asks a moment
-		// later, swept across the worker's last pass. Everything the worker
-		// sends comes before its Complete, so once it has completed, work it
-		// took has been answered.
+		// Work asked for is refused at once once the worker has marked its
+		// queue gone, and otherwise queued; and work that finds the queue not
+		// yet gone, and reaches it only after the worker's last pass has found
+		// it empty, must not sit there with nothing left to run it: a statement
+		// or a begin() neither refused nor answered, ever, and a close() leaving
+		// the connection refusing every open after it. Each round opens a
+		// missing file, waits for the open to fail, and asks a moment later,
+		// swept across the worker's last pass. Everything the worker sends comes
+		// before its Complete, so once it has completed, work it took has been
+		// answered.
 		var missing:String = Path.join([Sys.getCwd(), "export", "sqlite-native-absent-" + Std.random(0x7FFFFFFF) + ".db"]);
 		var runtime = crossbyte.core.CrossByte.current();
 		var lost:Array<String> = [];

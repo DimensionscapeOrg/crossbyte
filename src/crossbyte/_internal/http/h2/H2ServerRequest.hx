@@ -11,7 +11,7 @@ import haxe.io.Bytes;
  * every rule in RFC 9113 §8.3.1 is about one message: a request carries
  * exactly one `:method`, `:scheme` and `:path`, never a `:status`, and no
  * pseudo-header may follow a regular field. A message breaking any of them is
- * *malformed*, which §8.1.1 makes a stream error, the connection is fine and
+ * *malformed*, which §8.1.1 makes a stream error: the connection is fine and
  * other streams keep running.
  */
 class H2ServerRequest {
@@ -159,10 +159,10 @@ class H2ServerRequest {
 
 			// §8.2.1: no CR, LF or NUL in a value, no whitespace at its ends,
 			// and nothing in a name but visible, lowercase ASCII. HPACK
-			// carries any byte, so a line break reached the request middleware
-			// sees. An uppercase name is malformed rather than merely unusual:
-			// normalising it would let two spellings of one header disagree
-			// about which a router matched.
+			// carries any byte, so a line break would otherwise reach the
+			// request middleware sees. An uppercase name is malformed rather
+			// than merely unusual: normalising it would let two spellings of
+			// one header disagree about which a router matched.
 			if (!field.lawful) {
 				var problem:Null<String> = H2FieldRules.violation(name, field.value);
 				if (problem != null) {
@@ -214,8 +214,8 @@ class H2ServerRequest {
 					// here, but the field still reaches middleware and PHP,
 					// which would otherwise be told a length the body does not
 					// have. Read through IntParse, so a value no Int can hold is
-					// not mistaken for a small one, as Std.parseInt does on
-					// Linux native.
+					// not mistaken for a small one, as Std.parseInt mistakes it
+					// on Linux native.
 					var declared:Int = IntParse.decimal(field.value);
 					var received:Int = body == null ? 0 : body.length;
 					if (declared < 0 || (!partial && declared != received)) {

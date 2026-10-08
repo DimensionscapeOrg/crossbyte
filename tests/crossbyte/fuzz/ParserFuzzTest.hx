@@ -24,16 +24,16 @@ import utest.Assert;
  * Each of these decodes something a remote peer chose: a STUN binding from any
  * host that can reach the socket, an SCTP chunk from a browser's data channel,
  * an HPACK block from an HTTP/2 client, a compressed body from a server the
- * caller merely named. Reading such a parser is how most of its bugs are
- * found, and reading is exactly what missed the two that turned up in this
- * codebase by other means: a length that overflowed when added to a position,
- * and a decoder with no ceiling on what it would allocate.
+ * caller merely named. Reading such a parser finds most of its bugs, but
+ * not the ones easiest to find by feeding it: a length that overflows when
+ * added to a position, and a decoder with no ceiling on what it will
+ * allocate.
  *
  * **Throwing is a pass.** A parser handed nonsense is entitled to refuse it,
  * loudly, and every call here is wrapped. What is not allowed is to crash the
  * process, to run away with the clock, or to return a result larger than the
  * ceiling it was given. The first of those is asserted by this file finishing
- * at all, on cpp a bad read takes the whole runner with it, and the other
+ * at all (on cpp a bad read takes the whole runner with it), and the other
  * two are measured.
  *
  * Inputs come three ways, and the last two matter most. Random bytes mostly
@@ -132,9 +132,9 @@ class ParserFuzzTest extends utest.Test {
 	}
 
 	public function testDecompressorsNeverExceedTheirCeiling():Void {
-		// The guard these grew this month. A decoder that refuses only after
-		// it has finished allocating has already spent what the ceiling was
-		// there to protect.
+		// The ceiling each decompressor checks as it goes. A decoder that refuses
+		// only after it has finished allocating has already spent what the
+		// ceiling was there to protect.
 		var bombs:Array<{name:String, run:Bytes->Int}> = [
 			{name: "Lz4", run: b -> Lz4.decompress(b, CEILING).length},
 			{name: "Inflater", run: b -> Inflater.apply(b, CEILING).length},
@@ -210,10 +210,9 @@ class ParserFuzzTest extends utest.Test {
 				run: b -> Lz4.decompress(b, CEILING)
 			},
 			{
-				// The one wire decoder this file did not have, and the one that
-				// hung: four bytes declaring a metadata block and then ending
-				// kept it looping for good. A mutation fuzzer finds that in a
-				// couple of hundred inputs, which is fewer than one pass here.
+				// Four bytes declaring a metadata block and then ending must not keep
+				// it looping for good. A mutation fuzzer finds that shape in a couple of
+				// hundred inputs, which is fewer than one pass here.
 				name: "Brotli.decompress",
 				seed: () -> Brotli.compress(Bytes.ofString("the quick brown fox jumps over the lazy dog, then the quick brown fox jumps again")),
 				run: b -> Brotli.decompress(b, CEILING)

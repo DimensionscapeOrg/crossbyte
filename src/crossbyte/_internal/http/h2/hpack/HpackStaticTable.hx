@@ -37,11 +37,9 @@ class HpackStaticTable {
 	// index. Built once, with the class: a linear scan of 61 entries per
 	// header is the kind of cost that only shows up under load.
 	//
-	// A map per name rather than one keyed by name and value joined. The two
-	// were joined with a NUL, and a HashLink string ends at its first NUL, so
-	// every pair of a name hashed and compared as the name alone and the last
-	// entry set won: on hl `:method GET` was sent as POST, `:scheme http` as
-	// https, and `:status 200` as 500, in both directions.
+	// A map per name rather than one keyed by name and value joined with a
+	// NUL: a HashLink string ends at its first NUL, so every pair of a name
+	// would hash and compare as the name alone.
 	private static final __byName:Map<String, Int> = __indexNames();
 	private static final __byPair:Map<String, Map<String, Int>> = __indexPairs();
 
@@ -70,8 +68,7 @@ class HpackStaticTable {
 
 	/**
 		The `:status` field for `status`: the static table's own for the seven
-		it lists, a new one otherwise. A response made one, and the text of
-		its code, every time.
+		it lists, a new one otherwise.
 	**/
 	public static function statusField(status:Int):HpackHeader {
 		return switch (status) {

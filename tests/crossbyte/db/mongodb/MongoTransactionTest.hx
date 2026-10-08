@@ -19,8 +19,8 @@ import utest.Assert;
 	Transactions on a connection's session, and the pool that has to end
 	the ones a borrower leaves open.
 
-	`inTransaction` always read false and `lastInsertRowID` always 0,
-	whatever had happened; a pool trusting the first would hand the next
+	`inTransaction` and `lastInsertRowID` read what happened; a pool
+	trusting an `inTransaction` that always read false would hand the next
 	borrower a transaction the last one left.
 **/
 class MongoTransactionTest extends utest.Test {

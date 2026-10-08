@@ -82,10 +82,10 @@ class URLTest extends utest.Test {
 
 	public function testControlCharactersAreRefused():Void {
 		// The client writes the path, query and host into the request as they
-		// are, so a CR or LF here ended the request line and started a header
-		// of the URL's choosing: "http://host/a\r\nX-Injected: evil" did just
-		// that on the wire. Built from char codes so the test does not depend
-		// on how this file's line endings were checked out.
+		// are, so a CR or LF here would end the request line and start a header
+		// of the URL's choosing, as "http://host/a\r\nX-Injected: evil" would on
+		// the wire. Built from char codes so the test does not depend on how
+		// this file's line endings were checked out.
 		var cr:String = String.fromCharCode(13);
 		var lf:String = String.fromCharCode(10);
 		for (control in [cr, lf, cr + lf, String.fromCharCode(0), String.fromCharCode(9), String.fromCharCode(31), String.fromCharCode(127)]) {

@@ -28,8 +28,8 @@ import crossbyte.events.SQLEvent;
 	var page = statement.getResult();
 	```
 
-	`:name` placeholders are bound to `parameters` as values, a date stays a
-	BSON date, an `Int64` an int64, never spliced into the text, so no value
+	`:name` placeholders are bound to `parameters` as values (a date stays a
+	BSON date, an `Int64` an int64), never spliced into the text, so no value
 	can change what the command does. A command answering with a cursor
 	(`find`, `aggregate`) pages through it: `execute(n)` and `next(n)` fetch `n`
 	documents at a time, sending `getMore` as the server's batches run out.
@@ -116,7 +116,7 @@ class MongoStatement extends EventDispatcher {
 		try {
 			var params:FieldStruct<Dynamic> = parameters;
 			// Whether each exists is asked apart from its value, so one set to
-			// null is bound as BSON null; it was refused as "no parameter".
+			// null is bound as BSON null.
 			var command:Dynamic = ExtendedJson.parse(text, name -> FieldStruct.get(params, name), name -> FieldStruct.exists(params, name));
 
 			if (!Std.isOfType(command, BsonDocument)) {
@@ -163,10 +163,9 @@ class MongoStatement extends EventDispatcher {
 	}
 
 	/**
-		Reports a failure both ways: as the `SQLErrorEvent` it always was, and
-		as the error it now throws. It dispatched the event and returned, so to
-		a caller not listening, an `AsyncDatabase` task among them, a
-		refused command read as one that had run.
+		Reports a failure both ways: as the `SQLErrorEvent`, and as the error
+		it throws, so to a caller not listening (an `AsyncDatabase` task
+		among them) a refused command does not read as one that had run.
 	**/
 	@:noCompletion private function __fail(e:Dynamic):Void {
 		var error:SQLError = __asSQLError(e);
@@ -176,7 +175,7 @@ class MongoStatement extends EventDispatcher {
 
 	/**
 		The next page fetched, or `null`. `rowsAffected` is what the command
-		reported writing, `n` from an insert, update or delete, and
+		reported writing (`n` from an insert, update or delete) and
 		`complete` whether the documents have all been taken.
 	**/
 	public function getResult():SQLResult {
@@ -184,8 +183,7 @@ class MongoStatement extends EventDispatcher {
 
 		if (results != null) {
 			// The last page is the one read as the documents ran out, with none
-			// behind it. This was !__executing alone, which called every page
-			// still waiting complete once the last had been read.
+			// behind it.
 			return new SQLResult(results, __affected, !__executing && __resultQueue.length == 0, 0);
 		}
 
@@ -233,7 +231,7 @@ class MongoStatement extends EventDispatcher {
 		}
 	}
 
-	/** The reply's count, whole past 2^31: it was read as an `Int`, held at 2^31 - 1. **/
+	/** The reply's count, whole past 2^31. **/
 	@:noCompletion private static function __affectedOf(reply:Dynamic):Float {
 		var n:Dynamic = Reflect.field(reply, "n");
 		return n == null || Reflect.hasField(reply, "cursor") ? 0.0 : MongoConnection.__count(n);
@@ -242,9 +240,9 @@ class MongoStatement extends EventDispatcher {
 	/**
 		The failure as an `SQLError`, whatever was thrown. A `MongoError` is
 		one already and keeps its code; anything else is carried as text,
-		never as itself, a native exception where `SQLError` wants a
-		`String` was a ClassCastException on the jvm, which escaped `execute`
-		and left every listener unrun.
+		never as itself: a native exception where `SQLError` wants a
+		`String` is a ClassCastException on the jvm, which would escape
+		`execute` and leave every listener unrun.
 	**/
 	@:noCompletion private static function __asSQLError(e:Dynamic):SQLError {
 		if (Std.isOfType(e, SQLError)) {

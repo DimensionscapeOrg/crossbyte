@@ -6,7 +6,7 @@ import haxe.CallStack;
 	The base error type, carrying a message and a numeric `errorID`.
 
 	It extends `haxe.Exception`, so an Error can be thrown and caught like any
-	other exception, and carries its own call stack, see `getCallStack`.
+	other exception, and carries its own call stack: see `getCallStack`.
 	Subclass it to name a kind of failure; the subclasses in this package
 	(`ArgumentError`, `RangeError`, `IOError`, and the rest) are what CrossByte
 	itself throws.
@@ -87,10 +87,10 @@ class Error #if (haxe_ver >= "4.1.0") extends haxe.Exception #elseif (openfl_dyn
 	**/
 	public function getCallStack():String {
 		#if (haxe_ver >= "4.1.0")
-		// This error's stack, not the interpreter's most recently caught one.
-		// CallStack.exceptionStack() is global state: it answered "" for an error
-		// that was never thrown, and answered with an unrelated exception's stack
-		// once anything else had been caught, on whichever Error you asked.
+		// This error's stack, not the interpreter's most recently caught one:
+		// CallStack.exceptionStack() is global state, which answers "" for an
+		// error never thrown, and another exception's stack once anything else
+		// has been caught.
 		return this.stack.toString();
 		#else
 		return CallStack.toString(CallStack.exceptionStack());

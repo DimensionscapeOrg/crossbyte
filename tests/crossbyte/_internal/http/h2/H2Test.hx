@@ -146,8 +146,8 @@ class H2Test extends utest.Test {
 	}
 
 	public function testAStatusThatIsNotThreeDigitsIsNoStatus():Void {
-		// §8.3.2 makes :status three digits. Std.parseInt read 4294967496 as
-		// 200 on Linux native, 2147483647 on Windows, and threw on the jvm.
+		// §8.3.2 makes :status three digits. Std.parseInt reads 4294967496 as
+		// 200 on Linux native, 2147483647 on Windows, and throws on the jvm.
 		for (value in ["4294967496", "2000", "20", "+20", "abc", "099"]) {
 			var server = new ServerScript();
 			server.settings();
@@ -224,10 +224,10 @@ class H2Test extends utest.Test {
 	}
 
 	public function testAnEndlessHeaderBlockFromTheServerIsRefused():Void {
-		// The server has refused this from a client for a while: a HEADERS
-		// with no END_HEADERS, then CONTINUATION frames for ever, each within
-		// the frame size limit, and a buffer that only grew. A server could do
-		// the same to this client, which set no bound at all.
+		// The server refuses this from a client: a HEADERS with no END_HEADERS,
+		// then CONTINUATION frames for ever, each within the frame size limit,
+		// and a buffer that only grows. A server could do the same to this
+		// client, so the client bounds it too.
 		var server = new ServerScript();
 		server.settings();
 		server.rawHeaders(1, [new HpackHeader(":status", "200")], false);
@@ -251,9 +251,9 @@ class H2Test extends utest.Test {
 
 	public function testAResponseHeaderSectionPastTheLimitIsRefusedAndTheConnectionCarriesOn():Void {
 		// 3,000 one-byte references to one set-cookie entry: a block of about
-		// three kilobytes that decodes to 117 KB by the table's accounting. It
-		// was accepted under an eight megabyte limit and joined, quadratically;
-		// the stream is given up now, and the connection is not.
+		// three kilobytes that decodes to 117 KB by the table's accounting. The
+		// stream is given up rather than the block accepted under an eight
+		// megabyte limit and joined, quadratically; the connection is not.
 		var crumbs:Array<HpackHeader> = [new HpackHeader(":status", "200")];
 		for (_ in 0...3000) {
 			crumbs.push(new HpackHeader("set-cookie", "a"));
@@ -284,11 +284,11 @@ class H2Test extends utest.Test {
 
 	public function testAHeaderBlockAfterTheResponsesMustEndTheStream():Void {
 		// RFC 9113 8.1: after the final response's header block, a HEADERS
-		// is the trailer section, and ends the stream. Each one that did not
-		// was taken as more of the response, its fields added to the
-		// stream's, its status over the last, so a server repeating a
-		// block of 50 KB of fields, three bytes each after the first by
-		// HPACK, grew the stream by 50 KB a block for as long as it went on.
+		// is the trailer section, and ends the stream. Taken instead as more of
+		// the response (its fields added to the stream's, its status over the
+		// last), a server repeating a block of 50 KB of fields, three bytes each
+		// after the first by HPACK, would grow the stream by 50 KB a block for as
+		// long as it went on.
 		var crumbs:Array<HpackHeader> = [new HpackHeader(":status", "200")];
 		for (_ in 0...1200) {
 			crumbs.push(new HpackHeader("x-crumb", "a"));
@@ -332,13 +332,13 @@ class H2Test extends utest.Test {
 		var second = connection.request("GET", "http", "example.com", "/b", []);
 		connection.pumpUntilClosed(second);
 
-		// Trailers, as they were taken: the response ends with them.
+		// Trailers, as they are taken: the response ends with them.
 		Assert.isTrue(first.endOfStream);
 		Assert.equals(200, first.status);
 		Assert.equals("body", first.takeBody().toString());
 		Assert.equals("abc", [for (field in first.headers) if (field.name == "x-checksum") field.value][0]);
 
-		// A status in the trailers is malformed (8.1), and its status did
+		// A status in the trailers is malformed (8.1), and its status does
 		// not replace the response's.
 		Assert.isFalse(second.endOfStream, "trailers carrying :status completed the response");
 		Assert.equals("Malformed response: a pseudo-header field in the trailers", second.failure);
@@ -347,10 +347,10 @@ class H2Test extends utest.Test {
 
 	public function testInterimResponsesCountAgainstTheHeaderSectionLimit():Void {
 		// The HTTP/1.1 client holds a status line, its fields and every 1xx
-		// ahead of them to one 64 KB allowance. Over HTTP/2 each 1xx block
-		// was held to the limit on its own and then dropped, so a server
-		// sent 103s for as long as it liked, each a frame of the stream,
-		// keeping it from its idle timeout, and the request never ended.
+		// ahead of them to one 64 KB allowance, and HTTP/2 does the same. Each
+		// 1xx block held to the limit on its own and then dropped would let a
+		// server send 103s for as long as it liked (each a frame of the stream,
+		// keeping it from its idle timeout), and the request would never end.
 		// 100 of them at a kilobyte each, a byte apiece after the first.
 		var hint:Array<HpackHeader> = [new HpackHeader(":status", "103"), new HpackHeader("link", StringTools.rpad("<", "x", 1000) + ">")];
 		var server = new ServerScript();
@@ -371,9 +371,9 @@ class H2Test extends utest.Test {
 
 	public function testTheServersTableSizeDoesNotGrowTheClientsTable():Void {
 		// SETTINGS_HEADER_TABLE_SIZE is the most the server's decoder will
-		// hold, and the client's encoder followed it all the way: a server
-		// saying a megabyte, or 2^31 - 1, let every distinct field the
-		// client sent stay in the client's table for the connection's life,
+		// hold, and the client's encoder must not follow it all the way: a
+		// server saying a megabyte (or 2^31 - 1) would let every distinct field
+		// the client sent stay in the client's table for the connection's life,
 		// each one searched for every field after. An encoder may use less
 		// (RFC 7541 4.2), and this one keeps to the default 4 KB.
 		var server = new ServerScript();
@@ -392,8 +392,8 @@ class H2Test extends utest.Test {
 	public function testTheClientRefusesPushWhateverItsSettingsSay():Void {
 		// Nothing in the client can take a pushed stream, and a PUSH_PROMISE
 		// is a connection error here. H2Settings allows push unless told
-		// otherwise, so a client given settings of its own said it took
-		// pushes, and then failed the connection over the first one.
+		// otherwise, so a client given settings of its own must still say it
+		// takes no pushes, rather than fail the connection over the first one.
 		var server = new ServerScript();
 		server.settings();
 		var connection = new H2Connection(new haxe.io.BytesInput(Bytes.alloc(0)), server.sink(), new H2Settings());
@@ -522,8 +522,8 @@ class H2Test extends utest.Test {
 
 	public function testAControlCharacterInAResponseFieldIsRefused():Void {
 		// RFC 9113 8.2.1 applies to a response too: a CR, LF or NUL in a value
-		// is malformed. It reached the caller's headers, and a program passing
-		// them on over HTTP/1.1 wrote the line break with them.
+		// is malformed, and must not reach the caller's headers, where a program
+		// passing them on over HTTP/1.1 would write the line break with them.
 		var server = new ServerScript();
 		server.settings();
 		server.response(1, [
@@ -549,10 +549,10 @@ class H2Test extends utest.Test {
 
 	public function testAnInterimResponsesFieldsAreNotTheResponses():Void {
 		// A 103 Early Hints ahead of the response, as a server hinting at what
-		// to preload sends one. Every header block's fields were added to the
-		// stream's, so the 200 came back carrying the 103's link. RFC 9113 8.1:
-		// an interim response is a header block of its own, before the final
-		// one.
+		// to preload sends one. RFC 9113 8.1: an interim response is a header
+		// block of its own, before the final one, so the 200 must not come back
+		// carrying the 103's link, as it would if every header block's fields
+		// were added to the stream's.
 		var server = new ServerScript();
 		server.settings();
 		server.rawHeaders(1, [new HpackHeader(":status", "103"), new HpackHeader("link", "</style.css>; rel=preload")], true);
@@ -570,8 +570,8 @@ class H2Test extends utest.Test {
 
 	public function testAnInterimResponseThatEndsTheStreamIsMalformed():Void {
 		// An interim response promises the final one, so one that ends the
-		// stream is malformed (RFC 9113 8.1): a stream error, and the
-		// connection carries on. It was taken as the response, a 100.
+		// stream is malformed (RFC 9113 8.1): a stream error, not taken as the
+		// response, a 100, and the connection carries on.
 		var server = new ServerScript();
 		server.settings();
 		server.response(1, [new HpackHeader(":status", "100")], "", true);
@@ -658,10 +658,9 @@ class H2Test extends utest.Test {
 	public function testAResponseArrivingAfterOurResetIsDiscarded():Void {
 		var server = new ServerScript();
 		server.settings();
-		// The peer answers stream 1 as though it never saw our reset, it
-		// may well have sent this before the reset reached it. The custom
-		// field goes into the dynamic table, and stream 3's response refers
-		// back to it.
+		// The peer answers stream 1 as though it never saw our reset; it may
+		// well have sent this before the reset reached it. The custom field goes
+		// into the dynamic table, and stream 3's response refers back to it.
 		server.response(1, [new HpackHeader(":status", "200"), new HpackHeader("x-trace", "abc")], "too late", true);
 		server.response(3, [new HpackHeader(":status", "200"), new HpackHeader("x-trace", "abc")], "ok", true);
 
@@ -671,9 +670,9 @@ class H2Test extends utest.Test {
 		connection.resetStream(cancelled.id, H2ErrorCode.CANCEL);
 		connection.pumpUntilClosed(kept);
 
-		// Nothing of the late response lands on the stream that was reset.
-		// It is still in the connection's map, and filling it in was how a
-		// cancelled request came to report itself complete.
+		// Nothing of the late response lands on the stream that was reset. It
+		// is still in the connection's map, and filling it in would make a
+		// cancelled request report itself complete.
 		Assert.equals(-1, cancelled.status);
 		Assert.equals(0, cancelled.headers.length);
 		Assert.equals(0, cancelled.bodyLength);
@@ -723,9 +722,9 @@ class H2Test extends utest.Test {
 			Assert.isNull(connection.stream(stream.id));
 		}
 
-		// A pooled connection lives as long as it is used, and it kept every
-		// stream it had ever opened: a hundred here, and one more, with its
-		// header list, for every request after.
+		// A pooled connection lives as long as it is used, so it must not keep
+		// every stream it has ever opened: a hundred here, and one more (with its
+		// header list) for every request after.
 		var held:Int = 0;
 		for (_ in connection.__streams) {
 			held++;
@@ -795,8 +794,8 @@ class H2Test extends utest.Test {
 		var connection = server.connect();
 		var stream = connection.request("POST", "http", "example.com", "/upload", [], Bytes.alloc(100000));
 
-		// Returned rather than thrown: this used to wait on for the stream's
-		// window, which never reopens, and fail the whole connection with a
+		// Returned rather than thrown: waiting on for the stream's window, which
+		// never reopens, would fail the whole connection with a
 		// FLOW_CONTROL_ERROR once there was nothing left to read.
 		Assert.isTrue(stream.isClosed());
 		Assert.isTrue(stream.endOfStream);
@@ -963,7 +962,7 @@ class H2Test extends utest.Test {
 		}
 
 		Require.notNull(headers);
-		// With a body, HEADERS must not carry END_STREAM, the DATA does.
+		// With a body, HEADERS must not carry END_STREAM: the DATA does.
 		Assert.isFalse(headers.has(H2Flags.END_STREAM));
 		Require.notNull(data);
 		Assert.equals("payload", data.payload.toString());

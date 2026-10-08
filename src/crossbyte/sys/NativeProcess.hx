@@ -14,10 +14,10 @@ import haxe.io.Input;
 import haxe.io.Output;
 
 // Every target with sys.io.Process and threads but the interpreter: cpp, hl,
-// neko and the jvm. Only cpp names an OS when it is built, the others'
-// bytecode runs unchanged on any, and none is needed, since their Process and
-// threads work wherever they run. Asked for an OS, hl and neko refused to start
-// a process anywhere, and the jvm did until this asked for threads instead.
+// neko and the jvm. Only cpp names an OS when it is built (the others'
+// bytecode runs unchanged on any), and none is needed, since their Process
+// and threads work wherever they run. Asking for an OS would have hl, neko
+// and the jvm refuse to start a process anywhere, so this asks for threads.
 // The interpreter is left out for the reason `isSupported` gives.
 import crossbyte.errors.IllegalOperationError;
 #if nodejs
@@ -34,8 +34,8 @@ import sys.thread.Thread;
 
 #if !nodejs
 /**
-	What a reader thread hands the runtime: a typed message, where it was an
-	anonymous object the runtime read back with eight `Reflect.field` calls.
+	What a reader thread hands the runtime: a typed message rather than an
+	anonymous object read back with eight `Reflect.field` calls.
 **/
 private enum ProcessOutput {
 	Chunk(stream:String, text:String, isError:Bool);
@@ -51,10 +51,9 @@ private enum ProcessOutput {
 	dispatches it. Natively, on the jvm, hl and neko at most
 	`MAX_OUTPUT_AHEAD` bytes of it are held ahead of the runtime, for each
 	process: past that the readers stop reading, and a child that goes on
-	writing waits on its pipe until the runtime has caught up. It used to be
-	read as fast as the child wrote, whether or not the runtime dispatched any
-	of it, and held without limit, a chatty child of a busy server held its
-	whole output in this process.
+	writing waits on its pipe until the runtime has caught up, rather than a
+	chatty child of a busy server having its whole output held in this
+	process.
 **/
 class NativeProcess extends EventDispatcher {
 	/**
@@ -67,9 +66,9 @@ class NativeProcess extends EventDispatcher {
 		Whether this build can start a process: natively, on the jvm, hl,
 		neko and Node.
 
-		Not on the interpreter (`--interp`). Its process natives, a read of
-		the child's output, the wait for it to end, hold every thread while
-		they wait, so a child with nothing to say stopped the whole program
+		Not on the interpreter (`--interp`). Its process natives (a read of
+		the child's output, the wait for it to end) hold every thread while
+		they wait, so a child with nothing to say would stop the whole program
 		until it spoke or ended, and one that waits for input before writing
 		anything could never be given any. `start` throws there, saying so.
 		Not in a browser either, which has no processes; the class is not built
@@ -258,9 +257,9 @@ class NativeProcess extends EventDispatcher {
 			// The output to its end first, then the exit code. The jvm's
 			// exitCode() reads whatever output is left into a buffer of its
 			// own before it waits, racing the readers above for it: what it
-			// took was never delivered, and the child's output went missing.
-			// Elsewhere the order changes nothing, since both had to finish
-			// before the completion went out.
+			// took would never be delivered. Elsewhere the order changes
+			// nothing, since both have to finish before the completion goes
+			// out.
 			readerCompletion.pop(true);
 			readerCompletion.pop(true);
 
@@ -286,8 +285,8 @@ class NativeProcess extends EventDispatcher {
 		} catch (e:Dynamic) {
 			__exitCode = -1;
 			// Whether or not exit() asked for the end, it has come, and EXIT is
-			// owed: this sent nothing once exit() had cleared __running, and a
-			// child stopped that way was never reported as gone.
+			// owed, even once exit() has cleared __running, so a child stopped
+			// that way is reported as gone.
 			var worker:Worker = __worker;
 			if (worker != null) {
 				worker.sendError(Std.string(e));
@@ -312,9 +311,9 @@ class NativeProcess extends EventDispatcher {
 
 		var buffer:Bytes = Bytes.alloc(OUTPUT_BUFFER_SIZE);
 		// The first bytes of a character the last read cut in two, kept at
-		// the front of the buffer for the next read to finish. Each read was
-		// decoded on its own, so a UTF-8 character split across two came out
-		// as replacement characters; Node decodes across reads already.
+		// the front of the buffer for the next read to finish, so a UTF-8
+		// character split across two reads is not decoded as replacement
+		// characters; Node decodes across reads already.
 		var carried:Int = 0;
 		#if hl
 		var handle = @:privateAccess __process.p;
@@ -458,7 +457,8 @@ class NativeProcess extends EventDispatcher {
 		// The JDK's wait, not Haxe's exitCode(), which first reads whatever
 		// output is left into a buffer of its own: the readers have read it
 		// all by now, and on Linux the JDK's destroy() closes the streams, so
-		// after exit() that read threw "Stream closed" and EXIT never came.
+		// after exit() that read would throw "Stream closed" and EXIT never
+		// come.
 		var process:java.lang.Process = @:privateAccess __process.proc;
 		process.waitFor();
 		return process.exitValue();
@@ -474,12 +474,13 @@ class NativeProcess extends EventDispatcher {
 		HashLink reads a child's output with a bare ReadFile or read, and waits
 		for it to exit with WaitForSingleObject or waitpid, none of which tells
 		its collector the thread is waiting, and the collector stops every
-		thread until each reaches a safe point. So a child that said nothing for
-		five seconds held the whole runtime for five: 5,212 ms between two ticks
-		of a runtime that ticks sixty times a second. Its socket reads mark the
-		wait, and these now do the same. Nothing inside a blocking section may
-		allocate, and these natives do not; the buffer is resolved before
-		entering, and the answer interpreted after leaving.
+		thread until each reaches a safe point. Outside a blocking section, a
+		child that said nothing for five seconds would hold the whole runtime
+		for five (5,212 ms between two ticks of a runtime that ticks sixty
+		times a second). Its socket reads mark the wait, and these do the
+		same. Nothing inside a blocking section may allocate, and these
+		natives do not; the buffer is resolved before entering, and the
+		answer interpreted after leaving.
 	**/
 	@:noCompletion private static function __hlRead(handle:hl.Abstract<"hl_process">, stdout:Bool, buffer:Bytes, offset:Int, length:Int):Int {
 		var data:hl.Bytes = buffer;
@@ -507,9 +508,6 @@ class NativeProcess extends EventDispatcher {
 
 	/**
 		`getPid()`, which `sys.io.Process` has on every target.
-
-		This looked for a `pid` field instead, by reflection, and no target's
-		Process has one: the id read -1 natively as well as on neko.
 	**/
 	@:noCompletion private function __resolvePid():Int {
 		try {
@@ -705,7 +703,7 @@ class NativeProcess extends EventDispatcher {
 		}
 
 		// Decoded by Node rather than chunk by chunk, so a multi-byte character
-		// split across two reads survives, its decoder holds the partial
+		// split across two reads survives: its decoder holds the partial
 		// sequence until the rest arrives.
 		stream.setEncoding("utf8");
 
@@ -722,8 +720,8 @@ class NativeProcess extends EventDispatcher {
 	@:noCompletion private inline function __requireSupported():Void {
 		if (!isSupported) {
 			// An IllegalOperationError naming the target, as everything that
-			// cannot work on one throws; this was an ArgumentError, which says
-			// the caller passed something wrong.
+			// cannot work on one throws, rather than an ArgumentError, which
+			// would say the caller passed something wrong.
 			#if eval
 			throw new IllegalOperationError("NativeProcess cannot start a process on the interpreter (--interp): its process calls hold every thread while they wait on the child. Build for a native target, the jvm, hl, neko or Node.");
 			#else

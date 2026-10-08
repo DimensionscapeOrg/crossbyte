@@ -10,8 +10,8 @@ import crossbyte.math.Rectangle;
  * Points in a rectangle, divided where they are: a quad holds up to
  * `capacity` of them and splits into four when it is given more.
  *
- * Because it divides where the points are, it copes with uneven crowds, a
- * thousand on one spot and a scattering elsewhere, and suits points that
+ * Because it divides where the points are, it copes with uneven crowds (a
+ * thousand on one spot and a scattering elsewhere) and suits points that
  * hold still, or queries of many sizes. It has no way to move a point:
  * things that move are put back by `clear` and inserting everything again,
  * which costs a descent per point per rebuild. For many things moving every
@@ -22,9 +22,9 @@ import crossbyte.math.Rectangle;
 class QuadTree<T> {
 	// Deep enough for any real spread of points: 32 levels down, a quad is a
 	// four-billionth of the width it started at. Only points piled on one
-	// spot, a crowd on a spawn point, ever get that far, and splitting
-	// them again only moves the pile down a level, so past this a quad keeps
-	// what it is given instead. Uncapped, each `capacity` of them cost one
+	// spot (a crowd on a spawn point) ever get that far, and splitting them
+	// again only moves the pile down a level, so past this a quad keeps what
+	// it is given instead. Uncapped, each `capacity` of them would cost one
 	// more level, until the quads were too small for floating point to tell
 	// apart and inserts began to fail.
 	private static inline var MAX_DEPTH:Int = 32;
@@ -66,13 +66,12 @@ class QuadTree<T> {
 			return false;
 
 		// Down by arithmetic. Once this quad holds the point, which child takes
-		// it is which side of each midline it falls on, the midlines being
-		// the edges the children were built with. No child is asked whether
-		// it contains the point, so none can refuse it. Asking them in turn
-		// cost up to four containment tests a level, and it dropped points:
-		// a child's far edge is `(x + w/2) + w/2`, which can round an ulp
-		// short of its parent's `x + w`, and a point in that sliver was in the
-		// parent and in neither child, so insert returned false.
+		// it is which side of each midline it falls on (the midlines being
+		// the edges the children were built with). No child is asked whether
+		// it contains the point, so none can refuse it: a child's far edge is
+		// `(x + w/2) + w/2`, which can round an ulp short of its parent's
+		// `x + w`, and a point in that sliver would be in the parent and in
+		// neither child.
 		var quad:QuadTree<T> = this;
 		while (quad.nodes.length >= quad.capacity && quad.depth < MAX_DEPTH) {
 			if (!quad.divided)

@@ -42,8 +42,7 @@ abstract Array2D<T>(Array<Array<T>>) from Array<Array<T>> to Array<Array<T>> {
 
 	/**
 	 * Removes every row. The rows are emptied in place, so every reference
-	 * to this grid sees it cleared; it was replaced, which left another
-	 * reference to it holding the old rows.
+	 * to this grid sees it cleared.
 	 */
 	public inline function clear():Void {
 		this.resize(0);

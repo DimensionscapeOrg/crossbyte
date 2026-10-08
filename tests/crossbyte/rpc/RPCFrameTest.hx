@@ -7,16 +7,16 @@ import haxe.io.Bytes;
 import utest.Assert;
 
 /**
-	One buffer a session: every frame a session sends, calls, answers,
-	error answers, pings, on both lanes, is written in the one buffer the
+	One buffer a session: every frame a session sends (calls, answers,
+	error answers, pings, on both lanes) is written in the one buffer the
 	session keeps, and handed to `INetConnection.send`, which copies what it
 	keeps before it returns.
 
-	Each frame was a `ByteArrayOutput` of its own, a call's and its answer's
-	alike: most of what a call allocated. Under `-D crossbyte_check_events`
-	each frame is a buffer of its own, poisoned once sent, so a transport
-	that kept one is caught; under `-D crossbyte_fresh_events` each is one
-	of its own and left as it is.
+	A `ByteArrayOutput` of its own for each frame, a call's and its
+	answer's alike, would be most of what a call allocates. Under
+	`-D crossbyte_check_events` each frame is a buffer of its own, poisoned
+	once sent, so a transport that kept one is caught; under
+	`-D crossbyte_fresh_events` each is one of its own and left as it is.
 **/
 @:access(crossbyte.rpc.RPCSession)
 class RPCFrameTest extends utest.Test {
@@ -91,7 +91,7 @@ class RPCFrameTest extends utest.Test {
 
 	public function testACallMadeFromInsideASendGetsAFrameOfItsOwn():Void {
 		// The client relays to the server, whose handler calls the client
-		// back from inside that send, the link delivers at once, and the
+		// back from inside that send (the link delivers at once), and the
 		// client's handler calls the server again while its own frame is
 		// still being sent: that call cannot be framed over it.
 		var link = KeepingConnection.pair();
@@ -157,8 +157,8 @@ class RPCFrameTest extends utest.Test {
 	}
 
 	public function testANullWhereAValueMustBeIsRefusedBeforeAnythingIsSent():Void {
-		// Natively a null String or Bytes argument crashed the process; on the
-		// interpreter and the jvm it threw a null access.
+		// A null String or Bytes argument is refused, rather than crashing the
+		// process natively or throwing a null access on the interpreter and the jvm.
 		var link = KeepingConnection.pair();
 		var commands = new FrameCommands();
 		var client = new RPCSession<FrameCommands>(link.client, commands);
@@ -187,7 +187,7 @@ class RPCFrameTest extends utest.Test {
 	public function testAStringIsSentAsItsUtf8WhateverItHolds():Void {
 		// Natively a string held a byte a character is copied as it stands,
 		// and on the jvm a short ASCII one a character at a time; every other
-		// string as it always was.
+		// string is written character by character.
 		var link = KeepingConnection.pair();
 		var commands = new FrameCommands();
 		var client = new RPCSession<FrameCommands>(link.client, commands);

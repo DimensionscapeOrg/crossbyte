@@ -7,7 +7,7 @@ import haxe.io.Bytes;
 	A request body as an `HTTPBackend` is handed it (`HTTPRequestContext.data`):
 	text, sent as UTF-8, or bytes, sent as they are.
 
-	Either converts to one, so a body is given as before:
+	Either converts to one, so a body is given as a `String` or as `Bytes`:
 
 	```haxe
 	context.data = "name=value";      // text
@@ -15,9 +15,8 @@ import haxe.io.Bytes;
 	```
 
 	A backend reads `toBytes()` for what goes on the wire, and `text` or
-	`isText` where it matters which it was, for a default `Content-Type`,
-	say. This was `Dynamic`, holding a `String` or `Bytes`, which every backend
-	had to tell apart with `Std.isOfType` and a third case for anything else.
+	`isText` where it matters which it was (for a default `Content-Type`,
+	say).
 **/
 abstract HTTPRequestBody(Either<String, Bytes>) {
 	private inline function new(value:Either<String, Bytes>) {

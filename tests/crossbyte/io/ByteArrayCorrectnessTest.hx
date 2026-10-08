@@ -203,11 +203,11 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		The word-at-a-time integer accessors agree with the byte-at-a-time
 		definition, in both orders, at every alignment.
 
-		`readInt`, `readShort` and their writers moved from four (or two)
-		bounds-checked byte accesses to one `getInt32`/`getUInt16` plus a swap
-		for big-endian streams, most network traffic, and all of STUN and
-		SCTP. `getInt32` is little-endian by definition on every target, so the
-		swap is where a mistake would live, and a wrong swap still round-trips
+		`readInt`, `readShort` and their writers make one `getInt32`/`getUInt16`
+		access plus a swap for big-endian streams (most network traffic, and all
+		of STUN and SCTP), not four (or two) bounds-checked byte accesses.
+		`getInt32` is little-endian by definition on every target, so the swap
+		is where a mistake would live, and a wrong swap still round-trips
 		perfectly against itself: write then read gives the value back while
 		every byte on the wire is reversed. So the bytes are checked, not just
 		the round trip.
@@ -276,13 +276,13 @@ class ByteArrayCorrectnessTest extends utest.Test {
 	/**
 		A read that cannot be satisfied throws and moves nothing.
 
-		The multi-byte readers used to lean on `readUnsignedByte` for their
-		bounds check, one byte at a time, so a truncated stream advanced the
-		position by however many bytes happened to be there before throwing,
-		leaving the caller to catch an error and then find its cursor somewhere
-		it never put it. Checking the whole width up front makes the read
-		atomic, which is what a caller that catches `EOFError` and retries on a
-		longer buffer needs.
+		The multi-byte readers check the whole width up front, rather than
+		leaning on `readUnsignedByte` for their bounds check one byte at a time,
+		where a truncated stream would advance the position by however many
+		bytes happened to be there before throwing, leaving the caller to catch
+		an error and then find its cursor somewhere it never put it. Checking
+		first makes the read atomic, which is what a caller that catches
+		`EOFError` and retries on a longer buffer needs.
 	**/
 	public function testATruncatedReadThrowsWithoutMovingThePosition():Void {
 		for (available in 0...4) {
@@ -336,10 +336,10 @@ class ByteArrayCorrectnessTest extends utest.Test {
 
 	/**
 		The whole unsigned range the doc promises, at each edge where the
-		encoded length changes and at the top bit. The writer looped while a
-		signed `v > 0x7F`, so a value with bit 31 set went out as a single
-		byte: 0x80000000 read back as 0, and 0xFFFFFFFF as a varint that
-		never ended.
+		encoded length changes and at the top bit. A writer looping while a
+		signed `v > 0x7F` would send a value with bit 31 set as a single byte:
+		0x80000000 would read back as 0, and 0xFFFFFFFF as a varint that never
+		ended.
 	**/
 	public function testVarUIntRoundTripsTheWholeUnsignedRange():Void {
 		var values:Array<Int> = [0, 0x7F, 0x80, 0x3FFF, 0x4000, 1 << 30, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF];
@@ -364,8 +364,8 @@ class ByteArrayCorrectnessTest extends utest.Test {
 
 	/**
 		A fifth byte carries the last four bits of a 32-bit value and must
-		end the varint. Bits past those were shifted off the top, so 2^32 + 1
-		read as 1 and nothing said the value had not fitted.
+		end the varint. Bits past those are refused, not shifted off the top,
+		where 2^32 + 1 would read as 1 with nothing to say the value had not fitted.
 	**/
 	public function testReadVarUIntRefusesAValuePast32Bits():Void {
 		// 2^32 + 1, 2^32, and the fifth byte asking for a sixth.
@@ -383,7 +383,7 @@ class ByteArrayCorrectnessTest extends utest.Test {
 	/**
 		A varint cut short is an EOFError that leaves the position where it
 		was, as a truncated readInt does, so a reader can try again once the
-		rest has arrived. It used to leave the position inside the varint.
+		rest has arrived.
 	**/
 	public function testATruncatedVarUIntLeavesThePositionAlone():Void {
 		var ba = new ByteArray();
@@ -466,23 +466,21 @@ class ByteArrayCorrectnessTest extends utest.Test {
 
 	/**
 	 * The same guarantee when the gap comes from seeking past the end and
-	 * writing there, the one case `writeBytes` cannot cover by
+	 * writing there: the one case `writeBytes` cannot cover by
 	 * overwriting, and so the one the zeroing still has to handle.
 	 */
 	/**
 		A gap that needs no growth is zeroed too.
 
 		`testWritingPastTheEndZeroesTheGap` leaves its hole by seeking 32KB past
-		the end of a one-byte array, which forces a reallocation, and the
-		zeroing lived inside that reallocation, so the case it covers is the
-		only case it could ever have caught.
+		the end of a one-byte array, which forces a reallocation, so zeroing
+		done only inside that reallocation would pass it and miss this case.
 
 		The buffer here keeps its capacity and loses only its length, which is
 		the ordinary way to reuse one. Everything between the new end and the
-		capacity is still holding the old contents, and a later write past the
-		end exposes all of it: bytes the caller never wrote, readable by
-		whoever the buffer is handed to. Ninety-six of ninety-six, measured
-		before this was fixed.
+		capacity still holds the old contents, and a later write past the end
+		would expose all of it unzeroed: bytes the caller never wrote, readable
+		by whoever the buffer is handed to.
 	**/
 	public function testAGapThatNeedsNoGrowthIsZeroedAsWell():Void {
 		var ba = new ByteArray();
@@ -544,8 +542,7 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		The same for readBytes into a destination past its end: the gap before
 		the offset is zeroed, the old contents of a destination cut short do
 		not show through it, and what is read lands whole. Only the gap is
-		zeroed now, the bytes read cover the rest, where everything grown
-		was zeroed and then written.
+		zeroed, since the bytes read cover the rest.
 	**/
 	public function testReadBytesPastTheEndZeroesOnlyTheGap():Void {
 		var ba = new ByteArray();
@@ -606,8 +603,8 @@ class ByteArrayCorrectnessTest extends utest.Test {
 
 	/**
 	 * Appending stays byte-exact across many growths, since that is the
-	 * path where zeroing is now skipped on the grounds that the write
-	 * covers the whole grown region.
+	 * path where zeroing is skipped on the grounds that the write covers the
+	 * whole grown region.
 	 */
 	public function testRepeatedAppendsStayIntactAcrossGrowth():Void {
 		var chunk = new ByteArray();
@@ -633,10 +630,10 @@ class ByteArrayCorrectnessTest extends utest.Test {
 	}
 
 	/**
-	 * The length in front of a writeUTF string is sixteen bits. Past 65535 it
-	 * wrapped: the whole string went out behind a length describing some
-	 * other number of bytes, so the reader stopped short and every read after
-	 * it landed in the middle of the string.
+	 * The length in front of a writeUTF string is sixteen bits, so past 65535
+	 * it is refused: wrapped, the whole string would go out behind a length
+	 * describing some other number of bytes, so the reader would stop short
+	 * and every read after it would land in the middle of the string.
 	 */
 	public function testWriteUTFRefusesWhatItsLengthPrefixCannotState():Void {
 		var ba = new ByteArray();
@@ -649,7 +646,7 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		}
 
 		Assert.isTrue(Std.isOfType(raised, crossbyte.errors.RangeError), "70000 bytes did not raise RangeError: " + Std.string(raised));
-		// Refused before anything was written, so the record stays in step.
+		// Refused before anything is written, so the record stays in step.
 		Assert.equals(0, ba.length);
 
 		var widest:String = StringTools.lpad("", "y", 65535);

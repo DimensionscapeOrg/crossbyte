@@ -134,7 +134,7 @@ final class SocketRegistry {
 		Reports `socket` to its `registryOnWritable` once it can be written
 		to, until `unwatchWritable`: how a connect in flight is finished as
 		soon as the system finishes it. A socket whose failure the system
-		reports only as an exception, a refused connect, on Windows, is
+		reports only as an exception (a refused connect, on Windows) is
 		reported the same way, so the handler asks which it was.
 	**/
 	public inline function watchWritable(socket:Socket):Void {
@@ -175,9 +175,9 @@ final class SocketRegistry {
 	}
 
 	/**
-		`socket` is closing: no longer asked, nor held here, a closed
-		connection kept in the list until the next sweep was kept from the
-		collector with all it carried.
+		`socket` is closing: no longer asked, nor held here, since a closed
+		connection kept in the list until the next sweep would be kept from
+		the collector with all it carried.
 	**/
 	public function unwatchQuiet(socket:QuietRelease):Void {
 		if (__holders != null) {
@@ -236,14 +236,14 @@ final class SocketRegistry {
 		if (!__writableQueue.isEmpty) {
 			// Swapped before draining: a socket that is still blocked
 			// re-queues itself from inside this dispatch, and clearing the
-			// live queue afterwards discarded those, stranding whatever it
-			// still held.
+			// live queue afterwards would discard those, stranding whatever
+			// it still held.
 			var draining:Stack<Socket> = __writableQueue;
 			__writableQueue = __writableSwap;
 			__writableSwap = draining;
 
-			// Walked here, not handed to forEach: the method handed over was a
-			// closure made for every pass that had something to flush.
+			// Walked here, not handed to forEach, which would make a closure for
+			// every pass that had something to flush.
 			var flushing:Array<Null<Socket>> = draining.__items;
 			for (i in 0...draining.__top) {
 				__onFlushSocket((flushing[i] : Socket));
@@ -263,9 +263,9 @@ final class SocketRegistry {
 		if (__set.isEmpty && __writeSet.isEmpty) {
 			// The last sockets polled are let go of here. The buffer is only
 			// resized when the set's size changes, and an empty set returns
-			// before that, so the last connections a server held stayed
-			// reachable from it, through their `custom`, each whole Socket
-			// with its buffers and userData, for as long as it sat idle.
+			// before that, so otherwise the last connections a server held
+			// would stay reachable from it (through their `custom`, each whole
+			// Socket with its buffers and userData) for as long as it sat idle.
 			if (__selectBuffer.length > 0) {
 				__selectBuffer.resize(0);
 			}
@@ -368,10 +368,10 @@ final class SocketRegistry {
 		// already has. So they go first, and finding any drops the select to a
 		// poll.
 		//
-		// Only the jvm backend can answer yes, it is the one that decrypts in
-		// front of the channel. Gating the sweep keeps every other target's
-		// pump exactly as it was rather than paying a call per socket per pump
-		// for an answer that is structurally always false.
+		// Only the jvm backend can answer yes: it is the one that decrypts in
+		// front of the channel. Gating the sweep keeps every other target from
+		// paying a call per socket per pump for an answer that is structurally
+		// always false.
 		#if (java || jvm)
 		for (i in 0...count) {
 			var cb:IPollableSocket = cast __selectBuffer[i].custom;
@@ -431,17 +431,17 @@ final class SocketRegistry {
 	#if ((java || jvm) && !macro)
 	// What select found ready, in arrays this registry keeps, and whether
 	// they are being walked: a handler that pumps the runtime from inside
-	// the walk gets arrays of its own, as every select did.
+	// the walk gets arrays of its own.
 	@:noCompletion private var __readyRead:Array<Socket> = [];
 	@:noCompletion private var __readyWrite:Array<Socket> = [];
 	@:noCompletion private var __readyOthers:Array<Socket> = [];
 	@:noCompletion private var __walkingReady:Bool = false;
 
 	/**
-		The jvm's select, answered into this registry's own arrays. Through
-		`Socket.select` every frame made two empty arrays to ask with, three
-		to answer in, their storage, the object holding them and a boxed
-		timeout: 200 to 250 bytes a frame with a socket on it, idle or not.
+		The jvm's select, answered into this registry's own arrays: through
+		`Socket.select` every frame would make two empty arrays to ask with,
+		three to answer in, their storage, the object holding them and a
+		boxed timeout, 200 to 250 bytes a frame with a socket on it.
 	**/
 	@:noCompletion private function __selectKept(wait:Float, watching:Bool):Void {
 		var nested:Bool = __walkingReady;

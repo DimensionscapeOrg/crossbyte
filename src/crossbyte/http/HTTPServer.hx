@@ -48,9 +48,8 @@ class HTTPServer extends ServerSocket {
 
 	// Cleartext connections whose first bytes have not yet said which protocol
 	// they speak, with the time each must say it by (0 for none). Counted
-	// against maxConnections like any other: while waiting here they used to
-	// be counted by nothing, timed by nothing and drained by nothing, so six
-	// silent sockets all got in past a limit of two and outlived drain().
+	// against maxConnections like any other, timed, and drained, so silent
+	// sockets cannot get in past the limit or outlive drain().
 	private var __sniffing:ObjectMap<CBSocket, Float>;
 	// ServerSocket.maxConnections, which the configuration sets: the front's,
 	// on a server spread over runtimes; 0 or less for no count.
@@ -290,9 +289,9 @@ class HTTPServer extends ServerSocket {
 		var idleSockets:Array<CBSocket> = [];
 		for (socket in __active.keys()) {
 			var handler:HTTPRequestHandler = __active.get(socket);
-			// A connection that has never sent a byte, a browser's
-			// preconnect, has nothing in flight either, and held the drain
-			// open for its whole timeout.
+			// A connection that has never sent a byte (a browser's preconnect)
+			// has nothing in flight either, so it closes now rather than
+			// holding the drain open for its whole timeout.
 			if (handler.__isIdle() || !handler.__receivedAny) {
 				idleSockets.push(socket);
 			} else {
@@ -494,9 +493,9 @@ class HTTPServer extends ServerSocket {
 			return;
 		}
 
-		// Handed over still counted: it keeps the place it took. It was let
-		// go of and counted again by the serve functions, and on a server
-		// spread over runtimes another runtime could take the place between.
+		// Handed over still counted: it keeps the place it took, so on a
+		// server spread over runtimes another runtime cannot take the place
+		// in between.
 		__sniffing.remove(socket);
 
 		if (isHttp2) {
@@ -553,8 +552,8 @@ class HTTPServer extends ServerSocket {
 	 */
 	@:noCompletion private function __serveHttp2(socket:CBSocket, buffered:ByteArray, counted:Bool = false):Void {
 		if (!counted && !__claimConnection()) {
-			// Counted against the same ceiling as HTTP/1.1. Left out, the limit
-			// was one a peer could ignore entirely by speaking HTTP/2.
+			// Counted against the same ceiling as HTTP/1.1, so a peer cannot
+			// get past the limit by speaking HTTP/2.
 			Logger.error('Connection refused: concurrency limit ${__maxConnections}');
 			try {
 				socket.close();
@@ -562,9 +561,8 @@ class HTTPServer extends ServerSocket {
 			return;
 		}
 
-		// The same per-response hook as HTTP/1.1, so HTTP/2 responses are counted
-		// and timed. They were not, so a server serving browsers over h2
-		// reported almost nothing.
+		// The same per-response hook as HTTP/1.1, so HTTP/2 responses are
+		// counted and timed.
 		var handler:H2ConnectionHandler = new H2ConnectionHandler(socket, __config, php, buffered, __responseHook, __sweepHook);
 		__activeHttp2.set(socket, handler);
 		__armReceiveSweep();
@@ -622,13 +620,12 @@ class HTTPServer extends ServerSocket {
 	 * active connections unsubscribes, so an idle or drained server leaves
 	 * nothing ticking.
 	 *
-	 * The sweep also reaps idle keep-alive connections, one walk, two
-	 * meanings of the same per-handler deadline, so it must arm when
+	 * The sweep also reaps idle keep-alive connections (one walk, two
+	 * meanings of the same per-handler deadline), so it must arm when
 	 * either timeout is live, not only `requestTimeout`. And it holds every
 	 * body being pumped out to its stall deadline, whatever the timeouts
-	 * are, so it arms while one is: with both timeouts off it never armed,
-	 * and a download whose client stopped taking it held its file and its
-	 * connection for good.
+	 * are, so it arms while one is: a download whose client stopped taking
+	 * it would otherwise hold its file and its connection for good.
 	 */
 	@:noCompletion private function __armReceiveSweep():Void {
 		if (__sweepArmed || (!__timeoutsLive() && __pumpCount <= 0 && !__publishesBuffers())) {
@@ -652,8 +649,8 @@ class HTTPServer extends ServerSocket {
 
 	/**
 	 * Registers, or with `null` drops, `owner`'s stall check: a writer's, for
-	 * a body it is pumping out or bytes its client has not taken, what
-	 * `HTTPResponseWriter.sweepWith` reaches here, or an HTTP/2
+	 * a body it is pumping out or bytes its client has not taken (what
+	 * `HTTPResponseWriter.sweepWith` reaches here), or an HTTP/2
 	 * connection's, for what it holds for its client.
 	 */
 	@:noCompletion private function __sweepWith(owner:{}, check:Null<Float->Void>):Void {
@@ -800,11 +797,11 @@ class HTTPServer extends ServerSocket {
 	private function this_onResponse(handler:HTTPRequestHandler, status:Int):Void {
 		__recordResponse(status);
 
-		// Observed per response, at response time. The old cleanup-time
-		// observation billed a request for the whole connection's life,
-		// which under keep-alive would charge request N for every request
-		// and idle gap before it, and count once per connection instead
-		// of once per response.
+		// Observed per response, at response time. Observed at cleanup, a
+		// request would be billed for the whole connection's life, which
+		// under keep-alive charges request N for every request and idle gap
+		// before it, and counts once per connection instead of once per
+		// response.
 		if (__requestSeconds != null) {
 			__requestSeconds.observe(haxe.Timer.stamp() - handler.__requestStartedAt);
 		}
@@ -814,7 +811,7 @@ class HTTPServer extends ServerSocket {
 		Registers this server's metrics when a registry is configured.
 
 		Series are created up front so a scrape before the first request
-		reports zero rather than omitting the series entirely, an absent
+		reports zero rather than omitting the series entirely: an absent
 		series and a genuinely idle server look identical to a collector
 		otherwise.
 	**/
@@ -862,9 +859,8 @@ class HTTPServer extends ServerSocket {
 				peak = pending;
 			}
 		}
-		// HTTP/2 connections hold output too, and were left out of both gauges:
-		// in the socket, and in what flow control holds back on each stream,
-		// which counted nowhere.
+		// HTTP/2 connections hold output too, in the socket and in what flow
+		// control holds back on each stream, and both count in the gauges.
 		for (handler in __activeHttp2) {
 			var pending:Int = handler.heldBytes;
 			if (pending > peak) {

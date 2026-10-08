@@ -16,20 +16,21 @@ import utest.Assert;
 
 	`ParserFuzzTest` already hands `SctpPacket.decode` nonsense as a pure
 	function. What it cannot reach is the state each side accumulates *across*
-	packets, the reassembly buffer, the ordering queue, the record of which
-	transmission numbers have arrived. That state is where every SCTP bug found
-	in this codebase has been.
+	packets (the reassembly buffer, the ordering queue, the record of which
+	transmission numbers have arrived), and that state is where an SCTP
+	receiver's growth lives.
 
 	**The assertion is what is left over, not that nothing crashed.** Three
-	separate unbounded-growth bugs lived here and every one of them passed a
-	green suite: `__received` kept every chunk ever accepted, `__partial` kept
-	the fragments of a message the peer never finished, and `__held` kept
-	messages waiting on a stream sequence that never came. A receiver with all
-	three faults still delivers messages perfectly and still answers afterwards.
-	It only grows, at whatever rate the peer chooses, until the process dies.
+	collections here can grow without bound and still pass a green suite:
+	`__received` keeping every chunk ever accepted, `__partial` keeping the
+	fragments of a message the peer never finished, and `__held` keeping
+	messages waiting on a stream sequence that never comes. A receiver with
+	all three faults still delivers messages perfectly and still answers
+	afterwards. It only grows, at whatever rate the peer chooses, until the
+	process dies.
 
-	All three were found by sweeping the source by hand, which works once per
-	pattern and then stops working. This is the part that keeps working.
+	A sweep of the source by hand finds such a pattern once and then stops
+	finding it. This is the part that keeps working.
 **/
 class SctpWireFuzzTest extends utest.Test {
 	/** Malformed packets before the association is asked to prove it is well. **/

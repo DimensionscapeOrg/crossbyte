@@ -19,11 +19,11 @@ import haxe.macro.TypeTools;
 	tags or lengths: positional, as hxwire's binary is. The fields go in the
 	order of their names, so moving a declaration changes nothing, after
 	those pinned with `@:field(n)`, in the order of n. A field that may be
-	absent, `Null<T>`, `?name`, `@:optional`, has a byte before it
+	absent (`Null<T>`, `?name`, `@:optional`) has a byte before it
 	saying whether it is there; one that may not has none.
 
-	Its token is its shape written out, each field's pinned id, name and
-	kind, in order, so a field renamed, retyped, added, removed or made
+	Its token is its shape written out (each field's pinned id, name and
+	kind, in order), so a field renamed, retyped, added, removed or made
 	optional changes the op of every method that carries the structure,
 	and one moved does not. A class and an anonymous structure with the
 	same fields have the same shape, and interoperate.
@@ -49,7 +49,7 @@ class RPCStructs {
 	/**
 		Starts a fresh walk of structures, and hands back the one it puts
 		aside, for `leave`. Typing a field's type can build another class
-		there and then, a handler, whose macro asks for kinds of its own,
+		there and then (a handler, whose macro asks for kinds of its own),
 		and that walk is not this one: what it meets is not inside what this
 		one is shaping.
 	**/
@@ -152,8 +152,8 @@ class RPCStructs {
 	}
 
 	/**
-		The kind of an enum: its constructor's index, one byte, or two for
-		an enum of more than 256 constructors, then that constructor's
+		The kind of an enum: its constructor's index (one byte, or two for
+		an enum of more than 256 constructors), then that constructor's
 		arguments, each as its kind is written, positionally, as a
 		structure's fields are. A simple enum is its index alone, of fixed
 		size, and an array of one is one run. A tagged union, as Rust's enums

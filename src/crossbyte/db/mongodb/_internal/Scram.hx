@@ -222,7 +222,7 @@ class Scram {
 
 	/**
 		24 bytes for the nonce, from the platform's secure generator where
-		there is one. Where there is not, the interpreter, neko, hl, they
+		there is one. Where there is not (the interpreter, neko, hl) they
 		come from the clock and `Math.random`: the nonce only has to be fresh
 		for the exchange to be sound, since the server's half of it is what
 		stops a replay, and nothing about the password depends on it.

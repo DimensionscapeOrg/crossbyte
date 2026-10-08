@@ -13,10 +13,10 @@ import utest.Assert;
 	A call waiting on an answer fails once its connection can carry none, over
 	real transports, with the application's `onClose` set after the session.
 
-	The session could not use `onClose` to hear of the end: it is the
+	The session cannot use `onClose` to hear of the end: it is the
 	application's one callback, and set after the session was made it would
-	replace the session's. So a call still waiting when the peer went away
-	waited for good. The transports now tell the session themselves, before
+	replace the session's, so a call still waiting when the peer went away
+	would wait for good. The transports tell the session themselves, before
 	the application's callback, whenever that was set.
 
 	Not in the portable suite: these pump real sockets until something has
@@ -108,8 +108,8 @@ class RPCConnectionEndTest extends utest.Test {
 
 	public function testASessionOnALocalListenerAnswersItsNextClient():Void {
 		// A listening LocalConnection takes its next client on the same
-		// object. The session on it stayed ended once the first had gone, and
-		// dropped every error answer the second was owed.
+		// object. The session on it does not stay ended once the first has gone,
+		// and the second still gets every error answer it is owed.
 		#if (cpp && (windows || linux || mac || macos))
 		var server = new LocalConnection();
 		var clients:Array<LocalConnection> = [];

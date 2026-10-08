@@ -52,9 +52,9 @@ class QuadTreeTest extends utest.Test {
 	public function testAPointInTheRootIsNeverRefusedByTheChildren():Void {
 		// Bounds where a child's far edge, (x + w/2) + w/2, rounds an ulp short
 		// of the root's x + w. The point is the last value below the root's
-		// edge: inside the root, past the east child's edge, and so, when
-		// the children were each asked, inside neither. One set of random
-		// bounds in twenty has such a sliver at its first split alone.
+		// edge: inside the root, past the east child's edge, and so, if the
+		// children were each asked, inside neither. One set of random bounds in
+		// twenty has such a sliver at its first split alone.
 		var x:Float = -860.2891528507621;
 		var width:Float = 453.56597600631187;
 		var sliver:Float = -406.7231768444503;

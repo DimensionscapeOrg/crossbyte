@@ -13,11 +13,11 @@ import utest.Assert;
 	What `MongoConnection` promises before and around the wire: that it is
 	available, and that its failures arrive as errors carrying text.
 
-	It was unsupported everywhere but php, where it no longer compiled. And
-	on the jvm every failure path passed the exception itself where
-	`IOError` and `SQLError` take a `String`, a ClassCastException there,
-	which escaped the statement's catch, left its listeners unrun, and lost
-	what had actually gone wrong.
+	It is supported everywhere, not only on php. And on the jvm a failure
+	path must pass text, not the exception itself, where `IOError` and
+	`SQLError` take a `String`: a ClassCastException there would escape the
+	statement's catch, leave its listeners unrun, and lose what had
+	actually gone wrong.
 **/
 class MongoConnectionTest extends utest.Test {
 	public function testSupportedWhereverThereAreBlockingSockets():Void {
@@ -68,10 +68,10 @@ class MongoConnectionTest extends utest.Test {
 	}
 
 	public function testAServerThatNeverAnswersFailsTheOpenAtConnectTimeout():Void {
-		// connectTimeout bounded the connect alone; the hello and the login
-		// then waited on socketTimeout, which is 0, no limit, by default, and
-		// on the interpreter on nothing at all. A server that accepted and
-		// never answered held open() for good.
+		// connectTimeout bounds the connect alone, and the hello and the login
+		// then wait on socketTimeout, which is 0, no limit, by default (and on
+		// the interpreter on nothing at all), so a server that accepted and
+		// never answered must still not hold open() for good.
 		var listener:sys.net.Socket = new sys.net.Socket();
 		listener.bind(new sys.net.Host("127.0.0.1"), 0);
 		listener.listen(4);
@@ -101,9 +101,9 @@ class MongoConnectionTest extends utest.Test {
 
 	#if !eval
 	public function testAConnectNobodyAnswersFailsAtConnectTimeout():Void {
-		// The connect itself had no limit where the system applies no send
-		// timeout to it, Windows natively, and on the jvm for TLS: 21 s to a
-		// host that drops the SYN. Here, a listener that never accepts with its
+		// The connect itself has no limit where the system applies no send
+		// timeout to it (Windows natively, and on the jvm for TLS: 21 s to a
+		// host that drops the SYN). Here, a listener that never accepts with its
 		// one slot taken: the next SYN goes unanswered, on Linux for good and on
 		// Windows until it refuses a couple of seconds later. The interpreter
 		// connects with no limit at all (see MongoConfig.connectTimeout).
@@ -159,9 +159,9 @@ class MongoConnectionTest extends utest.Test {
 			var caught:SQLError = null;
 			statement.addEventListener(SQLErrorEvent.ERROR, event -> caught = event.error);
 
-			// Reported both ways, as every statement does now: to the
-			// listener, and thrown, as the same error, and as text, never as
-			// the native exception it began as.
+			// Reported both ways, as every statement does: to the listener, and
+			// thrown, as the same error, and as text, never as the native exception
+			// it began as.
 			var thrown:Dynamic = null;
 			try {
 				statement.execute();

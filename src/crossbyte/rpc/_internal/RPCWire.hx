@@ -16,15 +16,15 @@ class RPCWire {
 
 		A ping is a one-way frame with this op and no arguments. Every session
 		answers one with a pong: a response frame with this op and request id
-		0, which answers no call, ids start at 1, so a session of an
+		0, which answers no call (ids start at 1), so a session of an
 		earlier version passes over it.
 	**/
 	public static inline final PING_OP:Int = 0x165DF089;
 
 	/**
 		The op of the hello, `RPCOps.opOf("rpc:hello")`: a response frame
-		under request id 0, which answers no call, so a session from before
-		1.0 passes over it, as it does a pong, that each session sends as
+		under request id 0 (which answers no call, so a session from before
+		1.0 passes over it, as it does a pong) that each session sends as
 		its connection starts:
 
 		```
@@ -61,9 +61,7 @@ class RPCWire {
 		at `end`, or `count` values, none of which is shorter than a byte.
 
 		For a length or a count the peer chose, checked before anything is
-		allocated for it. The runtime lane made an array of whatever count a
-		frame named, and a `Bytes` of whatever length, before reading a byte
-		of either, so twenty bytes could ask for two gigabytes in any build.
+		allocated for it, so twenty bytes cannot ask for two gigabytes.
 	**/
 	public static inline function requireRoom(input:ByteArrayInput, end:Int, count:Int):Void {
 		if (count < 0 || count > end - input.position) {
@@ -86,10 +84,10 @@ class RPCWire {
 	/**
 		Throws if reading a frame went past its end, into whatever follows it.
 
-		A frame's length says where the next begins, and each was read to its
-		end and then skipped to it, but nothing stopped a frame too short
-		for its arguments from taking the rest of them from the next one, and
-		the handler then ran on them. Checked before a handler runs or a
+		A frame's length says where the next begins, and each is read to its
+		end and then skipped to it, but that alone would not stop a frame too
+		short for its arguments from taking the rest of them from the next
+		one, and the handler running on them. Checked before a handler runs or a
 		response resolves: past the end, the frame is not sound.
 	**/
 	public static inline function requireWithin(input:ByteArrayInput, end:Int):Void {
@@ -102,7 +100,7 @@ class RPCWire {
 
 	/**
 		The compiled lane's readers of a number: checked against what the
-		input holds, in every build, a frame is the peer's, and then one
+		input holds, in every build (a frame is the peer's) and then one
 		load natively (`RPCBytes`), where `ByteArrayInput.readInt` was four
 		bounds-checked byte reads, and no check at all in `final`.
 	**/

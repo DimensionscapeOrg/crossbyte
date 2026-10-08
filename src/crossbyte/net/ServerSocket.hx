@@ -60,9 +60,9 @@ import crossbyte._internal.socket.AlpnSocket;
 	listening state, the server socket object dispatches connect events whenever a client using the
 	TCP protocol attempts to connect to the bound address and port. The ServerSocket object
 	continues to listen for additional connections until you call the close() method.
-	TCP connections are persistent, they exist until one side of the connection closes it (or a
+	TCP connections are persistent: they exist until one side of the connection closes it (or a
 	serious network failure occurs). Any data sent over the connection is broken into transmittable
-	packets and reassembled on the other end. All packets are guaranteed to arrive (within reason),
+	packets and reassembled on the other end. All packets are guaranteed to arrive (within reason):
 	any lost packets are retransmitted. In general, the TCP protocol manages the available network
 	bandwidth better than the UDP protocol. Most applications that require socket communications
 	should use the ServerSocket and Socket classes rather than the DatagramSocket class.
@@ -130,11 +130,11 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		The listener sits in the runtime's poll set, so connections are taken
 		as they arrive rather than at the next tick. The operating system holds
 		connections that have finished their TCP handshake in the listen queue
-		until they are accepted, as many as `listen()`'s backlog, up to the
-		system's limit, and refuses any that arrive while it is full. Taking
-		one a tick, as this server used to, spent 190 ticks clearing 190
-		waiting connections, and a login burst larger than the queue was
-		refused by the kernel before the server saw it. The cap keeps one wake
+		until they are accepted (as many as `listen()`'s backlog, up to the
+		system's limit) and refuses any that arrive while it is full. Taking
+		one a tick would spend 190 ticks clearing 190 waiting connections,
+		and a login burst larger than the queue would be refused by the
+		kernel before the server saw it. The cap keeps one wake
 		from being spent entirely on arrivals: what is left is taken at the
 		next.
 
@@ -161,8 +161,8 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		keeps no count. 10,000 by default.
 
 		A connection arriving while this many are open is closed as soon as
-		it is accepted, before any TLS handshake, before a `Socket` is made
-		for it, before a `connect` event, and counted in
+		it is accepted (before any TLS handshake, before a `Socket` is made
+		for it, before a `connect` event) and counted in
 		`refusedConnections`. Its peer sees its connection accepted and then
 		closed at once: an end of stream, or a reset if it had already sent
 		something the server never read. Node's `net.Server.maxConnections`
@@ -181,14 +181,13 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		its limit from `HTTPServerConfig.maxConnections` and answers an
 		HTTP/1.1 request at the limit 503 too.
 
-		10,000, as `HTTPServer` has always held its connections: an idle
-		connection holds 1.5 to 2 KB of heap natively (measured with 1,000,
-		heap after a full collection), and the kernel's buffers besides,
-		see `receiveBufferSize`, so the default bounds what a flood of
-		connections can hold, where a raw server accepted without bound. A
-		server built to hold more, a game server's lobby, a feed with many
-		quiet subscribers, raises it, and the process's descriptor limit
-		with it (see `acceptFailures`).
+		10,000, as `HTTPServer` holds its connections: an idle connection
+		holds 1.5 to 2 KB of heap natively (measured with 1,000, heap after a
+		full collection), and the kernel's buffers besides (see
+		`receiveBufferSize`), so the default bounds what a flood of
+		connections can hold. A server built to hold more (a game server's
+		lobby, a feed with many quiet subscribers) raises it, and the
+		process's descriptor limit with it (see `acceptFailures`).
 
 		On a server spread over `runtimes`, every runtime's connections
 		together.
@@ -199,9 +198,9 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	public static inline var DEFAULT_MAX_CONNECTIONS:Int = 10000;
 
 	/**
-		The most connections one address may have still in their handshake,
-		a TLS server's TLS handshake; a `ServerWebSocket`'s TLS and HTTP
-		upgrade together, once half of `maxPendingHandshakes` are taken. A
+		The most connections one address may have still in their handshake
+		(a TLS server's TLS handshake; a `ServerWebSocket`'s TLS and HTTP
+		upgrade together) once half of `maxPendingHandshakes` are taken. A
 		connection past it is closed as soon as it is accepted, before any
 		handshake work, and counted in `refusedConnections`. `0` or less
 		sets no limit per address. With `maxPendingHandshakes` negative, no
@@ -209,17 +208,18 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		handshake, and never reads it.
 
 		16 by default. One address opening connections and saying nothing
-		held every one of the 256 places, each for `handshakeTimeout`, and
-		every real client waited in the kernel's queue behind them: joins
-		took 8-9 s for as long as the flood went on, from one address at 40
-		connections a second. Here it holds at most half the places before
+		could otherwise hold every one of the 256 places, each for
+		`handshakeTimeout`, with every real client waiting in the kernel's
+		queue behind them: joins took 8-9 s for as long as such a flood went
+		on, from one address at 40 connections a second. Here it holds at
+		most half the places before
 		the rest are shared out 16 to an address, and a client from anywhere
 		else is taken at once.
 
-		Only under pressure, where a per-address limit, nginx's
-		`limit_conn`, HAProxy's `src_conn_cur`, refuses at all times: many
-		real clients can share an address, a carrier's NAT, an office, a
-		proxy in front of this server, and one that is not crowding anyone
+		Only under pressure, where a per-address limit (nginx's
+		`limit_conn`, HAProxy's `src_conn_cur`) refuses at all times: many
+		real clients can share an address (a carrier's NAT, an office, a
+		proxy in front of this server), and one that is not crowding anyone
 		out is let in. Behind a proxy that forwards connections before their
 		client has spoken, every connection has the proxy's address: set it
 		to 0 there, and bound what each client can cost at the proxy.
@@ -306,7 +306,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 		Natively a connection also takes it from the listener, which this sets
 		as it is asked; on the jvm, whose listener has no send buffer, it is
-		set on each connection as it is accepted, on a `ServerWebSocket`'s
+		set on each connection as it is accepted; on a `ServerWebSocket`'s
 		sessions there, not at all.
 
 		@throws RangeError If set below 1.
@@ -359,8 +359,8 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 	#if ((cpp || java || jvm) && !macro)
 	/**
-		Gives a connection just accepted the buffer sizes the server, the
-		front, on a server spread over runtimes, was asked for.
+		Gives a connection just accepted the buffer sizes the server (the
+		front, on a server spread over runtimes) was asked for.
 	**/
 	@:noCompletion private function __applyAcceptedBuffers(accepted:Socket):Void {
 		var source:ServerSocket = __front != null ? __front : this;
@@ -383,21 +383,19 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		client finds it closed, and each failure there costs one connection
 		rather than a spinning listener.
 
-		After a failure the listener is set aside, not polled, for a
+		After a failure the listener is set aside (not polled) for a
 		while, then asked again: 5 ms after the first, twice as long after
 		each failure that follows, at most a second, and back to 5 ms once a
 		connection is taken. That is what Go's `net/http` does, and libuv,
 		Netty and nginx each set the listener aside the same way. A listener
 		with a connection it cannot take stays readable, so a server out of
-		descriptors that polled it on every pass spent a whole core failing,
-		85,000 to 95,000 accepts a second, measured, and served nothing
-		else meanwhile.
+		descriptors that polled it on every pass would spend a whole core
+		failing (85,000 to 95,000 accepts a second, measured) and serve
+		nothing else meanwhile.
 
 		The first failure after a success is also dispatched as an `ioError`
 		event, and logged, so a run of them is reported once rather than
-		every pass. Each used to be swallowed natively, no event, no count,
-		and a server out of descriptors looked idle, or, on the jvm and
-		Node, closed the server. On HashLink, whose accept answers nothing
+		every pass. On HashLink, whose accept answers nothing
 		for any failure, a listener still readable after an accept that
 		found nothing is taken for one.
 
@@ -423,9 +421,9 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		TLS handshakes that failed, or were given up on at `handshakeTimeout`,
 		and so never became a `connect` event. Counted rather than reported one
 		by one: an open port sees a steady trickle of them from scanners and
-		broken clients, and each used to be dropped without a trace. Always 0
-		on a plain server, but a `ServerWebSocket` counts its sessions' TLS
-		and upgrade together, plain or secure; see there.
+		broken clients. Always 0 on a plain server, but a `ServerWebSocket`
+		counts its sessions' TLS and upgrade together, plain or secure; see
+		there.
 
 		On a server spread over `runtimes`, the count is theirs together.
 	**/
@@ -433,8 +431,8 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 	/**
 		Decides, from the peer's address alone, whether a connection is taken
-		at all. Called as soon as it is accepted, before any TLS handshake,
-		before a `Socket` is built for it, before a `connect` event, so a
+		at all. Called as soon as it is accepted (before any TLS handshake,
+		before a `Socket` is built for it, before a `connect` event), so a
 		refusal costs almost nothing. Return `false` and the connection is
 		closed on the spot. The default admits everything.
 
@@ -458,14 +456,14 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	/**
 		The runtimes this server's connections are served on, so that one
 		listener uses more than one core. `null`, the default, serves every
-		connection on the runtime that called `listen()`, as a server always
-		has. Set before `listen()`.
+		connection on the runtime that called `listen()`. Set before
+		`listen()`.
 
 		A runtime runs on one thread, so a server on one runtime uses one
 		core however many the machine has. Spread over these, the listener
 		stays where it was and accepts, and each connection it accepts is
-		handed to one of them, the one `selectRuntime` names, or the next
-		in turn, before anything else is done with it, its TLS handshake
+		handed to one of them (the one `selectRuntime` names, or the next
+		in turn) before anything else is done with it, its TLS handshake
 		included. From then on it is that runtime's for its whole life: its
 		socket is polled there, its events are dispatched there, its
 		deadlines are kept there, and the `connect` listener that receives
@@ -474,8 +472,8 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 		Which makes `connect` listeners, and whatever they share, code that
 		runs on several threads at once. What one connection's handlers keep
-		to themselves needs nothing; what they share across connections,
-		a registry of players, a cache, a counter, must be thread-safe, or
+		to themselves needs nothing; what they share across connections
+		(a registry of players, a cache, a counter) must be thread-safe, or
 		kept per runtime and reached through `CrossByte.current()`. Add
 		`connect` listeners before `listen()`.
 
@@ -491,18 +489,18 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		are given back.
 
 		A runtime takes up what it is handed at its next pass, so only one
-		that is stalled, a handler that blocks, a long collection, falls
+		that is stalled (a handler that blocks, a long collection) falls
 		behind. One with 256 connections handed to it and not yet taken up
 		is passed over for the next in turn, and once every runtime is that
 		far behind, each connection is closed as it is accepted, counted in
 		`refusedConnections`, and that is logged once: a stalled runtime
-		holds a bounded number of sockets, where it was handed every
-		connection that came its way for as long as the stall lasted.
+		holds a bounded number of sockets, rather than every connection that
+		came its way for as long as the stall lasted.
 
 		`admit`, `maxAcceptsPerTick` and `maxPendingHandshakes` hold for the
 		server as a whole: `admit` is asked, and `maxAcceptsPerTick` counted,
-		on the listener's runtime, with `reusePort`, on each runtime as it
-		accepts, and the handshakes under way are counted across every
+		on the listener's runtime (with `reusePort`, on each runtime as it
+		accepts), and the handshakes under way are counted across every
 		runtime.
 		`handshakeFailures`, `pendingHandshakeCount()` and the counts of the
 		servers built on this one are the sums across them.
@@ -513,7 +511,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		take turns, so it serves correctly and no faster. On Node every
 		runtime shares the one thread there is, so there is nothing to spread
 		over: setting this throws `IllegalOperationError`, and several
-		processes, Node's `cluster`, are the way to use more cores there.
+		processes (Node's `cluster`) are the way to use more cores there.
 
 		@throws ArgumentError When the list holds `null`, or a runtime twice.
 		@throws IllegalOperationError When the server is already listening,
@@ -544,8 +542,8 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 	/**
 		Picks which of `runtimes` a connection is served on. Called on the
-		listener's runtime as each connection is accepted, after `admit`,
-		before any TLS handshake, with the peer's canonical address and
+		listener's runtime as each connection is accepted (after `admit`,
+		before any TLS handshake), with the peer's canonical address and
 		port. Return one of `runtimes`, or `null` for the next in turn, which
 		is what the default does.
 
@@ -553,9 +551,9 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		replaced by the next in turn. A hook that throws refuses the
 		connection, as `admit` does.
 
-		Where the peer's address says which runtime it belongs on, a game
+		Where the peer's address says which runtime it belongs on (a game
 		server whose matchmaker has told it which match each player's
-		address is joining, and runs each match on a runtime of its own,
+		address is joining, and runs each match on a runtime of its own),
 		this sends the player to the runtime that owns their match, so the
 		match's state is only ever touched from one thread:
 
@@ -586,8 +584,8 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		It needs `runtimes` or `runtimeCount`, and is refused by `listen()`
 		without one. Natively on Linux, and on the jvm on Linux from Java 9,
 		which first exposes the option. macOS and the BSDs accept the option
-		without spreading anything, every connection goes to one of the
-		sockets, and Windows has nothing like it, so there, and on every
+		without spreading anything (every connection goes to one of the
+		sockets), and Windows has nothing like it, so there, and on every
 		other target, setting this to `true` throws `IllegalOperationError`;
 		the hand-off `runtimes` makes by default works everywhere.
 
@@ -598,20 +596,20 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 	/**
 		The backlog `listen()` asks for when given none: more than any system
-		grants, so the system's own maximum is what applies, `somaxconn` on
+		grants, so the system's own maximum is what applies: `somaxconn` on
 		Linux, whichever value is asked; on Windows 65535, asked as
 		`SOMAXCONN_HINT` (see `__nativeBacklog`), natively, on HashLink and on
 		neko, and 200 on the jvm and the interpreter.
 		`0x7FFFFFF` rather than the largest Int, which neko's 31-bit integers
-		cannot carry: `listen()` threw there, so no server could start.
+		cannot carry, so `listen()` can start a server there.
 	**/
 	@:noCompletion private static inline var DEFAULT_BACKLOG:Int = 0x7FFFFFF;
 
 	/**
 		The number to hand the system's `listen()` for `backlog`.
 
-		Windows grants at most 200 to a backlog asked as a number,
-		`0x7FFFFFF` included, and refuses a connection arriving while 200
+		Windows grants at most 200 to a backlog asked as a number
+		(`0x7FFFFFF` included) and refuses a connection arriving while 200
 		wait. Asked as `SOMAXCONN_HINT(n)`, which is `-n`, it grants `n`, from
 		200 to 65535. With nothing accepting, a listener asked for the default
 		took 200 connections and refused the rest; asked this way, every one
@@ -692,8 +690,8 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	// spread.
 	@:noCompletion private var __front:ServerSocket = null;
 
-	// The listener the class itself attaches for `connect`, HTTPServer's,
-	// ServerWebSocket's, which on a spread server runs on each replica
+	// The listener the class itself attaches for `connect` (HTTPServer's,
+	// ServerWebSocket's), which on a spread server runs on each replica
 	// rather than on this one; and the `connect` listeners the application
 	// added, as an array no one changes once it is published, which the
 	// replicas walk from their own threads. See __dispatchShared.
@@ -702,9 +700,9 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	// it was added in. On hl the list holds the listener wrapped for
 	// addEventListener's generic signature, and neither == nor
 	// Reflect.compareMethods matches a wrapper to the function the class
-	// passed in: the front ran its own listener for every replica's
-	// connection too, so a session was counted twice and two handlers on two
-	// threads read one socket.
+	// passed in, so the front would run its own listener for every
+	// replica's connection too: a session counted twice, and two handlers on
+	// two threads reading one socket.
 	@:noCompletion private var __ownConnectOrder:Int = -1;
 	@:noCompletion private var __sharedConnect:Array<Dynamic> = null;
 	#if (target.threaded && !js)
@@ -779,7 +777,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		// arrives after this through setCertificate(), requireClientCertificate()
 		// and addSNICertificate(). So the server is made in listen(), which is
 		// the same instant the native path calls "the point TLS configuration
-		// is materialized", it just has to be literal about it here.
+		// is materialized": it just has to be literal about it here.
 		__serverSocket = null;
 		__closed = false;
 		bound = false;
@@ -795,16 +793,16 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		}
 		#if (java || jvm)
 		// JvmSslSocket extends sys.net.Socket, so the accept and select paths
-		// below do not care which of the two this is, the same arrangement
+		// below do not care which of the two this is: the same arrangement
 		// sys.ssl.Socket gives every other sys target.
 		__serverSocket = secure ? new SSLSocket() : new sys.net.Socket();
 
 		if (secure) {
 			// As natively, below: a server asks for client certificates only
-			// once requireClientCertificate() says to. Left unset it followed
-			// DEFAULT_VERIFY_CERT, which is for the connections an application
-			// makes, so turning that on made the server refuse every client
-			// that had no certificate, which is every browser.
+			// once requireClientCertificate() says to, not by DEFAULT_VERIFY_CERT,
+			// which is for the connections an application makes and would have
+			// the server refuse every client with no certificate, which is
+			// every browser.
 			(cast __serverSocket : SSLSocket).verifyCert = false;
 		}
 		#else
@@ -1003,8 +1001,8 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 		#if nodejs
 		// Node has no bind that is separate from listening: a server takes its
-		// address when it starts, and reports a refusal, a port in use, an
-		// address that is not local, as an event once it has tried. So this
+		// address when it starts, and reports a refusal (a port in use, an
+		// address that is not local) as an event once it has tried. So this
 		// records the endpoint and listen() is where it is claimed, which means
 		// two visible differences on Node: a bind failure arrives as an
 		// ioError and a close event rather than out of this call, and a port
@@ -1023,16 +1021,15 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			bound = true;
 		} catch (e:Dynamic) {
 			// Std.string rather than a bare switch on the value, and a
-			// default that throws: the two cases listed here used to be the
-			// only ones handled, so any other failure fell straight through
-			// and bind() returned as though it had worked, leaving the
-			// caller to listen on a socket that was never bound.
+			// default that throws, so a failure the cases listed here do not
+			// name still fails bind(), rather than leaving the caller to
+			// listen on a socket that was never bound.
 			switch (Std.string(e)) {
 				case "Unresolved host":
 					throw new ArgumentError("One of the parameters is invalid");
 				default:
 					// "Bind failed" included. The socket is not what was
-					// invalid, the address or the port would not take.
+					// invalid: the address or the port would not take.
 					throw new IOError("Could not bind to " + localAddress + ":" + localPort + ": " + Std.string(e));
 			}
 		}
@@ -1044,7 +1041,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	 * Builds the listener, plain or TLS, and wires what both need.
 	 *
 	 * `tls.Server` extends `net.Server`, so from here on the two are the same
-	 * object to the rest of this class, listen, close, address and the error
+	 * object to the rest of this class: listen, close, address and the error
 	 * event are all inherited. The only thing that differs is what was handed
 	 * to the constructor.
 	 */
@@ -1057,10 +1054,9 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			if (__closed || !listening || __cbInstance == null) {
 				// Arrived after close() or stopAccepting(): a TLS handshake
 				// that was under way finishes after Node has stopped
-				// listening. It was adopted anyway, with no runtime, since
-				// close() had let go of it, and announced as a connection
-				// to a server that had stopped; it is let go of, as a
-				// handshake in flight is natively.
+				// listening, and is let go of, as a handshake in flight is
+				// natively, rather than announced as a connection to a server
+				// that has stopped.
 				connection.destroy();
 				return;
 			}
@@ -1099,8 +1095,8 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			socket.secure = secure;
 
 			// Contained: this runs from Node's event loop, and a connect
-			// listener that threw ended the process, every connection the
-			// server held, for a fault in handling one.
+			// listener that threw would end the process, every connection
+			// the server held with it, for a fault in handling one.
 			try {
 				dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
 			} catch (e:Dynamic) {
@@ -1133,12 +1129,12 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 			if (__tlsSni.length > 0) {
 				// Each name's context made once, here, with its key's
-				// passphrase. It was made at every handshake for the name,
-				// without the passphrase: an encrypted key, which the default
-				// certificate's could be, failed every handshake that asked
-				// for its name, and an unencrypted one was parsed again for
-				// each. A key or certificate Node cannot read now throws from
-				// listen(), as the default certificate's does.
+				// passphrase, rather than at every handshake for the name
+				// without it: an encrypted key (which the default certificate's
+				// could be) would fail every handshake that asked for its name,
+				// and an unencrypted one would be parsed again for each. A key
+				// or certificate Node cannot read throws from listen(), as the
+				// default certificate's does.
 				var sni:Array<{match:String->Bool, context:Dynamic}> = [];
 				for (entry in __tlsSni) {
 					var material:Dynamic = {key: entry.key.__pem, cert: entry.certificate.__pem};
@@ -1167,10 +1163,10 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			// by its peerShutdownPolicy, rather than Node's to answer with its
 			// own.
 			options.allowHalfOpen = true;
-			// handshakeTimeout, which Node takes in milliseconds. It was not
-			// passed, so Node's own two minutes applied: a client that opened
-			// a connection and never sent its half of the handshake held it
-			// twelve times longer than the server was configured to allow.
+			// handshakeTimeout, which Node takes in milliseconds. Not passed,
+			// Node's own two minutes would apply, and a client that opened a
+			// connection and never sent its half of the handshake would hold
+			// it twelve times longer than the server is configured to allow.
 			// 0 is no deadline, which Node takes as 0 too.
 			options.handshakeTimeout = handshakeTimeout > 0 ? Std.int(Math.max(1, handshakeTimeout * 1000)) : 0;
 			__serverSocket = Tls.createServer(options, accept);
@@ -1196,10 +1192,10 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		}
 
 		// A port already in use, or an address that is not local, reaches a
-		// Node server as an event rather than as a failed call, see bind().
+		// Node server as an event rather than as a failed call (see bind()).
 		// So does a connection Node could not take once listening, a process
-		// out of descriptors, which closed the server: natively and on the
-		// jvm the server goes on, and so it does here.
+		// out of descriptors: natively and on the jvm the server goes on,
+		// and so it does here.
 		__serverSocket.on("error", function(error:Dynamic):Void {
 			if (__closed) {
 				return;
@@ -1213,9 +1209,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 				}
 
 				// The listen failed, so there is no server: an ioError saying
-				// why, then CLOSE, as a DatagramSocket's bind reports it. It was
-				// CLOSE alone, which said the server had stopped and not that
-				// it never started, nor why.
+				// why, then CLOSE, as a DatagramSocket's bind reports it.
 				close();
 				dispatchEvent(new crossbyte.events.IOErrorEvent(crossbyte.events.IOErrorEvent.IO_ERROR,
 					"Could not listen on " + localAddress + ":" + localPort + ": " + Std.string(message)));
@@ -1251,8 +1245,8 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		to the runtime, as `CrossByte.post` hands work over, and happens there
 		after this returns: a connection may still be announced until then.
 		A runtime's poll set and tick listeners are not thread-safe, and a
-		close made elsewhere took the listener out of them from the wrong
-		thread, while the runtime might be polling it.
+		close made elsewhere would take the listener out of them from the
+		wrong thread, while the runtime might be polling it.
 		@throws Error This error occurs if the socket could not be closed, or the socket was not open.
 			From another thread nothing is thrown here: a close that fails on
 			the runtime is reported as any posted callback's failure is.
@@ -1331,8 +1325,8 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		On Windows, natively, on HashLink and on neko, a backlog above 200 is
 		granted up to 65535, and the default is 65535. Windows grants 200 to
 		any larger number asked plainly, which is all the jvm and the
-		interpreter can ask, so a burst of connections past 200 was refused by
-		the kernel before the server saw it.
+		interpreter can ask, so there a burst of connections past 200 is
+		refused by the kernel before the server sees it.
 
 		On Node a port that cannot be had is reported after this returns, as
 		an `ioError` and then `close`; see `bind()`.
@@ -1349,11 +1343,11 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			if (__closed) {
 				throw new IOError("Operation attempted on invalid socket.");
 			}
-			// Natively too, where it was left to the system: Windows refused
-			// a listen on a socket never bound, and Linux and macOS bound it
-			// to a port of their choosing and listened there, so the same
-			// call failed on one system and served a port nobody had asked
-			// for, and that localPort did not report, on the others.
+			// Natively too, rather than left to the system: Windows refuses
+			// a listen on a socket never bound, and Linux and macOS bind it
+			// to a port of their choosing and listen there, so the same call
+			// would fail on one system and serve a port nobody asked for (and
+			// that localPort did not report) on the others.
 			if (!bound) {
 				throw new IOError("Operation attempted on invalid socket: listen() needs bind() first.");
 			}
@@ -1787,9 +1781,9 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		A spread server's drain, for the servers built on this one: each
 		replica drains what it holds on its own runtime, as a server on one
 		runtime drains its own, by `drainOne`, which calls the function it is
-		given once it has finished; `finish` runs here once every one has,
-		or, should one never say so, a second after the deadline they were
-		all given, so the wait ends either way.
+		given once it has finished; `finish` runs here once every one has
+		(or, should one never say so, a second after the deadline they were
+		all given), so the wait ends either way.
 	**/
 	@:noCompletion private function __drainReplicas(timeoutSeconds:Float, drainOne:(ServerSocket, Void->Void) -> Void, finish:Void->Void):Void {
 		var spread:ServerSpread = __spread;
@@ -1858,9 +1852,9 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 	/**
 		On a replica, on its runtime, as the runtime exits: it stops, as it
-		does when the front stops, what is still in its handshake here is
+		does when the front stops (what is still in its handshake here is
 		dropped and its socket closed, and the front's count of handshakes
-		told, and the places its open connections hold under
+		told), and the places its open connections hold under
 		`maxConnections` are given back, since they will never be served
 		again.
 	**/
@@ -1978,7 +1972,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	/**
 		Whether this server holds its connections to `maxConnections` here,
 		as each is announced: a server whose own class takes each connection
-		as it is announced, an `HTTPServer`, a `ServerWebSocket`, counts
+		as it is announced (an `HTTPServer`, a `ServerWebSocket`) counts
 		them in its protocol's terms instead.
 	**/
 	@:noCompletion private inline function __countsOpen():Bool {
@@ -2104,8 +2098,8 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	}
 
 	/**
-		On the front of a spread server: dispatches `event`, a `connect`
-		on one of the replicas, on its runtime, to the `connect` listeners
+		On the front of a spread server: dispatches `event` (a `connect`
+		on one of the replicas, on its runtime) to the `connect` listeners
 		the application added to this server. Walked from the published
 		array, which nothing changes once it is published, rather than from
 		the dispatcher's own lists, which this thread does not own.
@@ -2163,10 +2157,10 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	}
 
 	/**
-		A replica's `connect` goes to its own listener, the class's, and
+		A replica's `connect` goes to its own listener (the class's) and
 		then to those the application added to the front. Every other event,
 		and every event on a server that is not a replica, is dispatched as
-		ever.
+		usual.
 	**/
 	override public function dispatchEvent<T:Event>(event:T):Bool {
 		var front:ServerSocket = __front;
@@ -2204,15 +2198,14 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	#if !nodejs
 	@:noCompletion private function __fromSocket(socket:sys.net.Socket, ?accepted:{host:sys.net.Host, port:Int}):Null<CBSocket> {
 		// Asked once, and first. A peer already gone has no address on Linux
-		// and macOS, getpeername fails once a connection is reset, and
-		// Linux hands over one reset before it was accepted, and peer()
-		// answers null, which was read through twice below and ended the
-		// process: any client that connected and reset at once took a native
-		// server on Linux down. A TLS 1.3
+		// and macOS (getpeername fails once a connection is reset, and
+		// Linux hands over one reset before it was accepted), and peer()
+		// answers null, which read through twice below would end the process
+		// for any client that connected and reset at once. A TLS 1.3
 		// client finishes its handshake before the server does, and one that
 		// hangs up at once is often gone by the time its connection is
 		// promoted: it is announced all the same, from the address it was
-		// accepted with, as Windows announces it and as TLS 1.2 always did,
+		// accepted with, as Windows announces it and as TLS 1.2 does,
 		// and its first read finds it gone. With no address at all there is
 		// nothing to announce; the caller closes the socket.
 		var peer = socket.peer();
@@ -2230,11 +2223,10 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		cbSocket.__socket = socket;
 		cbSocket.__connected = true;
 
-		// A peer accepted by a TLS listener is a TLS connection, and until now
-		// nothing said so: `secure` was set only by the browser constructor, so
-		// every server-side socket reported false regardless of what it was
-		// carrying. Read by `registryHasBufferedInput`, which has to know
-		// whether asking the TLS layer about buffered bytes is even meaningful.
+		// A peer accepted by a TLS listener is a TLS connection, and `secure`
+		// says so: read by `registryHasBufferedInput`, which has to know
+		// whether asking the TLS layer about buffered bytes is even
+		// meaningful.
 		cbSocket.secure = secure;
 		cbSocket.__timestamp = haxe.Timer.stamp();
 
@@ -2252,12 +2244,11 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 		cbSocket.__cbInstance = __cbInstance;
 
-		// No CLOSE is scheduled from here. One was, a tick on, for a socket no
-		// longer connected by then, and every way a socket stops being
-		// connected announces CLOSE itself, so a peer that connected and hung
-		// up within a tick, a load balancer's health check, was announced
-		// closed twice: onDisconnect ran twice, and a live-connection count
-		// fell by two for every one that went.
+		// No CLOSE is scheduled from here: every way a socket stops being
+		// connected announces CLOSE itself, so a second would announce a
+		// peer that connected and hung up within a tick (a load balancer's
+		// health check) as closed twice, and a live-connection count would
+		// fall by two for every one that went.
 
 		socket.custom = cbSocket;
 
@@ -2270,14 +2261,13 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	/**
 		The tick a TLS server keeps: every handshake in flight is stepped once
 		a tick, which ends one that has run past `handshakeTimeout` and
-		finishes one whose next step the poll set cannot report, a flight
-		this side could not write all at once.
+		finishes one whose next step the poll set cannot report (a flight
+		this side could not write all at once).
 
-		Connections are not taken here. They were, and only here, so a server
-		accepted once a tick however it was polled: 41 to 57 ms from connect
-		to accept at twelve ticks a second, whatever the backend. The listener
-		is in the poll set now and is read when connections are waiting, and a
-		plain server has no tick at all.
+		Connections are not taken here: the listener is in the poll set and
+		is read when connections are waiting, and a plain server has no tick
+		at all. Taken once a tick, a connection would wait 41 to 57 ms from
+		connect to accept at twelve ticks a second, whatever the backend.
 	**/
 	@:noCompletion private function this_onTick(e:TickEvent):Void {
 		__pumpHandshakes();
@@ -2462,12 +2452,12 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		connection stays in the kernel's queue and is asked for again next
 		tick, which is all there is to do about a process out of descriptors.
 
-		On Node it arrives as the server's error event, and closed the
-		server; it is counted and reported here the same way.
+		On Node it arrives as the server's error event, and is counted and
+		reported here the same way.
 
-		hxcpp raises this as a bare string, which the catch-all here swallowed
-		without a word; the jvm raises it as an I/O error, which closed the
-		server, over a condition that passes as soon as a descriptor frees.
+		hxcpp raises this as a bare string and the jvm as an I/O error, and
+		neither closes the server over a condition that passes as soon as a
+		descriptor frees.
 	**/
 	@:noCompletion private function __onAcceptFailed(error:Dynamic):Void {
 		acceptFailures++;
@@ -2559,8 +2549,8 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	/**
 		Once per process, as a server starts listening: a warning where the
 		descriptors the process may hold are fewer than a server is likely to
-		need. Natively on Linux and macOS, where the limit was raised to the
-		hard one as the process started; see `acceptFailures`.
+		need. Natively on Linux and macOS, where the limit is raised to the
+		hard one as the process starts; see `acceptFailures`.
 	**/
 	@:noCompletion private static function __checkDescriptorLimit():Void {
 		if (__descriptorLimitChecked) {
@@ -2598,10 +2588,9 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			__refreshSharedConnect();
 		}
 
-		// Only once the last one goes. Removing any one used to stop the
-		// server accepting, though others were still listening for what it
-		// accepted, one part of an application unsubscribing silenced it
-		// for the rest.
+		// Only once the last one goes, so one part of an application
+		// unsubscribing does not silence the server for the rest still
+		// listening for what it accepts.
 		if (type == Event.CONNECT && !hasEventListener(Event.CONNECT)) {
 			__hasListener = false;
 			#if !nodejs
@@ -2624,17 +2613,16 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		the runtime's poll set, and the accept tick goes on the runtime where
 		this server needs one.
 
-		Every path that wants it running comes here, `listen()` with a
+		Every path that wants it running comes here (`listen()` with a
 		`connect` listener, a `connect` listener added while listening, and
-		`ServerWebSocket`: and each used to add the tick again. The runtime's
-		dispatcher keeps every add and each remove takes out one, so a server
-		given its listener after `listen()` held two and closing it removed
-		one: the other ran on for good, calling `accept()` on the closed
-		listener every frame and keeping the server alive. Natively each of
-		those accepts fails on the closed socket. eval keeps a closed socket's
-		descriptor number and cannot make a socket non-blocking, so there the
-		accept landed on whichever socket took that number next, and waited
-		for a connection on it, stopping the runtime.
+		`ServerWebSocket`), and the tick is added once. The runtime's
+		dispatcher keeps every add and each remove takes out one, so a second
+		add would leave a tick running on after close, calling `accept()` on
+		the closed listener every frame and keeping the server alive; on eval,
+		which keeps a closed socket's descriptor number and cannot make a
+		socket non-blocking, that accept would land on whichever socket took
+		that number next and wait for a connection on it, stopping the
+		runtime.
 	**/
 	@:noCompletion private function __attachAcceptTick():Void {
 		if (__acceptRuntime != null || __cbInstance == null) {
@@ -2693,8 +2681,8 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 	#if (target.threaded && !js)
 	/**
-		On a spread server's listener, the front's, or with `reusePort` a
-		replica's own: whether the handshakes under way on every runtime, and
+		On a spread server's listener (the front's, or with `reusePort` a
+		replica's own): whether the handshakes under way on every runtime, and
 		on their way to one, reach the front's `maxPendingHandshakes`. If they
 		do, this listener is set aside until a runtime says one has ended.
 	**/
@@ -2714,7 +2702,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		Keeps the listener in the poll set while this server is accepting and
 		has room, and out of it otherwise: at the handshake limit the listener
 		stays readable with nothing taken from it, and a poll would report it
-		on every pass, a POLL loop spinning until a handshake finished.
+		on every pass: a POLL loop spinning until a handshake finished.
 	**/
 	@:noCompletion private function __syncListenerWatch():Void {
 		#if (target.threaded && !js)
@@ -2875,8 +2863,8 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		time are closed without ever reaching application code.
 	**/
 	@:noCompletion private function __pumpHandshakes():Void {
-		// Node terminates its own handshakes, tls.createServer does not hand
-		// out a connection until one has completed, so there is nothing here
+		// Node terminates its own handshakes (tls.createServer does not hand
+		// out a connection until one has completed), so there is nothing here
 		// to pump and no pending set to pump it from.
 		#if !nodejs
 		if (__pendingHandshakes == null || __pendingHandshakes.length == 0) {

@@ -32,11 +32,11 @@ import sys.thread.Thread;
  *   is written outside it, in the order it was queued, by whichever thread
  *   holds the write: the session's writer thread, the reader writing its
  *   own answers, or a request with no body writing its own head while the
- *   writer watches it. Every write was made where its frame was made, under
- *   the mutex: a server that stopped reading held that thread in the write
- *   for good, and the mutex with it, so no request on the connection reached
- *   its timeout, a cancel waited with them, on whatever thread made it,
- *   and so did a close.
+ *   writer watches it. Were a write made under the mutex, a server that
+ *   stopped reading would hold that thread in the write for good, and the
+ *   mutex with it: no request on the connection would reach its timeout,
+ *   and a cancel (on whatever thread made it) and a close would wait with
+ *   them.
  * - No caller waits on the socket past its own deadline: a request waits on
  *   its stream, a body on a window or on its queued frames going out, a
  *   request's own head is watched, and every one of those waits has the
@@ -46,7 +46,7 @@ import sys.thread.Thread;
  *   closed connection whose last write does not go out is given up
  *   `CLOSE_GRACE` after it closed.
  *
- * Waiting is on `H2Wake`, a `Lock`, or on eval a `Semaphore`, never
+ * Waiting is on `H2Wake` (a `Lock`, or on eval a `Semaphore`), never
  * `Condition`: parking a thread on a condition variable stalls the hxcpp
  * collector, and a GC pause that only reproduces under concurrent requests
  * is not a thing anyone wants to debug twice.
@@ -54,13 +54,13 @@ import sys.thread.Thread;
 class H2ClientSession {
 	/**
 		Seconds a closed session's writer has to send what was queued before
-		it, its GOAWAY last, before the connection is ended under it.
+		it (its GOAWAY last) before the connection is ended under it.
 	**/
 	public static inline var CLOSE_GRACE:Float = 1.0;
 
 	/**
-		Bytes of answers the peer obliged, PING and SETTINGS acknowledgements,
-		WINDOW_UPDATEs, that may wait unwritten before the reader stops
+		Bytes of answers the peer obliged (PING and SETTINGS acknowledgements,
+		WINDOW_UPDATEs) that may wait unwritten before the reader stops
 		reading until they have gone (`H2Connection.queuedReplyBytes`). A peer
 		that sends those and reads nothing is then stopped by its own socket,
 		and holds no more of this side than this.
@@ -129,9 +129,9 @@ class H2ClientSession {
 
 	// Released for every batch queued; the writer waits on it.
 	private final __writerWake:H2Wake = new H2Wake();
-	// Held, under the lock, by whichever thread is writing the socket, the
+	// Held, under the lock, by whichever thread is writing the socket (the
 	// writer, the reader writing its own answers, or a request writing its
-	// own head, so one writes at a time, in the order frames were queued.
+	// own head), so one writes at a time, in the order frames were queued.
 	private var __writing:Bool = false;
 	// The stream whose request is writing its own head, or -1, and the
 	// longest that write may go without progress before the writer, which
@@ -179,7 +179,7 @@ class H2ClientSession {
 	 * Seconds since this session last had a request in flight, or `-1` while
 	 * one still is.
 	 *
-	 * A pooled connection is meant to outlive the request that opened it,
+	 * A pooled connection is meant to outlive the request that opened it:
 	 * that is the whole saving. What it must not do is outlive the program's
 	 * interest in the host, holding a socket and a parked reader thread for a
 	 * server nobody is talking to any more.
@@ -204,10 +204,9 @@ class H2ClientSession {
 	 * either opens its stream first, and the session is left alone, or finds
 	 * the session retired and is refused before anything is sent.
 	 *
-	 * The pool asked `idleSeconds` instead, from outside the lock, and a
-	 * request starting in between could be read half before and half after:
-	 * nothing in flight, and idle since the clock began. That closed
-	 * connections with a stream just opened on them.
+	 * Asked from outside the lock, a request starting in between could be
+	 * read half before and half after (nothing in flight, and idle since the
+	 * clock began), and a connection closed with a stream just opened on it.
 	 *
 	 * The lock is only tried. One that is held means the session is being
 	 * used right now, and the pool, which holds its own lock here, has no
@@ -262,11 +261,9 @@ class H2ClientSession {
 		stream in flight has ended, at once if none is, or if it is dead.
 
 		What a session the peer has sent GOAWAY needs. Closed as soon as a new
-		request was refused on it, it took every request still in flight on it
-		down too, each failing as "connection closed before the response
-		headers arrived" though the peer was answering it: 42 of 12,001 from
-		eight concurrent clients when CrossByte's own server ended a
-		connection after every thousandth request.
+		request was refused on it, it would take every request still in
+		flight on it down too, each failing as "connection closed before the
+		response headers arrived" though the peer was answering it.
 	**/
 	public function retire():Void {
 		__lock.acquire();
@@ -298,7 +295,7 @@ class H2ClientSession {
 	 *
 	 * `headTimeoutSeconds` is a deadline, not an idle limit: the response's
 	 * final header block has that long to arrive once the request has been
-	 * sent, however much else arrives meanwhile, 1xx blocks among it,
+	 * sent, however much else arrives meanwhile (1xx blocks among it),
 	 * after which the stream is reset and this throws. `0` or less is none.
 	 */
 	public function execute(method:String, scheme:String, authority:String, path:String, headers:Array<HpackHeader>, body:Null<Bytes>,
@@ -341,8 +338,8 @@ class H2ClientSession {
 		}
 
 		// Registered before the lock is dropped so the reader cannot close the
-		// stream in the gap, it needs this same lock to process a frame,
-		// and before the body, whose write drops the lock while it waits on a
+		// stream in the gap (it needs this same lock to process a frame), and
+		// before the body, whose write drops the lock while it waits on a
 		// window.
 		__waiters.set(target.id, waiter);
 		__activeStreams++;
@@ -352,13 +349,12 @@ class H2ClientSession {
 		// is dropped, for the waiter's reason: until then the reader cannot
 		// process a frame for this stream, so a cancel from here on resets it
 		// before any of its response can land. Registered after the lock, a
-		// cancel in the gap found no handler to run, and the response could
-		// complete the stream before the late registration reset it. Before
-		// the body too: registered after it, a cancel during an upload
-		// waiting on a window did nothing until the upload was over. A token
-		// cancelled in the meantime runs this immediately, re-entering the
-		// lock, which is why `onCancel` fires late registrations rather than
-		// dropping them.
+		// cancel in the gap would find no handler to run, and the response
+		// could complete the stream before the late registration reset it.
+		// Before the body too, so a cancel during an upload waiting on a
+		// window acts at once. A token cancelled in the meantime runs this
+		// immediately, re-entering the lock, which is why `onCancel` fires
+		// late registrations rather than dropping them.
 		var streamId:Int = target.id;
 		var onCancelled:Void->Void = () -> cancel(streamId);
 		if (cancelToken != null) {
@@ -368,9 +364,8 @@ class H2ClientSession {
 		var upload:Null<H2Upload> = null;
 		if (hasBody) {
 			// The timeout applies to the body too, as the longest a window may
-			// stay shut: sending the body with no deadline at all let a peer
-			// that stopped granting window hold the request forever on a
-			// connection busy enough never to look stalled.
+			// stay shut, so a peer that stops granting window cannot hold the
+			// request forever on a connection busy enough never to look stalled.
 			upload = new H2Upload(timeoutSeconds);
 			__uploads.set(streamId, upload);
 			try {
@@ -387,10 +382,10 @@ class H2ClientSession {
 
 		var alreadyDone:Bool = target.isClosed();
 		// A request with no body writes its head itself when no one else is
-		// writing: handed to the writer thread, the hand-off was most of
-		// what a request cost on a fast link. The writer watches the write
-		// instead, so a peer that does not take it holds this thread no
-		// longer than the request's timeout, or a cancel's grace.
+		// writing: handing it to the writer thread would be most of what a
+		// request costs on a fast link. The writer watches the write instead,
+		// so a peer that does not take it holds this thread no longer than
+		// the request's timeout, or a cancel's grace.
 		var direct:Null<Array<Bytes>> = null;
 		if (DIRECT_HEADS && !hasBody && !__writing && !dead) {
 			direct = connection.takeOutbox();
@@ -475,10 +470,8 @@ class H2ClientSession {
 	 * False when it gave up.
 	 *
 	 * An idle limit, as the HTTP/1.1 client's socket timeout is and Node's
-	 * request timeout is. This waited `timeoutSeconds` once, from the start,
-	 * so the same `idleTimeout` that let a large download over HTTP/1.1 run
-	 * for as long as it kept moving cut it off over HTTP/2 however fast it
-	 * was arriving.
+	 * request timeout is, so a large download is not cut off for as long as
+	 * it keeps moving.
 	 *
 	 * The reader counts the stream's frames rather than timing them, since a
 	 * clock read per frame cost the frame path about 8% on small frames.
@@ -492,9 +485,8 @@ class H2ClientSession {
 	 */
 	private function __awaitEnd(target:H2Stream, waiter:H2Wake, timeoutSeconds:Float, headDeadline:Float):Int {
 		if (timeoutSeconds <= 0 && headDeadline <= 0) {
-			// No limit. Each thing that wakes the waiter, the stream ending,
-			// a cancel, the connection going, ends this wait. A limit of
-			// zero was a wait of none, and failed every such request at once.
+			// No limit. Each thing that wakes the waiter (the stream ending, a
+			// cancel, the connection going) ends this wait.
 			waiter.wait();
 			return ENDED;
 		}
@@ -555,9 +547,8 @@ class H2ClientSession {
 
 	/**
 	 * A stream error, not a connection error: the stream has been reset and
-	 * the connection carries on. As a connection error it took the whole
-	 * pooled connection down, and every other request on it, for one request
-	 * that took too long.
+	 * the connection carries on, rather than every other request on the
+	 * pooled connection failing for one request that took too long.
 	 */
 	private function __timedOut(streamId:Int, timeoutSeconds:Float):H2StreamError {
 		return new H2StreamError(streamId, H2ErrorCode.CANCEL, 'Request to $origin timed out after ${timeoutSeconds}s');
@@ -578,7 +569,7 @@ class H2ClientSession {
 	 *
 	 * RST_STREAM rather than a close: the connection is shared, so tearing it
 	 * down would cancel every other request on it too. Safe from any thread,
-	 * and safe on a stream that has already finished, the reset is simply
+	 * and safe on a stream that has already finished: the reset is simply
 	 * not sent.
 	 *
 	 * Decided under the lock the reader takes to process a frame. Once this
@@ -634,13 +625,12 @@ class H2ClientSession {
 		leaves last closes the socket. A write the peer keeps from going out
 		has `CLOSE_GRACE`, and is then ended by the shutdown.
 
-		The socket was closed here, from whichever thread closed the session,
-		the pool's sweep, a request discarding it, `closeAll`, while the
-		reader sat in a read on it. For TLS that freed the socket's mbedTLS
-		context under the read, and when the read returned, with the peer
-		answering the GOAWAY, mbedTLS carried on with the freed context: a
-		SIGSEGV in `mbedtls_ssl_read`, on Linux, reached from any pool close
-		with a session open. `Http.__interrupt` is what the HTTP/1.1 client
+		The socket is not closed here. Whichever thread closes the session
+		(the pool's sweep, a request discarding it, `closeAll`) may do so
+		while the reader sits in a read on it, and for TLS that would free
+		the socket's mbedTLS context under the read, which carries on with
+		the freed context once the peer answers the GOAWAY: a SIGSEGV in
+		`mbedtls_ssl_read`. `Http.__interrupt` is what the HTTP/1.1 client
 		does for the same reason. On Windows a TLS socket's read is ended by
 		the peer answering the shutdown, as it is there for a cancelled load.
 	**/
@@ -672,9 +662,9 @@ class H2ClientSession {
 		peer is not taking, the writer's.
 
 		On the jvm and eval a write still under way is ended by closing the
-		socket. A shutdown does not end one already waiting on Windows there,
-		the JDK signals the writing thread only on POSIX, and eval shuts
-		only a socket's writing side there, and closing under a call is
+		socket. A shutdown does not end one already waiting on Windows there
+		(the JDK signals the writing thread only on POSIX, and eval shuts
+		only a socket's writing side there), and closing under a call is
 		safe on both: the call fails, and nothing native is freed under it,
 		as closing a TLS socket natively would be. On neko and HashLink a
 		plain socket is closed so too, as `Http.__interrupt` closes one
@@ -773,13 +763,12 @@ class H2ClientSession {
 			}
 			var answered:Bool = connection.queuedBytes > queued;
 
-			// A peer that sends what must be answered, a PING, a SETTINGS,
-			// DATA earning a WINDOW_UPDATE, and reads none of the answers
+			// A peer that sends what must be answered (a PING, a SETTINGS,
+			// DATA earning a WINDOW_UPDATE) and reads none of the answers
 			// would grow them here without end. Past MAX_QUEUED_REPLIES this
 			// stops reading until they have gone, so its own socket stops it,
-			// as a write held up under the lock once did, but holding nothing
-			// anyone else needs. The wait ends when the writer takes them, or
-			// the session ends.
+			// holding nothing anyone else needs. The wait ends when the writer
+			// takes them, or the session ends.
 			while (failure == null && connection.queuedReplyBytes > MAX_QUEUED_REPLIES && !dead && !__stopped) {
 				__readerWaiting = true;
 				__lock.release();
@@ -790,9 +779,9 @@ class H2ClientSession {
 			}
 			__lock.release();
 			if (answered && failure == null) {
-				// Its own answers, a WINDOW_UPDATE the server is waiting on
-				// to send more, written here when no one else is writing,
-				// rather than handed to the writer thread: the hand-off held
+				// Its own answers (a WINDOW_UPDATE the server is waiting on
+				// to send more) are written here when no one else is writing,
+				// rather than handed to the writer thread, which would hold
 				// each one up, and downloads with it. This thread may wait in
 				// the write, which only stops it reading, as a peer not reading
 				// should; the requests do not wait with it.
@@ -830,10 +819,7 @@ class H2ClientSession {
 	 * is slow but moving is not cut off. Once it has passed, only this stream
 	 * is reset; the body's write sees it closed and stops, and if what kept
 	 * it waiting is a writer the peer has not taken a byte from all that
-	 * while, the connection is given up too. This used to wait for any frame
-	 * at all, thirty seconds at a time: on a busy connection a body the peer
-	 * had stopped taking waited forever, and on a quiet one the thirty
-	 * seconds failed the connection and every request on it.
+	 * while, the connection is given up too.
 	 */
 	private function __onWindowBlocked(target:H2Stream, stalledSeconds:Float):Bool {
 		if (dead || __stopped) {
@@ -926,8 +912,8 @@ class H2ClientSession {
 
 	/**
 	 * Wakes every waiter, so a dead connection surfaces as a failed request
-	 * rather than as one that waits out its whole timeout, and the writer
-	 * and the reader, so they notice it too.
+	 * rather than as one that waits out its whole timeout, and wakes the
+	 * writer and the reader, so they notice it too.
 	 */
 	private function __wakeEveryone():Void {
 		__lock.acquire();
@@ -1032,8 +1018,8 @@ class H2ClientSession {
 
 	/**
 		Writes what is queued, batch by batch, unless another thread is
-		writing, false then, and that thread takes what was queued, or
-		the connection is dead. At most `batches` of them, `-1` for all; what
+		Writes what is queued, batch by batch, unless another thread is
+		writing (false then, and that thread takes what was queued) or
 		is left after is handed to the writer thread.
 	**/
 	private function __drainQueue(batches:Int):Bool {
@@ -1148,8 +1134,8 @@ class H2ClientSession {
 
 	/**
 		Holds a closed session to `CLOSE_GRACE`: if its threads have not left
-		by then, its writer held in a write the peer is not taking, or its
-		reader in a read nothing ends, the socket is shut down under them.
+		by then (its writer held in a write the peer is not taking, or its
+		reader in a read nothing ends), the socket is shut down under them.
 		Nothing else would end them: everyone who could has gone.
 	**/
 	private static function __watchClosing(session:H2ClientSession):Void {

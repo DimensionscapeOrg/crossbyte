@@ -4,11 +4,11 @@ package crossbyte._internal.php;
  * Raised when a FastCGI exchange runs past its deadline.
  *
  * A type of its own so the request handler can tell a backend that is not
- * answering from one that answered badly. Those deserve different statuses,
- * 504 against 502, and before this there was no way to tell them apart,
- * because there was no deadline: a php-fpm that accepted a connection and then
- * said nothing held the runtime thread for as long as it cared to, which on a
- * server serving every connection from one tick means forever, for everyone.
+ * answering from one that answered badly: they deserve different statuses,
+ * 504 against 502. Without a deadline, a php-fpm that accepted a connection
+ * and then said nothing would hold the runtime thread for as long as it
+ * cared to, which on a server serving every connection from one tick means
+ * forever, for everyone.
  */
 class PHPTimeout {
 	/** Seconds the exchange was allowed before it was abandoned. */

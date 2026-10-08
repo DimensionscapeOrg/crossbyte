@@ -14,12 +14,12 @@ import utest.Assert;
 **/
 class JvmSocketTest extends utest.Test {
 	/**
-		A connect the peer is slow to answer leaves the runtime running. It
-		spun on `finishConnect()` until the connection came up: two seconds
-		of the runtime's thread against a listener whose queue was full, and
-		the whole SYN-retry time, 21 s on Windows, two minutes on Linux,
-		against a host that never answers. Natively a connect in progress
-		returns at once and the tick finishes it; so does this now.
+		A connect the peer is slow to answer leaves the runtime running: it
+		returns at once and the tick finishes it, as natively, rather than
+		spinning on `finishConnect()` until the connection comes up (two
+		seconds of the runtime's thread against a listener whose queue is full,
+		and the whole SYN-retry time, 21 s on Windows, two minutes on Linux,
+		against a host that never answers).
 	**/
 	public function testAConnectToABusyListenerLeavesTheRuntimeRunning():Void {
 		var runtime = crossbyte.core.CrossByte.current();
@@ -53,9 +53,10 @@ class JvmSocketTest extends utest.Test {
 	}
 
 	/**
-		A blocking connect gives up at the socket's timeout, as a read does.
-		It was bounded by the system alone, so an https request to a host that
-		never answered waited out the SYN retries whatever its timeout said.
+		A blocking connect gives up at the socket's timeout, as a read does,
+		rather than being bounded by the system alone, where an https request
+		to a host that never answered would wait out the SYN retries whatever
+		its timeout said.
 	**/
 	public function testABlockingConnectGivesUpAtItsTimeout():Void {
 		var busy = __busyListener();
@@ -82,15 +83,15 @@ class JvmSocketTest extends utest.Test {
 
 	/**
 		`select` answers only for the sockets it is asked about. A socket stays
-		registered from one call to the next now, so one asked about earlier
-		and ready since must neither be reported by a later call that did not
-		ask about it nor cut that call's wait short.
+		registered from one call to the next, so one asked about earlier and
+		ready since must neither be reported by a later call that did not ask
+		about it nor cut that call's wait short.
 	**/
 	/**
 		A thread's selectors are closed once it has ended, by the next thread
-		to select. Java says nothing when a thread ends, and every thread
-		that ever selected kept up to three, an epoll descriptor and its
-		wakeup pipe each, or on Windows a loopback socket pair each, for
+		to select. Java says nothing when a thread ends, and every thread that
+		ever selected would otherwise keep up to three (an epoll descriptor and
+		its wakeup pipe each, or on Windows a loopback socket pair each) for
 		the life of the process.
 	**/
 	public function testAnEndedThreadsSelectorsAreClosed():Void {
@@ -143,9 +144,9 @@ class JvmSocketTest extends utest.Test {
 		A socket `select` keeps registered lets go of its address when closed.
 		On Windows a registered channel's socket is only closed once the
 		selector lets it go, at its next select, so kept registered between
-		calls a closed datagram socket kept its address until the runtime's
-		next pump, and binding it again straight away, as a restarted peer
-		does, was refused.
+		calls a closed datagram socket would keep its address until the
+		runtime's next pump, and binding it again straight away, as a restarted
+		peer does, would be refused.
 	**/
 	public function testASocketSelectKeepsLetsGoOfItsAddressWhenClosed():Void {
 		var first = new sys.net.UdpSocket();
@@ -174,9 +175,9 @@ class JvmSocketTest extends utest.Test {
 	}
 
 	/**
-		`select` leaves a blocking socket blocking, as it is natively. It made
-		the channel non-blocking to register it and left it so, and a blocking
-		reader then met a read that answered "would block" at once rather
+		`select` leaves a blocking socket blocking, as it is natively: making
+		the channel non-blocking to register it and leaving it so would have a
+		blocking reader meet a read that answered "would block" at once rather
 		than waiting for the data on its way.
 	**/
 	public function testSelectLeavesABlockingSocketBlocking():Void {
@@ -211,9 +212,9 @@ class JvmSocketTest extends utest.Test {
 	/**
 		On Windows, past 1,023 sockets, `select` starts no thread per call.
 		The selector hands each further 1,024 sockets to a helper thread, and
-		registering every socket and cancelling every key on every call
-		started one and stopped it again each time: at 2,000 sockets, one
-		thread per select, and the registry selects on every pump.
+		registering every socket and cancelling every key on every call would
+		start one and stop it again each time: at 2,000 sockets, one thread per
+		select, and the registry selects on every pump.
 	**/
 	public function testSelectOverManySocketsStartsNoThreadPerCall():Void {
 		if (Sys.systemName() != "Windows") {
@@ -281,9 +282,8 @@ class JvmSocketTest extends utest.Test {
 		A refused connect that a select other than the client's own settled
 		first, as the runtime's poll does as often as not. NIO closes a
 		channel whose connect failed, so a select after the one that found it
-		has nothing to say about it: a WebSocket's refusal waited out its ten
-		second connect deadline about one connect in 150, and failed
-		NetConnectionLifecycleTest on the jvm.
+		has nothing to say about it, and the refusal must not be left to wait
+		out the connect deadline (a WebSocket's ten seconds).
 	**/
 	public function testARefusalAnotherSelectSettledEndsAPlainConnect():Void {
 		var socket = new crossbyte.net.Socket();

@@ -135,7 +135,7 @@ class HpackHuffman {
 			symbol[node] = sym;
 		}
 
-		// Published last, and `__left`, the one checked above, after the
+		// Published last, and `__left` (the one checked above) after the
 		// others: a concurrent reader either sees null and builds its own
 		// identical tree, or sees all three. Never a half-published one.
 		__right = right;

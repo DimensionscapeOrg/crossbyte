@@ -14,15 +14,15 @@ import sys.net.Socket;
 
 	A runtime's POLL loop spends each frame blocked in poll, which a
 	descriptor becoming ready ends and nothing else does. Work handed over
-	from another thread, an RPC answer finished on a worker, a query result,
-	a task's completion, used to wait out the rest of the frame there: 38ms
-	on average at the default twelve ticks a second, and up to a whole frame.
-	Writing here makes the poll return at once, and the runtime runs what it
-	was handed.
+	from another thread (an RPC answer finished on a worker, a query result,
+	a task's completion) would otherwise wait out the rest of the frame
+	there: 38ms on average at the default twelve ticks a second, and up to a
+	whole frame. Writing here makes the poll return at once, and the runtime
+	runs what it was handed.
 
 	A connected TCP pair rather than a datagram sent to itself: an idle UDP
-	socket in a Windows poll set is what once made poll return immediately,
-	over and over, which is the one thing this must not do.
+	socket in a Windows poll set can make poll return immediately, over and
+	over, which is the one thing this must not do.
 **/
 @:noCompletion
 final class WakeSocket implements IPollableSocket {
@@ -35,11 +35,11 @@ final class WakeSocket implements IPollableSocket {
 	@:noCompletion private var __closed:Bool = false;
 	#if target.threaded
 	// Held while the writing end is written to or closed. Another thread
-	// wakes the runtime, a post, an exit, a parent exiting its children,
+	// wakes the runtime (a post, an exit, a parent exiting its children)
 	// while the runtime's own thread may be closing the pair as it exits, and
-	// the write then went to a descriptor already closed: on the interpreter
-	// an error no catch sees, which ended the process, and natively a
-	// descriptor the system may have handed to another socket by then.
+	// a write to a descriptor already closed is, on the interpreter, an error
+	// no catch sees, which ends the process, and natively a write to whatever
+	// socket the system has handed the descriptor to by then.
 	// Taken once per wake, when a runtime's queue goes from empty to not.
 	@:noCompletion private final __lock:sys.thread.Mutex = new sys.thread.Mutex();
 	#end
@@ -48,8 +48,8 @@ final class WakeSocket implements IPollableSocket {
 
 	/**
 		Makes the pair, or answers null when this process cannot open a
-		loopback connection; the runtime then wakes as it did before, at the
-		end of the frame.
+		loopback connection; the runtime then wakes at the end of the
+		frame.
 	**/
 	public static function create(?onWake:Void->Void):Null<WakeSocket> {
 		var listener:Socket = null;
@@ -98,7 +98,7 @@ final class WakeSocket implements IPollableSocket {
 		Ends the poll the runtime is waiting in, or the next one it starts.
 		Safe from any thread: the only thing touched is the writing end, and
 		the runtime writes to it once per batch of work at most. A write that
-		cannot go, the byte before it is still unread, changes nothing,
+		cannot go (the byte before it is still unread) changes nothing,
 		since one byte waiting is already a wake.
 	**/
 	public function wake():Void {

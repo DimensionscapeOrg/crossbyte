@@ -38,8 +38,8 @@ import crossbyte.sys.TaskPool;
  * **The queue is bounded twice by default**: a job waits at most
  * `queueTimeout`, 30 seconds, for a worker, and fails at that deadline
  * whether or not a worker comes free; and `maxQueued`, 100,000, is the most
- * that may wait at once. A database slower than the traffic reaching it,
- * or one a partition has silenced, holding every worker, shows up as
+ * that may wait at once. A database slower than the traffic reaching it (or
+ * one a partition has silenced, holding every worker) shows up as
  * failed jobs and refused submissions, rather than as a queue that grows
  * with the traffic in memory and in the latency of every job behind it.
  */
@@ -65,7 +65,7 @@ class AsyncDatabase<T> {
 	 * before failing: `null`, the default, uses the pool's own
 	 * `acquireTimeout`, and 0 is no limit.
 	 *
-	 * With a worker per pooled connection, what `of` builds, this never
+	 * With a worker per pooled connection (what `of` builds) this never
 	 * fires: a worker only exists when a connection does, so the waiting all
 	 * happens earlier, in the worker pool's queue, where this does not reach.
 	 * `queueTimeout` is the deadline for that wait.
@@ -79,14 +79,14 @@ class AsyncDatabase<T> {
 	 * 100,000, unless set, or 0 for no limit. Past it `submit` throws an
 	 * `IllegalOperationError` instead of queueing.
 	 *
-	 * The backlog had no bound unless set. A database slower than the
-	 * traffic reaching it then showed up as a queue that grew with the
-	 * traffic, in memory, each job holding what its body captured, rather
-	 * than as an error anyone saw; `queueTimeout` bounds how long a job
-	 * waits, and this how many wait, which the traffic decides. Set to more
-	 * for a batch that submits more than 100,000 statements at once, or set
-	 * to 0. Checked at submission, against the worker pool's queue, which
-	 * counts a job that expired there until a worker discards it.
+	 * Without a bound, a database slower than the traffic reaching it would
+	 * show up as a queue that grew with the traffic (in memory, each job
+	 * holding what its body captured) rather than as an error anyone saw;
+	 * `queueTimeout` bounds how long a job waits, and this how many wait,
+	 * which the traffic decides. Set to more for a batch that submits more
+	 * than 100,000 statements at once, or set to 0. Checked at submission,
+	 * against the worker pool's queue, which counts a job that expired there
+	 * until a worker discards it.
 	 *
 	 * @throws ArgumentError When set below 0.
 	 */
@@ -102,11 +102,10 @@ class AsyncDatabase<T> {
 	 * busy. It takes no connection, and a worker that reaches it later
 	 * passes over it.
 	 *
-	 * A caller long gone, an HTTP request that has timed out, say, no
-	 * longer gets its query run anyway, holding a connection that live
-	 * requests are waiting for. It was `null` unless set, which waited for
-	 * ever, and even when set it failed a job only when a worker reached it:
-	 * with every worker held by a database that had stopped answering, never.
+	 * A caller long gone (an HTTP request that has timed out, say) does not
+	 * get its query run anyway, holding a connection that live requests are
+	 * waiting for, even with every worker held by a database that has
+	 * stopped answering.
 	 *
 	 * A batch of more jobs than the workers finish in this time loses its
 	 * tail: raise it, or set 0, for such a batch. Applies to jobs submitted
@@ -129,14 +128,14 @@ class AsyncDatabase<T> {
 	 * Creates a facade over an existing pool and worker pool.
 	 *
 	 * Sizing note: a worker blocks while waiting for a connection, so a
-	 * worker count far above the pool's `maxSize` buys nothing, the extra
+	 * worker count far above the pool's `maxSize` buys nothing: the extra
 	 * workers simply queue. Matching them, or keeping workers at or below
 	 * `maxSize`, is usually right.
 	 *
 	 * @param metrics Registry to publish the backlog into, or `null` for
-	 *        none: `<prefix>_queued` and `<prefix>_running` jobs, a job
+	 *        none: `<prefix>_queued` and `<prefix>_running` jobs (a job
 	 *        failed at its `queueTimeout` counts as queued until a worker
-	 *        passes over it, `<prefix>_queue_wait_seconds`, observed as a
+	 *        passes over it), `<prefix>_queue_wait_seconds`, observed as a
 	 *        job starts or expires, and `<prefix>_rejected_total` and
 	 *        `<prefix>_expired_total` for jobs `maxQueued` and
 	 *        `queueTimeout` turned away. The pool publishes its own.
@@ -347,8 +346,8 @@ class AsyncDatabase<T> {
 	 * Stops accepting work and releases resources.
 	 *
 	 * @param drain When `true` (the default), queued jobs run to completion
-	 *        before workers stop, each still failing at its `queueTimeout`
-	 *        if no worker reaches it first, so the call waits for the jobs
+	 *        before workers stop (each still failing at its `queueTimeout`
+	 *        if no worker reaches it first), so the call waits for the jobs
 	 *        running and those queued: as long as the slowest statement,
 	 *        which the driver's own limits bound (a read timeout or a
 	 *        statement timeout; keepalive for a server that has gone
@@ -401,8 +400,8 @@ private final class QueuedJob {
 	The waiting jobs are kept in a heap by deadline. Submitting one costs a
 	push and taking one a removal, each under a lock held for a few
 	instructions, beside a job that runs a statement. The thread sleeps until
-	the earliest deadline, in whole milliseconds, since hxcpp's timed wait
-	spins through a fraction of one on Windows, and ends after a while
+	the earliest deadline (in whole milliseconds, since hxcpp's timed wait
+	spins through a fraction of one on Windows) and ends after a while
 	with nothing waiting, to be started again by the next job.
 **/
 @:access(crossbyte.sys.Task)

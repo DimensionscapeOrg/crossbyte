@@ -15,13 +15,13 @@ import utest.Assert;
 	Which TLS version native connections run, and the parts of TLS 1.3 the
 	rest of the suite does not reach on its own.
 
-	hxcpp's mbedTLS moved from 2.28, which tops out at TLS 1.2, to 3.6, which
-	negotiates TLS 1.3 whenever the peer offers it: every native TLS case in
-	the suite now runs over 1.3 against itself. These pin that it does, and
-	cover what 1.3 changes beyond that. A returning client resumes from a 1.3
-	ticket, which is a pre-shared key rather than 1.2's sealed session. A
-	server that is not mbedTLS, Node, which is OpenSSL, sends tickets after
-	the handshake that an mbedTLS client has to take in its stride. And a peer
+	hxcpp's mbedTLS 3.6 negotiates TLS 1.3 whenever the peer offers it
+	(2.28 tops out at TLS 1.2), so every native TLS case in the suite runs
+	over 1.3 against itself. These pin that it does, and cover what 1.3
+	changes beyond that. A returning client resumes from a 1.3 ticket,
+	which is a pre-shared key rather than 1.2's sealed session. A server
+	that is not mbedTLS (Node, which is OpenSSL) sends tickets after the
+	handshake that an mbedTLS client has to take in its stride. And a peer
 	that can only offer TLS 1.1 is still turned away.
 
 	The version expected follows the mbedTLS the program was built with, so
@@ -351,14 +351,13 @@ class TlsProtocolTest extends utest.Test {
 		accepting, on a configuration that is still its own.
 
 		hxcpp gives every connection a listener accepts the listener's mbedTLS
-		configuration, which mbedTLS reads on each record, and closing the
-		listener freed it: from then on every connection the server had
-		accepted read freed memory. `stopAccepting()` closes the listener so a
-		successor can bind while the connections finish, a graceful
-		shutdown did exactly that. 2.28 kept the configuration's flags at the
-		end of the structure and read zeros there; 3.6 keeps them first, where
-		the allocator writes its own bookkeeping, and on Linux a connection
-		took the garbage for a renegotiation request and crashed in the
+		configuration, which mbedTLS reads on each record, so closing the
+		listener must not free it, or every connection the server had accepted
+		would read freed memory. `stopAccepting()` closes the listener so a
+		successor can bind while the connections finish, as a graceful
+		shutdown does. 3.6 keeps the configuration's flags first, where the
+		allocator writes its own bookkeeping, and on Linux a connection would
+		take that garbage for a renegotiation request and crash in the
 		handshake it began. The fork keeps a configuration until the last
 		connection on it has gone.
 	**/
@@ -414,8 +413,8 @@ class TlsProtocolTest extends utest.Test {
 			after = __endpointOf(accepted[0]);
 		}
 		// Only over a configuration still there. Over a freed one mbedTLS
-		// reads whatever the memory holds by then, and a run against an
-		// hxcpp without the fix ended in a crash, not in the assertion.
+		// reads whatever the memory holds by then, and the run would end in a
+		// crash, not in the assertion.
 		if (after == 1) {
 			client.writeUTFBytes(HELLO);
 			client.flush();
@@ -443,11 +442,11 @@ class TlsProtocolTest extends utest.Test {
 
 		A connection points at the name its handshake agreed on, inside the
 		listener's ALPN list, and keeps no copy; the list is CrossByte's, and
-		it was freed when the listener closed, under connections that, now
-		the configuration outlives the listener, carry on. Asked after that,
-		a connection read its protocol from freed memory, and lists made
-		next took the memory over: these of the same sizes, on Linux, every
-		time.
+		must not be freed when the listener closes, under connections that
+		(now the configuration outlives the listener) carry on. Freed, it
+		would have a connection asked after that read its protocol from freed
+		memory, and lists made next take the memory over: these of the same
+		sizes, on Linux, every time.
 	**/
 	public function testAnAcceptedConnectionKeepsItsProtocolAfterItsListenerCloses():Void {
 		var fixture = TLSTestFixture.selfSigned();

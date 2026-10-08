@@ -9,8 +9,8 @@ import haxe.io.BytesInput;
 
 /**
 	`Inflater.inflate` on the jvm, through `java.util.zip.Inflater`, the
-	JDK's zlib, where the Haxe `InflateImpl` built its tables and a 64 KB
-	window as objects for every call.
+	JDK's zlib, rather than the Haxe `InflateImpl`, which builds its tables
+	and a 64 KB window as objects for every call.
 **/
 @:noCompletion
 class JvmZlib {

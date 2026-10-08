@@ -10,7 +10,7 @@ import sys.db.ResultSet;
  * driver can ask SQLite itself whether a transaction is open.
  *
  * `sqlite3_get_autocommit` answers from the connection's own state, so a
- * transaction begun or ended as SQL text, `request("BEGIN")`, or rolled
+ * transaction begun or ended as SQL text (`request("BEGIN")`) or rolled
  * back by SQLite after an error is reflected, at no cost.
  *
  * It also keeps the `sqlite3` pointer itself, for `sqlite3_interrupt`, which
@@ -18,14 +18,14 @@ import sys.db.ResultSet;
  * connection it opens to each automatic extension registered with
  * `sqlite3_auto_extension`, on the thread opening it; the one registered
  * here notes it, and `open` takes it straight after the glue's own open
- * returns, on the same thread, no change to hxcpp needed.
+ * returns, on the same thread, with no change to hxcpp needed.
  *
  * Through the same pointer, on an asynchronous connection, it registers a
  * progress handler, which SQLite calls every thousand steps of its virtual
  * machine: it stops the run a `cancel()` has asked to stop while that run is
  * the one under way (`publish`, `beginStop`, `stop`). `sqlite3_interrupt`
- * alone is lost when it lands as a statement starts, SQLite clears it
- * there when no other statement is running, and a `cancel()` can land
+ * alone is lost when it lands as a statement starts (SQLite clears it
+ * there when no other statement is running), and a `cancel()` can land
  * just then, as the worker takes the work up. The interrupt is still made:
  * it stops a single step that runs long, such as counting a whole table,
  * inside which SQLite calls no handler. A synchronous connection has the
@@ -78,8 +78,8 @@ static void crossbyte_sqlite_interrupt(void *db) {
 }
 
 // The glue closes its database from a finalizer when the collector takes
-// it, and SQLite refuses, SQLITE_BUSY, leaving it open, its file locked,
-// for the life of the process, while a statement prepared on it is not
+// it, and SQLite refuses (SQLITE_BUSY, leaving it open, its file locked,
+// for the life of the process) while a statement prepared on it is not
 // finalized, as the connection\'s kept ones are not. So the connection
 // removes that finalizer and closes the database from its own instead
 // (NativeSQLiteConnection.__letGo), its statements finalized first.
@@ -90,8 +90,8 @@ static void crossbyte_sqlite_disown(Dynamic handle) {
 // What a cancel() and the work it would stop decide between them, one per
 // connection: for an asynchronous connection made and freed by the
 // connection on the thread that runs it, for a synchronous one by its
-// native connection. runner is the run under way, the work of the worker,
-// or a synchronous request, 0 for none; stopFor, the run a cancel() has
+// native connection. runner is the run under way (the work of the worker,
+// or a synchronous request), 0 for none; stopFor, the run a cancel() has
 // asked the progress handler to stop; stopping, how many cancel()s are
 // between reading the run under way and having interrupted it, while the
 // worker starts no run; cancels, on a synchronous connection, how many
@@ -233,7 +233,7 @@ static bool crossbyte_sqlite_sync_begin(void *p, int run, int since) {
 }
 
 // Once its first step has returned: no longer starting, and whether an
-// interrupt() asked to stop it meanwhile, one that read it as under way
+// interrupt() asked to stop it meanwhile; one that read it as under way
 // and asks only after this interrupts it as well, which by then lands.
 static bool crossbyte_sqlite_sync_end(void *p, int run) {
 	crossbyte_sqlite_runs *runs = (crossbyte_sqlite_runs *)p;
@@ -315,11 +315,11 @@ class NativeSQLiteConnection implements Connection {
 	}
 
 	/**
-		The collector's, for a connection let go without `close()`, as the
-		glue's own finalizer was: its statements finalized and the database
-		closed. The glue's could not close it once statements were kept on
-		it, SQLite refuses while one is left, and the database stayed
-		open, its file locked, for the life of the process. Runs inside a
+		The collector's, for a connection let go without `close()`: its
+		statements finalized and the database closed. The glue's own
+		finalizer cannot close it while statements are kept on it (SQLite
+		refuses while one is left), and would leave the database open, its
+		file locked, for the life of the process. Runs inside a
 		collection: it allocates nothing.
 	**/
 	@:noCompletion private static function __letGo(connection:NativeSQLiteConnection):Void {
@@ -391,7 +391,7 @@ class NativeSQLiteConnection implements Connection {
 
 	/**
 		A `cancel()`: has the progress handler stop `run` while it is the one
-		under way, within a thousand steps, failing it with "interrupted",
+		under way (within a thousand steps, failing it with "interrupted")
 		and never another.
 	**/
 	public static function stop(runs:cpp.Pointer<cpp.Void>, run:Int):Void {
@@ -404,8 +404,8 @@ class NativeSQLiteConnection implements Connection {
 	}
 
 	/**
-		Stops the statement running on this connection at its next step,
-		it fails with "interrupted", from any thread. Does nothing when none
+		Stops the statement running on this connection at its next step (it
+		fails with "interrupted"), from any thread. Does nothing when none
 		is running, or once closed. A write interrupted inside a transaction
 		takes the whole transaction back with it, as SQLite has it.
 
@@ -462,11 +462,11 @@ class NativeSQLiteConnection implements Connection {
 
 		hxcpp's glue keeps one live result per connection, and starts a
 		request by finalizing the one before it: a statement read a page at a
-		time while others ran on the connection, a cursor whose rows are
-		each written elsewhere, lost every row after the page in hand, and
-		its next page read as the empty last one. So the result still live
-		reads the rest of its rows into its own hands first, and gives them
-		as asked; only a result interleaved that way pays for it.
+		time while others run on the connection (a cursor whose rows are
+		each written elsewhere) would lose every row after the page in hand,
+		and its next page would read as the empty last one. So the result
+		still live reads the rest of its rows into its own hands first, and
+		gives them as asked; only a result interleaved that way pays for it.
 	**/
 	public function request(s:String):ResultSet {
 		return requestSince(s, cancels());
@@ -519,8 +519,8 @@ class NativeSQLiteConnection implements Connection {
 				}
 			}
 		} else {
-			// Its text's kept one is running, a statement read a page at a
-			// time, another run of the same text meanwhile, so this one is
+			// Its text's kept one is running (a statement read a page at a
+			// time, another run of the same text meanwhile), so this one is
 			// used once and freed.
 			statement.kept = false;
 		}
@@ -645,8 +645,8 @@ class NativeSQLiteConnection implements Connection {
 		within a thousand steps, and one whose first step returned sooner is
 		interrupted again, so its next step fails. SQLite clears an interrupt
 		that lands while a statement is prepared, and on its own such a
-		request ran on, for as long as it took: an aggregate for its hours,
-		a SELECT through every row.
+		request would run on for as long as it takes: an aggregate for its
+		hours, a SELECT through every row.
 	**/
 	public function requestSince(s:String, since:Int):ResultSet {
 		return __requestWith(s, null, since, false);
@@ -655,7 +655,7 @@ class NativeSQLiteConnection implements Connection {
 	/**
 		`requestSince`, with `parameters` bound when `bound`. Natively the
 		statement is prepared once and kept (`__take`), its rows made with
-		fixed slots; the glue prepares it again for every run, and is used
+		fixed slots. The glue, which prepares it again for every run, is used
 		only when the connection's `sqlite3` was not reached.
 	**/
 	@:noCompletion private function __requestWith(s:String, parameters:Null<haxe.ds.StringMap<Dynamic>>, since:Int, bound:Bool):ResultSet {
@@ -665,7 +665,7 @@ class NativeSQLiteConnection implements Connection {
 
 		if (__db == null && bound) {
 			// No sqlite3 reached to prepare on: the values written into the
-			// text, through the glue, as before.
+			// text, through the glue.
 			s = @:privateAccess crossbyte.db.sql.sqlite.SQLiteConnection.__substitute(s, parameters);
 		}
 

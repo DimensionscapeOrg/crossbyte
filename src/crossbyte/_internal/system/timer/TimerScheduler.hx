@@ -67,8 +67,8 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	 * several runtimes and they need not agree: a simulation thread holding a
 	 * timer per entity and a network thread holding a handful want different
 	 * structures, and a compile flag cannot say so. There is no cost to
-	 * deciding it here, this abstract already calls through `ITimerScheduler`
-	 * either way, so nothing was being saved by fixing it at build time.
+	 * deciding it here: this abstract calls through `ITimerScheduler`
+	 * either way, so nothing would be saved by fixing it at build time.
 	 *
 	 * See `crossbyte.core.TimerStrategy` for which to pick.
 	 */

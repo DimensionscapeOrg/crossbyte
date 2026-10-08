@@ -29,9 +29,9 @@ import sys.thread.Thread;
 /**
  * `SharedChannel` is CrossByte's higher-level local message IPC surface.
  *
- * It preserves the classic method-name plus serialized-arguments programming
- * model that used to live on `LocalConnection`, but now runs on top of the
- * low-level byte-oriented `LocalConnection` transport.
+ * It keeps the classic method-name plus serialized-arguments programming
+ * model, running on top of the low-level byte-oriented `LocalConnection`
+ * transport.
  *
  * A channel name is its user's own, as a `LocalConnection` name is: the
  * processes of one user meet over it, those of two users never do, and what
@@ -52,9 +52,9 @@ class SharedChannel extends EventDispatcher {
 	 * The object that handles incoming messages.
 	 * This should contain methods matching the message names sent by peers.
 	 *
-	 * A message naming no method of it, or whose arguments cannot be read,
-	 * not Haxe serialization, naming a class this build does not have, or
-	 * nested more than 256 deep, is dropped.
+	 * A message naming no method of it, or whose arguments cannot be read
+	 * (not Haxe serialization, naming a class this build does not have, or
+	 * nested more than 256 deep), is dropped.
 	 *
 	 * A method that throws is reported as a callback the runtime runs is:
 	 * logged with `Logger.error`, and dispatched as
@@ -73,16 +73,15 @@ class SharedChannel extends EventDispatcher {
 	 * connection underneath.
 	 *
 	 * 0 (or less) means no deadline: the send waits until something
-	 * listens, however long that is. It used to make a single try. One try
+	 * listens, however long that is. One try
 	 * is what any timeout of 50 or less makes.
 	 */
 	public var timeout:Int = 5000;
 
 	@:noCompletion private var __listener:LocalConnection;
-	// A connection to each destination sent to lately, by name. It was one
-	// connection, closed and dialled again whenever a send went somewhere
-	// other than where the last one did, so two destinations sent to in turn
-	// cost a connect each send. One is closed after TIME_OUT without a send,
+	// A connection to each destination sent to lately, by name, so two
+	// destinations sent to in turn do not cost a connect each send. One is
+	// closed after TIME_OUT without a send,
 	// and the least recently used when a new one would pass MAX_OUTBOUND:
 	// each connection has a reader thread.
 	@:noCompletion private var __outbound:Map<String, OutboundLink> = new Map();
@@ -148,7 +147,7 @@ class SharedChannel extends EventDispatcher {
 		__listener = new LocalConnection();
 		__listener.onData = input -> {
 			// The connection's own, made for this message: taken as it is,
-			// where it was copied into one of this channel's first.
+			// not copied into one of this channel's first.
 			var payload:ByteArray = cast input;
 			payload.position = 0;
 			__dispatchReceivedData(payload);
@@ -185,9 +184,9 @@ class SharedChannel extends EventDispatcher {
 			return;
 		}
 
-		// Framed straight into one buffer of its size, little-endian lengths as
-		// BytesBuffer wrote them: BytesBuffer on hxcpp adds a byte at a time,
-		// and what it made was copied twice more before it was sent.
+		// Framed straight into one buffer of its size, little-endian lengths
+		// as BytesBuffer would write them, rather than through BytesBuffer,
+		// which on hxcpp adds a byte at a time and makes a copy to send.
 		var methodLength:Int = methodBytes.length;
 		var serializationLength:Int = serializationBytes.length;
 		var framed:Bytes = Bytes.alloc(8 + methodLength + serializationLength);
@@ -322,8 +321,8 @@ class SharedChannel extends EventDispatcher {
 		}
 
 		// Kept apart from the reading above: what the method throws is the
-		// application's failure, not the message's, and was dropped with the
-		// unreadable ones, without a word.
+		// application's failure, not the message's, and is reported rather
+		// than dropped with the unreadable ones.
 		try {
 			Reflect.callMethod(target, method, call.args);
 		} catch (error:Dynamic) {
@@ -365,8 +364,8 @@ class SharedChannel extends EventDispatcher {
 
 	/**
 		Reports what a client method threw as the runtime reports a posted
-		callback's failure, logged, and dispatched as
-		`UncaughtErrorEvent.UNCAUGHT_ERROR`: on the runtime of the thread
+		callback's failure (logged, and dispatched as
+		`UncaughtErrorEvent.UNCAUGHT_ERROR`) on the runtime of the thread
 		that called it, which is the channel's; logged alone where there is
 		none.
 	**/

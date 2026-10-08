@@ -29,14 +29,14 @@ class TimerNode {
 	 * callback does to it: clearing itself ends the timer, but the node waits
 	 * for the callback to return before it can carry another timer. Kept on
 	 * the node rather than in one field of the scheduler, so a callback that
-	 * runs a pass of its own, a nested pump, does not lose track of the
+	 * runs a pass of its own (a nested pump) does not lose track of the
 	 * one that called it.
 	 */
 	public var firing:Bool = false;
 
 	/**
-	 * Whether the callback running gave its own timer a new time, a
-	 * reschedule, a delay or a resume through its handle, which settling it
+	 * Whether the callback running gave its own timer a new time (a
+	 * reschedule, a delay or a resume through its handle), which settling it
 	 * afterwards has to respect.
 	 */
 	public var rearmed:Bool = false;
@@ -54,9 +54,9 @@ class TimerNode {
 
 	/**
 	 * The scheduler's time when the timer was paused, or NaN while it is not
-	 * paused; see `isPaused`. It was a `Null<Float>`, which natively and on
-	 * the jvm is a boxed number: every pause allocated one. No timer's time
-	 * is NaN, since the schedulers refuse it.
+	 * paused; see `isPaused`. Not a `Null<Float>`, which natively and on the
+	 * jvm is a boxed number, allocated by every pause. No timer's time is
+	 * NaN, since the schedulers refuse it.
 	 */
 	public var pausedAt:Float = Math.NaN;
 
@@ -64,10 +64,10 @@ class TimerNode {
 
 	/**
 	 * A `Void->Void` callback, kept as it was given and called directly; null
-	 * for one that takes its handle. It used to be wrapped in a closure that
-	 * took the handle and dropped it: a closure made per timer armed, two
-	 * dynamic calls per fire, and the handle boxed for each, an allocation
-	 * once handles were past hxcpp's small-int cache.
+	 * for one that takes its handle. Wrapped in a closure that took the
+	 * handle and dropped it, it would cost a closure per timer armed, two
+	 * dynamic calls per fire, and the handle boxed for each: an allocation
+	 * once handles are past hxcpp's small-int cache.
 	 */
 	public var voidCallback:Void->Void;
 
@@ -76,8 +76,8 @@ class TimerNode {
 	 * The handle as hxcpp passes it to a callback that takes one, boxed once
 	 * for the timer rather than once per fire: a closure is called with its
 	 * arguments boxed, and a handle is past the small-int cache from the
-	 * 256th timer on, so an interval taking its handle allocated every time
-	 * it fired. Null until the first fire.
+	 * 256th timer on, so boxed per fire, an interval taking its handle would
+	 * allocate every time it fired. Null until the first fire.
 	 */
 	public var handleBox:Dynamic = null;
 	#end

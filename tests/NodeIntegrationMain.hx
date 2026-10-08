@@ -32,7 +32,7 @@ import crossbyte.url.URLRequest;
 	The parts of CrossByte that only exist on Node, exercised against Node.
 
 	`JsTestMain` deliberately holds nothing needing a socket, a subprocess or a
-	runtime driving itself, it is the portable suite, and it has to mean the
+	runtime driving itself: it is the portable suite, and it has to mean the
 	same thing on the browser build. Everything written for Node specifically
 	therefore had no home: the self-driven loop, sockets over `js.node.net`,
 	`URLLoader` over Node's HTTP client, `NativeProcess` over `child_process`.
@@ -46,14 +46,10 @@ import crossbyte.url.URLRequest;
 **/
 class NodeIntegrationMain extends Application {
 	// Every server in this file binds port 0 and reads back the port the OS
-	// assigned. They used to be fixed, 50561 to 50565, and Windows reserves
-	// ports in blocks for Hyper-V, WinNAT and WSL, blocks that move between
-	// boots, so the same unchanged test passed one day and failed the next.
-	// Confirmed rather than guessed, both times: `netsh int ipv4 show
-	// excludedportrange protocol=udp` listed 50474-50573 when the datagram
-	// stage stopped with "still 0 after 201 tries", and `protocol=tcp` listed
-	// 50501-50600 when the run died at its first server with `listen EACCES`,
-	// green on CI only because that runner's blocks fell somewhere else.
+	// assigned. Windows reserves ports in blocks for Hyper-V, WinNAT and WSL
+	// (`netsh int ipv4 show excludedportrange protocol=udp` lists them), and
+	// the blocks move between boots, so a fixed port passes one day and
+	// fails the next, with "still 0 after 201 tries" or `listen EACCES`.
 	//
 	// A server written against Node reads its port from address() in the
 	// listen callback. A CrossByte one reads localPort, which on Node stays 0
@@ -113,9 +109,9 @@ class NodeIntegrationMain extends Application {
 		// Node process instead of reporting a failure.
 		//
 		// Unreferenced, because an armed timer is itself a reason for Node to
-		// stay alive, with this one referenced the process sat here for the
-		// full thirty seconds after passing, and the guard reported a timeout
-		// on a run that had already finished.
+		// stay alive: referenced, it would keep the process here for the full
+		// thirty seconds after passing, and the guard would report a timeout on
+		// a run that had already finished.
 		var guard = js.Node.setTimeout(function():Void {
 			Sys.println("TIMED OUT after " + TIMEOUT_MS + "ms with " + checks + " checks done");
 			Sys.exit(1);
@@ -124,21 +120,20 @@ class NodeIntegrationMain extends Application {
 
 		check("Event.INIT reached the application", true, "");
 
-		// File.spaceAvailable compiled cleanly here and then threw
-		// `ReferenceError: sys is not defined` when called: it shelled out
-		// through sys.io.Process, which type-checks on Node because hxnodejs
-		// allows the `sys` package but generates nothing for it. It reads the
-		// filesystem directly now.
+		// File.spaceAvailable reads the filesystem directly on Node. Shelling
+		// out through sys.io.Process would type-check here (hxnodejs allows the
+		// `sys` package but generates nothing for it) and then throw
+		// `ReferenceError: sys is not defined` when called.
 		var free:Float = File.applicationStorageDirectory.spaceAvailable;
 		check("File.spaceAvailable answers on Node", free > 1024 * 1024, "reported " + free + " bytes free");
 
 		// Node is where the platform conditionals hurt most, and where
 		// SysSupportTest cannot reach: `#if windows` is never set here, so on
-		// Windows this target answered every platform question with the branch
-		// written for POSIX. PLATFORM read "undefined" and appStorageDir read
-		// HOME, the profile root when Git Bash had set it, a different place
-		// than a native build uses for the same data, and the literal string
-		// "undefined" when nothing had.
+		// Windows a platform question must not be answered with the branch
+		// written for POSIX, where PLATFORM would read "undefined" and
+		// appStorageDir HOME (the profile root when Git Bash had set it, a
+		// different place than a native build uses for the same data, and the
+		// literal string "undefined" when nothing had).
 		check("System.PLATFORM identifies the host on Node", crossbyte.sys.System.PLATFORM != "undefined",
 			"reported " + crossbyte.sys.System.PLATFORM);
 
@@ -420,10 +415,9 @@ class NodeIntegrationMain extends Application {
 		config.rootDirectory = new File(webRoot);
 		config.directoryIndex = ["index.html"];
 
-		// This refused until the bridge stopped reading synchronously: Node has
-		// no blocking socket read, so PHP could not be served here at all and
-		// validate() said so at startup. Stage 12 is the demonstration that it
-		// now can, and this is the config-level half of it.
+		// Node has no blocking socket read, so the bridge reads
+		// asynchronously, and PHP can be served here: stage 12 is the
+		// demonstration, and this is the config-level half of it.
 		var refusedPhp:String = null;
 
 		try {
@@ -523,10 +517,10 @@ class NodeIntegrationMain extends Application {
 	// ---- 6. crossbyte.net.WebSocket framing over js.node.net -------------
 
 	private function startWebSocketServer():Void {
-		// Checked here because the WebSocket depends on it, a client masks
-		// every frame with a fresh key, and the key comes from here. It threw
-		// on Node until Node's own CSPRNG was wired in, which meant a
-		// WebSocket could not be constructed at all.
+		// Checked here because the WebSocket depends on it: a client masks
+		// every frame with a fresh key, and the key comes from here, from
+		// Node's own CSPRNG. Without it a WebSocket could not be constructed
+		// at all.
 		var first = crossbyte.crypto.SecureRandom.getSecureRandomBytes(32);
 		var second = crossbyte.crypto.SecureRandom.getSecureRandomBytes(32);
 
@@ -540,8 +534,8 @@ class NodeIntegrationMain extends Application {
 
 		// An RFC 6455 echo server written straight onto a Node socket rather
 		// than pulled from npm, so CI needs nothing installed. It answers the
-		// upgrade, unmasks what a client sends, a client must mask, a server
-		// must not, and sends the same payload back unmasked.
+		// upgrade, unmasks what a client sends (a client must mask, a server
+		// must not), and sends the same payload back unmasked.
 		wsServer = js.node.Net.createServer(function(connection:js.node.net.Socket):Void {
 			var handshaken:Bool = false;
 			var buffer:js.node.Buffer = js.node.Buffer.alloc(0);
@@ -812,15 +806,14 @@ class NodeIntegrationMain extends Application {
 	// ---- 8. the reliable layer on top of it ------------------------------
 
 	private function startReliableDatagrams():Void {
-		// Pure protocol over DatagramSocket, sequencing, acknowledgement,
-		// retransmission, so nothing about it is platform code. Which is
-		// exactly why it is worth running rather than assuming: it came to
-		// Node as a gate change and no new lines, and a gate change that
-		// compiles is not a gate change that works.
+		// Pure protocol over DatagramSocket (sequencing, acknowledgement,
+		// retransmission), so nothing about it is platform code. Which is
+		// exactly why it is worth running rather than assuming: a gate change
+		// that compiles is not a gate change that works.
 		rdServer = new ReliableDatagramServerSocket();
 		// Its sequence starts forty below 2^31, so the burst below crosses
-		// it. JavaScript counted on past it where the wire wraps, and the
-		// receiver stopped delivering at the crossing.
+		// it: JavaScript counts on past it where the wire wraps, and the
+		// receiver must keep delivering at the crossing.
 		rdClient = new CrossingSocket();
 
 		rdServer.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, function(event:ReliableDatagramSocketConnectEvent):Void {
@@ -957,8 +950,8 @@ class NodeIntegrationMain extends Application {
 
 		var secureWs = new ServerWebSocket(true);
 		check("a secure ServerWebSocket constructs on Node", true, "");
-		// The property, not a private flag. It read false on a secure server
-		// until the constructor stopped keeping its own copy of the answer.
+		// The property, not a private flag: the constructor keeps no copy of
+		// the answer of its own that could read false on a secure server.
 		check("a secure ServerWebSocket says it is secure", secureWs.secure, "secure reported false");
 		check("a plain ServerWebSocket says it is not", !wsListener.secure, "secure reported true");
 
@@ -1215,9 +1208,8 @@ class NodeIntegrationMain extends Application {
 
 	// ---- 12. the PHP bridge over Node's sockets --------------------------
 	//
-	// This one could not exist until the bridge stopped reading synchronously.
-	// Node has no blocking socket read, so PHP was refused outright at config
-	// validation; the refusal is gone and this is what replaces it.
+	// Node has no blocking socket read, so the bridge reads
+	// asynchronously, and PHP passes config validation here.
 	//
 	// The backend is a socket that speaks FastCGI, not php-fpm. What is under
 	// test is the bridge, and standing up a real PHP to test it would make this
@@ -1231,7 +1223,7 @@ class NodeIntegrationMain extends Application {
 
 			phpPeer.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
 				// The request arrives as records this test does not need to
-				// parse, any of it means the bridge sent something.
+				// parse: any of it means the bridge sent something.
 				if (phpAnswered) {
 					return;
 				}
@@ -1308,7 +1300,7 @@ class NodeIntegrationMain extends Application {
 
 		// The accepted socket is held, which is the whole point of this stage.
 		// Dropped on the floor it is collectable, Node tears the connection
-		// down, and the bridge reports a closed peer, a real failure, but not
+		// down, and the bridge reports a closed peer: a real failure, but not
 		// the one under test. A backend that accepted and then said nothing is
 		// what has to be survived here.
 		silent.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent):Void {
@@ -1396,7 +1388,7 @@ class NodeIntegrationMain extends Application {
 
 	private static function check(what:String, ok:Bool, detail:String):Void {
 		checks++;
-		Sys.println((ok ? "  PASS  " : "  FAIL  ") + what + (ok ? "" : ", " + detail));
+		Sys.println((ok ? "  PASS  " : "  FAIL  ") + what + (ok ? "" : ": " + detail));
 
 		if (!ok) {
 			failures++;

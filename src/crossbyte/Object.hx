@@ -12,7 +12,7 @@ import crossbyte.ds.ListedMap.KeyValuePair;
  * As in ActionScript, an `Object` holding a function can be called.
  *
  * **What it costs.** Every field of an `Object` is looked up by its name when
- * it is read. Built from a literal, `{name: "a", hits: 3}`, the fields
+ * it is read. Built from a literal such as `{name: "a", hits: 3}`, the fields
  * have fixed places, which natively makes those lookups quick; built empty
  * and filled with `obj["name"] = ...`, every field goes in a hash map. Build
  * from a literal when the fields are known, and for repeated typed access cast
@@ -41,8 +41,7 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 	}
 
 	/**
-		The fields' values, in the order `keys()` gives the fields. It was made
-		through `Array.map` and a closure; it is a loop.
+		The fields' values, in the order `keys()` gives the fields.
 	**/
 	public function values():Array<Dynamic> {
 		var fields:Array<String> = keys();
@@ -54,10 +53,9 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 	}
 
 	/**
-		The fields as `key`/`value` pairs, each read when the iteration reaches
-		it. They were all made first, each an anonymous structure, through
-		`Array.map` and a closure; each is a `KeyValuePair` now, which fits
-		where a `{key, value}` structure is asked for.
+		The fields as `key`/`value` pairs, each made when the iteration reaches
+		it as a `KeyValuePair`, which fits where a `{key, value}` structure is
+		asked for.
 	**/
 	public function entries():Iterator<KeyValuePair<String, Dynamic>> {
 		return new ObjectEntries(this, keys());

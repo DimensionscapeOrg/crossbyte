@@ -19,8 +19,7 @@ class HTTPStatusEvent extends Event {
 
 		From a server's `HTTPRequestHandler`, every field the response was
 		given, less the framing the protocol writes itself:
-		`Content-Length`, `Transfer-Encoding` and `Connection`. It used to be
-		only the fields a caller had added.
+		`Content-Length`, `Transfer-Encoding` and `Connection`.
 	**/
 	public var responseHeaders:Array<URLRequestHeader>;
 
@@ -30,7 +29,7 @@ class HTTPStatusEvent extends Event {
 
 		From a server's `HTTPRequestHandler`, the path and query the response
 		answers, as `requestPath` and `queryString` read: `/index.html?x=1`.
-		It used to be the client's address, which is `remoteAddress`.
+		The client's address is `remoteAddress`.
 	**/
 	public var responseURL:String;
 

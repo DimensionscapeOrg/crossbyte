@@ -9,11 +9,11 @@ import utest.Async;
 /**
 	A runtime serves more connections than one `select` can name.
 
-	neko's registry selected every socket it held at once, and neko's
-	`select` takes at most 64 on Windows and throws past them, so from the
-	65th connection no socket was serviced at all: 39 of 100 connections
-	timed out. It polls through neko's poll natives now. This asks every
-	target the same of its registry: 100 connections, each answered.
+	neko's `select` takes at most 64 sockets on Windows and throws past
+	them, so a registry selecting every socket it held at once would
+	service no socket at all from the 65th connection on; neko's registry
+	polls through neko's poll natives instead. This asks every target the
+	same of its registry: 100 connections, each answered.
 **/
 class SocketRegistryScaleTest extends utest.Test {
 	private static inline var COUNT:Int = 100;

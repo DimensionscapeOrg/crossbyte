@@ -8,15 +8,15 @@ import utest.Assert;
 import utest.Async;
 
 /**
-	A `Socket` connected again, after a connect that failed, or in place of
-	one still under way, is the new connection's alone.
+	A `Socket` connected again (after a connect that failed, or in place of
+	one still under way) is the new connection's alone.
 
-	On Node it was not: the socket given up went on reporting, and its
-	reports were taken for the one that replaced it. A refused connect's
-	close comes a turn after its error, so a connect retried from that
-	ioError was released by it and then connected with nothing to write to;
-	and a connect abandoned for another still announced CONNECT when it came
-	up, and its end closed the connection that replaced it.
+	On Node the socket given up must not go on reporting, with its reports
+	taken for the one that replaced it. A refused connect's close comes a
+	turn after its error, so a connect retried from that ioError must not
+	be released by it and left connected with nothing to write to; and a
+	connect abandoned for another must not announce CONNECT when it comes
+	up, nor have its end close the connection that replaced it.
 **/
 class SocketReconnectTest extends utest.Test {
 	#if (cpp || java || jvm || eval || nodejs)
@@ -80,9 +80,9 @@ class SocketReconnectTest extends utest.Test {
 	#if (cpp || java || jvm || nodejs)
 	/**
 		One socket, closed and connected to another server, names the new
-		peer. The far end is read once per connection now, it was a
-		getpeername call on every read, every HTTP response among them, and
-		what is kept must not outlive the connection it was read from.
+		peer. The far end is read once per connection (not with a getpeername
+		call on every read, every HTTP response among them), and what is kept
+		must not outlive the connection it was read from.
 	**/
 	@:timeout(30000)
 	public function testASocketConnectedAgainNamesItsNewPeer(async:Async):Void {

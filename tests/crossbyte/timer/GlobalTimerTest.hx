@@ -46,9 +46,10 @@ class GlobalTimerTest extends utest.Test {
 		Timers set and cleared from several threads at once keep distinct ids,
 		and clearing them all leaves nothing behind.
 
-		The map and the id counter were locked only on hxcpp. On the jvm four
-		threads doing this were issued 498 ids twice and left 264 entries in
-		the map, and a clearTimeout could stop another thread's timer.
+		The map and the id counter are locked on every threaded target, not
+		only on hxcpp: unlocked, four threads doing this on the jvm would be
+		issued ids twice and leave entries in the map, and a clearTimeout could
+		stop another thread's timer.
 	**/
 	public function testTimersFromManyThreadsKeepDistinctIds():Void {
 		var threads:Int = 4;

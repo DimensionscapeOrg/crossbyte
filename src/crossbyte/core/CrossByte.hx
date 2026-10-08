@@ -71,8 +71,8 @@ final class CrossByte extends EventDispatcher {
 	 * automatically when it is exceeded. What a larger value buys is
 	 * avoiding that growth, since each step disposes the poll backend,
 	 * allocates a new one, and re-registers every socket. Starting at 64,
-	 * a server ramping to a thousand connections pays for roughly seven
-	 * such rebuilds, precisely while it is busiest.
+	 * a server ramping to a thousand connections would pay for roughly
+	 * seven such rebuilds, precisely while it is busiest.
 	 *
 	 * Costs on the order of tens of kilobytes per runtime at the default.
 	 * Lower it for memory-constrained processes that hold few sockets;
@@ -88,12 +88,11 @@ final class CrossByte extends EventDispatcher {
 		`HIGH_PRIORITY_CLASS`, ahead of everything else on the machine at
 		normal priority. Off by default.
 
-		It used to be raised unasked, by every native Windows build, as the
-		runtime loaded: a library has no business deciding that for the
-		process it is part of, and a busy server at high priority can starve
-		the rest of the machine, its shell and its debugger included. Ask
-		for it where frame timing matters more than the rest of the machine,
-		a game server on a box of its own.
+		A library has no business deciding that for the process it is part
+		of, and a busy server at high priority can starve the rest of the
+		machine, its shell and its debugger included. Ask for it where frame
+		timing matters more than the rest of the machine: a game server on a
+		box of its own.
 
 		Takes effect when it is set, before or after the application is
 		created; set back to `false`, the process returns to the class it
@@ -125,11 +124,10 @@ final class CrossByte extends EventDispatcher {
 	 * Slack left at the end of a long sleep for the operating system to
 	 * overshoot into, before the remainder is finished in short sleeps.
 	 *
-	 * A frame used to be waited out entirely in one-millisecond steps, which
-	 * at the default tick rate is over eighty sleeps per frame to accomplish
-	 * nothing. Sleeping the bulk in one call and stepping only the tail costs
-	 * a handful, and is why this margin exists rather than sleeping the whole
-	 * remainder and hoping.
+	 * Waiting a frame out entirely in one-millisecond steps would be over
+	 * eighty sleeps per frame at the default tick rate. Sleeping the bulk in
+	 * one call and stepping only the tail costs a handful, and is why this
+	 * margin exists rather than sleeping the whole remainder and hoping.
 	 */
 	@:noCompletion private static inline var SLEEP_SLACK:Float = 0.002;
 
@@ -153,8 +151,8 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private static inline var DEFAULT_MAX_SOCKETS:Int = 64;
 
 	/**
-	 * Resolves the starting poll capacity, falling back to the historical
-	 * default if a caller sets a nonsensical value.
+	 * Resolves the starting poll capacity, falling back to the default if a
+	 * caller sets a nonsensical value.
 	 */
 	@:noCompletion private static inline function __initialSocketCapacity():Int {
 		return defaultSocketCapacity > 0 ? defaultSocketCapacity : DEFAULT_MAX_SOCKETS;
@@ -167,10 +165,9 @@ final class CrossByte extends EventDispatcher {
 	// happens-before publish/read of the primordial fields.
 	@:noCompletion private static var __registryLock:Mutex = new Mutex();
 
-	// Which runtime each thread belongs to. On every threaded target: this
-	// used to be native only, and elsewhere current() answered the primordial
-	// runtime on every thread, so a child runtime on the jvm registered its
-	// sockets and timers with the main one, from the wrong thread.
+	// Which runtime each thread belongs to, on every threaded target, so a
+	// child runtime registers its sockets and timers with itself, from its
+	// own thread.
 	@:noCompletion private static var __threadLocalStorage:Tls<CrossByte> = new Tls();
 	@:noCompletion private static var __primordialThread:Thread;
 	#end
@@ -192,14 +189,14 @@ final class CrossByte extends EventDispatcher {
 	 * This is the intended entry point for additional threaded CrossByte
 	 * instances after the primordial application has already been established.
 	 *
-	 * The child belongs to the runtime that made it, the calling thread's,
-	 * or the primordial one from a thread with none, and exits with it, so
+	 * The child belongs to the runtime that made it (the calling thread's,
+	 * or the primordial one from a thread with none) and exits with it, so
 	 * a process whose primordial runtime has exited ends rather than waiting
 	 * on children nobody is going to stop.
 	 *
 	 * On JavaScript, which has one thread, the child's loop is a chain of
 	 * the platform's timers beside the application's, started in a later
-	 * turn. While its own work runs, INIT, its ticks and timers, EXIT,
+	 * turn. While its own work runs (INIT, its ticks and timers, EXIT),
 	 * `current()` is the child and `crossbyte.Timer` schedules on it; the
 	 * rest of the time, a socket's callbacks included, they are the
 	 * application's.
@@ -217,9 +214,8 @@ final class CrossByte extends EventDispatcher {
 	 *        holding a handful need not agree.
 	 * @param configure Called with the child on the calling thread before the
 	 *        child's thread starts: the place to set `tps` and add `INIT`
-	 *        and `EXIT` listeners. The thread used to start inside `make()`,
-	 *        so anything done to the returned runtime raced its first frame
-	 *        and an INIT listener added afterwards could miss INIT entirely.
+	 *        and `EXIT` listeners, which then cannot race the child's first
+	 *        frame or miss INIT.
 	 * @return The newly created non-primordial CrossByte instance.
 	 */
 	public static function make(loopType:MainLoopType = DEFAULT, timers:TimerStrategy = HEAP, ?configure:CrossByte->Void):CrossByte {
@@ -264,12 +260,12 @@ final class CrossByte extends EventDispatcher {
 	 * instance. If none is attached, it falls back to the primordial runtime
 	 * only when called from the primordial thread.
 	 *
-	 * On every threaded target, native, the jvm, the interpreter, hl and
-	 * neko, a thread with no runtime of its own is refused rather than
+	 * On every threaded target (native, the jvm, the interpreter, hl and
+	 * neko) a thread with no runtime of its own is refused rather than
 	 * handed the primordial one: anything it registered there would be
 	 * touched from two threads. JavaScript has one thread: there this is the
-	 * child runtime whose own work is running, its INIT, ticks, timers and
-	 * EXIT, and the primordial runtime the rest of the time, a socket's
+	 * child runtime whose own work is running (its INIT, ticks, timers and
+	 * EXIT) and the primordial runtime the rest of the time, a socket's
 	 * callbacks included.
 	 *
 	 * @return The current thread's CrossByte instance, or the primordial
@@ -361,8 +357,7 @@ final class CrossByte extends EventDispatcher {
 	 * The share of the last frame's tick interval spent working, as a
 	 * percentage from 0 to 100: timers, tick listeners, socket handlers and
 	 * posted callbacks, and not the time spent waiting for the next tick or
-	 * blocked in poll. A POLL loop's socket handlers used to go uncounted,
-	 * so a server busy half of every frame reported 0%.
+	 * blocked in poll.
 	 */
 	public var cpuLoad(get, never):Float;
 	public var uptime(get, never):Float;
@@ -388,18 +383,17 @@ final class CrossByte extends EventDispatcher {
 
 	/**
 	 * How far past its deadline the last frame ended, in seconds. A few
-	 * hundred microseconds is the clock's own overshoot, on Windows up to
+	 * hundred microseconds is the clock's own overshoot (on Windows up to
 	 * a millisecond or two, since a wait there ends on the system timer's
-	 * tick; more is a frame whose work outran its tick, and the next frame
-	 * starts that much short. Zero for a host-driven runtime, whose frames
+	 * tick); more is a frame whose work outran its tick, and the next frame
 	 * the host schedules.
 	 */
 	public var loopLag(get, never):Float;
 
 	/**
 	 * How many frames have run past their deadline with no time left to
-	 * wait, since the runtime started: frames whose work, timers, the
-	 * tick, socket handlers, posted callbacks, took all the time they had.
+	 * wait, since the runtime started: frames whose work (timers, the
+	 * tick, socket handlers, posted callbacks) took all the time they had.
 	 * A frame that ends late because a wait did is late, which `loopLag`
 	 * says, but not an overrun: the `POLL` loop waits in poll until its
 	 * deadline, and on Windows that wait ends on the system timer's tick,
@@ -409,8 +403,8 @@ final class CrossByte extends EventDispatcher {
 
 	/**
 	 * Seconds of schedule the loop has given up since the runtime started. A
-	 * stall longer than is worth repaying, a suspended process, a
-	 * breakpoint, a frame that ran for seconds, restarts the schedule from
+	 * stall longer than is worth repaying (a suspended process, a
+	 * breakpoint, a frame that ran for seconds) restarts the schedule from
 	 * the present instead of running a burst of frames to catch up, and what
 	 * that skipped is counted here.
 	 */
@@ -432,7 +426,7 @@ final class CrossByte extends EventDispatcher {
 		the whole live heap whenever an allocation finds the heap's free
 		space spent, in the middle of a tick, which a game server feels as
 		one long frame: with 180 MB of small objects live, a tick of 2 ms
-		took 14 to 18. With this on, the runtime notes when collections
+		takes 14 to 18. With this on, the runtime notes when collections
 		happen and how much free space each starts with, and once the last
 		ones say the collector will run before the gap after this one, it
 		collects as this gap begins, if the time left to the next tick is
@@ -441,8 +435,8 @@ final class CrossByte extends EventDispatcher {
 		to the collector, twice as many after each that overruns in a row.
 		It moves collections rather than adding them, a little early: a
 		steady server collects a few percent more often. Some still land in
-		ticks: the first two, which it learns from; one cycle in every few,
-		one in seventeen once the load holds steady, which it leaves to
+		ticks: the first two, which it learns from; one cycle in every few
+		(one in seventeen once the load holds steady), which it leaves to
 		the collector to measure how long a cycle runs; and any that comes
 		sooner than the last ones said, or when no gap was long enough. A
 		collection longer than two thirds of a gap is never moved: at sixty
@@ -484,14 +478,12 @@ final class CrossByte extends EventDispatcher {
 	 * When the current frame is due to end, as an absolute time.
 	 *
 	 * Carried forward by one tick interval per frame rather than recomputed
-	 * from whenever a frame happened to begin. Measuring the wait from the
-	 * frame's own start makes every overrun permanent, a frame that runs
-	 * two milliseconds long simply ends two milliseconds late and the next
-	 * one starts from there, so a runtime configured for 60 ticks a second
-	 * delivered closer to 55, silently, and anything counting ticks as
-	 * elapsed time drifted behind the clock for as long as it ran.
-	 *
-	 * Zero until the first frame establishes it.
+	 * from whenever a frame happened to begin. Measured from the frame's own
+	 * start, every overrun would be permanent (a frame that runs two
+	 * milliseconds long ends two milliseconds late and the next one starts
+	 * from there), so a runtime configured for 60 ticks a second would
+	 * deliver closer to 55, and anything counting ticks as elapsed time
+	 * would drift behind the clock for as long as it ran.
 	 */
 	@:noCompletion private var __frameDeadline:Float = 0.0;
 
@@ -516,7 +508,7 @@ final class CrossByte extends EventDispatcher {
 	// These events are ephemeral during dispatch and must not be retained.
 	// Set to null rather than left unset: a neko object gains a field when
 	// it is first set, which can move its field table, and a write another
-	// thread makes meanwhile, a post, a listener, is lost with the old
+	// thread makes meanwhile (a post, a listener) is lost with the old
 	// table.
 	@:noCompletion private var __pooledTickEvent:TickEvent = null;
 	@:noCompletion private var __pooledTickEventInUse:Bool = false;
@@ -540,8 +532,8 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private var __posted:Null<Array<Void->Void>> = null;
 	@:noCompletion private var __hasPosted:Bool = false;
 	// The array the last batch ran from, emptied, which the next batch is
-	// posted into: each batch was a new array, 104 bytes natively for every
-	// callback handed over on its own. The runtime's thread alone touches it.
+	// posted into, so a batch costs no new array (104 bytes natively). The
+	// runtime's thread alone touches it.
 	@:noCompletion private var __postedSpare:Null<Array<Void->Void>> = null;
 	// The longest batch whose array is kept: a burst's is let go rather than
 	// held at its size for good.
@@ -701,8 +693,8 @@ final class CrossByte extends EventDispatcher {
 	/**
 		Runs one frame of this runtime: what other threads posted, the timers
 		due once `delta` more seconds have passed, a `TickEvent` carrying
-		`delta`, the sockets, waiting up to `socketTimeout` seconds for one
-		to be ready, or for something to be posted, and what all of that
+		`delta`, the sockets (waiting up to `socketTimeout` seconds for one
+		to be ready, or for something to be posted), and what all of that
 		asked to send.
 
 		For a runtime that does not loop by itself. A `HostApplication`'s
@@ -749,18 +741,16 @@ final class CrossByte extends EventDispatcher {
 		__pump(delta, 0.0);
 	}
 
-	// The frame both `pump`s run. They were one function with
-	// `socketTimeout = 0.0`, and on the jvm an argument with a default is an
-	// object: every frame a host pumped boxed its timeout.
+	// The frame both `pump`s run, with no default for `socketTimeout`: on
+	// the jvm an argument with a default is an object, and every frame a
+	// host pumped would box its timeout.
 	@:noCompletion public function __pump(delta:Float, socketTimeout:Float):Void {
 		if (!__usesHostLoop) {
 			// A custom loop body's frame. Its loop bound the thread and
 			// dispatched INIT before calling the body, and finishes the exit
-			// once the body returns, so this does only the frame. pump used
-			// to refuse it, and everything else that runs a frame is private,
-			// so a custom loop could run nothing but itself.
+			// once the body returns, so this does only the frame.
 			if (!__loopType.match(CUSTOM(_))) {
-				throw new IllegalOperationError("CrossByte.pump() runs a frame of a runtime that does not loop by itself, a HostApplication's, or a MainLoopType.CUSTOM body's, and this one runs its own.");
+				throw new IllegalOperationError("CrossByte.pump() runs a frame of a runtime that does not loop by itself (a HostApplication's, or a MainLoopType.CUSTOM body's), and this one runs its own.");
 			}
 			if (!__isOwnThread()) {
 				throw new IllegalOperationError("A MainLoopType.CUSTOM runtime is pumped by its own loop body, on its own thread.");
@@ -777,22 +767,22 @@ final class CrossByte extends EventDispatcher {
 		}
 
 		#if cpp
-		// A host loop that only pumps, no sleep, nothing allocated, as a
-		// benchmark or an embedder's busy loop does, otherwise never reaches a
+		// A host loop that only pumps (no sleep, nothing allocated, as a
+		// benchmark or an embedder's busy loop does) otherwise never reaches a
 		// GC safepoint, and a collection another thread starts waits on this one
 		// for ever: every worker, and the pool URLLoader runs on, stops with it.
 		cpp.vm.Gc.safePoint();
 		#end
 
-		// Read the stop flag before claiming the thread, not after. This used to
-		// publish `this` as the thread's current runtime and rebind the thread's
-		// timer scheduler on the way in, so pumping a runtime that had already
-		// exited left a runtime which can never tick again as CrossByte.current()
-		// for the rest of that thread's life, __finalizeExit's hand-back is
-		// guarded by __didExit and so does not run a second time. Everything that
-		// resolves the current runtime afterwards (a Worker's completion listener,
-		// a timer, a socket registration) then attached to the dead runtime and
-		// simply never fired, with nothing raised to say so.
+		// Read the stop flag before claiming the thread, not after.
+		// Publishing `this` as the thread's current runtime and rebinding the
+		// thread's timer scheduler for a runtime that has already exited would
+		// leave one that can never tick again as CrossByte.current() for the
+		// rest of that thread's life (__finalizeExit's hand-back is guarded by
+		// __didExit and does not run a second time), and everything resolving
+		// the current runtime afterwards (a Worker's completion listener, a
+		// timer, a socket registration) would attach to the dead runtime and
+		// never fire, with nothing raised to say so.
 		if (!__getRunning()) {
 			__finalizeExit();
 			__releaseThreadLocal();
@@ -812,7 +802,7 @@ final class CrossByte extends EventDispatcher {
 		}
 
 		// Contained here as well as per callback, for what fails between
-		// them, a flush, a poll. A host's own frame is the last place a
+		// them (a flush, a poll). A host's own frame is the last place a
 		// CrossByte handler's failure should surface.
 		try {
 			__stepHost(delta, socketTimeout);
@@ -868,44 +858,41 @@ final class CrossByte extends EventDispatcher {
 		free to. Safe from any thread: the one way to hand a runtime something
 		from another.
 
-		What a runtime owns, its sockets, its event listeners, is not
+		What a runtime owns (its sockets, its event listeners) is not
 		thread-safe, so code finishing on another thread has to come back to
-		the owner's before touching them. Each component used to do that with
-		a tick listener of its own, attached on the owner's thread for exactly
-		that reason; this is one queue for all of them, costing a runtime
-		nobody posts to a field read a tick.
+		the owner's before touching them. This is one queue for all of them,
+		costing a runtime nobody posts to a field read a tick.
 
 		A runtime waiting out the rest of its frame is woken for it, and runs
-		it then rather than at the next tick. It used to wait for the tick:
-		38ms on average at the default twelve ticks a second, up to a whole
-		frame, paid by every RPC answer, query result and task completion
-		finished on another thread, and paid again by each of a chain of
-		them. The wake happens once per batch, when the queue goes from empty
-		to not, so a burst of posts costs one wake. A host-driven runtime runs
-		what was posted at the start of its next `pump`.
+		it then rather than at the next tick, which would cost 38ms on average
+		at the default twelve ticks a second, up to a whole frame, for every
+		RPC answer, query result and task completion finished on another
+		thread, and again for each of a chain of them. The wake happens once
+		per batch, when the queue goes from empty to not, so a burst of posts
+		costs one wake. A host-driven runtime runs what was posted at the
+		start of its next `pump`.
 
 		Callbacks run in the order they were posted. What throws is reported
-		like any other callback's failure, logged, and dispatched as
-		`UncaughtErrorEvent.UNCAUGHT_ERROR`: and does not stop the rest.
+		like any other callback's failure (logged, and dispatched as
+		`UncaughtErrorEvent.UNCAUGHT_ERROR`) and does not stop the rest.
 
 		The queue has no depth limit: a runtime takes every callback posted
 		to it until it exits, and `postQueueDepth` says how many wait. A
 		limit would have to refuse a callback or make its caller wait, and
 		either breaks what `post` is for. Callers hand a runtime work only its
-		own thread may do, close a socket, deliver an RPC answer, arm a
-		timer, so a refused callback is work lost, or done on a thread that
+		own thread may do (close a socket, deliver an RPC answer, arm a
+		timer), so a refused callback is work lost, or done on a thread that
 		must not do it; and a caller made to wait deadlocks when it is the
 		runtime posting to itself, or two runtimes posting to each other. A
 		waiting callback costs its closure and a slot, about 32 bytes
 		natively and 20 on the jvm for one holding a number: 32 MB for a
 		million. Where a peer's traffic can make something post faster than
-		the runtime runs what it is given, connections handed to a runtime
-		that is busy, the bound belongs to that producer, which knows what
+		the runtime runs what it is given (connections handed to a runtime
+		that is busy), the bound belongs to that producer, which knows what
 		it can refuse or send elsewhere, and can read `postQueueDepth`.
 
 		@return Whether the callback was taken. False once the runtime has
-		        exited, when it would never run: that used to be dropped
-		        without a word.
+		        exited, when it would never run.
 	**/
 	public function post(callback:Void->Void):Bool {
 		if (callback == null) {
@@ -931,7 +918,7 @@ final class CrossByte extends EventDispatcher {
 		#if target.threaded
 		// Released only while the loop is waiting on it, and marked as woken
 		// here, so a burst releases it once and a runtime nobody is waiting
-		// in, a host-driven one, never accumulates releases.
+		// in (a host-driven one) never accumulates releases.
 		if (wasEmpty && __sleeping) {
 			__sleeping = false;
 			__wakeLock.release();
@@ -952,8 +939,7 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	/**
-		What `post` was called before it was public. Kept, since code already
-		calls it.
+		The same as `post`, for code that calls it by this name.
 	**/
 	@:noCompletion public inline function __post(callback:Void->Void):Void {
 		post(callback);
@@ -1037,9 +1023,9 @@ final class CrossByte extends EventDispatcher {
 		runtime has contained it: logs it with `Logger.error`, then dispatches
 		`UncaughtErrorEvent.UNCAUGHT_ERROR` on this runtime.
 
-		The runtime calls this for every callback it runs itself, timers,
+		The runtime calls this for every callback it runs itself (timers,
 		tick and lifecycle listeners, socket handlers, posted callbacks, and
-		the loop around them. Public for code that delivers callbacks of its
+		the loop around them). Public for code that delivers callbacks of its
 		own on the runtime's behalf, such as a socket fed by the platform's
 		event loop rather than by this runtime's poll, so that a failure
 		there is reported the same way rather than ending the process.
@@ -1080,7 +1066,7 @@ final class CrossByte extends EventDispatcher {
 
 	/**
 		Reports a socket listener that threw where the runtime could not catch
-		it itself, inside a callback Node's own loop delivers, the way the
+		it itself (inside a callback Node's own loop delivers), the way the
 		native registry reports one: through `__uncaught` on the calling
 		thread's runtime, or to the log when there is none.
 	**/
@@ -1205,9 +1191,9 @@ final class CrossByte extends EventDispatcher {
 	/**
 		As `__queuePassFlush`, but asked from inside this pass's flush for the
 		next one: the walk takes in whatever is queued while it runs, so an
-		item that keeps asking from its own flush, a progress handler that
-		writes the next piece of a stream to a socket that never fills, was
-		flushed again and again before the loop polled anything else. Held
+		item that keeps asking from its own flush (a progress handler that
+		writes the next piece of a stream to a socket that never fills) would
+		be flushed again and again before the loop polled anything else. Held
 		until the walk ends, then queued; the loops poll again, without
 		waiting, before they flush it (see `__flushesWaiting`).
 	**/
@@ -1236,9 +1222,9 @@ final class CrossByte extends EventDispatcher {
 		other thread to hand it from. A `Task`'s events and a `Worker`'s
 		messages are delivered this way.
 
-		What it throws is reported as a posted callback's failure is, logged,
+		What it throws is reported as a posted callback's failure is (logged,
 		and dispatched as `UncaughtErrorEvent.UNCAUGHT_ERROR` on the runtime
-		current then, rather than thrown into the platform's loop, which on
+		current then) rather than thrown into the platform's loop, which on
 		Node ends the process.
 	**/
 	@:noCompletion public static function __nextTurn(callback:Void->Void):Void {
@@ -1273,11 +1259,10 @@ final class CrossByte extends EventDispatcher {
 		}
 
 		// Walked by index rather than copied, because a flush can make another
-		// holder ask, an error handler that sends on a different session,
+		// holder ask (an error handler that sends on a different session),
 		// and that one belongs to this pass too. A holder that throws is
-		// reported and the walk goes on: this used to rethrow, leaving the
-		// rest for a next pass that the throw had just cancelled along with
-		// the loop.
+		// reported and the walk goes on, rather than leaving the rest for a
+		// next pass the throw would cancel along with the loop.
 		__flushingPass = true;
 		while (__passFlushAt < __passFlushes.length) {
 			var item:PassFlush = __passFlushes[__passFlushAt];
@@ -1313,12 +1298,12 @@ final class CrossByte extends EventDispatcher {
 	/**
 	 * Fires the timers due this frame, within a budget of one tick interval.
 	 *
-	 * Every due timer fires; there used to be a cap of 256 a frame, which a
-	 * runtime with more than that due, a few hundred sessions each keeping
-	 * a 50ms retransmit clock, could never catch up with, so every timer
-	 * ran later the longer it stayed up. The budget is what bounds a pass
-	 * now: time, not a count, and only reached by a burst that would
-	 * otherwise hold the frame past its end and keep the sockets waiting.
+	 * Every due timer fires, with no cap by count: a cap would leave a
+	 * runtime with more than that due (a few hundred sessions each keeping
+	 * a 50ms retransmit clock) running every timer later the longer it
+	 * stayed up. The budget is what bounds a pass: time, not a count, and
+	 * only reached by a burst that would otherwise hold the frame past its
+	 * end and keep the sockets waiting.
 	 * What it leaves fires next frame and is counted by `timerBacklog`.
 	 */
 	@:noCompletion private inline function __advanceTimers(dt:Float):Void {
@@ -1370,8 +1355,8 @@ final class CrossByte extends EventDispatcher {
 
 	// ==== Private Methods ====
 
-	// Socket polling is now shared across cpp and non-cpp targets.
-	// `SocketRegistry` already exists on non-cpp, and both TCP/UDP transports rely on it.
+	// Socket polling is shared across cpp and non-cpp targets: both TCP and
+	// UDP transports rely on `SocketRegistry`.
 	#if !js
 	@:noCompletion private inline function registerSocket(socket:Socket):Void {
 		if (__socketRegistry != null) {
@@ -1431,18 +1416,14 @@ final class CrossByte extends EventDispatcher {
 		if (__isPrimordial || __usesHostLoop) {
 			// This thread is the runtime's own: the primordial one's, or the
 			// one that will pump it. A child made with make() runs on a thread
-			// of its own and binds its timers there, from its loop; binding
-			// them here took over the timers of whichever thread called make(),
-			// so a timer that thread armed afterwards, a heartbeat, a
-			// retransmit, ran on the child's thread instead.
+			// of its own and binds its timers there, from its loop, so it does
+			// not take over the timers of whichever thread called make().
 			CBTimer.bindCurrentThread(__timer);
 		}
 		tps = DEFAULT_TICKS_PER_SECOND;
 		mainLoop = switch (__loopType) {
-			// JavaScript has no socket set to poll, sockets there are
-			// delivered by the platform's own loop, so POLL is the DEFAULT
-			// loop there. It threw at the first frame, which took down every
-			// ServerApplication on Node, the web-server sample among them.
+			// JavaScript has no socket set to poll (sockets there are delivered
+			// by the platform's own loop), so POLL is the DEFAULT loop there.
 			case POLL: #if js __defaultMainLoop #else __pollBasedMainLoop #end;
 			case CUSTOM(loop): loop;
 			default: __defaultMainLoop;
@@ -1541,9 +1522,9 @@ final class CrossByte extends EventDispatcher {
 	/**
 	 * Exits every runtime this one made. Called as this one finishes exiting,
 	 * after its own EXIT, so an EXIT handler can still reach them. On the
-	 * primordial runtime that is every runtime in the process, transitively:
-	 * a child used to keep running, and the process with it, after the
-	 * primordial runtime had exited and nothing was left to stop it.
+	 * primordial runtime that is every runtime in the process, transitively,
+	 * so no child keeps running, and the process with it, after the
+	 * primordial runtime has exited and nothing is left to stop it.
 	 */
 	@:noCompletion private function __exitChildren():Void {
 		#if target.threaded
@@ -1563,8 +1544,8 @@ final class CrossByte extends EventDispatcher {
 		}
 	}
 
-	// Timers made before any runtime existed, by a library's static
-	// initializer, which runs before main, start on this one's ticks.
+	// Timers made before any runtime existed (by a library's static
+	// initializer, which runs before main) start on this one's ticks.
 	@:noCompletion private function __adoptEarlyTimers():Void {
 		#if !lime_cffi
 		@:privateAccess haxe.Timer.__primordialReady(this);
@@ -1626,8 +1607,7 @@ final class CrossByte extends EventDispatcher {
 
 		#if js
 		// One turn of the JavaScript event loop at a time, rather than a loop
-		// that never gives it back. Spinning here would be the same code as
-		// below and would work in the sense that ticks would dispatch, and
+		// that never gives it back. Spinning here would dispatch ticks, and
 		// nothing else would ever run: not a socket, not an HTTP response, not
 		// a repaint, because every one of those is delivered by the loop this
 		// would be holding.
@@ -1654,8 +1634,8 @@ final class CrossByte extends EventDispatcher {
 
 	/**
 	 * Waits out what is left of a frame a failure cut short. Without it a
-	 * failure that recurs every pass, a broken poll backend, a custom loop
-	 * body with a bug, would skip the wait each time and spin a core
+	 * failure that recurs every pass (a broken poll backend, a custom loop
+	 * body with a bug) would skip the wait each time and spin a core
 	 * logging it, where this costs a line per tick.
 	 */
 	@:noCompletion private function __afterLoopFailure():Void {
@@ -1682,7 +1662,7 @@ final class CrossByte extends EventDispatcher {
 	 * that arrive early, so a rate below it still means what it says.
 	 *
 	 * A browser also asks for both a frame and a timer, because a page that is
-	 * not visible is given no frames at all, the callback is held until the
+	 * not visible is given no frames at all: the callback is held until the
 	 * tab comes back. On its own that would stop the entire runtime for as long
 	 * as the user looked at something else: no timers, no socket handling, a
 	 * connection left to time out. Timers do keep running while hidden, so one
@@ -1763,11 +1743,10 @@ final class CrossByte extends EventDispatcher {
 		Starts this runtime's loop in a later turn, after whatever the code
 		that made it does next, as a thread would start elsewhere.
 
-		Both an application's loop and a child's went through haxe.EntryPoint,
-		which runs what it is handed only while its own loop goes on: on Node,
-		until the program has started. So a runtime made once the program was
-		running, an application made after an asynchronous load, a child
-		made from a tick, never started at all.
+		Not through haxe.EntryPoint, which runs what it is handed only while
+		its own loop goes on (on Node, until the program has started), so a
+		runtime made once the program was running (an application made after
+		an asynchronous load, a child made from a tick) would never start.
 	**/
 	@:noCompletion private function __startLoopLater():Void {
 		#if nodejs
@@ -1784,12 +1763,10 @@ final class CrossByte extends EventDispatcher {
 
 		JavaScript has one thread, so a child runtime's loop is a chain of the
 		platform's timers beside the application's, and the timers'
-		`bindCurrentThread` binds them for the whole program. A child's loop
-		did that as it started and never gave them back: a timer the
-		application armed from then on was the child's, and never ran once the
-		child had exited. A runtime's own work, its INIT, its frames, its
-		EXIT, is bracketed by these instead, and whatever was there before
-		is put back after.
+		`bindCurrentThread` binds them for the whole program. A runtime's own
+		work (its INIT, its frames, its EXIT) is bracketed by these, and
+		whatever was there before is put back after, so a timer the
+		application arms is not taken over by a child, nor lost when it exits.
 	**/
 	@:noCompletion private function __enterJs():Void {
 		__jsOuterRunning = __jsRunning;
@@ -1831,8 +1808,8 @@ final class CrossByte extends EventDispatcher {
 		}
 
 		// Contained per listener: the listeners on a runtime's tick belong to
-		// unrelated components, and one's failure skipped every listener after
-		// it and then ended the loop.
+		// unrelated components, and one's failure must not skip every listener
+		// after it and end the loop.
 		if (__pooledTickEventInUse) {
 			__dispatchContained(new TickEvent(TickEvent.TICK, delta));
 			return;
@@ -1879,9 +1856,8 @@ final class CrossByte extends EventDispatcher {
 		var handBack:CrossByte = (!__isPrimordial && __primordial != this) ? __primordial : null;
 		#end
 
-		// The thread's timers go back with it. They were left on this runtime,
-		// which will never advance them again, so a timer armed on the thread
-		// afterwards simply never fired.
+		// The thread's timers go back with it: this runtime will never advance
+		// them again, so a timer armed on the thread afterwards would never fire.
 		if (CBTimer.currentOrNull() == __timer) {
 			CBTimer.bindCurrentThread(handBack != null ? handBack.__timer : null);
 		}
@@ -1894,8 +1870,8 @@ final class CrossByte extends EventDispatcher {
 
 		__didExit = true;
 
-		// What was handed over before the exit still runs, an answer that
-		// raced it should still reach its caller, and so does what EXIT's
+		// What was handed over before the exit still runs (an answer that
+		// raced it should still reach its caller), and so does what EXIT's
 		// own listeners post. After that the queue refuses, since nothing will
 		// ever run it again.
 		if (__hasPosted) {
@@ -2030,7 +2006,7 @@ final class CrossByte extends EventDispatcher {
 		// deliver through callbacks, so there is no descriptor to wait on and
 		// nothing for a poll budget to spend. The DEFAULT loop is the whole of
 		// what a poll loop would do here.
-		throw new IllegalOperationError("The POLL main loop needs a pollable socket set, which no JavaScript target has, sockets there are delivered by the runtime, not polled for. Use the DEFAULT main loop.");
+		throw new IllegalOperationError("The POLL main loop needs a pollable socket set, which no JavaScript target has: sockets there are delivered by the runtime, not polled for. Use the DEFAULT main loop.");
 		#else
 		var frameStart:Float = __frameStart = Timer.stamp();
 		__advanceTimers(__dt);
@@ -2054,40 +2030,31 @@ final class CrossByte extends EventDispatcher {
 			return;
 		}
 
-		// Spend what is left of the frame inside poll rather than beside it.
-		//
-		// This used to poll with a zero timeout and then sleep the remainder
-		// out, which meant sockets were serviced exactly once per tick: at the
-		// default 12 ticks a second, measured, a socket was polled every 84ms,
-		// so data arriving just after a poll waited that long to be seen and a
-		// request/response pair could pay it twice. Blocking here instead
-		// wakes the loop the moment a descriptor is ready, and returns at the
-		// deadline when nothing is, so the tick cadence is unchanged while the
-		// latency between the two disappears.
+		// Spend what is left of the frame inside poll rather than beside it,
+		// so the loop wakes the moment a descriptor is ready and returns at
+		// the deadline when nothing is: the tick cadence is unchanged, and data
+		// arriving just after a poll is not left waiting for the next tick
+		// (84ms at the default 12 ticks a second).
 		//
 		// The loop re-enters for whatever remains after dispatching, so a
 		// frame carrying several arrivals is not cut short by the first. The
 		// MIN_POLL_WAIT floor stops that becoming a spin when a backend
-		// returns immediately and repeatedly, the failure this replaces was
-		// Windows UDP poll doing exactly that with an idle socket registered,
-		// which is why the frame wait was kept out of poll's hands
-		// originally. Timers cannot be starved by it: the budget is bounded
-		// by the frame, and whatever it does not consume is slept off below.
+		// returns immediately and repeatedly, as Windows UDP poll can with an
+		// idle socket registered. Timers cannot be starved by it: the budget
+		// is bounded by the frame, and whatever it does not consume is slept
+		// off below.
 		var remaining:Float = __frameDeadline - Timer.stamp();
 		__socketRegistry.__waited = 0.0;
 
 		// At least one pass a frame, without a wait when there is no budget
-		// left to wait in. A frame shorter than the floor, 1,000 ticks a
-		// second, or one whose tick ran past its deadline used to skip the
-		// sockets altogether: a server at that rate never accepted or read,
-		// and one that fell behind stopped reading its clients until it
-		// caught up, which reading them is part of.
+		// left to wait in, so a frame shorter than the floor (1,000 ticks a
+		// second) or one whose tick ran past its deadline still reads its
+		// sockets.
 		//
 		// And again, with no wait, while a socket stopped with its share of
-		// the pass taken and more waiting, for as long as the frame lasts:
-		// a frame too short to wait in otherwise read it once and slept out
-		// the rest, so at 1,000 ticks a second an upload was read a megabyte
-		// a sleep.
+		// the pass taken and more waiting, for as long as the frame lasts, so
+		// a frame too short to wait in does not read it once and sleep out
+		// the rest.
 		var polled:Bool = false;
 		while ((remaining >= MIN_POLL_WAIT || !polled || ((__socketRegistry.__moreToRead || __flushesWaiting()) && remaining > 0)) && __getRunning()) {
 			polled = true;
@@ -2104,9 +2071,8 @@ final class CrossByte extends EventDispatcher {
 			remaining = __frameDeadline - Timer.stamp();
 		}
 
-		// The frame's work is what it spent less what poll spent blocked.
-		// It was taken before the poll, so every socket handler went
-		// uncounted: a server busy half of every frame reported 0%.
+		// The frame's work is what it spent less what poll spent blocked, so
+		// socket handlers are counted.
 		__cpuTime = Timer.stamp() - frameStart - __socketRegistry.__waited;
 		__wait(frameStart);
 		#end
@@ -2119,7 +2085,7 @@ final class CrossByte extends EventDispatcher {
 	 * Keeping the debt is what holds the configured rate: a frame that runs
 	 * long leaves the next one a shorter wait, so the average lands on the
 	 * interval instead of drifting past it. Keeping it without limit is the
-	 * other failure, after a suspend or a breakpoint the loop would run a
+	 * other failure: after a suspend or a breakpoint the loop would run a
 	 * burst of zero-wait frames trying to repay minutes of debt, starving
 	 * everything else to catch up with a schedule nobody is watching. Past
 	 * `MAX_SCHEDULE_DEBT`, the stall is declared
@@ -2158,8 +2124,8 @@ final class CrossByte extends EventDispatcher {
 		// reached from where it began, rather than where the clock is now.
 		// The POLL loop comes here from a wait in poll, which on Windows ends
 		// on the system timer's tick, up to a millisecond or two past the
-		// deadline it was given, and every frame with nothing to do was
-		// counted as one whose work had outrun its tick.
+		// deadline it was given, and a frame with nothing to do must not
+		// count as one whose work outran its tick.
 		var overran:Bool = frameStartTime + __cpuTime >= __frameDeadline;
 		#if precision_tick
 		var minSleep = 0.001;
@@ -2182,16 +2148,16 @@ final class CrossByte extends EventDispatcher {
 		__advanceDeadline();
 		#else
 		// The bulk of the wait goes in one blocking call, and only the last
-		// couple of milliseconds are stepped out. Stepping the whole remainder,
-		// which is what this once did, costs a syscall per millisecond, so
-		// better than eighty per frame at the default tick rate, all of them
-		// to arrive at the same moment one sleep would have.
+		// couple of milliseconds are stepped out: stepping the whole remainder
+		// would cost a syscall per millisecond, better than eighty per frame
+		// at the default tick rate, all of them to arrive at the same moment
+		// one sleep would have.
 		//
 		// The bulk is a wait on a lock rather than a sleep, so that `post`
 		// can end it. What another thread hands over is run then, and the
-		// wait goes on to the deadline: the tick cadence is what it was, and
-		// the handoff no longer waits for the next tick. The tail's short
-		// steps look for work between them.
+		// wait goes on to the deadline: the tick cadence is unchanged, and the
+		// handoff does not wait for the next tick. The tail's short steps look
+		// for work between them.
 		while (__getRunning()) {
 			var remaining:Float = __frameDeadline - Timer.stamp();
 
@@ -2206,10 +2172,10 @@ final class CrossByte extends EventDispatcher {
 
 			#if target.threaded
 			// Whole milliseconds only. hxcpp's timed lock on Windows waits out
-			// any fraction of a millisecond by spinning, measured, a 0.7ms
-			// wait burned 0.94ms of CPU, which at sixty ticks a second cost
-			// a loop with nothing to do two percent of a core. The fraction
-			// goes to the short sleeps below instead.
+			// any fraction of a millisecond by spinning (a 0.7ms wait burns 0.94ms
+			// of CPU), which at sixty ticks a second would cost a loop with
+			// nothing to do two percent of a core. The fraction goes to the short
+			// sleeps below instead.
 			var bulk:Float = Math.ffloor((remaining - WAIT_SLACK) * 1000) / 1000;
 			if (bulk >= 0.001) {
 				__sleepUntilWoken(bulk);
@@ -2229,7 +2195,7 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	// The gap before the next tick is starting: collectWhenIdle's chance.
-	// Counted as the frame's work, as a collection inside the tick was.
+	// Counted as the frame's work, as a collection inside the tick would be.
 	@:noCompletion private function __collectIfIdle():Void {
 		var collector:IdleCollector = __idleCollector;
 		if (collector == null) {
@@ -2239,8 +2205,8 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	// Runs what was posted, then sends what it asked to have sent, before
-	// the loop goes back to waiting. Counted as the frame's work: done inside
-	// the wait, it was missing from cpuLoad.
+	// the loop goes back to waiting. Counted as the frame's work, so cpuLoad
+	// includes it.
 	@:noCompletion private function __runPostedNow():Void {
 		var start:Float = Timer.stamp();
 		__runPosted();
@@ -2251,9 +2217,9 @@ final class CrossByte extends EventDispatcher {
 	#if !js
 	/**
 	 * Puts a wake socket in the poll set, so that `post` from another thread
-	 * ends the wait a POLL loop spends inside poll. Without one, a process
-	 * that cannot open a loopback connection, the loop is woken for posted
-	 * work at the end of each poll, as it was before.
+	 * ends the wait a POLL loop spends inside poll. Without one (a process
+	 * that cannot open a loopback connection) the loop is woken for posted
+	 * work at the end of each poll.
 	 */
 	@:noCompletion private function __armWakeSocket():Void {
 		if (__wakeSocket != null || __socketRegistry == null) {
@@ -2275,9 +2241,9 @@ final class CrossByte extends EventDispatcher {
 	When `CrossByte.collectWhenIdle` collects: asked as each gap before a
 	tick begins.
 
-	hxcpp says nothing about how far through its free space a cycle has got,
-	the in-use figure moves only when the heap grows or a collection ends,
-	measured: flat for the whole of a steady cycle, so this goes by when
+	hxcpp says nothing about how far through its free space a cycle has got
+	(the in-use figure moves only when the heap grows or a collection ends,
+	flat for the whole of a steady cycle), so this goes by when
 	collections happen. A cycle spends the free space a collection leaves,
 	which can be read, at the rate the program allocates, which a steady
 	server keeps: so the time from one collection to the next, per byte of
@@ -2435,15 +2401,14 @@ class IdleCollector {
 		var after:Float = clock();
 		var took:Float = after - before;
 		// A quarter of the way to each new one: on a busy machine single
-		// collections ran half as long again as their neighbours.
+		// collections can run half as long again as their neighbours.
 		pause = pause > 0 ? pause + (took - pause) * 0.25 : took;
 		collections++;
 		if (after > deadline) {
 			// Backed off: the next wants a gap half as long again as this
-			// took, and the next cycles are left to the collector, one, then
-			// twice as many each time one overruns again, where easing the
-			// estimate alone had a collection that never fits retried, and
-			// overrun, every few cycles.
+			// took, and the next cycles are left to the collector (one, then
+			// twice as many each time one overruns again), so a collection
+			// that never fits is not retried, and overrun, every few cycles.
 			overruns++;
 			if (took > pause) {
 				pause = took;

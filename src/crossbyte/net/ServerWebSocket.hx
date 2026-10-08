@@ -41,8 +41,8 @@ import sys.net.Host;
  * inherits: `admit` is asked about each connection as soon as it is
  * accepted, before any TLS or upgrade work; `maxAcceptsPerTick` bounds how
  * many are taken from the listen queue in one tick; and
- * `maxPendingHandshakes` bounds the sessions still upgrading, TLS and the
- * HTTP upgrade together, after which new connections wait in the kernel's
+ * `maxPendingHandshakes` bounds the sessions still upgrading (TLS and the
+ * HTTP upgrade together), after which new connections wait in the kernel's
  * queue. On Node, which accepts as connections arrive and has no queue to
  * leave them in, a connection that would pass that bound is refused.
  *
@@ -129,10 +129,10 @@ class ServerWebSocket extends ServerSocket {
 		8 MiB by default, as `HTTPServer` bounds a response's output: room for
 		the largest message a session takes (1 MiB, `maxMessageSize`) several
 		times over, behind a peer that has fallen seconds behind; and what a
-		peer that never reads can make this server hold. It was 0, so one
-		such peer, a phone asleep, a client that stopped reading, grew
+		peer that never reads can make this server hold. Unbounded, one such
+		peer (a phone asleep, a client that stopped reading) would grow
 		without bound everything sent to it, and a server broadcasting to it
-		held every message.
+		would hold every message.
 
 		Set here rather than per session because an application never sees an
 		accepted socket before the handshake response is written to it, so a
@@ -165,7 +165,7 @@ class ServerWebSocket extends ServerSocket {
 
 	/**
 		Whether sessions agree to permessage-deflate (RFC 7692) when a client
-		offers it, as every browser does, sending each message of
+		offers it (as every browser does), sending each message of
 		`compressionThreshold` bytes or more compressed and accepting
 		compressed messages.
 		Off by default. Set before the sessions it is for arrive.
@@ -188,7 +188,7 @@ class ServerWebSocket extends ServerSocket {
 		The largest upgrade request this server reads, in bytes: the request
 		line and every header, to the blank line that ends them. A request
 		past it is answered `431 Request Header Fields Too Large` and its
-		connection closed, counted in `handshakeFailures`, as soon as that
+		connection closed (counted in `handshakeFailures`) as soon as that
 		many bytes have arrived without an end, rather than once its peer
 		stops. `0` or less reads requests of any size. Set before the
 		sessions it is for arrive.
@@ -200,9 +200,9 @@ class ServerWebSocket extends ServerSocket {
 		`maxPendingHandshakes`: 4 MB at the defaults. Raise it for clients
 		that carry larger cookies.
 
-		There was no limit: one connection sending a header without end made
-		a server hold 221 MB in 10 s, with single passes of a second, until
-		`handshakeTimeout` ended it.
+		Without a limit, one connection sending a header without end would
+		have a server hold 221 MB in 10 s, with single passes of a second,
+		until `handshakeTimeout` ended it.
 	**/
 	public var maxHeaderSize:Int = crossbyte._internal.websocket.WebSocket.DEFAULT_MAX_HEADER_SIZE;
 
@@ -214,11 +214,10 @@ class ServerWebSocket extends ServerSocket {
 		session is accepted.
 
 		1 MiB by default. A peer can make a session hold about this much
-		while a message arrives, 50 sessions each part way through one
-		held 62 MB, so set it to the largest message the application
-		takes. It was process-wide, and every frame was held besides to
-		64 KiB, which refused a browser's messages of more than that: a
-		browser sends one of 100 KB as a single frame.
+		while a message arrives (50 sessions each part way through one held
+		62 MB), so set it to the largest message the application takes.
+		Frames are not limited on their own: a browser sends a message of
+		100 KB as a single frame.
 	**/
 	public var maxMessageSize:Int = crossbyte._internal.websocket.WebSocket.DEFAULT_MAX_MESSAGE_SIZE;
 
@@ -230,8 +229,7 @@ class ServerWebSocket extends ServerSocket {
 
 		Refused for 0, as a session's is, rather than read as no deadline: a
 		closing handshake that waited for good would hold every peer that
-		never answers its close frame. It took 0, NaN or a negative number
-		without a word, and its sessions waited the default five seconds.
+		never answers its close frame.
 
 		@throws ArgumentError When not a number above 0.
 	**/
@@ -286,9 +284,9 @@ class ServerWebSocket extends ServerSocket {
 		Sends `message` to every session this server has open, or, given
 		`sessions`, to each of those that is open: one message made ready once
 		(see `PreparedMessage`) and copied into what each session's pass
-		sends, where a `sendText` per session encoded and framed it again for
-		every one. Who receives, a room, a topic, an area of interest, is
-		the application's to say with `sessions`.
+		sends, rather than encoded and framed again for every one, as a
+		`sendText` per session would. Who receives (a room, a topic, an area
+		of interest) is the application's to say with `sessions`.
 
 		Each session goes on as `WebSocket.sendPrepared` would have it: one
 		write a pass however many messages it was sent in that pass, its
@@ -296,7 +294,7 @@ class ServerWebSocket extends ServerSocket {
 		the message holds one, and closed with 1011 past its
 		`maxOutputBufferSize`. Nothing is thrown for one session: one not
 		open, or closing, is passed over, and one under the `THROW`
-		`outputOverflowPolicy` is not thrown for, its `outputBufferLength`
+		`outputOverflowPolicy` is not thrown for: its `outputBufferLength`
 		says what waits. A session that closes during the broadcast is passed
 		over, and the others are each sent the message once.
 
@@ -327,8 +325,8 @@ class ServerWebSocket extends ServerSocket {
 		}
 		#end
 
-		// From a list of its own: a session closing as it is sent to, past
-		// its output limit, or a close listener closing another, comes off
+		// From a list of its own: a session closing as it is sent to (past
+		// its output limit, or a close listener closing another) comes off
 		// __clients, whose last session takes its place, which would be sent
 		// to twice or passed over. The list is kept for the next broadcast;
 		// one inside another, from a close listener, takes a copy.
@@ -392,7 +390,7 @@ class ServerWebSocket extends ServerSocket {
 	/**
 	 * Publishes this server's session metrics into `registry`.
 	 *
-	 * Everything here is an **aggregate across sessions**, a count, a
+	 * Everything here is an **aggregate across sessions**: a count, a
 	 * maximum, a sum. Nothing is labelled per peer, and that is a hard
 	 * constraint rather than a stylistic one: a label whose values are
 	 * client addresses or session ids creates a new time series per
@@ -491,9 +489,8 @@ class ServerWebSocket extends ServerSocket {
 	//
 	// `ServerSocket` bounds this for its own accepts by deferring the TLS
 	// handshake and sweeping deadlines from the tick. This class overrides
-	// `this_onTick` and accepts through its own path, so it never populated
-	// that queue and never swept it, a review recorded the gap, and it
-	// is this list that closes it. One deadline covers both ways an upgrade
+	// `this_onTick` and accepts through its own path, so it keeps this list
+	// and sweeps it itself. One deadline covers both ways an upgrade
 	// can stall: a peer that finishes the TCP connection and then says nothing
 	// during TLS, and one that completes TLS and never sends the HTTP upgrade.
 	// Neither is distinguishable from a slow client until the clock runs out,
@@ -512,10 +509,10 @@ class ServerWebSocket extends ServerSocket {
 		// requestCert and rejectUnauthorized.
 		__tlsAuthority = value;
 		#else
-		// The authority and the demand together. Natively the authority alone
-		// was installed, with verification left off as the constructor set
-		// it, so a server told to require client certificates let in a client
-		// that presented none, where Node asked and refused.
+		// The authority and the demand together: the authority alone, with
+		// verification left off as the constructor set it, would let a
+		// server told to require client certificates take a client that
+		// presented none.
 		__applyTls(function(socket:sys.net.Socket):Void {
 			var listener:FlexSocket = socket;
 			if (value != null) {
@@ -587,11 +584,11 @@ class ServerWebSocket extends ServerSocket {
 		accept. On Node, which completes its own TLS handshakes, a session is
 		counted once Node hands it over.
 
-		One that never arrives, its TLS handshake or its upgrade request
-		failed, its peer left first, or `handshakeTimeout` ran out, is
+		One that never arrives (its TLS handshake or its upgrade request
+		failed, its peer left first, or `handshakeTimeout` ran out) is
 		counted in `handshakeFailures`, on a plain server too. One that
 		`upgrade` refused, or that `stopAccepting()`, `drain()` or `close()`
-		let go of, is not. Both used to stay at 0 on every `ServerWebSocket`.
+		let go of, is not.
 
 		On a server spread over `runtimes`, every runtime's together, with
 		those accepted and on their way to one.
@@ -626,11 +623,9 @@ class ServerWebSocket extends ServerSocket {
 			`ServerSocket`, which cannot install a certificate there.
 	**/
 	public function new(secure:Bool = false) {
-		// Passed up rather than kept here. This used to set a private
-		// secure and then call super() with no argument, so `secure`,
-		// the property ServerSocket exposes and this class inherits, read
-		// false on a server that was terminating TLS. Two fields for one fact,
-		// and the public one was the wrong one.
+		// Passed up rather than kept here, so `secure`, the property
+		// ServerSocket exposes and this class inherits, reads true on a server
+		// that terminates TLS: one field for one fact.
 		super(secure);
 
 		// The server dispatches CONNECT to itself once a handshake
@@ -646,8 +641,8 @@ class ServerWebSocket extends ServerSocket {
 
 		Native drives its own accepting from `this_onTick`, and reaps there as a
 		side effect of already being called. Node is handed connections by a
-		callback and has no accept loop, so it has nothing that runs on a clock,
-		and it needs one exactly as much, because a peer that completes the
+		callback and has no accept loop, so it has nothing that runs on a clock;
+		it needs one exactly as much, because a peer that completes the
 		TCP connection and then says nothing is holding a descriptor either way.
 	**/
 	@:noCompletion private function __attachTick():Void {
@@ -770,9 +765,8 @@ class ServerWebSocket extends ServerSocket {
 	/**
 		When a session accepted at `since` is given up on: `handshakeTimeout`
 		later, or never for a timeout of zero. Every session is listed either
-		way, it is what `maxPendingHandshakes` counts and what stopping drops,
-		where one with no deadline used to be left off, uncounted and
-		undroppable.
+		way, since it is what `maxPendingHandshakes` counts and what stopping
+		drops; one with no deadline is still counted and dropped.
 	**/
 	@:noCompletion private inline function __upgradeDeadline(since:Float):Float {
 		return handshakeTimeout > 0 ? since + handshakeTimeout : Math.POSITIVE_INFINITY;
@@ -781,8 +775,8 @@ class ServerWebSocket extends ServerSocket {
 	/**
 		A session that ended before its upgrade completed, told as it closes.
 
-		Nothing is owed for one this server let go of itself, at its
-		deadline, or in `stopAccepting()`, `drain()` or `close()`, which
+		Nothing is owed for one this server let go of itself (at its
+		deadline, or in `stopAccepting()`, `drain()` or `close()`), which
 		takes it off the list first. Any other is counted in
 		`handshakeFailures`, unless `upgrade` refused it: a refusal is a
 		decision, not a failure.
@@ -804,10 +798,10 @@ class ServerWebSocket extends ServerSocket {
 		Closes every session still upgrading: `stopAccepting()`, `drain()` and
 		`close()` each end this server's part in sessions not yet open.
 
-		None of them did. The reaper runs from the tick those calls take
-		away, so a session caught mid-upgrade was left with no deadline at
-		all, holding its descriptor for as long as its peer liked, and one
-		that finished upgrading afterwards opened, and was announced, on a
+		The reaper runs from the tick those calls take away, so a session
+		caught mid-upgrade would otherwise be left with no deadline at all
+		(holding its descriptor for as long as its peer liked), and one that
+		finished upgrading afterwards would open, and be announced, on a
 		server that had stopped or was draining. Not counted as failures:
 		they were let go of, not lost.
 	**/
@@ -840,13 +834,11 @@ class ServerWebSocket extends ServerSocket {
 		for (pending in __pendingUpgrades) {
 			// Gone on its own, by close or by error. Nothing owed here.
 			//
-			// This read `!pending.session.connected`, which is never true of a
-			// session waiting to upgrade: a WebSocket reports `connected` once
-			// the handshake completes, deliberately, and these are exactly the
-			// sessions whose handshake has not completed. So every entry took
-			// this branch on the first tick after it was recorded and was
-			// dropped from tracking without being closed. The deadline below was
-			// unreachable, and `handshakeTimeout` shut nothing on any target.
+			// Not `!pending.session.connected`: a WebSocket reports `connected`
+			// only once the handshake completes, deliberately, so every session
+			// waiting to upgrade would take this branch and be dropped from
+			// tracking without being closed, leaving `handshakeTimeout` to shut
+			// nothing.
 			//
 			// A successful upgrade is not what this has to catch either: the
 			// session removes itself through `__clearPendingUpgrade` when it
@@ -877,7 +869,7 @@ class ServerWebSocket extends ServerSocket {
 		}
 
 		for (session in expired) {
-			// Given up on, so it failed to arrive, counted here, since it is
+			// Given up on, so it failed to arrive; counted here, since it is
 			// off the list by the time its close is told.
 			handshakeFailures++;
 			try {
@@ -910,9 +902,10 @@ class ServerWebSocket extends ServerSocket {
 		}
 
 		// Told as it closes, ahead of its own close listeners, by the session
-		// itself (see __sessionClosed). It was a close listener of the
-		// server's on every session, a map, a list, an entry and a closure
-		// each, 370 bytes natively, held for the session's life.
+		// itself (see __sessionClosed), rather than through a close listener
+		// of the server's on every session, which would cost a map, a list,
+		// an entry and a closure each, 370 bytes natively, held for the
+		// session's life.
 		@:privateAccess client.__trackedBy = this;
 	}
 
@@ -926,10 +919,9 @@ class ServerWebSocket extends ServerSocket {
 
 	/**
 		Whether `client` is one of this server's open sessions: asked of the
-		place it was given in the list. Each connect searched the list for it,
-		and each close searched it again to take it out, a pass over every
-		session a connection, at ten thousand sessions some 15,000 comparisons
-		for one to arrive and leave.
+		place it was given in the list, rather than by searching the list at
+		each connect and again at each close (at ten thousand sessions some
+		15,000 comparisons for one to arrive and leave).
 	**/
 	@:noCompletion private inline function __tracks(client:WebSocket):Bool {
 		var slot:Int = @:privateAccess client.__serverSlot;
@@ -970,8 +962,8 @@ class ServerWebSocket extends ServerSocket {
 
 		if (secure) {
 			// A TLS socket verifies its peer unless told otherwise, which on a
-			// server means demanding a certificate from every client, every
-			// browser refused. Clients are asked for one only once
+			// server means demanding a certificate from every client, which
+			// refuses every browser. Clients are asked for one only once
 			// certAuthority says to.
 			__webServerSocket.verifyCert = false;
 		}
@@ -1039,16 +1031,15 @@ class ServerWebSocket extends ServerSocket {
 			#end
 		} catch (e:Dynamic) {
 			// Std.string rather than a bare switch on the value, and a
-			// default that throws: the two cases listed here used to be the
-			// only ones handled, so any other failure fell straight through
-			// and bind() returned as though it had worked, leaving the
-			// caller to listen on a socket that was never bound.
+			// default that throws, so a failure the cases listed here do not
+			// name still fails bind(), rather than leaving the caller to
+			// listen on a socket that was never bound.
 			switch (Std.string(e)) {
 				case "Unresolved host":
 					throw new ArgumentError("One of the parameters is invalid");
 				default:
 					// "Bind failed" included. The socket is not what was
-					// invalid, the address or the port would not take.
+					// invalid: the address or the port would not take.
 					throw new IOError("Could not bind to " + localAddress + ":" + localPort + ": " + Std.string(e));
 			}
 		}
@@ -1130,9 +1121,8 @@ class ServerWebSocket extends ServerSocket {
 
 		It may be called from any thread, as `close()` may: from one that is
 		not the server's runtime's, the drain is handed to the runtime and
-		begins there after this returns. Begun elsewhere, it put its wait on
-		the runtime's tick from the wrong thread, or, with no session open,
-		closed the server and called `onComplete` there.
+		begins there after this returns: its wait, the close when no
+		session is open, and `onComplete` all run on the runtime.
 
 		@param timeoutSeconds How long to wait for clients to acknowledge
 			before dropping them. Values at or below zero close at once.
@@ -1145,10 +1135,9 @@ class ServerWebSocket extends ServerSocket {
 			`WebSocket.closeWith` says; nothing is stopped then.
 	**/
 	public function drain(timeoutSeconds:Float = 30.0, ?onComplete:Void->Void, closeCode:Int = 1001):Void {
-		// Asked before anything is stopped. Each session's closeWith refused a
-		// code like this, and the refusal was swallowed with the others, so
-		// no session was sent a close frame: they were dropped at the end of
-		// the wait with nothing to tell them why.
+		// Asked before anything is stopped: each session's closeWith would
+		// refuse a code like this, the refusal swallowed with the others, and
+		// no session would be sent a close frame or told why it was dropped.
 		if (!@:privateAccess WebSocket.__isSendableCloseCode(closeCode)) {
 			throw new ArgumentError('$closeCode is not a close code that may be sent; use 1000, 1001, 1002-1014 (but 1004-1006), or 3000-4999.');
 		}
@@ -1435,9 +1424,8 @@ class ServerWebSocket extends ServerSocket {
 		}
 		#end
 
-		// As many as maxAcceptsPerTick, not one: this loop used to take one
-		// connection a tick and never asked `admit`, which the class inherits
-		// from ServerSocket, so a hook set here compiled, and did nothing.
+		// As many as maxAcceptsPerTick, not one, and each asked of `admit`,
+		// which the class inherits from ServerSocket.
 		var limit:Int = maxAcceptsPerTick < 1 ? 1 : maxAcceptsPerTick;
 		for (_ in 0...limit) {
 			// Full: the rest wait in the kernel's queue until upgrades finish.
@@ -1542,18 +1530,18 @@ class ServerWebSocket extends ServerSocket {
 		Takes one connection from the listen queue, or `null` when none is
 		waiting or the system would not hand one over.
 
-		A refusal, the process out of descriptors (`EMFILE`), the system
-		out of memory, is `ServerSocket`'s accept failure: counted in
+		A refusal, such as the process out of descriptors (`EMFILE`) or the
+		system out of memory, is `ServerSocket`'s accept failure: counted in
 		`acceptFailures`, reported once for a run of them, and the server
 		goes on listening, with the connection left in the kernel's queue to
-		be taken once a descriptor frees. Here hxcpp's refusal, a bare string,
-		was swallowed without a trace, and the jvm's, an I/O error, closed the
+		be taken once a descriptor frees. hxcpp raises it as a bare string
+		and the jvm as an I/O error; neither is swallowed or closes the
 		server.
 	**/
 	@:noCompletion private function __acceptPending():FlexSocket {
 		#if eval
-		// eval cannot make a socket non-blocking, its setBlocking does
-		// nothing, so an accept with no connection waiting would hold
+		// eval cannot make a socket non-blocking (its setBlocking does
+		// nothing), so an accept with no connection waiting would hold
 		// the runtime until one came. Asked first, as ServerSocket does.
 		try {
 			if (sys.net.Socket.select([__webServerSocket], [], [], 0).read.length == 0) {
@@ -1643,16 +1631,13 @@ class ServerWebSocket extends ServerSocket {
 	}
 
 	/**
-		On a replica, on its runtime: a connection handed over becomes a
-		session of this runtime's, whose TLS handshake and upgrade run here.
-	**/
-	/**
-		On a replica, on its runtime: a connection the front handed over, which
-		the front counted under its address as it accepted it. One closed here
-		without being taken up, the server stopping, or this runtime exiting,
-		while the hand-off was on its way, is let go of from that count too:
-		it stayed counted for as long as the server ran, and an address with
-		sixteen such was refused whenever the places were crowded.
+		On a replica, on its runtime: a connection the front handed over
+		becomes a session of this runtime's, whose TLS handshake and upgrade
+		run here. The front counted it under its address as it accepted it;
+		one closed here without being taken up (the server stopping, or this
+		runtime exiting, while the hand-off was on its way) is let go of from
+		that count too, or an address with sixteen such would be refused
+		whenever the places were crowded.
 	**/
 	@:noCompletion override private function __adopt(socket:sys.net.Socket, peer:{host:Host, port:Int}):Void {
 		__adopted = false;
@@ -1710,9 +1695,8 @@ class ServerWebSocket extends ServerSocket {
 		The certificate this server presents to clients, with its private key.
 
 		Set it before `bind()`, where a native server builds its TLS
-		configuration: it is refused afterwards, where it used to be taken
-		and then never presented. A secure server will not `listen()`
-		without one.
+		configuration: it is refused afterwards, since it would never be
+		presented. A secure server will not `listen()` without one.
 
 		@throws Error When this server is not secure, or is already bound.
 		@throws ArgumentError When the certificate or the key is missing.
@@ -1841,9 +1825,9 @@ class ServerWebSocket extends ServerSocket {
 		var accept = function(connection:NodeSocket):Void {
 			// A connection that finishes arriving after this server stopped:
 			// a TLS handshake in flight at stopAccepting() or close(), which
-			// Node carries on with. It was taken on as a session, after
-			// close(), by a server with no runtime, and could open and be
-			// announced on a server that had stopped, or was draining.
+			// Node carries on with. Taken on as a session, it could open and be
+			// announced on a server that had stopped (with no runtime, after
+			// close()) or was draining.
 			if (__closed || __listenerReleased || !listening) {
 				connection.destroy();
 				return;
@@ -1882,10 +1866,9 @@ class ServerWebSocket extends ServerSocket {
 			connection.setNoDelay(true);
 			var accepted = __fromSockettoWebsocket(connection);
 
-			// The push the comment on __pendingUpgrades used to say was missing.
-			// Without it a peer could connect, send no upgrade request, and hold
-			// the descriptor for as long as it liked, the native path has been
-			// closing those for a while, and Node was the one serving the web.
+			// The deadline for its upgrade: without it a peer could connect,
+			// send no upgrade request, and hold the descriptor for as long as
+			// it liked.
 			if (accepted != null) {
 				__pendingUpgrades.push({session: accepted, deadline: __upgradeDeadline(__acceptedAt(connection)), address: address});
 			} else {
@@ -1894,10 +1877,9 @@ class ServerWebSocket extends ServerSocket {
 		};
 
 		if (secure) {
-			// Everything the TLS methods were given, where only `cert` and the
-			// authority were read: a certificate installed with
-			// setCertificate(), the SNI entries and the ALPN list were kept
-			// where this listener never looked.
+			// Everything the TLS methods were given, not only `cert` and the
+			// authority: a certificate installed with setCertificate(), the SNI
+			// entries and the ALPN list.
 			var options:Dynamic = {};
 
 			if (__tlsCertificate != null && __tlsKey != null) {
@@ -1950,10 +1932,10 @@ class ServerWebSocket extends ServerSocket {
 				};
 			}
 
-			// Node's own bound on the TLS handshake, which was its default of
-			// two minutes: handshakeTimeout was never passed, so natively a
-			// peer that said nothing was dropped at it and here held its
-			// descriptor for 120 s. Node reads 0 as its default, so no deadline
+			// Node's own bound on the TLS handshake, which is two minutes
+			// unless handshakeTimeout is passed, so a peer that said nothing
+			// would hold its descriptor for 120 s where natively it is dropped
+			// at handshakeTimeout. Node reads 0 as its default, so no deadline
 			// is the longest it will take.
 			options.handshakeTimeout = handshakeTimeout > 0 ? Math.min(Math.fceil(handshakeTimeout * 1000), NODE_TIMEOUT_MAX) : NODE_TIMEOUT_MAX;
 
@@ -1963,7 +1945,7 @@ class ServerWebSocket extends ServerSocket {
 
 			// The raw TCP connection, before TLS starts on it: the point where
 			// a refusal still costs nothing, and where the session's deadline
-			// starts, handshakeTimeout covers its TLS and its upgrade
+			// starts: handshakeTimeout covers its TLS and its upgrade
 			// together, as natively.
 			__webServerSocket.on("connection", function(raw:NodeSocket):Void {
 				if (!__nodeAdmits(raw)) {
@@ -1975,7 +1957,7 @@ class ServerWebSocket extends ServerSocket {
 
 			// A handshake that failed, or ran out of handshakeTimeout, which
 			// Node reports here and nowhere else: counted, as natively, and the
-			// connection let go, Node leaves that to whoever listens here.
+			// connection let go, since Node leaves that to whoever listens here.
 			__webServerSocket.on("tlsClientError", function(_:Dynamic, socket:NodeSocket):Void {
 				handshakeFailures++;
 				try {
@@ -1988,9 +1970,9 @@ class ServerWebSocket extends ServerSocket {
 
 		// A port already in use, or an address that is not local, reaches a
 		// Node server here, once listen() has tried: reported as a
-		// DatagramSocket reports it on Node, an ioError and then close. It
-		// dispatched close alone, so a listener on ioError, which is where
-		// a native bind() failure arrives, never heard why.
+		// DatagramSocket reports it on Node, an ioError and then close, so a
+		// listener on ioError (which is where a native bind() failure
+		// arrives) hears why.
 		__webServerSocket.on("error", function(error:Dynamic):Void {
 			if (__closed) {
 				return;

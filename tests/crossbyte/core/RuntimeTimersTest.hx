@@ -6,19 +6,19 @@ import utest.Assert;
 	The runtime fires every timer that is due, however many there are, and
 	bounds a frame's timers by time rather than by count.
 
-	It used to fire at most 256 a frame. At the default twelve ticks a second
-	that is about three thousand a second, which a few hundred sessions each
-	keeping a 50ms retransmit clock exceed, and past the cap every timer
-	ran late by more each frame, so a 30 second idle timeout beside 400 busy
-	sessions fired at 78 seconds.
+	A cap of 256 a frame would be about three thousand a second at the
+	default twelve ticks a second, which a few hundred sessions each keeping
+	a 50ms retransmit clock exceed. Past such a cap every timer runs later
+	each frame, so a 30 second idle timeout beside 400 busy sessions would
+	fire at 78 seconds.
 **/
 @:access(crossbyte.core.CrossByte)
 class RuntimeTimersTest extends utest.Test {
 	/**
 		Wall time and scheduler time convert at the present: the scheduler's
 		time now is the clock's now, and other times follow by the difference.
-		Both conversions counted the scheduler's time on top of its start, so
-		a runtime that had run for an hour put every wall time an hour out.
+		Counting the scheduler's time on top of its start instead would put
+		every wall time an hour out on a runtime that has run for an hour.
 	**/
 	public function testWallClockConversionsMeetAtThePresent():Void {
 		var runtime = new CrossByte(false, DEFAULT, true);
@@ -44,9 +44,8 @@ class RuntimeTimersTest extends utest.Test {
 
 	/**
 		`Timer.stamp()` with no application is an IllegalOperationError that
-		says so, as `CrossByte.make()` is. It read the primordial runtime's
-		uptime without looking, which is a null access, and natively, in a
-		release build, a crash.
+		says so, as `CrossByte.make()` is, not a null access to the primordial
+		runtime's uptime (natively, in a release build, a crash).
 	**/
 	public function testStampWithNoApplicationSaysSo():Void {
 		var primordial:CrossByte = CrossByte.__primordial;
@@ -65,8 +64,8 @@ class RuntimeTimersTest extends utest.Test {
 	#if target.threaded
 	/**
 		A thread no runtime runs on has no timers, and asking for them is an
-		IllegalOperationError, as `CrossByte.current()` is there. It was a
-		bare String.
+		IllegalOperationError, as `CrossByte.current()` is there, not a bare
+		String.
 	**/
 	public function testATimerOnAThreadWithNoRuntimeIsRefused():Void {
 		var result = new sys.thread.Deque<Dynamic>();
@@ -99,7 +98,7 @@ class RuntimeTimersTest extends utest.Test {
 
 	public function testALongTimeoutIsNotDelayedByBusySessions():Void {
 		// 400 sessions each re-arming every 50ms: 8000 fires a second at the
-		// default rate, against a cap that allowed 3072.
+		// default rate, well past the 3072 a cap of 256 a frame would allow.
 		var runtime = new CrossByte(false, DEFAULT, true);
 		var frame:Float = 1 / 12;
 		for (_ in 0...400) {

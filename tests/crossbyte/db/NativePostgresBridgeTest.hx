@@ -29,9 +29,9 @@ import crossbyte.test.Require;
 class NativePostgresBridgeTest extends utest.Test {
 	public function testConcurrentQueriesEachGetTheirOwnRows():Void {
 		// The shape AsyncDatabase produces by default: a worker per pooled
-		// connection, all querying at once. Every connection and thread wrote
-		// one process-wide result buffer, so a query could read another's rows,
-		// or the freed memory of a buffer another thread had just grown.
+		// connection, all querying at once. With one process-wide result buffer,
+		// a query could read another's rows, or the freed memory of a buffer
+		// another thread had just grown.
 		var config = __config("localhost");
 		var pool = new ConnectionPool<PostgresConnection>({
 			factory: () -> __open(config),
@@ -76,10 +76,9 @@ class NativePostgresBridgeTest extends utest.Test {
 	}
 
 	public function testLibpqIsLookedForWhereEachSystemKeepsIt():Void {
-		// macOS names it libpq.5.dylib, and the driver looked there for
-		// libpq.so.5 and libpq.so: a Mac could load libpq from nowhere but a
-		// path given in full, "Could not load libpq (tried ..., libpq.so.5,
-		// libpq.so, libpq.so.5, libpq.so)", every name twice.
+		// macOS names it libpq.5.dylib, which the driver looks for as well as
+		// libpq.so.5 and libpq.so: otherwise a Mac could load libpq from nowhere
+		// but a path given in full.
 		var connection = new PostgresConnection();
 		var mac:Array<String> = @:privateAccess connection.__libraryCandidates({}, "mac");
 
@@ -97,10 +96,9 @@ class NativePostgresBridgeTest extends utest.Test {
 		Assert.same(["libpq.so.5", "libpq.so"], @:privateAccess connection.__libraryCandidates({}, "linux"));
 		Assert.equals("libpq.dll", @:privateAccess connection.__libraryCandidates({}, "windows").pop());
 
-		// A directory stands for the names libpq has in it there. It stood
-		// for libpq.so alone, which only a development package installs, so
-		// a directory holding the runtime's libpq.so.5 was looked in and not
-		// found.
+		// A directory stands for the names libpq has in it there, not
+		// libpq.so alone, which only a development package installs: a
+		// directory holding the runtime's libpq.so.5 must be found.
 		var directory:String = Path.join([Sys.getCwd(), "export", "pq-lib-" + Std.random(0x7FFFFFFF)]);
 		sys.FileSystem.createDirectory(directory);
 		var given:PostgresConfig = {libraryPath: directory};
@@ -129,9 +127,10 @@ class NativePostgresBridgeTest extends utest.Test {
 	}
 
 	public function testConcurrentFailedOpensEachReportTheirOwnError():Void {
-		// The reason an open failed was one process-wide string too, read back
-		// after the call returned, so a pool opening connections from several
-		// workers could report another connection's failure.
+		// The reason an open failed is the connection's own, not one
+		// process-wide string read back after the call returned, which would let
+		// a pool opening connections from several workers report another
+		// connection's failure.
 		var failures:Array<String> = [];
 		var guard = new Mutex();
 		var done = new Lock();
@@ -170,9 +169,9 @@ class NativePostgresBridgeTest extends utest.Test {
 	}
 
 	public function testABlockedQueryDoesNotStallTheCollector():Void {
-		// A query waiting on the server sat inside PQexec with the thread still
-		// registered as running Haxe code, so the next collection, on any
-		// thread, waited for it. One slow report query stopped the runtime
+		// A query waiting on the server inside PQexec must not leave the thread
+		// registered as running Haxe code, or the next collection, on any thread,
+		// would wait for it, and one slow report query would stop the runtime
 		// thread and every socket it served.
 		var connection = __open(__config("localhost"));
 		var done = new Lock();
@@ -216,7 +215,7 @@ class NativePostgresBridgeTest extends utest.Test {
 	public function testASlowConnectDoesNotStallTheCollector():Void {
 		// Connecting blocks for up to connectTimeout, five seconds by default,
 		// and a pool opens connections on demand, so a database host that
-		// stopped answering stalled the process once per connection attempt.
+		// stops answering must not stall the process once per connection attempt.
 		var done = new Lock();
 		var opened:PostgresConnection = null;
 
@@ -241,8 +240,8 @@ class NativePostgresBridgeTest extends utest.Test {
 
 	public function testCancelStopsAStatementFromAnotherThread():Void {
 		// The thread running a statement is blocked waiting for its answer, so
-		// stopping it is necessarily another thread's call. There was no way
-		// to make it: no cancel, and no statement timeout either.
+		// stopping it is necessarily another thread's call: cancel, or a
+		// statement timeout.
 		var connection = __open(__config("localhost"));
 		var done = new Lock();
 		var failure:String = null;
@@ -294,9 +293,9 @@ class NativePostgresBridgeTest extends utest.Test {
 			done.release();
 		});
 
-		// Running before the first open: on the four-core CI runner the 300
-		// opens and closes were over before the thread had started, and it
-		// cancelled nothing at all.
+		// Running before the first open: on a four-core CI runner the 300 opens
+		// and closes can be over before the thread has started, cancelling
+		// nothing at all.
 		Assert.isTrue(started.wait(5.0));
 		for (_ in 0...300) {
 			connection.open(config);
@@ -342,9 +341,9 @@ class NativePostgresBridgeTest extends utest.Test {
 
 	/**
 		A connection made with no keepalive settings reaches libpq with
-		MySQL's timings, 60/10/6. libpq turns keepalive on but left the
-		timings to the system, two hours before the first probe, so a
-		query waiting on a host gone silent held its worker that long.
+		MySQL's timings, 60/10/6. libpq turns keepalive on but leaves the
+		timings to the system (two hours before the first probe), so a query
+		waiting on a host gone silent would hold its worker that long.
 	**/
 	public function testKeepAliveReachesLibpqWithTimingsByDefault():Void {
 		var connection = __open(__config("localhost"));
@@ -368,7 +367,7 @@ class NativePostgresBridgeTest extends utest.Test {
 	public function testACommitTheServerTurnedIntoARollbackThrows():Void {
 		// After a statement fails inside a transaction, PostgreSQL answers the
 		// COMMIT with success and the tag ROLLBACK, discarding everything. Only
-		// the tag says so, and nothing read it: the commit reported success.
+		// the tag says so, so it is read, and the commit does not report success.
 		var connection = __open(__config("localhost"));
 		var events:Int = 0;
 		connection.addEventListener(SQLErrorEvent.ERROR, _ -> events++);
@@ -390,7 +389,7 @@ class NativePostgresBridgeTest extends utest.Test {
 		Require.notNull(thrown);
 		Assert.isTrue(Std.isOfType(thrown, SQLError), Std.string(thrown));
 		Assert.isTrue(Std.string(thrown).indexOf("rolled it back") >= 0, Std.string(thrown));
-		// Still reported to listeners, as it always was.
+		// Still reported to listeners.
 		Assert.equals(1, events);
 		// The transaction is over either way, and the connection usable.
 		Assert.isFalse(connection.inTransaction);
@@ -410,8 +409,8 @@ class NativePostgresBridgeTest extends utest.Test {
 	}
 
 	public function testATransactionTaskFailsWhenItsCommitDoes():Void {
-		// The pattern AsyncDatabase.transaction documents for this driver. It
-		// completed as success when the COMMIT had rolled everything back.
+		// The pattern AsyncDatabase.transaction documents for this driver, which
+		// must not complete as success when the COMMIT rolled everything back.
 		var config = __config("localhost");
 		var pool = new ConnectionPool<PostgresConnection>({factory: () -> __open(config), close: c -> c.close(), maxSize: 1});
 		var db = AsyncDatabase.of(pool);
@@ -458,9 +457,9 @@ class NativePostgresBridgeTest extends utest.Test {
 	}
 
 	public function testATransactionBegunAsTextIsReported():Void {
-		// inTransaction changed only in begin(), commit() and rollback(), so a
-		// transaction opened with request("BEGIN;") read as none, and a pool
-		// returning the connection had nothing to roll back.
+		// inTransaction follows the server, not only begin(), commit() and
+		// rollback(), so a transaction opened with request("BEGIN;") reads as
+		// one, and a pool returning the connection has something to roll back.
 		var connection = __open(__config("localhost"));
 
 		connection.request("BEGIN;");
@@ -486,10 +485,10 @@ class NativePostgresBridgeTest extends utest.Test {
 	}
 
 	public function testThePoolRollsBackATransactionABorrowerLeftOpen():Void {
-		// Aborted by a failed statement and returned that way, it went to the
-		// next borrower, whose every statement then failed with "current
-		// transaction is aborted", and no reset had been configured to stop
-		// it, because the pool offered no rollback of its own.
+		// Aborted by a failed statement and returned that way, it would go to
+		// the next borrower, whose every statement would then fail with
+		// "current transaction is aborted", so the pool rolls it back itself,
+		// with no reset configured.
 		var config = __config("localhost");
 		var pool = new ConnectionPool<PostgresConnection>({factory: () -> __open(config), close: c -> c.close(), maxSize: 1});
 
@@ -522,14 +521,13 @@ class NativePostgresBridgeTest extends utest.Test {
 
 	/**
 		A statement the server refuses throws as well as dispatching, as
-		MySQL's does. It dispatched an `SQLErrorEvent` and returned, so to a
-		caller not listening, an `AsyncDatabase` task among them, a failed
-		statement read as one that had run.
+		MySQL's does, so to a caller not listening (an `AsyncDatabase` task
+		among them) a failed statement does not read as one that had run.
 	**/
 	/**
-		`request()` answers a `PostgresResultSet`, a `sys.db.ResultSet`: it was
-		`Dynamic`, its rows built from JSON the bridge rendered, and it had
-		no field names and nothing to read by position.
+		`request()` answers a `PostgresResultSet`, a `sys.db.ResultSet`, with
+		field names and reading by position, not a `Dynamic` with rows built
+		from JSON the bridge rendered.
 	**/
 	public function testRequestAnswersATypedResultSet():Void {
 		var connection = __open(__config("localhost"));
@@ -598,12 +596,12 @@ class NativePostgresBridgeTest extends utest.Test {
 		read, and only its last page says it is complete, the last page of a
 		result that divides evenly into pages as well.
 
-		Off cpp the pages waited in an Array read with `pop()`, newest first.
-		On every target a page's `complete` was `!executing` when it was taken,
-		so once the last page had been read every page still waiting said it
-		was the last; and the statement noticed the rows had run out only when
-		a page came up short, so four rows in pages of two left no page that
-		was complete.
+		Off cpp the pages are not kept in an Array read with `pop()`, newest
+		first. On every target a page's `complete` is not `!executing` when it
+		is taken, which once the last page had been read would make every page
+		still waiting say it was the last; and the statement notices the rows
+		have run out without waiting for a page to come up short, which for
+		four rows in pages of two would leave no page complete.
 	**/
 	public function testPagesComeBackInOrderAndOnlyTheLastIsComplete():Void {
 		var connection = __open(__config("localhost"));
@@ -619,10 +617,11 @@ class NativePostgresBridgeTest extends utest.Test {
 	}
 
 	public function testCountsPastThirtyTwoBitsAreWhole():Void {
-		// The bridge read a statement's count with atoi, into 32 bits: a
-		// write of three billion rows read 2147483647 here (MSVC clamps;
-		// glibc wraps it negative), on both of its paths. And a statement's
-		// rowsAffected was the rows its result held, 0 for every write.
+		// The bridge reads a statement's count in 64 bits, not with atoi into
+		// 32, where a write of three billion rows would read 2147483647 (MSVC
+		// clamps; glibc wraps it negative), on both of its paths. And a
+		// statement's rowsAffected is the count, not the rows its result holds,
+		// which for every write is 0.
 		var connection = __open(__config("localhost"));
 
 		connection.request("fake:affect 3000000000");
@@ -669,10 +668,9 @@ class NativePostgresBridgeTest extends utest.Test {
 	}
 
 	public function testAutocommitOffKeepsATransactionOpenUntilCommit():Void {
-		// autocommit stored a flag nothing read: set false, every statement
-		// still committed on its own. PostgreSQL has no setting for it on the
-		// server, so the driver begins the transaction itself, as MySQL's
-		// server and JDBC do.
+		// autocommit is read: set false, statements do not commit on their own.
+		// PostgreSQL has no setting for it on the server, so the driver begins
+		// the transaction itself, as MySQL's server and JDBC do.
 		var connection:PostgresConnection = __open(__config("localhost"));
 		Assert.isTrue(connection.autocommit);
 		connection.autocommit = false;
@@ -706,8 +704,8 @@ class NativePostgresBridgeTest extends utest.Test {
 	}
 
 	public function testAnIsolationLevelTheServerRefusesThrows():Void {
-		// The setter swallowed the server's refusal: the level read as set,
-		// and the session went on at the old one.
+		// The setter reports the server's refusal, rather than the level
+		// reading as set while the session goes on at the old one.
 		var connection:PostgresConnection = __open(__config("localhost"));
 		connection.begin();
 
@@ -741,10 +739,10 @@ class NativePostgresBridgeTest extends utest.Test {
 	}
 
 	public function testWhatRequestIsRefusedIsAnSQLError():Void {
-		// request() threw an IOError for a statement the server refused, where
-		// requestParams() threw an SQLError, and code catching SQLError, as
-		// MongoError's doc says every driver's failures are caught, caught
-		// nothing from request(). On a connection not open it threw a String.
+		// request() throws an SQLError for a statement the server refused, as
+		// requestParams() does, not an IOError, so code catching SQLError, as
+		// MongoError's doc says every driver's failures are caught, catches it.
+		// On a connection not open it throws an error, not a String.
 		var connection:PostgresConnection = __open(__config("localhost"));
 		var thrown:Dynamic = null;
 
@@ -776,10 +774,10 @@ class NativePostgresBridgeTest extends utest.Test {
 	}
 
 	public function testOpeningAgainClosesTheConnectionItHad():Void {
-		// open() on an open connection replaced its native handle and left
-		// the first connection open, unreachable, for the life of the process,
-		// a server connection each time a pool factory or a reconnect
-		// called it twice. MySQL's closes first; this does too now.
+		// open() on an open connection closes the first, as MySQL's does,
+		// rather than replacing its native handle and leaving it open,
+		// unreachable, for the life of the process (a server connection each
+		// time a pool factory or a reconnect called it twice).
 		var connection:PostgresConnection = __open(__config("localhost"));
 		var closes:Int = 0;
 		connection.addEventListener(crossbyte.events.SQLEvent.CLOSE, _ -> closes++);
@@ -818,8 +816,7 @@ class NativePostgresBridgeTest extends utest.Test {
 
 	/**
 		The stand-in, as hxcpp's linker names a shared library on each
-		system: `.dll`, `.dylib` on macOS, `.dso` elsewhere. It was `.dso`
-		everywhere but Windows, so on macOS no case here loaded it.
+		system: `.dll`, `.dylib` on macOS, `.dso` elsewhere.
 	**/
 	@:noCompletion private static function __libraryPath():String {
 		var name:String = switch (crossbyte.sys.System.PLATFORM) {

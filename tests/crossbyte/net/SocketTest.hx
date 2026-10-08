@@ -20,9 +20,9 @@ class SocketTest extends utest.Test {
 
 		Without a slot on the connection, anything holding per-connection
 		state keeps a `Map` beside it and has to remember to remove the entry
-		when the connection closes. Forgetting is silent, the connection is
-		gone, the traffic stops, and the entry stays until the process does,
-		and that is the shape of half the retention bugs in this repository.
+		when the connection closes. Forgetting is silent (the connection is
+		gone, the traffic stops, and the entry stays until the process does),
+		and it is the commonest shape of a retention bug.
 	**/
 	public function testAConnectionCarriesTheApplicationsOwnState():Void {
 		var one = new Socket();
@@ -49,10 +49,8 @@ class SocketTest extends utest.Test {
 	}
 
 	public function testTheConstructorAttemptsEveryPortConnectAccepts():Void {
-		// 65535 is a valid TCP port. The constructor tested `port < 65535`
-		// while connect() accepts `port <= 65535`, so the highest port was
-		// the one number the two disagreed about: connect(h, 65535) dialled,
-		// new Socket(h, 65535) silently did not.
+		// 65535 is a valid TCP port, and the constructor and connect() must
+		// agree on it: the constructor dials it as connect(h, 65535) does.
 		ConstructorProbeSocket.lastPort = null;
 		new ConstructorProbeSocket("127.0.0.1", 65535);
 		Assert.equals(65535, ConstructorProbeSocket.lastPort);
@@ -180,8 +178,8 @@ class SocketTest extends utest.Test {
 
 	/**
 		Reported once the lookup has failed, which is after `connect()`
-		returns: a name is looked up off the runtime's thread now, where it
-		used to be looked up, and this reported, inside the call.
+		returns: a name is looked up off the runtime's thread, not inside the
+		call.
 	**/
 	@:timeout(15000)
 	public function testInvalidHostDispatchesIOErrorWithoutSocket(async:utest.Async):Void {
@@ -190,7 +188,7 @@ class SocketTest extends utest.Test {
 		socket.addEventListener(IOErrorEvent.IO_ERROR, _ -> errors++);
 		// Ended by the lookup failing or, wherever the resolver takes longer
 		// to give up than this waits, by the attempt's deadline, which counts
-		// the lookup: the macOS CI runner's resolver did not answer in 10 s.
+		// the lookup: some resolvers take more than 10 s to answer.
 		socket.timeout = 3000;
 
 		socket.connect("bad host name", 80);
@@ -218,12 +216,12 @@ class SocketTest extends utest.Test {
 		A megabyte flushed through a socket that takes 16 KB a write and 64 KB
 		a pass, as a TLS socket does against a slow reader.
 
-		Each flush wrote once and then copied everything still waiting into a
-		new buffer: a pass sent one 16 KB record whatever room there was, and
-		draining a backlog cost a copy of it per write, quadratic in its
-		size. A flush now writes until the socket takes no more, and what went
-		is stepped over; the buffer is compacted only when what went is at
-		least what remains.
+		A flush writes until the socket takes no more, and what went is
+		stepped over; the buffer is compacted only when what went is at least
+		what remains. Writing once a flush, and copying everything still
+		waiting into a new buffer each time, would send one 16 KB record a
+		pass whatever room there was, and cost a copy of the backlog per
+		write, quadratic in its size.
 	**/
 	public function testAFlushStepsThroughItsBacklogWithoutCopyingIt():Void {
 		var size:Int = 1024 * 1024;
@@ -276,12 +274,12 @@ class SocketTest extends utest.Test {
 		A peer that keeps every read full is read a megabyte a pass, and the
 		rest on the passes after, not for as long as it keeps sending.
 
-		The read loop went round for as long as each read filled the buffer,
-		so a client uploading faster than the server copied held the runtime
-		inside that one socket, no timer ran and no other socket was read
-		while it lasted, and everything it read was held at once: over
-		loopback a single uploader's unread backlog reached 365 MB before
-		the listener saw any of it.
+		A read loop that went round for as long as each read filled the buffer
+		would let a client uploading faster than the server copied hold the
+		runtime inside that one socket (no timer running and no other socket
+		read while it lasted), and would hold everything it read at once: over
+		loopback a single uploader's unread backlog can reach 365 MB before the
+		listener sees any of it.
 	**/
 	public function testAPeerThatKeepsSendingIsReadAMegabyteAPass():Void {
 		var total:Int = 8 * 1024 * 1024;
@@ -303,10 +301,10 @@ class SocketTest extends utest.Test {
 		A TLS socket reads on past a full record, as a plain one reads on past
 		a full buffer.
 
-		A TLS read returns one record at most, 16 KB of plaintext, which
-		never fills the 64 KB read buffer, so every TLS read was taken for the
-		last of its pass: a TLS upload was read one record a pass, 16 MB a
-		second at 1,000 passes a second, whatever the link could carry.
+		A TLS read returns one record at most, 16 KB of plaintext, which never
+		fills the 64 KB read buffer, so it must not be taken for the last read
+		of its pass: a TLS upload read one record a pass would be held to 16 MB
+		a second at 1,000 passes a second, whatever the link could carry.
 	**/
 	public function testATlsStreamIsReadMoreThanARecordAPass():Void {
 		var total:Int = 1024 * 1024;
@@ -381,8 +379,8 @@ class SocketTest extends utest.Test {
 		still waiting: once a pass, down to none.
 
 		`bytesPending` is documented to be read in an OUTPUT_PROGRESS
-		handler, and the event was never dispatched, so a writer streaming to
-		a slow reader had nothing to wait on but a timer.
+		handler, so the event has to be dispatched: without it a writer
+		streaming to a slow reader would have nothing to wait on but a timer.
 	**/
 	public function testAWriterIsToldAsWhatItWroteReachesTheNetwork():Void {
 		var size:Int = 256 * 1024;
@@ -421,10 +419,10 @@ class SocketTest extends utest.Test {
 
 	/**
 		What an OUTPUT_PROGRESS handler sends is reported at the next pass,
-		not this one. Told from inside the pass that sent it, a writer
-		feeding a socket that never fills, TLS, slower to encrypt than its
-		reader is to read, was told and wrote again until it had nothing
-		left, with every other connection waiting.
+		not this one. Told from inside the pass that sent it, a writer feeding
+		a socket that never fills (TLS, slower to encrypt than its reader is
+		to read) would be told and write again until it had nothing left, with
+		every other connection waiting.
 	**/
 	public function testWhatAProgressHandlerSendsIsReportedAtTheNextPass():Void {
 		var chunk:Int = 64 * 1024;
@@ -465,10 +463,9 @@ class SocketTest extends utest.Test {
 
 	/**
 		An object round-trips in every encoding a ByteArray handles: JSON,
-		which is always there. A Socket took only HXSF; anything else read
-		null and wrote nothing, and an encoding the build cannot do, AMF
-		without -lib format, said so nowhere. ByteArray had been fixed for
-		exactly that; its siblings had not.
+		which is always there. A Socket takes more than HXSF, and an encoding
+		the build cannot do (AMF without -lib format) says so, rather than
+		reading null and writing nothing.
 	**/
 	public function testAnObjectRoundTripsInJson():Void {
 		var writer = progressSocket();
@@ -569,28 +566,25 @@ class SocketTest extends utest.Test {
 		The connect event comes from the tick that confirms the socket is
 		writable, never synchronously from inside connect().
 
-		It used to fire synchronously whenever a non-blocking connect completed
-		immediately, which a loopback connect intermittently does on Windows,
-		and a CONNECT listener that wrote then reached a socket the OS had
-		reported connected but not finished the handshake on, whose write failed
-		with Eof. That surfaced, through a since-corrected flush message, as an
-		"invalid socket" failure on a connection that was in fact healthy: a rare
-		red run that never reproduced under a debugger because the window is one
-		instruction wide. Deferring the event to the writability check the tick
-		already makes closes the window. Pinned as: no CONNECT at the instant
-		connect() returns.
+		A non-blocking connect can complete immediately (a loopback connect
+		intermittently does on Windows), and a CONNECT listener that wrote then
+		would reach a socket the OS had reported connected but not finished
+		the handshake on, whose write fails with Eof: a rare failure on a
+		healthy connection, in a window one instruction wide. Deferring the
+		event to the writability check the tick already makes closes the
+		window. Pinned as: no CONNECT at the instant connect() returns.
 	**/
 	/**
 		A bind that fails says what failed.
 
-		Every one of these catch blocks used to answer with "Operation attempted
-		on invalid socket.", a message describing a socket that was perfectly
-		fine, when it was the address that would not take. The same fabrication
-		in `Socket.flush` cost weeks on an unrelated intermittent, because the
-		one line of evidence a red run produced named a cause that had not
-		happened. The rule this pins: a caught error is reported, never replaced.
+		Each of these catch blocks reports the error it caught, never a
+		replacement such as "Operation attempted on invalid socket.", which
+		would describe a socket that was perfectly fine when it was the
+		address that would not take, and send whoever reads it after a cause
+		that did not happen. The rule this pins: a caught error is reported,
+		never replaced.
 
-		192.0.2.1 is TEST-NET-1, a valid numeric address that is not an
+		192.0.2.1 is TEST-NET-1: a valid numeric address that is not an
 		interface on any machine, so the operating system must refuse it.
 	**/
 	/**
@@ -601,20 +595,17 @@ class SocketTest extends utest.Test {
 		ioError and never as a CLOSE, because a caller retries one and not the
 		other.
 
-		The timing is the other half again. The completion tick used to ask
-		select about writability alone, and a refused connect is reported on
-		Windows in the exception set and never becomes writable, so nothing
-		noticed until the connect timeout, twenty seconds by default, for a
-		refusal the operating system had already reported. Measured at 20001ms
-		before this was fixed. So what is checked is that the failure is the
-		refusal and not the socket's own deadline, and the wait runs past that
-		deadline rather than stopping short of it.
-
-		It stopped at eight seconds, which was the test deciding how long a
-		system may take to refuse: Windows retries a refused SYN, two
-		seconds on this machine, longer where its retransmission timer starts
-		higher, and a run that missed the eight seconds failed with the code
-		right.
+		The timing is the other half again. A refused connect is reported on
+		Windows in the exception set and never becomes writable, so the
+		completion tick must ask select about more than writability, or
+		nothing would notice until the connect timeout (twenty seconds by
+		default) for a refusal the operating system had already reported. So
+		what is checked is that the failure is the refusal and not the
+		socket's own deadline, and the wait runs past that deadline rather
+		than stopping short of it: Windows retries a refused SYN (two seconds
+		here, longer where its retransmission timer starts higher), and a
+		shorter wait would be the test deciding how long a system may take to
+		refuse.
 	**/
 	public function testARefusedConnectionIsReportedAsAFailureNotAClose():Void {
 		var client = new Socket();
@@ -628,12 +619,11 @@ class SocketTest extends utest.Test {
 			timedOut = e.errorID == IOErrorEvent.TIMEOUT_ERROR_ID;
 		});
 
-		// A port nothing listens on, obtained rather than assumed. This was
-		// port 1, which is only closed by convention, on a machine where
-		// something has bound it the connect succeeds, and the test then
-		// reports a bug in the very code it guards ("CONNECT was dispatched
-		// for a connection that was refused"), which is how it was found.
-		// Binding zero and closing yields a port that was free a moment ago.
+		// A port nothing listens on, obtained rather than assumed: a port
+		// that is only closed by convention connects on a machine where
+		// something has bound it, and the test would then report a bug in the
+		// very code it guards. Binding zero and closing yields a port that was
+		// free a moment ago.
 		var vacant = new ServerSocket();
 		vacant.bind(0, "127.0.0.1");
 		vacant.listen(1);
@@ -700,8 +690,8 @@ class SocketTest extends utest.Test {
 		A retry on a socket that is already gone does nothing at all.
 
 		Between a write blocking and the queue draining, the socket may have
-		been closed, by the peer, by the application, or by the overflow
-		policy. There is nothing to retry and nothing to report; what matters
+		been closed (by the peer, by the application, or by the overflow
+		policy). There is nothing to retry and nothing to report; what matters
 		is that it does not throw into the drain.
 	**/
 	public function testARetryOnAClosedSocketIsSilent():Void {
@@ -769,16 +759,16 @@ class SocketTest extends utest.Test {
 	}
 
 	/**
-		A one-shot peer, accept, write, close, delivers CONNECT, then the
+		A one-shot peer (accept, write, close) delivers CONNECT, then the
 		data, then CLOSE, and never an ioError.
 
 		Its data and FIN follow the connection coming up so closely that all
-		three can land in one client tick. That tick must still announce CONNECT,
-		because the connection did come up, and end in CLOSE, because the peer
-		hung up cleanly after a complete exchange, not ioError, which means the
-		connect failed. The tick guard used to drop CONNECT whenever a close was
-		decided in the same tick, and the dropped CONNECT flipped the close
-		verdict to a failure the connection never suffered.
+		three can land in one client tick. That tick must still announce
+		CONNECT, because the connection did come up, and end in CLOSE, because
+		the peer hung up cleanly after a complete exchange, not ioError, which
+		means the connect failed. A tick guard that dropped CONNECT whenever a
+		close was decided in the same tick would flip the close verdict to a
+		failure the connection never suffered.
 	**/
 	public function testAOneShotPeerConnectsDeliversAndClosesWithoutError():Void {
 		var server = new ServerSocket();
@@ -791,9 +781,8 @@ class SocketTest extends utest.Test {
 			serverPeer = event.socket;
 			// A full read chunk, then close at once. The burst and the FIN reach
 			// the client together, so they land in the same tick the connect
-			// completes, the arrangement the fix is about. A short payload can
-			// arrive a tick later, when CONNECT and the close no longer coincide
-			// and the old guard was never exercised.
+			// completes: the arrangement this case is about. A short payload can
+			// arrive a tick later, when CONNECT and the close no longer coincide.
 			var payload = new ByteArray();
 			for (i in 0...Socket.READ_CHUNK) {
 				payload.writeByte(i & 0xFF);
@@ -937,9 +926,9 @@ class SocketTest extends utest.Test {
 
 	public function testDefaultPolicyStillClosesOnPeerFin():Void {
 		// The default has to stay exactly what it was, or every consumer that
-		// never heard of half-close changes behaviour. A peer FIN closes,
-		// dispatches CLOSE and not PEER_CLOSE, and peerShutdown is still set,
-		// so a CLOSE consumer can tell a graceful end from an error one.
+		// never heard of half-close changes behaviour. A peer FIN closes and
+		// dispatches CLOSE, not PEER_CLOSE, and peerShutdown is still set, so
+		// a CLOSE consumer can tell a graceful end from an error one.
 		var server = new ServerSocket();
 		var client = new Socket();
 		var serverPeer:Socket = null;
@@ -1071,8 +1060,8 @@ class SocketTest extends utest.Test {
 			Assert.notNull(serverPeer);
 			Assert.equals("pong", echoed);
 			Assert.equals("::1", server.localAddress);
-			// Guarded: a failed `Assert.notNull` does not stop the test, utest
-			// records it and carries on, and reading a field off the null that
+			// Guarded: a failed `Assert.notNull` does not stop the test (utest
+			// records it and carries on), and reading a field off the null that
 			// follows is a SIGSEGV on hxcpp release, not a catchable error.
 			if (serverPeer != null) {
 				Assert.equals("::1", serverPeer.localAddress);

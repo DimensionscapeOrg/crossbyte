@@ -15,7 +15,7 @@ class SocketCapacityTest extends utest.Test {
 	}
 
 	public function testDefaultIsSizedForServerWorkloads():Void {
-		// The historical 64 forced roughly seven grow-and-rebuild cycles on
+		// A default of 64 would force roughly seven grow-and-rebuild cycles on
 		// the way to a thousand connections.
 		Assert.isTrue(CrossByte.defaultSocketCapacity >= 1024);
 	}

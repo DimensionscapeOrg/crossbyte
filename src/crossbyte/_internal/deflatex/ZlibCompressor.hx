@@ -17,7 +17,7 @@ class ZlibCompressor {
 	/*
 	 * 0x78: deflate with a 32K window. 0x9C: no preset dictionary, the
 	 * default compression level, and a check value making the pair a multiple
-	 * of 31, the header zlib itself writes by default. The level is only a
+	 * of 31: the header zlib itself writes by default. The level is only a
 	 * hint to someone deciding whether to recompress.
 	 */
 	private static inline var CMF:Int = 0x78;
@@ -54,7 +54,7 @@ class ZlibCompressor {
 	**/
 	public static function decompress(stream:Bytes, maxOutputSize:Int = 0):Bytes {
 		// The header is checked here so that what is wrong can be said: data
-		// that is not zlib at all, a raw deflate stream, most likely, fails
+		// that is not zlib at all (a raw deflate stream, most likely) fails
 		// its check value, where the inflater would only say "Invalid data".
 		if (stream == null || stream.length < 2) {
 			throw new IOError("Invalid zlib data: too short for a header");

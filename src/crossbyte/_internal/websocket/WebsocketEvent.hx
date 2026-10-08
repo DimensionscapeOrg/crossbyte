@@ -6,9 +6,8 @@ import crossbyte.io.ByteArray;
 
 /**
  * What a framed session tells its owner, `crossbyte.net.WebSocket`: it
- * opened, a message arrived, something failed, it closed. Typed, where its
- * payload was `Dynamic` and read back as a `ByteArray` or a `String` by a
- * checked conversion for every message.
+ * opened, a message arrived, something failed, it closed. Typed, so a
+ * message's payload is read without a checked conversion.
  *
  * @author Christopher Speciale
  */
@@ -36,7 +35,7 @@ class WebsocketEvent {
 	public var isText:Bool = false;
 
 	/**
-		On an error: the `IOErrorEvent` id the owner reports it with,
+		On an error: the `IOErrorEvent` id the owner reports it with:
 		`IOErrorEvent.TIMEOUT_ERROR_ID` for a deadline that passed, else 0.
 	**/
 	public var errorID:Int = 0;
@@ -50,10 +49,7 @@ class WebsocketEvent {
 
 		if (type == CLOSE && reason == null) {
 			// Shared with the public close event so both layers describe a
-			// code the same way. The table here previously reported 1003 as
-			// "Message too big", that is 1009; 1003 is unsupported data,
-			// and had no entry for 1006, which is the code a peer that just
-			// disappears produces and therefore the most common of all.
+			// code the same way.
 			reason = crossbyte.events.WebSocketCloseEvent.describe(code);
 		}
 

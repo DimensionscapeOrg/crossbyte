@@ -5,9 +5,9 @@ package crossbyte.net;
 	`TurnClient.allocated` carries as its `cause`, and `TurnClient.failure`
 	once an allocation has gone.
 
-	A failure used to be a sentence and nothing else, so an application that
-	had to decide what to do next, try another relay, fetch new credentials,
-	give up, could only match on the wording. The decision turns on the code:
+	A failure carries its code as well as a sentence, so an application
+	deciding what to do next (try another relay, fetch new credentials,
+	give up) need not match on the wording. The decision turns on the code:
 	486 and 508 are this relay being full, a good reason to try another; 401
 	is the credentials; 300 names where to go instead.
 **/

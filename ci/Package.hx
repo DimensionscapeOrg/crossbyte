@@ -10,17 +10,17 @@ import sys.io.File;
 
 	`haxe ci/package.hxml`
 
-	It holds what `-lib crossbyte` reads, the sources, with every native
+	It holds what `-lib crossbyte` reads (the sources, with every native
 	extension's C++ and Build.xml under `src`, the std overrides, and
-	`extraParams.hxml`, which names the host and turns those overrides on,
+	`extraParams.hxml`, which names the host and turns those overrides on),
 	plus the documents haxelib shows and the samples. Tests, CI and anything
 	a build writes stay out.
 
 	Taken from the commit, not the working tree, through `git archive`: what
 	ships is what was committed, and in the repository's own line endings. A
 	Windows checkout holds its text as CRLF, and a line break inside a Haxe
-	string literal is the file's, so a package zipped from it gave every
-	multi-line literal a `\r` on every platform.
+	string literal is the file's, so a package zipped from it would give
+	every multi-line literal a `\r` on every platform.
 **/
 class Package {
 	static final PATHS:Array<String> = [
@@ -32,6 +32,7 @@ class Package {
 		"extraParams.hxml",
 		"src",
 		"std",
+		"docs",
 		"samples"
 	];
 

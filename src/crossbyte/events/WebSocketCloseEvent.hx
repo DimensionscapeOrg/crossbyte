@@ -20,7 +20,7 @@ import crossbyte.events.Event;
 
 	That distinction is worth having: a peer disconnecting mid-conversation
 	and a peer being dropped for sending a malformed frame are the same
-	event to a bare `Event.CLOSE`, and they call for different responses,
+	event to a bare `Event.CLOSE`, and they call for different responses:
 	one is routine, the other says something is wrong with a client or an
 	intermediary.
 **/
@@ -40,8 +40,8 @@ class WebSocketCloseEvent extends Event {
 	/**
 		The connection ended without a close frame.
 
-		The ordinary case for a client that simply disappeared, a closed
-		tab, a dropped mobile connection, and so the most common code seen
+		The ordinary case for a client that simply disappeared (a closed
+		tab, a dropped mobile connection), and so the most common code seen
 		in practice. Not a fault by itself.
 	**/
 	public static inline var ABNORMAL:Int = 1006;
@@ -77,7 +77,7 @@ class WebSocketCloseEvent extends Event {
 		Whether this closure is one an application should treat as routine.
 
 		True for a normal closure, a peer going away, and a connection that
-		simply ended, the cases a chat server sees constantly. False for
+		simply ended: the cases a chat server sees constantly. False for
 		the codes that indicate a protocol or policy fault worth logging.
 	**/
 	public var expected(get, never):Bool;

@@ -21,7 +21,7 @@ import haxe.Timer;
 	Scenario S: a web server under connection churn.
 
 	HTTP/1.1 with keep-alive and HTTP/2 on one listener, WebSocket on
-	another, each again over TLS, four ports, configured as a deployment
+	another, each again over TLS: four ports, configured as a deployment
 	would be, defaults kept but for two: the per-address rate limit is off,
 	since every client here is one address, and the access log is quiet
 	unless `--access-log`. Clients connect, do a few to a few dozen requests

@@ -566,8 +566,8 @@ class ServerSpreadTest extends utest.Test {
 
 	/**
 		On Linux: a listener per runtime on one port, and the kernel sharing
-		connections out over them. Each runtime accepts for itself, `admit`
-		is asked on each, on its own thread, and the runtime that called
+		connections out over them. Each runtime accepts for itself (`admit`
+		is asked on each, on its own thread), and the runtime that called
 		`listen()` accepts none.
 	**/
 	@:timeout(60000)
@@ -653,13 +653,14 @@ class ServerSpreadTest extends utest.Test {
 	}
 
 	/**
-		A runtime that has stalled, a handler blocking it, is handed at
-		most `ServerSpread.MAX_WAITING` connections it has not taken up; the
-		next go to the runtime after it, and once every runtime is that far
-		behind a connection is closed as it is accepted, and counted. Once the
-		runtimes catch up, what they were handed is taken up. A stalled
-		runtime was handed every connection that came its way in turn, each a
-		socket held in its post queue, for as long as the stall lasted.
+		A runtime that has stalled (a handler blocking it) is handed at most
+		`ServerSpread.MAX_WAITING` connections it has not taken up; the next go
+		to the runtime after it, and once every runtime is that far behind a
+		connection is closed as it is accepted, and counted. Once the runtimes
+		catch up, what they were handed is taken up. Without the bound a
+		stalled runtime would be handed every connection that came its way in
+		turn, each a socket held in its post queue, for as long as the stall
+		lasted.
 	**/
 	@:timeout(30000)
 	public function testAStalledRuntimeIsHandedABoundedNumberOfConnections():Void {
@@ -799,9 +800,9 @@ class ServerSpreadTest extends utest.Test {
 
 	/**
 		A runtime that exits with sessions still upgrading there drops them:
-		their connections are closed, and the server's count of upgrades
-		under way lets go of them. They stayed counted for as long as the
-		server ran, and held places `maxPendingHandshakes` gave out.
+		their connections are closed, and the server's count of upgrades under
+		way lets go of them, rather than keeping them counted for as long as
+		the server ran, holding places `maxPendingHandshakes` gave out.
 	**/
 	@:timeout(30000)
 	public function testARuntimeThatExitsGivesUpWhatIsStillUpgrading():Void {
@@ -906,9 +907,9 @@ class ServerSpreadTest extends utest.Test {
 	/**
 		`maxPendingHandshakes` counts the handshakes under way on every
 		runtime together: past it the listener waits, and as handshakes fail
-		at `handshakeTimeout`, counted in `handshakeFailures`, summed over
-		the runtimes, the rest are taken. `stopAccepting()` drops what is
-		still handshaking wherever it is.
+		at `handshakeTimeout` (counted in `handshakeFailures`, summed over the
+		runtimes) the rest are taken. `stopAccepting()` drops what is still
+		handshaking wherever it is.
 	**/
 	@:timeout(30000)
 	public function testHandshakeLimitHoldsAcrossRuntimes():Void {

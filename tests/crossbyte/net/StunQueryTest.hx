@@ -9,17 +9,15 @@ import utest.Assert;
 /**
 	What a STUN answer means, and when to ask again.
 
-	Three places ask a server what address it sees, a socket of its own, a
-	listening reliable-datagram port, and the socket a peer connection already
-	shares with ICE and DTLS, and until this class existed each carried its own
-	copy of the reading and the schedule. The transports differ irreducibly; the
-	semantics never did, and the copies were a standing invitation for a fix to
-	reach two of three. One did: the retransmission was added by hand twice and
-	the second was nearly missed.
+	Three places ask a server what address it sees (a socket of its own, a
+	listening reliable-datagram port, and the socket a peer connection
+	already shares with ICE and DTLS), and all three read the answer and
+	schedule the asking through this one class. The transports differ
+	irreducibly; the semantics do not, and separate copies would invite a
+	fix to reach two of the three.
 
-	No socket and no clock here, times being arguments, so these hold on every
-	target rather than only where UDP exists, which is more than the
-	socket-bound cases they were extracted from could manage.
+	No socket and no clock here, times being arguments, so these hold on
+	every target rather than only where UDP exists.
 **/
 class StunQueryTest extends utest.Test {
 	private function unsupported():Bool {
@@ -167,7 +165,7 @@ class StunQueryTest extends utest.Test {
 	/**
 		A timeout of 0 or less sets no deadline, as it does for a connection:
 		the question never expires, and goes on being asked, each gap twice
-		the last. It was three seconds.
+		the last.
 	**/
 	public function testANonPositiveTimeoutSetsNoDeadline():Void {
 		if (unsupported()) return;
@@ -193,10 +191,10 @@ class StunQueryTest extends utest.Test {
 		An answer whose FINGERPRINT does not match is not an answer.
 
 		RFC 8489 section 7.3 has such a message dropped: damaged on the way, or
-		not STUN at all however it looks. It was believed, transaction and
-		all, so a mangled datagram could settle the question with whatever
-		address it now carried. Dropped, it leaves the question open for the
-		sound answer behind it.
+		not STUN at all however it looks. Believed, transaction and all, a
+		mangled datagram could settle the question with whatever address it
+		now carried; dropped, it leaves the question open for the sound answer
+		behind it.
 	**/
 	public function testAnAnswerWithABadFingerprintIsNotBelieved():Void {
 		if (unsupported()) return;
@@ -228,9 +226,9 @@ class StunQueryTest extends utest.Test {
 
 	/**
 		An answer carrying an attribute the server requires understood, and
-		this client does not, cannot be used: whatever it changes about the
-		answer is exactly what cannot be seen. RFC 8489 section 7.3.3. It was
-		used, address and all.
+		this client does not, cannot be used, address and all: whatever it
+		changes about the answer is exactly what cannot be seen. RFC 8489
+		section 7.3.3.
 
 		One the server marks optional is ignored, as the same section says, so
 		the check is on the range and not on strangeness.
@@ -263,9 +261,9 @@ class StunQueryTest extends utest.Test {
 
 	/**
 		An IPv6 answer is an answer. The address is XORed with the
-		transaction as well as the cookie, and it used to read as no address
-		at all, a server that answered promptly reported as one that had
-		answered without answering.
+		transaction as well as the cookie; read as no address at all, a server
+		that answered promptly would be reported as one that had answered
+		without answering.
 	**/
 	public function testAnIPv6AnswerIsAnAnswer():Void {
 		if (unsupported()) return;
@@ -284,12 +282,12 @@ class StunQueryTest extends utest.Test {
 	}
 
 	/**
-		The answer is kept, and with it the bytes it was decoded from,
-		`raw`, which its integrity is checked against. Those arrive as a
-		datagram's payload, valid only during the call that handed it over,
-		and the answer held them by reference: once the socket had handed
-		the next datagram over in the same bytes, the kept answer's
-		FINGERPRINT checked against whatever that was.
+		The answer is kept, and with it the bytes it was decoded from (`raw`,
+		which its integrity is checked against). Those arrive as a datagram's
+		payload, valid only during the call that handed it over, so the answer
+		copies them: held by reference, once the socket had handed the next
+		datagram over in the same bytes, the kept answer's FINGERPRINT would be
+		checked against whatever that was.
 	**/
 	public function testAKeptAnswerKeepsTheBytesItWasDecodedFrom():Void {
 		if (unsupported()) return;

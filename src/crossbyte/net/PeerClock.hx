@@ -48,7 +48,7 @@ import haxe.ds.Vector;
  * seconds, not minutes, keeps that below the error bound.
  *
  * The estimate moves in steps, whenever a better exchange arrives. Something
- * that must not step, a simulation's clock, an animation, should ease
+ * that must not step (a simulation's clock, an animation) should ease
  * towards `now()` rather than follow it.
  *
  * **Threading.** None.
@@ -125,8 +125,8 @@ final class PeerClock {
 	 * @param receivedAt This side's clock when the answer arrived.
 	 * @return Whether the estimate changed: this exchange was the shortest
 	 *         yet, or the shortest before it left the window. `false` too for
-	 *         an exchange that cannot have happened, an answer before its
-	 *         question, or a time that is not a finite number, which is not
+	 *         an exchange that cannot have happened (an answer before its
+	 *         question, or a time that is not a finite number), which is not
 	 *         taken.
 	 */
 	public function sample(sentAt:Float, peerTime:Float, receivedAt:Float):Bool {

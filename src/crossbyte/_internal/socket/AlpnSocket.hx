@@ -77,9 +77,9 @@ class AlpnSocket extends SSLSocket {
 	/**
 		Reads decrypted bytes without an exception of its own for "would
 		block": -1 then, 0 at the end of the stream. The TLS layer still
-		throws natively for it; through `input` that was caught and thrown
-		again as `Blocked`, a second exception for every read that ended a
-		pass.
+		throws natively for it; through `input` that would be caught and
+		thrown again as `Blocked`, a second exception for every read that
+		ended a pass.
 	**/
 	@:noCompletion private override function __tryRead(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
 		try {

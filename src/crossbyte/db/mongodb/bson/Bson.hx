@@ -19,7 +19,7 @@ typedef BsonReadOptions = {
 
 	/**
 		int64 values as `BsonInt64` rather than `haxe.Int64`, so they are
-		written back as int64 whatever their value, on hxcpp a small
+		written back as int64 whatever their value: on hxcpp a small
 		`haxe.Int64` in a `Dynamic` cannot be told from an `Int`.
 	**/
 	@:optional var wrapInt64:Bool;
@@ -50,7 +50,7 @@ typedef BsonReadOptions = {
 	| MinKey, MaxKey | `MinKey.VALUE`, `MaxKey.VALUE` |
 
 	A number is written by its value: a whole number in the 32-bit range as
-	int32, any other as a double, see `BsonDouble` for why the Haxe type
+	int32, any other as a double; see `BsonDouble` for why the Haxe type
 	cannot decide. The deprecated types read as their nearest form: undefined
 	as `null`, a symbol as its `String`, a DBPointer as `{$ref, $id}`.
 **/

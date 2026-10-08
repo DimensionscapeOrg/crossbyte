@@ -15,32 +15,29 @@ import crossbyte.test.Require;
  */
 class CompressionRoundTripTest extends utest.Test {
 	/**
-	 * The assertion this file did not have: that compressing makes the data
-	 * smaller.
+	 * That compressing makes the data smaller.
 	 *
-	 * Everything else here checks fidelity, same length back, same bytes
-	 * back, and a codec that stores its input verbatim satisfies every one
-	 * of those perfectly. Three of the four did exactly that.
-	 * `Deflater.compress` wrote stored blocks and nothing else: a `0x01`
-	 * header, the length, its complement, then the raw bytes. No Huffman
-	 * coding, no LZ77. gzip wrapped the same, and `Lz4.compress` emitted one
-	 * literal run without ever looking for a match. All three returned more
-	 * bytes than they were given, and every round-trip case above passed
-	 * throughout.
+	 * Every other case here checks fidelity (same length back, same bytes
+	 * back), and a codec that stores its input verbatim satisfies every one of
+	 * those perfectly: a deflater writing stored blocks and nothing else (a
+	 * `0x01` header, the length, its complement, then the raw bytes, with no
+	 * Huffman coding and no LZ77), gzip wrapping the same, or an `Lz4.compress`
+	 * emitting one literal run without ever looking for a match. Each would
+	 * return more bytes than it was given, and every round-trip case would
+	 * still pass.
 	 *
-	 * That was not academic. `HTTPRequestHandler` serves `Content-Encoding:
-	 * gzip` and `deflate` through these, so a server negotiating gzip sent
-	 * more bytes than it would have uncompressed and made the client
-	 * decompress them for nothing.
+	 * `HTTPRequestHandler` serves `Content-Encoding: gzip` and `deflate`
+	 * through these, so a server negotiating gzip would send more bytes than it
+	 * would have uncompressed and make the client decompress them for nothing.
 	 *
 	 * So this asserts, for all four: a codec that stops compressing fails
 	 * here rather than passing quietly on fidelity alone.
 	 */
 	public function testCompressionActuallyCompresses():Void {
 		// Twelve bytes repeated five hundred times. Any real encoder collapses
-		// this to almost nothing, the four land between 23 and 77 bytes,
-		// so a tenth of the input is a floor none of them can approach without
-		// having genuinely stopped working.
+		// this to almost nothing (the four land between 23 and 77 bytes), so a
+		// tenth of the input is a floor none of them can approach without having
+		// genuinely stopped working.
 		var sample = new ByteArray();
 
 		for (i in 0...500) {
@@ -244,9 +241,9 @@ class CompressionRoundTripTest extends utest.Test {
 	// Zeros pack into a stream small enough to arrive in a single frame, and
 	// LZ4's match encoding is what expands it again: a short length replaying
 	// window bytes. That is the shape of the bomb, and it does not need to be
-	// large to have it, 32 KB from 139 bytes is already 235x. Kept small on
+	// large to have it: 32 KB from 139 bytes is already 235x. Kept small on
 	// purpose: decoding one is markedly slower on eval than on a compiled
-	// target, so a megabyte here would have cost the interpreter minutes.
+	// target, so a megabyte here would cost the interpreter minutes.
 	private static inline var BOMB_SIZE:Int = 32 * 1024;
 
 	private function lz4Bomb():Bytes {
@@ -275,15 +272,15 @@ class CompressionRoundTripTest extends utest.Test {
 	/**
 	 * Inflating costs the inflate and nothing more.
 	 *
-	 * `Inflater` delegates to `haxe.zip.InflateImpl`, and beside that it kept a
-	 * decoder of its own nothing called, whose 32K-entry window every `new
-	 * Inflater()` still allocated and cleared, and a CRC of every result that
-	 * only gzip reads. An 846-byte game message cost 96 us to inflate on Node,
-	 * 66 of them in the constructor; on eval it was 2.4 times the inflate
-	 * itself. Timed against the same inflate done directly, interleaved, and
-	 * each side by its fastest round: a collection or another process landing
-	 * on one round says nothing about either, and natively a whole side is a
-	 * few milliseconds, which a loaded machine can double.
+	 * `Inflater` delegates to `haxe.zip.InflateImpl`, and keeps no decoder of
+	 * its own beside it (whose 32K-entry window every `new Inflater()` would
+	 * allocate and clear) nor a CRC of every result, which only gzip reads.
+	 * With them, an 846-byte game message would cost 96 us to inflate on Node,
+	 * 66 of them in the constructor, and on eval 2.4 times the inflate itself.
+	 * Timed against the same inflate done directly, interleaved, and each side
+	 * by its fastest round: a collection or another process landing on one
+	 * round says nothing about either, and natively a whole side is a few
+	 * milliseconds, which a loaded machine can double.
 	 */
 	public function testInflatingCostsNoMoreThanTheInflate():Void {
 		var message:Bytes = Bytes.alloc(846);
@@ -343,12 +340,11 @@ class CompressionRoundTripTest extends utest.Test {
 
 	/**
 	 * An LZ4 block has no length of its own, so one cut short where a literal
-	 * run happens to end read as complete: the auditor's block cut in half
-	 * decoded 10,133 bytes of 20,006 and nothing said so. The format's end
-	 * rules, the last five bytes literals, the last match starting twelve
-	 * or more from the end, are what a cut block almost never meets, and
-	 * are now enforced. Of every cut point of a 6 KB block, about a third
-	 * decoded; now almost none do.
+	 * run happens to end would read as complete: a block cut in half could
+	 * decode 10,133 bytes of 20,006 with nothing to say so. The format's end
+	 * rules (the last five bytes literals, the last match starting twelve or
+	 * more from the end) are what a cut block almost never meets, and they are
+	 * enforced. Of every cut point of a 6 KB block, almost none decode.
 	 */
 	public function testAnLz4BlockCutShortIsRefused():Void {
 		var packed:Bytes = Lz4.compress(words(6000));
@@ -371,11 +367,10 @@ class CompressionRoundTripTest extends utest.Test {
 	}
 
 	/**
-	 * The encoder wrote through a ByteArray, whose writeBytes takes a
-	 * ByteArray. Given a plain Bytes, every literal run made one from it,
-	 * allocating and clearing a copy of the whole input per run, quadratic,
-	 * and natively 900 KB of it crashed the process. ByteArray.compress
-	 * passed itself and escaped it; any other caller did not.
+	 * The encoder takes a plain Bytes as it is. Writing through a ByteArray,
+	 * whose writeBytes takes a ByteArray, every literal run would make one from
+	 * the Bytes, allocating and clearing a copy of the whole input per run:
+	 * quadratic, and natively 900 KB of it would crash the process.
 	 */
 	public function testCompressingPlainBytesCostsWhatAByteArrayDoes():Void {
 		var text:Bytes = words(48 * 1024);
@@ -398,10 +393,10 @@ class CompressionRoundTripTest extends utest.Test {
 	}
 
 	public function testUncompressCarriesTheLimitIntoTheLz4Decoder():Void {
-		// The limit used to be applied to the finished buffer, so the memory
-		// was taken before anything objected. This asserts the public path
-		// refuses; that it refuses *during* the decode is the point of passing
-		// maxOutputSize down rather than measuring afterwards.
+		// The limit is applied during the decode, not to the finished buffer,
+		// where the memory would be taken before anything objected. This asserts
+		// the public path refuses; that it refuses *during* the decode is the
+		// point of passing maxOutputSize down rather than measuring afterwards.
 		var bomb:ByteArray = ByteArray.fromBytes(lz4Bomb());
 		bomb.position = 0;
 		Assert.raises(() -> bomb.uncompress(CompressionAlgorithm.LZ4, 4096));

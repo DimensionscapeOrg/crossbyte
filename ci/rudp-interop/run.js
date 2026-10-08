@@ -2,8 +2,8 @@
 // targets: native (libsodium), the jvm (CrossByte's own ChaCha20-Poly1305,
 // since Java 8 has none) and Node (its crypto, and CrossByte's own for small
 // datagrams). The suite proves each target's sealed bytes against vectors
-// computed elsewhere; this proves whole sessions, handshake, key schedule,
-// every delivery mode, a graceful close, across processes.
+// computed elsewhere; this proves whole sessions (handshake, key schedule,
+// every delivery mode, a graceful close) across processes.
 //
 // Usage: node ci/rudp-interop/run.js
 // Needs the three ends built: haxe ci/rudp-interop.hxml,

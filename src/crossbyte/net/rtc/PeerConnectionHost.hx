@@ -20,7 +20,7 @@ import haxe.ds.ObjectMap;
 
 	A `PeerConnection` that binds a socket of its own costs a port, that
 	socket's buffers and a tick listener, for as long as it lives. A server
-	holding ten thousand browser peers held ten thousand of each, and had to
+	holding ten thousand browser peers would hold ten thousand of each, and have to
 	open a port range as wide as its peak to reach them through a firewall.
 	Connections made here share this host's socket and its one tick instead:
 	one port to open, one socket, one listener however many peers there are.
@@ -43,7 +43,7 @@ import haxe.ds.ObjectMap;
 	receiving side's ufrag, and each connection here has its own. An answer to
 	a check this side sent carries that check's transaction id, which is
 	remembered as it goes out. A DTLS record carries nothing of the kind, and
-	goes by the address it came from, to the connection that has proved a
+	goes by the address it came from: to the connection that has proved a
 	path to that address, and to no other.
 
 	That last rule is the one that matters. A peer's candidates are its to
@@ -58,7 +58,7 @@ import haxe.ds.ObjectMap;
 	Relaying and asking a STUN server. Both belong to one socket's mapping,
 	and here that mapping is every connection's: `gatherReflexive` and
 	`gatherRelayed` refuse on a connection made here. A server with a public
-	address, what this is for, needs neither; give that address to
+	address (what this is for) needs neither; give that address to
 	`addLocalCandidate`, and every connection offers it.
 
 	The socket also reads at most 64 datagrams each time the runtime services
@@ -71,7 +71,7 @@ class PeerConnectionHost {
 		Transactions remembered per connection, oldest forgotten first.
 
 		A check that is answered is forgotten as the answer arrives; this bounds
-		the ones that never are, checks to a candidate nothing answers from,
+		the ones that never are (checks to a candidate nothing answers from),
 		which a peer listing many such candidates could otherwise pile up.
 	**/
 	@:noCompletion private static inline var MAX_TRANSACTIONS:Int = 256;
@@ -213,8 +213,8 @@ class PeerConnectionHost {
 		time on it.
 	**/
 	public function poll(now:Float):Void {
-		// Backwards, so a connection that closes during its own poll, and
-		// leaves the list, does not make the next one be skipped.
+		// Backwards, so a connection that closes during its own poll (and
+		// leaves the list) does not make the next one be skipped.
 		var i:Int = __connections.length - 1;
 
 		while (i >= 0) {
@@ -356,7 +356,7 @@ class PeerConnectionHost {
 	/**
 		Credentials for a connection's ICE restart, with a ufrag no connection
 		here has, routed to it alongside the one it had until the restart is
-		done, checks for the old session still arrive meanwhile.
+		done: checks for the old session still arrive meanwhile.
 	**/
 	@:noCompletion private function __freshCredentials(connection:PeerConnection):IceCredentials {
 		var credentials:IceCredentials;
@@ -438,7 +438,7 @@ class PeerConnectionHost {
 
 		// RFC 7983's first-byte ranges, as a connection with its own socket
 		// reads them: under 4 is STUN, 20 to 63 DTLS. Nothing else is carried
-		// here, no relay, so anything else is noise.
+		// here (no relay), so anything else is noise.
 		if (first < 4) {
 			target = __stunTarget(data);
 		} else if (first >= 20 && first <= 63) {

@@ -1,7 +1,7 @@
 # The whole suite on HashLink.
 #
 # hl-ver says which HashLink the bytecode is for. Haxe 4.3 assumes 1.12, and
-# haxe.atomic: which crossbyte.utils.Random uses, will not compile for hl
+# haxe.atomic (which crossbyte.utils.Random uses) will not compile for hl
 # below 1.13, so without this the build stops inside the standard library with
 # "Atomic operations require HL 1.13+". The runtime must be 1.13 or later.
 #

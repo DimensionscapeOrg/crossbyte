@@ -5,10 +5,9 @@ import crossbyte.io.ByteArray;
 /**
  * Where a decided response goes, and how it gets framed.
  *
- * `HTTPRequestHandler` decided a response and wrote HTTP/1.1 in the same
- * breath, `__dispatchResponseBytes` built a `"HTTP/1.1 200 OK\r\n..."`
- * string and pushed it at a socket, so nothing above that could serve a
- * response over any other protocol. This is the line between the two halves.
+ * `HTTPRequestHandler` decides a response and a writer frames it, so the
+ * same response can go out over HTTP/1.1 or HTTP/2. This is the line
+ * between the two halves.
  *
  * The buffering members are not incidental. The streaming file path feeds a
  * body in bounded bursts and pauses at a watermark, so peak memory per
@@ -50,7 +49,7 @@ interface HTTPResponseWriter {
 	/**
 	 * Invoked if this response is abandoned without the connection closing:
 	 * under HTTP/2, a reset of its stream, whether the peer sent it or the
-	 * server did, for a protocol error of the peer's on that stream, say. A
+	 * server did (for a protocol error of the peer's on that stream, say). A
 	 * closed connection is the socket's own `Event.CLOSE`, and under HTTP/1.1
 	 * that is the only way a response is abandoned, so this is never called
 	 * there.
@@ -62,9 +61,8 @@ interface HTTPResponseWriter {
 	 * few times a second, while a body is pumped out or bytes wait on the
 	 * peer, so a transfer the peer has stopped taking has a deadline; `null`
 	 * stops it. The sweep runs for these whatever `requestTimeout` and
-	 * `keepAliveTimeout` are, and visits only these when both are off: a
-	 * stall deadline was checked from the walk those two arm, so with both
-	 * at `0` it never was.
+	 * `keepAliveTimeout` are, and visits only these when both are off, so a
+	 * stall deadline holds even with both at `0`.
 	 *
 	 * @return Whether a sweep runs it: false for a writer with no server
 	 *         behind it, which has no sweep and ignores this.
@@ -81,8 +79,8 @@ interface HTTPResponseWriter {
 	/**
 	 * Writes the status and header fields. Called once per response.
 	 *
-	 * `head` and its fields are the caller's again once this returns, a
-	 * connection reuses them for its next response, so a writer that
+	 * `head` and its fields are the caller's again once this returns (a
+	 * connection reuses them for its next response), so a writer that
 	 * needs any of them later copies what it needs.
 	 */
 	function writeHead(head:HTTPResponseHead):Void;
@@ -92,8 +90,8 @@ interface HTTPResponseWriter {
 
 	/**
 	 * `writeBody`, for bytes the caller hands over: it never changes them
-	 * again, so a writer that holds a body until its peer takes it, HTTP/2,
-	 * behind flow control, may keep `data` itself rather than a copy.
+	 * again, so a writer that holds a body until its peer takes it (HTTP/2,
+	 * behind flow control) may keep `data` itself rather than a copy.
 	 */
 	function writeBodyTaken(data:ByteArray, offset:Int, length:Int):Void;
 
@@ -103,8 +101,8 @@ interface HTTPResponseWriter {
 	/**
 	 * Marks the response complete.
 	 *
-	 * HTTP/1.1 has nothing to do here, the framing already said how long the
-	 * body was, but HTTP/2 must close the stream, since a stream left open
+	 * HTTP/1.1 has nothing to do here (the framing already said how long the
+	 * body was), but HTTP/2 must close the stream, since a stream left open
 	 * is a request the client is still waiting on.
 	 */
 	function endResponse():Void;

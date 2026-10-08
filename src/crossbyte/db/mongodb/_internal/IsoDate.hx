@@ -247,8 +247,7 @@ class IsoDate {
 
 /**
 	Where a parse has got to in its text. A class, so its position is a
-	field rather than looked up by name in an anonymous object, about
-	thirty times a date.
+	field rather than looked up by name, about thirty times a date.
 **/
 private class IsoCursor {
 	public var pos:Int = 0;

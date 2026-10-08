@@ -9,7 +9,7 @@ enum MainLoopType {
 	 * The shape a renderer or a simulation wants, and what `Application` and
 	 * `HostApplication` use. Sockets are polled once per frame without
 	 * blocking, so the tick rate is also the latency floor for anything
-	 * arriving on one, at the default rate, an arrival waits up to a frame to
+	 * arriving on one: at the default rate, an arrival waits up to a frame to
 	 * be seen. That is the right trade when the loop's job is to keep a steady
 	 * cadence for something else; it is the wrong one for a server, which
 	 * should use `POLL`.
@@ -21,8 +21,8 @@ enum MainLoopType {
 	 * socket that becomes ready wakes the loop immediately instead of waiting
 	 * for the next tick.
 	 *
-	 * What `ServerApplication` uses. Tick cadence is unchanged, an idle frame
-	 * still ends on the interval, but arrivals are no longer quantised to it.
+	 * What `ServerApplication` uses. Tick cadence is unchanged (an idle frame
+	 * still ends on the interval), but arrivals are not quantised to it.
 	 */
 	POLL;
 
@@ -35,7 +35,7 @@ enum MainLoopType {
 	 * frame's work by calling the runtime's `pump(delta, socketTimeout)`:
 	 * what other threads posted, the timers, the tick, the sockets and what
 	 * they send. When it calls that, and what else it does around it, is the
-	 * body's to decide, a simulation stepping at its own rate, a loop that
+	 * body's to decide: a simulation stepping at its own rate, a loop that
 	 * waits on readiness alone.
 	 *
 	 * So is the pacing. `pump` waits up to `socketTimeout` for a socket to be

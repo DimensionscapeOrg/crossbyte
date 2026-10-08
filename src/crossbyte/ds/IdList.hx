@@ -10,7 +10,7 @@ import haxe.ds.Vector;
  * above 127 as a boxed `Integer`, one allocation per id pushed; on
  * JavaScript, emptying one with `resize(0)` hands V8's backing store back,
  * so the next round grows it again from nothing. For 1,000 views of 50 ids
- * that was 2.2 MB a tick, 130 MB a second at 60 Hz, spent on the list
+ * that is 2.2 MB a tick, 130 MB a second at 60 Hz, spent on the list
  * alone. hxcpp has neither problem, and this costs it nothing either.
  *
  * ```haxe

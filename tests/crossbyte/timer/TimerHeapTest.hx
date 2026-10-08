@@ -115,7 +115,7 @@ class TimerHeapTest extends utest.Test {
 		Assert.isFalse(heap.isActive(oldHandle));
 		Assert.isTrue(heap.isActive(newHandle));
 
-		// Well past where an 8-bit generation once wrapped back to oldHandle.
+		// Well past where an 8-bit generation would wrap back to oldHandle.
 		var last = newHandle;
 		for (i in 0...600) {
 			Assert.isTrue(heap.clear(last));
@@ -130,9 +130,9 @@ class TimerHeapTest extends utest.Test {
 
 	public function testARecurringTimerThatThrowsStaysArmed():Void {
 		// Driven by hand, with nothing set to receive failures, a throw still
-		// leaves advanceTime, but only once the timer is settled. It used to
-		// leave from inside the call, with the timer already dequeued: its
-		// handle went on reading as live and it never fired again.
+		// leaves advanceTime, but only once the timer is settled. Leaving from
+		// inside the call, with the timer already dequeued, would leave its
+		// handle reading as live, and it would never fire again.
 		var heap = new TimerHeap();
 		var fired = 0;
 		var handle = heap.setInterval(1.0, 1.0, _ -> {
@@ -170,9 +170,8 @@ class TimerHeapTest extends utest.Test {
 	}
 
 	public function testEveryDueTimerFiresInOnePass():Void {
-		// There was a cap of 256 fires a pass, and the runtime never passed
-		// anything but the default: past 256 due a frame, every timer ran
-		// late, and later every frame.
+		// No cap on fires a pass: with one of 256, past 256 due a frame every
+		// timer would run late, and later every frame.
 		var heap = new TimerHeap();
 		var fired = 0;
 		for (_ in 0...1000) {
@@ -212,8 +211,8 @@ class TimerHeapTest extends utest.Test {
 	}
 
 	public function testATimerArmedDuringAPassWaitsForTheNextOne():Void {
-		// A callback that re-arms itself for now, polling until something
-		// is ready, ran again inside the same pass until a cap stopped it.
+		// A callback that re-arms itself for now (polling until something is
+		// ready) must not run again inside the same pass until a cap stops it.
 		var heap = new TimerHeap();
 		var runs = 0;
 		function again():Void {
@@ -232,8 +231,8 @@ class TimerHeapTest extends utest.Test {
 	}
 
 	public function testATimerRescheduledFromItsOwnCallbackRunsAtItsNewTime():Void {
-		// It used to be freed once the callback returned, taking the new time
-		// with it.
+		// It is not freed once the callback returns, which would take the new
+		// time with it.
 		var heap = new TimerHeap();
 		var runs:Array<Float> = [];
 		var handle = heap.setTimeout(1.0, h -> {
@@ -252,7 +251,7 @@ class TimerHeapTest extends utest.Test {
 	}
 
 	public function testARecurringTimerThatPausesItselfCanBeResumed():Void {
-		// Pausing from its own callback used to free it instead.
+		// Pausing from its own callback pauses it rather than freeing it.
 		var heap = new TimerHeap();
 		var runs = 0;
 		var handle = heap.setInterval(1.0, 1.0, h -> {
@@ -274,9 +273,9 @@ class TimerHeapTest extends utest.Test {
 	}
 
 	public function testAHandleIsNeverNegative():Void {
-		// A handle once carried a generation whose top bit was the sign bit,
-		// so one could equal INVALID. Handles count up to MAX_HANDLE and start
-		// again at zero, here from just short of the end.
+		// A handle can never equal INVALID, as one carrying a generation whose
+		// top bit was the sign bit could. Handles count up to MAX_HANDLE and
+		// start again at zero, here from just short of the end.
 		var heap = new TimerHeap();
 		@:privateAccess heap.__nextHandle = TimerHandle.MAX_HANDLE - 2;
 		var seen:Array<Int> = [];
@@ -289,10 +288,10 @@ class TimerHeapTest extends utest.Test {
 	}
 
 	// A handle a timer was given is never given again while it could still be
-	// held: the count runs to 2^31 before it repeats. It was a slot and a
-	// twelve-bit generation, slots reused the most recently freed first, so
-	// a handle kept after its timer was cleared named whichever timer had
-	// that slot 4,096 reuses later, and clearing it cancelled that timer.
+	// held: the count runs to 2^31 before it repeats. With a slot and a
+	// twelve-bit generation, slots reused the most recently freed first, a
+	// handle kept after its timer was cleared would name whichever timer had
+	// that slot 4,096 reuses later, and clearing it would cancel that timer.
 
 	public function testAHandleKeptAcrossThousandsOfTimersStaysCleared():Void {
 		for (reuses in [4095, 2 * 4096 - 1, 5000]) {
@@ -315,9 +314,9 @@ class TimerHeapTest extends utest.Test {
 
 	public function testTimersArmedTogetherDoNotCrowdTheTable():Void {
 		// Handles are counted, so timers armed together have consecutive
-		// handles. Placed by their low bits, 10,000 long-lived ones filled one
-		// solid run of the table, and each later handle whose place fell
-		// inside it walked the run: arming and clearing a timer went from
+		// handles. Placed by their low bits, 10,000 long-lived ones would fill
+		// one solid run of the table, and each later handle whose place fell
+		// inside it would walk the run: arming and clearing a timer would go from
 		// 0.11 to 2.6 microseconds. The longest run of taken places says it
 		// without a clock.
 		var heap = new TimerHeap();
@@ -369,8 +368,8 @@ class TimerHeapTest extends utest.Test {
 	}
 
 	public function testANaNDelayIsRefusedAndStopsNothing():Void {
-		// One NaN due time stopped every timer on the heap: it compares false
-		// with every other, and at the root read as never due.
+		// One NaN due time must not stop every timer on the heap: it compares
+		// false with every other, and at the root would read as never due.
 		var heap = new TimerHeap();
 		var fired = 0;
 		for (i in 0...20) {
@@ -427,8 +426,8 @@ class TimerHeapTest extends utest.Test {
 	public function testATimerIsDueWhenTheClockReachesItByAnyPath():Void {
 		// The clock is summed from frame deltas and a due time from the clock
 		// plus a delay, and they round differently. From here, two 50ms steps
-		// land a rounding error short of the 0.1s a timer asked for, and it
-		// waited a whole frame more.
+		// land a rounding error short of the 0.1s a timer asked for, and it must
+		// not wait a whole frame more.
 		var heap = new TimerHeap();
 		for (_ in 0...16) {
 			heap.advanceTime(1 / 60);
@@ -586,8 +585,8 @@ class TimerHeapTest extends utest.Test {
 
 	public function testATimerClearedLazilyWhileHeldBackIsFreed():Void {
 		// Armed during a pass and due in it, it is held back for the next
-		// pass; cleared lazily meanwhile, nothing dequeued it to free its
-		// slot, and its handle read as live for as long as the heap ran.
+		// pass; cleared lazily meanwhile, it must still be dequeued to free its
+		// slot, or its handle would read as live for as long as the heap ran.
 		var heap = new TimerHeap();
 		var held:TimerHandle = TimerHandle.INVALID;
 		heap.setTimeoutVoid(1.0, () -> {
@@ -605,9 +604,9 @@ class TimerHeapTest extends utest.Test {
 	}
 
 	public function testATimerRescheduledFromItsCallbackAfterANestedPass():Void {
-		// Which timer's callback was running was one field of the heap, and a
-		// pass run from inside a callback, a nested pump, cleared it: the
-		// callback's own reschedule afterwards was lost, and the timer freed.
+		// Which timer's callback is running is not one field of the heap that a
+		// pass run from inside a callback (a nested pump) clears: that would lose
+		// the callback's own reschedule afterwards, and free the timer.
 		var heap = new TimerHeap();
 		var runs:Array<Float> = [];
 		var nested = 0;
@@ -631,9 +630,9 @@ class TimerHeapTest extends utest.Test {
 
 	public function testATimerResumedFromItsCallbackAfterANestedPassCanBeCleared():Void {
 		// The path `crossbyte.Timer.pause` and `resume` take. Resumed after a
-		// nested pass, the one-shot went back in the heap and had its slot
-		// freed as if it had run: its handle read as cleared, nothing could
-		// clear it, and the resume was lost.
+		// nested pass, the one-shot goes back in the heap with its slot kept:
+		// freed as if it had run, its handle would read as cleared, nothing could
+		// clear it, and the resume would be lost.
 		var heap = new TimerHeap();
 		var runs = 0;
 		var nested = 0;

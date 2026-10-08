@@ -6,17 +6,17 @@ import crossbyte.core.CrossByte;
 	Hands a close made on another thread to the runtime the connection runs
 	on.
 
-	What a runtime owns, its socket registry, its timers, its listeners,
+	What a runtime owns (its socket registry, its timers, its listeners)
 	is not thread-safe, and closing a connection touches all three. Each
 	socket's `close()` therefore runs on its runtime's thread: called from
 	any other, it is posted there, as `CrossByte.post` posts any work, and
 	the call returns at once. Closing is the one thing worth allowing from
-	elsewhere, a worker that decides a connection has to go, and it
-	used to throw part way through, or tell the connection's listeners on
-	the wrong thread.
+	elsewhere (a worker that decides a connection has to go), and run on the
+	calling thread it would throw part way through, or tell the
+	connection's listeners on the wrong thread.
 
-	Asked first, then posted, so a close on the runtime's own thread, every
-	close but these, builds no closure to post: a caller writes
+	Asked first, then posted, so a close on the runtime's own thread (every
+	close but these) builds no closure to post: a caller writes
 
 	```haxe
 	if (RuntimeHandOff.offThread(runtime) && runtime.post(() -> close())) {

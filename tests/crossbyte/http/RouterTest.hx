@@ -27,7 +27,7 @@ class RouterTest extends utest.Test {
 		Assert.equals("42", __dispatchParams(router, "GET", "/users/42").get("id"));
 
 		// The request path is URL-decoded before middleware runs, so a
-		// param holds whatever its segment holds, an encoded %2F became a
+		// param holds whatever its segment holds: an encoded %2F became a
 		// segment boundary upstream, and the router does not decode again.
 		Assert.equals("a b", __dispatchParams(router, "GET", "/users/a b").get("id"));
 
@@ -130,7 +130,7 @@ class RouterTest extends utest.Test {
 		router.any("/mixed", _ -> hits++);
 
 		// The GET-only route misses POST, but any() is a real match for
-		// every method, dispatch, not 405.
+		// every method: dispatch, not 405.
 		__dispatchHandler(router, "POST", "/mixed")(__ctx());
 		Assert.equals(1, hits);
 
@@ -187,8 +187,8 @@ class RouterTest extends utest.Test {
 	}
 
 	/**
-	 * Unwraps a dispatch's handler, failing the test, rather than
-	 * crashing the run on a null, when the match is anything else.
+	 * Unwraps a dispatch's handler, failing the test (rather than
+	 * crashing the run on a null) when the match is anything else.
 	 */
 	private function __dispatchHandler(router:Router, verb:String, path:String):RouteContext->Void {
 		return switch (router.__match(verb, path)) {
@@ -201,8 +201,8 @@ class RouterTest extends utest.Test {
 	}
 
 	/**
-	 * Unwraps a dispatch's captured params, failing the test, rather than
-	 * crashing the run on a null, when the match is anything else.
+	 * Unwraps a dispatch's captured params, failing the test (rather than
+	 * crashing the run on a null) when the match is anything else.
 	 */
 	private function __dispatchParams(router:Router, verb:String, path:String):Map<String, String> {
 		return switch (router.__match(verb, path)) {
@@ -233,10 +233,8 @@ class RouterTest extends utest.Test {
 	 * has a live request to offer.
 	 */
 	/**
-		What a route is handed is a `RouteContext` instance, a class, read
-		by field, built from the same literal, not an anonymous structure.
-		Before, `RouteContext` was a typedef, which `Std.isOfType` cannot
-		name: this did not compile.
+		What a route is handed is a `RouteContext` instance (a class, read
+		by field, built from the same literal), not an anonymous structure.
 	**/
 	public function testARouteContextIsAClassBuiltFromALiteral():Void {
 		var context:RouteContext = {handler: null, params: ["id" => "7"]};

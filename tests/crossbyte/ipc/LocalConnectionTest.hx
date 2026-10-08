@@ -50,10 +50,10 @@ class LocalConnectionTest extends utest.Test {
 			client.connect(name);
 
 			// Waits for what the assertions below actually check. `connected`
-			// flips before the ready callbacks have been dispatched, they are
-			// queued onto the runtime tick when they cannot run inline, so
-			// waiting on it alone let the send go out against a half-ready pair
-			// and left readyCount at 1 with nothing delivered.
+			// flips before the ready callbacks have been dispatched (they are
+			// queued onto the runtime tick when they cannot run inline), so
+			// waiting on it alone would let the send go out against a half-ready
+			// pair and leave readyCount at 1 with nothing delivered.
 			pumpUntil(() -> readyCount == 2 && server.connected && client.connected, 2.0);
 			client.send(bytesOf("hello local"));
 			pumpUntil(() -> received != null, 2.0);
@@ -127,12 +127,13 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	public function testReadyAndDataArriveWhileTheRuntimesListenersChange():Void {
-		// The reader thread attached the tick listener that carries its
-		// dispatches to this thread, and EventDispatcher is not thread-safe:
-		// an attach that met a listener change made here was lost, and the
-		// listening side then never saw onReady nor anything sent to it. Here
-		// the listeners change as fast as this thread can change them, the way
-		// timers and sockets change them all the time.
+		// The reader thread hands its dispatches to this thread, and
+		// EventDispatcher is not thread-safe: were the reader to attach a tick
+		// listener here itself, an attach that met a listener change made here
+		// could be lost, and the listening side would then never see onReady
+		// nor anything sent to it. Here the listeners change as fast as this
+		// thread can change them, the way timers and sockets change them all
+		// the time.
 		#if (cpp && (windows || linux || mac || macos))
 		var runtime = CrossByte.current();
 		var kept:TickEvent->Void = _ -> {};
@@ -180,10 +181,8 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	public function testAConnectionWhosePeerWentAwayIsLetGoOfByTheRuntime():Void {
-		// The runtime holds nothing of a connection whose peer went away. It
-		// delivered through a tick listener, which had to come off again when
-		// the connection ended; it delivers through posts to the runtime now,
-		// which leave nothing behind, and this stays to say so.
+		// The runtime holds nothing of a connection whose peer went away: it
+		// delivers through posts to the runtime, which leave nothing behind.
 		#if (cpp && (windows || linux || mac || macos))
 		var runtime = CrossByte.current();
 		var before = tickListeners(runtime);
@@ -221,11 +220,11 @@ class LocalConnectionTest extends utest.Test {
 
 	public function testAConnectionListenedOrConnectedAgainKeepsOneReader():Void {
 		// listen() and connect() begin with close(), and the reader thread of
-		// the session that ends sleeps between polls: it woke to find the
-		// connection running again and carried on beside the new session's
-		// reader. Two threads read one pipe, splitting its bytes, and tearing
-		// the connection down when the read that lost found nothing, and the
-		// old one's teardown closed the new session's pipes.
+		// the session that ends sleeps between polls. It must not wake to find
+		// the connection running again and carry on beside the new session's
+		// reader: two threads would read one pipe (splitting its bytes, and
+		// tearing the connection down when the read that lost found nothing),
+		// and the old one's teardown would close the new session's pipes.
 		#if (cpp && (windows || linux || mac || macos))
 		var server = new LocalConnection();
 		var client = new LocalConnection();
@@ -287,8 +286,7 @@ class LocalConnectionTest extends utest.Test {
 
 			// Both ends ready, not merely connected: `connected` flips before
 			// the ready callbacks are dispatched, and a send against a
-			// half-ready pair is lost with nothing to say so. That is what made
-			// the round-trip case above fail intermittently.
+			// half-ready pair is lost with nothing to say so.
 			pumpUntil(() -> readyCount == 2 && server.connected && client.connected, 2.0);
 			client.send(bytesOf("deferred"));
 			pumpUntil(() -> true, 0.05);
@@ -312,8 +310,8 @@ class LocalConnectionTest extends utest.Test {
 
 	public function testAConnectionMadeFromAUrlIsToldItIsReady():Void {
 		// `new NetConnection("local://...")` connects as it is made, and
-		// connect() dispatched Ready from inside itself: an onReady set once
-		// the constructor had returned, as the RPC guide sets one, never ran.
+		// connect() does not dispatch Ready from inside itself, so an onReady
+		// set once the constructor has returned, as the RPC guide sets one, runs.
 		#if (cpp && (windows || linux || mac || macos))
 		var name = uniqueName("url");
 		var server = new LocalConnection();
@@ -340,11 +338,11 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	public function testSendDoesNotWaitForAPeerThatIsNotReading():Void {
-		// send() wrote until all of it was gone, on the runtime's thread: five
-		// seconds a send on Windows, and for good elsewhere, to a peer that
-		// had stopped reading. What the channel does not take is queued now,
-		// and a peer that leaves more than maxQueuedBytes unread is closed,
-		// with an error that says so.
+		// send() does not write until all of it is gone, on the runtime's
+		// thread, which to a peer that has stopped reading would take five
+		// seconds a send on Windows, and for good elsewhere. What the channel
+		// does not take is queued, and a peer that leaves more than
+		// maxQueuedBytes unread is closed, with an error that says so.
 		#if (cpp && (windows || linux || mac || macos))
 		var name = uniqueName("stuck");
 		var peer = LocalConnection.__createInboundPipe(name);
@@ -400,11 +398,11 @@ class LocalConnectionTest extends utest.Test {
 
 	/**
 		A connect to a listener that takes nobody ends at its deadline. On
-		Linux a connect to a listener whose backlog was full waited in the
-		kernel for it to take someone, past any `timeout`, on the calling
-		thread: a listener hung, or simply busy, held every client's runtime
-		for good. The connects run on a thread of their own, so a wait that
-		never ends fails the case instead of the run.
+		Linux a connect to a listener whose backlog is full waits in the kernel
+		for it to take someone, past any `timeout`; on the calling thread, a
+		listener hung, or simply busy, would hold every client's runtime for
+		good. The connects run on a thread of their own, so a wait that never
+		ends fails the case instead of the run.
 	**/
 	@:timeout(60000)
 	public function testAConnectToAListenerTakingNobodyEndsAtItsDeadline():Void {
@@ -450,12 +448,11 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	public function testTwoSidesSendingAtOnceDoNotWaitOnEachOther():Void {
-		// Each side's send held its own lock while it waited for the other to
-		// read, and its reader needed that lock to read: two sides filling each
-		// other's channels at once each waited on the other, five seconds a
-		// send on Windows, and for good elsewhere, and a write that gave up
-		// part way through a frame left the other side reading from the middle
-		// of it.
+		// Neither side's send holds a lock its reader needs while it waits for
+		// the other to read: two sides filling each other's channels at once
+		// would each wait on the other (five seconds a send on Windows, and for
+		// good elsewhere), and a write that gave up part way through a frame
+		// would leave the other side reading from the middle of it.
 		#if (cpp && (windows || linux || mac || macos))
 		var name = uniqueName("both");
 		var server = new LocalConnection();
@@ -528,20 +525,18 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	/**
-		The same through socket buffers as small as macOS gives a local socket,
-		8 KB a direction, where Linux gives over 200, asked for on Linux
+		The same through socket buffers as small as macOS gives a local socket
+		(8 KB a direction, where Linux gives over 200), asked for on Linux
 		(which doubles what is asked: 4 KB asked is 8 KB had), and quickly.
 
-		On macOS the case above delivered two of the four frames in ten
-		seconds. Two costs grew as the buffer shrank. The reader moved at most
-		what the socket held each pass, then slept, from 1 ms to 10 ms as
-		passes found the socket still full or still empty, so the two sides
-		took turns at 8 KB a turn. And each pass copied whatever of a frame
-		had arrived so far to a new array and back, so a 3 MB frame arriving
-		8 KB at a time was copied 384 times over. Here on Linux the nine
-		megabytes took 3.0 s at that size, and take about 0.12 s now; more
-		than 2 s fails the case. macOS runs it at its own size, against the
-		ten-second deadline alone.
+		Two costs grow as the buffer shrinks. A reader that moved at most what
+		the socket held each pass, then slept from 1 ms to 10 ms as passes found
+		the socket still full or still empty, would have the two sides take
+		turns at 8 KB a turn. And copying whatever of a frame had arrived so
+		far to a new array and back on each pass would copy a 3 MB frame
+		arriving 8 KB at a time 384 times over. On Linux at that size the nine
+		megabytes take about 0.12 s; more than 2 s fails the case. macOS runs it
+		at its own size, against the ten-second deadline alone.
 	**/
 	@:timeout(60000)
 	public function testFramesArriveWholeThroughBuffersAsSmallAsMacOSGives():Void {
@@ -559,8 +554,8 @@ class LocalConnectionTest extends utest.Test {
 	/**
 		Three 3 MB frames and a small one, sent at once from a client to a
 		listener with sockets of `buffer` bytes a direction (0: the system's):
-		what arrived within ten seconds, each frame's number, -2 for the
-		small one, how long it took, and what either side was told went
+		what arrived within ten seconds (each frame's number, -2 for the
+		small one), how long it took, and what either side was told went
 		wrong.
 	**/
 	private static function sendLargeFrames(buffer:Int):{received:Array<Int>, seconds:Float, errors:Array<String>} {
@@ -606,9 +601,9 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	public function testManyMessagesAreDeliveredInATick():Void {
-		// Thirty-two a tick were delivered, whatever they cost: 384 a second
-		// at 12 ticks a second, and anything faster waited in a queue with no
-		// bound. Delivery is by time now.
+		// Delivery is bounded by time, not by a count a tick: thirty-two a tick
+		// would be 384 a second at 12 ticks a second, and anything faster would
+		// wait in a queue with no bound.
 		#if (cpp && (windows || linux || mac || macos))
 		var runtime = CrossByte.current();
 		var name = uniqueName("many");
@@ -651,10 +646,10 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	public function testAReceiverThatFallsBehindStopsTakingData():Void {
-		// Everything that arrived was read and queued for the runtime, however
-		// far behind it was, so a sender faster than the application grew this
-		// process without bound. Past maxQueuedBytes waiting to be delivered
-		// the reader stops, and the sender's data waits on its own side.
+		// What arrives is not read and queued for the runtime however far
+		// behind it is, which would let a sender faster than the application
+		// grow this process without bound. Past maxQueuedBytes waiting to be
+		// delivered the reader stops, and the sender's data waits on its own side.
 		#if (cpp && (windows || linux || mac || macos))
 		var name = uniqueName("behind");
 		var server = new LocalConnection();
@@ -706,10 +701,9 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	public function testSendingToAPeerThatHasGoneEndsTheConnectionNotTheProcess():Void {
-		// On POSIX a send to a peer that had gone raised SIGPIPE, which ends
-		// the process. send() looked first, and a peer that had simply gone
-		// looked closed; one that said something before it went looked open
-		// until that was read, and the send went ahead.
+		// On POSIX a send to a peer that has gone raises SIGPIPE, which ends the
+		// process. Looking first is not enough: a peer that said something
+		// before it went looks open until that is read.
 		#if (cpp && (windows || linux || mac || macos))
 		var name = uniqueName("gone");
 		var peer = LocalConnection.__createInboundPipe(name);
@@ -756,10 +750,10 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	public function testASecondListenerOnANameInUseIsRefused():Void {
-		// Windows made a second instance of the pipe beside the first, and
-		// POSIX removed the first's socket file and bound its own: either way
-		// listen() said nothing, and the first listener's clients went to the
-		// second.
+		// A second listen() on a name already listened on must fail: on Windows
+		// it would make a second instance of the pipe beside the first, and on
+		// POSIX remove the first's socket file and bind its own, and either way
+		// the first listener's clients would go to the second.
 		#if (cpp && (windows || linux || mac || macos))
 		var name = uniqueName("taken");
 		var first = new LocalConnection();
@@ -799,9 +793,10 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	public function testAClientThatWritesAndLeavesBeforeItIsTakenIsHeard():Void {
-		// On Windows a client that had come and gone before the listener next
-		// looked left the pipe closing: ConnectNamedPipe answered ERROR_NO_DATA,
-		// which was taken for "nobody yet", and the listener took nobody again.
+		// On Windows a client that has come and gone before the listener next
+		// looks leaves the pipe closing: ConnectNamedPipe answers ERROR_NO_DATA,
+		// which must not be taken for "nobody yet", or the listener takes nobody
+		// again.
 		#if (cpp && (windows || linux || mac || macos))
 		var name = uniqueName("brief");
 		var server = new LocalConnection();
@@ -843,10 +838,10 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	public function testNamesAlikeUpToPunctuationOrLengthAreDifferentChannels():Void {
-		// POSIX made a name's socket path by turning everything but letters,
-		// digits, '-' and '_' into '_', and cutting it to 48 characters: "a.b"
-		// and "a_b", or two long names alike for their first 48, were one
-		// channel.
+		// Each name has a socket path of its own: turning everything but
+		// letters, digits, '-' and '_' into '_', and cutting it to 48 characters,
+		// would make "a.b" and "a_b", or two long names alike for their first 48,
+		// one channel.
 		#if (cpp && (windows || linux || mac || macos))
 		var base = uniqueName("alike");
 		var long = base + "_" + [for (_ in 0...60) "x"].join("");
@@ -892,11 +887,11 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	/**
-		A callback that throws is reported as a socket handler's failure is,
-		logged, and dispatched as `UncaughtErrorEvent.UNCAUGHT_ERROR`, and,
-		as before, ends the connection and is told to `onError`. With no
-		`onError` set it went without a word, and so did whatever `onClose`
-		threw as `close()` called it.
+		A callback that throws is reported as a socket handler's failure is
+		(logged, and dispatched as `UncaughtErrorEvent.UNCAUGHT_ERROR`), and it
+		ends the connection and is told to `onError`. With no `onError` set it
+		is still reported, and so is whatever `onClose` throws as `close()`
+		calls it.
 	**/
 	public function testACallbackThatThrowsIsReported():Void {
 		#if (cpp && (windows || linux || mac || macos))
@@ -953,7 +948,7 @@ class LocalConnectionTest extends utest.Test {
 	/**
 		`timeout = 0` means no deadline, as it does on every connect: the
 		connect waits, on the calling thread, until something listens on the
-		name. It made one try and gave up at once.
+		name, rather than making one try and giving up at once.
 	**/
 	@:timeout(30000)
 	public function testATimeoutOfZeroWaitsForTheListenerWithoutADeadline():Void {
@@ -1010,8 +1005,8 @@ class LocalConnectionTest extends utest.Test {
 
 	/**
 		Another process of this user's meets this one over a name, both ways:
-		a name being the user's own, a directory only the user can enter on
-		Linux and macOS, a pipe only the user can open on Windows, keeps out
+		a name being the user's own (a directory only the user can enter on
+		Linux and macOS, a pipe only the user can open on Windows) keeps out
 		other users, not the user's other processes. The child is this suite's
 		own binary, run again: it connects, says so, and waits for an answer.
 	**/
@@ -1144,10 +1139,10 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	/**
-		On Windows a listener's pipe admits this user and SYSTEM alone. It was
-		made with the default security, which lets everyone read a pipe, the
-		anonymous user included, so another local user could open it and
-		take what the listener sent.
+		On Windows a listener's pipe admits this user and SYSTEM alone, not
+		the default security, which lets everyone read a pipe (the anonymous
+		user included), so another local user could open it and take what the
+		listener sent.
 	**/
 	public function testAPipeAdmitsNoneButItsUser():Void {
 		#if (cpp && windows)
@@ -1170,11 +1165,11 @@ class LocalConnectionTest extends utest.Test {
 	/**
 		A link put where a listener's lock file goes is not followed, and the
 		name is not listened on. On Linux and macOS a listener holds its name
-		by a lock on a file. It was in /tmp, where any user can put something
-		first, and was opened following a link: another user's link there
-		made this process make, or lock, a file wherever it pointed. The file
-		is in this user's own directory now, where only this user can put a
-		link, and one is still not followed.
+		by a lock on a file. In /tmp, where any user can put something first,
+		a file opened following a link would let another user's link make this
+		process make, or lock, a file wherever it pointed. The file is in this
+		user's own directory, where only this user can put a link, and one is
+		still not followed.
 	**/
 	public function testALinkWhereTheListenersLockFileGoesIsNotFollowed():Void {
 		var name = uniqueName("lnk");
@@ -1194,8 +1189,8 @@ class LocalConnectionTest extends utest.Test {
 
 	/**
 		Nor a FIFO, nor anything else that is not a regular file of this
-		user's: a FIFO opened for reading and writing does not wait, and was
-		locked and taken for the name's lock file.
+		user's: a FIFO opened for reading and writing does not wait, and would
+		be locked and taken for the name's lock file.
 	**/
 	public function testAFifoWhereTheListenersLockFileGoesIsRefused():Void {
 		var name = uniqueName("fifo");
@@ -1211,10 +1206,10 @@ class LocalConnectionTest extends utest.Test {
 
 	/**
 		Listening brings the lock file's times up to date, as each hour of
-		listening does, so a cleaner of old files in /tmp, macOS's takes
-		what nobody has touched for three days, systemd's for ten, does not
-		find a listener's old and delete it, which let a second listener
-		take the name from the first.
+		listening does, so a cleaner of old files in /tmp (macOS's takes what
+		nobody has touched for three days, systemd's for ten) does not find a
+		listener's old and delete it, which would let a second listener take
+		the name from the first.
 	**/
 	public function testListeningBringsTheLockFilesTimesUpToDate():Void {
 		var name = uniqueName("fresh");
@@ -1243,12 +1238,11 @@ class LocalConnectionTest extends utest.Test {
 
 	/**
 		A link at the socket path is not followed: a connect that finds one
-		is refused, not taken to wherever it points. The socket was in /tmp,
-		where any user could put a link under a name first, and connect()
-		followed it to their listener. The link here is planted where the
-		name's socket goes in either layout, /tmp, and this user's own
-		directory, where only this user could put one, and points at a
-		listener on another name.
+		is refused, not taken to wherever it points. In /tmp any user could put
+		a link under a name first, and a connect() that followed it would reach
+		their listener. The link here is planted where the name's socket goes
+		in either layout (/tmp, and this user's own directory, where only this
+		user could put one) and points at a listener on another name.
 	**/
 	public function testALinkAtTheSocketPathIsNotFollowed():Void {
 		var directory = ensureUserDirectory();

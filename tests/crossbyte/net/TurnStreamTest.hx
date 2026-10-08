@@ -25,10 +25,11 @@ class TurnStreamTest extends utest.Test {
 		A relay that redirects with 300 Try Alternate over TCP is followed to
 		the one it names, over a connection of its own.
 
-		The stream was opened once, to the first relay, and went on carrying
-		everything there: the retry meant for the alternate reached the relay
-		that had just redirected it, which redirected it again, and the
-		allocation failed as a redirection back to a relay already asked.
+		Each relay gets a connection of its own: a stream opened once, to the
+		first relay, and left carrying everything there would take the retry
+		meant for the alternate to the relay that had just redirected it,
+		which would redirect it again, and the allocation would fail as a
+		redirection back to a relay already asked.
 	**/
 	public function testATryAlternateOverTcpIsFollowed():Void {
 		if (unsupported()) return;

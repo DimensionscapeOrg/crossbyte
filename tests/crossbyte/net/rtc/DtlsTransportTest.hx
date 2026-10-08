@@ -12,8 +12,8 @@ import crossbyte.net.rtc._internal.NativeDtlsSession;
 	Two DTLS sessions handed each other's datagrams, with no network between
 	them.
 
-	The transport owns no socket for the same reason the ICE agent does not,
-	the one it would want is already carrying connectivity checks, and the
+	The transport owns no socket for the same reason the ICE agent does not
+	(the one it would want is already carrying connectivity checks), and the
 	same benefit follows: a real handshake, retransmission timers and all, runs
 	to completion here deterministically.
 
@@ -42,9 +42,9 @@ class DtlsTransportTest extends utest.Test {
 		An established session with nothing to do costs nothing to poll.
 
 		Nothing in an established session runs on a timer: records are read as
-		they arrive and written as they are sent. It was stepped every tick
-		regardless, three native calls per idle peer, finding nothing each
-		time. Counted rather than timed: the steps are what cost.
+		they arrive and written as they are sent. Stepped every tick
+		regardless, it would cost three native calls per idle peer, finding
+		nothing each time. Counted rather than timed: the steps are what cost.
 	**/
 	public function testAnIdleEstablishedSessionIsNotStepped():Void {
 		if (unsupported()) return;
@@ -185,10 +185,10 @@ class DtlsTransportTest extends utest.Test {
 
 	/**
 		Red team. Each record reaches `onMessage` in the byte order a
-		`ByteArray` made for it has, `ByteArray.defaultEndian`, as it did when
-		each had one of its own. The transport's one payload is read into
-		again for each, and its `endian` was never set again: a handler that
-		read one record big-endian left every record after it big-endian.
+		`ByteArray` made for it has, `ByteArray.defaultEndian`. The
+		transport's one payload is read into again for each, so its `endian`
+		has to be set again for each: a handler that read one record
+		big-endian would otherwise leave every record after it big-endian.
 	**/
 	public function testEachRecordStartsInTheDefaultByteOrder():Void {
 		if (unsupported()) return;
@@ -222,9 +222,9 @@ class DtlsTransportTest extends utest.Test {
 		Closing before it completes tells whoever was waiting.
 
 		Every path that settled this future ran from the handshake, and closing
-		is what stops the handshake, so a caller that closed mid-negotiation
-		was left holding a future that could not settle either way. The same gap
-		existed in every class in this stack that hands one out.
+		is what stops the handshake, so closing has to settle it too: a caller
+		that closed mid-negotiation would otherwise be left holding a future
+		that could not settle either way.
 	**/
 	public function testClosingBeforeTheHandshakeCompletesTellsWhoeverWaited():Void {
 		if (unsupported()) return;
@@ -243,11 +243,11 @@ class DtlsTransportTest extends utest.Test {
 	/**
 		A peer that closes its session is heard, and its last words are not lost.
 
-		mbedtls reported the peer's close_notify and this transport went on as
-		though nothing had happened: `connected` stayed true, `send` kept
+		mbedtls reports the peer's close_notify, and the transport has to act
+		on it: otherwise `connected` would stay true, `send` would keep
 		encrypting into a session nobody was reading, and nothing above it
 		could tell a peer that said goodbye from one that had merely gone
-		quiet. The one sign it gave was an internal state nothing read.
+		quiet.
 	**/
 	public function testThePeerClosingTheSessionIsReported():Void {
 		if (unsupported()) return;
@@ -291,7 +291,7 @@ class DtlsTransportTest extends utest.Test {
 	/**
 		Closing without telling the peer sends nothing.
 
-		For a path already known to be dead, consent expired, where RFC
+		For a path already known to be dead (consent expired), where RFC
 		7675 asks the sender to stop transmitting, goodbyes included.
 	**/
 	public function testClosingQuietlySendsNothing():Void {
@@ -335,10 +335,10 @@ class DtlsTransportTest extends utest.Test {
 		A client whose ClientHello nobody answers gives up in seconds.
 
 		mbedtls's own schedule resends a flight after one second and doubles to
-		a minute, failing after 123 seconds, two minutes of a session, and the
+		a minute, failing after 123 seconds: two minutes of a session, and the
 		socket and listener above it, held for a peer that was never there.
-		Resent at one, two, four and eight seconds now, and given up on at
-		fifteen.
+		Here it is resent at one, two, four and eight seconds, and given up on
+		at fifteen.
 	**/
 	public function testAHandshakeNobodyAnswersIsGivenUpInSeconds():Void {
 		if (unsupported()) return;
@@ -376,12 +376,12 @@ class DtlsTransportTest extends utest.Test {
 		separate.
 
 		Every session lives in one process-wide table, keyed by a handle from
-		one process-wide counter, and neither was guarded: peers on two child
-		runtimes inserted into, erased from and searched the same map at the
-		same moment. A lookup that lands mid-rebalance follows a stale node,
-		a live handle reads as gone, or a closed one as live, and two opens
-		that race on the counter get the same handle, so each then drives the
-		other's session.
+		one process-wide counter, so both have to be guarded: peers on two
+		child runtimes insert into, erase from and search the same map at the
+		same moment. A lookup that lands mid-rebalance would follow a stale
+		node (a live handle reading as gone, or a closed one as live), and two
+		opens that raced on the counter would get the same handle, so each
+		would then drive the other's session.
 	**/
 	public function testSessionsOnSeveralThreadsStaySeparate():Void {
 		#if cpp
@@ -451,7 +451,7 @@ class DtlsTransportTest extends utest.Test {
 	/**
 		The case the fingerprint exists for.
 
-		An attacker who can answer gets a perfectly good DTLS handshake, the
+		An attacker who can answer gets a perfectly good DTLS handshake: the
 		cryptography is not what identifies the peer here, because there is no
 		authority to appeal to. What identifies it is that the certificate
 		presented hashes to what arrived over signalling. So this hands a peer a

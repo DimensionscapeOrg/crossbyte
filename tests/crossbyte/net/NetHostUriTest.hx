@@ -10,10 +10,11 @@ import utest.Async;
 	system chooses, as `ServerSocket.bind(0)` does, and `localPort` says
 	which.
 
-	The URI was read the way a URI to dial is read, where port 0 names
-	nothing, and refused: a host made from a URI could only be given a port
-	someone had found free a moment before, which is assuming a port is
-	free, and how a server and a test trip over whatever took it since.
+	The URI is not read the way a URI to dial is read, where port 0 names
+	nothing and is refused: otherwise a host made from a URI could only be
+	given a port someone had found free a moment before, which is assuming
+	a port is free, and how a server and a test trip over whatever took it
+	since.
 **/
 class NetHostUriTest extends utest.Test {
 	private static inline var DEADLINE:Float = 10.0;
@@ -62,7 +63,7 @@ class NetHostUriTest extends utest.Test {
 		}, async);
 	}
 
-	/** Dialling is unchanged: port 0 is nowhere to connect to. **/
+	/** Dialling: port 0 is nowhere to connect to. **/
 	public function testAUriToDialOnPortZeroIsStillRefused():Void {
 		var refused:Bool = false;
 		try {
@@ -74,8 +75,8 @@ class NetHostUriTest extends utest.Test {
 	}
 
 	/**
-		Makes a listening host from `uri`, waits for it to have a port, Node
-		claims one a turn after `listen()`, dials it with `dial`, and checks
+		Makes a listening host from `uri`, waits for it to have a port (Node
+		claims one a turn after `listen()`), dials it with `dial`, and checks
 		the host accepted the connection on the port it reported. `dial`
 		answers with how to close what it opened.
 	**/
@@ -108,10 +109,10 @@ class NetHostUriTest extends utest.Test {
 			NetPump.until(() -> accepted != null || failure != null, DEADLINE, function(_) {
 				Assert.isNull(failure, "a client could not reach the host on the port it reported: " + failure);
 				Assert.notNull(accepted, "the host on port " + port + " accepted nothing");
-				// The host's end first. A client closed first with an answer
-				// unread resets the connection, and the interpreter dies of a
-				// send that meets a reset, the WebSocket session's close
-				// frame, where every other target reports it.
+				// The host's end first. A client closed first with an answer unread
+				// resets the connection, and the interpreter dies of a send that meets
+				// a reset (the WebSocket session's close frame) where every other
+				// target reports it.
 				if (accepted != null) {
 					__quietly(accepted.close);
 				}

@@ -10,7 +10,7 @@ import utest.Assert;
  */
 class PostgresConnInfoTest extends utest.Test {
 	public function testDefaultsAreWhatTheDriverAlwaysSent():Void {
-		// And keepalive's timings, which libpq left to the system.
+		// And keepalive's timings, which libpq would leave to the system.
 		Assert.equals("host='127.0.0.1' port='5432' dbname='postgres' connect_timeout='5' keepalives_idle='60' keepalives_interval='10' keepalives_count='6'",
 			PostgresConnInfo.build({}));
 	}
@@ -68,9 +68,9 @@ class PostgresConnInfoTest extends utest.Test {
 
 	/**
 		Keepalive has MySQL's timings unless told otherwise. libpq turns it on
-		but leaves the timings to the system, two hours before the first
-		probe, so a pooled connection to a host gone silent held its worker
-		that long. keepalives_* are libpq 9.0's, as old as anything that loads.
+		but leaves the timings to the system (two hours before the first
+		probe), so a pooled connection to a host gone silent would hold its
+		worker that long. keepalives_* are libpq 9.0's, as old as anything that loads.
 	**/
 	public function testKeepAliveHasTimingsByDefault():Void {
 		var conninfo:String = PostgresConnInfo.build({});
@@ -100,7 +100,7 @@ class PostgresConnInfoTest extends utest.Test {
 		Assert.raises(() -> PostgresConnInfo.build({tcpUserTimeout: -0.5}));
 		Assert.raises(() -> PostgresConnInfo.build({keepAliveIdle: -1}));
 		Assert.raises(() -> PostgresConnInfo.build({statementTimeout: Math.NaN}));
-		// It was taken for no limit, without a word; 0 is that, asked for.
+		// Refused, not taken for no limit without a word; 0 is that, asked for.
 		Assert.raises(() -> PostgresConnInfo.build({connectTimeout: -1}), crossbyte.errors.ArgumentError);
 		Assert.equals(-1, PostgresConnInfo.build({connectTimeout: 0}).indexOf("connect_timeout"));
 	}

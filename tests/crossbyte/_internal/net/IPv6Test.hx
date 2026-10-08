@@ -7,9 +7,8 @@ import utest.Assert;
  *
  * The reason this exists: hxcpp renders the loopback address as `::1` and
  * the jvm renders it as `0:0:0:0:0:0:0:1`. An application comparing what
- * it bound against what it is told back works on one target and fails on
- * the other, which is how four jvm test failures sat unnoticed, nothing
- * in CI ran the jvm suite.
+ * it bound against what it is told back would work on one target and fail
+ * on the other.
  */
 class IPv6Test extends utest.Test {
 	public function testExpandedLoopbackCompresses():Void {
@@ -33,7 +32,7 @@ class IPv6Test extends utest.Test {
 	 * runs tie. A shorter run must be written out.
 	 */
 	public function testLongestZeroRunWinsAndSingleZeroIsWrittenOut():Void {
-		// Runs of 1 then 3, the longer one collapses.
+		// Runs of 1 then 3: the longer one collapses.
 		Assert.equals("2001:0:1::1", IPv6.compress("2001:0000:0001:0000:0000:0000:0000:0001"));
 		// Two runs of 2, leftmost collapses.
 		Assert.equals("1::1:0:0:1:1", IPv6.compress("0001:0000:0000:0001:0000:0000:0001:0001"));

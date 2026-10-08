@@ -5,8 +5,8 @@ import crossbyte.errors.RangeError;
 import haxe.io.Bytes;
 
 /**
- * The most recent values filed under a sequence number, a tick, a packet
- * number, a frame, and found again by it.
+ * The most recent values filed under a sequence number (a tick, a packet
+ * number, a frame) and found again by it.
  *
  * It holds a window of `capacity` consecutive numbers ending at the newest
  * one put. Anything older has aged out and reads as `null`, even while its
@@ -28,7 +28,7 @@ import haxe.io.Bytes;
  *
  * It is also a receive window: what a reliable protocol holds past a gap,
  * filed by sequence as it arrives out of order, taken out with `remove` as
- * the gap fills, and acknowledged with `writeBits`, a bit for each number
+ * the gap fills, and acknowledged with `writeBits`: a bit for each number
  * past the next expected, the shape of a selective acknowledgement or a
  * game's ack bitfield. Nothing is hashed, and nothing is copied to answer:
  *
@@ -151,9 +151,9 @@ final class SequenceRing<T> {
 	 * `from + 8i + k` is, as `has` would answer it. Numbers not held, aged
 	 * out or never put write zeroes.
 	 *
-	 * Eight slots are read at a time, and only a set bit is looked at again,
-	 * to check the slot holds that number and not one a ring's length
-	 * away, so the cost follows `byteCount` and what is held, not the
+	 * Eight slots are read at a time, and only a set bit is looked at again
+	 * (to check the slot holds that number and not one a ring's length
+	 * away), so the cost follows `byteCount` and what is held, not the
 	 * ring's size.
 	 *
 	 * @param from The number bit 0 of the first byte stands for.

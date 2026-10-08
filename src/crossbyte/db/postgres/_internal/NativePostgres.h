@@ -3,10 +3,10 @@
 // C++ linkage: these take and return hxcpp types, so every result reaches the
 // caller as its own Haxe object rather than through a buffer the bridge keeps.
 
-// Opens a connection. Returns a handle whether or not it succeeded, null
-// only if the handle itself could not be allocated, and the reason it failed
-// is read from crossbyte_postgres_error() before the handle is closed. Per
-// handle, so connections opening on several threads cannot report each
+// Opens a connection. Returns a handle whether or not it succeeded (null
+// only if the handle itself could not be allocated), and the reason it
+// failed is read from crossbyte_postgres_error() before the handle is closed.
+// Per handle, so connections opening on several threads cannot report each
 // other's failures.
 void* crossbyte_postgres_open(::String conninfo, Array< ::String > libraryPaths);
 ::String crossbyte_postgres_error(void* handle);

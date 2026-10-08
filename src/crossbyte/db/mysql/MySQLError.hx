@@ -8,9 +8,9 @@ import crossbyte.errors.SQLError;
  * report (1062, `23000`), a statement interrupted by `cancel()` (1317), a
  * connection lost or timed out (2013).
  *
- * The message is the server's and holds no SQL. It used to begin with the
- * whole statement, values included, so a duplicate-key error on a row
- * holding an API token wrote the token into whatever logged the error.
+ * The message is the server's and holds no SQL, so a duplicate-key error on
+ * a row holding an API token does not write the token into whatever logs
+ * the error.
  */
 class MySQLError extends SQLError {
 	/**

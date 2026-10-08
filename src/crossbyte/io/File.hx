@@ -40,12 +40,12 @@ import haxe.io.Bytes;
 	The File class includes static properties that let you reference commonly used directory
 	locations. These static properties include:
 
-	* File.applicationStorageDirectory, a storage directory unique to each installed	application
-	* File.applicationDirectory, the read-only directory where the application is installed
+	* File.applicationStorageDirectory: a storage directory unique to each installed	application
+	* File.applicationDirectory: the read-only directory where the application is installed
 	(along with any installed assets)
-	* File.desktopDirectory, the user's desktop directory
-	* File.documentsDirectory, the user's documents directory
-	* File.userDirectory, the user directory
+	* File.desktopDirectory: the user's desktop directory
+	* File.documentsDirectory: the user's documents directory
+	* File.userDirectory: the user directory
 
 	These properties have meaningful values on different operating systems. For example,
 	Mac OS, Linux, and Windows each have different native paths to the user's desktop directory.
@@ -93,7 +93,7 @@ final class File extends EventDispatcher {
 		Node's `birthtime`; on the jvm the attribute `creationTime`, and
 		`null` on Linux before Java 22, whose JVM answers the modification
 		time in its place. It is never POSIX's `ctime`, which is when the
-		file's status last changed, a chmod, a rename or a write moves it
+		file's status last changed: a chmod, a rename or a write moves it
 		on.
 
 		@throws IOError               The file does not exist or cannot be
@@ -115,8 +115,8 @@ final class File extends EventDispatcher {
 		The ByteArray object representing the data from the loaded file after
 		a successful call to the `load()` method.
 
-		A load starts by unsetting it, so a load that fails, `load()`
-		throwing its `IOError`, `loadAsync()` dispatching `ioError`, or one
+		A load starts by unsetting it, so a load that fails (`load()`
+		throwing its `IOError`, `loadAsync()` dispatching `ioError`), or one
 		cancelled leaves no data from an earlier one. `save()` sets it to a
 		copy of what it saved, read from position 0: the `ByteArray` given to
 		`save()` is the caller's again once it returns.
@@ -150,7 +150,7 @@ final class File extends EventDispatcher {
 
 		An `Int`, so it states sizes up to 2,147,483,647 bytes, and a file
 		larger than that throws rather than answering. The standard library's
-		`stat` has an Int size too, and what it made of a larger file was
+		`stat` has an Int size too, and what it makes of a larger file is
 		different everywhere and right nowhere: on Windows native a 3 GB file
 		and a 5 GB one both read as **0**, indistinguishable from an empty
 		file. The HTTP server refuses to serve such a file for the same
@@ -200,8 +200,8 @@ final class File extends EventDispatcher {
 		that works across platforms. In CrossByte this is exposed as a filesystem path, not
 		as a URL-backed virtual path.
 
-		It is the directory the program itself is in, the executable natively, the jar on the
-		jvm, the script on Node, the bytecode file on neko and HashLink, and not the working
+		It is the directory the program itself is in (the executable natively, the jar on the
+		jvm, the script on Node, the bytecode file on neko and HashLink) and not the working
 		directory, which is wherever the program was started from: `C:\Windows\System32` for a
 		Windows service. On the interpreter (`--interp`), which runs from source and has no
 		program file, it is the working directory. `System.appDir` says more.
@@ -283,8 +283,8 @@ final class File extends EventDispatcher {
 		On Windows, this is the Documents directory in the user's profile (for example,
 		C:\Users\userName\Documents); a Documents folder moved elsewhere, through its properties or by OneDrive,
 		is not followed. On Mac OS, it is /Users/userName/Documents. On Linux and the BSDs it is the directory
-		xdg-user-dirs names, `XDG_DOCUMENTS_DIR` in `~/.config/user-dirs.dirs`, which a desktop in another
-		language or the user may have moved, and /home/userName/Documents where that names none.
+		xdg-user-dirs names (`XDG_DOCUMENTS_DIR` in `~/.config/user-dirs.dirs`, which a desktop in another
+		language or the user may have moved), and /home/userName/Documents where that names none.
 
 		The documentsDirectory property provides a way to reference the documents directory that works across
 		platforms.
@@ -377,11 +377,10 @@ final class File extends EventDispatcher {
 		and the forward slashes are replaced with the appropriate backslash character for you.
 
 		A path is taken literally on every platform: `%NAME%` and `$NAME` are characters of a
-		name, as they are to the operating system's own file calls. It used to expand the first
-		`%NAME%` from the environment on Windows, which let a name a peer sent, `"%SystemRoot%"`,
-		reach a directory the program never named. Expand a variable yourself, from
-		`Sys.getEnv`, where one is meant; `File.applicationStorageDirectory` and the other
-		static directories are usually what was.
+		name, as they are to the operating system's own file calls, so a name a peer sent
+		(`"%SystemRoot%"`) cannot reach a directory the program never named. Expand a variable
+		yourself, from `Sys.getEnv`, where one is meant; `File.applicationStorageDirectory` and the
+		other static directories are usually what was.
 
 		Before writing code to set the nativePath property directly, consider whether doing so may result
 		in platform-specific code. For example, a native path such as "C:\\Documents and Settings\\bob\\Desktop"
@@ -469,10 +468,7 @@ final class File extends EventDispatcher {
 	/**
 		Members of the Adobe AIR `File` API that CrossByte does not implement.
 
-		They were eleven bare `// TODO` markers next to commented-out
-		declarations, which recorded that something was missing without
-		recording what or why. Listed here so the gap can be judged rather than
-		rediscovered:
+		Listed here so the gap can be judged rather than rediscovered:
 
 		- `cacheDirectory`: a per-user cache location distinct from
 		  `applicationStorageDirectory`. Implementable: it is a known path per
@@ -595,9 +591,9 @@ final class File extends EventDispatcher {
 		"S:\\", "T:\\", "U:\\", "V:\\", "W:\\", "X:\\", "Y:\\", "Z:\\"
 	];
 
-	// Each asynchronous operation's own worker, while it runs. There was one
-	// field for all of them, so a second operation started before the first
-	// had finished was disposed of by the first one's completion.
+	// Each asynchronous operation's own worker, while it runs, so a second
+	// operation started before the first has finished is not disposed of by
+	// the first one's completion.
 	@:noCompletion private var __pending:Array<Worker> = [];
 	@:noCompletion private var __path:String;
 
@@ -637,8 +633,8 @@ final class File extends EventDispatcher {
 			return;
 		}
 
-		// A URL, as documented: it was taken for a native path, so
-		// "file:///C:/x" became "file:\C:\x", which names nothing.
+		// A URL, as documented: taken for a native path, "file:///C:/x" would
+		// become "file:\C:\x", which names nothing.
 		if (path.length >= 5 && path.substr(0, 5).toLowerCase() == "file:") {
 			path = __pathOfUrl(path, System.isWindows);
 		}
@@ -654,7 +650,7 @@ final class File extends EventDispatcher {
 	/**
 		The native path a `file:` URL names: `file:///C:/x` is `C:\x` on Windows,
 		`file:///home/x` is `/home/x`, `file://server/share/x` is the share
-		`\\server\share\x`, and `%XX` escapes are decoded as UTF-8, `+` is a
+		`\\server\share\x`, and `%XX` escapes are decoded as UTF-8; `+` is a
 		plus sign in a path, not a space.
 	**/
 	@:noCompletion private static function __pathOfUrl(url:String, windows:Bool):String {
@@ -721,7 +717,7 @@ final class File extends EventDispatcher {
 	/**
 		Cancels any pending asynchronous operation.
 
-		Each stops where it is and reports nothing more, no `complete`, no `ioError`, and the File
+		Each stops where it is and reports nothing more (no `complete`, no `ioError`), and the File
 		dispatches `cancel`, once. What is left behind:
 
 		- `copyToAsync` stops between blocks. A destination that did not exist before the copy began is
@@ -739,10 +735,7 @@ final class File extends EventDispatcher {
 		@event cancel An asynchronous operation was cancelled.
 	**/
 	public function cancel():Void {
-		// It cancelled a worker without asking whether there was one: with
-		// nothing pending, a null access. And the work went on, a 64 MB
-		// copy finished after it had been cancelled, because nothing in it
-		// ever asked.
+		// With nothing pending this does nothing, as documented.
 		if (__pending.length == 0) {
 			return;
 		}
@@ -802,13 +795,13 @@ final class File extends EventDispatcher {
 		matches the case of the actual file or directory name. If the File object is a symbolic link,
 		canonicalization adjusts the path so that it matches the file or directory that the link points to.
 
-		The path is the one the file system gives for the file, natively and on Node through the system's own
-		call (`GetFinalPathNameByHandle`, `realpath`), on the jvm `toRealPath`, and on the interpreter, neko and
-		HashLink under Linux and macOS `realpath`, so every link on the way, a junction on Windows included, is
-		followed. Two cases fall back to correcting the case of each name that exists, listing each directory on
-		the way down, without following links: a path with nothing at the end of it, AIR follows a link to a
-		target that does not exist, and this does not, and the interpreter, neko and HashLink under Windows,
-		whose standard library resolves no link.
+		The path is the one the file system gives for the file, so every link on the way, a junction on
+		Windows included, is followed: natively and on Node through the system's own call
+		(`GetFinalPathNameByHandle`, `realpath`), on the jvm `toRealPath`, and on the interpreter, neko and
+		HashLink under Linux and macOS `realpath`. Two cases fall back to correcting the case of each name
+		that exists, listing each directory on the way down, without following links: a path with nothing
+		at the end of it (AIR follows a link to a target that does not exist, and this does not), and the
+		interpreter, neko and HashLink under Windows, whose standard library resolves no link.
 
 		The following code shows how to use the canonicalize() method to find the correct capitalization of a
 		directory name. Before running this example, create a directory named CrossByte Test on the desktop of your computer.
@@ -824,8 +817,7 @@ final class File extends EventDispatcher {
 	**/
 	public function canonicalize():Void {
 		// The file system's own path, where it can be asked: links followed,
-		// as documented, which nothing did, only the case of each name was
-		// corrected, by listing each directory on the way down.
+		// as documented.
 		var real:Null<String> = __realPath(__path);
 
 		if (real != null) {
@@ -858,13 +850,12 @@ final class File extends EventDispatcher {
 		File object. To copy a file, use the copyTo() method.
 	**/
 	public function clone():File {
-		// The File's own state, set on a File made the ordinary way. It copied
-		// every instance field by reflection: EventDispatcher's too, so the
-		// clone shared the original's listeners (fixed by skipping those), and
-		// every property through its getter, `isHidden`, which runs
-		// `attrib` on Windows, `spaceAvailable`, which runs fsutil or df, and
-		// size and both dates, which read the disk, to set them on a clone
-		// that cannot be set.
+		// The File's own state, set on a File made the ordinary way, rather
+		// than every instance field copied by reflection, which would share
+		// the original's listeners and run every property's getter
+		// (`isHidden` runs `attrib` on Windows, `spaceAvailable` runs fsutil
+		// or df, and size and both dates read the disk) to set them on a
+		// clone where they cannot be set.
 		var clone:File = new File();
 		clone.__path = __path;
 		clone.name = name;
@@ -950,10 +941,10 @@ final class File extends EventDispatcher {
 		}
 
 		// Onto itself, whatever overwrite says. The standard library's copy
-		// truncates the destination before it reads the source, and the
-		// source was the destination: the file was left empty. A different
-		// spelling of the same file, its name in another case, a hard
-		// link, a path through a junction, did the same.
+		// truncates the destination before it reads the source, so a copy of
+		// a file onto itself would leave it empty, under any spelling of the
+		// same file (its name in another case, a hard link, a path through a
+		// junction).
 		if (FileOps.sameFile(__path, newPath, System.isWindows)) {
 			throw __ioError('"$__path" and "$newPath" are the same file, and copying it onto itself would empty it.', 3011);
 		}
@@ -1043,9 +1034,9 @@ final class File extends EventDispatcher {
 			throw e;
 		} catch (e:Dynamic) {
 			// The source was checked above, so whatever went wrong is not what
-			// 3003 says. A permission denial, a full disk and a file held open
-			// by another process all used to be reported as a missing file,
-			// which sends whoever is reading the error looking for the wrong
+			// 3003 says: a permission denial, a full disk and a file held open
+			// by another process are not a missing file, and reporting them as
+			// one would send whoever reads the error looking for the wrong
 			// thing entirely.
 			throw __ioError('Unable to copy "$source" to "$target": ${Std.string(e)}', 3006);
 		}
@@ -1057,9 +1048,9 @@ final class File extends EventDispatcher {
 
 		copyTo refuses its own two ends when they are one file, but a
 		directory merged into another can find a second name of one of its
-		own files there, a hard link, and that copy truncated the file before
-		reading it. Where the target cannot tell two files apart, neko and
-		hl under Windows, whose `stat` has no file index, two files with
+		own files there, a hard link, which a copy would truncate before
+		reading it. Where the target cannot tell two files apart (neko and
+		hl under Windows, whose `stat` has no file index), two files with
 		the same bytes count as one: copying either onto the other changes
 		nothing, and a second name of one file always has the same bytes.
 	**/
@@ -1345,9 +1336,8 @@ final class File extends EventDispatcher {
 			throw __ioError('"$__path" is not empty, and deleteDirectoryContents is false.', 3010);
 		}
 
-		// Each failure was "Folder is not empty", whatever it was, a
-		// directory held open, a permission refused, and the base Error,
-		// where an IOError is documented.
+		// Each failure says what it was (a directory held open, a permission
+		// refused), as the IOError documented.
 		try {
 			FileSystem.deleteDirectory(__path);
 		} catch (e:Dynamic) {
@@ -1486,7 +1476,7 @@ final class File extends EventDispatcher {
 	public function getDirectoryListingAsync():Void {
 		__startAsync(cancelled -> {
 			// On the worker, so that what is wrong with the directory is the
-			// documented ioError event. It was thrown, synchronously.
+			// documented ioError event, not a throw.
 			__checkDirectory();
 			var files:Array<File> = [];
 
@@ -1527,8 +1517,8 @@ final class File extends EventDispatcher {
 		that came from outside: see `resolvePath`. It is `""` when the two are
 		the same place. Both paths are normalized first, and a relative one is
 		read against the working directory. Names are compared without regard
-		to case on Windows and exactly everywhere else, macOS included,
-		whose default volume ignores case: a name that differs only in case
+		to case on Windows and exactly everywhere else (macOS included,
+		whose default volume ignores case): a name that differs only in case
 		reads as somewhere else, which for an inside-this-directory check is
 		the side to err on. Two drives, or two shares, are two volumes, and
 		the answer between them is null even with `useDotDot`.
@@ -1539,10 +1529,6 @@ final class File extends EventDispatcher {
 		@throws	ArgumentError The reference is null.
 	**/
 	public function getRelativePath(ref:File, useDotDot:Bool = false):Null<String> {
-		// It compared raw strings split on the separator: a sibling came back
-		// as its bare name rather than null, the answer was joined with `\` on
-		// Windows, a null ref was a null access, and nothing stopped it
-		// answering across two drives.
 		if (ref == null) {
 			throw new ArgumentError("getRelativePath needs a File to compare against.");
 		}
@@ -1646,8 +1632,8 @@ final class File extends EventDispatcher {
 		file replaced through it is never seen half written. A name changed only in case is renamed,
 		even where the file system ignores case and the two names are the same file. Onto another
 		volume, where no rename reaches, the source is copied and then deleted, and if the copy fails
-		nothing of it is left behind. With `overwrite`, an existing destination is replaced, a
-		directory as a whole, not merged into, and is put back if the move fails.
+		nothing of it is left behind. With `overwrite`, an existing destination is replaced (a
+		directory as a whole, not merged into), and is put back if the move fails.
 
 		@param newLocation The target location for the move. This object specifies the path to the
 		resulting (moved) file or directory, not the path to the containing directory.
@@ -1691,11 +1677,11 @@ final class File extends EventDispatcher {
 
 	/** moveTo, whose copy across volumes `cancelled`, when given, can stop. **/
 	@:noCompletion private function __moveTo(newLocation:File, overwrite:Bool, cancelled:Null<Void->Bool>):Void {
-		// It was a copy followed by a delete, always. Onto itself that copy
-		// emptied the file; a rename of a name's case, the same file to
-		// Windows and to macOS by default, copied the file onto itself and
-		// then deleted it. It is a rename now, and a copy and a delete only
-		// where a rename cannot go: to another volume.
+		// A rename where one reaches, and a copy and a delete only where it
+		// cannot, to another volume: onto itself a copy would empty the file,
+		// and a change of a name's case (the same file to Windows and to
+		// macOS by default) would copy the file onto itself and then delete
+		// it.
 		if (newLocation == null) {
 			throw new ArgumentError("moveTo needs a destination.");
 		}
@@ -1762,8 +1748,8 @@ final class File extends EventDispatcher {
 			return;
 		}
 
-		// Anything else in the way, a directory, or a file a directory is
-		// moving onto, is set aside first, under a name of its own in the
+		// Anything else in the way (a directory, or a file a directory is
+		// moving onto) is set aside first, under a name of its own in the
 		// same directory, and put back if the move fails. Overwrite replaces
 		// it, as documented, rather than merging into it.
 		var aside:Null<String> = null;
@@ -1880,7 +1866,7 @@ final class File extends EventDispatcher {
 
 		A directory opens in the file manager. The application is started and this returns: it does
 		not wait for it, nor report what it does after starting. Through `explorer.exe` on Windows,
-		`open` on macOS and `xdg-open` elsewhere, on Node through `child_process`, so it opens on
+		`open` on macOS and `xdg-open` elsewhere (on Node through `child_process`), so it opens on
 		the desktop of the user the program runs as, and does nothing visible for a service with no
 		desktop.
 
@@ -1891,11 +1877,10 @@ final class File extends EventDispatcher {
 
 		@throws IOError The file does not exist.
 		@throws IllegalOperationError The file's type is one that would be run; or there is no way to
-		open a file here, a browser, an operating system other than Windows, macOS, Linux and BSD, or
+		open a file here: a browser, an operating system other than Windows, macOS, Linux and BSD, or
 		`xdg-open` not installed.
 	**/
 	public function openWithDefaultApplication():Void {
-		// It was empty: a public, documented member that did nothing at all.
 		#if (js && !nodejs)
 		throw new IllegalOperationError("A browser cannot open a file in another application.");
 		#else
@@ -1925,8 +1910,8 @@ final class File extends EventDispatcher {
 	**/
 	@:noCompletion private static function __defaultApplicationCommand(path:String, platform:String):Null<{command:String, args:Array<String>}> {
 		return switch (platform) {
-			// explorer.exe rather than cmd's `start`, which a quoted argument,
-			// and Process quotes each, stops being: cmd reads `"start"` as
+			// explorer.exe rather than cmd's `start`, which a quoted argument
+			// (and Process quotes each) stops being: cmd reads `"start"` as
 			// the name of a program.
 			case "windows": {command: "explorer.exe", args: [path]};
 			case "mac": {command: "open", args: [path]};
@@ -2053,7 +2038,7 @@ final class File extends EventDispatcher {
 
 		**This is not a sandbox.** An absolute `path` is returned as it is,
 		wherever it points, and the `..` rule above only stops a path climbing
-		out of the storage root by `..`, it does not stop one that names
+		out of the storage root by `..`; it does not stop one that names
 		somewhere else outright. To keep a path that came from a user or a peer
 		inside a directory, resolve it and then check where it landed:
 
@@ -2152,9 +2137,8 @@ final class File extends EventDispatcher {
 		@throws IOError A file is there and `overwrite` is false (3002), or the file cannot be written.
 	**/
 	public function save(data:ByteArray, overwrite:Bool = false):Void {
-		// Plain strings were thrown, and every failure to write was "File is
-		// open": a missing directory, a permission refused and a full disk all
-		// read as that.
+		// Each failure says what it was (a missing directory, a permission
+		// refused, a full disk), as an IOError.
 		if (data == null) {
 			throw new ArgumentError("save needs the data to write.");
 		}
@@ -2170,10 +2154,10 @@ final class File extends EventDispatcher {
 		}
 
 		// What was saved, kept as a copy, read from the start as a load would
-		// read it back: `data` is the caller's again once this returns. It
-		// was kept itself, so a buffer reused after saving, or a payload a
-		// listener was handed for its call alone, saved as it arrived,
-		// changed `data` into something that was never saved.
+		// read it back: `data` is the caller's again once this returns, so a
+		// buffer reused after saving (or a payload a listener was handed for
+		// its call alone, saved as it arrived) cannot change `data` into
+		// something that was never saved.
 		var saved = ByteArray.fromBytes((data : haxe.io.Bytes).sub(0, data.length));
 		saved.endian = data.endian;
 		saved.objectEncoding = data.objectEncoding;
@@ -2275,8 +2259,8 @@ final class File extends EventDispatcher {
 	}
 
 	/**
-		The file system's own path for `path`, every link followed, each
-		name in its case on disk, or null when there is no such file, or no
+		The file system's own path for `path` (every link followed, each
+		name in its case on disk), or null when there is no such file, or no
 		way here to ask: the interpreter, neko and hl under Windows, whose
 		`fullPath` follows no link.
 	**/
@@ -2344,8 +2328,8 @@ final class File extends EventDispatcher {
 
 	/**
 		`FileSystem.readDirectory` does not fail the same way on every target. On hxcpp a
-		directory it cannot open comes back as `null` rather than throwing, `sys_read_dir`
-		returns `null()` when `FindFirstFileW` hands back `INVALID_HANDLE_VALUE`, and
+		directory it cannot open comes back as `null` rather than throwing (`sys_read_dir`
+		returns `null()` when `FindFirstFileW` hands back `INVALID_HANDLE_VALUE`), and
 		iterating that null takes the process down with it, past any `catch` the caller
 		wrote. Every listing goes through here so a missing directory raises the same
 		catchable `Error` everywhere.
@@ -2417,15 +2401,14 @@ final class File extends EventDispatcher {
 		Creates a temporary file or directory under a name nobody could have
 		guessed, and only if nothing is there already.
 
-		The name came from `Math.random`, 24 bits of it, and the file was
-		created after checking the name was free, through a call that follows
-		symbolic links. On a shared temporary directory another local user
-		could plant links at the names ahead of time, and the next temporary
-		file this created was written wherever the link pointed. The name is
-		now 64 bits from the platform's secure source, and the file is created
-		exclusively, `O_CREAT | O_EXCL | O_NOFOLLOW`, readable by its owner
-		only, or `CREATE_NEW`, so a name that is taken, by a link or anything
-		else, is passed over for another.
+		The name is 64 bits from the platform's secure source, and the file is
+		created exclusively (`O_CREAT | O_EXCL | O_NOFOLLOW`, readable by its
+		owner only, or `CREATE_NEW`), so a name that is taken, by a link or
+		anything else, is passed over for another. A guessable name, or a
+		check that the name is free followed by a create that follows
+		symbolic links, would let another local user plant links on a shared
+		temporary directory ahead of time and have the next temporary file
+		written wherever a link pointed.
 
 		The interpreter, hl and neko have neither a secure source nor an
 		exclusive create here, and fall back to a name drawn from `Std.random`
@@ -2476,11 +2459,9 @@ final class File extends EventDispatcher {
 	/**
 		Sixteen hex digits from the secure source where there is one.
 
-		Elsewhere four draws of sixteen bits. It was two draws below
-		0x7FFFFFFF, and neko's Int is 31 bits: that bound is not an Int there,
-		and the native under `Std.random` refused it, so every temporary file
-		and directory neko asked for threw, and so did every `Store.put`,
-		which drew the same way.
+		Elsewhere four draws of sixteen bits, a bound every target's Int
+		holds: neko's Int is 31 bits, and a bound past it makes its
+		`Std.random` throw.
 	**/
 	@:noCompletion private static function __tempNonce():String {
 		if (crossbyte.crypto.SecureRandom.isSupported) {
@@ -2562,18 +2543,18 @@ final class File extends EventDispatcher {
 		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("Reading a file attribute means shelling out, and a browser has no shell.");
 		#elseif cpp
-		// GetFileAttributesW. It started `attrib` through cmd.exe for each
-		// question, and cmd expanded any %NAME% in the path, so a file with
-		// one in its name was asked about under another name.
+		// GetFileAttributesW, rather than `attrib` started through cmd.exe,
+		// which would expand any %NAME% in the path and ask about a file
+		// with one in its name under another name.
 		return crossbyte.io._internal.NativeFileSync.hidden(__path) == 1;
 		#elseif (jvm || java)
 		// On Windows the JVM's isHidden is the attribute.
 		return new java.io.File(__path).isHidden();
 		#else
-		// No call for the attribute here, so `attrib` still answers, run
-		// directly, not through cmd.exe, which expanded any %NAME% in the
-		// path. Node has no sys.io.Process; System's helper runs it there
-		// through child_process.
+		// No call for the attribute here, so `attrib` answers, run
+		// directly rather than through cmd.exe, which would expand any
+		// %NAME% in the path. Node has no sys.io.Process; System's helper
+		// runs it there through child_process.
 		return __attribSaysHidden(@:privateAccess System.__programOutput("attrib", [__path]));
 		#end
 	}
@@ -2600,16 +2581,16 @@ final class File extends EventDispatcher {
 	}
 
 	/**
-		The names a path gives, `name`, `extension`, `type`, which need
+		The names a path gives (`name`, `extension`, `type`), which need
 		nothing from the disk. What the disk says is asked when it is wanted:
-		`size`, `modificationDate` and `creationDate` were a snapshot taken
-		when the path was set, while `exists` was live, so a File made before
-		its file was written reported a size of 0 for good.
+		`size`, `modificationDate` and `creationDate` are read live, as
+		`exists` is, so a File made before its file was written says what is
+		there now.
 	**/
 	@:noCompletion private function __updateNames(path:String):Void {
 		name = Path.withoutDirectory(path);
-		// null for a name with no dot, as documented. It was "", which reads
-		// as an extension that happens to be empty, as "name." has.
+		// null for a name with no dot, as documented, not "", which reads as
+		// an extension that happens to be empty, as "name." has.
 		extension = name.indexOf(".") < 0 ? null : Path.extension(path);
 		type = extension;
 	}
@@ -2711,10 +2692,9 @@ final class File extends EventDispatcher {
 	}
 
 	@:noCompletion private function get_creationDate():Null<Date> {
-		// When the file was made. It was stat's ctime, which on POSIX is when
-		// the file's status last changed: a chmod, a rename, a write moved it
-		// on. Windows' ctime is the creation time, which is the one platform
-		// where that was right.
+		// When the file was made, not stat's ctime, which on POSIX is when
+		// the file's status last changed (a chmod, a rename, a write moves it
+		// on). Only Windows' ctime is the creation time.
 		#if (js && !nodejs)
 		return FileSystem.stat(__path).ctime;
 		#elseif cpp
@@ -2867,22 +2847,21 @@ final class File extends EventDispatcher {
 	}
 
 	@:noCompletion private function set_nativePath(path:String):String {
-		// Taken literally. On Windows the first %NAME% in a path was replaced
-		// by that environment variable, after resolvePath had normalized it,
-		// so a name sent by a peer, "%SystemRoot%" or "%USERPROFILE%",
-		// reached a directory the caller had never named, out of a server's
-		// root among them. AIR's File expands nothing, and neither does the
-		// operating system's own file API.
+		// Taken literally: a %NAME% in a path is not replaced from the
+		// environment, so a name sent by a peer ("%SystemRoot%" or
+		// "%USERPROFILE%") cannot reach a directory the caller never named,
+		// out of a server's root among them. AIR's File expands nothing, and
+		// neither does the operating system's own file API.
 		if (path.charAt(path.length - 1) == ":" /*|| FileSystem.isDirectory(path)*/) {
 			path = Path.addTrailingSlash(path);
 		}
 		// Refuses a bare name, which says nothing about where the file is. An
 		// absolute path always says, whatever Path.directory makes of it: the
 		// directory of "/root" is "", because its only separator is the root,
-		// so every path one level under "/", a HOME of /root, a working
-		// directory of /app, "/" itself, was refused as though it were a
-		// bare "root". A relative path with a directory in it is accepted as
-		// it always was; callers build those, and resolvePath keeps them so.
+		// and a path one level under "/" (a HOME of /root, a working directory
+		// of /app, "/" itself) is not a bare name. A relative path with a
+		// directory in it is accepted; callers build those, and resolvePath
+		// keeps them so.
 		if (Path.directory(path).length == 0 && !Path.isAbsolute(path)) {
 			throw new ArgumentError("One of the parameters is invalid.");
 		}
@@ -2901,8 +2880,7 @@ final class File extends EventDispatcher {
 	@:noCompletion private function get_isHidden():Bool {
 		// The dotfile convention is not Windows's, and Windows's attribute is
 		// not a convention. Asked at runtime because eval, Node and the JVM
-		// all run on Windows without the compiler saying so, and all three
-		// used to answer the dotfile question there.
+		// all run on Windows without the compiler saying so.
 		return System.isWindows ? __winGetHiddenAttr() : name.charAt(0) == ".";
 	}
 
@@ -2921,9 +2899,9 @@ final class File extends EventDispatcher {
 		var lastIndex:Int = path.lastIndexOf(separator);
 
 		// Nothing left above it: "/" strips to "" and "C:\" to "C:". A root's
-		// parent is documented as null, and the return below was written to
-		// give it, but the adjustment after this ran first and turned -1 into
-		// 0, so a root asked for new File("") instead, which throws.
+		// parent is documented as null, and is answered here, before the
+		// adjustment below would turn -1 into 0 and ask for new File(""),
+		// which throws.
 		if (lastIndex == -1) {
 			return null;
 		}
@@ -2933,33 +2911,16 @@ final class File extends EventDispatcher {
 		if (lastIndex == path.indexOf(separator)) {
 			lastIndex += 1;
 		}
-		// `(lastIndex - path.length) + path.length` is `lastIndex`; the round
-		// trip through the length cancels exactly and always did. That
-		// expression is what the "can we optimize this?" note here was
-		// pointing at, so it is answered rather than left asked.
 		return new File(__path.substring(0, lastIndex));
 	}
 
 	/**
-	 * Free bytes on the volume holding this path.
-	 *
-	 * Bytes on every target, which it was not: the POSIX branch returned
-	 * `df -k` output unconverted, so one target reported bytes and another
-	 * reported kilobytes for the same question.
-	 *
-	 * Three separate things were wrong here, and all of them answered rather
-	 * than failed, a wrong number is worse than an error for a caller asking
-	 * "have I room to write this":
-	 *
-	 * - Windows matched the line containing "Total bytes", which is the
-	 *   volume's capacity. `fsutil` prints free space on the line above, as
-	 *   "Total free bytes". A 930 GB disk with 75 GB free reported 930 GB.
-	 * - POSIX required `df`'s first column to equal this path, but that column
-	 *   is the device. It never matched, so the loop fell through and returned
-	 *   zero, and zero is a legitimate reading, so nothing looked wrong.
-	 * - Node compiled and then threw `ReferenceError: sys is not defined` at
-	 *   runtime, because `sys.io.Process` type-checks there (hxnodejs allows
-	 *   the `sys` package) and generates nothing.
+	 * Free bytes on the volume holding this path, in bytes on every target:
+	 * natively from the system itself, and elsewhere from `fsutil`'s "Total
+	 * free bytes" on Windows (not "Total bytes", which is the volume's
+	 * capacity) or `df -k`'s Available column, converted from kilobytes. A
+	 * wrong number would be worse than an error for a caller asking "have I
+	 * room to write this".
 	 */
 	@:noCompletion private function get_spaceAvailable():Float {
 		#if (js && !nodejs)
@@ -2993,12 +2954,10 @@ final class File extends EventDispatcher {
 			return 0;
 		}
 
-		// Sys.systemName(), not `#if windows`. That define says which target the
-		// compiler was aimed at, not which machine is running, eval does not
-		// set it at all, so on Windows this took the `df` branch, found no df,
-		// and reported a full disk as empty. A conditional that is right on
-		// four targets and silently wrong on the fifth is worse than a runtime
-		// check that is right on all of them.
+		// Sys.systemName(), not `#if windows`: that define says which target
+		// the compiler was aimed at, not which machine is running, and eval
+		// does not set it at all, so on Windows it would take the `df`
+		// branch, find no df, and report no space.
 		var onWindows:Bool = Sys.systemName() == "Windows";
 		// fsutil takes a directory, and refused a file's path: every file read
 		// as having no room to grow. A file is asked about through the
@@ -3021,15 +2980,13 @@ final class File extends EventDispatcher {
 		}
 
 		// `g`, or `split` stops at the first match: "/dev/sdd  1055762868 ..."
-		// came back as two parts, the row never reached the four a data row
-		// needs, and every disk on every non-Windows target read as full.
-		// Windows parses fsutil above and never reaches this, which is why
-		// the suite was green where it was run and zero everywhere else.
+		// would come back as two parts, never the four a data row needs, and
+		// every disk would read as full.
 		var whitespace:EReg = ~/\s+/g;
 
-		// An escape rather than a newline typed into the literal, which meant
-		// whatever line ending the file was checked out with, a carriage
-		// return and a newline in a Windows working tree. Each line is
+		// An escape rather than a newline typed into the literal, which would
+		// mean whatever line ending the file was checked out with (a carriage
+		// return and a newline in a Windows working tree). Each line is
 		// trimmed below, so this handles either.
 		for (line in output.split("\n")) {
 			var text:String = StringTools.trim(line);
@@ -3042,17 +2999,14 @@ final class File extends EventDispatcher {
 				if (onWindows) {
 					// "Total free bytes : 80,872,067,072 ( 75.3 GB)". Matched by
 					// its own prefix: the next line, "Total bytes", is the
-					// volume's capacity, and an indexOf on that string is what
-					// used to return a 930 GB disk as 930 GB free.
+					// volume's capacity.
 					if (StringTools.startsWith(text, "Total free bytes")) {
 						var value:String = text.substring(text.indexOf(":") + 1);
 						return Std.parseFloat(StringTools.replace(StringTools.trim(value), ",", ""));
 					}
 				} else {
 					// The Available column of the first data row, in 1K blocks.
-					// Not matched against this path: df names the device there,
-					// so the old comparison never matched and fell through to
-					// zero, a reading indistinguishable from a full disk.
+					// Not matched against this path: df names the device there.
 					var parts:Array<String> = whitespace.split(text);
 
 					if (parts.length >= 4 && parts[0] != "Filesystem") {

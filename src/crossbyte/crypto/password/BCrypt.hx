@@ -33,13 +33,13 @@ import crossbyte.crypto.password._internal.PHPGlobalExt;
  * (`$2y$`), OpenBSD, Node, Python and Java (`$2a$`, `$2b$`) verify here, and hashes
  * made here verify there.
  *
- * ## Hashes from CrossByte before this was fixed
+ * ## Hashes stored by earlier CrossByte versions
  *
- * Earlier versions left the key's terminating NUL out for `$2y$`, which was the
+ * Earlier versions left the key's terminating NUL out for `$2y$`, which was their
  * default, so the `$2y$` hashes they stored match no other implementation and accept a
- * password's repetitions (`abc` and `abcabc` were one password). `verify` still accepts
+ * password's repetitions (`abc` and `abcabc` are one password). `verify` still accepts
  * them: it tries the standard form first and the old one second, and only for `$2y$`,
- * the one revision CrossByte ever produced. `needsRehash` reports every `$2y$` hash,
+ * the one revision those versions produced. `needsRehash` reports every `$2y$` hash,
  * so rehashing on a successful login, as in the example above, retires them. Until a
  * user's hash is retired, a wrong password against it costs two hashes instead of one.
  *
@@ -380,8 +380,8 @@ class BCrypt {
 	 *
 	 * `key` is the password's bytes without a terminator. Every revision adds the NUL
 	 * here except the original `$2$`, and except when `legacy` asks for the form
-	 * CrossByte stored before it did, which had none for `$2y$`. Without the NUL a key is
-	 * its bytes repeated to 72, so a password and its repetitions were one password.
+	 * earlier CrossByte versions stored, which had none for `$2y$`. Without the NUL a
+	 * key is its bytes repeated to 72, so a password and its repetitions are one password.
 	 */
 	@:noCompletion private static function __crypt(key:Bytes, setting:String, legacy:Bool):Null<String> {
 		var minor:Int = __minorOf(setting);
@@ -483,8 +483,8 @@ class BCrypt {
 		__setupWithSalt(saltWords);
 
 		// 2^cost rounds of key then salt, counted in pairs: 1 << 31 is negative
-		// in an Int, and a loop to it ran no rounds at all, so a cost-31 hash
-		// was the cheapest one there was.
+		// in an Int, and a loop to it would run no rounds at all, making a
+		// cost-31 hash the cheapest one there is.
 		var pairs:Int = 1 << (cost - 1);
 		for (i in 0...pairs) {
 			__roundWith(expanded, saltWords);

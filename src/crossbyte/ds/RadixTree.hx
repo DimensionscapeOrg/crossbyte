@@ -8,14 +8,10 @@ package crossbyte.ds;
  * A Radix Tree (Prefix Tree) implementation in Haxe.
  *
  * `search` finds a key exactly; `longestPrefix` finds the longest key held
- * that the one given starts with, the route that serves
- * "/api/v1/users/123" when "/api/v1/users" is held, which is what a prefix
- * tree is for and which it could not answer.
+ * that the one given starts with: the route that serves
+ * "/api/v1/users/123" when "/api/v1/users" is held.
  *
- * A lookup reads the key in place and allocates nothing. It built the common
- * prefix of each label and the key a character at a time, and a substring of
- * the key at every level: 1.2-1.5 microseconds and 7.6 KB per lookup on the
- * jvm, where a `Map` took 0.1.
+ * A lookup reads the key in place and allocates nothing.
  *
  * ```haxe
  * var routes = new RadixTree<Handler>();

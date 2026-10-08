@@ -63,8 +63,8 @@ class ApplicationIdentityMacro {
 
 	/**
 		The class whose static `main` the program starts at. The main
-		expression is that call alone, or, in a build that uses the event
-		loop, as CrossByte does, a block of it and `haxe.EntryPoint.run()`.
+		expression is that call alone, or (in a build that uses the event
+		loop, as CrossByte does) a block of it and `haxe.EntryPoint.run()`.
 
 		Aedifex, CrossByte's build tool, starts every application at a
 		`ProgramMain` of its own that constructs the project's main class:

@@ -9,10 +9,7 @@ import utest.Assert;
 class PostgresConnectionTest extends utest.Test {
 	public function testSupportFlagHonorsBuildTarget():Void {
 		// Postgres is native on cpp and PHP-backed on php; no other target
-		// has a driver. This asserted `false` everywhere but php, which
-		// stopped being true when the native bridge landed, and went
-		// unnoticed because the suite was registered only in `addAll`,
-		// where cpp cases compile out.
+		// has a driver.
 		#if cpp
 		Assert.isTrue(PostgresConnection.isSupported);
 		#elseif !php
@@ -33,12 +30,12 @@ class PostgresConnectionTest extends utest.Test {
 
 	public function testFallbackEscapeLeavesBackslashesAlone():Void {
 		// escape() falls back to a hand-rolled implementation when there is no
-		// libpq connection to ask. It doubled backslashes, which is right only
-		// for a server with standard_conforming_strings off, a setting
+		// libpq connection to ask, and must not double backslashes, which is
+		// right only for a server with standard_conforming_strings off, a setting
 		// PostgreSQL has defaulted away from since 9.1. On any modern server a
 		// backslash carries no meaning in an ordinary string literal, so
-		// doubling it stores two where the caller wrote one: silent corruption
-		// of paths, regular expressions and UNC names.
+		// doubling it would store two where the caller wrote one: silent
+		// corruption of paths, regular expressions and UNC names.
 		var connection = new PostgresConnection();
 		var backslash:String = String.fromCharCode(92);
 		var path:String = "C:" + backslash + "Users" + backslash + "app";
@@ -49,8 +46,8 @@ class PostgresConnectionTest extends utest.Test {
 	}
 
 	public function testFallbackEscapeStillDoublesQuotes():Void {
-		// The half that was always right, and has to stay right: a quote ends
-		// the literal unless it is doubled.
+		// The other half, which has to stay right: a quote ends the literal
+		// unless it is doubled.
 		var connection = new PostgresConnection();
 
 		Assert.equals("O''Brien", connection.escape("O'Brien"));
@@ -58,11 +55,10 @@ class PostgresConnectionTest extends utest.Test {
 	}
 
 	public function testGeneratedSavepointNamesDoNotRepeat():Void {
-		// The name came from haxe.Timer.stamp() in microseconds through
-		// Std.int, the same scheme SQLiteConnection used: 2000 generated back
-		// to back produced 47 duplicates there, and the value overflows Int
-		// about 36 minutes into a process. Two savepoints sharing a name make
-		// RELEASE and ROLLBACK TO act on the wrong one.
+		// Not haxe.Timer.stamp() in microseconds through Std.int: names made
+		// that way collide back to back, and the value overflows Int about 36
+		// minutes into a process. Two savepoints sharing a name make RELEASE
+		// and ROLLBACK TO act on the wrong one.
 		var connection = new PostgresConnection();
 		var seen = new Map<String, Bool>();
 		var distinct:Int = 0;

@@ -85,7 +85,7 @@ final class ReliableDatagramFrame {
 	/**
 		On a CONNECT: whether it came from a peer on 1.0 or later, which puts
 		an extension ahead of what its `connect` passed (see
-		`ReliableDatagramProtocol`), `payload` is then what `connect`
+		`ReliableDatagramProtocol`); `payload` is then what `connect`
 		passed, and nothing of the extension. With it, `features` is what
 		the peer declares, and `hasCookie`, `cookieHigh` and `cookieLow` the
 		join cookie it returns, if it returns one.
@@ -104,7 +104,7 @@ final class ReliableDatagramFrame {
 
 	/**
 		On an extended CONNECT with `FEATURE_ENCRYPT`: its sender's random,
-		`RANDOM_SIZE` bytes, in `random`, storage of the frame's own, made
+		`RANDOM_SIZE` bytes, in `random`: storage of the frame's own, made
 		the first time and filled again for each, so read it before anything
 		else is decoded into the frame.
 	**/
@@ -174,30 +174,29 @@ final class ReliableDatagramFrame {
 	is, so its receiver acts on it only once everything sent before it has
 	arrived. A FIN without it ends the session at once, whatever is still
 	on its way: the abortive close, a server's answer to a peer it holds no
-	session for, and every FIN a peer from before 1.0 sends, which also
-	takes a graceful FIN that way, ignoring the flag, as it always took a
-	FIN.
+	session for, and every FIN a peer from before 1.0 sends. Such a peer
+	also takes a graceful FIN that way, ignoring the flag.
 
 	An ACK's payload, when it has one, is a selective acknowledgement: a map
 	of the frames the receiver holds past the cumulative acknowledgement,
-	bit `i` of it, lowest bit of the first byte first, standing for frame
+	bit `i` of it (lowest bit of the first byte first) standing for frame
 	`ack + 1 + i`. It names up to `SACK_BITS` frames and is cut after its
 	last set byte. An ACK without one, from an older peer or one holding
 	nothing past a gap, says only what the cumulative value says; an older
 	peer given one ignores it.
 
-	An ACK with `ACK_DELAY_MASK`, the bit a FIN calls graceful, which no
-	ACK set before, starts its payload with two bytes saying how long its
+	An ACK with `ACK_DELAY_MASK` (the bit a FIN calls graceful, which no
+	ACK set before) starts its payload with two bytes saying how long its
 	sender held it, in `ACK_DELAY_UNIT`s, and the map follows. Its receiver
 	takes that off the round trip it measures, as QUIC's ACK Delay is taken
 	off. Only a peer that said it reads them is sent one: a HANDSHAKE from
 	this build carries six bytes, the peer's connection id echoed (0 for
 	none) and then the most its sender holds an acknowledgement, in the same
 	units, and a peer whose HANDSHAKE carries fewer is from before 1.0, and
-	acknowledged every pass, as it always was.
+	acknowledged every pass.
 
-	An ACK with `ACK_DUPLICATE_MASK`, the bit a PACKET calls a resend,
-	which no ACK set before, was drawn by a frame its sender already had:
+	An ACK with `ACK_DUPLICATE_MASK` (the bit a PACKET calls a resend,
+	which no ACK set before) was drawn by a frame its sender already had:
 	a copy sent again after the first had arrived. Its receiver takes it as
 	that copy delivered, RFC 2883's D-SACK put to the use RFC 8985 makes of
 	it, and judges loss from when the copy went (see
@@ -209,19 +208,19 @@ final class ReliableDatagramFrame {
 	peer whose CONNECT or HANDSHAKE said it takes them, since an older peer
 	would drop the whole datagram as a frame with the wrong magic.
 
-	A CONNECT from a peer on 1.0 or later sets `CONNECT_EXTENDED_MASK`,
-	the bit a FIN calls graceful, and its payload starts with an
+	A CONNECT from a peer on 1.0 or later sets `CONNECT_EXTENDED_MASK`
+	(the bit a FIN calls graceful), and its payload starts with an
 	extension, ahead of what the peer's `connect` passed: a byte saying how
 	many bytes of extension follow it; a byte of features, `FEATURE_REBIND`
 	(the sender answers a reset that carries a rebind challenge) and
 	`FEATURE_COOKIE` (a join cookie follows); the cookie, `COOKIE_SIZE`
 	bytes, when there is one; and zeros. The zeros pad the datagram to
-	`MIN_CONNECT_SIZE`, the most anything sends back to a CONNECT, a
-	cookie, or a HANDSHAKE carrying a rebind key, so that answering one
+	`MIN_CONNECT_SIZE`, the most anything sends back to a CONNECT (a
+	cookie, or a HANDSHAKE carrying a rebind key), so that answering one
 	never sends more than it was sent. A CONNECT with the bit that is
 	shorter than that, or whose extension runs past its end, is not a
-	frame. A peer from before 1.0 sets none of this, and read none of it:
-	it took no payload on a CONNECT.
+	frame. A peer from before 1.0 sets none of this, and reads none of it:
+	it takes no payload on a CONNECT.
 
 	A PATH frame is about the address its sender or receiver is at, and its
 	payload starts with what it is. `PATH_COOKIE` is a server's answer to a
@@ -238,9 +237,9 @@ final class ReliableDatagramFrame {
 	`REBIND_KEY_SIZE` random bytes, after the six of its HANDSHAKE (22 in
 	all), for as long as the peer has not shown it took the HANDSHAKE; a
 	peer that reads six takes none, and is never offered a rebind. Its
-	reset, the FIN that ends a session at once, answering a frame from an
-	address with no session, then carries a challenge in its sequence
-	field, where a reset carried 0: four bytes, the server's keyed hash of
+	reset (the FIN that ends a session at once, answering a frame from an
+	address with no session) then carries a challenge in its sequence
+	field, where any other reset carries 0: four bytes, the server's keyed hash of
 	the address and port the frame came from and the time, never 0. A peer
 	from before 1.0, or one with no key, ends its session on it as on any
 	reset. A peer with a key, whose session is live, answers instead with a
@@ -261,7 +260,7 @@ final class ReliableDatagramFrame {
 	side's random, an encrypted CONNECT is padded to
 	`MIN_SEALED_CONNECT_SIZE` rather than `MIN_CONNECT_SIZE`; shorter, or
 	with an extension too short for the random, it is not a frame. A peer
-	from before this reads past the random as past padding, and answers
+	without encryption reads past the random as past padding, and answers
 	in the clear, which the CONNECT's sender refuses.
 
 	A server that will not open the session a CONNECT asks for, because
@@ -499,7 +498,7 @@ final class ReliableDatagramProtocol {
 		}
 
 		var meta:Int = bytes.get(from + 2);
-		// Every value the three bits can hold is a type now, PATH the last.
+		// Every value the three bits can hold is a type, PATH the last.
 		var typeValue:Int = meta & TYPE_MASK;
 
 		var ackPresent:Bool = (meta & ACK_PRESENT_MASK) != 0;
@@ -604,9 +603,9 @@ final class ReliableDatagramProtocol {
 	}
 
 	/**
-		Writes the payload of an extended CONNECT into `out` at `at`, the
+		Writes the payload of an extended CONNECT into `out` at `at` (the
 		extension, padded to `MIN_CONNECT_SIZE` for the whole frame, then
-		`length` bytes of `payload` from `offset`, and says how many bytes
+		`length` bytes of `payload` from `offset`), and says how many bytes
 		it took. The frame it goes in sets `CONNECT_EXTENDED_MASK` and
 		carries no acknowledgement. `out` must have room:
 		`CONNECT_EXTENSION_MAX` more than the payload, or `MIN_CONNECT_SIZE`.
@@ -716,8 +715,8 @@ final class ReliableDatagramProtocol {
 
 	/**
 		Writes a frame into `out` at `start`, and says how many bytes it took.
-		Nothing is allocated: `out` is a buffer the caller reuses, a
-		session's pending bundle, where each frame is written in place, which
+		Nothing is allocated: `out` is a buffer the caller reuses (a
+		session's pending bundle, where each frame is written in place), which
 		is safe because a send has finished with its bytes before it returns:
 		natively it is a system call, and on Node `DatagramSocket.send` copies
 		them first.

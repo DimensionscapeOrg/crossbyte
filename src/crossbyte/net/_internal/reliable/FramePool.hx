@@ -10,28 +10,28 @@ import haxe.ds.Vector;
 
 	A reliable message is held until it is acknowledged, since the network
 	may lose it and only this side can send it again, and the caller may
-	reuse its own bytes the moment `send` returns; so `send` copies it. That
-	copy was a `ByteArray`, its `Bytes` and its storage, and a frame to hold
-	it: 424 bytes natively for a 200-byte message, garbage a round trip
-	later, for every reliable message a server sent. It is now made into a
-	frame from here, whose buffer is the smallest of 64, 128, 256, 512, 768
-	or 1,024 bytes, or a whole frame's 1,200, that holds the message, and the
-	frame comes
-	back here when the peer acknowledges it: the memory is still held while
-	the message is in flight, and nothing is allocated for it. A frame that
-	sends a `PreparedDatagram`'s bytes, or a FIN, has no buffer, and comes
-	from a list of its own.
+	reuse its own bytes the moment `send` returns; so `send` copies it.
+	Copied into a `ByteArray` of its own, with its `Bytes` and its storage
+	and a frame to hold it, it would cost 424 bytes natively for a 200-byte
+	message, garbage a round trip later, for every reliable message a server
+	sent. Instead it is made into a frame from here, whose buffer is the
+	smallest of 64, 128, 256, 512, 768 or 1,024 bytes, or a whole frame's
+	1,200, that holds the message, and the frame comes back here when the
+	peer acknowledges it: the memory is still held while the message is in
+	flight, and nothing is allocated for it. A frame that sends a
+	`PreparedDatagram`'s bytes, or a FIN, has no buffer, and comes from a
+	list of its own.
 
-	One pool serves every session of a server, all on the server's
-	runtime, sending one message at a time, and a session with no server
+	One pool serves every session of a server (all on the server's
+	runtime, sending one message at a time), and a session with no server
 	has one of its own.
 
 	**How much it keeps.** As many frames, in use and idle together, as
 	were in use at once lately, and `SPARE` more. A game server's tick sends
 	to every session and has it all acknowledged before the next, so what is
 	in use rises to a thousand and falls to none, every tick; a pool that
-	kept only what was in use at each moment kept half, and the other half
-	was made again every tick. "Lately" is this period of `PEAK_PERIOD`
+	kept only what was in use at each moment would keep half, and the other half
+	would be made again every tick. "Lately" is this period of `PEAK_PERIOD`
 	seconds and the one before it, so once the traffic falls the pool keeps
 	less within two periods; and once nothing has come back to it for
 	`QUIET_PERIOD` seconds, with nothing in use, it lets go of all but
@@ -92,8 +92,8 @@ final class FramePool {
 
 	/**
 		The capacity of a class's buffer: 64 bytes doubling to 512, then 768
-		and 1,024, a snapshot of a kilobyte is held in a kilobyte, not in
-		the 1,200 of a whole frame, and a whole frame's payload last.
+		and 1,024 (a snapshot of a kilobyte is held in a kilobyte, not in
+		the 1,200 of a whole frame), and a whole frame's payload last.
 	**/
 	public static inline function capacityOf(sizeClass:Int):Int {
 		return sizeClass < 4 ? 64 << sizeClass : (sizeClass == 4 ? 768 : (sizeClass == 5 ? 1024 : ReliableDatagramProtocol.MAX_PAYLOAD_SIZE));

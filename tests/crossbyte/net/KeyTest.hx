@@ -7,10 +7,10 @@ import utest.Assert;
 	A private key shows nothing of itself however it is printed.
 
 	`Key` says it is never read back out, never logged and never converted to
-	a string. On Node it held its PEM text and passphrase in two plain
-	fields, and `trace(key)`, `Std.string`, `JSON.stringify` and
-	`console.log` each listed both: one debugging line put a server's private
-	key, and the password protecting it, in its logs.
+	a string. On Node it holds its PEM text and passphrase, and `trace(key)`,
+	`Std.string`, `JSON.stringify` and `console.log` must list neither: one
+	debugging line would otherwise put a server's private key, and the
+	password protecting it, in its logs.
 **/
 class KeyTest extends utest.Test {
 	#if !(js && !nodejs)
@@ -54,12 +54,11 @@ class KeyTest extends utest.Test {
 
 	/**
 		Every form a key file comes in loads, with its password where it has
-		one, on every target that has keys. The jvm refused all but an
-		unencrypted PKCS#8, a key encrypted, or written as PKCS#1 or SEC1,
-		which is what `openssl genrsa` and `openssl ecparam -genkey` write,
-		was an error saying to convert the file, where native and Node load
-		them all. There each is checked to be the same key as the PKCS#8
-		one, not merely a key.
+		one, on every target that has keys, the jvm included: not only an
+		unencrypted PKCS#8, but a key encrypted, or written as PKCS#1 or SEC1,
+		which is what `openssl genrsa` and `openssl ecparam -genkey` write.
+		There each is checked to be the same key as the PKCS#8 one, not merely
+		a key.
 	**/
 	public function testEveryFormOfAKeyLoads():Void {
 		var forms = KeyFormFixture.make();
@@ -126,9 +125,9 @@ class KeyTest extends utest.Test {
 	#if nodejs
 	/**
 		A certificate a server presents for one name, by SNI, with a key that
-		is encrypted. Node's SNI path made the name's context without the
-		key's passphrase, so every handshake asking for that name failed,
-		where the default certificate's key, given the same way, worked.
+		is encrypted. Node's SNI path makes the name's context with the key's
+		passphrase, or every handshake asking for that name would fail, where
+		the default certificate's key, given the same way, worked.
 	**/
 	@:timeout(15000)
 	public function testAnSniKeyIsDecryptedWithItsPassphrase(async:utest.Async):Void {

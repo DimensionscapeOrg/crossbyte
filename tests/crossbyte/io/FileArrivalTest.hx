@@ -10,9 +10,9 @@ import utest.Assert;
 	datagram saved to a file from inside its `DATA` listener.
 
 	`File.data` is a member read later, and its doc says `save()` sets it to
-	what it saved. It is set to the `ByteArray` passed, by reference: saved
-	from a payload valid only during its call, the file's `data` reads as
-	whatever the socket put there next, nothing, once the call returned.
+	what it saved. Set to the `ByteArray` passed, by reference, saved from a
+	payload valid only during its call, the file's `data` would read as
+	whatever the socket put there next: nothing, once the call returned.
 **/
 class FileArrivalTest extends utest.Test {
 	public function testWhatAFileSavedFromADatagramSaysItSavedIsTheDatagram():Void {

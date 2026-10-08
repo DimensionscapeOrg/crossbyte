@@ -8,9 +8,8 @@ class Dictionary {
 		The bytes, decoded from the text below each time this is called.
 
 		Only BrotliCodec calls it, once, while it builds its tables under
-		a lock. These were decoded as static initialisers, so every program
-		that linked ByteArray decoded a few hundred kilobytes at startup
-		whether or not it ever used Brotli.
+		a lock, so a program that never uses Brotli never decodes these
+		few hundred kilobytes.
 	**/
 	public static function decode():Bytes {
 		return Base64.decode([

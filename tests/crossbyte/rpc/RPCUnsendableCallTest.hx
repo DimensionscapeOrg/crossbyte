@@ -9,14 +9,14 @@ import utest.Assert;
 	Calls that cannot go fail at once; none is left waiting on an answer
 	that cannot come.
 
-	A request made after its connection had ended waited for good over local
-	IPC, whose send reports a closed connection to `onError` rather than
-	throwing; over TCP the send threw out of the call and left its response
-	waiting. Commands with no session dereferenced a null connection, on
-	hxcpp in release, a crash. And an application's own connection, wrapped
-	as a `NetConnection` a second time after a session was made on it, lost
-	the session's hold on its close, so the calls waiting on it waited for
-	good.
+	A request made after its connection has ended fails, over local IPC,
+	whose send reports a closed connection to `onError` rather than
+	throwing, and over TCP, where the send would otherwise throw out of the
+	call and leave its response waiting. Commands with no session must not
+	dereference a null connection (on hxcpp in release, a crash). And an
+	application's own connection, wrapped as a `NetConnection` a second time
+	after a session was made on it, keeps the session's hold on its close,
+	so the calls waiting on it fail when it does.
 **/
 @:access(crossbyte.rpc.RPCCommands)
 @:access(crossbyte.rpc.RPCSession)

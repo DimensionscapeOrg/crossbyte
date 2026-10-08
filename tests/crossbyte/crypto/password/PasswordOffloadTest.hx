@@ -16,10 +16,10 @@ import sys.thread.Thread;
  *
  * A hash at the recommended cost is 50-300 ms of one thread doing nothing else,
  * so a runtime hashing sign-ins serves nobody meanwhile. Moving it to a worker
- * is only half the fix on hxcpp: a collection waits for every thread to reach a
- * safe point, and neither libsodium nor BCrypt's allocation-free inner loop ever
- * reaches one, so the stall moved from one runtime to every thread in the
- * process. The native cases here time a collection while a worker hashes.
+ * is only half of it on hxcpp: a collection waits for every thread to reach a
+ * safe point, and neither libsodium nor BCrypt's allocation-free inner loop
+ * ever reaches one, so the stall would move from one runtime to every thread
+ * in the process. The native cases here time a collection while a worker hashes.
  */
 @:access(crossbyte.core.CrossByte)
 class PasswordOffloadTest extends utest.Test {
@@ -117,8 +117,8 @@ class PasswordOffloadTest extends utest.Test {
 	}
 
 	private function __assertArgon2idThrows():Void {
-		// It returned false for every password where it could not run, which
-		// looked like a working check refusing everyone.
+		// It throws where it cannot run: false for every password would look
+		// like a working check refusing everyone.
 		Assert.raises(() -> Argon2id.verify(ARGON_REFERENCE, "password"));
 		Assert.raises(() -> Argon2id.hash("password"));
 		Assert.raises(() -> Argon2id.needsRehash(ARGON_REFERENCE, 2, Argon2id.MEMLIMIT_INTERACTIVE));
@@ -197,7 +197,7 @@ class PasswordOffloadTest extends utest.Test {
 	public function testArgon2idOnAWorkerDoesNotHoldUpCollections():Void {
 		// Enough passes over 64 MiB for a few hundred milliseconds.
 		var timing = collectWhileAWorkerHashes(() -> Argon2id.hash("password", 24, Argon2id.MEMLIMIT_INTERACTIVE));
-		// Held up, the collection waited out the rest of the hash.
+		// Held up, the collection would wait out the rest of the hash.
 		Assert.isTrue(timing.collectionMs < timing.baselineMs + timing.hashMs / 4,
 			'collection ${timing.collectionMs} ms (${timing.baselineMs} ms idle) during a ${timing.hashMs} ms hash');
 	}
@@ -245,10 +245,10 @@ class PasswordOffloadTest extends utest.Test {
 	 * since that is where Node's own argon2 reports.
 	 *
 	 * Elsewhere each pump moves the runtime on by the time that really passed.
-	 * It moved it a sixtieth of a second a pump, with a millisecond's sleep
-	 * between, so the runtime's clock, which utest's timeouts run on, went
-	 * some sixteen times faster than the wall, and neko's pure-Haxe BCrypt,
-	 * about 50 ms a verify, ran out a 250 ms timeout in some 20 ms of work.
+	 * Moved a sixtieth of a second a pump, with a millisecond's sleep between,
+	 * the runtime's clock (which utest's timeouts run on) would go some sixteen
+	 * times faster than the wall, and neko's pure-Haxe BCrypt, about 50 ms a
+	 * verify, would run out a 250 ms timeout in some 20 ms of work.
 	 */
 	static function pumpUntil(done:Void->Bool, timeout:Float, then:Bool->Void):Void {
 		var runtime:CrossByte = CrossByte.current();

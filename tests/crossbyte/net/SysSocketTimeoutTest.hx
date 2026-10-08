@@ -5,17 +5,16 @@ import utest.Assert;
 /**
 	A blocking read with a timeout set gives up at the timeout.
 
-	On the jvm `setTimeout` was stored and never read: a blocking NIO channel
-	has no read timeout of its own, so a read with nothing coming waited for
-	ever, and CrossByte's HTTP client reads a response exactly that way, with
-	its idle limit as the timeout, so it could wait for ever on a server that
-	stopped sending.
+	On the jvm `setTimeout` has to be read: a blocking NIO channel has no
+	read timeout of its own, so a read with nothing coming would wait for
+	ever, and CrossByte's HTTP client reads a response exactly that way,
+	with its idle limit as the timeout.
 
-	On eval too, where the timeout was a native error no Haxe code could
-	catch, which ended the interpreter, and where on Linux and macOS it came
-	a thousand times too late, eval hands the system a thousand times the
-	timeout, which only Windows counts in milliseconds. The read now runs
-	where that error ends only a helper thread (see the eval
+	On eval too, where the timeout is a native error no Haxe code can
+	catch, which would end the interpreter, and where on Linux and macOS it
+	would come a thousand times too late: eval hands the system a thousand
+	times the timeout, which only Windows counts in milliseconds. The read
+	runs where that error ends only a helper thread (see the eval
 	`sys.net.Socket`), and arrives as `Blocked`, on time.
 **/
 class SysSocketTimeoutTest extends utest.Test {

@@ -9,8 +9,8 @@ abstract class NetConnectionBase implements CloseObservable {
 		A slot for whatever the application wants this connection to carry.
 
 		Untouched by the framework, and it goes when the connection does.
-		Without one, an application holding per-connection state, a session,
-		a player, a room membership, keeps a `Map` beside the connection and
+		Without one, an application holding per-connection state (a session,
+		a player, a room membership) keeps a `Map` beside the connection and
 		has to remember to remove the entry on close. Forgetting is not
 		noisy: the connection is gone, the traffic stops, and the entry stays
 		until the process does.
@@ -54,7 +54,7 @@ abstract class NetConnectionBase implements CloseObservable {
 
 	/**
 		Closes the connection, telling `onClose` `reason` rather than
-		`Reason.Closed`: for a closer that knows more than that it closed,
+		`Reason.Closed`: for a closer that knows more than that it closed:
 		an `RPCSession` whose heartbeat heard nothing closes its connection as
 		`Reason.Timeout`. `close()` is this with `Reason.Closed`. A connection
 		CrossByte did not write has only its own `close()`, which this calls.
@@ -83,8 +83,8 @@ abstract class NetConnectionBase implements CloseObservable {
 
 	/**
 		Called by each transport as it becomes ready, before `onReady`. A
-		connection ready again, one an application wrote, taking another
-		peer, has a new life, whose end is told in turn.
+		connection ready again (one an application wrote, taking another
+		peer) has a new life, whose end is told in turn.
 	**/
 	@:noCompletion private inline function __notifyReady():Void {
 		__closeObserved = false;

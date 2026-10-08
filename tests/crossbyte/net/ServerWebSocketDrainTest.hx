@@ -14,12 +14,11 @@ class ServerWebSocketDrainTest extends utest.Test {
 		}
 
 		// A peer that completes the TCP connection and then says nothing. That
-		// is indistinguishable from a slow client until a clock runs out, and
-		// until this existed there was no clock: `ServerSocket` defers its TLS
-		// handshake and sweeps deadlines from the tick, but `ServerWebSocket`
-		// overrides the tick and accepts through its own path, so it inherited
-		// the setting and not the sweep. The socket was held until the
-		// operating system ran out of them.
+		// is indistinguishable from a slow client until a clock runs out, so
+		// there has to be a clock: `ServerSocket` defers its TLS handshake and
+		// sweeps deadlines from the tick, but `ServerWebSocket` overrides the
+		// tick and accepts through its own path, so it needs a sweep of its own,
+		// or the socket would be held until the operating system ran out of them.
 		var server = new ServerWebSocket();
 		server.handshakeTimeout = 0.4;
 
@@ -69,9 +68,9 @@ class ServerWebSocketDrainTest extends utest.Test {
 			client.connect("127.0.0.1", server.localPort);
 
 			// The effect, not the list: the session is still waited on, and its
-			// peer still connected. It is listed all the same, counted against
-			// maxPendingHandshakes, and dropped by stopAccepting(), where it
-			// used to be left off, uncounted and beyond anything's reach.
+			// peer still connected. It is listed all the same (counted against
+			// maxPendingHandshakes, and dropped by stopAccepting()), not left off,
+			// uncounted and beyond anything's reach.
 			pumpUntil(() -> false, 0.8);
 			Assert.equals(1, server.pendingHandshakeCount(), "the session was not still being waited on");
 			Assert.isTrue(client.connected, "a session with no deadline was closed");

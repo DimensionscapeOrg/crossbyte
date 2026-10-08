@@ -12,10 +12,10 @@ import haxe.ds.StringMap;
  * A weighted graph implementation in Haxe.
  *
  * Nodes are found by hashing, as `==` tells them apart: strings and
- * integers by value, objects by identity. Each lookup was a pass over every
- * node, so building a graph of n nodes cost n^2 comparisons. Floats,
- * booleans and null, which few graphs use as nodes, are still found by a
- * pass over the nodes of that kind.
+ * integers by value, objects by identity, so building a graph of n nodes
+ * costs n lookups rather than n^2 comparisons. Floats, booleans and null,
+ * which few graphs use as nodes, are found by a pass over the nodes of
+ * that kind.
  *
  * @param T The type of values stored in the graph nodes.
  */
@@ -148,8 +148,7 @@ private class Adjacency<T> {
 
 /**
  * An edge of a `WeightedGraph`: the node it leads to, and its weight; what
- * `getNeighbors` answers. It was private, so the edges a public method
- * returned could not be named by the code that received them.
+ * `getNeighbors` answers.
  *
  * @param T The type of the node.
  */

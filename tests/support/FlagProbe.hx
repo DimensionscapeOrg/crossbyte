@@ -1,9 +1,9 @@
 /**
 	Runs on python, the one CSPRNG-less UDP target this machine can execute.
 
-	Before the fix this printed `StunClient.isSupported = true` and then threw
-	from the first line of discover(), the lying-flag bug DatagramSocket's own
-	documentation warns about, demonstrated rather than reasoned.
+	A support flag must not say true there while the first line of
+	discover() throws: the lying-flag bug DatagramSocket's own documentation
+	warns about, demonstrated rather than reasoned.
 **/
 class FlagProbe {
 	static function main():Void {
@@ -16,7 +16,7 @@ class FlagProbe {
 		Sys.println("StunClient.isSupported     = " + stun);
 
 		if (stun && !rng) {
-			Sys.println("FAIL: the flag lies, discovery would throw on its first line");
+			Sys.println("FAIL: the flag lies, since discovery would throw on its first line");
 			Sys.exit(1);
 		}
 

@@ -21,11 +21,11 @@ class HTTPRequestFramingTest extends utest.Test {
 		some smaller number.
 
 		On Linux and macOS native, `Std.parseInt` is `strtol` cast to an
-		`int`, so 4294967296 read as 0 and 4294967396 as 100. At 0 the server
-		read no body and parsed the body as the next request, a smuggled
+		`int`, so 4294967296 reads as 0 and 4294967396 as 100. At 0 the server
+		would read no body and parse the body as the next request: a smuggled
 		request, unseen by anything that inspected the outer one. On the jvm
-		the same field threw and was answered 500. The request carried in the
-		body here must never reach the application.
+		the same field throws, and would be answered 500. The request carried
+		in the body here must never reach the application.
 	**/
 	public function testALengthNoIntCanHoldIsRefused(async:Async):Void {
 		var seen:Array<String> = [];
@@ -123,10 +123,9 @@ class HTTPRequestFramingTest extends utest.Test {
 		The largest limit an `Int` holds still serves.
 
 		What a connection may buffer is the body's limit plus the headers',
-		and that sum wrapped past `Int` max. HashLink compared the buffer's
-		length with the negative result as signed numbers and answered every
-		request `413`; the other targets compared it unsigned and got away
-		with it.
+		and that sum must not wrap past `Int` max: HashLink compares the
+		buffer's length with a negative result as signed numbers, and would
+		answer every request `413`, where the other targets compare it unsigned.
 	**/
 	public function testTheLargestBodyLimitStillServes(async:Async):Void {
 		var seen:Array<String> = [];
@@ -151,14 +150,14 @@ class HTTPRequestFramingTest extends utest.Test {
 		request still being answered, do not replace its answer.
 
 		What arrives behind a request being answered is the next request, kept
-		until the answer has gone. Past what one connection holds, the body
-		limit and the header allowance, it was answered `413`, on the request
-		being answered: three pipelined 600 KB uploads, each under the 1 MB
-		limit, behind a route answering a moment later came back as one `413`,
-		and the route's answer was lost. What does not fit is dropped now, with
-		everything after it, and the connection closes once the answer has
-		gone, saying so; the requests it held go unanswered, which a client
-		that pipelines sends again (RFC 9112 9.3.2).
+		until the answer has gone. Past what one connection holds (the body
+		limit and the header allowance) it must not be answered `413` on the
+		request being answered, which would turn three pipelined 600 KB
+		uploads, each under the 1 MB limit, behind a route answering a moment
+		later into one `413`, and lose the route's answer. What does not fit is
+		dropped, with everything after it, and the connection closes once the
+		answer has gone, saying so; the requests it held go unanswered, which a
+		client that pipelines sends again (RFC 9112 9.3.2).
 	**/
 	public function testPipelinedBodiesPastWhatIsHeldLeaveTheAnswerBeingGiven(async:Async):Void {
 		var seen:Array<String> = [];
@@ -191,11 +190,11 @@ class HTTPRequestFramingTest extends utest.Test {
 
 	/**
 		The same when one read brings them all, the request to be answered
-		and those behind it, as Linux reads do: the whole buffer was held to
-		the limit before anything in it was parsed, so the first request was
-		answered `413` before it was handed over. Four 60 KB uploads at a
-		100 KB limit land in one read anywhere, and are over it however they
-		are split.
+		and those behind it, as Linux reads do: holding the whole buffer to
+		the limit before anything in it is parsed would answer the first
+		request `413` before it was handed over. Four 60 KB uploads at a 100 KB
+		limit land in one read anywhere, and are over it however they are
+		split.
 	**/
 	public function testPipelinedBodiesPastWhatIsHeldInOneReadLeaveTheAnswerBeingGiven(async:Async):Void {
 		var seen:Array<String> = [];
@@ -252,9 +251,9 @@ class HTTPRequestFramingTest extends utest.Test {
 	}
 
 	/**
-		The same behind a response still going out: it was cut off where it
-		was, and the connection closed with it. It goes out whole now, and the
-		connection closes after it.
+		The same behind a response still going out: it goes out whole, and the
+		connection closes after it, rather than the response being cut off
+		where it was with the connection closed under it.
 	**/
 	public function testPipelinedBodiesPastWhatIsHeldLeaveAResponseGoingOutWhole(async:Async):Void {
 		// Written as it goes, its end a second after its start (on the wall's
@@ -326,8 +325,9 @@ class HTTPRequestFramingTest extends utest.Test {
 	/**
 		`Expect: 100-continue` waits for the application.
 
-		The server told every such client to send before any middleware had
-		seen the request, so an unauthenticated upload was invited in full.
+		The server must not tell every such client to send before any
+		middleware has seen the request, which would invite an
+		unauthenticated upload in full.
 	**/
 	public function testExpectContinueAsksTheApplicationFirst(async:Async):Void {
 		var seen:Array<String> = [];
@@ -358,9 +358,9 @@ class HTTPRequestFramingTest extends utest.Test {
 		Repeats of one field are joined in the order they came, cookies with
 		`; ` and the rest with `, `, however many there are.
 
-		They are collected and joined once the block ends. Each used to be
-		appended to the whole value so far, which is quadratic in the repeats:
-		the 64 KB a block may take holds some thirteen thousand of them.
+		They are collected and joined once the block ends, not each appended
+		to the whole value so far, which is quadratic in the repeats: the 64 KB
+		a block may take holds some thirteen thousand of them.
 	**/
 	public function testRepeatedFieldsAreJoinedInOrder(async:Async):Void {
 		var config:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
@@ -404,9 +404,9 @@ class HTTPRequestFramingTest extends utest.Test {
 	/**
 		Node's client frames a body on any method.
 
-		Node frames a body only for the methods it expects one on, so a body on
-		a DELETE went out bare: this server read it as the start of the next
-		request, and the next call on the pooled socket got a 400.
+		Node frames a body only for the methods it expects one on, so a body
+		on a DELETE would go out bare: this server would read it as the start
+		of the next request, and the next call on the pooled socket get a 400.
 	**/
 	public function testTheNodeClientFramesABodyOnAnyMethod(async:Async):Void {
 		var router:Router = new Router();
@@ -468,8 +468,8 @@ class HTTPRequestFramingTest extends utest.Test {
 
 	/**
 		On Node a 404 is an IO_ERROR carrying its body, and the response's
-		headers reach the loader, as on native. It completed here, and no
-		target dispatched HTTP_RESPONSE_STATUS at all.
+		headers reach the loader, as on native, with HTTP_RESPONSE_STATUS
+		dispatched.
 	**/
 	public function testTheNodeLoaderKeepsTheNativeStatusContract(async:Async):Void {
 		var router:Router = new Router();
@@ -497,7 +497,7 @@ class HTTPRequestFramingTest extends utest.Test {
 
 	/**
 		Node follows redirects as the native client does, dropping credentials
-		once one leaves the origin. A 3xx used to complete the load on Node.
+		once one leaves the origin, rather than completing the load on a 3xx.
 	**/
 	public function testTheNodeLoaderFollowsRedirectsSafely(async:Async):Void {
 		var elsewhereRouter:Router = new Router();
@@ -581,8 +581,8 @@ class HTTPRequestFramingTest extends utest.Test {
 
 		Not `StringTools.rpad`, which asks its StringBuf for its length after
 		every piece it adds, and on hxcpp that length is counted by walking
-		every piece added so far. The 1.5 MB body this suite sends was a
-		trillion steps to build: the case took nine minutes on native.
+		every piece added so far: the 1.5 MB body this suite sends would take a
+		trillion steps to build, and minutes on native.
 	**/
 	private static function __repeat(code:Int, count:Int):String {
 		var bytes:haxe.io.Bytes = haxe.io.Bytes.alloc(count);

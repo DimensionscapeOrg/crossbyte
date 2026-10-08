@@ -40,8 +40,8 @@ final class NativeSocketRegistry {
 	/**
 		Given what a socket's handler threw, and that socket. Each handler is
 		contained on its own, so one connection's bug is not the rest's:
-		letting it propagate from inside the dispatch skipped every other
-		ready socket this pass and took the runtime's loop down with it. Null
+		letting it propagate from inside the dispatch would skip every other
+		ready socket this pass and take the runtime's loop down with it. Null
 		rethrows instead, for a registry nothing is driving; a runtime sets
 		this, and decides what becomes of the socket.
 	**/
@@ -93,10 +93,10 @@ final class NativeSocketRegistry {
 	#if (cpp && !crossbyte_keep_nofile)
 	/**
 		As the process starts, its soft limit on open descriptors is raised
-		to the hard one, natively on Linux and macOS, as Go and the JVM do:
-		a shell's soft limit of 1,024 stopped a server near a thousand
-		connections whatever its hard limit allowed. Nothing on Windows,
-		which has no such limit. `-D crossbyte_keep_nofile` keeps the limit
+		to the hard one, natively on Linux and macOS, as Go and the JVM do,
+		so a shell's soft limit of 1,024 does not stop a server near a
+		thousand connections whatever its hard limit allows. Nothing on
+		Windows, which has no such limit. `-D crossbyte_keep_nofile` keeps the limit
 		the process started with; see `ServerSocket.acceptFailures`.
 	**/
 	static function __init__():Void {
@@ -215,9 +215,9 @@ final class NativeSocketRegistry {
 	}
 
 	/**
-		`socket` is closing: no longer asked, nor held here, a closed
-		connection kept in the list until the next sweep was kept from the
-		collector with all it carried.
+		`socket` is closing: no longer asked, nor held here, since a closed
+		connection kept in the list until the next sweep would be kept from
+		the collector with all it carried.
 	**/
 	public function unwatchQuiet(socket:QuietRelease):Void {
 		if (__holders != null) {
@@ -276,16 +276,15 @@ final class NativeSocketRegistry {
 		if (!__writableQueue.isEmpty) {
 			// Drained through a swap buffer, because a socket that is still
 			// blocked re-queues itself from inside this dispatch. Iterating
-			// the live queue and clearing it afterwards threw those away,
-			// so a socket only ever got one retry and whatever it still
-			// held was stranded, no error, no close, indistinguishable
-			// from data that was never sent.
+			// the live queue and clearing it afterwards would throw those
+			// away, and whatever they still held would be stranded with no
+			// error and no close, indistinguishable from data never sent.
 			var draining:Stack<Socket> = __writableQueue;
 			__writableQueue = __writableSwap;
 			__writableSwap = draining;
 
-			// Walked here, not handed to forEach: the method handed over was a
-			// closure made for every pass that had something to flush.
+			// Walked here, not handed to forEach, which would make a closure for
+			// every pass that had something to flush.
 			var flushing:Array<Null<Socket>> = draining.__items;
 			for (i in 0...draining.__top) {
 				__onFlushSocket((flushing[i] : Socket));
@@ -303,8 +302,7 @@ final class NativeSocketRegistry {
 
 		// Nothing watched, nothing to poll. The poll is a function of its own,
 		// not returns from this one: `-D final` inlines update(), and Haxe
-		// cannot inline a return from the middle of it, the catch below
-		// returned, and every final build failed to compile.
+		// cannot inline a return from the middle of it.
 		if (!__set.isEmpty || !__writeSet.isEmpty) {
 			__pollAndDispatch(timeout);
 		}
@@ -362,9 +360,9 @@ final class NativeSocketRegistry {
 	/**
 		A backend that failed to prepare or to poll is replaced by the built-in
 		one, prepared from the lists it was given, and the failure logged: left
-		in place, it failed the same way every pass and nothing was polled
-		again, however long the runtime ran. The registry keeps the built-in
-		one from then on, growing included.
+		in place, it would fail the same way every pass and nothing would be
+		polled again. The registry keeps the built-in one from then on,
+		growing included.
 	**/
 	@:noCompletion private function __fallBack(error:Dynamic):Void {
 		crossbyte.utils.Logger.warn("The poll backend failed and was replaced by the built-in one: " + Std.string(error));

@@ -8,7 +8,7 @@ package crossbyte.net;
  */
 enum abstract ConcurrencyRejection(String) to String {
 	/**
-	 * The limiter was at capacity and had no room left to wait, its queue
+	 * The limiter was at capacity and had no room left to wait: its queue
 	 * was full, or it keeps none.
 	 */
 	var SATURATED = "saturated";

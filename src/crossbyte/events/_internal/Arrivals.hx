@@ -16,7 +16,7 @@ import crossbyte.io.ByteArray.ByteArrayData;
 	  up: a listener that pumps the runtime can be handed the next
 	  arrival inside its own call. `REUSE`.
 	- `-D crossbyte_fresh_events`: every arrival gets objects of its own,
-	  and nothing is reused or cleared, for code that keeps them, until
+	  and nothing is reused or cleared: for code that keeps them, until
 	  it copies instead.
 	- `-D crossbyte_check_events`: every arrival gets objects of its own,
 	  and each is killed when the outermost call that handed it out
@@ -43,11 +43,10 @@ class Arrivals {
 		next: 16 KB. Past every datagram a network path carries whole (1,500
 		bytes, 9,000 with jumbo frames) and the messages a game sends each
 		tick, so the hot path allocates nothing; and small enough that a
-		server with 10,000 idle connections holds at most 160 MB for it,
-		each connection's last message just under the limit, where 64 KB
+		server with 10,000 idle connections holds at most 160 MB for it
+		(each connection's last message just under the limit), where 64 KB
 		would let it hold 640 MB. A larger arrival is rare enough to have
-		storage of its own, as every arrival had before: it is let go once
-		its call returns.
+		storage of its own, let go once its call returns.
 	**/
 	public static inline var KEEP:Int = 16 * 1024;
 
@@ -64,16 +63,15 @@ class Arrivals {
 		what `release` lets go of past `KEEP`.
 
 		Those four are all a `ByteArray` carries besides its bytes. Every
-		reused payload is filled through this, `refill`, `refillView`,
-		`sized`, and the buffers a session puts a message together in, and
+		reused payload is filled through this (`refill`, `refillView`,
+		`sized`, and the buffers a session puts a message together in), and
 		an owner that reads in an order of its own (a socket's `endian`, a
 		session's `objectEncoding`) sets it after.
 
-		It reset position, length and the object encoding only: the byte
-		order a `TurnClient.onData` or `DtlsTransport.onMessage` handler set
-		for one arrival was the next one's, and a reliable server's `admit`
-		read a CONNECT's payload in whatever order the last message a session
-		dispatched from the same buffer was read in.
+		So no setting a handler makes for one arrival carries into the next:
+		the byte order a `TurnClient.onData` or `DtlsTransport.onMessage`
+		handler sets, say, or the order a reliable server's `admit` reads a
+		CONNECT's payload in.
 	**/
 	public static function reset(payload:ByteArray):Void {
 		var data:ByteArrayData = payload;
@@ -110,7 +108,7 @@ class Arrivals {
 
 	/**
 		Makes a reused payload `length` bytes long, read from position 0, for
-		its caller to fill in place, a native read into its storage,
+		its caller to fill in place (a native read into its storage),
 		without zeroing what is about to be overwritten. Storage grows as
 		`refill`'s does.
 	**/
@@ -190,18 +188,17 @@ class Arrivals {
 	}
 
 	/**
-		For a payload this side made for one arrival, not one it reuses,
+		For a payload this side made for one arrival (not one it reuses),
 		once the outermost call that handed it out has returned: released,
 		emptied as a reused one is (`release`: length and position 0, its
 		storage let go past `KEEP`), since an event that is reused may still
 		refer to it, and its docs say what it was handed reads empty after
 		its call; under `-D crossbyte_check_events` killed; under
-		`-D crossbyte_fresh_events` left as it is, as before 1.0.
+		`-D crossbyte_fresh_events` left as it is.
 
-		Released it did nothing, so a session's reused event went on holding
-		the last payload made for it alone: a WebSocket message inflated from
-		permessage-deflate, up to a megabyte, for as long as its peer was
-		quiet.
+		So a session's reused event does not go on holding the last payload
+		made for it alone (a WebSocket message inflated from
+		permessage-deflate, up to a megabyte) while its peer is quiet.
 	**/
 	public static inline function done(payload:Null<ByteArray>):Void {
 		#if crossbyte_check_events

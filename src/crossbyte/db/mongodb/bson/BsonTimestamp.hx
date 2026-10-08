@@ -2,7 +2,7 @@ package crossbyte.db.mongodb.bson;
 
 /**
 	A BSON timestamp: MongoDB's internal replication clock, a count of seconds
-	and an increment within that second. Not a date, use `Date` or
+	and an increment within that second. Not a date: use `Date` or
 	`BsonDateTime` for those.
 
 	Both halves are unsigned 32-bit values carried in an `Int`, so a value

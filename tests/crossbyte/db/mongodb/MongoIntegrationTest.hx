@@ -20,9 +20,9 @@ import utest.Assert;
 	The driver against a real MongoDB server.
 
 	`FakeMongoServer` runs everywhere and checks what the driver sends; this
-	checks that a real server agrees, that it takes the handshake, the
-	SCRAM proof, the OP_MSG sequences and the BSON, and that a TTL index acts
-	on the dates. Three servers, each named by an environment variable, and
+	checks that a real server agrees (that it takes the handshake, the SCRAM
+	proof, the OP_MSG sequences and the BSON, and that a TTL index acts on
+	the dates). Three servers, each named by an environment variable, and
 	each part skipped when its variable is unset:
 
 	- `CROSSBYTE_MONGO_URI`: a standalone server requiring authentication,
@@ -238,8 +238,8 @@ class MongoIntegrationTest extends utest.Test {
 			crossbyte.sys.System.sleep(0.5);
 		}
 
-		// Deleted by the server for its date: the JSON path could only ever
-		// have stored the date as text, which a TTL index ignores.
+		// Deleted by the server for its date, which a date stored as text
+		// would not be: a TTL index ignores text.
 		Assert.equals(0, connection.count("sessions", {_id: "s_expired"}));
 		Assert.equals(1, connection.count("sessions", {_id: "s_live"}));
 		connection.runCommand(new BsonDocument().add("setParameter", 1).add("ttlMonitorSleepSecs", 60), "admin");
@@ -250,8 +250,8 @@ class MongoIntegrationTest extends utest.Test {
 			return;
 		}
 
-		// The program the old driver could not run: sessions upserted with a
-		// real date, read back by id, through the statement API as well.
+		// Sessions upserted with a real date, read back by id, through the
+		// statement API as well.
 		connection.createIndexes("sessions", [{key: {expiresAt: 1}, name: "ttl", expireAfterSeconds: 0}]);
 		var sid:String = "s_abc123";
 		var expires:Date = Date.fromTime(Date.now().getTime() + 3600000.0);

@@ -7,10 +7,9 @@ import utest.Assert;
 
 /**
 	The calls waiting on their answers, past a caller's first: a ring
-	indexed by request id, where they were an `IntMap`. Each must be found
-	again by its id whatever else waits beside it, calls in flight by the
-	hundred, answered in any order, and a slow one that a ring's length of
-	later calls has passed.
+	indexed by request id. Each must be found again by its id whatever else
+	waits beside it: calls in flight by the hundred, answered in any order,
+	and a slow one that a ring's length of later calls has passed.
 **/
 @:access(crossbyte.rpc.RPCCommands)
 @:access(crossbyte.rpc._internal.RPCPendingCalls)

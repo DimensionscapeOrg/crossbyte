@@ -13,11 +13,11 @@ import utest.Async;
 	How a reliable datagram session begins again, stays up, and ends, when one
 	side restarts, goes quiet or goes away.
 
-	Before these, a peer that crashed and came back on the same address and
-	port could not get back in, its old session took every CONNECT it sent
-	and was kept alive by them, a session with nothing to say was closed as
-	dead within 150 seconds, and neither a server closing nor a server that
-	had restarted told its clients anything.
+	A peer that crashed and came back on the same address and port gets
+	back in, rather than its old session taking every CONNECT it sent and
+	being kept alive by them; a session with nothing to say is not closed as
+	dead; and a server closing, or a server that has restarted, tells its
+	clients.
 **/
 @:access(crossbyte.net.ReliableDatagramSocket)
 @:access(crossbyte.net.ReliableDatagramServerSocket)
@@ -246,9 +246,9 @@ class ReliableDatagramLifecycleTest extends utest.Test {
 		one datagram in seven: the server's session hears all of it, in
 		order, and then its close, and the client's close follows.
 
-		`close()` dropped what the congestion window had not let out yet and
-		what had been lost and was waiting to be sent again, and the server
-		took the FIN the moment it came, past any gap.
+		`close()` sends what the congestion window has not let out yet and what
+		had been lost and was waiting to be sent again, and the server takes
+		the FIN only once nothing is missing before it, not past any gap.
 	**/
 	@:timeout(40000)
 	public function testABurstClosedAtOnceArrivesWholeOverALossyPath(async:Async):Void {

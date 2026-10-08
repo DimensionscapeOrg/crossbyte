@@ -83,7 +83,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		ByteArrays made from then on, not ones that already exist.
 
 		It is `Endian.LITTLE_ENDIAN` on every target, chosen rather than
-		inherited, it does not follow the host's byte order, so a ByteArray
+		inherited: it does not follow the host's byte order, so a ByteArray
 		written on one machine reads the same on another. Set it to
 		`Endian.BIG_ENDIAN` if you mostly work in network byte order and would
 		rather not say so on each instance.
@@ -107,16 +107,16 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	/**
 		The most values one object read may make: every element, member,
 		name and key, and each null of a run, in any encoding. `readObject`
-		refuses an object holding more with an `IOError`, a socket's too,
-		which reads through a ByteArray, and `SharedObject` and
+		refuses an object holding more with an `IOError` (a socket's too,
+		which reads through a ByteArray), and `SharedObject` and
 		`SharedChannel` refuse one as they read it. 1,000,000 unless changed;
 		zero or less is no limit.
 
 		A bound on bytes does not bound this. An HXSF array can hold a run of
-		nulls in a few bytes, and `au100000000h`, twelve of them, made an
-		array of 100,000,000 slots, 800 MB natively, from any peer that could
-		send an object. Every other value costs at least a byte, so a frame
-		of 1 MB holds a million at most.
+		nulls in a few bytes, and `au100000000h` (twelve of them) would make
+		an array of 100,000,000 slots, 800 MB natively, from any peer that
+		could send an object. Every other value costs at least a byte, so a
+		frame of 1 MB holds a million at most.
 
 		It is one setting for the whole process, read as each object is: a
 		program reading larger objects of its own, from files it wrote,
@@ -156,7 +156,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 		`HXSF` (Haxe Serialization Format, via `haxe.Serializer`) is the default,
 		and `JSON` is always available. `AMF0` and `AMF3` are read and written
-		only when the optional `format` haxelib is on the build, `-lib format`.
+		only when the optional `format` haxelib is on the build (`-lib format`).
 		Asking for one this build cannot do throws, rather than reading `null`
 		or writing nothing.
 	**/
@@ -204,14 +204,14 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			   the other way, and `BROTLI` further still.
 
 		`DEFLATE` writes a raw deflate stream
-		([RFC 1951](https://www.ietf.org/rfc/rfc1951.txt)) and nothing else,
+		([RFC 1951](https://www.ietf.org/rfc/rfc1951.txt)) and nothing else:
 		no header, no checksum, no length. `GZIP` writes the same compressed
 		bytes inside a gzip container ([RFC 1952](https://www.ietf.org/rfc/rfc1952.txt)),
 		which adds metadata around them: a magic number, the original size, a
 		CRC, and optionally a filename and modification time.
 
 		That distinction is the one that catches people out. A .gz or .zip file
-		is not a deflate stream, so `uncompress(DEFLATE)` will not read one,
+		is not a deflate stream, so `uncompress(DEFLATE)` will not read one:
 		the container has to be parsed off first. In the other direction,
 		`compress(DEFLATE)` does not produce a file any gzip or zip tool will
 		open, because none of the metadata those formats require is there.
@@ -427,8 +427,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		@return The deserialized object.
 		@throws EOFError There is not sufficient data available to read.
 				`position` is left where it was, so the read can be tried
-				again once the rest has arrived, in `AMF0` and `AMF3` too,
-				which threw a `haxe.io.Eof` of their own.
+				again once the rest has arrived, in `AMF0` and `AMF3` too.
 		@throws RangeError An `HXSF` or `JSON` object declares 2^31 bytes or
 				more, which no ByteArray holds.
 		@throws IOError The object nests values within values more than 256
@@ -437,9 +436,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 				or is malformed in a way that would read the same bytes for
 				ever. It is refused before reading it could exhaust the
 				stack or memory: a peer's object, read through a socket's
-				`readObject`, nested a few thousand deep ended the process,
-				and twelve bytes of HXSF made an array of 800 MB. An `HXSF`
-				or `JSON` object's bytes are consumed.
+				`readObject`, nested a few thousand deep would end the
+				process, and twelve bytes of HXSF would make an array of
+				800 MB. An `HXSF` or `JSON` object's bytes are consumed.
 	**/
 	public inline function readObject():Dynamic {
 		return this.readObject();
@@ -562,11 +561,11 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			   self-describing enough to guess between.
 
 		A gzip or zip file is not a raw deflate stream, so `uncompress(DEFLATE)`
-		does not read one, see `compress()` for why.
+		does not read one; see `compress()` for why.
 
 		@param maxOutputSize Bytes the decoded result may reach before this
 		       gives up, or `0` for no limit. Compression ratios have no
-		       ceiling, a megabyte of zeros returns as roughly a gigabyte,
+		       ceiling (a megabyte of zeros returns as roughly a gigabyte),
 		       so anything decoding bytes it did not author wants to name one.
 		@throws crossbyte.errors.IOError The data is not valid for
 		        `algorithm`: damaged, cut short, or compressed with something
@@ -858,8 +857,8 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		#else
 		// An empty one shares one empty buffer: every ByteArray made from a
 		// Bytes (fromBytes, every implicit conversion, per datagram, per
-		// frame) starts empty and is handed the bytes' own buffer at once, and
-		// this allocated a Bytes and its buffer only for them to be dropped.
+		// frame) starts empty and is handed the bytes' own buffer at once, so
+		// a Bytes and its buffer made here would only be dropped.
 		// Nothing writes into a buffer of no length; growing replaces it.
 		var data:BytesData;
 		if (length == 0) {
@@ -965,9 +964,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	public static function fromBytes(bytes:Bytes):ByteArrayData {
 		// Made empty, then given the bytes' own buffer. Made at their length,
-		// it allocated and zero-filled a buffer that __fromBytes dropped at
-		// once, on every implicit conversion, every socket read among them,
-		// where the bytes are a 64 KB scratch. eval copies into the buffer
+		// it would allocate and zero-fill a buffer that __fromBytes drops at
+		// once, on every implicit conversion (every socket read among them,
+		// where the bytes are a 64 KB scratch). eval copies into the buffer
 		// rather than adopting one, so it is still made to size there.
 		var result = new ByteArrayData(#if eval bytes.length #else 0 #end);
 		result.__fromBytes(bytes);
@@ -1001,22 +1000,22 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		if (length == 0)
 			length = this.length - position;
 
-		// Against the bytes remaining rather than `position + length`. That
+		// Against the bytes remaining rather than `position + length`: that
 		// sum overflows for a large length and wraps negative, which is not
-		// greater than this.length, so the guard passed and the read ran
+		// greater than this.length, so the guard would pass and the read run
 		// off the end of the buffer.
 		if (offset < 0 || length < 0 || length > this.length - position) {
 			throw new EOFError();
 		}
 
-		// Same shape on the destination: `offset + length` decided both the
-		// test and the size passed to __resize, so an overflow asked for a
-		// negative allocation.
+		// Same shape on the destination: `offset + length` would decide both
+		// the test and the size passed to __resize, so an overflow would ask
+		// for a negative allocation.
 		//
 		// Grown with the bytes from `offset` on left to the blit below, which
-		// writes all of them: only a gap before `offset` is zeroed. They were
-		// all zeroed and then written, on JavaScript a byte at a time, a
-		// third of a Node server's working time taking uploads.
+		// writes all of them: only a gap before `offset` is zeroed, rather than
+		// zeroing them all first (on JavaScript a byte at a time, a third of a
+		// Node server's working time taking uploads).
 		if ((bytes : ByteArrayData).length - offset < length) {
 			(bytes : ByteArrayData).__resize(offset + length, offset);
 		}
@@ -1082,7 +1081,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		switch (objectEncoding) {
 			#if format
 			// An object that runs out is an EOFError, position left alone, as
-			// one in HXSF or JSON is; it was the reader's own haxe.io.Eof.
+			// one in HXSF or JSON is.
 			case AMF0:
 				var input = new BytesInput(this, position);
 				var reader = new BoundedAMFReader(input);
@@ -1109,8 +1108,8 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			#end
 
 			// Bounded, every encoding: an object is what a peer sends a
-			// socket, and natively one nested a few thousand deep, 12 KB,
-			// overflowed the stack reading it and ended the process.
+			// socket, and natively one nested a few thousand deep (12 KB)
+			// would overflow the stack reading it and end the process.
 			case HXSF:
 				return BoundedUnserializer.run(__readObjectText());
 
@@ -1125,12 +1124,12 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	/**
 		The text an HXSF or JSON object was written as: its length in bytes as
 		an unsigned 32-bit integer in this stream's `endian`, then that many
-		bytes of UTF-8. Framed as `writeUTF` frames a string, behind sixteen
-		bits, an object could not pass 65,535 bytes of text.
+		bytes of UTF-8. Not framed as `writeUTF` frames a string, behind
+		sixteen bits, so an object can pass 65,535 bytes of text.
 
 		An object only part of which is here is an EOFError that leaves
 		`position` where it was, so a socket's reader can try again when the
-		rest has arrived; readUTF moved it past the length first.
+		rest has arrived.
 	**/
 	@:noCompletion private function __readObjectText():String {
 		var at:Int = position;
@@ -1153,11 +1152,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		__writeAll(bytes);
 	}
 
-	// Reached when objectEncoding names a format this build cannot do, AMF
-	// without the optional haxelib, or a value that is not an ObjectEncoding at
-	// all, which Int can be. Both used to be silent: readObject answered null
-	// and writeObject wrote nothing, so an AMF round trip on a build without
-	// -lib format lost the object and said so nowhere.
+	// Reached when objectEncoding names a format this build cannot do (AMF
+	// without the optional haxelib, or a value that is not an ObjectEncoding
+	// at all, which Int can be), so that an AMF round trip on a build
+	// without -lib format fails loudly rather than losing the object.
 	private static function __unsupportedEncoding(encoding:ObjectEncoding):String {
 		#if !format
 		if (encoding == AMF0 || encoding == AMF3) {
@@ -1306,10 +1304,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			}
 			var byte:Int = get(at++);
 			// The fifth byte carries the last four bits of 32 and has to end
-			// the varint. Anything above them was shifted off the top, so
-			// 2^32 + 1 read as 1; a continuation bit here asked for a sixth
-			// byte, which the old bound of 35 let in and folded back over
-			// the value.
+			// the varint: anything above them would be shifted off the top
+			// (2^32 + 1 reading as 1), and a continuation bit here asks for a
+			// sixth byte, which a 32-bit value never needs.
 			if (shift == 28 && byte > 0x0F) {
 				throw new RangeError("A varint does not fit in 32 bits.");
 			}
@@ -1326,7 +1323,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	/**
 		@param maxOutputSize Bytes the decoded result may reach before this
 		       gives up, or `0` for no limit. Compression ratios have no
-		       ceiling, a megabyte of zeros returns as roughly a gigabyte,
+		       ceiling (a megabyte of zeros returns as roughly a gigabyte),
 		       so anything decoding bytes it did not author wants to name one.
 	**/
 	public function uncompress(algorithm:CompressionAlgorithm = LZ4, maxOutputSize:Int = 0):Void {
@@ -1439,9 +1436,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	// A view's bytes appended at the end in one copy, the position left where
-	// it is. What a Node socket receives is a view of a pool Node shares; it
-	// was sliced into a buffer of its own, wrapped in a ByteArray, and copied
-	// again from that.
+	// it is. What a Node socket receives is a view of a pool Node shares,
+	// copied here once rather than sliced into a buffer of its own, wrapped
+	// in a ByteArray and copied again.
 	@:noCompletion private function __appendView(view:js.lib.Uint8Array):Void {
 		var count:Int = view.length;
 		if (count > 0) {
@@ -1452,9 +1449,8 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 	#end
 
-	// All of `bytes` at the position, as writeBytes writes them, without the
-	// ByteArray writeBytes takes: one was made and dropped for every string
-	// written.
+	// All of `bytes` at the position, as writeBytes writes them, without
+	// making the ByteArray writeBytes takes for every string written.
 	@:noCompletion private inline function __writeAll(bytes:Bytes):Void {
 		var count:Int = bytes.length;
 		if (count > 0) {
@@ -1585,9 +1581,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	public function writeUTF(value:String):Void {
 		var bytes = crossbyte._internal.Utf8.bytesOf(value);
 
-		// The length prefix is sixteen bits. Past 65535 it wrapped: the
-		// string was written whole behind a length that described some other
-		// number of bytes, and every read after it landed in the wrong place.
+		// The length prefix is sixteen bits: past 65535 it would wrap, and
+		// the string would go out behind a length that describes some other
+		// number of bytes, landing every read after it in the wrong place.
 		if (bytes.length > 0xFFFF) {
 			throw new RangeError('writeUTF takes at most 65535 bytes, and this string is ${bytes.length}. Use writeUTFBytes with a length of your own.');
 		}
@@ -1602,10 +1598,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	@:keep public inline function writeVarUInt(value:Int):Void {
-		// Tested and shifted as the unsigned value it is. A signed
-		// `v > 0x7F` was false for anything with bit 31 set, which went out
-		// as one byte: 0x80000000 read back as 0, 0xFFFFFFFF as a varint
-		// that never ended.
+		// Tested and shifted as the unsigned value it is: a signed `v > 0x7F`
+		// is false for anything with bit 31 set, which would go out as one
+		// byte (0x80000000 reading back as 0, 0xFFFFFFFF as a varint that
+		// never ends).
 		var v:Int = value;
 		while ((v & ~0x7F) != 0) {
 			writeByte((v & 0x7F) | 0x80);
@@ -1646,38 +1642,28 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	/**
-		Grows the buffer to at least `size`, zeroing the newly exposed
-		region.
+		Makes at least `size` bytes readable, zeroing anything newly exposed.
 
 		That zeroing is not optional in general. A caller may seek past the
 		end and write there, or simply assign `length`, and the bytes in
-		between must read as zero rather than as whatever the allocator
-		last left in that memory, otherwise reading a grown ByteArray
-		discloses unrelated heap contents.
-
-		@param overwriteFrom When the caller guarantees it will itself write
-			every byte from this offset up to `size`, only the region below
-			it needs zeroing. Omit it and the whole grown region is zeroed,
-			which is always safe.
-	**/
-	/**
-		Makes at least `size` bytes readable, zeroing anything newly exposed.
+		between must read as zero rather than as whatever the allocator last
+		left in that memory: otherwise reading a grown ByteArray discloses
+		unrelated heap contents.
 
 		@param overwriteFrom Where the caller is about to start writing. Bytes
 		from the old end up to there are zeroed; bytes from there on are the
-		caller's to fill and are left alone, which is what spares an append,
-		the common case, and the whole of the bulk write path, a pass over
-		everything it is about to overwrite anyway.
+		caller's to fill and are left alone, which spares an append (the
+		common case, and the whole of the bulk write path) a pass over
+		everything it is about to overwrite anyway. Omitted, the whole grown
+		region is zeroed, which is always safe.
 
-		The zeroing runs against the old *logical* length and outside the growth
-		branch, both deliberately. It used to sit inside that branch and start
-		from the old capacity, which meant a gap opened without a reallocation
-		was never zeroed at all, and one opened with a reallocation was only
-		zeroed past the capacity the old buffer had, while the blit below
-		carried every stale byte beneath that capacity into the new buffer. The
-		effect either way was old contents readable through a hole the caller
-		skipped over, which is a thing a buffer being reused for something else
-		must never do.
+		The zeroing runs against the old *logical* length and outside the
+		growth branch, both deliberately: inside that branch, from the old
+		capacity, a gap opened without a reallocation would not be zeroed at
+		all, and the blit would carry every stale byte beneath the old
+		capacity into the new buffer. Either way old contents would be
+		readable through a hole the caller skipped over, which a buffer
+		being reused for something else must never allow.
 	**/
 	@:noCompletion private function __resize(size:Int, overwriteFrom:Int = -1):Void {
 		// The logical end before anything moves: everything above this is
@@ -1770,7 +1756,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		is what backs the buffer.
 
 		One place rather than repeated at every bounds check, which is what the
-		multi-byte readers now do instead of leaning on `readUnsignedByte` to
+		multi-byte readers do instead of leaning on `readUnsignedByte` to
 		check once per byte.
 	**/
 	@:noCompletion private inline function __available():Int {
@@ -1781,8 +1767,8 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		Reverses a 32-bit value's bytes.
 
 		`getInt32` and `setInt32` are little-endian by definition on every
-		target, so a big-endian stream, which is most network traffic, and all
-		of STUN and SCTP, is one word access and this, rather than four
+		target, so a big-endian stream (which is most network traffic, and all
+		of STUN and SCTP) is one word access and this, rather than four
 		bounds-checked byte accesses and a shift for each.
 	**/
 	/**
@@ -1792,13 +1778,13 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		none of that is needed for a write landing inside a buffer that already
 		has the capacity and starts at or before the current end, which is
 		every append an encoder makes, and encoding is what this class spends
-		its life doing. A call out to it per field was most of the difference
-		between reading a word and writing one.
+		its life doing. A call out to it per field would be most of the
+		difference between reading a word and writing one.
 
 		Two conditions, both necessary. The capacity has to cover the write, or
 		the buffer must grow. And the cursor must not be past the logical end,
 		or there is a gap between them that has to be zeroed before the caller's
-		bytes land, the case the previous commit was about.
+		bytes land.
 
 		@return Whether the fast path applied; the caller falls back when not.
 	**/

@@ -16,7 +16,7 @@ import utest.Assert;
 	`IceAgentTest` proves the exchange with no network in the way, which is the
 	right place to test the protocol. This tests the join: that checks actually
 	leave the socket the server listens on, arrive, get routed to the agent
-	rather than dropped as noise, and, the part most likely to break, that
+	rather than dropped as noise, and (the part most likely to break) that
 	the reliable session afterwards still works on the same socket, because the
 	agent did not swallow frames that were never its business.
 

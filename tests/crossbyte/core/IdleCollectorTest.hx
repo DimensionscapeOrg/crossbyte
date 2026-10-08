@@ -7,9 +7,9 @@ import utest.Assert;
 
 /**
 	`CrossByte.collectWhenIdle`: when the runtime collects in the gap before a
-	tick. The decision is driven here by a heap and a clock of the test's own,
-	a cycle of so much free space, spent so much a tick, and the collector
-	running inside the tick that spends the last of it, and natively a real
+	tick. The decision is driven here by a heap and a clock of the test's own
+	(a cycle of so much free space, spent so much a tick, and the collector
+	running inside the tick that spends the last of it), and natively a real
 	runtime runs with it on.
 **/
 @:access(crossbyte.core.CrossByte)
@@ -73,8 +73,8 @@ class IdleCollectorTest extends utest.Test {
 
 	public function testACollectionThatNeverFitsIsTriedLessAndLessOften():Void {
 		// Each takes 30 ms against gaps of 23: every one made overruns. Eased
-		// back down, the estimate let one be tried, and overrun, every five
-		// cycles; after an overrun the next cycles are left to the collector,
+		// back down, the estimate would let one be tried, and overrun, every five
+		// cycles; so after an overrun the next cycles are left to the collector,
 		// twice as many after each.
 		var heap = new SimulatedHeap();
 		heap.takes = 0.030;

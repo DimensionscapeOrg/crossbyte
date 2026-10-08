@@ -14,17 +14,17 @@ import utest.Async;
 	upgrade request, what its buffers keep between messages and once it has
 	gone quiet, and what a server hangs on each session it lists.
 
-	Each measured at 1,000 idle sessions natively, before these: 6.6 KB a
-	session on the server, of which 2.2 KB was its request's parsed headers;
-	and after one 16 KB message each way, 97 KB a session, held for as long
-	as it lasted.
+	Each measured at 1,000 idle sessions natively: without these, 6.6 KB a
+	session on the server, of which 2.2 KB was its request's parsed
+	headers; and after one 16 KB message each way, 97 KB a session, held
+	for as long as it lasted.
 **/
 @:access(crossbyte.net.WebSocket)
 @:access(crossbyte._internal.websocket.WebSocket)
 class WebSocketMemoryTest extends utest.Test {
 	/**
-		A request read after its session has opened, once the session has
-		let go of the parsed headers and kept the head they came from, has
+		A request read after its session has opened (once the session has
+		let go of the parsed headers and kept the head they came from) has
 		every header, cookie and the origin the client sent, as it had in
 		`upgrade`.
 	**/
@@ -50,12 +50,12 @@ class WebSocketMemoryTest extends utest.Test {
 	}
 
 	/**
-		A session that has gone quiet, nothing heard and nothing sent for a
-		beat of its heartbeat, lets go of the storage its buffers held for
+		A session that has gone quiet (nothing heard and nothing sent for a
+		beat of its heartbeat) lets go of the storage its buffers held for
 		the messages before: what it read into, what it framed in, what it
-		sent from, and the message it handed out. It kept each at the largest
-		it had needed for as long as it lasted: a 10 KB message each way left
-		about 60 KB held.
+		sent from, and the message it handed out. Kept at the largest each had
+		needed for as long as the session lasted, a 10 KB message each way
+		would leave about 60 KB held.
 	**/
 	@:timeout(20000)
 	public function testAQuietSessionLetsGoOfWhatItHeldForMessages(async:Async):Void {
@@ -88,9 +88,9 @@ class WebSocketMemoryTest extends utest.Test {
 	#if !(eval || nodejs)
 	/**
 		Output that waited for a slow peer is let go of as soon as it has
-		drained, past what one pass batches (64 KB): the buffer kept what the
-		backlog grew it to, here more than a megabyte, for as long as the
-		session lasted.
+		drained, past what one pass batches (64 KB), rather than the buffer
+		keeping what the backlog grew it to (here more than a megabyte) for as
+		long as the session lasted.
 
 		Not on eval, whose sockets block: a write to a peer not reading waits
 		there rather than leaving bytes to hold. Nor on Node, where what waits
@@ -138,7 +138,7 @@ class WebSocketMemoryTest extends utest.Test {
 	/**
 		A server hangs no listener of its own on its sessions: it is told of
 		a close by the session itself, and still takes the session off its
-		list. Its close listener on every session was a map, a list, an
+		list. A close listener on every session would be a map, a list, an
 		entry and a closure, 370 bytes natively, for as long as it lasted.
 	**/
 	@:timeout(15000)

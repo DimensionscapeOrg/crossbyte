@@ -6,12 +6,12 @@ import utest.Assert;
 	The networking tests wait by `haxe.Timer.stamp()`, the one monotonic
 	clock, as the framework they test does (see `ClockTest`).
 
-	Their helpers timed deadlines and pauses by `Sys.time()`, the time of
-	day: a clock the system can set back or forward while a test waits. Set
-	forward, a wait ends early and a test fails for nothing; set back, it
-	holds the test far past its deadline, and nothing else ends it, since
-	these loops are the tests' own and utest's timeout does not reach a
-	thread that is busy in one. `Sys.time()` is for the time of day, and says
+	A wait timed by `Sys.time()`, the time of day, is on a clock the system
+	can set back or forward while a test waits. Set forward, a wait ends
+	early and a test fails for nothing; set back, it holds the test far past
+	its deadline, and nothing else ends it, since these loops are the tests'
+	own and utest's timeout does not reach a thread that is busy in one.
+	`Sys.time()` is for the time of day, and says
 	so with a `// time of day:` comment where it is used.
 **/
 class NetTestClockTest extends utest.Test {

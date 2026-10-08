@@ -11,11 +11,11 @@ import crossbyte.io.ByteArray;
 	A reliable UDP message made ready once to send to many sessions: a
 	match's state, a room's chat line, an event for everyone in an area.
 	Its bytes are copied once, when it is made, and every session it is sent
-	to refers to them, to send it, and to send it again until the peer has
-	it, where a `send` per session copied the message for each one and
-	held every copy until that session's peer acknowledged it: a thousand
-	copies of a 1 KB update to a thousand players, held for a round trip at
-	least, and for as long as a player who lost it takes to get it.
+	to refers to them (to send it, and to send it again until the peer has
+	it), rather than each session copying the message and holding the copy
+	until its peer acknowledged it: a thousand copies of a 1 KB update to a
+	thousand players, held for a round trip at least, and for as long as a
+	player who lost it takes to get it.
 
 	```haxe
 	// Given server:ReliableDatagramServerSocket, room:Array<ReliableDatagramSocket>, snapshot:crossbyte.io.ByteArray.
@@ -32,7 +32,7 @@ import crossbyte.io.ByteArray;
 	}
 	```
 
-	Who receives a message, rooms, teams, areas of interest, is the
+	Who receives a message (rooms, teams, areas of interest) is the
 	application's: a prepared datagram is only the message.
 
 	**Its bytes are its own.** Making one copies what it is given, so the
@@ -47,10 +47,10 @@ import crossbyte.io.ByteArray;
 	it with whatever else it sends in the pass; paces it by its own
 	congestion window; and sends it again, from the shared bytes, as often as
 	its own peer needs. A message larger than one frame is split into frames
-	by each session, 1,200 bytes in the clear, 1,179 encrypted
-	(`ReliableDatagramSocket.maxPayloadSize`), over the same bytes. What a
+	by each session, over the same bytes: 1,200 bytes in the clear, 1,179 encrypted
+	(`ReliableDatagramSocket.maxPayloadSize`). What a
 	session holds for it is a record of each frame in flight, a few dozen
-	bytes, where `send` held a copy.
+	bytes, where `send` holds a copy.
 
 	**Encrypted sessions** share it as sessions in the clear do: a session
 	seals each datagram as it goes out, into a buffer its server's sessions

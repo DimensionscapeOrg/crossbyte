@@ -16,7 +16,7 @@ import crossbyte.net.rtc._internal.sctp.SctpPacket.SctpChunk;
 	in a cookie the requester carries and hands back.
 
 	That is a defence against a flood of forged INITs from addresses that cannot
-	answer, the attack that made SYN cookies necessary for TCP, designed into
+	answer: the attack that made SYN cookies necessary for TCP, designed into
 	SCTP from the start rather than retrofitted.
 
 	## Verification tags
@@ -30,7 +30,7 @@ import crossbyte.net.rtc._internal.sctp.SctpPacket.SctpChunk;
 
 	## No socket
 
-	`onSend` out, `receive` in, `poll` for time, the fourth component in this
+	`onSend` out, `receive` in, `poll` for time: the fourth component in this
 	stack built that way, and here it is doubly forced: an association runs
 	inside a DTLS session which itself runs over a socket already carrying ICE.
 	Nothing at this level has any business knowing what a socket is.
@@ -42,11 +42,9 @@ class SctpAssociation {
 	/**
 		How much undelivered data this end is willing to hold, in bytes.
 
-		Advertised in the INIT and, now that `SctpDataTransfer` subtracts what
-		it is holding, in every SACK as well. It was 256 KB and meant nothing:
-		the figure went out unchanged however much had piled up, so the peer
-		was told the whole window was free right up to the point where nothing
-		was.
+		Advertised in the INIT and, since `SctpDataTransfer` subtracts what it
+		is holding, in every SACK as well, so the peer is not told the whole
+		window is free right up to the point where nothing is.
 
 		It has to clear `MAX_REASSEMBLY` plus `MAX_HELD`, and that is what set
 		it. Those are the most one stream may have part-assembled and the most
@@ -114,7 +112,7 @@ class SctpAssociation {
 		Whether the peer listed RE-CONFIG among the chunks it understands,
 		RFC 6525: stream reset, which is how a data channel is closed at both
 		ends. Without it nothing is asked of the peer, and a channel closed here
-		closes here only, what a CrossByte peer from before 1.0 gets.
+		closes here only, which is what a CrossByte peer from before 1.0 gets.
 	**/
 	public var peerSupportsReconfig(default, null):Bool = false;
 
@@ -158,10 +156,6 @@ class SctpAssociation {
 		side or from a fault: the peer's ABORT, or the peer no longer answering.
 		Not called for `close()` or `abort()`, which the caller already knows
 		about.
-
-		An ABORT used to close the association without a word to anyone above
-		it. The channels on top went on reporting themselves open, and the
-		first sign anything had happened was a `send` that threw.
 	**/
 	public dynamic function onClose(reason:String):Void {}
 
@@ -327,14 +321,15 @@ class SctpAssociation {
 					return true;
 				case SctpPacket.CHUNK_HEARTBEAT:
 					// RFC 4960 section 8.3: answered at once, with what it
-					// carried copied back unchanged. It never was, and a peer
-					// that hears no answer counts a failed path, so a channel
-					// that only received, from a browser whose stack probes idle
-					// paths, was torn down after a few minutes of quiet.
+					// carried copied back unchanged. A peer that hears no
+					// answer counts a failed path, so a channel that only
+					// received, from a browser whose stack probes idle paths,
+					// would be torn down after a few minutes of quiet.
 					//
 					// One a packet. A peer probes its one path with one at a
-					// time, and each answer is a packet of its own, a DTLS
-					// record and a `sendto`, so a packet of 300 drew 300.
+					// time, and each answer is a packet of its own (a DTLS
+					// record and a `sendto`), so answering all of a packet of
+					// 300 would send 300.
 					if (!heartbeatAnswered && __up() && __tagMatches(packet)) {
 						heartbeatAnswered = true;
 						onSend(packetFor([new SctpChunk(SctpPacket.CHUNK_HEARTBEAT_ACK, 0, chunk.value)]));
@@ -358,7 +353,7 @@ class SctpAssociation {
 						return true;
 					}
 				default:
-					// Everything else, DATA and SACK, is for the layer above,
+					// Everything else (DATA and SACK) is for the layer above,
 					// which is where it goes once established, and while a
 					// shutdown the peer asked for is finishing what was sent.
 					if ((state == ESTABLISHED || state == SHUTDOWN_RECEIVED) && __tagMatches(packet)) {
@@ -368,8 +363,8 @@ class SctpAssociation {
 			}
 		}
 
-		// A chunk handed up may have ended the association, a SACK can tell
-		// the layer above the peer is gone, and then nothing is owed.
+		// A chunk handed up may have ended the association (a SACK can tell
+		// the layer above the peer is gone), and then nothing is owed.
 		if (passedUp && !__closed) {
 			onPacketEnd();
 		}
@@ -416,7 +411,7 @@ class SctpAssociation {
 		`notifyPeer` and whoever is above through `onClose`.
 
 		For the layer above, which is where the faults an established
-		association dies of are noticed, data the peer stopped acknowledging.
+		association dies of are noticed: data the peer stopped acknowledging.
 	**/
 	@:allow(crossbyte.net.rtc._internal.sctp)
 	@:noCompletion private function __end(reason:String, notifyPeer:Bool):Void {
@@ -693,14 +688,14 @@ class SctpAssociation {
 		Partial reliability, RFC 3758, said twice over: the parameter that
 		says so, and the chunk type listed as a supported extension, which is
 		how RFC 5061 has a sender name the chunks it understands. A browser
-		looks for both. Without them it may not abandon anything it sends here,
-		a channel opened with `maxRetransmits: 0` was silently made
-		reliable, and nothing sent from here may be abandoned either.
+		looks for both. Without them it may not abandon anything it sends here
+		(a channel opened with `maxRetransmits: 0` would be made reliable), and
+		nothing sent from here may be abandoned either.
 
 		And RE-CONFIG, RFC 6525, listed beside it: stream reset, which is how a
 		data channel closes at both ends. A peer that does not see it listed
-		resets nothing toward this end, so a browser closing a channel had no
-		way to say so.
+		resets nothing toward this end, so a browser closing a channel would
+		have no way to say so.
 	**/
 	@:noCompletion private function __initBody(tag:Int, tsn:Int):ByteArray {
 		var value = new ByteArray();

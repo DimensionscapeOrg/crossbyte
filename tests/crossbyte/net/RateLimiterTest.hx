@@ -43,7 +43,7 @@ class RateLimiterTest extends utest.Test {
 			Assert.isTrue(limiter.tryAcquire("client"));
 		}
 
-		// A full idle period refills to capacity, exactly 10 more, never 20.
+		// A full idle period refills to capacity: exactly 10 more, never 20.
 		now = 1.0;
 		for (_ in 0...10) {
 			Assert.isTrue(limiter.tryAcquire("client"));
@@ -98,9 +98,9 @@ class RateLimiterTest extends utest.Test {
 	}
 
 	/**
-		A null key spends from the empty string's bucket, and resets it too.
-		`reset(null)` returned at once, so a null key once limited stayed
-		limited until its bucket refilled.
+		A null key spends from the empty string's bucket, and resets it too,
+		rather than `reset(null)` returning at once, which would leave a null
+		key once limited limited until its bucket refilled.
 	**/
 	public function testResettingANullKeyResetsTheBucketItSpends():Void {
 		var limiter = new RateLimiter(1, 60.0, clock);
@@ -232,8 +232,9 @@ class RateLimiterTest extends utest.Test {
 	}
 
 	public function testTheDefaultCapHolds():Void {
-		// Keys are whatever a client sends: account names, addresses. They
-		// were all kept, and swept inside whichever call found the sweep due.
+		// Keys are whatever a client sends: account names, addresses. Kept
+		// all, and swept inside whichever call found the sweep due, they would
+		// grow without bound.
 		var limiter = new RateLimiter(1, 60.0, clock);
 		for (i in 0...RateLimiter.DEFAULT_MAX_KEYS + 1000) {
 			limiter.tryAcquire("user" + i);
@@ -295,7 +296,7 @@ class RateLimiterTest extends utest.Test {
 
 	public function testOneSlash64IsOneClient():Void {
 		// Keyed on the whole address, a thousand attempts from one /64 against
-		// a limit of five were refused none of the time.
+		// a limit of five would be refused none of the time.
 		var limiter = new RateLimiter(5, 60.0, clock);
 		var refused:Int = 0;
 		for (i in 0...1000) {

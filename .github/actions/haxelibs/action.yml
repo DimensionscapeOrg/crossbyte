@@ -3,11 +3,10 @@ description: >-
   Installs the libraries ci/haxelibs.txt lists, each at its pinned version and
   commit, from a cache, else from GitHub, else from lib.haxe.org.
 
-# On 2026-10-04 lib.haxe.org's API lost its database, every job failed at its
-# first `haxelib install`, and main stayed red for hours over nothing in the
-# code. A cache alone could not have helped for long: it is filled from
-# somewhere, and `haxelib install` asks the registry about a version even
-# when that version is installed already.
+# lib.haxe.org's API can go down, and then every job fails at its first
+# `haxelib install` over nothing in the code. A cache alone cannot help for
+# long: it is filled from somewhere, and `haxelib install` asks the
+# registry about a version even when that version is installed already.
 #
 # So each library comes, in this order, from:
 # 1. The cache. It holds each library's folder in the haxelib repository
@@ -19,11 +18,11 @@ description: >-
 #    once.)
 # 2. GitHub, at the pinned commit, through `haxelib git`, which asks the
 #    registry nothing for a library without dependencies. GitHub comes first
-#    because every job depends on it already: the checkout, setup-haxe and
-#    hxcpp all come from there: so it adds no new way to fail, where the
+#    because every job depends on it already (the checkout, setup-haxe and
+#    hxcpp all come from there), so it adds no new way to fail, where the
 #    registry would; and a commit is exact.
-# 3. lib.haxe.org, only if GitHub could not supply the commit: a repository
-#    moved or rewritten: with a warning saying so. The pinned commits were
+# 3. lib.haxe.org, only if GitHub could not supply the commit (a repository
+#    moved or rewritten), with a warning saying so. The pinned commits were
 #    checked to be the registry's releases (ci/haxelibs.txt says how), so
 #    either source gives the same library.
 #

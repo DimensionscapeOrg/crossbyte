@@ -25,8 +25,8 @@ import crossbyte.io.ByteArray;
  * takes none of for 30 seconds is given up, as any response's is, ending the
  * response the same way.
  *
- * A stream belongs to the one response it was begun for. Once that has ended,
- * by `end`, by the client leaving, or at the cap, it refuses every write,
+ * A stream belongs to the one response it was begun for. Once that has ended
+ * (by `end`, by the client leaving, or at the cap) it refuses every write,
  * so a producer that has not noticed cannot reach the connection's next
  * response.
  */
@@ -65,7 +65,7 @@ class HTTPResponseStream {
 	 * default.
 	 *
 	 * @return `true` when there is room for more now; `false` when the client
-	 * is not keeping up, wait for `onDrain`, or the stream no longer
+	 * is not keeping up (wait for `onDrain`), or the stream no longer
 	 * reaches it (`connected`).
 	 */
 	public function write(data:ByteArray, offset:Int = 0, length:Int = -1):Bool {
@@ -100,7 +100,7 @@ class HTTPResponseStream {
 	}
 
 	/**
-	 * Finishes the response, the last chunk, or the end of the stream,
+	 * Finishes the response (the last chunk, or the end of the stream)
 	 * and readies the connection for its next request, or closes it if this
 	 * response said so. Anything written after is refused.
 	 */

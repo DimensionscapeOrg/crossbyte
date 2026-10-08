@@ -15,14 +15,14 @@ import sys.thread.Lock;
 	reports them, not at the next tick.
 
 	The loop spends each frame blocked in poll, which only a socket in the
-	poll set can end. Listeners were never in it, accepts ran from the
-	tick, a connect in flight was watched from the tick, and a TLS server's
-	handshakes were stepped from the tick. So each waited for the next frame:
-	41 to 57 ms from connect to accept at the default twelve ticks a second,
-	and a handshake paid that for every round trip, 132 ms to secureConnect
-	on the jvm. These run a child runtime's real loop at two ticks a second,
-	where the old wait was a quarter of a second on average, and act at
-	arbitrary points in its frame.
+	poll set can end, so listeners, connects in flight and a TLS server's
+	handshakes all have to be in it. Watched from the tick instead, each
+	would wait for the next frame: 41 to 57 ms from connect to accept at
+	the default twelve ticks a second, and a handshake would pay that for
+	every round trip (132 ms to secureConnect on the jvm). These run a
+	child runtime's real loop at two ticks a second, where waiting for the
+	tick would cost a quarter of a second on average, and act at arbitrary
+	points in its frame.
 **/
 @:access(crossbyte.core.CrossByte)
 class SocketReadinessTest extends utest.Test {

@@ -7,13 +7,12 @@ import crossbyte.io.ByteArray;
 import utest.Assert;
 
 /**
-	Handlers that answer later: a method returning `Future<T>`, and a
-	runtime handler returning one, is answered once the future completes.
-
-	A handler had to answer in the call it was made in, so one whose answer
-	depended on something slow, a hub asking an instance host for a match,
-	had nothing to send back by the time it returned. The wire, the calling
-	side and handlers that answer at once are as they were.
+	Handlers that answer later: a method returning `Future<T>` (and a
+	runtime handler returning one) is answered once the future completes,
+	so a handler whose answer depends on something slow (a hub asking an
+	instance host for a match) need not have it by the time it returns.
+	The wire, the calling side and handlers that answer at once are the
+	same either way.
 **/
 @:access(crossbyte.rpc.RPCSession)
 @:access(crossbyte.core.CrossByte)

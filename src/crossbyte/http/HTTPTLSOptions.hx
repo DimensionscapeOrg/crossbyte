@@ -20,13 +20,9 @@ import crossbyte._internal.socket.FlexSocket;
 	`clientCertificate`, `clientKey` and `pinnedPublicKeys`, and hands it to
 	the client, or to a backend as `HTTPRequestContext.tls`. A connection
 	opened under one set of options is reused only for a request whose options
-	are the same, the same settings and the same certificate and key objects,
-	so a request that checks its server is never sent down a connection
-	opened without checking.
-
-	There used to be no way to say any of this per request: trusting a private
-	authority meant setting a process-wide static through `@:privateAccess`,
-	and a client certificate could not be presented at all.
+	are the same (the same settings and the same certificate and key
+	objects), so a request that checks its server is never sent down a
+	connection opened without checking.
 **/
 final class HTTPTLSOptions {
 	/** The options every request has unless it says otherwise. */

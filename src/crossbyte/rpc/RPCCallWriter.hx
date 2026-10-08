@@ -14,8 +14,8 @@ import haxe.io.Bytes;
 	```
 
 	The same frame `call(op, [1.5, 2.5, 7, "run"])` sends, and read the same
-	way by the other side, an `Array<Dynamic>` handler or one registered
-	with `registerArgs`, but with no array and no boxing: each value is
+	way by the other side (an `Array<Dynamic>` handler or one registered
+	with `registerArgs`), but with no array and no boxing: each value is
 	written, tagged, as it is given, and a call of numbers allocates
 	nothing. A value is always sent under its method's tag: `float(2)` is a
 	Float on every target, where `call` sends a whole Float as an Int on
@@ -26,7 +26,7 @@ import haxe.io.Bytes;
 	sent or cancelled throws an `IllegalOperationError`. One taken and never
 	sent keeps the session's frame, and every call after it is framed in a
 	fresh buffer: `cancel()` gives it back. Taken while another is being
-	written, a value computed by code that makes a call of its own, it is
+	written (a value computed by code that makes a call of its own), it is
 	framed in a buffer of its own, so the two do not mix.
 
 	Allocation-free and inlined: the writer is the frame, and each method

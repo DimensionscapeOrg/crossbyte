@@ -18,8 +18,8 @@
 
 // libsodium is compiled from vendored sources as part of this build (see
 // NativeSodiumBuild.xml), so the bridge is available on every target hxcpp
-// supports rather than only where a prebuilt library happened to exist.
-// The stub below remains for targets that opt out by defining
+// supports rather than only where a prebuilt library happens to exist.
+// The stub below is for targets that opt out by defining
 // CROSSBYTE_SODIUM_DISABLED.
 #if !defined(CROSSBYTE_SODIUM_DISABLED)
 #define CROSSBYTE_SODIUM_ENABLED 1

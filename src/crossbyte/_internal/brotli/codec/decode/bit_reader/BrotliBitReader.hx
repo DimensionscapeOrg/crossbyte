@@ -5,11 +5,11 @@ import haxe.io.Bytes;
 /**
 	Reads bits LSB first straight out of the input.
 
-	The C this was ported from streamed its input through an 8 KB ring and a
-	callback, 4 KB at a time. The decoder is only ever handed a whole stream,
-	so this reads it where it lies: `val_` holds the four bytes before `pos_`,
-	of which `bit_pos_` bits are spent. Bytes past the end read as zero, and
-	`BrotliReadMoreInput` says when a read went past it.
+	The decoder is only ever handed a whole stream, so this reads it where it
+	lies, not through an 8 KB ring and a callback as the C reference does:
+	`val_` holds the four bytes before `pos_`, of which `bit_pos_` bits are
+	spent. Bytes past the end read as zero, and `BrotliReadMoreInput` says
+	when a read went past it.
 **/
 class BrotliBitReader {
 	public var val_:UInt; /* pre-fetched bits */

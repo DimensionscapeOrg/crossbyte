@@ -83,8 +83,8 @@ class SocketBufferSizeTest extends utest.Test {
 	/**
 		Asked before `connect()`, a receive buffer is the connection's: it
 		reads as asked until then, and once connected as the system granted
-		it, what was asked, or twice that on Linux, which counts its own
-		bookkeeping, not the system's default.
+		it (what was asked, or twice that on Linux, which counts its own
+		bookkeeping), not the system's default.
 	**/
 	public function testABufferAskedBeforeConnectingIsTheConnections():Void {
 		var server = new ServerSocket();
@@ -157,11 +157,11 @@ class SocketBufferSizeTest extends utest.Test {
 
 	/**
 		What the sizes are for. A peer that reads nothing can make the system
-		hold no more than the two buffers, its receive buffer and this
-		side's send buffer, and everything past them waits in the socket's
-		own output buffer, where `bytesPending` counts it and
-		`maxOutputBufferSize` can bound it. Left to grow, Windows' loopback
-		buffers took all 64 MB a test sent them.
+		hold no more than the two buffers (its receive buffer and this side's
+		send buffer), and everything past them waits in the socket's own
+		output buffer, where `bytesPending` counts it and `maxOutputBufferSize`
+		can bound it. Left to grow, Windows' loopback buffers would take all
+		64 MB a test sends them.
 	**/
 	public function testASmallBufferKeepsASlowPeersBacklogWhereItIsCounted():Void {
 		var server = new ServerSocket();

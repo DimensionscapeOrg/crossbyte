@@ -10,7 +10,7 @@
 # library that needs another lists both here.
 #
 # Each commit was checked, file by file by git blob hash, against the
-# registry's release of that version (2026-10-04):
+# registry's release of that version:
 # - utest 1.13.2: tag 1.13.2. All 59 files of the release identical.
 # - hxjava 4.2.0: tag 4.2.0, with its submodule build-tool/base. The
 #   release's files identical, lib/hxjava-std.jar (what --jvm reads) among

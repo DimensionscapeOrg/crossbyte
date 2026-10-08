@@ -38,8 +38,8 @@ class Deflater {
 	 * Match finder tuning.
 	 *
 	 * MAX_CHAIN bounds how many earlier positions a single hash bucket will
-	 * compare against. Without it, input that hashes into few buckets, a long
-	 * run of one byte, say, degrades to scanning the whole window per
+	 * compare against. Without it, input that hashes into few buckets (a long
+	 * run of one byte, say) degrades to scanning the whole window per
 	 * position.
 	 *
 	 * TOO_FAR drops a shortest-possible match found a long way back. Under the
@@ -58,11 +58,11 @@ class Deflater {
 	 *
 	 * Built as the class is initialised, which happens before any other thread
 	 * can call in: at startup natively, and under the class-initialisation
-	 * lock on the jvm. They were built on first use and published by setting
-	 * `lengthSymbol` last, but nothing orders six plain stores as another
-	 * thread sees them, a compiler may reorder them, and so may a weakly
-	 * ordered CPU, so a thread that saw `lengthSymbol` set could still read
-	 * a null `lengthBase`. There are about nine hundred entries.
+	 * lock on the jvm. Built on first use instead, they would need ordering
+	 * that plain stores do not give: a compiler or a weakly ordered CPU may
+	 * reorder six stores as another thread sees them, so a thread could see
+	 * `lengthSymbol` set and still read a null `lengthBase`. There are about
+	 * nine hundred entries.
 	 *
 	 * From a Symbols of their own rather than LZPair.SYMBOLS, so nothing here
 	 * depends on which class Haxe initialises first.
@@ -99,9 +99,6 @@ class Deflater {
 
 	/**
 	 * Applies the deflate compression on the supplied stream.
-	 *
-	 * It computed a CRC of every input as well, which only gzip reads; gzip
-	 * computes its own.
 	 *
 	 * @return Bytes holding the compressed data
 	 */
@@ -181,6 +178,7 @@ class Deflater {
 	 */
 	private function findAt(stream:Bytes, at:Int, n:Int):Int {
 		// Every earlier position has to be in the chains before this bucket is
+		// read, and `at` itself must not be: relinking a position already in a
 		// read, and `at` itself must not be: relinking a position already in a
 		// chain points it at itself, which walks as a match at distance zero,
 		// not a distance deflate can encode. `insertThrough` leaves `inserted`

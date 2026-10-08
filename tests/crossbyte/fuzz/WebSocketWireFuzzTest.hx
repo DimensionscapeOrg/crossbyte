@@ -18,7 +18,7 @@ import utest.Assert;
  * `WebSocketConformanceTest` already covers the violations someone thought of
  * and named: an unmasked client frame, a reserved bit, a fragmented control
  * frame, an oversized control payload. Those are the valuable cases and they
- * are not what this is for. This is for the ones nobody named, a length
+ * are not what this is for. This is for the ones nobody named: a length
  * field mutated deep in a header, a continuation with nothing to continue, a
  * frame that promises two gigabytes and sends none of it.
  *
@@ -102,9 +102,8 @@ class WebSocketWireFuzzTest extends utest.Test {
 
 		// The guard against this quietly testing nothing. If the handshake
 		// stopped working, every round above would be a connect and a close
-		// and the frame decoder would never be reached, which is the shape
-		// the HTTP wire fuzzer was already caught in once, refused at the rate
-		// limiter before the parser saw a byte.
+		// and the frame decoder would never be reached: the same trap as a wire
+		// fuzzer refused at a rate limiter before its parser sees a byte.
 		Assert.isTrue(handshakes > ROUNDS / 2,
 			"only " + handshakes + " of " + ROUNDS + " rounds got past the handshake, so the frame decoder was barely reached");
 
@@ -124,11 +123,10 @@ class WebSocketWireFuzzTest extends utest.Test {
 		// visible to anything above: a server holding all sixty of those dead
 		// sessions would have passed every assertion in this case.
 		//
-		// `__pendingUpgrades` especially. Its reaper closed nothing on any
-		// target until this month, and the test that covered it asserted the
-		// list emptied, which it did, immediately, for the wrong reason.
-		// Counting what is left after adversarial traffic is the check that
-		// shape cannot satisfy by forgetting.
+		// `__pendingUpgrades` especially: a reaper can empty that list without
+		// closing anything, so a test that asserts only that the list emptied
+		// passes for the wrong reason. Counting what is left after adversarial
+		// traffic is the check that shape cannot satisfy by forgetting.
 		__pumpUntil(() -> (@:privateAccess __server.__clients.length) <= 1, 2.0);
 
 		var sessions:Int = @:privateAccess __server.__clients.length;
@@ -169,7 +167,7 @@ class WebSocketWireFuzzTest extends utest.Test {
 			case 4: client.frame(0x00, Bytes.ofString("orphan"));
 
 			// A control frame carrying a payload, split across fragments, with
-			// a reserved bit set, three violations at once, which is not a
+			// a reserved bit set: three violations at once, which is not a
 			// case anybody writes by hand.
 			case _: client.frame(0x09, __randomBytes(__nextInt(0, 200)), false, true, 0x40);
 		}

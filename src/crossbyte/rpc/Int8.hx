@@ -2,15 +2,15 @@ package crossbyte.rpc;
 
 /**
 	A signed 8-bit integer, -128 to 127: one byte on the RPC wire, where an
-	`Int` takes four. For a small signed value, a direction, a delta,
+	`Int` takes four. For a small signed value (a direction, a delta)
 	that a signature or a field of an `RPCStruct` declares as this type.
 
 	Held as an `Int`, and an `Int` wherever one is wanted: arithmetic on it is
 	`Int` arithmetic. An `Int` assigned to one keeps its low eight bits, read
-	as signed, as a cast to a byte does in C or Java, 128 is -128 and 255 is
-	-1, so what a value holds is what is sent and what arrives. The narrowing
-	is two shifts, the only cost. Operators and comparisons, with an Int or a
-	Float on the other side, work on the `Int` it holds, so `value < 300`
+	as signed, as a cast to a byte does in C or Java (128 is -128 and 255 is
+	-1), so what a value holds is what is sent and what arrives. The narrowing
+	is two shifts, the only cost. Operators and comparisons (with an Int or a
+	Float on the other side) work on the `Int` it holds, so `value < 300`
 	compares 300 itself. From another compact type, convert through `Int`: `var
 	wide:UInt16 = (small : Int)`.
 
@@ -38,7 +38,7 @@ abstract Int8(Int) to Int {
 	}
 
 	// Every operator works on the Int a value holds, the other side an Int
-	// or anything that is one, another compact number, an Int literal,
+	// or anything that is one (another compact number, an Int literal),
 	// so `level < 300` compares 300, not 300 narrowed to this type.
 
 	@:op(A + B) @:commutative static inline function add(a:Int8, b:Int):Int {

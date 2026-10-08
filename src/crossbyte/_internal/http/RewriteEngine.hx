@@ -27,12 +27,10 @@ class RewriteEngine {
 	 * above the root resolves to nothing, rather than throwing.
 	 *
 	 * A request naming an existing file or directory index is served it,
-	 * unless a rule that asks about files, one with a `FileExists` or
-	 * `DirExists` condition, applies first; every other rule is passed over
+	 * unless a rule that asks about files (one with a `FileExists` or
+	 * `DirExists` condition) applies first; every other rule is passed over
 	 * for it, which is Apache's `RewriteCond !-f` written in for every rule
-	 * that does not say otherwise. It used to be served before any rule was
-	 * looked at, so no rule could win over a file that existed, though
-	 * `HTTPServerConfig.tryFiles` said one asking about files could.
+	 * that does not say otherwise.
 	 */
 	public static function decide(cfg:HTTPServerConfig, reqPath:String, reqQuery:String, method:String, headers:StringMap<String>,
 			?seen:FileSeen):Decision {
@@ -42,11 +40,11 @@ class RewriteEngine {
 		}
 		var q:String = reqQuery;
 
-		// What the request names as it stands: a file, or a directory's index.
-		// The same lookups, in the same order, as before; with no rules they
-		// are the whole of it. Asked of the system once (FileFacts), and what
-		// was found handed on with the decision, or through `seen` when nothing
-		// was found, so the handler does not ask again.
+		// What the request names as it stands: a file, or a directory's index;
+		// with no rules that is the whole of it. Asked of the system once
+		// (FileFacts), and what was found handed on with the decision, or
+		// through `seen` when nothing was found, so the handler does not ask
+		// again.
 		var origFacts:FileFacts = __probe(cfg, orig);
 		if (seen != null) {
 			seen.path = orig;
@@ -140,9 +138,8 @@ class RewriteEngine {
 			}
 
 			// `$uri` in a later entry is the request path, as in nginx's
-			// try_files: "$uri.html" serves /about from about.html. It was
-			// looked for as a file named "$uri.html". Settled again, since a
-			// path joined to text is a new path.
+			// try_files: "$uri.html" serves /about from about.html. Settled
+			// again, since a path joined to text is a new path.
 			var entry:Null<String> = c.indexOf("$uri") >= 0 ? normalize(StringTools.replace(c, "$uri", orig)) : c;
 			if (entry == null) {
 				continue;
@@ -194,16 +191,14 @@ class RewriteEngine {
 	 *
 	 * `p` arrives percent-decoded exactly once by the request handler.
 	 * Decoding it again here is not hygiene but corruption: a path whose
-	 * single decode legitimately contains `+` or `%`, `/a+b.html`, or
-	 * `/100%.html` from `/100%25.html`, would be form-decoded a second
+	 * single decode legitimately contains `+` or `%` (`/a+b.html`, or
+	 * `/100%.html` from `/100%25.html`) would be form-decoded a second
 	 * time and made to name a different file. Double-encoded traversal
 	 * needs no second decode to stay caught: `%252e` decodes once to the
 	 * literal text `%2e`, which no filesystem reads as a dot.
 	 *
-	 * This used to refuse any path containing `..` anywhere by throwing
-	 * "403", which reached the client as a 500 before the router ran, so
-	 * `/compare/v1.2..v1.3` could not be routed at all, and it collapsed
-	 * slashes with a regular expression compiled on every request.
+	 * A `..` inside a segment, as in `/compare/v1.2..v1.3`, is part of a
+	 * name, and such a path is routed like any other.
 	 */
 	@:noCompletion public static inline function normalize(p:String):Null<String> {
 		return HttpSyntax.normalizePath(p);
@@ -235,9 +230,9 @@ class RewriteEngine {
 		return index == null ? null : index.web;
 	}
 
-	// The root as Path.normalize leaves it, kept with the root it was made from:
-	// it was normalized again for every lookup, two or more a request. One
-	// object, so a thread that reads it sees a pair that belongs together.
+	// The root as Path.normalize leaves it, kept with the root it was made
+	// from, so it is not normalized again for every lookup. One object, so
+	// a thread that reads it sees a pair that belongs together.
 	@:noCompletion private static var __rootPair:Null<RootPair> = null;
 
 	@:noCompletion private static function __normalizedRoot(native:String):String {
@@ -258,7 +253,7 @@ class RewriteEngine {
 		return a == null ? FileFacts.NONE : FileFacts.of(a);
 	}
 
-	/** Whether `web`, whose facts are `facts`, is a file: asked of the system as before when they are not known. */
+	/** Whether `web`, whose facts are `facts`, is a file: asked of the system when they are not known. */
 	@:noCompletion private static function __isFile(cfg:HTTPServerConfig, web:String, facts:FileFacts):Bool {
 		if (facts.known) {
 			return facts.exists && !facts.directory;
@@ -279,10 +274,9 @@ class RewriteEngine {
 
 		for (i in cfg.directoryIndex) {
 			// An index the server cannot serve is not an index. With PHP off
-			// there is no bridge to execute index.php, so offering it here
-			// made a directory holding both index.php and index.html resolve
-			// to the one that cannot be delivered and answer 404 with a
-			// perfectly good index sitting beside it.
+			// there is no bridge to execute index.php, so a directory holding
+			// both index.php and index.html resolves to the one that can be
+			// delivered, not to a 404.
 			if (!cfg.phpEnabled && isPhpPath(i)) {
 				continue;
 			}
@@ -331,9 +325,9 @@ class RewriteEngine {
 	 *
 	 * A single left-to-right pass rather than one `String.replace` per group,
 	 * because a replace loop reprocesses text it has already written: a
-	 * segment captured into `$1` whose own value contained `$2` had that
-	 * `$2` substituted by the next iteration, letting the request rather than
-	 * the rule author decide part of the rewritten target.
+	 * segment captured into `$1` whose own value contained `$2` would have
+	 * that `$2` substituted by the next iteration, letting the request rather
+	 * than the rule author decide part of the rewritten target.
 	 *
 	 * `$0`, and `$10` upwards, are not groups. That matches mod_rewrite,
 	 * where `$10` reads as `$1` followed by a literal `0`. A group the
@@ -408,9 +402,8 @@ class RewriteEngine {
 					var re:EReg = __compile(c.pattern, true);
 					re.match(method);
 				case RewriteConditionType.Header:
-					// Lowercase, as both parsers store a request's fields: a
-					// key written "X-Test" was looked up as written and
-					// matched nothing a client could send.
+					// Lowercase, as both parsers store a request's fields, so a
+					// key written "X-Test" matches what a client sends.
 					var v:String = (headers != null && c.key != null) ? headers.get(c.key.toLowerCase()) : null;
 					var re:EReg = __compile(c.pattern, true);
 					re.match(v == null ? "" : v);
@@ -494,8 +487,8 @@ class RewriteEngine {
 }
 
 /**
-	Where a request resolved to. A class, where an anonymous structure's
-	fields were found by name natively, three to five times a request.
+	Where a request resolved to. A class, so natively its fields are read
+	directly rather than found by name, three to five times a request.
 **/
 final class Decision {
 	public final finalPath:String;

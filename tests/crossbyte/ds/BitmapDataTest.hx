@@ -58,9 +58,9 @@ class BitmapDataTest extends utest.Test {
 	}
 
 	/**
-		Every pixel that passes is counted and recoloured. Each case of the
-		operation ended in `break`, which in Haxe leaves the loop around the
-		switch, so the first pixel ended each row and every call returned 0.
+		Every pixel that passes is counted and recoloured. A `break` ending a
+		case of the operation would leave the loop around the switch in Haxe,
+		so the first pixel would end each row and every call would return 0.
 	**/
 	public function testThresholdCountsAndSetsEveryPassingPixel():Void {
 		var bitmap = new crossbyte.ds.BitmapData(4, 4, true, 0xFF00FF00);
@@ -79,8 +79,8 @@ class BitmapDataTest extends utest.Test {
 
 	/**
 		The comparison is unsigned, as ActionScript's `uint` is: an alpha of
-		0xFF is above 0x7F. Compared as signed Ints, every opaque pixel read
-		as negative and so as less than any threshold with a clear top bit.
+		0xFF is above 0x7F. Compared as signed Ints, every opaque pixel would
+		read as negative and so as less than any threshold with a clear top bit.
 	**/
 	public function testThresholdComparesAsUnsigned():Void {
 		var source = new crossbyte.ds.BitmapData(3, 1, true, 0);

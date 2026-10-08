@@ -11,13 +11,13 @@ import utest.Assert;
  * read buffer.
  *
  * Every size here is derived from `Socket.READ_CHUNK` rather than written
- * out, because the case being tested is the boundary itself. Hardcoding the
- * number meant that raising the buffer left these cases passing while
- * probing a size that no longer fills it, protection in name only.
+ * out, because the case being tested is the boundary itself: a hardcoded
+ * number would leave these cases passing, once the buffer was raised,
+ * while probing a size that no longer fills it.
  *
  * The read loop in crossbyte.net.Socket re-reads whenever a read fills its
  * buffer, and stops on a short read or a Blocked error. On eval/interp the
- * descriptor is blocking, setBlocking is a no-op there (see the vendored
+ * descriptor is blocking (setBlocking is a no-op there; see the vendored
  * sys.net.Socket), so a burst of exactly one buffer, or a whole multiple of
  * one, gives the loop no way out: no short read, no Blocked, and the
  * follow-up read parks the whole runtime thread until the peer sends more or
@@ -52,15 +52,15 @@ class SocketExactBufferReadTest extends utest.Test {
 	}
 
 	/**
-	 * A full buffer immediately followed by the peer's FIN, the two arrive
+	 * A full buffer immediately followed by the peer's FIN: the two arrive
 	 * in the same tick, so the read loop fills once and then hits Eof (or,
 	 * on eval, a select that reports the closed descriptor readable).
 	 *
 	 * Both halves of that tick have to survive: the 4096 bytes must be
 	 * delivered, and they must be delivered BEFORE the close is announced.
-	 * Announcing first is what lost them, a listener that tears down on
-	 * CLOSE never saw the payload, and one that read it from the CLOSE
-	 * handler found the socket already nulled and threw out of the tick
+	 * Announced first, they would be lost: a listener that tears down on
+	 * CLOSE would never see the payload, and one that read it from the CLOSE
+	 * handler would find the socket already nulled and throw out of the tick
 	 * dispatch. Asserting the payload alone would miss the ordering, so the
 	 * bytes-at-close-time are captured and asserted too.
 	 */
@@ -119,7 +119,7 @@ class SocketExactBufferReadTest extends utest.Test {
 	 * Serves exactly `size` patterned bytes over loopback and asserts the
 	 * client receives all of them, byte for byte. The burst is written in one
 	 * flush so it reaches the client's socket buffer as a single pending
-	 * block, the shape that trips the exact-multiple read loop.
+	 * block: the shape that trips the exact-multiple read loop.
 	 */
 	private function __assertLoopbackRoundTrip(size:Int):Void {
 		var server = new ServerSocket();
@@ -163,8 +163,8 @@ class SocketExactBufferReadTest extends utest.Test {
 	}
 
 	/**
-	 * The byte expected at `index`. Period 251, prime, and not a divisor of
-	 * 4096, so a stream that drops or repeats a buffer-sized chunk cannot
+	 * The byte expected at `index`. Period 251 (prime, and not a divisor of
+	 * 4096), so a stream that drops or repeats a buffer-sized chunk cannot
 	 * alias back onto the pattern the way a 256-period generator would
 	 * (4096 is 16 * 256).
 	 */
@@ -174,11 +174,10 @@ class SocketExactBufferReadTest extends utest.Test {
 
 	/**
 	 * `size` patterned bytes, built before anything is pumped. Built inside
-	 * the server's connect handler, as it was, the payload cost its pump 5.5
-	 * seconds on eval for 128 KB, a ByteArray grown a byte at a time copies
-	 * itself there a byte at a time, which is more than the deadline the
-	 * wait below gives the whole exchange. The case passed only while the
-	 * accept and the client's read fell in the same pump.
+	 * the server's connect handler, the payload would cost its pump 5.5
+	 * seconds on eval for 128 KB (a ByteArray grown a byte at a time copies
+	 * itself there a byte at a time), which is more than the deadline the
+	 * wait below gives the whole exchange.
 	 */
 	private static function __payload(size:Int):ByteArray {
 		var bytes:haxe.io.Bytes = haxe.io.Bytes.alloc(size);

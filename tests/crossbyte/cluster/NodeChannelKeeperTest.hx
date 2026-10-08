@@ -14,12 +14,12 @@ import utest.Assert;
 
 	A message waits in two places: queued while the link is down, and held
 	until the pass ends while it is up, to be taken back if the link fails
-	first. Both held the caller's `ByteArray` and sent what its bytes were by
-	then: a buffer the caller reused went as its later contents, and a
-	listener forwarding what arrived, `channel.send(event.data)`, a payload
-	valid only during the listener's call, forwarded nothing under
-	`-D crossbyte_check_events`, and the next datagram once a socket reuses
-	its payload.
+	first. Holding the caller's `ByteArray` in either would send what its
+	bytes were by then: a buffer the caller reused would go as its later
+	contents, and a listener forwarding what arrived (`channel.send(event.data)`,
+	a payload valid only during the listener's call) would forward nothing
+	under `-D crossbyte_check_events`, and the next datagram once a socket
+	reuses its payload.
 **/
 class NodeChannelKeeperTest extends utest.Test {
 	/** Forwarded from a datagram listener while the link is down: what arrives at the far end later. **/

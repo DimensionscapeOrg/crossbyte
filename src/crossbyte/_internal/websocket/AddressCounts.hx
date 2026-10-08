@@ -4,9 +4,9 @@ package crossbyte._internal.websocket;
 	Connections still arriving, counted by the peer's address: what
 	`ServerWebSocket.maxPendingHandshakesPerAddress` is held to.
 
-	One per server, shared by a server spread over runtimes, its listener
+	One per server, shared by a server spread over runtimes (its listener
 	counts each connection as it accepts it, and the runtime the connection
-	goes to lets go of it once its upgrade has ended, so taken under a lock
+	goes to lets go of it once its upgrade has ended), so taken under a lock
 	where there are threads. An address is kept only while it has a
 	connection arriving.
 **/

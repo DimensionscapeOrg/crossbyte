@@ -26,8 +26,8 @@ class HashLongestMatchQuickly
   /**
    * Clears the table for a call whose input is in `data` from 0.
    *
-   * An input small next to the table, the whole input known, and no more
-   * than a thirty-second of the buckets, only ever looks in the buckets
+   * An input small next to the table (the whole input known, and no more
+   * than a thirty-second of the buckets) only ever looks in the buckets
    * its own positions hash to, so those are the ones cleared, as the C
    * encoder does. The output is what a fully cleared table gives: every
    * bucket read is one cleared here. Anything larger is cleared whole.
@@ -84,9 +84,9 @@ class HashLongestMatchQuickly
     var match_found:Bool = false;
     // Only a match inside the input: what C's unsigned `prev_ix < cur_ix`
     // says. That test, here a UInt against an Int, is signed on HashLink,
-    // where the first positions reached back past the start into the empty
-    // end of the ring buffer. Input beginning with zeros matched there, and
-    // came out undecodable or decoded wrong.
+    // where the first positions would reach back past the start into the
+    // empty end of the ring buffer, and input beginning with zeros would
+    // match there and come out undecodable or decoded wrong.
     if (backward > 0 && prev_ix >= 0) {
       prev_ix &= ring_buffer_mask;
       if (compare_char == ring_buffer[prev_ix + best_len]) {

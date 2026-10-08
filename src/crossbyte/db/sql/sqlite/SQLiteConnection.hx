@@ -36,15 +36,15 @@ import haxe.Int64;
  * around common PRAGMAs and maintenance operations.
  *
  * Failures are reported as the other drivers report theirs. On a
- * synchronous connection an operation SQLite refuses, `begin()`,
- * `commit()`, a statement, is dispatched as an `SQLErrorEvent` and thrown
+ * synchronous connection an operation SQLite refuses (`begin()`,
+ * `commit()`, a statement) is dispatched as an `SQLErrorEvent` and thrown
  * as its `SQLError`; `request()` throws the `SQLError` and dispatches
  * nothing, as `MySQLConnection.request()` does. On an asynchronous
  * connection it is dispatched, since the caller has returned by then.
  *
  * An asynchronous connection (`openAsync()`) is used by its worker alone.
- * What answers at once, `request()`, and the properties and methods that
- * ask SQLite, such as `journalMode`, `lastInsertRowID` or `stats()`, is
+ * What answers at once (`request()`, and the properties and methods that
+ * ask SQLite, such as `journalMode`, `lastInsertRowID` or `stats()`) is
  * run by the worker in its turn, behind the work queued before it, while
  * the calling thread waits for the answer, for at most `queueTimeout`.
  * `connected` and `getSchemaResult()` answer from what the connection has
@@ -65,37 +65,33 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		Whether the database gives the space of deleted rows back to the
 		file system at every commit, so its file shrinks: SQLite's FULL
 		`auto_vacuum`, set when `open()` creates the database with
-		`autoCompact`, as AIR's is. A database made by an earlier CrossByte
-		with `autoCompact` is INCREMENTAL, which keeps its free pages until
-		`PRAGMA incremental_vacuum` runs, and reads `false`; `compact()`
-		reclaims the space of any database.
+		`autoCompact`, as AIR's is. A database whose `auto_vacuum` is
+		INCREMENTAL keeps its free pages until `PRAGMA incremental_vacuum`
+		runs, and reads `false`; `compact()` reclaims the space of any
+		database.
 	**/
 	public var autoCompact(get, null):Bool;
 	/**
 		How much of the database the connection keeps in memory, as SQLite's
 		`PRAGMA cache_size` has it: a positive number of pages, or a negative
-		number of KiB, `-2000` is about 2 MB, SQLite's own default. `open()`
+		number of KiB: `-2000` is about 2 MB, SQLite's own default. `open()`
 		sets 2000 pages, as AIR's does.
-
-		It was a `UInt`, which can hold no negative: `-4096` set was written
-		as 4294963200, which SQLite took as 0, and a size SQLite kept in KiB
-		read back as four billion pages.
 	**/
 	public var cacheSize(get, set):Int;
 	// public var columnNameStyle(get, set):String;
 
 	/**
 		Whether the connection is open. A synchronous connection asks SQLite.
-		An asynchronous one answers from its events, `SQLEvent.OPEN`
+		An asynchronous one answers from its events (`SQLEvent.OPEN`
 		dispatched, and neither `close()` called nor `SQLEvent.CLOSE`
-		dispatched since, and asks its worker nothing, so it never waits.
+		dispatched since) and asks its worker nothing, so it never waits.
 	**/
 	public var connected(get, null):Bool;
 
 	/**
 		Seconds a call that answers at once waits on an asynchronous
 		connection for its turn: `request()`, and every property and method
-		that asks SQLite, `journalMode`, `lastInsertRowID`, `stats()` and
+		that asks SQLite: `journalMode`, `lastInsertRowID`, `stats()` and
 		the rest. The worker runs such a call behind the work queued before
 		it, so what it answers is the connection's state once that work is
 		done. A call not started within this many seconds is withdrawn
@@ -104,22 +100,15 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		without limit. Defaults to 10. A synchronous connection has nothing
 		to wait for, and does not read it.
 
-		Those calls ran on the calling thread, on the connection the worker
-		was running statements on: a read made while the worker stepped a
-		statement finalized it under the worker, which crashed the process.
-
 		@throws ArgumentError When set to a negative number, or NaN.
 	**/
 	public var queueTimeout(default, set):Float = 10.0;
 
 	/**
 		Whether a transaction is open. On cpp this is SQLite's own answer
-		(`sqlite3_get_autocommit`), so a transaction begun as SQL text,
-		`request("BEGIN")`: counts, and one SQLite rolled back by itself
-		after an error does not. It used to change only in `begin()`,
-		`commit()` and `rollback()`, so a `ConnectionPool` handed a
-		connection with a `BEGIN` sent as SQL on to the next borrower with
-		its transaction still open.
+		(`sqlite3_get_autocommit`), so a transaction begun as SQL text
+		(`request("BEGIN")`) counts, and one SQLite rolled back by itself
+		after an error does not.
 	**/
 	public var inTransaction(get, null):Bool;
 	public var lastInsertRowID(get, null):Float;
@@ -127,9 +116,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	/**
 		The rows inserted, updated or deleted since the connection opened, as
-		SQLite's `total_changes()` counts them: a `Float`, exact to 2^53. It
-		was an `Int`, parsed with `Std.parseInt`, which past 2^31 answers
-		differently on each target and never the number.
+		SQLite's `total_changes()` counts them: a `Float`, exact to 2^53.
 	**/
 	public var totalChanges(get, null):Float;
 
@@ -179,14 +166,14 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	 * Milliseconds to wait on a locked database before failing:
 	 * `DEFAULT_BUSY_TIMEOUT`, 5,000, as `open()` and `openAsync()` leave it.
 	 * `0` fails at once, with "database is locked", which is SQLite's own
-	 * default and was this connection's before 1.0.
+	 * default.
 	 *
-	 * Another connection writing, in this process or another, holds the
+	 * Another connection writing (in this process or another) holds the
 	 * lock until it commits; this one waits for it, up to this long, rather
 	 * than failing a write that would have succeeded a moment later. The
 	 * wait is on the thread that runs the statement: an asynchronous
 	 * connection's worker, with the work queued behind it, or, on a
-	 * synchronous connection, the caller's, a runtime's thread, if that is
+	 * synchronous connection, the caller's: a runtime's thread, if that is
 	 * where it is called, stops for it. Set it lower, or to `0`, where that
 	 * matters more than the write.
 	 *
@@ -251,8 +238,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	// statements: a job notes it as it is queued, and the worker compares as
 	// the job starts, asking whether the job was cancelled only when the two
 	// differ. Moved on by an atomic add on cpp, after which a cancel() reads
-	// the run under way, as the worker publishes its run and then reads
-	// this, so that one of the two always sees the other.
+	// the run under way (as the worker publishes its run and then reads
+	// this), so that one of the two always sees the other.
 	@:noCompletion private var __cancelGen:Int = 0;
 	@:noCompletion private var __savepoints:Array<String> = [];
 	@:noCompletion private var __savepointSeq:Int = 0;
@@ -272,8 +259,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	// Gated the same way the imports above are, not on cpp alone. The queue is
 	// written by whichever thread calls the connection and read by the worker,
 	// so it needs a structure built for that, and neko, hl, java and jvm all
-	// have real threads and both of these types. They were getting a plain
-	// Array instead, pushed and popped with no lock at all.
+	// have real threads and both of these types.
 	#if !php
 	// The current worker's queue: replaced with the worker, so a worker that
 	// is stopping keeps to its own.
@@ -335,9 +321,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	/**
 		The rows that break a foreign key, as `PRAGMA foreign_key_check`
 		reports them. Each `rowid` is whole, exact to 2^53, or null for a row
-		of a `WITHOUT ROWID` table; it was parsed into an `Int`, so a
-		violation at rowid 3,000,000,000 was reported at 2147483647, the row
-		a repair would then have touched.
+		of a `WITHOUT ROWID` table.
 	**/
 	public function foreignKeyCheck():Array<FKViolation> {
 		var rs:ResultSet = __pragma("foreign_key_check");
@@ -384,8 +368,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		var freeListRow = __pragmaFirstRow("freelist_count");
 
 		// Counted as Floats and multiplied as them: a page count can pass 2^31,
-		// and the product of two Ints wrapped past 2 GB, a 3 GB database
-		// reported a negative size, before it ever reached the Int64.
+		// and the product of two Ints would wrap past 2 GB before it ever
+		// reached the Int64.
 		var pageSize:Float = pageSizeRow != null ? __wholeNumber(Reflect.field(pageSizeRow, "page_size")) : 0;
 		var pageCount:Float = pageCountRow != null ? __wholeNumber(Reflect.field(pageCountRow, "page_count")) : 0;
 		var freeList:Float = freeListRow != null ? __wholeNumber(Reflect.field(freeListRow, "freelist_count")) : 0;
@@ -417,11 +401,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		transactions as the main database. `reference` is a path or a `File`,
 		as `open` takes; null attaches a new in-memory database. Dispatches
 		`SQLEvent.ATTACH`, or for an asynchronous connection
-		`SQLErrorEvent.ERROR` when SQLite refuses, a name in use, a file it
-		cannot open.
-
-		`SQLEvent.ATTACH` was declared, as AIR's `SQLConnection` has it, and
-		nothing could make one: there was no way to attach a database at all.
+		`SQLErrorEvent.ERROR` when SQLite refuses (a name in use, a file it
+		cannot open).
 	**/
 	public function attach(name:String, reference:Object = null):Void {
 		var path:String = ":memory:";
@@ -444,7 +425,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 
 	/**
-		Reads what `database` holds, `"main"`, or one `attach` opened, for
+		Reads what `database` holds (`"main"`, or one `attach` opened) for
 		`getSchemaResult()`: its tables with their columns, and its views,
 		indices and triggers, as SQLite records them. Dispatches
 		`SQLEvent.SCHEMA` when read.
@@ -514,8 +495,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	/**
 		Does `work` and reports it as `operation`: now, dispatching the
-		`SQLEvent`: or, when SQLite refuses, dispatching the `SQLErrorEvent`
-		and throwing the `SQLError`, or, on an asynchronous connection, on
+		`SQLEvent` (or, when SQLite refuses, dispatching the `SQLErrorEvent`
+		and throwing the `SQLError`), or, on an asynchronous connection, on
 		the worker, where the event is sent back to be dispatched instead.
 		Every operation of the connection's own goes through here, so each
 		reports the same way on both.
@@ -552,8 +533,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	/**
 		Runs `work` against the connection and answers what it answers: now,
 		on a synchronous connection, and on an asynchronous one on the
-		worker, in its turn, while the calling thread waits, for at most
-		`queueTimeout` before it starts, so that only the worker ever
+		worker, in its turn, while the calling thread waits (for at most
+		`queueTimeout` before it starts), so that only the worker ever
 		touches an asynchronous connection. What SQLite refuses is thrown as
 		an `SQLError` either way. Asked on the worker itself, by code it is
 		running, it runs at once: queued, it would wait behind itself.
@@ -590,11 +571,11 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	#if !php
 	/**
 		Waits for `call`, queued on `queue`: at most `queueTimeout` for the
-		worker to take it up, after which it is withdrawn and refused, and
+		worker to take it up (after which it is withdrawn and refused), and
 		then to its end. Waits in slices, looking between them whether the
 		worker has stopped: after an open that failed it has, before the
-		calling thread has heard so, and a call queued then waited out the
-		whole of `queueTimeout` for nothing.
+		calling thread has heard so, and a call queued then would wait out
+		the whole of `queueTimeout` for nothing.
 	**/
 	@:noCompletion private function __awaitCall(call:SQLiteCall, operation:String, queue:SQLiteQueue):Void {
 		var limit:Float = queueTimeout;
@@ -668,8 +649,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	/**
 		Reports a failed operation both ways, as the other drivers do: as the
-		`SQLErrorEvent` it never was, for listeners, and as the `SQLError` it
-		throws in place of the driver's raw `String`.
+		`SQLErrorEvent`, for listeners, and as the `SQLError` it throws,
+		never the driver's raw `String`.
 	**/
 	@:noCompletion private function __fail(operation:String, e:Dynamic):Void {
 		var error:SQLError = __asSQLError(operation, e);
@@ -689,7 +670,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	/**
 		`value` as an SQLite literal: `NULL`, `1` or `0` for a `Bool`, a
-		number as one, and anything else as a quoted string, a hex blob when
+		number as one, and anything else as a quoted string, or a hex blob when
 		it holds a NUL, which a quoted string would cut short. Needs no open
 		connection, so an asynchronous statement's parameters can be bound on
 		the calling thread before the worker has opened one.
@@ -750,7 +731,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	/**
 		Refuses what needs an open connection, as AIR's `SQLConnection`
-		does, where each dereferenced the connection it did not have.
+		does.
 	**/
 	@:noCompletion private inline function __requireOpen():Void {
 		if (!__isOpen()) {
@@ -774,9 +755,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	/**
 		Refuses an open while one is open, or an asynchronous close is not yet
-		over, as AIR's `open()` does. The handle it had was replaced and left
-		open, unreachable, holding whatever locks it held, and on an
-		asynchronous connection a second worker started over the same object.
+		over, as AIR's `open()` does, so the handle it has is never replaced
+		and left open (unreachable, holding whatever locks it held), and no
+		second worker starts on an asynchronous connection.
 	**/
 	@:noCompletion private function __refuseIfOpen():Void {
 		if (__opened || __closing || __connection != null && !__async) {
@@ -785,7 +766,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		}
 	}
 
-	/** `name` as an SQL identifier, quoted, so any name, one with a space or a quote, is one. **/
+	/** `name` as an SQL identifier, quoted, so any name (one with a space or a quote) is one. **/
 	@:noCompletion private static inline function __quoteIdentifier(name:String):String {
 		if (name == null || name == "") {
 			throw new ArgumentError("A database name is required.");
@@ -813,8 +794,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		`BEGIN IMMEDIATE` and `BEGIN EXCLUSIVE` take their locks when the
 		transaction starts, where a plain (deferred) one waits for its first
 		write, and can then fail with SQLITE_BUSY part way through. Both
-		paths take the option from here: the asynchronous one ignored it and
-		always began deferred.
+		paths, synchronous and asynchronous, take the option from here.
 	**/
 	@:noCompletion private function __beginWith(options:String):Void {
 		switch (options) {
@@ -828,19 +808,12 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 
 	/**
-		Removes the statistics `analyze()` gathered, the rows of
-		`sqlite_stat1`, and of `sqlite_stat4` where SQLite keeps one, from
+		Removes the statistics `analyze()` gathered (the rows of
+		`sqlite_stat1`, and of `sqlite_stat4` where SQLite keeps one) from
 		every database the connection has open, attached ones included, and
 		has the query planner read them again, so it plans without them, as
 		AIR's `deanalyze()` does. Dispatches `SQLEvent.DEANALYZE` once that is
 		done.
-
-		It closed the connection and opened it again, and touched no
-		statistics: an in-memory database lost every table, a file kept its
-		statistics, and the session lost its transaction, attached databases
-		and settings. On an asynchronous connection `DEANALYZE` came at once,
-		and the reopen, made from the worker's thread, left the connection
-		answering nothing.
 	**/
 	public function deanalyze():Void {
 		__perform(SQLEvent.DEANALYZE, __removeStatistics);
@@ -887,36 +860,32 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		`cancel()` does. The connection stays open and usable: what is asked
 		of it after the call runs as usual.
 
-		On an asynchronous connection the work running now is interrupted,
-		SQLite stops it at its next step, or within a thousand steps of its
+		On an asynchronous connection the work running now is interrupted
+		(SQLite stops it at its next step, or within a thousand steps of its
 		virtual machine when the call lands just as it starts, and it fails
-		with "interrupted", and everything queued before the call is
+		with "interrupted"), and everything queued before the call is
 		dropped, each reporting an `SQLErrorEvent` that says so, to its
 		statement or to this connection, so nothing waiting on one waits for
 		ever. `CANCEL` follows them. An open or a close already asked for is
 		not dropped.
 
 		On a synchronous connection nothing is queued: a statement running on
-		another thread, a `request()`, or a statement's `execute()` or
-		`next()`: is interrupted at its next step, and `CANCEL` is
+		another thread (a `request()`, or a statement's `execute()` or
+		`next()`) is interrupted at its next step, and `CANCEL` is
 		dispatched at once. A `request()` or a statement's `execute()` called
 		before the call that has not yet reached SQLite fails as interrupted
 		without running, and a statement SQLite is still preparing is
 		stopped within a thousand steps of its virtual machine, or at its next
 		step when its first one ends sooner: SQLite clears an interrupt that
-		lands as a statement starts, and such a statement ran on, for as long
-		as it took. What is asked for after the call runs as usual.
+		lands as a statement starts, and such a statement would otherwise
+		run on for as long as it takes. What is asked for after the call
+		runs as usual.
 
 		SQLite takes a whole transaction back when a write inside it is
 		interrupted, and leaves one open otherwise: `inTransaction` says which.
 		On targets other than cpp a statement already running is not
 		interrupted, and finishes first. Does nothing on a connection that is
 		not open.
-
-		It cancelled the connection's worker instead: the statement running
-		finished with nothing left to report it, the work queued was dropped
-		without a word, `CANCEL` came at once, and `close()` never closed,
-		holding the connection and its file lock for the life of the process.
 	**/
 	public function cancel():Void {
 		if (!__isOpen()) {
@@ -1022,7 +991,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			if (!queued) {
 				// Its worker stopped as this was asked for, after an open that
 				// failed: as above, nothing to close and no CLOSE to come. Left
-				// closing, the connection refused every open after this one.
+				// closing, the connection would refuse every open after this one.
 				__closing = false;
 				__ready = false;
 			}
@@ -1031,8 +1000,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 			if (connection == null) {
 				// Not open, or closed already: nothing to close, as on the
-				// other drivers. It dereferenced the connection it did not
-				// have.
+				// other drivers.
 				return;
 			}
 
@@ -1058,7 +1026,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	/**
 		Runs `sql` and answers its result. Throws an `SQLError` when SQLite
-		refuses it, where it let the driver's raw `String` escape.
+		refuses it.
 
 		On a synchronous connection it runs now, on the calling thread, and
 		the rows are read as they are asked for. On an asynchronous one the
@@ -1066,9 +1034,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		the calling thread waits (see `queueTimeout`), and reads every row
 		there: what it answers holds them, to be read by name with `next()`.
 		`getResult()`, `getIntResult()` and `getFloatResult()`, which read
-		the row a statement stands on, throw on it. It ran on the calling
-		thread while the worker ran statements on the same connection, and
-		crashed the process.
+		the row a statement stands on, throw on it.
 	**/
 	public function request(sql:String):ResultSet {
 		if (!__async) {
@@ -1099,8 +1065,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	/**
 		On a synchronous connection, `sql` run now, asked for when
 		`__cancelsNow()` read `since`: a `cancel()` made since stops it,
-		before it starts, as it is prepared, or at its next step, where one
-		landing as SQLite prepared it was lost, and the statement ran on.
+		before it starts, as it is prepared, or at its next step.
 	**/
 	@:noCompletion private function __requestSince(sql:String, since:Int):ResultSet {
 		#if cpp
@@ -1118,8 +1083,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		A statement's `text` run with its `parameters`, on the thread that
 		runs the connection's work: natively prepared once and kept, its
 		values bound to its `:name`s (`NativeSQLiteConnection.requestBound`);
-		otherwise, a connection that is not SQLite's own, such as a test's,
-		written into the text as literals, as before.
+		otherwise (a connection that is not SQLite's own, such as a test's)
+		written into the text as literals.
 	**/
 	@:noCompletion private function __requestStatement(text:String, parameters:Null<haxe.ds.StringMap<Dynamic>>, since:Int):ResultSet {
 		#if cpp
@@ -1149,7 +1114,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 
 	/**
-		`value` as an SQL string literal, quoted, a hex blob when it holds a
+		`value` as an SQL string literal, quoted, or a hex blob when it holds a
 		NUL, which a quoted string would cut short. Needs no SQLite, so an
 		asynchronous connection answers it at once.
 	**/
@@ -1174,9 +1139,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		On an asynchronous connection, forgets the savepoints as a commit or
 		rollback is asked for, on the calling thread, which keeps them:
 		`setSavepoint()` records each there as it is asked for, and the
-		calls after it name them. The worker cleared them as it ran the
-		commit, replacing the list the calling thread was adding to and
-		reading.
+		calls after it name them. The worker does not clear them as it runs
+		the commit, since that would replace the list the calling thread is
+		adding to and reading.
 	**/
 	@:noCompletion private inline function __endSavepoints():Void {
 		if (__async) {
@@ -1189,13 +1154,12 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 
 	/**
-		Opens the database at `reference`, a path or a `File`, or null for
-		a new in-memory one, on the calling thread, and dispatches
+		Opens the database at `reference` (a path or a `File`, or null for
+		a new in-memory one) on the calling thread, and dispatches
 		`SQLEvent.OPEN`.
 
 		@throws IllegalOperationError When this connection is open already,
-		or an asynchronous close is not yet over: `close()` it first. A second
-		open replaced the connection it had and left that open.
+		or an asynchronous close is not yet over: `close()` it first.
 	**/
 	public function open(reference:Object = null, openMode:SQLiteMode = CREATE, autoCompact:Bool = false, pageSize:Int = 1024):Void {
 		__refuseIfOpen();
@@ -1213,8 +1177,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 
 	/**
-		Closes what an open that failed part way had opened, its settings
-		refused after the file was, so it is neither left open nor taken for
+		Closes what an open that failed part way had opened (its settings
+		refused after the file was), so it is neither left open nor taken for
 		an open connection.
 	**/
 	@:noCompletion private function __abandon():Void {
@@ -1252,10 +1216,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		Releases a savepoint, discarding it and any nested inside it.
 
 		With no name, releases the innermost savepoint this connection still
-		holds. That used to mint a brand new name and issue `RELEASE` for a
-		savepoint that had never existed, which SQLite refuses outright, so
-		the no-argument form could not work at all, and neither could
-		`setSavepoint()`, whose generated name was never returned to anyone.
+		holds.
 	**/
 	public function releaseSavepoint(name:String = null):Void {
 		var resolved:String = __takeSavepoint(name, false);
@@ -1282,10 +1243,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		savepoint itself stays active, as SQLite leaves it.
 
 		With no name, rolls back to the innermost savepoint this connection
-		holds, and only to a full `rollback()` when it holds none. It used to
-		roll the whole transaction back whenever the name was omitted, so a
-		caller asking to return to a savepoint lost everything before it
-		instead.
+		holds, and only to a full `rollback()` when it holds none.
 	**/
 	public function rollbackToSavepoint(name:String = null):Void {
 		if (name == null && __savepoints.length == 0) {
@@ -1299,8 +1257,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	/**
 		Creates a savepoint and returns its name, so one created without a name
-		can still be released or rolled back to. It returned nothing, which
-		left a generated name known only to the statement that used it.
+		can still be released or rolled back to.
 	**/
 	public function setSavepoint(name:String = null):String {
 		var resolved:String = __sanitizeSavePoint(name);
@@ -1367,13 +1324,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 
 	@:noCompletion private inline function __sanitizeSavePoint(name:String):String {
-		// A counter, not a timestamp. This read haxe.Timer.stamp() in
-		// microseconds through Std.int, which collides: 2000 names generated
-		// back to back produced 47 duplicates, and two savepoints sharing a
-		// name make RELEASE and ROLLBACK TO act on the wrong one. It also
-		// overflows Int about 36 minutes into a process and wraps every 72,
-		// so a long-lived connection reissues names it has already used. The
-		// same allocation haxe.Timer already does for its own ids.
+		// A counter, not a timestamp: names from the clock collide when made
+		// back to back and wrap in a long-lived process, and two savepoints
+		// sharing a name make RELEASE and ROLLBACK TO act on the wrong one.
 		var n:String = (name != null && name != "") ? name : ("sp_" + (++__savepointSeq));
 
 		return ~/[^\w]/g.replace(n, "_");
@@ -1443,9 +1396,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			}
 
 			if (openMode == READ) {
-				// hxcpp's glue opens every file to read and write, so READ only
-				// checked that the file existed: an INSERT through it
-				// succeeded. Held to reading here instead, as AIR's READ is.
+				// hxcpp's glue opens every file to read and write, so READ alone
+				// would only check that the file exists, and an INSERT through
+				// it would succeed. Held to reading here instead, as AIR's READ is.
 				__connection.request("PRAGMA query_only = 1;");
 			}
 		}
@@ -1455,9 +1408,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 			if (autoCompact) {
 				// FULL: freed pages go back to the file system at every
-				// commit, which is what autoCompact is. This set 2,
-				// INCREMENTAL, which gives nothing back until PRAGMA
-				// incremental_vacuum runs, and nothing here ran it.
+				// commit, which is what autoCompact is. INCREMENTAL would
+				// give nothing back until PRAGMA incremental_vacuum runs.
 				__connection.request("PRAGMA auto_vacuum = 1;");
 			}
 
@@ -1477,15 +1429,11 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	private function __onSQLWorkerError(e:ThreadEvent):Void {}
 
 	/**
-		On the runtime's thread: what the worker sent, dispatched where it
-		belongs, a statement's page and event to the statement, the
-		connection's own events here.
-
-		Anything but an `SQLEvent` used to be taken for a statement's message,
-		so every `SQLErrorEvent` of the connection's own, a refused `BEGIN`,
-		a failed open, was read as one, its absent statement dereferenced,
-		and the process died. A statement's failure died the same way, on its
-		absent result set.
+		On the runtime's thread, what the worker sent, dispatched where it
+		belongs: a statement's page and event to the statement, the
+		connection's own events here. A connection's own `SQLErrorEvent`
+		(a refused `BEGIN`, a failed open) is not a statement's message, and
+		is never read as one.
 	**/
 	private function __onSQLWorkerProgress(e:ThreadEvent):Void {
 		var message:Dynamic = e.message;
@@ -1549,9 +1497,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	private function __sqlWork(m:Dynamic):Void {
 		#if !php
 		__sqlThread = Thread.current();
-		// This worker's own, read once: a worker stopping as the next starts
-		// took the next one's work from its queue, and told its Worker it was
-		// complete.
+		// This worker's own, read once, so a worker stopping as the next
+		// starts cannot take the next one's work from its queue and tell its
+		// Worker it was complete.
 		var queue:SQLiteQueue = __sqlQueue;
 		var worker:Worker = __sqlWorker;
 		#if cpp
@@ -1561,10 +1509,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		var run:Int = 0;
 
 		while (!queue.closing) {
-			// Blocks until there is work. The Array path this replaces spun:
-			// an empty queue fell through to haxe.Timer.delay(fn, 0), which
-			// schedules rather than waits, so an idle async connection burned
-			// a core on every target that was not hl or neko.
+			// Blocks until there is work, so an idle asynchronous connection
+			// costs no CPU.
 			var job:SQLiteJob = queue.jobs.pop(true);
 
 			if (job == null) {
@@ -1650,12 +1596,12 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		}
 
 		// Queued behind the close, or behind an open that failed: each is
-		// told it will never run, where it waited for ever. A cancel's own
+		// told it will never run, rather than waiting for ever. A cancel's own
 		// report still goes out. Marked gone first, so that what is asked for
 		// from now on is refused where it is asked for, and a call waiting
 		// stops waiting. Under `ending`, and `ended` after: work that joins
 		// the queue as this pass finds it empty takes itself back out
-		// (__enqueue), where it sat for ever, neither run nor refused.
+		// (__enqueue), rather than sitting there neither run nor refused.
 		queue.gone = true;
 		queue.ending.acquire();
 
@@ -1682,7 +1628,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 		// sendComplete, not cancel. cancel() detaches the runtime listener and
 		// frees the message queue immediately, on this thread, so every
-		// event queued here and not yet drained by the main thread was
+		// event queued here and not yet drained by the main thread would be
 		// destroyed, the CLOSE among them. A Complete message travels the
 		// same queue in order, so everything sent before it is dispatched
 		// first and the listener is detached when it is drained, on the main
@@ -1693,8 +1639,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	/**
 		On the worker: tells whoever queued `job` that it will not run, and
-		why, a caller waiting on it as a call made on a connection that is
-		not open gets told, when the connection has `closed`.
+		why. A caller waiting on it is told as for a call made on a
+		connection that is not open, when the connection has `closed`.
 	**/
 	@:noCompletion private function __refuse(job:SQLiteJob, reason:String, closed:Bool, worker:Worker):Void {
 		var error:SQLError = new SQLError(job.operation, reason, reason);
@@ -1721,9 +1667,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		`cancel()` made after it was queued unless it `keep`s. A statement's
 		work goes through `__queueStatement`, and both through `__enqueue`,
 		rather than opening the queue themselves. The queue is a Deque, which
-		locks for itself; this took the mutex around it as well, which nothing
-		needed. Answers whether it was queued: work that `keep`s is dropped
-		unqueued when the worker has stopped (see `__enqueue`).
+		locks for itself, so no mutex is taken around it. Answers whether it
+		was queued: work that `keep`s is dropped unqueued when the worker has
+		stopped (see `__enqueue`).
 	**/
 	private function __addToQueue(run:Void->Void, operation:String, keep:Bool = false, ?call:SQLiteCall):Bool {
 		#if !php
@@ -1748,7 +1694,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	#if !php
 	/**
 		Queues `job` for the worker, and answers true. When the worker has
-		stopped, an open that failed, not yet heard of, nothing would ever
+		stopped (an open that failed, not yet heard of), nothing would ever
 		run it: what would have waited for ever is refused, as on a
 		connection that is not open, and what keeps has nothing left to do,
 		and answers false.
@@ -1762,9 +1708,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			// Read again once queued: the worker marks its queue gone before
 			// its last pass, so a job that finds it not gone here was queued
 			// in time for that pass. One that read it not gone above and was
-			// queued only after the pass had found the queue empty sat there
-			// for ever, unanswered. A plain read, ordered by the queue's own
-			// lock: the worker's mark comes before its last look at the
+			// queued only after the pass had found the queue empty would sit
+			// there for ever, unanswered. A plain read, ordered by the queue's
+			// own lock: the worker's mark comes before its last look at the
 			// queue, and this read after the job joined it.
 			if (!queue.gone || !__takeBack(queue, job)) {
 				return true;
@@ -1819,8 +1765,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	#end
 
 	/**
-		On the worker, for a job a `cancel()` may have overtaken, the count of
-		them has moved on since it was queued: `JOB_CANCELLED` when the
+		On the worker, for a job a `cancel()` may have overtaken (the count of
+		them has moved on since it was queued): `JOB_CANCELLED` when the
 		connection's `cancel()` was called after it was queued, so it is
 		dropped and told so; `JOB_WITHDRAWN` when its statement's was, so it is
 		dropped unheard; and otherwise `JOB_RUNS`. Read after the run is
@@ -1854,9 +1800,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 
 	/**
-		On an asynchronous connection on cpp: stops the run under way,
-		`statement`'s last run, if that is the one, or whatever is under way
-		for null, and never another. SQLite is interrupted, which stops even
+		On an asynchronous connection on cpp: stops the run under way
+		(`statement`'s last run, if that is the one, or whatever is under way
+		for null) and never another. SQLite is interrupted, which stops even
 		a single step that runs long, such as counting a whole table; and the
 		progress handler is asked to stop the same run within a thousand
 		steps, which it does where the interrupt lands as the run starts and
@@ -1940,7 +1886,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	/**
 		`statement.cancel()`'s part here, on an asynchronous connection: moves
 		its cancel count on, so that the work asked of it before is dropped,
-		and stops its run if that is the one under way, only then, so no
+		and stops its run if that is the one under way, and only then, so no
 		other statement's work is stopped.
 	**/
 	@:noCompletion private function __cancelStatement(statement:SQLiteStatement):Void {
@@ -1964,7 +1910,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	/**
 		On the worker: lets go of the result of the statement left with rows
-		unread, when its `cancel()` has been called since, finalized, so
+		unread, when its `cancel()` has been called since: finalized, so
 		the read it holds ends now and its rows are never read.
 	**/
 	@:noCompletion private function __dropCancelledPage():Void {
@@ -1982,8 +1928,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	/**
 		On the thread running the connection's work: ends `result` when it is
-		the statement SQLite is part way through, finalized, its read
-		ended, its rows unread, rather than leaving it for the next request
+		the statement SQLite is part way through (finalized, its read ended,
+		its rows unread) rather than leaving it for the next request
 		to read to its end first.
 	**/
 	@:noCompletion private function __letGo(result:ResultSet):Void {
@@ -2015,10 +1961,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	private function get_autoCompact():Bool {
 		return __now("autoCompact", function():Bool {
 			var result:ResultSet = __connection.request("PRAGMA auto_vacuum;");
-			// FULL only. An INCREMENTAL database, what autoCompact made
-			// before, keeps its free pages until PRAGMA incremental_vacuum
-			// runs, so it does not compact by itself and is not reported as
-			// doing so.
+			// FULL only. An INCREMENTAL database keeps its free pages until
+			// PRAGMA incremental_vacuum runs, so it does not compact by
+			// itself and is not reported as doing so.
 			return result.hasNext() && __wholeNumber(Reflect.field(result.next(), "auto_vacuum")) == 1;
 		});
 	}
@@ -2112,7 +2057,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		The rowid of the last insert, whole. SQLite's are 64-bit, and
 		`sys.db.Connection.lastInsertId` answers an Int: hxcpp's stops at
 		2^31 - 1 and the other drivers wrap, so a Snowflake id or a
-		millisecond timestamp used as a key read back as something else.
+		millisecond timestamp used as a key would read back as something else.
 		Below that it is exact and nothing more is asked; at or past it, or
 		negative, SQLite is asked in SQL, whose integer column every driver
 		returns whole.
@@ -2131,8 +2076,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 
 	/**
-		An integer column as a Float, exact to 2^53: an Int, an Int64,
-		hxcpp's for a value past 32 bits, a Float, or text.
+		An integer column as a Float, exact to 2^53: an Int, an Int64
+		(hxcpp's for a value past 32 bits), a Float, or text.
 	**/
 	@:noCompletion private static function __wholeNumber(value:Dynamic):Float {
 		if (value == null) {
@@ -2180,9 +2125,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 
 	/**
-		`PRAGMA body`, through `__now`. It took the connection's mutex on an
-		asynchronous connection, which the worker never took, and ran on the
-		calling thread.
+		`PRAGMA body`, through `__now`, so an asynchronous connection runs it
+		on its worker.
 	**/
 	private function __pragma(body:String):ResultSet {
 		return __now("pragma", () -> __rows(__connection.request('PRAGMA ' + body + ';')));
@@ -2324,9 +2268,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 }
 
 /*
-	What the connection's own reads answer. Classes, where they were
-	anonymous structures: each field is read directly rather than looked up
-	by name, and an object literal with the same fields still makes one.
+	What the connection's own reads answer. Classes, so each field is read
+	directly rather than looked up by name; an object literal with the same
+	fields makes one.
 */
 
 /** What a WAL checkpoint did (`walCheckpoint`): SQLite's three counts. **/

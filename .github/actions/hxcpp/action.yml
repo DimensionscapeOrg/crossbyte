@@ -5,8 +5,7 @@ description: >-
 
 # From GitHub, not lib.haxe.org: `haxelib git` asks the registry only for a
 # library's dependencies, and hxcpp has none, so this keeps working through a
-# registry outage: as it did on 2026-10-04, when every `haxelib install`
-# failed.
+# registry outage.
 #
 # Every native extern includes its Build.xml through ${haxelib:crossbyte}, so
 # hxcpp has to be able to resolve this repository by name; -cp is not enough.

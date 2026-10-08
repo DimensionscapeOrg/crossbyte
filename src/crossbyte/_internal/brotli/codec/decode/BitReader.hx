@@ -36,9 +36,8 @@ public static function ShiftBytes32(br:BrotliBitReader) {
 /*
  * Whether every bit consumed so far lay inside the stream.
  *
- * Asked before each step of the decode, as the streaming reader this replaced
- * asked for more input: a step that ran past the end is refused at the next
- * one, having read only zeros meanwhile.
+ * Asked before each step of the decode: a step that ran past the end is
+ * refused at the next one, having read only zeros meanwhile.
  */
 public static function BrotliReadMoreInput(br:BrotliBitReader):Bool {
   // Bytes from the first byte in val_ to the end of the stream.

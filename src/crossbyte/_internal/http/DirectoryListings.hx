@@ -13,9 +13,9 @@ import sys.thread.Tls;
  *
  * On Windows and macOS the resolver serves a file only under the spelling its
  * directory lists (see `HTTPRequestHandler.__isSpelledAsOnDisk`), and a
- * listing per path segment per request cost about a fifth of a static request
- * on Windows, growing with the directory. So a listing is kept, and a name it
- * contains is trusted for `FRESH_SECONDS`.
+ * listing per path segment per request would cost about a fifth of a static
+ * request on Windows, growing with the directory. So a listing is kept, and a
+ * name it contains is trusted for `FRESH_SECONDS`.
  *
  * Only a name that is found is trusted. A name not in a kept listing makes the
  * directory be listed again before the answer is no, so a file created a

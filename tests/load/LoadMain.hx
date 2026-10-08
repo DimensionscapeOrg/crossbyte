@@ -15,7 +15,7 @@ import crossbyte.sys.NativeProcessStartupInfo;
 
 	One executable plays every part, by its first argument. The three
 	scenarios each start their server in this process and their clients as
-	children, this executable again, or Node for the churn's TLS clients,
+	children (this executable again, or Node for the churn's TLS clients),
 	so the clients' processor time and memory are never counted as the
 	server's, and gather the children's reports into their own.
 
@@ -37,8 +37,8 @@ import crossbyte.sys.NativeProcessStartupInfo;
 	a server sharing one with its own clients measured 60% more processor
 	time a tick.
 
-	The parts the scenarios start themselves, `game-bots`, `churn-bots`,
-	`idle-bots`: can also be started by hand against a server on another
+	The parts the scenarios start themselves (`game-bots`, `churn-bots`,
+	`idle-bots`) can also be started by hand against a server on another
 	machine, with `--host` and `--port`.
 **/
 class LoadMain extends ServerApplication {

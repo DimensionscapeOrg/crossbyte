@@ -11,24 +11,21 @@ import crossbyte.errors.RangeError;
 /**
  * ActionScript's `Vector`: a dense, typed array whose length can be fixed.
  *
- * `v[i]` reads and writes an element on every target. It was a class
- * implementing `ArrayAccess`, which only hxcpp honours: `v[i]` threw on eval
- * and the jvm and on JavaScript set a property of that name, so a write was
- * lost. As in ActionScript, reading at or past `length` throws `RangeError`,
- * writing at `length` appends, and writing past it throws.
+ * `v[i]` reads and writes an element on every target. As in ActionScript,
+ * reading at or past `length` throws `RangeError`, writing at `length`
+ * appends, and writing past it throws.
  *
  * **`fixed`** is enforced: while it is set, anything that would change the
- * length, `push`, `pop`, `shift`, `unshift`, `insertAt`, `removeAt`, a
- * `splice` that adds or removes, setting `length`, throws `RangeError`.
+ * length (`push`, `pop`, `shift`, `unshift`, `insertAt`, `removeAt`, a
+ * `splice` that adds or removes, setting `length`) throws `RangeError`.
  *
  * **Callbacks** given to `every`, `filter`, `forEach`, `map` and `some` are
- * called with as many of `(item, index, vector)` as they take. They were
- * called with two and, if that threw, again with one and then none, so a
- * callback that threw was run a second time, missing its index.
+ * called with as many of `(item, index, vector)` as they take, and one that
+ * throws is never run a second time.
  *
  * A callback is a `VectorCallback`: any function of none to three of those,
  * typed, which is called directly. An untyped `Function` still works, and is
- * called through reflection as before, as is any callback given a
+ * called through reflection, as is any callback given a
  * `thisObject`.
  */
 @:forward
@@ -54,9 +51,8 @@ abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
 	called directly; an untyped `Function` converts too, and is called
 	through reflection with as many arguments as it takes.
 
-	These were all `Function`, called through `Reflect.callMethod` with an
-	argument array made per item: 64 ns an item where calling the function
-	takes 17.
+	Called directly, an item costs about 17 ns, where `Reflect.callMethod`
+	with an argument array made per item costs 64.
 **/
 abstract VectorCallback<T, R>(Dynamic) {
 	@:from @:noCompletion private static inline function ofNone<T, R>(f:Void->R):VectorCallback<T, R> {
@@ -134,9 +130,7 @@ class VectorImpl<T> {
 
 	/**
 		A new vector of this one's items followed by each of `vectors`', as
-		ActionScript's `concat` takes them. It took anything, arrays and
-		lone items too, typed `Dynamic`, and sorted them out by testing
-		each one's type.
+		ActionScript's `concat` takes them.
 	**/
 	public function concat(...vectors:Vector<T>):Vector<T> {
 		var out:Array<T> = __array.copy();
@@ -272,8 +266,7 @@ class VectorImpl<T> {
 	/**
 		Sorts in place by `compare`, which answers a negative number, zero or
 		a positive one as its first argument goes before, with or after its
-		second; by `Reflect.compare` when there is none. It took any value,
-		typed `Dynamic`, and threw for one that was not a function.
+		second; by `Reflect.compare` when there is none.
 	**/
 	public function sort(?compare:(T, T) -> Int):Vector<T> {
 		if (compare == null) {
@@ -438,8 +431,8 @@ class VectorImpl<T> {
 
 	/**
 		eval says nothing of a function's arity, and refuses a call with more
-		arguments than the function takes, before running it, by throwing
-		this string, while it pads one with fewer. So the arguments go from
+		arguments than the function takes (before running it, by throwing
+		this string), while it pads one with fewer. So the arguments go from
 		most to fewest, stepping down only on that refusal, and the count the
 		first call runs with holds for the rest of the loop. A callback's own
 		exception is never a reason to call it again.

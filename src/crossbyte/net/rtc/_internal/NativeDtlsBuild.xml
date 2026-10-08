@@ -8,9 +8,9 @@
 
 	<!-- Pulls in hxcpp's own mbedTLS build. That is what puts the mbedtls_*
 	     symbols in the link, and it sets MBEDTLS_DIR to whichever mbedtls hxcpp
-	     actually ships, pinning a version here is what broke the crypto build
-	     once already. That file carries the same pragma, so including it from
-	     more than one bridge is safe. -->
+	     actually ships, which a version pinned here would not follow. That
+	     file carries the same pragma, so including it from more than one
+	     bridge is safe. -->
 	<include name="${HXCPP}/src/hx/libs/ssl/Build.xml"/>
 
 	<files id="crossbyte-dtls-native">
@@ -32,10 +32,10 @@
 
 		     So this compiles against hxcpp's own flags: the include path of
 		     whichever mbedTLS it ships, 2.28 or 3.6, and the very config file
-		     the library is built with. An earlier copy of the macros here
-		     assumed the angle brackets in -DMBEDTLS_USER_CONFIG_FILE=<...> do
-		     not survive a Windows command line; they do, as hxcpp's own build of
-		     mbedTLS relies on. NativeDtls.cpp still fails to compile if
+		     the library is built with. The angle brackets in
+		     -DMBEDTLS_USER_CONFIG_FILE=<...> survive a Windows command line,
+		     as hxcpp's own build of mbedTLS relies on. NativeDtls.cpp still
+		     fails to compile if
 		     MBEDTLS_THREADING_C is missing. -->
 		<include name="${HXCPP}/project/thirdparty/mbedtls-flags.xml"/>
 

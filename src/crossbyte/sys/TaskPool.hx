@@ -9,8 +9,8 @@ import sys.thread.Thread;
 #end
 
 /**
-	What a worker takes from the queue. A class rather than the anonymous
-	`{task, job}` it was, whose two fields hxcpp read by name; the job is
+	What a worker takes from the queue. A class rather than an anonymous
+	`{task, job}`, whose two fields hxcpp would read by name; the job is
 	held as it was given rather than wrapped in another closure.
 **/
 @:access(crossbyte.sys.Task)
@@ -78,10 +78,10 @@ class TaskPool {
 	@:noCompletion private var __workerCount:Int;
 	@:noCompletion private var __isShutdown:Bool;
 	// The tasks in flight, kept alive until each is done. Each task holds its
-	// place here, so letting one go swaps the last into it: it was found with
-	// Array.remove, a search and a shift of everything after it per task, so
-	// a burst cost the square of its size, 200,000 tasks delivered in 1.5 s
-	// where 0.1 s does.
+	// place here, so letting one go swaps the last into it, rather than
+	// Array.remove's search and shift of everything after it per task, which
+	// makes a burst cost the square of its size (200,000 tasks delivered in
+	// 1.5 s where this takes 0.1 s).
 	@:noCompletion private var __retained:Array<Task<Any>>;
 	#if target.threaded
 	@:noCompletion private var __queued:Int;
@@ -154,8 +154,8 @@ class TaskPool {
 			throw new IllegalOperationError("Cannot submit tasks after shutdown.");
 		}
 		__queued++;
-		// Kept under the same lock, once the pool has taken the task: it was
-		// kept first, and a submit refused by a shutdown kept it for good.
+		// Kept under the same lock, once the pool has taken the task, so a
+		// submit refused by a shutdown does not keep it for good.
 		@:privateAccess task.__poolSlot = __retained.length;
 		__retained.push(cast task);
 		task.__keptBy(this);

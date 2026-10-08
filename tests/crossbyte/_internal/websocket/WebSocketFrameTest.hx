@@ -8,7 +8,7 @@ import crossbyte.test.Require;
 
 @:access(crossbyte._internal.websocket.WebSocket)
 class WebSocketFrameTest extends utest.Test {
-	// --- Finding 1: server rejects unmasked client frames ---
+	// --- the server rejects unmasked client frames ---
 
 	public function testServerRejectsUnmaskedFrame():Void {
 		var ws = serverParser();
@@ -35,7 +35,7 @@ class WebSocketFrameTest extends utest.Test {
 		Assert.equals("hello", received.readUTFBytes(received.length));
 	}
 
-	// --- Finding 2: cumulative reassembled message size cap ---
+	// --- the cap on a reassembled message's total size ---
 
 	public function testOversizeAccumulatedMessageRejected():Void {
 		var ws = clientParser();
@@ -85,7 +85,7 @@ class WebSocketFrameTest extends utest.Test {
 		Assert.equals(WebSocket.OPEN, ws.readyState);
 	}
 
-	// --- Finding 3: CLOSE frame validation ---
+	// --- CLOSE frame validation ---
 
 	public function testCloseFrameWithSingleBytePayloadRejected():Void {
 		var ws = clientParser();
@@ -175,7 +175,7 @@ class WebSocketFrameTest extends utest.Test {
 		Assert.equals(1007, closeCode);
 	}
 
-	// --- Finding 4: TEXT payload UTF-8 validation + the validator itself ---
+	// --- TEXT payload UTF-8 validation, and the validator itself ---
 
 	public function testTextFrameWithInvalidUtf8Rejected():Void {
 		var ws = clientParser();

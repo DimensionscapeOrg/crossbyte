@@ -18,7 +18,7 @@ import crossbyte.net.Socket;
  * connection, it propagates out of `pump()` and stops the loop serving
  * every other connection in the process. It is reachable whenever a peer
  * disconnects, or the overflow policy fires, while a write is still
- * blocked, routine events on a busy server.
+ * blocked: routine events on a busy server.
  */
 class SocketDeferredFlushStress implements StressCase {
 	private static inline final LIMIT:Int = 256 * 1024;

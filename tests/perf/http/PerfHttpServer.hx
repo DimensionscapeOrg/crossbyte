@@ -265,7 +265,7 @@ class PerfHttpServer extends ServerApplication {
 		var cpu:Float = #if nodejs { var u:Dynamic = js.Syntax.code("process.cpuUsage()"); (u.user + u.system) / 1e6; } #else Sys.cpuTime() #end;
 		#if jvm
 		// Sys.cpuTime is System.nanoTime on the jvm: wall time. The runtime's
-		// own thread instead, the server runs on it alone, which leaves out
+		// own thread instead (the server runs on it alone), which leaves out
 		// the collector's and the JIT's threads.
 		var threads = java.lang.management.ManagementFactory.getThreadMXBean();
 		cpu = haxe.Int64.toInt(threads.getCurrentThreadCpuTime() / 1000) / 1e6;

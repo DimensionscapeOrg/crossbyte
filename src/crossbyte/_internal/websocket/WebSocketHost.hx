@@ -3,15 +3,14 @@ package crossbyte._internal.websocket;
 /**
 	The host a WebSocket client is asked to dial, IPv6 literals included.
 
-	The pattern this replaces took a host as a run of letters, digits, dots
-	and hyphens, so an IPv6 literal, `::1`, `[2001:db8::1]`, was refused
-	as "Invalid host" before a socket existed, on every target. Built for the
-	browser too, where `Socket` dials a WebSocket the same way.
+	Takes an IPv6 literal (`::1`, `[2001:db8::1]`) as well as a name or an
+	IPv4 address, on every target. Built for the browser too, where
+	`Socket` dials a WebSocket the same way.
 **/
 @:noCompletion
 class WebSocketHost {
 	/**
-		Splits `target`, a host, perhaps after a scheme and before a path,
+		Splits `target` (a host, perhaps after a scheme and before a path)
 		into the host and the path, or answers null when it names no host. An
 		IPv6 literal may be bracketed, as a URL writes one, or bare, and comes
 		back without brackets.
@@ -51,7 +50,7 @@ class WebSocketHost {
 			return {host: head, path: slash < 0 ? "" : rest.substr(slash + 1)};
 		}
 
-		// A name or an IPv4 address, read exactly as it always was.
+		// A name or an IPv4 address.
 		var name:EReg = ~/^([A-Za-z0-9\-\.]+)\/?(.*)/;
 		if (!name.match(rest)) {
 			return null;
@@ -68,7 +67,7 @@ class WebSocketHost {
 	}
 
 	/**
-		Whether `text` is an IPv6 literal: hex digits, colons, at least two,
+		Whether `text` is an IPv6 literal: hex digits, colons (at least two)
 		and dots for an IPv4 tail, with an optional `%` zone. Loose, as
 		`IPv6.isNumericAddress` is: a malformed literal is the system's to
 		refuse, and it will.

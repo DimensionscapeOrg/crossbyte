@@ -37,9 +37,9 @@ class Array2DTest extends utest.Test {
 	}
 
 	/**
-		Clearing empties the grid for every reference to it. It replaced the
-		rows, so another reference, the same grid held in two places,
-		still saw them.
+		Clearing empties the grid for every reference to it: it does not replace
+		the rows, which another reference (the same grid held in two places)
+		would still see.
 	**/
 	public function testClearIsSeenThroughEveryReference():Void {
 		var grid = new crossbyte.ds.Array2D<Int>(2, 2, 7);

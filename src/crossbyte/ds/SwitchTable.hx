@@ -10,12 +10,10 @@ class SwitchTable {
 	 *
 	 * A key is any expression: a literal, a constant such as `Opcode.PING`, or
 	 * a variable read when the dispatcher runs. Two literal keys that are the
-	 * same are refused at compile time. Only literals were accepted, so a table
-	 * keyed on named opcodes had to repeat their numbers.
+	 * same are refused at compile time.
 	 *
 	 * A key no case matches goes to `otherwise`, a `(key:Dynamic,
 	 * args:Array<Dynamic>) -> Void`, or without one throws naming the key.
-	 * There was no way to handle it but a `try` around every dispatch.
 	 *
 	 * Example:
 	 * ```haxe
@@ -86,8 +84,7 @@ class SwitchTable {
 		// Comparison and dispatch go through runtime helpers whose Dynamic
 		// parameters keep the backend on the general equality/call paths.
 		// A handler written as a function literal is made once, with the
-		// dispatcher, rather than each time its case is chosen: written into
-		// the dispatcher's body, every dispatch made a new closure of it.
+		// dispatcher, rather than each time its case is chosen.
 		var hoisted:Array<Expr> = [];
 		for (i in 0...handlers.length) {
 			switch (handlers[i].expr) {
@@ -116,13 +113,13 @@ class SwitchTable {
 			caseIndex--;
 		}
 
-		// Keys all of one type, every one an Int, or every one a String,
-		// are looked up typed first: a switch for literals, comparisons of
-		// that type for named constants. The chain above, a dynamic equality
-		// per case, cost 148 ns a dispatch of sixteen Int keys where a switch
+		// Keys all of one type (every one an Int, or every one a String) are
+		// looked up typed first: a switch for literals, comparisons of that
+		// type for named constants. The chain above, a dynamic equality per
+		// case, costs 148 ns a dispatch of sixteen Int keys where a switch
 		// costs 8. A key of another type, or one no case names, still goes
 		// through the chain, so what matches and what reaches `otherwise` is
-		// what it always was; the jvm's mixed-key miscompile needs keys of
+		// the same either way; the jvm's mixed-key miscompile needs keys of
 		// both types, which never come here.
 		var typed:Null<Expr> = __typedLookup(keys, handlers);
 		var body:Expr = typed == null ? chain : macro {

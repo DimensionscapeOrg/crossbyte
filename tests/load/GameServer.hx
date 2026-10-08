@@ -19,8 +19,8 @@ import haxe.Timer;
 /**
 	Scenario G: an authoritative game server over reliable UDP.
 
-	Every tick the server sends each client a snapshot, 100 to 400 bytes,
-	varied, sequenced, with every `--reliable-every`th one reliable, naming
+	Every tick the server sends each client a snapshot (100 to 400 bytes,
+	varied, sequenced, with every `--reliable-every`th one reliable) naming
 	the newest input it has from that client. Each client sends an input
 	every tick (sequenced) and an action every tenth (reliable). What the
 	server does between is nothing a real game would not do more of; the
@@ -38,7 +38,7 @@ import haxe.Timer;
 	`--warmup` seconds; a full collection again, which with the baseline
 	gives memory per session; `--seconds` measured, a window reported every
 	`--report`; the clients closing; and a last full collection once every
-	session has gone, which should be back at the baseline, a session's
+	session has gone, which should be back at the baseline: a session's
 	worth of anything left over per client is a leak.
 
 	Per window and for the run: the server's processor time per tick (user
@@ -48,8 +48,8 @@ import haxe.Timer;
 	that arrived);
 	frames that overran their interval, how late the loop ran, input to
 	acknowledgement as the clients see it, the gap from one tick's start to
-	the next, where a collection's pause shows, with `--world-mb` of live
-	world data held, snapshots lost or superseded,
+	the next (where a collection's pause shows, with `--world-mb` of live
+	world data held), snapshots lost or superseded,
 	the transport's loss and timeout events on both ends, and heap, resident
 	memory and handles.
 **/
@@ -84,8 +84,8 @@ class GameServer {
 	var runTick:Histogram = new Histogram();
 	var runFrame:Histogram = new Histogram();
 	var tickEnd:TickEnd;
-	// Tick start to tick start: a frame held up by anything, a collection
-	// above all, shows here, where cpuLoad stops at a whole frame.
+	// Tick start to tick start: a frame held up by anything (a collection
+	// above all) shows here, where cpuLoad stops at a whole frame.
 	var tickGaps:Histogram = new Histogram();
 	var runGaps:Histogram = new Histogram();
 	var lastTickAt:Float = -1;
@@ -520,8 +520,8 @@ class GameServer {
 
 	Queued for the pass flush after the tick's sends, it queues itself once
 	more when its turn comes, which puts it behind the datagram socket's own
-	flush, queued during the walk, when the first session handed it a
-	datagram, so what it records runs from the tick handler's start to
+	flush (queued during the walk, when the first session handed it a
+	datagram), so what it records runs from the tick handler's start to
 	the last `sendto` or `sendmmsg`.
 **/
 @:access(crossbyte.core.CrossByte)
@@ -558,7 +558,7 @@ class TickEnd implements crossbyte.core._internal.PassFlush {
 /**
 	Live world data, as a game server holds it: `--world-mb` megabytes of
 	entities, each a handful of numbers, a component array and a name,
-	listed and indexed by id, millions of small objects, which is what a
+	listed and indexed by id: millions of small objects, which is what a
 	collector that stops the world has to mark. Every tick some move, and
 	`--world-churn` of them are despawned and replaced, so the heap keeps
 	making garbage the way a world does, and collections keep happening

@@ -78,9 +78,10 @@ class ConfigTest extends utest.Test {
 	}
 
 	public function testAnIntegerTooBigForAnIntIsRefusedOnEveryTarget():Void {
-		// Std.parseInt read 4294967296 as 0 on Linux native, 2147483647 on
-		// Windows native, threw on the jvm and gave back a number wider than an
-		// Int on JavaScript: a connection limit could silently become 0.
+		// Std.parseInt reads 4294967296 differently on each target (0 on Linux
+		// native, 2147483647 on Windows native, a throw on the jvm, a number wider
+		// than an Int on JavaScript), and a connection limit must not silently
+		// become 0.
 		var config = new Config([
 			"limit" => "4294967296",
 			"big" => "99999999999",

@@ -1,5 +1,5 @@
-# A server-shaped workload, run long, to find out whether the native
-# collector's intermittent fault reaches production code. See
+# A server-shaped workload, run long, to find out whether a native process
+# stays up under a server's allocation. See
 # tests/soak/SoakMain.hx for what it is answering and why it deliberately
 # generates no haxe.PosInfos.
 #

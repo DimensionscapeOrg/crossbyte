@@ -128,8 +128,8 @@ class CongestionControlTest extends utest.Test {
 	}
 
 	public function testLossTolerantRemembersTheBestOfItsRecentMeasurements():Void {
-		// A round trip in which the peer received almost nothing, the
-		// application paused, or a burst went missing, is not what the path
+		// A round trip in which the peer received almost nothing (the
+		// application paused, or a burst went missing) is not what the path
 		// can carry: the most delivered over the last few still is.
 		var session = sessionWith(0.02, 0.02);
 		var control = new LossTolerantCongestionControl();
@@ -178,8 +178,9 @@ class CongestionControlTest extends utest.Test {
 		}
 
 		// Measured by what the acknowledgement passed, the round trip that
-		// caught the gap filling read twice the rate, the most delivered kept
-		// it, and this loss kept 97% of the window behind a queue of half.
+		// caught the gap filling would read twice the rate, the most delivered
+		// would keep it, and this loss would keep 97% of the window behind a
+		// queue of half.
 		var before = control.window;
 		control.onLoss(session, 0);
 		Assert.equals(before / 2, control.window, "a gap filling was read as bandwidth");
@@ -225,7 +226,7 @@ class CongestionControlTest extends utest.Test {
 	/**
 		A session that has measured these round trips and delivered nothing:
 		all a policy reads from one. Made empty, so every field a policy reads
-		is set here, on eval an unset one is null, not zero.
+		is set here: on eval an unset one is null, not zero.
 	**/
 	private static function sessionWith(smoothed:Float, fastest:Float):ReliableDatagramSocket {
 		var session:ReliableDatagramSocket = Type.createEmptyInstance(ReliableDatagramSocket);

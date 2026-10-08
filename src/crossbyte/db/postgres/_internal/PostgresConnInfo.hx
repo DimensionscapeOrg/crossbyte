@@ -38,7 +38,7 @@ class PostgresConnInfo {
 		var connectTimeout:Int = cfg.connectTimeout != null ? cfg.connectTimeout : 5;
 
 		// 0 is no limit, as libpq reads an absent connect_timeout; a negative
-		// one was taken for the same without a word.
+		// one is refused.
 		if (connectTimeout < 0) {
 			throw new ArgumentError('PostgresConfig.connectTimeout must not be negative ($connectTimeout); 0 is no limit.');
 		}
@@ -51,9 +51,9 @@ class PostgresConnInfo {
 
 		// Keepalive is on with MySQL's timings unless turned off: libpq
 		// turns it on by default but leaves the timings to the system, two
-		// hours before the first probe on Linux and Windows, which is how long
-		// a connection to a host gone silent looked alive, and held the
-		// worker waiting on it. A keyword the caller passes itself in
+		// hours before the first probe on Linux and Windows, so a connection
+		// to a host gone silent would look alive, and hold the worker
+		// waiting on it, that long. A keyword the caller passes itself in
 		// connectionParameters is theirs.
 		if (cfg.keepAlive == false) {
 			__addDefault(out, extra, "keepalives", "0");
@@ -96,8 +96,8 @@ class PostgresConnInfo {
 				}
 
 				if (!~/^[a-z_]+$/.match(key)) {
-					// A keyword is spliced in unquoted, so anything else in it,
-					// a space, an equals sign, would write keywords of its
+					// A keyword is spliced in unquoted, so anything else in it
+					// (a space, an equals sign) would write keywords of its
 					// own into the string.
 					throw new ArgumentError('Invalid libpq connection parameter "$key": expected a keyword such as application_name.');
 				}
@@ -149,7 +149,7 @@ class PostgresConnInfo {
 	public static inline var DEFAULT_KEEPALIVE_COUNT:Int = 6;
 
 	/**
-		A count setting: its value, or `fallback` when unset, left out
+		A count setting: its value, or `fallback` when unset; left out
 		altogether when the caller names the keyword in `extra`.
 	**/
 	@:noCompletion private static function __addCount(out:StringBuf, extra:Map<String, String>, keyword:String, setting:String, value:Null<Int>,
@@ -176,8 +176,8 @@ class PostgresConnInfo {
 
 	/**
 	 * Seconds as whole milliseconds, rounded up so a small limit never rounds
-	 * down to zero, which for `statement_timeout` would mean no limit at all,
-	 * and clamped where an Int runs out, about 24 days.
+	 * down to zero (which for `statement_timeout` would mean no limit at
+	 * all), and clamped where an Int runs out, about 24 days.
 	 */
 	@:noCompletion private static function __millis(setting:String, seconds:Float):String {
 		if (Math.isNaN(seconds) || seconds < 0) {

@@ -3,18 +3,13 @@ package crossbyte._internal.http;
 /**
  * The rules of HTTP that hold wherever HTTP is spoken.
  *
- * These lived in `Http`, which is the client: a class that drives requests over
- * a raw socket with its own TLS, and is therefore excluded from both JavaScript
- * targets. The rules themselves have nothing to do with a socket. Which
- * versions are supported, whether two framing headers contradict each other,
- * and which bytes may not appear in a header are facts about the protocol, and
- * a server needs them exactly as much as a client does, so leaving them
- * behind a class that cannot compile on Node would have meant a second copy,
- * and two copies of a header sanitiser is one too many for the thing it
- * prevents.
- *
- * `Http` keeps its four methods as forwards, so its callers and their tests are
- * unchanged and there is still only one implementation.
+ * They sit apart from `Http`, the client, which drives requests over a raw
+ * socket with its own TLS and is therefore excluded from both JavaScript
+ * targets. Which versions are supported, whether two framing headers
+ * contradict each other, and which bytes may not appear in a header are
+ * facts about the protocol, and a server needs them exactly as much as a
+ * client does, so there is one copy, here, compiled everywhere. `Http`
+ * keeps its four methods as forwards.
  */
 class HttpSyntax {
 	private static final SUPPORTED_VERSIONS:Array<HttpVersion> = [HttpVersion.HTTP_1, HttpVersion.HTTP_1_1];
@@ -40,11 +35,6 @@ class HttpSyntax {
 	/**
 	 * Returns `true` when adding `incoming` bytes to an already-accumulated
 	 * `accumulated` total would exceed `limit`. A `limit <= 0` disables the cap.
-	 *
-	 * Left behind in `Http` when the other four rules moved here, which is the
-	 * whole reason the extraction did not buy what it was for: the tests kept
-	 * pointing at the forwarder, and the forwarder is native-only, so rules
-	 * that hold on every target were still only checked on some of them.
 	 */
 	public static function exceedsChunkedBodyLimit(accumulated:Int, incoming:Int, limit:Int):Bool {
 		if (limit <= 0) {
@@ -64,15 +54,13 @@ class HttpSyntax {
 	 * a trailing step, leaves the result ending in `/`, since it names a
 	 * directory. `*`, the target of a server-wide `OPTIONS`, is left alone.
 	 *
-	 * This is what lets a guard and the file it guards agree. The server
-	 * decoded the path once for middleware and the static resolver normalised
-	 * it again on its own, so a middleware refusing `/private/` saw
-	 * `//private/report.txt` and `/./private/report.txt` go past, and the
-	 * resolver then served `/private/report.txt` for both. One normalisation,
-	 * before middleware, means the path a guard checks is the path served.
+	 * This is what lets a guard and the file it guards agree: one
+	 * normalisation, before middleware, means the path a guard checks is the
+	 * path served, so a middleware refusing `/private/` also refuses
+	 * `//private/report.txt` and `/./private/report.txt`.
 	 *
-	 * No browser sends a `..` that climbs above the root, it applies the
-	 * steps itself, so answering null for one, and 400 for the request,
+	 * No browser sends a `..` that climbs above the root (it applies the
+	 * steps itself), so answering null for one, and 400 for the request,
 	 * refuses only what was written by hand to escape. A `..` inside a
 	 * segment, as in `/compare/v1.2..v1.3`, is part of a name and not a step.
 	 *
@@ -174,14 +162,14 @@ class HttpSyntax {
 
 	/**
 	 * What `Host` and `:authority` carry: `host`, in brackets when it is an
-	 * IPv6 literal, then `:port` unless `port` is `defaultPort`, the
-	 * scheme's own, or `-1` to always name it.
+	 * IPv6 literal, then `:port` unless `port` is `defaultPort` (the scheme's
+	 * own, or `-1` to always name it).
 	 *
-	 * `URL` takes the brackets off an IPv6 literal, and both clients put the
-	 * host back as it was: `[2001:db8::1]:8080` went out as
-	 * `2001:db8::1:8080`, which no server can split. And the port was left
-	 * out for 80 and 443 whatever the scheme, so `http://host:443/` was sent
-	 * as `Host: host`, which means port 80.
+	 * `URL` takes the brackets off an IPv6 literal, and they go back on here:
+	 * `[2001:db8::1]:8080` written bare would be `2001:db8::1:8080`, which no
+	 * server can split. The port is compared with the scheme's own, so
+	 * `http://host:443/` is sent as `Host: host:443`, not as `Host: host`,
+	 * which means port 80.
 	 */
 	public static function authority(host:String, port:Int, defaultPort:Int):String {
 		var name:String = host.indexOf(":") >= 0 ? "[" + host + "]" : host;
@@ -221,14 +209,15 @@ class HttpSyntax {
 	}
 
 	/**
-	 * `target`: a path, with its query, as a request line can carry it:
+	 * `target` (a path, with its query) as a request line can carry it:
 	 * a space, a control character or DEL becomes its `%XX`, and anything
 	 * past ASCII its UTF-8 bytes, each as `%XX`. Everything else is left as it
 	 * is, `%` included, so a target already encoded is not encoded twice.
 	 *
-	 * A space ended the target early, `GET /a b HTTP/1.1` gives a server a
-	 * version of `b`, and a line break ended the request line. Returns
-	 * `target` itself, allocating nothing, when there is nothing to encode.
+	 * Unencoded, a space would end the target early (`GET /a b HTTP/1.1` gives
+	 * a server a version of `b`), and a line break would end the request line.
+	 * Returns `target` itself, allocating nothing, when there is nothing to
+	 * encode.
 	 */
 	public static function encodeRequestTarget(target:String):String {
 		var clean:Bool = true;
@@ -276,8 +265,8 @@ class HttpSyntax {
 	/**
 	 * `name` as HTTP/2 sends it, lowercase (RFC 9113 8.2.1): the fields this
 	 * server writes on every response from constants, and anything else
-	 * through `lowerAscii`. Lowercasing them made a new string for each
-	 * field of every response.
+	 * through `lowerAscii`, so no new string is made for each field of every
+	 * response.
 	 */
 	public static function fieldNameForH2(name:String):String {
 		return switch (name) {
@@ -345,9 +334,8 @@ class HttpSyntax {
 		}
 
 		// Read before anything is built: nearly every value is clean, and
-		// every one was rebuilt a character at a time, on every response.
-		// With the names, 4% of a native server's time, for headers that
-		// never change.
+		// comes back as it was rather than rebuilt a character at a time on
+		// every response.
 		for (i in 0...v.length) {
 			if (__dropsFromValue(StringTools.fastCodeAt(v, i))) {
 				return __stripValue(v);

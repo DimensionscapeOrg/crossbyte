@@ -148,11 +148,10 @@ final class SecureRandom {
 	/**
 	 * Whether this target has a CSPRNG to draw from.
 	 *
-	 * `getSecureRandomBytes` throws where it does not, on purpose, but a
-	 * caller that would rather take a different path than catch an exception
-	 * has no way to ask, and anything built on this inherits the same problem.
-	 * The condition is the same one the branches below use, kept beside them so
-	 * the two cannot drift.
+	 * `getSecureRandomBytes` throws where it does not, on purpose; this lets a
+	 * caller that would rather take a different path ask first, and anything
+	 * built on this pass the question on. The condition is the same one the
+	 * branches below use, kept beside them so the two cannot drift.
 	 *
 	 * True natively (cpp), on the jvm, on Node, in a browser and on PHP. False on
 	 * the interpreter, on neko and on HashLink, which have no such source here,
@@ -164,8 +163,8 @@ final class SecureRandom {
 	/**
 	 * Returns `length` bytes from the platform CSPRNG.
 	 *
-	 * @throws IllegalOperationError On a target without one, the
-	 *         interpreter, neko, HashLink, naming it, rather than falling
+	 * @throws IllegalOperationError On a target without one (the
+	 *         interpreter, neko, HashLink), naming it, rather than falling
 	 *         back to a generator that only looks random.
 	 */
 	public static function getSecureRandomBytes(length:Int):ByteArray {
@@ -190,8 +189,8 @@ final class SecureRandom {
 
 	#if nodejs
 	/**
-	 * Node's `crypto.randomBytes`, which is the platform CSPRNG, OpenSSL's,
-	 * seeded from the operating system, and not `Math.random`.
+	 * Node's `crypto.randomBytes`, which is the platform CSPRNG (OpenSSL's,
+	 * seeded from the operating system), not `Math.random`.
 	 */
 	@:noCompletion private static function __getSecureRandomBytesNode(length:Int):ByteArray {
 		if (length <= 0) {
@@ -235,8 +234,8 @@ final class SecureRandom {
 		var offset:Int = 0;
 
 		// Filled a quota at a time, because one call for more than 65536 bytes
-		// is a QuotaExceededError rather than a short read, so a caller
-		// asking for a large key would get an exception, not fewer bytes.
+		// is a QuotaExceededError rather than a short read, so a caller asking
+		// for a large key would get an exception, not fewer bytes.
 		while (offset < length) {
 			var span:Int = length - offset;
 
@@ -257,8 +256,7 @@ final class SecureRandom {
 		BCryptGenRandom on Windows, /dev/urandom elsewhere, through the calling
 		thread's pool (the native code above). Which system source is chosen
 		by the preprocessor, not at run time: bcrypt.h exists only on Windows,
-		and a call into it compiled on Linux stopped the build at
-		"BCRYPT_USE_SYSTEM_PREFERRED_RNG was not declared".
+		and a call into it compiled on Linux would stop the build.
 	**/
 	private static function __getSecureRandomBytesNative(length:Int):Bytes {
 		var out:Bytes = Bytes.alloc(length);

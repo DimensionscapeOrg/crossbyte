@@ -15,12 +15,12 @@ import sys.thread.Thread;
 /**
 	Host names looked up off the runtime's thread.
 
-	A lookup can take as long as the network's resolver likes, a second is
-	ordinary for a name that does not exist, and a broken resolver makes every
-	lookup wait out its timeout, and done on the runtime's thread that is
-	how long every socket and timer on it waits too. Measured: a failing lookup
-	held the loop for 1,020 ms. A reconnect loop made it worse, retrying
-	exactly while the resolver was broken.
+	A lookup can take as long as the network's resolver likes (a second is
+	ordinary for a name that does not exist, and a broken resolver makes
+	every lookup wait out its timeout), and done on the runtime's thread
+	that is how long every socket and timer on it waits too: a failing
+	lookup can hold the loop for a second, and a reconnect loop retries
+	exactly while the resolver is broken.
 
 	So a name is looked up on one of a few threads kept for it, and the answer
 	is handed back on the runtime's thread through its post queue, where the
@@ -33,22 +33,19 @@ import sys.thread.Thread;
 
 	- **Threads.** `MAX_THREADS` lookups run at once, at most, each on a
 	  thread kept for lookups; the rest wait their turn, first come first
-	  served. Each lookup was a thread started for it alone, with no cap: ten
-	  thousand connects by name were ten thousand threads. A system lookup
-	  cannot be stopped once it has started, so this is also the most threads
-	  a wedged resolver can hold. A thread with nothing to do ends after
-	  `IDLE_SECONDS`.
+	  served. A system lookup cannot be stopped once it has started, so this
+	  is also the most threads a wedged resolver can hold. A thread with
+	  nothing to do ends after `IDLE_SECONDS`.
 	- **The wait.** A caller waits `TIMEOUT` seconds for its answer at most,
 	  and is then told the lookup timed out, whether it was still waiting for
 	  a thread or the system had not answered. The system call carries on on
-	  its own thread, and its answer is kept for whoever asks next. Nothing
-	  ended a lookup the system did not.
+	  its own thread, and its answer is kept for whoever asks next.
 	- **The queue.** `MAX_QUEUED` names, at most, wait for a thread; a name
 	  asked for past that fails at once.
 	- **Repeats.** A caller asking for a name already being looked up waits
 	  for that lookup rather than start another, and an answer is kept and
-	  handed to whoever asks for `TTL` seconds, a failure for
-	  `NEGATIVE_TTL`: for `MAX_CACHED` names at most. The system's lookup
+	  handed to whoever asks for `TTL` seconds (a failure for
+	  `NEGATIVE_TTL`), for `MAX_CACHED` names at most. The system's lookup
 	  says nothing of how long its answer lives, so `TTL` is a fixed time,
 	  the jvm's own default: short enough that a host that moved is found
 	  within half a minute, long enough that a burst of connects to one host
@@ -89,8 +86,8 @@ class Resolver {
 	@:noCompletion public static var __queried:Int = 0;
 
 	/**
-		The system's lookup, which a test replaces with one it controls, a
-		resolver cannot be made to wedge on demand. Called on a lookup thread;
+		The system's lookup, which a test replaces with one it controls (a
+		resolver cannot be made to wedge on demand). Called on a lookup thread;
 		throws for a name that does not resolve.
 	**/
 	@:noCompletion public static var __system:String->Host = __systemLookup;
@@ -186,13 +183,13 @@ class Resolver {
 
 	/**
 		Looks `host` up and waits here for the answer, on a thread that may
-		block, `URLLoader`'s, or a connector's, and answers the host, or
+		block (`URLLoader`'s, or a connector's), and answers the host, or
 		throws a `String` saying why not.
 
 		An address is taken as it is. A name is looked up on the resolver's
 		threads, as `resolve` looks one up, so that the wait can end where the
-		system call cannot: after `timeout` seconds, `TIMEOUT`, if that is
-		sooner or `timeout` is `0` or less, or as soon as `cancel` is
+		system call cannot: after `timeout` seconds (`TIMEOUT`, if that is
+		sooner or `timeout` is `0` or less), or as soon as `cancel` is
 		cancelled.
 	**/
 	public static function lookup(host:String, timeout:Float = 0, ?cancel:HTTPCancelToken):Host {
@@ -362,10 +359,8 @@ class Resolver {
 
 		The refusal is answered here, not on `waiter`: once filed, `waiter`
 		is a lookup thread's to answer, under the lock, and it may do so
-		before its caller is out of this call. The caller read whether it
-		had been answered without the lock, to catch the refusal, and a
-		thread answering sets that before what the answer is: a name that
-		had resolved threw `null`, and `resolve` called back twice.
+		before its caller is out of this call, so the caller cannot tell a
+		refusal from an answer by reading `waiter` without the lock.
 	**/
 	private static function __ask(name:String, waiter:Waiter):Null<Answer> {
 		var start:Bool = false;

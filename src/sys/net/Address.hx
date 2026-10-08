@@ -36,7 +36,7 @@ class Address {
 	// The jvm's form of this address, made by UdpSocket for the first send
 	// to it and kept for the next, with the host, port and IPv6 bytes it was
 	// made from: compared by value, so a change to any of them makes another
-	// rather than sending to where this used to point.
+	// rather than sending to the old destination.
 	@:noCompletion public var __jvmAddress:Null<java.net.InetSocketAddress> = null;
 	@:noCompletion public var __jvmHost:Int = 0;
 	@:noCompletion public var __jvmPort:Int = 0;
@@ -101,10 +101,10 @@ class Address {
 		#else
 		var resolved:Host = Type.createEmptyInstance(Host);
 		untyped resolved.ip = host;
-		// Not on hl, whose Host has no such field: writing one threw, from
-		// DatagramSocket's receive, for every datagram, so UDP, RUDP, STUN
-		// and ICE on hl received nothing at all. Neither hl nor neko can hold
-		// an IPv6 address to write.
+		// Not on hl, whose Host has no such field: writing one would throw,
+		// from DatagramSocket's receive, for every datagram, so UDP, RUDP,
+		// STUN and ICE on hl would receive nothing at all. Neither hl nor
+		// neko can hold an IPv6 address to write.
 		#if !(hl || neko)
 		untyped resolved.ipv6 = ipv6;
 		#end

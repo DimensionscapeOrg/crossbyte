@@ -36,12 +36,12 @@ import crossbyte.events.ReliableDatagramSocketConnectEvent;
  * callbacks the same story, whatever its transport's own events are:
  *
  * - `onReady` once, when it is up.
- * - `onError` for what went wrong: a connect that failed, refused, not
- *   found, not made within its timeout, or a transport error. Reads stop
+ * - `onError` for what went wrong: a connect that failed (refused, not
+ *   found, not made within its timeout) or a transport error. Reads stop
  *   there.
  * - `onClose` exactly once, when it is over, however it ended: closed by
  *   either end, failed, or timed out, before or after it was ready. It is
- *   given why, `Reason.Closed`, a WebSocket peer's `Reason.Code`, or the
+ *   given why: `Reason.Closed`, a WebSocket peer's `Reason.Code`, or the
  *   reason `onError` was given when that is what ended it. Nothing is
  *   called after it.
  *
@@ -181,7 +181,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		`data` is the caller's again as soon as this returns: every transport
 		copies what it keeps to send later, so a buffer may be written over
 		and sent again at once, and a payload a listener was handed for its
-		call alone, a datagram's `event.data`, may be sent on from inside
+		call alone (a datagram's `event.data`) may be sent on from inside
 		it. See `INetConnection.send`.
 	**/
 	public inline function send(data:ByteArray):Void {
@@ -190,15 +190,15 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 
 	/**
 		Closes the wrapped transport, and tells `onClose` `Reason.Closed` if
-		the connection had not already ended. On one that has, closed by
-		its peer, failed, closed already, it does nothing, and does not
+		the connection had not already ended. On one that has (closed by
+		its peer, failed, closed already), it does nothing, and does not
 		throw.
 
 		Over TCP, WebSocket and reliable UDP it may be called from any
 		thread: from one that is not the connection's runtime's, the close is
 		handed to the runtime and happens there after this returns, so
 		`onClose` is called on the runtime's thread, as every other callback
-		is. It was called on the closing thread.
+		is.
 	**/
 	public inline function close():Void {
 		this.close();
@@ -324,8 +324,8 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		return socket;
 	}
 
-	// The IPC transport, and only it. Node has the other three, TCP,
-	// WebSocket and reliable datagram all run there, but LocalConnection
+	// The IPC transport, and only it. Node has the other three (TCP,
+	// WebSocket and reliable datagram all run there), but LocalConnection
 	// needs an operating-system IPC channel and shared memory, which it has
 	// not got. Protocol.LOCAL is therefore not a case that exists there
 	// rather than one that fails at runtime.
@@ -444,11 +444,12 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 		observer, by the connection they wrap. A connection an application
 		wrote has only those callbacks to be observed through, and the one
 		adapter observing it keeps the application's own behind its forwarder.
-		Wrapped a second time, `(connection : NetConnection).onClose = ...`
-		after a session was made on it, a new adapter set the callback on the
-		connection itself, over the forwarder: the session never heard it end,
-		and the calls waiting on it waited for good. So a connection that is
-		being observed is wrapped by the adapter observing it, until it ends.
+		Wrapped a second time (`(connection : NetConnection).onClose = ...`
+		after a session was made on it), a new adapter would set the callback
+		on the connection itself, over the forwarder: the session would never
+		hear it end, and the calls waiting on it would wait for good. So a
+		connection that is being observed is wrapped by the adapter observing
+		it, until it ends.
 
 		Only connections that are not CrossByte's own come here, and only while
 		observed; guarded, since runtimes on other threads wrap their own.
@@ -545,7 +546,7 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 	}
 
 	/**
-		Handed on to the wrapped connection when it can be told itself, a
+		Handed on to the wrapped connection when it can be told itself, as a
 		`LocalConnection` can. Any other has only its `onClose` to go by, so
 		this wraps that, keeping the application's callback here: set through
 		this `NetConnection` afterwards, it stays wrapped. Set on the wrapped
@@ -747,9 +748,9 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 		end a pass, it is sent at once, and so it is on a socket whose
 		`outputOverflowPolicy` throws, for the throw to reach this call.
 
-		Each send was a write of its own, a system call apiece: RPC over TCP,
-		twenty calls a tick, spent 7.0 µs a call, nearly all of it in the
-		kernel, and spends 0.5 µs now.
+		A write per send would be a system call apiece: RPC over TCP,
+		twenty calls a tick, spends 0.5 µs a call this way against 7.0 µs,
+		nearly all of it in the kernel, with a write each.
 	**/
 	public function send(data:ByteArray):Void {
 		this.__writeBytes(data, 0, 0);
@@ -812,9 +813,8 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 
 	/**
 		The connection is over: the observer and then `onClose` are told,
-		once, and nothing is told after. Closed by this side, it used to be
-		told every time `close()` was called, and once more on top of the
-		peer's close.
+		once, and nothing is told after: not by another `close()`, nor by
+		the peer's close.
 	**/
 	@:noCompletion private function __end(reason:Reason):Void {
 		if (__ended) {
@@ -836,9 +836,9 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 	}
 
 	/**
-		The uptime of the runtime the socket is on. Read from the native
-		socket's own runtime field, it was a TypeError on a Node client,
-		every send, and the first arrival, which closed the connection.
+		The uptime of the runtime the socket is on, asked of the socket
+		rather than read from the native socket's own runtime field, which
+		a Node client does not have.
 	**/
 	@:noCompletion private inline function __uptime():Float {
 		final runtime:CrossByte = __socket.__runtime();
@@ -869,11 +869,10 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 
 	/**
 		An error stops the reads, and `onError` is told. A `Socket` whose
-		connect failed says so with this alone, no connection came up, so
-		no `close` follows, and the connection ends here; one that was up
-		ends with the `close` its socket dispatches next. A connect that
-		failed used to end with `onError` and no `onClose`, where a
-		WebSocket's and a reliable UDP one's ended with both.
+		connect failed says so with this alone (no connection came up, so
+		no `close` follows), and the connection ends here, with `onError`
+		and then `onClose`, as a WebSocket's and a reliable UDP one's do;
+		one that was up ends with the `close` its socket dispatches next.
 	**/
 	@:noCompletion private function socket_onIoError(e:IOErrorEvent):Void {
 		if (__ended) {
@@ -1061,12 +1060,11 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 
 	/**
 		The uptime of the runtime the socket delivers on, read off its
-		transport. Every message sent and received asked `CrossByte.current()`
-		instead: a thread-local lookup a message, and on JavaScript the
-		application's runtime rather than a child's whenever a socket's
-		callback was what sent or received, a clock the child's heartbeat
-		does not read. The calling thread's is the fallback for a socket with
-		no transport yet.
+		transport, rather than `CrossByte.current()` for every message: a
+		thread-local lookup a message, and on JavaScript the application's
+		runtime rather than a child's whenever a socket's callback is what
+		sends or receives (a clock the child's heartbeat does not read). The
+		calling thread's is the fallback for a socket with no transport yet.
 	**/
 	@:noCompletion private inline function __uptime():Float {
 		var runtime:Null<CrossByte> = @:privateAccess __socket.__transportRuntime();
@@ -1107,8 +1105,8 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 	@:noCompletion private function socket_onDatagramData(event:DatagramSocketDataEvent):Void {
 		inTimestamp = __uptime();
 		// A copy: the event's bytes are valid only during this call, and what
-		// `onData` is handed is the application's to keep, on every transport,
-		// a stream's own input over TCP and WebSocket, and here the message.
+		// `onData` is handed is the application's to keep, on every transport
+		// (a stream's own input over TCP and WebSocket, and here the message).
 		var message:ByteArray = Arrivals.copyOf(event.data);
 		message.position = 0;
 		__onData(message);
@@ -1327,9 +1325,9 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 	}
 
 	/**
-		Closed once. A WebSocket already closed, by its peer, or by a
-		close() before this one, throws from its own close(), and so did
-		this: closing a connection whose peer had gone was an error.
+		Closed once. A WebSocket already closed (by its peer, or by a
+		close() before this one) throws from its own close(); this does not,
+		so closing a connection whose peer has gone is not an error.
 	**/
 	override public function __closeWith(reason:Reason):Void {
 		// From another thread, on the session's runtime; see `NetConnection.close`.
@@ -1367,9 +1365,9 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 	/**
 		How the peer closed: `Reason.Code` with the close frame's code and
 		reason, or `Reason.Closed` when the session ended with no code known.
-		It was `Reason.Closed` whatever the peer said, a server going away
-		and a server refusing a protocol violation were one close to the
-		application, and to an RPC call that failed because of it.
+		A server going away and a server refusing a protocol violation are
+		two closes to the application, and to an RPC call that failed because
+		of it.
 	**/
 	@:noCompletion private static function __closeReason(e:Event):Reason {
 		final closed:WebSocketCloseEvent = Std.downcast(e, WebSocketCloseEvent);

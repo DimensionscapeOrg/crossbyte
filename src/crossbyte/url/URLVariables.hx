@@ -105,9 +105,9 @@ abstract URLVariables(FieldStruct<Array<String>>) from FieldStruct<Array<String>
 
 		`URLRequest.data` is `Dynamic`, and at run time a `URLVariables` is the
 		`StringMap` beneath it. `toString()` above belongs to the abstract, so
-		`Std.string` never reaches it, Node sent a debug dump of the map, and
-		`Reflect.fields` sees the map's own fields, so the native client sent an
-		empty body. Every client asks this first instead.
+		`Std.string` never reaches it (it would give a debug dump of the
+		map), and `Reflect.fields` sees the map's own fields (an empty body).
+		Every client asks this first instead.
 	**/
 	@:noCompletion public static function encodeData(data:Dynamic):Null<String> {
 		if (data == null || !Std.isOfType(data, haxe.ds.StringMap)) {

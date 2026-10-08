@@ -10,16 +10,15 @@ import utest.Async;
 /**
 	A `wss://` client checks who it is talking to.
 
-	Every secure client used to be built with verification switched off, so a
-	`WebSocket`: and a `NetConnection` to a `wss://` address, accepted any
-	certificate for any host: whoever could sit in the path could present one
-	of their own and read everything. There was no way to turn verification
-	on.
+	Verification can be turned on for a secure client. Without it a
+	`WebSocket` (and a `NetConnection` to a `wss://` address) accepts any
+	certificate for any host: whoever could sit in the path could present
+	one of their own and read everything.
 
 	Each case runs the same server, presenting a self-signed certificate, so
 	the client's settings are the only thing that differs between them. The
-	refusal on its own would prove little, a client that cannot connect at
-	all refuses too, which is why it sits beside the cases showing the same
+	refusal on its own would prove little (a client that cannot connect at
+	all refuses too), which is why it sits beside the cases showing the same
 	server is reachable once the client is told to trust it.
 
 	Not on eval, where a TLS handshake cannot be made non-blocking and would
@@ -34,7 +33,7 @@ class WebSocketTLSTest extends utest.Test {
 			Assert.isTrue(outcome.ended, "the refused connection was never reported as ended");
 			Assert.isTrue(__isCertificateRefusal(outcome.failure), "the connection failed, but not over the certificate: " + outcome.failure);
 			// A failed connect, as a browser reports one, on every target:
-			// natively a TLS failure closed with 1015, on Node with 1006.
+			// 1006, not the 1015 a TLS failure might suggest.
 			Assert.equals(1006, outcome.closeCode, "a refused certificate did not end the connect as a failed one");
 			Assert.equals(0, outcome.sessions, "the server completed an upgrade the client should have refused");
 		}, async);
@@ -68,7 +67,7 @@ class WebSocketTLSTest extends utest.Test {
 			Assert.isTrue(outcome.ended, "the refused connection was never reported as ended");
 			Assert.isTrue(__isCertificateRefusal(outcome.failure), "the connection failed, but not over the certificate: " + outcome.failure);
 			// A failed connect, as a browser reports one, on every target:
-			// natively a TLS failure closed with 1015, on Node with 1006.
+			// 1006, not the 1015 a TLS failure might suggest.
 			Assert.equals(1006, outcome.closeCode, "a refused certificate did not end the connect as a failed one");
 			Assert.equals(0, outcome.sessions, "the server completed an upgrade the client should have refused");
 		}, async);
@@ -77,11 +76,10 @@ class WebSocketTLSTest extends utest.Test {
 	#if (java || jvm)
 	@:timeout(30000)
 	public function testAServerAtAnIPv6AddressIsVerified(async:Async):Void {
-		// The jvm sent the address as the SNI name, which the JDK refuses for
-		// an IPv6 literal before a byte is sent: no verified connection to one
-		// could be made at all. An address is checked against the
-		// certificate's IP entries instead. Below the WebSocket, whose client
-		// does not take an IPv6 literal yet.
+		// The jvm sends no SNI name for an address, since the JDK refuses an
+		// IPv6 literal there before a byte is sent, and checks the address
+		// against the certificate's IP entries instead. Below the WebSocket,
+		// whose client does not take an IPv6 literal yet.
 		var fixture = TLSTestFixture.trusted(["::1"]);
 		if (fixture == null) {
 			Assert.warn("no certificate toolchain on this machine; the case did not run");
@@ -174,10 +172,10 @@ class WebSocketTLSTest extends utest.Test {
 			Assert.equals(0, outcome.sessions);
 
 			// And promptly: the server's handshake fails on the first bytes it
-			// reads, and closing that connection is what tells the client. The
-			// server used to drop a session whose TLS failed without closing its
-			// socket, so the client sat waiting on an answer until a deadline
-			// of its own, and the server held the descriptor for good.
+			// reads, and closing that connection is what tells the client. A
+			// server that dropped a session whose TLS failed without closing its
+			// socket would leave the client waiting on an answer until a deadline
+			// of its own, and hold the descriptor for good.
 			Assert.isTrue(outcome.ended, "the client was never told the connection had ended");
 			Assert.isTrue(outcome.endedAfter < 3.0, 'the connection took ${outcome.endedAfter} s to end after its TLS handshake failed');
 		}, async);

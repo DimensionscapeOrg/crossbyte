@@ -5,8 +5,8 @@ and `Socket` APIs.
 
 It includes:
 
-- `SocketChatServerSample` - a broadcast chat server
-- `SocketChatClientSample` - a console client
+- `SocketChatServerSample`: a broadcast chat server
+- `SocketChatClientSample`: a console client
 
 Useful commands from `samples/socket-chat`:
 

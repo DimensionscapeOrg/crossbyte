@@ -11,15 +11,13 @@ package crossbyte.auth.jwt;
  * var claims:JWTPayload = {sub: "user-1", exp: now + 600, aud: ["api", "billing"]};
  * claims.audience.contains("billing"); // true
  * ```
- *
- * It was `Dynamic`, so reading it needed a check of its type at every use,
- * and a `String` taken from an array-valued claim failed only at run time.
  */
 abstract JWTAudience(Dynamic) from String from Array<String> to Dynamic {
 	/**
 	 * Whether this names `audience`: is it, or, as an array, holds it. False
 	 * when there is no audience, and for a `null` one asked about. An entry
-	 * of an array that is not a string, a token's, which can hold any JSON,
+	 * when there is no audience, and for a `null` one asked about. An entry
+	 * of an array that is not a string (a token's, which can hold any JSON)
 	 * matches nothing.
 	 */
 	public function contains(audience:String):Bool {

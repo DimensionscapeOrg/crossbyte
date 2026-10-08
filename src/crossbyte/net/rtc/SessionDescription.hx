@@ -8,13 +8,13 @@ import crossbyte.utils.IntParse;
 	A `PeerDescription` written as SDP, and read back from it.
 
 	Two CrossByte peers have no reason to serialise a description any particular
-	way, they can pass the structure. A browser does: `RTCPeerConnection`
+	way: they can pass the structure. A browser does: `RTCPeerConnection`
 	takes an offer and an answer as SDP and gives them back the same way, so
 	this is the translation, and it is the only thing standing between the stack
 	and a browser at the other end.
 
 	It renders exactly enough for a data channel. There is no media here, no
-	codec negotiation, no BUNDLE of several streams, a data channel is one
+	codec negotiation, no BUNDLE of several streams: a data channel is one
 	`m=application` line, and everything the connection needs hangs off it.
 
 	## What each line is doing
@@ -50,7 +50,7 @@ class SessionDescription {
 	/**
 		The port SDP puts on a line whose real port ICE will choose.
 
-		RFC 4145 uses 9, the discard port, precisely because it means nothing,
+		RFC 4145 uses 9, the discard port, precisely because it means nothing:
 		a peer that dialled it would reach a service defined to throw traffic
 		away, which is a safer accident than reaching something real.
 	**/
@@ -121,10 +121,10 @@ class SessionDescription {
 			}
 		}
 
-		// Only when the description says gathering is over. It was written into
-		// every document, so an answer sent before its reflexive candidate had
-		// come back told the peer to stop listening for the very candidate that
-		// would have reached it.
+		// Only when the description says gathering is over: written into
+		// every document, it would tell the peer of an answer sent before its
+		// reflexive candidate came back to stop listening for the very
+		// candidate that would reach it.
 		if (description.endOfCandidates == true) {
 			lines.push("a=end-of-candidates");
 		}
@@ -246,7 +246,7 @@ class SessionDescription {
 	/**
 		Whether a media section id is an SDP token (RFC 4566): printable, and
 		free of the spaces and separators that would let it spill into the rest
-		of the line, or, with a line break, into a line of its own.
+		of the line or, with a line break, into a line of its own.
 	**/
 	private static function isToken(text:String):Bool {
 		if (text == null || text.length == 0 || text.length > 256) {
@@ -303,7 +303,7 @@ class SessionDescription {
 		The role to answer an offer with.
 
 		`actpass` leaves the choice here, and `active` is the conventional
-		answer, it makes the answering peer the DTLS client, which is what a
+		answer: it makes the answering peer the DTLS client, which is what a
 		browser expects when it offers. An offer that has already committed to a
 		role gets the opposite, because both peers taking the same one is two
 		peers waiting for a ClientHello neither will send.
@@ -336,7 +336,7 @@ class SessionDescription {
 		priority address port typ type`, and `raddr`/`rport` after it for
 		anything that is not a host candidate.
 
-		Without the `a=`, which is how a trickled candidate travels, what a
+		Without the `a=`, which is how a trickled candidate travels: what a
 		browser's `RTCIceCandidate.candidate` holds and `addIceCandidate` takes.
 		A description written as SDP puts `a=` in front of each.
 
@@ -377,9 +377,8 @@ class SessionDescription {
 		Reads one candidate line, with or without its `a=`: a line from a
 		description, or one the peer trickled.
 
-		Public so trickled candidates can be read the way a description's are.
-		It was private, and an application passing a browser's candidates on had
-		to write its own parser, and get the field order right itself.
+		Public so trickled candidates can be read the way a description's are,
+		without an application writing its own parser.
 
 		@return The candidate, or null for one this stack cannot use: TCP, a
 		component other than the one a data channel has, or a priority or port
@@ -494,10 +493,10 @@ class SessionDescription {
 	/**
 		What this stack will accept in one message, advertised so a peer knows.
 
-		The largest message the receiver reassembles. It used to be the receive
-		window, twice that: a peer told two megabytes had anything over one
-		acknowledged fragment by fragment and then dropped whole, so its sender
-		saw success and nothing arrived.
+		The largest message the receiver reassembles. Advertising the receive
+		window instead, twice that, would tell a peer two megabytes: anything
+		it sent over one would be acknowledged fragment by fragment and then
+		dropped whole, so it would see success and nothing would arrive.
 	**/
 	private static var MaxMessageSize(get, never):Int;
 

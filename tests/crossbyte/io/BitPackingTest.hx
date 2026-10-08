@@ -35,8 +35,8 @@ class BitPackingTest extends utest.Test {
 		writer.writeBool(true);
 
 		// Worked by hand: bits fill 32-bit words from the bottom and words are
-		// stored little-endian. Word 0 is 0xBEEFABCD, 101, 1, 0xABC and the
-		// low half of 0xDEADBEEF, and word 1 is 0x0001DEAD, trimmed to the
+		// stored little-endian. Word 0 is 0xBEEFABCD (101, 1, 0xABC and the
+		// low half of 0xDEADBEEF) and word 1 is 0x0001DEAD, trimmed to the
 		// 49 bits written.
 		Assert.equals(49, writer.bitLength);
 		Assert.equals("cdabefbeadde01", hex(writer.finish()));

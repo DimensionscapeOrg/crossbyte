@@ -14,8 +14,8 @@ import utest.Assert;
 	What a session holds for a peer that is not taking what it is sent:
 	`maxOutputBufferSize`, 256 KB unless changed, and past it the session is
 	ended with an `ioError` saying why, as a TCP connection to a peer that
-	stopped reading would be. It was unbounded by default, and an overloaded
-	server held 1.2 GB for its sessions.
+	stopped reading would be, rather than held without bound by an
+	overloaded server.
 **/
 @:access(crossbyte.net.ReliableDatagramSocket)
 @:access(crossbyte.net.CongestionControl)
@@ -83,10 +83,10 @@ class ReliableDatagramSendQueueTest extends utest.Test {
 	}
 
 	/**
-		Under `THROW` the limit is applied once the whole message is queued.
-		It was applied after each frame, and threw part way through a message
-		larger than a frame: what was queued said more followed, nothing
-		followed, and the peer put the next message sent together onto it.
+		Under `THROW` the limit is applied once the whole message is queued,
+		not after each frame, which would throw part way through a message
+		larger than a frame: what was queued would say more followed, nothing
+		would follow, and the peer would put the next message sent onto it.
 	**/
 	public function testAMessageLargerThanAFrameIsQueuedWholeBeforeTheLimitThrows():Void {
 		var socket = QueueWire.make();
@@ -112,8 +112,8 @@ class ReliableDatagramSendQueueTest extends utest.Test {
 
 	/**
 		And a stream's bytes flushed past the limit under `THROW` are queued
-		once: they were left in the output buffer when the limit threw, and
-		the next flush queued them again.
+		once: not left in the output buffer when the limit throws, to be queued
+		again by the next flush.
 	**/
 	public function testStreamBytesFlushedPastTheLimitAreQueuedOnce():Void {
 		var socket = QueueWire.make();

@@ -4,8 +4,8 @@ import haxe.ds.Vector;
 import haxe.io.Bytes;
 
 /**
-	ChaCha20-Poly1305 as RFC 8439 defines it, the IETF AEAD, a 32-byte key,
-	a 12-byte nonce and a 16-byte tag, in Haxe, for the targets that have
+	ChaCha20-Poly1305 as RFC 8439 defines it (the IETF AEAD, a 32-byte key,
+	a 12-byte nonce and a 16-byte tag) in Haxe, for the targets that have
 	no implementation of their own to call: the jvm (Java 8, which CI runs,
 	has no ChaCha20; it came in Java 11), and HashLink, neko and the
 	interpreter, where only the cipher's tests use it. Natively the session

@@ -15,7 +15,7 @@ class URLRequest {
 		`application/x-www-form-urlencoded; charset=utf-8`. On Node and in a
 		browser a form goes as `application/x-www-form-urlencoded` and any
 		other body with no `Content-Type`, which RFC 9110 lets a server read as
-		`application/octet-stream`: save that a browser labels a `String`
+		`application/octet-stream`, save that a browser labels a `String`
 		`text/plain;charset=UTF-8` itself.
 	**/
 	public var contentType:String;
@@ -23,21 +23,21 @@ class URLRequest {
 	/**
 		What the request sends: a body, or a form's fields.
 
-		- A `String` or `haxe.io.Bytes`, a `ByteArray` among them, sent as its
-		  `length` bytes, is the body as it is, labelled with `contentType`.
+		- A `String` or `haxe.io.Bytes` (a `ByteArray` among them, sent as its
+		  `length` bytes) is the body as it is, labelled with `contentType`.
 		- A `URLVariables`, or any other object, is a form: its fields go as the
 		  query of a GET or HEAD, and as an `application/x-www-form-urlencoded`
-		  body otherwise, an array's items each as `name[]`, an object's
+		  body otherwise: an array's items each as `name[]`, an object's
 		  fields as `name[field]`.
 		- A number or a `Bool` is sent as `Std.string` writes it.
 
-		A redirect that turns the request into a GET, a 301, 302 or 303, for
-		anything but a HEAD, leaves the body behind. In a browser a GET or
+		A redirect that turns the request into a GET (a 301, 302 or 303, for
+		anything but a HEAD) leaves the body behind. In a browser a GET or
 		HEAD carries no body at all: the browser drops it.
 
 		Bytes are copied when `URLLoader.load` takes the request, so they are
 		the caller's again once it returns: a payload a listener was handed
-		for its call alone, a datagram's `event.data`, can be sent on
+		for its call alone (a datagram's `event.data`) can be sent on
 		from inside it.
 	**/
 	public var data:Dynamic;
@@ -62,8 +62,8 @@ class URLRequest {
 		response holds, in the clear, on the word of the server being left.
 		Set this only for a server known to redirect that way.
 
-		In a browser the browser makes the hop, one leaving an `https` page
-		for `http` it blocks itself, and a page learns of it only once it has
+		In a browser the browser makes the hop (one leaving an `https` page
+		for `http` it blocks itself), and a page learns of it only once it has
 		been made: the request then fails, with the response unread, but what
 		the hop sent has gone in the clear.
 
@@ -84,28 +84,28 @@ class URLRequest {
 
 		On Node a request for anything but HTTP/1.1 is refused with an
 		`IO_ERROR`, since Node's http client speaks no other. In a browser the
-		browser negotiates the version itself, HTTP/2 or HTTP/3 over
-		`https`, where the server offers it, and this is not consulted.
+		browser negotiates the version itself (HTTP/2 or HTTP/3 over
+		`https`, where the server offers it), and this is not consulted.
 	**/
 	public var httpVersion:HTTPVersion;
 
 	/**
-		How long, in milliseconds, the request may go with nothing arriving,
-		waiting for the response, reading its body, and connecting too but on
-		Node, where it starts once the connection is made, before it is
+		How long, in milliseconds, the request may go with nothing arriving
+		(waiting for the response, reading its body, and connecting too but on
+		Node, where it starts once the connection is made) before it is
 		abandoned with an `IO_ERROR`. Time without progress, not a deadline on
 		the whole exchange: a large download that keeps moving is waited for.
 
 		`0` or less is no limit, on every target: the load waits for as long
-		as the server takes, until `close()` ends it. It was 30 seconds
-		natively and no limit on JavaScript.
+		as the server takes, until `close()` ends it.
 
 		Natively, on the jvm and the interpreter it also bounds the wait for
 		a thread to run the load on, when `URLLoader.maxConcurrentLoads`
 		loads are already running: a load that has not started by then fails
-		with an `IO_ERROR` saying so. It waited for as long as the loads ahead
-		of it took, which nothing bounded, a load whose server trickles its
-		body holds its thread for as long as the body keeps coming.
+		with an `IO_ERROR` saying so, rather than waiting for as long as the
+		loads ahead of it take, which nothing bounds: a load whose server
+		trickles its body holds its thread for as long as the body keeps
+		coming.
 
 		Bytes arriving reset it, so a server sending a byte at a time is
 		waited for however long it takes; `headTimeout` and `totalTimeout`
@@ -117,8 +117,8 @@ class URLRequest {
 	public var idleTimeout:Int;
 
 	/**
-		How long, in milliseconds, the response's head, its status line and
-		header fields, after any `1xx`, has to arrive once the request has
+		How long, in milliseconds, the response's head (its status line and
+		header fields, after any `1xx`) has to arrive once the request has
 		been sent, before the load is abandoned with an `IO_ERROR`. A
 		deadline, not an idle timeout: bytes trickling in do not move it, so
 		a server sending its head a byte at a time is given up at it rather
@@ -140,8 +140,8 @@ class URLRequest {
 
 	/**
 		How long, in milliseconds, the whole load may take, from `load()` to
-		its `COMPLETE`, the wait for a thread, the name's lookup, connecting,
-		every redirect, sending the request and reading all of the response,
+		its `COMPLETE` (the wait for a thread, the name's lookup, connecting,
+		every redirect, sending the request and reading all of the response),
 		before it is abandoned with an `IO_ERROR`. The request is cancelled
 		where it stands, as `close()` cancels it.
 
@@ -158,16 +158,12 @@ class URLRequest {
 	public var totalTimeout:Int = 0;
 
 	/**
-		The most bytes a response body may take as it arrives, before any
-		content coding is undone, before the load is abandoned with an
+		The most bytes a response body may take as it arrives (before any
+		content coding is undone) before the load is abandoned with an
 		`IO_ERROR`. A `Content-Length` past it is refused before a byte of the
 		body is read; a chunked body, or one ended by the connection closing,
 		when it grows past it. Defaults to 64 MB; `0` or less removes the
 		limit. `maxDecompressedSize` bounds what it then decodes to.
-
-		It was `Http.MAX_BODY_SIZE` and `MAX_CHUNKED_BODY_SIZE`, process-wide
-		statics of the native client that one caller changed for every
-		request in the process, and Node had no limit at all.
 
 		Natively, on the jvm, the interpreter and Node, and over HTTP/2. In a
 		browser it is held to what the browser says it has received, which
@@ -182,26 +178,23 @@ class URLRequest {
 		`followRedirects = false`, which hands the redirect back as the
 		response.
 
-		It was `Http.MAX_REDIRECTS`, a process-wide static of the native
-		client. In a browser the browser follows redirects itself, to its own
-		limit, 20, by the Fetch standard, and this is not consulted.
+		In a browser the browser follows redirects itself, to its own limit
+		(20, by the Fetch standard), and this is not consulted.
 	**/
 	public var maxRedirects:Int = 10;
 
 	/**
-		The most bytes a response's header section may take, its status
-		line and header fields, with any `1xx` responses ahead of it, and,
+		The most bytes a response's header section may take (its status
+		line and header fields, with any `1xx` responses ahead of it) and,
 		apart from it, the trailers after a chunked body, before the load is
 		abandoned with an `IO_ERROR`. Defaults to 65536, the 64 KB the server
 		holds a request's header block to; `0` or less removes the limit.
 
-		It was `Http.MAX_RESPONSE_HEADER_BYTES`, a process-wide static of the
-		native client. Over HTTP/2 the section is counted as HPACK counts it,
-		and is held to the 64 KB its connection tells the server it takes
-		whatever this says, since the connection is shared. On Node it is
-		Node's `maxHeaderSize` for the request, which was Node's default of
-		16 KB; in a browser the browser keeps its own limit and this is not
-		consulted.
+		Over HTTP/2 the section is counted as HPACK counts it, and is held to
+		the 64 KB its connection tells the server it takes whatever this says,
+		since the connection is shared. On Node it is Node's `maxHeaderSize`
+		for the request, in place of Node's default of 16 KB; in a browser
+		the browser keeps its own limit and this is not consulted.
 	**/
 	public var maxResponseHeaderSize:Int = 64 * 1024;
 
@@ -209,16 +202,15 @@ class URLRequest {
 		Whether to carry cookies across this request's redirects.
 
 		With `followRedirects` on, which it is by default, a sign-in that
-		answers `302` with a session cookie was losing it: the cookie was read
-		off the wire and dropped with the rest of the response headers when the
-		next hop reset them. When this is `true` a `Set-Cookie` is kept and sent
-		back on the following hops.
+		answers `302` with a session cookie would otherwise lose it with the
+		rest of the response headers when the next hop resets them. When this
+		is `true` a `Set-Cookie` is kept and sent back on the following hops.
 
 		For the length of one request and no longer. This is not a browser's
 		cookie jar: a cookie goes back only to the host that set it, `Secure`
 		cookies are withheld from a plaintext hop, and nothing survives the
 		request finishing. There is no `Domain` attribute, no path matching and
-		no persistence, if you need a session that outlives one call, hold the
+		no persistence: if you need a session that outlives one call, hold the
 		cookie yourself and set it through `requestHeaders`, which also takes
 		precedence over this when you do. A host keeps 180 cookies at most, the
 		oldest going first, as a browser's do, and one longer than 4,096
@@ -241,8 +233,7 @@ class URLRequest {
 
 		What a response sends and what it decodes to are different numbers:
 		compression ratios have no ceiling, and a few hundred bytes of gzip or
-		Brotli can name gigabytes. The limit used to be an internal setting of
-		the native client only.
+		Brotli can name gigabytes.
 
 		In a browser the browser decodes a response before a page sees any of
 		it, so the limit is held to the whole body once it has arrived: a load
@@ -254,8 +245,8 @@ class URLRequest {
 	public var maxDecompressedSize:Int = 64 * 1024 * 1024;
 
 	/**
-		The HTTP method. Any of `URLRequestMethod`, `GET`, `POST`, `PUT`,
-		`DELETE`, `HEAD`, `OPTIONS`, or any other token a server understands,
+		The HTTP method. Any of `URLRequestMethod` (`GET`, `POST`, `PUT`,
+		`DELETE`, `HEAD`, `OPTIONS`) or any other token a server understands,
 		since this is a plain string and is not validated here.
 
 		@default URLRequestMethod.GET
@@ -273,13 +264,13 @@ class URLRequest {
 		`User-Agent`, `Host` and `Connection` are not checked that way over
 		HTTP/1.1: the client writes all three unconditionally, so a
 		`User-Agent` added here goes out as a second header rather than
-		replacing the first, set the `userAgent` property instead. Over
+		replacing the first: set the `userAgent` property instead. Over
 		HTTP/2, and on Node, which send one, a `User-Agent` here is the one
 		sent.
 
 		In a browser the browser refuses the headers the Fetch standard keeps
-		for itself, `Accept-Encoding`, `Content-Length`, `Cookie`, `Host` and
-		`Connection` among them, and says so in the console.
+		for itself (`Accept-Encoding`, `Content-Length`, `Cookie`, `Host` and
+		`Connection` among them) and says so in the console.
 	**/
 	public var requestHeaders:Array<URLRequestHeader>;
 
@@ -297,7 +288,7 @@ class URLRequest {
 	public var url:String;
 
 	/**
-		For `https`: whether the server's certificate is checked, that it
+		For `https`: whether the server's certificate is checked: that it
 		chains to an authority this request trusts, and that it names the host.
 		On by default.
 
@@ -314,18 +305,15 @@ class URLRequest {
 	#if !(js && !nodejs)
 	/**
 		For `https`: the authority this request trusts, in place of the
-		system's, a private CA's certificate, or a server's own self-signed
+		system's: a private CA's certificate, or a server's own self-signed
 		one, to check a server the system does not know without turning
 		`verifyCert` off. `null`, the default, trusts the system's store.
-
-		It used to be reachable only as a process-wide static, through
-		`@:privateAccess`, for every request at once.
 	**/
 	public var certAuthority:crossbyte.net.Certificate = null;
 
 	/**
 		For `https`: the certificate this request presents to a server that
-		asks for one, mutual TLS, with `clientKey`. Presented only to the
+		asks for one (mutual TLS) with `clientKey`. Presented only to the
 		origin the request was made to: a redirect that leaves it leaves the
 		certificate behind, as it leaves `Authorization`.
 	**/
@@ -337,8 +325,8 @@ class URLRequest {
 
 	/**
 		For `https`: the public keys the server's certificate may carry, each
-		the base64 SHA-256 of its SubjectPublicKeyInfo, RFC 7469's
-		`pin-sha256`: with or without a `sha256/` in front. When set, a
+		the base64 SHA-256 of its SubjectPublicKeyInfo (RFC 7469's
+		`pin-sha256`), with or without a `sha256/` in front. When set, a
 		server whose key is not one of these fails the request, on every hop,
 		after the handshake and before anything is sent. `null` or empty pins
 		nothing.
@@ -359,7 +347,7 @@ class URLRequest {
 		is null the client sends `CrossByte`, on every target but the browser.
 
 		In a browser the browser has the last word: unset, it sends its own,
-		and one set here it sends or refuses as it sees fit, Firefox sends
+		and one set here it sends or refuses as it sees fit: Firefox sends
 		it, Chrome and Safari keep their own and say so in the console.
 	**/
 	public var userAgent:String;

@@ -15,17 +15,16 @@ import sys.thread.Thread;
 	The HTTP server's access log: a line per response, written to standard
 	output by a thread of its own rather than by the runtime that answered.
 
-	Each line went out through `Logger` as the response was written. To a
-	Windows console a write is flushed and drawn before it returns, and an
-	HTTP/1.1 server answering as fast as it could lost 85% of its rate to it;
-	to a file, 10%. The runtime now formats the line (as `Logger` would, text
-	or JSON, with or without a time) and queues it, and the writer thread
-	takes everything queued at once, a few times a second or sooner once a
-	good deal has gathered, and writes it in one write: the runtime never
-	waits on the console.
+	The runtime formats each line (as `Logger` would, text or JSON, with or
+	without a time) and queues it, and the writer thread takes everything
+	queued at once, a few times a second or sooner once a good deal has
+	gathered, and writes it in one write: the runtime never waits on the
+	console. To a Windows console a write is flushed and drawn before it
+	returns; written per response, that costs an HTTP/1.1 server answering
+	as fast as it can 85% of its rate, and 10% to a file.
 
 	**Bounded.** The queue holds at most `CAP_CHARACTERS` of text. Past that a
-	line is counted and dropped, the runtime neither waits nor holds more,
+	line is counted and dropped (the runtime neither waits nor holds more),
 	and the next write says how many were, once. A console slower than the
 	server can only fall behind by that much.
 
@@ -37,10 +36,10 @@ import sys.thread.Thread;
 	spread over several, and several servers, log through it in the order
 	their lines were made: a connection's lines stay in its order.
 
-	Where `Logger` has a `sink` or a `recordSink`, the line goes there as
-	before, on the runtime's thread: the application's sink is its own, and
-	nothing here calls it from another thread. Likewise on targets without
-	threads, on Node, `Logger` already gathers a turn's lines into one write.
+	Where `Logger` has a `sink` or a `recordSink`, the line goes there, on
+	the runtime's thread: the application's sink is its own, and nothing
+	here calls it from another thread. Likewise on targets without threads;
+	on Node, `Logger` already gathers a turn's lines into one write.
 **/
 @:noCompletion
 class AccessLog {

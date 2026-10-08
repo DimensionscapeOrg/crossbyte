@@ -103,7 +103,7 @@ public static function EstimateBitCostsForLiteralsUTF8(pos:Int, len:Int, mask:In
       lit_cost *= 0.5;
       lit_cost += 0.5;
     }
-    // Make the first bytes more expensive, seems to help, not sure why.
+    // Make the first bytes more expensive; it seems to help, not sure why.
     // Perhaps because the entropy source is changing its properties
     // rapidly in the beginning of the file, perhaps because the beginning
     // of the data is a statistical "anomaly".

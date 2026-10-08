@@ -42,7 +42,7 @@ class DBParameterBindingTest extends utest.Test {
 		// And a lone `:user` does not consume a following `name` run.
 		var lookup2 = lookupOf(["user" => "U"]);
 		var result2 = ParamBinder.substitute(":username", lookup2, wrapEscape);
-		// `:username` has no value -> left verbatim, `:user` must not partial-match.
+		// `:username` has no value, so it is left verbatim; `:user` must not partial-match.
 		Assert.equals(":username", result2);
 	}
 
@@ -85,9 +85,9 @@ class DBParameterBindingTest extends utest.Test {
 		// The sharpest case, and the reason the scanner tracks comments at all.
 		// Quoting means nothing inside a comment: escape() can wrap a value
 		// perfectly and it still ends the comment at its first newline, putting
-		// everything after it back into statement text. Measured before the
-		// scanner knew about comments, "-- audit :note" with a newline in the
-		// value produced a second line the server executed.
+		// everything after it back into statement text. With a scanner unaware
+		// of comments, "-- audit :note" with a newline in the value would produce
+		// a second line the server executed.
 		var params = lookupOf(["note" => "x" + String.fromCharCode(10) + "OR 1=1 --"]);
 		var sql = "SELECT * FROM t" + String.fromCharCode(10) + "-- audit :note" + String.fromCharCode(10) + "WHERE id = 1";
 
@@ -133,7 +133,7 @@ class DBParameterBindingTest extends utest.Test {
 
 	public function testANullParameterIsSubstitutedWhenItExists():Void {
 		// substitute() cannot tell a parameter set to null from one never
-		// set, so a null left :name in the SQL. substituteWith() asks.
+		// set, so it leaves :name in the SQL for a null. substituteWith() asks.
 		var present:Map<String, Bool> = ["gone" => true];
 		var result = ParamBinder.substituteWith("a = :gone, b = :absent", name -> present.exists(name), name -> null,
 			value -> value == null ? "NULL" : "<<" + Std.string(value) + ">>", false);
@@ -146,11 +146,11 @@ class DBParameterBindingTest extends utest.Test {
 	@:access(crossbyte.db.postgres.PostgresStatement)
 	@:access(crossbyte.db.sql.sqlite.SQLiteStatement)
 	public function testEveryDriverWritesANullParameterAsNull():Void {
-		// Postgres's and SQLite's statements took a parameter set to null for
-		// one never set, and left :email in the SQL, where MySQL's writes NULL.
-		// On Postgres the statement then failed at the server; SQLite reads an
-		// unbound :email as NULL, by luck. Mongo's refused it as "no parameter
-		// named email", though it was there (MongoCrudTest has that one).
+		// A parameter set to null is not one never set: :email becomes NULL in
+		// Postgres's and SQLite's statements, as MySQL's writes it, rather than
+		// staying in the SQL, where Postgres would fail at the server and SQLite
+		// would read an unbound :email as NULL by luck. (Mongo's is in
+		// MongoCrudTest.)
 		var sql:String = "INSERT INTO users (name, email) VALUES (:name, :email)";
 
 		var postgres = new crossbyte.db.postgres.PostgresStatement();
@@ -179,19 +179,19 @@ class DBParameterBindingTest extends utest.Test {
 			ParamBinder.substituteWith(sql, name -> params(name) != null, params, wrapEscape, true));
 
 		// Standard SQL: the quote after the backslash ends the literal, and
-		// the scan is then out of step with a MySQL server for the rest of
-		// the statement, substituting inside what MySQL reads as the
-		// literal, and not where MySQL reads statement text.
+		// the scan would then be out of step with a MySQL server for the rest of
+		// the statement, substituting inside what MySQL reads as the literal,
+		// and not where MySQL reads statement text.
 		Assert.equals("x = 'it\\'s <<alpha>>' AND y = :name", ParamBinder.substitute(sql, params, wrapEscape));
 	}
 
 	public function testAPostgresEscapeStringHonoursItsBackslashes():Void {
 		// E'...' reads a backslash as an escape in PostgreSQL even with
 		// standard_conforming_strings on, so in E'it\'s :name' the quote
-		// after the backslash does not end the literal. The scan ended it
-		// there, substituted the :name the server reads as inside the
-		// literal, and a value with no quote of its own then ended the
-		// server's literal for it: what followed was statement text.
+		// after the backslash does not end the literal. A scan ending it there
+		// would substitute the :name the server reads as inside the literal,
+		// and a value with no quote of its own would then end the server's
+		// literal for it: what followed would be statement text.
 		var params = lookupOf(["name" => "alpha"]);
 		var sql:String = "x = E'it\\'s :name' AND y = :name";
 
@@ -225,7 +225,7 @@ class DBParameterBindingTest extends utest.Test {
 			ParamBinder.substituteWith("SELECT foo$bar$ AS :name", has, params, wrapEscape, false, true));
 		// Unterminated: nothing after the opening tag is substituted.
 		Assert.equals("SELECT $$ :name", ParamBinder.substituteWith("SELECT $$ :name", has, params, wrapEscape, false, true));
-		// Not asked for, as for SQLite and MySQL: substituted as before.
+		// Not asked for, as for SQLite and MySQL: substituted.
 		Assert.equals("SELECT $$ <<alpha>> $$", ParamBinder.substituteWith("SELECT $$ :name $$", has, params, wrapEscape, false));
 	}
 
@@ -233,9 +233,9 @@ class DBParameterBindingTest extends utest.Test {
 	@:access(crossbyte.db.postgres.PostgresStatement)
 	public function testAPostgresStatementLeavesItsDollarQuotesAlone():Void {
 		// $$...$$ and $tag$...$tag$ quote everything up to the closing tag,
-		// quotes included. The scan did not know them, so a :name inside one
-		// was substituted, and a value holding the tag ended the string
-		// there, everything after it statement text.
+		// quotes included. A scan not knowing them would substitute a :name
+		// inside one, and a value holding the tag would end the string there,
+		// everything after it statement text.
 		var postgres = new crossbyte.db.postgres.PostgresStatement();
 		postgres.parameters.name = "$$; DROP TABLE users; --";
 		Assert.equals("SELECT $$ :name $$, '$$; DROP TABLE users; --'", postgres.__applyParameters("SELECT $$ :name $$, :name"));

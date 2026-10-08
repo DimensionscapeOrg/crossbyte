@@ -16,10 +16,10 @@ import crossbyte.net.Socket;
 /**
 	A callback's failure costs that callback, not the runtime.
 
-	Every one of these used to end the loop: the throw left the timer, the
-	tick dispatch or the socket poll, and nothing above caught it. EXIT was
-	never dispatched, held output never flushed, a recurring timer that threw
-	was dequeued for good, and every other connection went down with the one
+	In each case here, a throw that left the timer, the tick dispatch or the
+	socket poll with nothing above to catch it would end the loop: EXIT never
+	dispatched, held output never flushed, a recurring timer that threw
+	dequeued for good, and every other connection taken down with the one
 	whose handler had the bug.
 **/
 @:access(crossbyte.core.CrossByte)
@@ -116,9 +116,9 @@ class UncaughtErrorTest extends utest.Test {
 
 	#if js
 	/**
-		On JavaScript the loop is a chain of the platform's own timeouts, and
-		a throw out of one ended the chain: on Node the process died of it,
-		and in a page the runtime simply never ran another frame.
+		On JavaScript the loop is a chain of the platform's own timeouts, so a
+		throw out of one must not end the chain: on Node the process would die
+		of it, and in a page the runtime would simply never run another frame.
 	**/
 	@:timeout(5000)
 	public function testTheFrameChainCarriesOnPastAFailure(async:utest.Async):Void {

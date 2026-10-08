@@ -193,8 +193,8 @@ class H2ServerTest extends utest.Test {
 
 	public function testMalformedRequestResetsOnlyThatStream():Void {
 		// Missing :path. §8.1.1 makes a malformed message a *stream* error, so
-		// the connection must keep serving, resetting everything over one
-		// bad request would be a denial of service any client could trigger.
+		// the connection must keep serving: resetting everything over one bad
+		// request would be a denial of service any client could trigger.
 		var reset = firstResetFor([new HpackHeader(":method", "GET"), new HpackHeader(":scheme", "http")]);
 
 		Require.notNull(reset);
@@ -210,9 +210,9 @@ class H2ServerTest extends utest.Test {
 
 	public function testAControlCharacterInAFieldIsRejected():Void {
 		// RFC 9113 8.2.1 makes a CR, LF or NUL anywhere in a value malformed.
-		// HPACK carries any byte, so these reached the request middleware
-		// sees, where a CR LF could be written into an HTTP/1.1 request or a
-		// log line onward.
+		// HPACK carries any byte, so these would otherwise reach the request
+		// middleware sees, where a CR LF could be written into an HTTP/1.1
+		// request or a log line onward.
 		var cr:String = String.fromCharCode(13);
 		var lf:String = String.fromCharCode(10);
 		var nul:String = String.fromCharCode(0);
@@ -248,9 +248,9 @@ class H2ServerTest extends utest.Test {
 
 	/**
 		A request sent with trailers reaches the handler with its own header
-		section and body. The trailer block replaced the header section, so
-		the request was read from the trailers, found to have no `:method`,
-		and reset: one sent with trailers never arrived.
+		section and body: the trailer block does not replace the header
+		section, which would leave the request read from the trailers, found
+		to have no `:method`, and reset.
 	**/
 	public function testARequestWithTrailersArrivesWithItsOwnHeaders():Void {
 		var out = new Collector();
@@ -308,7 +308,7 @@ class H2ServerTest extends utest.Test {
 		// application, which must not be told a length the body does not have.
 		Assert.notNull(firstResetFor(requestFields([new HpackHeader("content-length", "5")])), "a length with no body was accepted");
 		Assert.notNull(resetForBody(requestFields([new HpackHeader("content-length", "4")]), Bytes.ofString("hello")), "a short length was accepted");
-		// 2^32 + 5, which Std.parseInt read as 5 on Linux native: it must not
+		// 2^32 + 5, which Std.parseInt reads as 5 on Linux native: it must not
 		// be taken to match a five-byte body.
 		Assert.notNull(resetForBody(requestFields([new HpackHeader("content-length", "4294967301")]), Bytes.ofString("hello")),
 			"a length past an Int matched a five-byte body");
@@ -319,9 +319,9 @@ class H2ServerTest extends utest.Test {
 	}
 
 	public function testABodilessResponseReleasesItsSlot():Void {
-		// A response with no body ended its stream without releasing the
-		// concurrency slot, so after as many 204s, 304s or HEADs as the limit
-		// allows, every new stream on the connection was refused.
+		// A response with no body ends its stream and releases the concurrency
+		// slot; otherwise, after as many 204s, 304s or HEADs as the limit allows,
+		// every new stream on the connection would be refused.
 		var out = new Collector();
 		var settings = new H2Settings();
 		settings.enablePush = false;
@@ -344,10 +344,10 @@ class H2ServerTest extends utest.Test {
 	}
 
 	public function testARefusedStreamStillAdvancesTheHeaderTable():Void {
-		// A stream refused for the concurrency limit was reset before its
-		// header block was read, so a header it added to the HPACK table was
-		// missing from this side's, and the next block to refer to it decoded
-		// wrongly. The block is decoded now, then refused.
+		// A stream refused for the concurrency limit has its header block
+		// decoded first, then is refused: reset before the block was read, a
+		// header it added to the HPACK table would be missing from this side's,
+		// and the next block to refer to it would decode wrongly.
 		var out = new Collector();
 		var settings = new H2Settings();
 		settings.enablePush = false;
@@ -380,9 +380,9 @@ class H2ServerTest extends utest.Test {
 	}
 
 	public function testABodyPastTheCapIsDeliveredEarlyAndTheStreamReset():Void {
-		// DATA was appended with no limit. Past the cap the request is handed
-		// over at once, marked, so it can be refused rather than buffered, and
-		// the stream is reset without error to stop the upload (§8.1).
+		// DATA is not appended with no limit. Past the cap the request is
+		// handed over at once, marked, so it can be refused rather than
+		// buffered, and the stream is reset without error to stop the upload (§8.1).
 		var out = new Collector();
 		var server = new H2ServerConnection(out.write);
 		server.maxRequestBodySize = 10;
@@ -453,8 +453,8 @@ class H2ServerTest extends utest.Test {
 	}
 
 	public function testDataPastAStreamWindowResetsTheStream():Void {
-		// Nothing checked that a client kept to its windows. A content-length
-		// of 100 opens no more than the first window.
+		// A client must keep to its windows. A content-length of 100 opens no
+		// more than the first window.
 		var server = new Budgeted(4 * 1024 * 1024, 1024 * 1024);
 		server.open(1, 100);
 		server.data(1, 16384, false);
@@ -552,7 +552,7 @@ class H2ServerTest extends utest.Test {
 		// A 3 MB upload is opened a megabyte at a time, so most of its body is
 		// still to be asked for when a newer upload arrives. The newer one is
 		// opened only from what is left once the older one's whole body is set
-		// aside, next to nothing, so the older can always finish; then the
+		// aside (next to nothing), so the older can always finish; then the
 		// newer gets its turn.
 		var size:Int = 3 * 1024 * 1024;
 		var server = new Budgeted(4 * 1024 * 1024, size);
@@ -646,9 +646,9 @@ class H2ServerTest extends utest.Test {
 	}
 
 	public function testDataAfterARequestHasEndedIsAStreamError():Void {
-		// A stream the peer has ended takes no more DATA (5.1). It was
-		// appended, and a second END_STREAM delivered the request again: two
-		// handlers for one stream, each answering it.
+		// A stream the peer has ended takes no more DATA (5.1): appended, a
+		// second END_STREAM would deliver the request again, two handlers for
+		// one stream, each answering it.
 		var out = new Collector();
 		var server = new H2ServerConnection(out.write);
 		var delivered:Int = 0;
@@ -750,8 +750,8 @@ class H2ServerTest extends utest.Test {
 		// and a PING go out; streams the client sent before it read them are
 		// taken and answered, not refused. Its answer to the PING brings the
 		// final GOAWAY, naming the last stream taken, and only one opened after
-		// that is refused. The one GOAWAY named the limit's stream at once, so
-		// a busy client's streams in flight were refused.
+		// that is refused. One GOAWAY naming the limit's stream at once would
+		// refuse a busy client's streams in flight.
 		var server = new Retiring(2);
 		for (id in [1, 3, 5]) {
 			server.get(id);
@@ -797,11 +797,11 @@ class H2ServerTest extends utest.Test {
 
 	public function testTheClientsTableSizeDoesNotGrowTheServersTable():Void {
 		// SETTINGS_HEADER_TABLE_SIZE is the most the client's decoder will
-		// hold, and the server's encoder followed it with no ceiling: a client
-		// saying a megabyte kept every distinct response field the server sent
-		// in the server's memory for the connection's life, each one searched
-		// for every field after. An encoder may use less (RFC 7541 4.2), and
-		// the server's keeps to the default 4 KB, as the client's does.
+		// hold, and the server's encoder must not follow it with no ceiling: a
+		// client saying a megabyte would keep every distinct response field the
+		// server sent in the server's memory for the connection's life, each one
+		// searched for every field after. An encoder may use less (RFC 7541 4.2),
+		// and the server's keeps to the default 4 KB, as the client's does.
 		var server = __tableServer("000100100000");
 		var encoder = new HpackEncoder(4096);
 		var id:Int = 1;
@@ -818,8 +818,8 @@ class H2ServerTest extends utest.Test {
 
 	public function testATableSizeThatReadsNegativeIsHeldToTheCeiling():Void {
 		// Past 2^31 - 1 the setting reads negative, which is over the ceiling,
-		// not under it: followed, it left the server's table empty and its
-		// size never announced. A size under the ceiling is still followed.
+		// not under it: followed, it would leave the server's table empty and
+		// its size never announced. A size under the ceiling is still followed.
 		var server = __tableServer("0001ffffffff");
 		Assert.equals(H2Connection.MAX_ENCODER_TABLE_SIZE, @:privateAccess server.__encoder.capacity);
 		server.receive(frame(H2FrameType.SETTINGS, 0, 0, Bytes.ofHex("000100000100")));
@@ -851,7 +851,7 @@ class H2ServerTest extends utest.Test {
 
 		// The default window is 65535 in each direction (6.5.2), and 6.9.1
 		// forbids sending past it. Writing the whole body anyway is not a
-		// slow transfer, it is a FLOW_CONTROL_ERROR, and a conforming peer
+		// slow transfer: it is a FLOW_CONTROL_ERROR, and a conforming peer
 		// kills the connection over it.
 		Assert.equals(65535, link.dataSent());
 		Assert.isFalse(link.sawEndStream());
@@ -1087,10 +1087,9 @@ class H2ServerTest extends utest.Test {
 
 		// A HEADERS that never ends, followed by CONTINUATION frames that keep
 		// arriving. Each frame is within SETTINGS_MAX_FRAME_SIZE, so the
-		// per-frame limit never fires; nothing bounded the run itself, and the
-		// buffer only grew. SETTINGS_MAX_HEADER_LIST_SIZE does not help,
-		// that limits what the block decodes to, and this never reaches the
-		// decoder.
+		// per-frame limit never fires; the run itself must be bounded, or the
+		// buffer only grows. SETTINGS_MAX_HEADER_LIST_SIZE does not help: that
+		// limits what the block decodes to, and this never reaches the decoder.
 		var filler = Bytes.alloc(1024);
 		server.receive(frame(H2FrameType.HEADERS, 0, 1, filler));
 		for (_ in 0...8) {
@@ -1106,8 +1105,8 @@ class H2ServerTest extends utest.Test {
 	}
 
 	public function testTheHeaderListLimitIsAdvertised():Void {
-		// SETTINGS_MAX_HEADER_LIST_SIZE was never sent, which tells a client
-		// the list is unlimited; the decoder quietly allowed eight megabytes.
+		// SETTINGS_MAX_HEADER_LIST_SIZE is sent, since its absence tells a
+		// client the list is unlimited, and the decoder holds to it.
 		var out = new Collector();
 		var server = new H2ServerConnection(out.write);
 		server.receive(Bytes.ofString(H2Connection.PREFACE));
@@ -1130,10 +1129,10 @@ class H2ServerTest extends utest.Test {
 
 	public function testAHeaderSectionPastTheLimitReachesNoHandlerAndTheConnectionCarriesOn():Void {
 		// 3,000 one-byte references to one cookie crumb: a block of about three
-		// kilobytes that decodes to 117 KB by the table's accounting. It was
-		// accepted, all of it, and joined; the HTTP/1.1 path refuses the same
-		// section at 64 KB. Refused now, and decoded to its end first, so the
-		// request after it on the same connection still decodes as sent.
+		// kilobytes that decodes to 117 KB by the table's accounting. Refused,
+		// as the HTTP/1.1 path refuses the same section at 64 KB, not accepted
+		// and joined; and decoded to its end first, so the request after it on
+		// the same connection still decodes as sent.
 		var link = new Loopback();
 		var fieldsSeen:Array<Int> = [];
 		var probe:Null<String> = null;
@@ -1235,8 +1234,8 @@ class H2ServerTest extends utest.Test {
 	}
 
 	public function testTheResetWindowAlsoTimesTheControlBudget():Void {
-		// One window measures both budgets, which HTTPServerConfig's
-		// http2ResetWindowSeconds now says: a PING flood is refused within it,
+		// One window measures both budgets, as HTTPServerConfig's
+		// http2ResetWindowSeconds says: a PING flood is refused within it,
 		// and a window of zero, where every window ends as it starts, lets
 		// nothing accumulate and so refuses neither flood.
 		var flood = new ResetFlood(3, 60.0);
@@ -1352,8 +1351,8 @@ class H2ServerTest extends utest.Test {
 	}
 
 	/**
-		Sends a request, a body, and then `trailers`, ending the stream or
-		not, and returns the RST_STREAM it drew, if any.
+		Sends a request, a body, and then `trailers` (ending the stream or
+		not), and returns the RST_STREAM it drew, if any.
 	**/
 	private static function resetForTrailers(trailers:Array<HpackHeader>, endStream:Bool):Null<H2Frame> {
 		var out = new Collector();
@@ -1432,8 +1431,8 @@ private class Collector {
 /**
  * Runs `H2Connection` and `H2ServerConnection` against each other.
  *
- * Both are blocking-shaped in opposite ways, the client pulls from an
- * `Input`, the server is pushed bytes, so the client's input is a queue this
+ * Both are blocking-shaped in opposite ways (the client pulls from an
+ * `Input`, the server is pushed bytes), so the client's input is a queue this
  * fills from the server's output between steps.
  */
 private class Loopback {

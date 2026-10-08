@@ -42,8 +42,8 @@ class H2ConnectionPool {
 	public static var idleTimeoutSeconds:Float = 90;
 
 	private static final __sessions:Map<String, Array<H2ClientSession>> = new Map();
-	// Connections being opened, by origin, one for each set of TLS options
-	// asked for, and who waits on each.
+	// Connections being opened, by origin (one for each set of TLS options
+	// asked for), and who waits on each.
 	private static final __connecting:Map<String, Array<PendingConnect>> = new Map();
 	private static final __lock:Mutex = new Mutex();
 
@@ -53,18 +53,15 @@ class H2ConnectionPool {
 	 *
 	 * Connecting is serialized per origin. Without that, concurrent first
 	 * requests to the same host each find no session, each open their own, and
-	 * the multiplexing never happens, the very case it exists for is the one
+	 * the multiplexing never happens: the very case it exists for is the one
 	 * that races. So one request connects and the others wait for it, per
 	 * origin, so a slow host cannot hold up connections to every other one.
 	 *
-	 * The waiting has limits. The others waited on a per-origin mutex, as long
-	 * as the connect took and without a deadline or a cancel reaching them, so
-	 * a server that accepted TCP and never finished TLS held every request to
-	 * its origin for good: three requests, no outcome in 15 seconds, a cancel
-	 * doing nothing. A waiter now gives up at `timeoutSeconds`, leaves at once
-	 * on its `cancelToken`, and is told the connector's failure rather than
-	 * trying the same connect again in turn, unless the connector was only
-	 * cancelled, when the next one tries.
+	 * The waiting has limits, so a server that accepts TCP and never finishes
+	 * TLS cannot hold every request to its origin for good. A waiter gives up
+	 * at `timeoutSeconds`, leaves at once on its `cancelToken`, and is told
+	 * the connector's failure rather than trying the same connect again in
+	 * turn, unless the connector was only cancelled, when the next one tries.
 	 *
 	 * `connect` runs outside the pool's lock: it performs a TCP connect and
 	 * possibly a TLS handshake, and holding a shared lock across that would
@@ -208,8 +205,8 @@ class H2ConnectionPool {
 
 	/**
 	 * A live session for `origin` with stream capacity, reaping dead and
-	 * expired ones on the way past, expired ones into `expired`, for the
-	 * caller to close once the lock is let go. Under the lock.
+	 * expired ones on the way past (expired ones into `expired`, for the
+	 * caller to close once the lock is let go). Under the lock.
 	 *
 	 * Returns `null` when a new connection is needed, except at the ceiling,
 	 * where the busiest session comes back instead: the peer refuses a stream
@@ -286,9 +283,9 @@ class H2ConnectionPool {
 	 * moment is never closed under.
 	 *
 	 * "At least" the timeout, so a timeout of N means idle for N or more and
-	 * a timeout of zero reaps anything not carrying a request. Strictly more
-	 * made that depend on whether the clock ticked between the request
-	 * finishing and the sweep, true natively, false on the jvm.
+	 * a timeout of zero reaps anything not carrying a request, whether or not
+	 * the clock ticked between the request finishing and the sweep (it does
+	 * natively, and not on the jvm).
 	 */
 	private static function __isExpired(session:H2ClientSession):Bool {
 		return idleTimeoutSeconds >= 0 && session.retireIfIdle(idleTimeoutSeconds);
@@ -296,7 +293,7 @@ class H2ConnectionPool {
 
 	/**
 		Retires sessions taken out of the pool: closed at once when they carry
-		nothing, dead, or idle, and otherwise once the last stream on them
+		nothing (dead, or idle), and otherwise once the last stream on them
 		ends (`H2ClientSession.retire`).
 	**/
 	private static function __closeAll(sessions:Array<H2ClientSession>):Void {
@@ -349,8 +346,8 @@ class H2ConnectionPool {
 	/**
 		Takes a session out of the pool without cutting short the requests it
 		carries: it closes once the last of them ends. For one that refused a
-		new request, its peer said GOAWAY, or the pool retired it as idle a
-		moment after handing it over, where `discard` would fail every other
+		new request (its peer said GOAWAY, or the pool retired it as idle a
+		moment after handing it over), where `discard` would fail every other
 		request still on it.
 	**/
 	public static function retire(session:H2ClientSession):Void {

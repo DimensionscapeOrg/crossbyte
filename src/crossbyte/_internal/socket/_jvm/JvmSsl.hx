@@ -39,9 +39,8 @@ class JvmSslSocket extends sys.net.Socket {
 
 	/**
 		This socket's own `verifyCert`, or `DEFAULT_VERIFY_CERT` when it has
-		none, the order the native socket uses. The default was never read
-		here, so turning verification off for every socket, as a development
-		setup does, left the jvm verifying and refusing the certificate.
+		none, the order the native socket uses, so turning verification off
+		for every socket, as a development setup does, reaches the jvm too.
 	**/
 	@:noCompletion private inline function __verifies():Null<Bool> {
 		return verifyCert != null ? verifyCert : DEFAULT_VERIFY_CERT;
@@ -68,8 +67,8 @@ class JvmSslSocket extends sys.net.Socket {
 
 	/**
 		How many handshakes after the first a server connection carries through
-		for its peer before refusing the next. Each is a full handshake, a
-		private-key operation, on a connection already admitted, so a peer
+		for its peer before refusing the next. Each is a full handshake (a
+		private-key operation) on a connection already admitted, so a peer
 		free to ask without limit has the server's CPU for the price of a
 		record. Node allows three.
 	**/
@@ -86,8 +85,8 @@ class JvmSslSocket extends sys.net.Socket {
 
 	// The engine's buffers, each held only while it holds something (see
 	// JvmSslBuffers), and null otherwise: ciphertext read and not yet
-	// decrypted, a record that has arrived in part, or what a full caller's
-	// buffer left, in write mode; plaintext decrypted and not yet taken, in
+	// decrypted (a record that has arrived in part, or what a full caller's
+	// buffer left), in write mode; plaintext decrypted and not yet taken, in
 	// read mode; ciphertext made and not yet sent, in read mode.
 	@:noCompletion private var __netIn:ByteBuffer;
 	@:noCompletion private var __appIn:ByteBuffer;
@@ -96,7 +95,7 @@ class JvmSslSocket extends sys.net.Socket {
 	// Making records and sending them is one step: they have to reach the
 	// wire in the order the engine made them, and a read that answers the
 	// peer's handshake makes records too, on another thread than the
-	// writer's, for the HTTP/2 client's reader.
+	// writer's for the HTTP/2 client's reader.
 	@:noCompletion private var __outbound:sys.thread.Mutex;
 
 	// What a pooled buffer holds: room for a whole record, either way.
@@ -145,8 +144,8 @@ class JvmSslSocket extends sys.net.Socket {
 	/**
 		Offers these protocol names during the handshake.
 
-		Built into the JDK, unlike the cpp path, which needed a native extension
-		to reach mbedTLS's ALPN at all. `null` or an empty list disables it.
+		Built into the JDK, unlike the cpp path, which needs a native extension
+		to reach mbedTLS's ALPN. `null` or an empty list disables it.
 	**/
 	public function setALPN(protocols:Null<Array<String>>):Void {
 		__alpn = (protocols != null && protocols.length > 0) ? protocols : null;
@@ -208,12 +207,12 @@ class JvmSslSocket extends sys.net.Socket {
 		Accepts a connection and gives it a server-mode engine.
 
 		The certificate lives on the listener, and so does the context made
-		from it: every accepted connection's engine comes from the one context.
-		Each used to build its own, a key store, key and trust managers and a
-		random source per connection, some 9 ms of CPU, and a context is also
-		where the sessions a server issued are kept, so no client could resume
-		one: 0 of 900 did. Nothing is negotiated here; the handshake is driven
-		later, by the pump.
+		from it: every accepted connection's engine comes from the one context,
+		rather than each building its own (a key store, key and trust managers
+		and a random source per connection, some 9 ms of CPU). A context is
+		also where the sessions a server issued are kept, so a client can
+		resume one. Nothing is negotiated here; the handshake is driven later,
+		by the pump.
 	**/
 	override public function accept():sys.net.Socket {
 		var incoming:java.nio.channels.SocketChannel = try {
@@ -261,21 +260,17 @@ class JvmSslSocket extends sys.net.Socket {
 		Connects and terminates TLS as the client.
 
 		`Http` reaches here for every https request: `FlexSocket(secure)` builds
-		one of these and calls connect, which until now did a plain TCP connect
-		and handed back a socket that spoke no TLS at all.
+		one of these and calls connect.
 
 		The channel stays blocking, as it is for any client connect, so the
 		handshake below runs to completion here rather than being driven by a
 		pump. It is bounded by the socket's timeout as a whole, not per read:
 		each read waits at most what is left of it.
 
-		Only `Blocked`, a record that has arrived in part, sends it round
+		Only `Blocked` (a record that has arrived in part) sends it round
 		again, and the next read then waits for the rest. Anything else is the
 		answer and is thrown as it came: a timeout, a reset, a certificate
-		refused. Every error used to be caught and retried after 2 ms, ten
-		thousand times, so a server that accepted and said nothing held an
-		https request for ten thousand times its timeout, and a reset took 25
-		seconds to report as a handshake that "did not complete".
+		refused.
 
 		By default the certificate is verified against the JDK's default trust
 		store and the hostname is checked against the certificate. Both matter:
@@ -288,10 +283,9 @@ class JvmSslSocket extends sys.net.Socket {
 		A socket made non-blocking before it connects is left to finish the
 		handshake the way every other target does, through `handshake()`
 		calls that report `Blocked` until it is done. Completing it here
-		instead held the calling thread for the whole exchange, and when
-		that thread was a runtime's, and the server on the far side ran on the
-		same runtime, the server could never answer: the client waited twenty
-		seconds for a reply its own wait was preventing.
+		would hold the calling thread for the whole exchange, and when that
+		thread is a runtime's and the server on the far side runs on the same
+		runtime, the server could never answer.
 	**/
 	override public function connect(host:sys.net.Host, port:Int):Void {
 		super.connect(host, port);
@@ -369,8 +363,8 @@ class JvmSslSocket extends sys.net.Socket {
 		} catch (e:Dynamic) {
 			// A handshake that failed says why before the connection goes: the
 			// engine has an alert waiting for exactly that. Closed without
-			// it, the peer reported a network fault, "Remote host terminated
-			// the handshake", in place of the certificate it was refused for.
+			// it, the peer would report a network fault ("Remote host terminated
+			// the handshake") in place of the certificate it was refused for.
 			if (!crossbyte._internal.socket.BlockedError.isBlocked(e) && !Std.isOfType(e, haxe.io.Eof)) {
 				__alert();
 			}
@@ -435,11 +429,11 @@ class JvmSslSocket extends sys.net.Socket {
 	@:noCompletion private function __startEngine(clientMode:Bool):Void {
 		// A client's engine is told whom it is talking to. The JDK checks the
 		// certificate against the SNI name first and falls back to the peer's
-		// host, and an engine made without one has none: a certificate that
-		// did not name the SNI host, or a connection by IP address, which
-		// sends no SNI, was refused as "Hostname or IP address is undefined"
-		// on the JDKs that fall back, the right connection refused along
-		// with the wrong one, for a reason naming neither.
+		// host, and an engine made without one has none: on the JDKs that fall
+		// back, a certificate that did not name the SNI host, or a connection
+		// by IP address, which sends no SNI, would be refused as "Hostname or
+		// IP address is undefined", the right connection along with the wrong
+		// one, for a reason naming neither.
 		//
 		// The host and port are also what the context's session cache is
 		// keyed by, so a client's next connection to them can resume.
@@ -468,8 +462,8 @@ class JvmSslSocket extends sys.net.Socket {
 			// is being asked for, and the same name is then checked against the
 			// certificate that comes back.
 			// Not for an address, which RFC 6066 forbids in SNI: the JDK
-			// refuses an IPv6 literal as a host name outright, so connecting to
-			// one threw before a byte was sent.
+			// refuses an IPv6 literal as a host name outright, before a byte
+			// is sent.
 			if (!crossbyte._internal.net.IPv6.isNumericAddress(__hostname)) {
 				var names = new JArrayList<JvmSslExterns.SNIServerName>();
 				names.add(cast new JvmSslExterns.SNIHostName(__hostname));
@@ -478,7 +472,7 @@ class JvmSslSocket extends sys.net.Socket {
 
 			// Only the check is optional. Sending the name is how a virtual
 			// host picks a certificate at all, so a client that is not
-			// verifying still has to ask for the right one, dropping SNI here
+			// verifying still has to ask for the right one; dropping SNI here
 			// would quietly get it served the wrong host.
 			if (__verifies() != false) {
 				parameters.setEndpointIdentificationAlgorithm("HTTPS");
@@ -549,8 +543,8 @@ class JvmSslSocket extends sys.net.Socket {
 		if (__verifies() == false) {
 			// Asked for explicitly, and it means the peer is no longer
 			// authenticated: the traffic is still encrypted, but anything able
-			// to sit in the middle can present its own certificate. Unset,
-			// the default, verifies.
+			// to sit in the middle can present its own certificate. Unset (the
+			// default) verifies.
 			var accepting:java.NativeArray<TrustManager> = new java.NativeArray(1);
 			accepting[0] = cast new crossbyte._internal.socket._jvm.JvmTrustAll();
 			trust = accepting;
@@ -689,7 +683,7 @@ class JvmSslSocket extends sys.net.Socket {
 	}
 
 	/**
-		Sends what the engine has to say about a failure, the alert naming it,
+		Sends what the engine has to say about a failure (the alert naming it)
 		ahead of the close. Best effort: it goes if the socket takes it now.
 	**/
 	@:noCompletion private function __alert():Void {
@@ -718,10 +712,10 @@ class JvmSslSocket extends sys.net.Socket {
 		and sends what it has to say. After the first handshake that is a
 		handshake the peer has begun again, or a TLS 1.3 key update to answer.
 
-		Nothing did, once the first handshake was over, so a TLS 1.2
-		renegotiation, a server asking for a client certificate part way
-		through, a client asking for new keys, waited for ever on a reply
-		that was never made, and neither side was told.
+		Without this, once the first handshake was over a TLS 1.2
+		renegotiation (a server asking for a client certificate part way
+		through, a client asking for new keys) would wait for ever on a
+		reply that was never made, and neither side would be told.
 	**/
 	@:noCompletion private function __service(result:SSLEngineResult):Void {
 		var status:String = result.getHandshakeStatus().name();
@@ -789,22 +783,21 @@ class JvmSslSocket extends sys.net.Socket {
 	}
 
 	/**
-		Decrypts one record, into `into`, the caller's own buffer, or, when
+		Decrypts one record, into `into` (the caller's own buffer) or, when
 		that is null, into the held plaintext.
 
 		What is held is tried before the socket is read. A single read
-		routinely carries several records, a TLS 1.3 server sends its whole
-		flight in one go, and going back to the socket before those are
+		routinely carries several records (a TLS 1.3 server sends its whole
+		flight in one go), and going back to the socket before those are
 		decoded waits for bytes the peer has already sent, or for bytes it will
-		only send once answered: a client handshake used to sit exactly there
-		until the peer gave up.
+		only send once answered.
 
 		@param mayWait For a blocking socket, whether to wait for the peer, up
 		to its timeout. A non-blocking socket never waits.
 		@param mayRead Whether to read the socket at all, rather than only
 		decode what is held.
-		@return Plaintext bytes produced, 0 for a record that carried none,
-		as a handshake message or a session ticket does, or `NOTHING` when no
+		@return Plaintext bytes produced (0 for a record that carried none,
+		as a handshake message or a session ticket does), or `NOTHING` when no
 		whole record can be had without waiting, `TOO_SMALL` when `into` has
 		no room for this record's plaintext, or `CLOSED` when the peer has
 		closed.
@@ -880,10 +873,10 @@ class JvmSslSocket extends sys.net.Socket {
 				return 0;
 			}
 
-			// A blocking read on the channel has no timeout of its own, so an
-			// https response that stopped arriving was waited for for ever. In
-			// a handshake the wait is what is left of the whole, so a peer that
-			// answers a byte at a time cannot stretch it.
+			// A blocking read on the channel has no timeout of its own, so without
+			// this an https response that stopped arriving would be waited for for
+			// ever. In a handshake the wait is what is left of the whole, so a
+			// peer that answers a byte at a time cannot stretch it.
 			var wait:Float = __timeout;
 			if (__deadline > 0) {
 				var left:Float = __deadline - haxe.Timer.stamp();
@@ -1023,11 +1016,11 @@ class JvmSslSocket extends sys.net.Socket {
 		alert, and what the peer still sends is read and dropped until it
 		closes, for a second at most.
 
-		Closed at once, it was reset by whatever the peer sent next, and a
-		reset throws away what the peer has not read yet, the alert saying
+		Closed at once, it would be reset by whatever the peer sent next, and
+		a reset throws away what the peer has not read yet: the alert saying
 		why it was refused. A JDK client still writing its half of the
-		handshake failed that write and reported "readHandshakeRecord" on
-		Linux; on Windows the alert was simply gone.
+		handshake would fail that write and report "readHandshakeRecord" on
+		Linux; on Windows the alert would simply be gone.
 	**/
 	override public function close():Void {
 		var lingering:java.nio.channels.SocketChannel = null;
@@ -1066,15 +1059,14 @@ class JvmSslSocket extends sys.net.Socket {
 
 		A TLS read takes whole records off the channel, so the end of the
 		handshake routinely arrives in the same read as the first application
-		record, a client that sends a request the instant it connects, which
-		is to say every HTTPS client, lands exactly there. Those bytes then sit
-		here while the channel looks idle, and a reactor that asks only the
-		kernel what is readable never comes back for them.
+		record (a client that sends a request the instant it connects, which
+		is to say every HTTPS client, lands exactly there). Those bytes then
+		sit here while the channel looks idle, and a reactor that asks only
+		the kernel what is readable never comes back for them.
 
-		`SocketRegistry` asks this so a socket in that state is serviced anyway.
-		Without it the request was stranded until something else disturbed the
-		connection: in the case that found this, the peer's own timeout and
-		close ten seconds later.
+		`SocketRegistry` asks this so a socket in that state is serviced
+		anyway, rather than stranded until something else disturbs the
+		connection.
 	**/
 	public function hasBufferedInput():Bool {
 		if (!__handshaken) {
@@ -1101,13 +1093,12 @@ class JvmSslSocket extends sys.net.Socket {
 			return false;
 		}
 
-		// Bytes present is not the same as bytes readable, and answering the
-		// first question got this wrong once already: a partial record sits
-		// held until the rest of it arrives, and reporting that as readable
-		// pinned the registry's select to a zero timeout and span the pump.
-		// What is whole is decoded, touching no socket, and only plaintext it
-		// actually produced counts, a record can be decoded and yield none,
-		// which is what a TLS 1.3 session ticket is.
+		// Bytes present is not the same as bytes readable: a partial record
+		// sits held until the rest of it arrives, and reporting that as
+		// readable would pin the registry's select to a zero timeout and spin
+		// the pump. What is whole is decoded, touching no socket, and only
+		// plaintext it actually produced counts; a record can be decoded and
+		// yield none, which is what a TLS 1.3 session ticket is.
 		return try {
 			__unwrapRecord(null, false, false);
 			(__appIn != null && __appIn.hasRemaining()) || (__inboundDone && !__eofTold);
@@ -1122,10 +1113,6 @@ class JvmSslSocket extends sys.net.Socket {
 	/**
 		Hands back decrypted bytes: what is held, then every record that has
 		already arrived, for as much as the caller's buffer takes.
-
-		It stopped after one record, 16 KB, so the runtime read a large
-		upload a record per pump, and paid a select over every connection it
-		held for each: a 10 MB upload took 2.4 s beside 2,000 idle connections.
 
 		Records are decrypted straight into the caller's buffer where they fit,
 		with no copy and no buffer held for them. Only when nothing has been
@@ -1265,19 +1252,19 @@ class JvmSslSocket extends sys.net.Socket {
 	The contexts client connections are made from: one for each way of
 	trusting and identifying, kept and shared.
 
-	Each connection used to build its own, key and trust managers, a random
-	source, and for the JDK's default trust store, the store itself read and
-	parsed, and a context is where a client's sessions are kept, so none was
-	ever resumed. A context is shared only between connections made the same
-	way: verifying or not, trusting the same authorities, presenting the same
-	certificate. A session made without verification is therefore never
-	resumed by a connection that verifies, nor one made trusting one
-	authority by a connection trusting another.
+	Each connection would otherwise build its own (key and trust managers, a
+	random source, and for the JDK's default trust store, the store itself
+	read and parsed), and a context is where a client's sessions are kept,
+	so none could be resumed. A context is shared only between connections
+	made the same way: verifying or not, trusting the same authorities,
+	presenting the same certificate. A session made without verification is
+	therefore never resumed by a connection that verifies, nor one made
+	trusting one authority by a connection trusting another.
 
 	Kept by identity: a certificate or key read again is a new object, and
 	gets a context of its own. Only the most recent few are kept, so an
-	application that reads a new certificate for every request costs what it
-	did before, and no more.
+	application that reads a new certificate for every request costs a
+	context per request, and no more.
 **/
 @:noCompletion @:access(crossbyte._internal.socket._jvm.JvmSslSocket)
 private class JvmSslContexts {
@@ -1346,13 +1333,13 @@ private class JvmSslContexts {
 	A thread's spare engine buffers.
 
 	A connection takes one when a read or a write needs it and gives it back
-	once it empties, so a connection that is idle, nearly every one, on a
-	busy server, holds none. Each used to hold three for its whole life,
-	some 50 KB a connection: half a gigabyte for 10,000 idle HTTPS
-	connections. A runtime reads and writes all its connections on its own
-	thread, so the pool is kept per thread and needs no lock; it keeps a few,
-	as many as one call takes at once. Buffers of another size, grown for a
-	record larger than the session said, are not kept.
+	once it empties, so a connection that is idle (nearly every one, on a
+	busy server) holds none. Three held for its whole life would be some
+	50 KB a connection: half a gigabyte for 10,000 idle HTTPS connections.
+	A runtime reads and writes all its connections on its own thread, so
+	the pool is kept per thread and needs no lock; it keeps a few, as many
+	as one call takes at once. Buffers of another size (grown for a record
+	larger than the session said) are not kept.
 **/
 @:noCompletion private class JvmSslBuffers {
 	private static inline var KEEP:Int = 4;
@@ -1492,7 +1479,7 @@ private class JvmSslLingering {
 private class JvmSslInput extends haxe.io.Input {
 	private var socket:JvmSslSocket;
 	// Kept: a reader taking a line a byte at a time, as the HTTP client
-	// does, allocated one for every byte.
+	// does, would allocate one for every byte.
 	private var one:haxe.io.Bytes = haxe.io.Bytes.alloc(1);
 
 	public function new(socket:JvmSslSocket) {
@@ -1538,13 +1525,12 @@ private class JvmSslOutput extends haxe.io.Output {
 	issued it, and a server has to present both: a client trusts the root, and
 	the leaf alone cannot be traced to it. A trust file is often a bundle of
 	several authorities. So every certificate is kept, in file order, and
-	`native` is the first, the leaf of a chain.
+	`native` is the first: the leaf of a chain.
 
-	Only the first used to be read, which is what the JDK's
-	`generateCertificate` does. A server given `fullchain.pem` presented the
-	leaf without its intermediate and every client refused it, curl, Node,
-	browsers, the JDK, and a bundle trusted its first authority alone. Native
-	and Node read the whole file.
+	The JDK's `generateCertificate` reads only the first, so a server given
+	`fullchain.pem` would present the leaf without its intermediate, which
+	every client refuses (curl, Node, browsers, the JDK), and a bundle would
+	trust its first authority alone. Native and Node read the whole file.
 **/
 class JvmSslCertificate {
 	private static inline var BEGIN:String = "-----BEGIN CERTIFICATE-----";
@@ -1599,8 +1585,8 @@ class JvmSslCertificate {
 	/**
 		The certificate blocks of `pem`, and nothing else in it.
 
-		A PEM file can hold a key beside its certificates, a combined key and
-		certificate file is a common way to ship one, and the JDK's reader
+		A PEM file can hold a key beside its certificates (a combined key and
+		certificate file is a common way to ship one), and the JDK's reader
 		fails on the first block that is not a certificate, where native and
 		Node pass over it. Text with no certificate armour at all is handed on
 		as it is, for the reader to say what it makes of it.
@@ -1631,7 +1617,7 @@ class JvmSslCertificate {
 /**
 	A private key, read from PEM in whichever form it came: see `readPEM`.
 
-	PKCS#8, `BEGIN PRIVATE KEY`, is what `PKCS8EncodedKeySpec` reads, so
+	PKCS#8 (`BEGIN PRIVATE KEY`) is what `PKCS8EncodedKeySpec` reads, so
 	the other forms are brought to it with the JDK alone: decrypted with its
 	ciphers, and rewritten in PKCS#8's DER. A form that cannot be read is
 	refused by name rather than misparsed: a key that silently fails to load
@@ -1667,14 +1653,10 @@ class JvmSslKey {
 		(`BEGIN ENCRYPTED PRIVATE KEY`), and the older PKCS#1 (`BEGIN RSA
 		PRIVATE KEY`) and SEC1 (`BEGIN EC PRIVATE KEY`), plain or encrypted
 		by OpenSSL (`Proc-Type: 4,ENCRYPTED`). The JDK reads only the first, so
-		the older two are rewritten as PKCS#8, the same key, with its
-		algorithm stated, and an encrypted one is decrypted with `password`
+		the older two are rewritten as PKCS#8 (the same key, with its
+		algorithm stated) and an encrypted one is decrypted with `password`
 		first. A `password` given for a key that is not encrypted is not
 		needed, and not used.
-
-		All of them used to be refused but the first, with an error saying to
-		convert the file: a key that loaded natively and on Node did not load
-		on the jvm, and no password could be given here at all.
 	**/
 	public static function readPEM(pem:String, isPublic:Bool = false, ?password:String):JvmSslKey {
 		if (pem == null || pem == "") {
@@ -1685,8 +1667,8 @@ class JvmSslKey {
 			throw "Public keys are not supported by the jvm TLS backend.";
 		}
 
-		// By its armour. A file can hold more than the key, an EC key's
-		// parameters before it, a certificate beside it, so the key's own
+		// By its armour. A file can hold more than the key (an EC key's
+		// parameters before it, a certificate beside it), so the key's own
 		// block is the one read.
 		if (pem.indexOf("-----BEGIN ENCRYPTED PRIVATE KEY-----") >= 0) {
 			var form:String = "an encrypted PKCS#8 key (BEGIN ENCRYPTED PRIVATE KEY)";
@@ -1741,8 +1723,8 @@ class JvmSslKey {
 	}
 
 	/**
-		PKCS#8's own encryption (RFC 8018), which the JDK decrypts. PBES2,
-		what `openssl pkcs8 -topk8` and `openssl req` write, names its key
+		PKCS#8's own encryption (RFC 8018), which the JDK decrypts. PBES2
+		(what `openssl pkcs8 -topk8` and `openssl req` write) names its key
 		derivation and cipher inside its parameters, and the JDK spells the
 		pair as one algorithm there, `PBEWithHmacSHA256AndAES_256`; the older
 		schemes are named by the identifier itself.
@@ -1770,7 +1752,7 @@ class JvmSslKey {
 		return try {
 			haxe.io.Bytes.ofData(info.getKeySpec(cipher).getEncoded());
 		} catch (e:Dynamic) {
-			throw "The key could not be decrypted, is the password right? " + Std.string(e);
+			throw "The key could not be decrypted: is the password right? " + Std.string(e);
 		}
 	}
 
@@ -1813,8 +1795,8 @@ class JvmSslKey {
 
 	/**
 		OpenSSL's own encryption of a PEM key: a block cipher in CBC mode,
-		keyed from the password by EVP_BytesToKey, MD5, one round, salted
-		with the first eight bytes of the IV `DEK-Info` names.
+		keyed from the password by EVP_BytesToKey (MD5, one round, salted
+		with the first eight bytes of the IV `DEK-Info` names).
 	**/
 	private static function __decryptTraditional(data:haxe.io.Bytes, dekInfo:String, password:String, form:String):haxe.io.Bytes {
 		var comma:Int = dekInfo.indexOf(",");
@@ -1863,7 +1845,7 @@ class JvmSslKey {
 			cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(secret.getData(), algorithm), new IvParameterSpec(iv.getData()));
 			haxe.io.Bytes.ofData(cipher.doFinal(data.getData()));
 		} catch (e:Dynamic) {
-			throw "The key could not be decrypted, is the password right? " + Std.string(e);
+			throw "The key could not be decrypted: is the password right? " + Std.string(e);
 		}
 	}
 

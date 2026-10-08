@@ -2,15 +2,13 @@
 //
 // The examples ship: `ci/docs-api.hxml` copies these comments into
 // `export/docs-api/crossbyte.xml`, so a reader who copies one out expects it
-// to compile. For a long time none in `io/File.hx` did. CrossByte's docs
-// descend from Adobe's ActionScript text and the examples came with it,
-// `var x:Array`, `for (var i:uint = 0; ...)`, `:void`. Underneath the syntax
-// were real API defects that reading had not caught: a documented
-// `listDirectory()` that does not exist, an instance method called
-// statically, a `catch (e:Error)` with no import, a Windows path whose
-// unescaped `\D` Haxe rejects outright, and two async examples that
-// registered a listener after starting the operation, with the handler
-// declared below its own use. A reviewer can miss all of that. A compiler
+// to compile. CrossByte's docs descend from Adobe's ActionScript text, and an
+// example written that way (`var x:Array`, `for (var i:uint = 0; ...)`,
+// `:void`) can hide real API defects that reading misses: a documented
+// method that does not exist, an instance method called statically, a
+// `catch (e:Error)` with no import, a Windows path whose unescaped `\D` Haxe
+// rejects outright, or an async example that registers its listener after
+// starting the operation. A reviewer can miss all of that. A compiler
 // cannot, so this asks one.
 //
 // Two kinds of file are checked. Source files in STANDALONE, whose doc
@@ -20,7 +18,7 @@
 // receiver,
 //
 //     connection.requestParams("SELECT payload FROM events WHERE id = $1", ...)
-//,
+//
 // and writing the setup out would bury the line being illustrated. Those
 // files are simply not listed. Add a file here once its examples check; the
 // lists are a floor that ratchets, not a claim about the rest.
@@ -28,8 +26,8 @@
 // All of one file's examples make one module, in the order they appear, so a
 // later example can use what an earlier one declared, as its reader does:
 //
-// - A block that declares types, its first line after the imports opens a
-//   class, interface, typedef, enum or abstract, or is metadata on one, goes
+// - A block that declares types (its first line after the imports opens a
+//   class, interface, typedef, enum or abstract, or is metadata on one) goes
 //   into the module as written.
 // - Any other block is statements, and becomes a function of its own. If its
 //   first line is a comment of the form
@@ -42,7 +40,7 @@
 // Imports anywhere in a block are hoisted to the top of the module.
 //
 // Usage: node ci/doc-examples.js [path substring]
-// Needs haxe on PATH. Typechecks only, `-D no-compilation` generates no C++
+// Needs haxe on PATH. Typechecks only: `-D no-compilation` generates no C++
 // and runs nothing, so the examples never touch a filesystem or a network.
 
 const fs = require('fs');
@@ -97,7 +95,16 @@ const STANDALONE = [
   'src/crossbyte/utils/LogCategory.hx',
   'src/crossbyte/utils/Logger.hx',
 ];
-const GUIDES = ['docs/rpc.md'];
+const GUIDES = [
+  'README.md',
+  'docs/data.md',
+  'docs/limits.md',
+  'docs/reliable-udp.md',
+  'docs/rpc.md',
+  'docs/runtime.md',
+  'docs/targets.md',
+  'docs/testing.md',
+];
 
 // Every fenced block of one of `languages`, with the 1-based line its body
 // opens on.

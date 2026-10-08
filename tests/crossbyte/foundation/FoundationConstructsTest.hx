@@ -147,9 +147,9 @@ class FoundationConstructsTest extends utest.Test {
 
 	/**
 		A string reads as the same `Int` on every target, or not at all.
-		`Std.parseInt` gave "4294967396" as null on eval, as that number on
-		Node and as a thrown NumberFormatException on the jvm, and read
-		"12abc" as 12.
+		`Std.parseInt` gives "4294967396" as null on eval, as that number on
+		Node and as a thrown NumberFormatException on the jvm, and reads "12abc"
+		as 12.
 	**/
 	public function testPrimitiveValueParsesIntegersTheSameOnEveryTarget():Void {
 		function int(text:String):Int {
@@ -173,7 +173,7 @@ class FoundationConstructsTest extends utest.Test {
 
 	/**
 		A Float outside the range of `Int` does not become one. `Std.int` of
-		3e9 was 2147483647 on the jvm and -1294967296 on eval and Node.
+		3e9 is 2147483647 on the jvm and -1294967296 on eval and Node.
 	**/
 	public function testPrimitiveValueFloatOutsideTheIntRangeThrows():Void {
 		function int(f:Float):Int {

@@ -77,11 +77,9 @@ class Lz4 {
 		@return The block's length.
 	**/
 	public static function compressInto(source:Bytes, offset:Int, n:Int, out:Bytes, outPos:Int):Int {
-		// Written straight into Bytes. It went through a ByteArray, whose
-		// writeBytes takes a ByteArray: handed a plain Bytes, each literal run
-		// made one from it, allocating and clearing a copy of the whole input
-		// per run, 27 GB of garbage compressing 900 KB, where a ByteArray
-		// input happened to be one already.
+		// Written straight into Bytes rather than through a ByteArray, whose
+		// writeBytes takes a ByteArray: handed a plain Bytes, it would copy
+		// the whole input into a new one for every literal run.
 		var op:Int = outPos;
 		var end:Int = offset + n;
 		var anchor:Int = offset;
@@ -173,9 +171,9 @@ class Lz4 {
 
 	/**
 		@param maxOutputSize Bytes to produce before giving up, or `0` for no
-			   limit. LZ4 ratios have no ceiling either, the format's own
+			   limit. LZ4 ratios have no ceiling either (the format's own
 			   match encoding will happily replay four bytes of window a
-			   million times, so anything decoding a stream it did not author
+			   million times), so anything decoding a stream it did not author
 			   wants to name one.
 
 		The limit is checked before each write rather than after the decode, so
@@ -183,9 +181,7 @@ class Lz4 {
 		never taken. The native decoder, from `crossbyte-lz4` with
 		`-D crossbyte_lz4_native`, is handed the limit as well: it adds up what
 		the block's sequence headers say it decodes to before allocating
-		anything, and refuses it there. It used to guess, and double its guess
-		on every failure, up to 256 MB, leaving the measuring to this function
-		afterwards.
+		anything, and refuses it there.
 
 		A block has no length of its own, so one cut short at the end of a
 		literal run would read as complete. The format's end rules catch most:

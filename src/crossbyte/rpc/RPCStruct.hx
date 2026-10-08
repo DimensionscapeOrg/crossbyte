@@ -24,7 +24,7 @@ package crossbyte.rpc;
 
 	What goes on the wire is every `var` the class declares, and every one
 	the classes it extends declare, except those marked `@:rpcSkip`: their
-	values one after another, with no names, tags or lengths, a `Float32`
+	values one after another, with no names, tags or lengths: a `Float32`
 	four bytes, a `UInt8` one. The fields go in the order of their names, so
 	moving a declaration changes nothing; `@:field(n)`, n from 0 to 65535,
 	pins a field ahead of the named ones, in the order of n, as the `hxwire`
@@ -38,7 +38,7 @@ package crossbyte.rpc;
 	cannot have type parameters, and it cannot contain itself, directly or
 	through the structures it holds.
 
-	The layout, each field's pinned id, name and kind, in order, is part
+	The layout (each field's pinned id, name and kind, in order) is part
 	of the op of every method that carries the class (see "What names a
 	call" in the RPC guide), so a peer built from another version of it
 	answers as for a method it does not have, rather than reading the
@@ -58,7 +58,7 @@ package crossbyte.rpc;
 
 	Prefer a class to a typedef'd anonymous structure for hot calls:
 	natively an anonymous structure's fields are looked up by name and its
-	numbers boxed. A one-way call carrying five numbers took 50 ns and 40
+	numbers boxed. A one-way call carrying five numbers takes 50 ns and 40
 	bytes as a class, 74 ns and 232 bytes as a typedef.
 **/
 interface RPCStruct {}

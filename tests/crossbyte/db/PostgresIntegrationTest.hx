@@ -10,14 +10,12 @@ import utest.Assert;
 import crossbyte.test.Require;
 
 /**
- * The first tests in this repository that talk to a real PostgreSQL server.
+ * The driver against a real PostgreSQL server.
  *
- * Everything else covering this driver asserts the support flag and that
- * `open` throws when unsupported, nothing had ever connected, so the whole
- * query path was shipped unexercised. That matters more than it sounds: the
- * driver builds SQL by string substitution and returns every value as a JSON
- * string, and neither of those had ever been checked against a server that
- * would tell it it was wrong.
+ * The rest of the suite covers this driver without a server, but the
+ * driver builds SQL by string substitution, and neither that nor the
+ * values it returns can be fully checked without a server that will tell
+ * it it is wrong.
  *
  * `@:suiteExempt` because it needs a live server and so cannot be reachable
  * from `addNativeSmoke`, which the coverage macro would otherwise require of a
@@ -95,9 +93,8 @@ class PostgresIntegrationTest extends utest.Test {
 		Assert.equals(2, rows.length);
 		Assert.equals("first", Std.string(Reflect.field(rows[0], "label")));
 		Assert.equals("second", Std.string(Reflect.field(rows[1], "label")));
-		// Every value arrives as text today, so this is a string comparison on
-		// purpose rather than an assertion about types. The typed-result work
-		// changes that, and this case is what will notice.
+		// Every value arrives as text, so this is a string comparison on
+		// purpose rather than an assertion about types.
 		Assert.equals("10", Std.string(Reflect.field(rows[0], "amount")));
 		#else
 		Assert.pass();
@@ -165,8 +162,8 @@ class PostgresIntegrationTest extends utest.Test {
 			maxSize: 1
 		});
 
-		// A borrower that leaves its transaction open. The next one was handed
-		// it, and its COMMIT committed the leaked insert along with its own.
+		// A borrower that leaves its transaction open. The next one must not be
+		// handed it, or its COMMIT would commit the leaked insert along with its own.
 		crossbyte.utils.Logger.recordSink = _ -> {};
 		pool.withConnection(function(c:PostgresConnection):Void {
 			c.request("BEGIN;");
@@ -399,7 +396,7 @@ class PostgresIntegrationTest extends utest.Test {
 		}
 
 		// Dispatched as the statement's error event and then thrown, as
-		// execute() reports a failure and as MySQL's statement always has.
+		// execute() reports a failure and as MySQL's statement does.
 		Assert.isTrue(errored, "the failure was not dispatched");
 		Require.notNull(thrown, "the failure was not thrown");
 		var said:String = thrown.message + " | " + thrown.details();
@@ -465,8 +462,8 @@ class PostgresIntegrationTest extends utest.Test {
 		}
 
 		// A worker per pooled connection, all querying at once: the default
-		// AsyncDatabase shape. Every connection in the process wrote one shared
-		// result buffer, so a query could come back with another's rows.
+		// AsyncDatabase shape. With one shared result buffer, a query could
+		// come back with another's rows.
 		var config:PostgresConfig = __config();
 		var pool = new ConnectionPool<PostgresConnection>({
 			factory: function():PostgresConnection {
@@ -621,8 +618,7 @@ class PostgresIntegrationTest extends utest.Test {
 		if (Sys.getEnv("CROSSBYTE_PG_REQUIRED") != null) {
 			// The CI job sets this. Without it a broken service container, a
 			// missing libpq or a mistyped variable would skip every case and
-			// report a green run, the job would exist and prove nothing,
-			// which is exactly how the jvm suite stayed red unnoticed.
+			// report a green run: the job would exist and prove nothing.
 			Assert.fail("CROSSBYTE_PG_REQUIRED is set but CROSSBYTE_PG_HOST is not: the server this job exists to test was never reached.");
 			return true;
 		}

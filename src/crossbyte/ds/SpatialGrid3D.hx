@@ -34,7 +34,7 @@ import haxe.ds.Vector;
  * JavaScript.
  *
  * **This or `SpatialGrid`.** Use this when things spread as far up and down
- * as they do across, space, flight, a tower of floors each a view apart. A
+ * as they do across: space, flight, a tower of floors each a view apart. A
  * world that is mostly flat relative to its view radius is cheaper in
  * `SpatialGrid` on the ground plane, with height checked afterwards if it
  * matters: a 3D cell costs an array entry whether or not anything is in it,
@@ -53,7 +53,7 @@ import haxe.ds.Vector;
  * entry per cell, so the bounds and cell size decide its size up front, and a
  * third axis makes that grow quickly: `MAX_CELLS` is the ceiling.
  *
- * **Ids** are small non-negative integers, entity slots, say, as
+ * **Ids** are small non-negative integers (entity slots, say), as
  * `InterestSet` takes them. The grid keeps six array entries for every id up
  * to the largest it has been given.
  *

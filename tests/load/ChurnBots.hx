@@ -278,7 +278,7 @@ class H1Session extends ChurnSession {
 	var expectLength:Int = -1;
 	var bodyLength:Int = -1;
 	var closing:Bool = false;
-	// The server said Connection: close, keepAliveMaxRequests, before
+	// The server said Connection: close (keepAliveMaxRequests) before
 	// this session's last request.
 	var retiring:Bool = false;
 
@@ -534,7 +534,7 @@ class H2cSession extends ChurnSession {
 	var received:Int = 0;
 	var bodyLength:Int = -1;
 	var closing:Bool = false;
-	// The server's GOAWAY, keepAliveMaxRequests, before this session's
+	// The server's GOAWAY (keepAliveMaxRequests) before this session's
 	// last request: the stream in flight is answered, and the session ends.
 	var retiring:Bool = false;
 	var scratch:ByteArray = new ByteArray();

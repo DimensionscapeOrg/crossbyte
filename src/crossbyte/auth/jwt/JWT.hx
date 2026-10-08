@@ -22,8 +22,8 @@ using StringTools;
  *
  * A token's `typ` is compared with `acceptedTypes` in any letter case, with
  * an `application/` prefix ignored, as RFC 7515 has it; by default `JWT` and
- * RFC 9068's `at+jwt`. A token with no `typ`, AWS Cognito's, Sign in with
- * Apple's, RFC 8037's own examples, is accepted unless `requireType` is set.
+ * RFC 9068's `at+jwt`. A token with no `typ` (AWS Cognito's, Sign in with
+ * Apple's, RFC 8037's own examples) is accepted unless `requireType` is set.
  *
  * ## Rotating keys
  *
@@ -45,10 +45,10 @@ class JWT {
 	/**
 	 * The audience this verifier is: a token's `aud` has to name it, or hold
 	 * it when `aud` is an array. When `null`, a token that names any audience
-	 * is refused as `WRONG_AUDIENCE` and one that names none is accepted,
+	 * is refused as `WRONG_AUDIENCE` and one that names none is accepted:
 	 * RFC 7519 has a recipient that does not identify itself with a token's
-	 * `aud` reject it, and accepting one let a token minted for another
-	 * service of the same issuer be replayed here.
+	 * `aud` reject it, so a token minted for another service of the same
+	 * issuer cannot be replayed here.
 	 */
 	public var expectedAudience:String;
 
@@ -69,8 +69,8 @@ class JWT {
 	/**
 	 * The `typ` header values accepted, compared case-insensitively and with any
 	 * `application/` prefix ignored. `JWT` and `at+jwt` by default. Set it to
-	 * one type to refuse the others, an API accepting only access tokens,
-	 * say, where an ID token signed by the same issuer must not pass, or to
+	 * one type to refuse the others (an API accepting only access tokens,
+	 * say, where an ID token signed by the same issuer must not pass), or to
 	 * `null` to accept any.
 	 */
 	public var acceptedTypes:Null<Array<String>> = ["JWT", "at+jwt"];
@@ -116,7 +116,7 @@ class JWT {
 	 *
 	 * @throws ArgumentError When `iat`, `exp` or `nbf` is present and not a
 	 *         finite number of seconds.
-	 * @throws String When the signer holds no private key, a verify-only
+	 * @throws String When the signer holds no private key: a verify-only
 	 *         one, such as `JWKSet.signer` makes.
 	 */
 	public function generateToken(payload:JWTPayload):String {
@@ -149,7 +149,7 @@ class JWT {
 	 *
 	 * Checks run cheapest first and the first failure is the answer: size and
 	 * shape, the header's `alg`, `crit`, `typ` and `kid`, the signature, and
-	 * then the claims, `exp` (required), `iat`, `nbf`, `iss` and `aud`.
+	 * then the claims: `exp` (required), `iat`, `nbf`, `iss` and `aud`.
 	 * Nothing in a refused token is returned, so claims are never read before
 	 * the signature over them has been checked. A header whose objects and
 	 * arrays nest more than 32 deep is `MALFORMED`, refused before it is
@@ -215,9 +215,9 @@ class JWT {
 			}
 
 			// RFC 7515 4.1.11: the extensions `crit` names are ones the token
-			// may not be accepted without, and none is implemented here. It was
-			// ignored, so a token with `"b64":false`, its payload unencoded,
-			// was read as though its payload were base64url.
+			// may not be accepted without, and none is implemented here.
+			// Ignored, a token with `"b64":false` (its payload unencoded) would
+			// be read as though its payload were base64url.
 			if (Reflect.hasField(header, "crit")) {
 				return JWTVerification.refused(UNSUPPORTED_CRITICAL);
 			}
@@ -252,7 +252,7 @@ class JWT {
 		}
 
 		// Unbounded: parsed only once the signature has shown the issuer wrote
-		// them. Measuring them too cost a typical token's verification 2%.
+		// them, and measuring them too would cost a typical token's verification 2%.
 		var claims:Null<Dynamic> = __decodeObject(token, headerEnd + 1, inputEnd, 0);
 		if (claims == null) {
 			return JWTVerification.refused(MALFORMED);
@@ -261,8 +261,8 @@ class JWT {
 		// The registered claims, read once and checked for the JSON types RFC
 		// 7519 gives them: strings for `sub`, `name`, `iss` and `jti`, numbers
 		// for the times. Checked here, so the payload's typed properties
-		// cannot hand back, say, an Int as a String, which the jvm answers
-		// with a cast exception, and read the field with no check of their
+		// cannot hand back, say, an Int as a String (which the jvm answers
+		// with a cast exception), and read the field with no check of their
 		// own. A missing or non-numeric `exp` is MISSING_EXPIRY.
 		var issuerValue:Dynamic = Reflect.field(claims, "iss");
 		if (!__isTextOrNull(Reflect.field(claims, "sub")) || !__isTextOrNull(Reflect.field(claims, "name")) || !__isTextOrNull(issuerValue)
@@ -305,8 +305,8 @@ class JWT {
 			}
 		} else if (audience != null) {
 			// RFC 7519 4.1.3: a recipient that does not identify itself with a
-			// value in `aud` must reject the token. One minted for another
-			// service the issuer and key serve was accepted here.
+			// value in `aud` must reject the token, so one minted for another
+			// service the issuer and key serve is refused here.
 			return JWTVerification.refused(WRONG_AUDIENCE);
 		}
 
@@ -391,8 +391,8 @@ class JWT {
 	/**
 	 * `a` and `b` as one media type: ASCII letters in either case, and an
 	 * `application/` prefix on either ignored. Compared in place, since this
-	 * runs for every token and lower-casing copies of both was an allocation
-	 * per candidate.
+	 * runs for every token and lower-casing copies of both would be an
+	 * allocation per candidate.
 	 */
 	@:noCompletion private static function __sameMediaType(a:String, b:String):Bool {
 		var i:Int = __afterApplication(a);
@@ -432,8 +432,8 @@ class JWT {
 	}
 
 	/**
-		Seconds since the epoch from a claim as JSON gives it, an `Int` or a
-		`Float` depending on the target and the size of the number, or NaN
+		Seconds since the epoch from a claim as JSON gives it (an `Int` or a
+		`Float` depending on the target and the size of the number), or NaN
 		when it is absent or not a finite number. NaN rather than `null`, which
 		natively boxes the number in an allocation.
 	**/
@@ -500,16 +500,16 @@ class JWT {
 		}
 
 		// An object or nothing: JSON whose first character is `{` parses to an
-		// object or not at all. Asked of the text, where four type tests of
-		// the parsed value asked it after the work of parsing.
+		// object or not at all. Asked of the text, rather than by four type
+		// tests of the parsed value after the work of parsing.
 		if (!__opensObject(text)) {
 			return null;
 		}
 
 		// Measured before parsing, which takes a frame per level. The header
-		// is parsed before the signature is checked, so a token needed no key
-		// to be nested 6,000 deep in 16 KB, within a raised maxTokenLength,
-		// and natively that overflowed the stack and ended the process.
+		// is parsed before the signature is checked, so a token needs no key
+		// to be nested 6,000 deep in 16 KB (within a raised maxTokenLength),
+		// and natively that would overflow the stack and end the process.
 		if (maxNesting > 0 && !JsonNesting.within(text, maxNesting)) {
 			return null;
 		}
@@ -565,8 +565,6 @@ class JWT {
 
 	/**
 	 * Decodes a base64url string to UTF-8 text, returning `null` on failure.
-	 * It was named `safeBase64UrlEncodeString`, for the opposite of what it
-	 * does.
 	 */
 	public static function safeBase64UrlDecodeString(s:String):Null<String> {
 		return s == null ? null : Base64Url.decodeText(s, 0, s.length);
@@ -578,9 +576,9 @@ class JWT {
 	 * accumulating per-byte differences, and folds in the length delta so that the
 	 * comparison's running time does not leak which (if either) operand matched.
 	 *
-	 * @return `true` only when both are present and equal: a missing value,
-	 *         a header or cookie that was not sent, matches nothing, another
-	 *         missing one included. It used to read the length of a null.
+	 * @return `true` only when both are present and equal: a missing value
+	 *         (a header or cookie that was not sent) matches nothing,
+	 *         another missing one included.
 	 */
 	public static function secureCompare(a:String, b:String):Bool {
 		if (a == null || b == null) {
@@ -623,9 +621,8 @@ private final class JWTHeaderSeen {
 /**
 	A signer and the header segment it signs under, made once: `updateKeys`
 	swaps the two together, so no token pairs one signer's header with
-	another's key. The header was serialized and encoded again for every
-	token. It is `{"alg":..,"typ":"JWT","kid":..}`, in that order on every
-	target; its members' order followed each target's objects before.
+	another's key. It is `{"alg":..,"typ":"JWT","kid":..}`, in that order on
+	every target.
 **/
 @:noCompletion
 private final class JWTKeys {

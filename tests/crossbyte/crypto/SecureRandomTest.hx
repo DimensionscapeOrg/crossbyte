@@ -7,10 +7,10 @@ import utest.Assert;
 	`SecureRandom` natively hands out a thread's bytes from a pool it refills
 	4 KB at a time, and draws of 1 KB or more straight from the system.
 
-	These hold the pool to what one system call per draw gave: every length
-	asked for, no draw repeating another, across refills, and between
+	These hold the pool to what one system call per draw gives: every length
+	asked for, no draw repeating another (across refills, and between
 	threads drawing at once, which would share bytes if the pool were not
-	each thread's own, and none handing back the zeros a used range is
+	each thread's own), and none handing back the zeros a used range is
 	wiped to.
 **/
 class SecureRandomTest extends utest.Test {

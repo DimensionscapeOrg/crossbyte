@@ -69,8 +69,8 @@ class BenchRpc {
 		});
 
 		// The same request to a method that answers with a Future: one complete
-		// already, a cached answer, the same future each time, so what is
-		// timed is the dispatch and not the handler's allocation, and one
+		// already (a cached answer, the same future each time, so what is
+		// timed is the dispatch and not the handler's allocation), and one
 		// completed after the method has returned, on this thread.
 		Bench.run("request answered with a complete future", function():Void {
 			commands.ready(7);

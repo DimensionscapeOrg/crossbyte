@@ -7,8 +7,8 @@ import crossbyte.errors.Error;
 
 	A `Future` is read by whoever is handed it, and completing one is kept
 	from them: a future anyone can resolve is a future nobody can trust. Code
-	that makes a promise of its own, an answer that arrives when a lobby
-	fills, a query finishes on another thread, a peer replies, makes a
+	that makes a promise of its own (an answer that arrives when a lobby
+	fills, a query finishes on another thread, a peer replies) makes a
 	`Completer`, hands out its `future`, and keeps the ability to complete it
 	here.
 
@@ -52,8 +52,8 @@ class Completer<T> {
 	/**
 		Fails the future with `error`, as a function fails by throwing it.
 
-		The future's `error` is the message, an `Error`'s or an exception's
-		`message`, a `String` as it is, anything else as `Std.string` gives it,
+		The future's `error` is the message (an `Error`'s or an exception's
+		`message`, a `String` as it is, anything else as `Std.string` gives it),
 		and its `cause` is `error` itself. An RPC handler answering with this
 		future passes a `crossbyte.rpc.RPCError`'s message to its caller, as it
 		would one it threw, and anything else as an internal error.

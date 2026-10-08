@@ -8,21 +8,20 @@ import crossbyte.net._internal.stun.StunMessage.StunAttribute;
 	One question to a STUN server: its transaction, its schedule, and what an
 	answer to it means.
 
-	Three places here ask a server what address it sees, `StunClient` on a
+	Three places here ask a server what address it sees (`StunClient` on a
 	socket of its own, `ReliableDatagramServerSocket` through the port it
 	listens on, and `PeerConnection` through the socket ICE and DTLS already
-	share. The transport differs in each, genuinely and irreducibly. Everything
-	else was the same three times over: a transaction to match a reply against,
+	share). The transport differs in each, genuinely and irreducibly. Everything
+	else is the same in all three: a transaction to match a reply against,
 	a doubling retransmission schedule, a deadline, and the handful of ways a
 	reply can be unhelpful.
 
-	Keeping one copy is not tidiness. The retransmission this schedule
-	implements had to be added to two of those by hand, and the second was
-	nearly missed; the class of bug this session has met repeatedly is one place
-	knowing something another does not.
+	Keeping one copy is not tidiness: with three, a change such as the
+	retransmission this schedule implements has to be made by hand in each,
+	and the usual bug is one place knowing something another does not.
 
-	No socket, no clock, no events, times arrive as arguments and datagrams as
-	bytes, so the interpretation can be tested directly on every target rather
+	No socket, no clock, no events (times arrive as arguments and datagrams as
+	bytes), so the interpretation can be tested directly on every target rather
 	than only through three socket-bound paths.
 **/
 class StunQuery {
@@ -37,8 +36,8 @@ class StunQuery {
 	public static inline var RETRANSMIT_FIRST:Float = 0.5;
 
 	/**
-		How long this question is asked for, in milliseconds, what a failure
-		should say it waited, or 0 for no deadline.
+		How long this question is asked for, in milliseconds (what a failure
+		should say it waited), or 0 for no deadline.
 	**/
 	public var timeoutMs(default, null):Int;
 
@@ -47,13 +46,13 @@ class StunQuery {
 
 	/**
 		The answer, once one has come: what a caller reads for more than the
-		mapped address, RFC 5780's OTHER-ADDRESS and RESPONSE-ORIGIN.
+		mapped address: RFC 5780's OTHER-ADDRESS and RESPONSE-ORIGIN.
 	**/
 	public var answer(default, null):Null<StunMessage> = null;
 
 	/**
-		How many answers to this question arrived damaged, its transaction,
-		and a FINGERPRINT that did not match, and were dropped.
+		How many answers to this question arrived damaged (its transaction,
+		and a FINGERPRINT that did not match) and were dropped.
 	**/
 	public var damaged(default, null):Int = 0;
 
@@ -65,9 +64,7 @@ class StunQuery {
 		@param now The caller's clock, whatever it consistently uses.
 		@param timeoutMs How long to keep asking. 0 or less sets no deadline,
 		as it does for every timeout here: the question is asked, each gap
-		twice the last, until it is answered or its asker stops it. It meant
-		three seconds, so a question could not be asked for longer without a
-		number, where a connection's timeout of 0 waits.
+		twice the last, until it is answered or its asker stops it.
 		@param attributes More for the request to carry: a CHANGE-REQUEST.
 	**/
 	public function new(now:Float, timeoutMs:Int, ?attributes:Array<StunAttribute>) {
@@ -124,7 +121,7 @@ class StunQuery {
 	/**
 		What an inbound datagram means for this question.
 
-		`NOT_OURS` for anything that is not a reply to this exact request,
+		`NOT_OURS` for anything that is not a reply to this exact request:
 		another peer's connectivity check, a relay's answer, a stray packet.
 		The transaction is ninety-six bits chosen at random per request and is
 		the whole of what stops a third party who can reach the port from
@@ -136,7 +133,7 @@ class StunQuery {
 	}
 
 	/**
-		The same, for a datagram the caller has already decoded, or null, for
+		The same, for a datagram the caller has already decoded, or null for
 		one that was not STUN. A socket carrying ICE and TURN as well decodes
 		each datagram once and shows the message to each of them.
 	**/
@@ -147,7 +144,7 @@ class StunQuery {
 
 		// A FINGERPRINT that does not match: damaged on the way, or not a STUN
 		// message at all however it looks. Dropped, as RFC 8489 section 7.3
-		// has it, and the question still open. It was believed.
+		// has it, and the question still open.
 		if (response.attribute(StunMessage.ATTR_FINGERPRINT) != null && !response.verifyFingerprint()) {
 			damaged++;
 			return NOT_OURS;
@@ -155,7 +152,7 @@ class StunQuery {
 
 		// An attribute the server requires understood and this client does
 		// not: whatever it changes about the answer is exactly what cannot be
-		// seen, so the answer cannot be used (section 7.3.3). It was.
+		// seen, so the answer cannot be used (section 7.3.3).
 		var unknown:Int = response.unknownRequiredAttribute();
 
 		if (unknown >= 0 && (response.type == StunMessage.BINDING_SUCCESS || response.type == StunMessage.BINDING_ERROR)) {

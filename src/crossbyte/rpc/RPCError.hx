@@ -7,7 +7,7 @@ import crossbyte.errors.Error;
 
 	Thrown from a handler method, its `message` becomes the caller's answer:
 	the `RPCResponse` the call returned fails with it, word for word, and the
-	connection carries on. Use it for what the caller can act on, a player
+	connection carries on. Use it for what the caller can act on: a player
 	that does not exist, an argument out of range, a request refused.
 
 	Anything else a handler throws is the handler failing, and the caller is
@@ -44,9 +44,9 @@ class RPCError extends Error {
 
 	/**
 		What a caller is told when the other side has no method its call
-		names: none of that name, or none with that signature, a peer built
+		names: none of that name, or none with that signature (a peer built
 		from another version of the contract, or from before the method was
-		added, as in a rolling deploy, and, on the runtime lane, no handler
+		added, as in a rolling deploy) and, on the runtime lane, no handler
 		registered for its number. See `RPCSession.onUnreadableFrame`.
 	**/
 	public static inline final UNKNOWN_METHOD_MESSAGE:String = "No method here answers this call";

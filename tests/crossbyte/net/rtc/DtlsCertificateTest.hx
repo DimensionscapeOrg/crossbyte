@@ -45,10 +45,11 @@ class DtlsCertificateTest extends utest.Test {
 		Off native, every member that needs mbedTLS says so, naming the
 		target.
 
-		The constructor threw "That certificate could not be read" whatever
-		it was given, `generate` threw a bare String, and `fingerprintOf` and
-		`matches` answered null and false, a certificate that would not
-		parse, a mismatch, rather than that none of it can be done here.
+		Each says that none of it can be done here, rather than the
+		constructor throwing "That certificate could not be read" whatever it
+		was given, `generate` a bare String, and `fingerprintOf` and `matches`
+		answering null and false, as for a certificate that would not parse or
+		a mismatch.
 	**/
 	public function testOffNativeEveryMemberSaysItCannot():Void {
 		if (DtlsCertificate.isSupported) {
@@ -134,8 +135,8 @@ class DtlsCertificateTest extends utest.Test {
 	/**
 		What a peer actually does with a signalled fingerprint.
 
-		Case is a display convention, a peer writing it in lowercase is naming
-		the same certificate, but the certificate itself is not negotiable.
+		Case is a display convention (a peer writing it in lowercase is naming
+		the same certificate), but the certificate itself is not negotiable.
 	**/
 	public function testMatchingAcceptsTheRightCertificateAndNothingElse():Void {
 		if (unsupported()) return;
@@ -184,8 +185,8 @@ class DtlsCertificateTest extends utest.Test {
 	/**
 		Fast enough to make one per session, which is the point of P-256.
 
-		Generous by two orders of magnitude against what this measures, a few
-		milliseconds, so it fails only if something has gone badly wrong, such
+		Generous by two orders of magnitude against what this measures (a few
+		milliseconds), so it fails only if something has gone badly wrong, such
 		as a switch to RSA.
 	**/
 	public function testGeneratingOneIsCheapEnoughToDoPerSession():Void {

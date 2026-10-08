@@ -195,11 +195,11 @@ class MetricsTest extends utest.Test {
 	/**
 		Whole numbers past 2^31 print every digit, in every sample.
 
-		They went through `Std.int`, which holds 31 bits: a counter of bytes
-		sent at three billion printed -1294967296, a gauge at five billion
-		705032704, and on the jvm both stopped at 2147483647. A collector
-		reading a counter that falls takes it for a restart. Bucket bounds,
-		sums and counts are written the same way, so they are checked too.
+		Whole numbers do not go through `Std.int`, which holds 31 bits: there a
+		counter of bytes sent at three billion would print -1294967296, a gauge
+		at five billion 705032704, and on the jvm both would stop at 2147483647.
+		A collector reading a counter that falls takes it for a restart. Bucket
+		bounds, sums and counts are written the same way, so they are checked too.
 	**/
 	public function testWholeNumbersPast32BitsPrintEveryDigit():Void {
 		metrics.counter("bytes_sent_total").inc(3000000000.0);
@@ -232,7 +232,7 @@ class MetricsTest extends utest.Test {
 		Assert.isTrue(text.indexOf("payload_bytes_count 2\n") >= 0, text);
 	}
 
-	/** Whole numbers that fit print as they always did, with no point. **/
+	/** Whole numbers that fit print with no point. **/
 	public function testSmallWholeNumbersAndFractionsPrintAsBefore():Void {
 		metrics.gauge("zero").set(0);
 		metrics.gauge("negative_zero").set(-0.0);
@@ -357,16 +357,16 @@ class MetricsTest extends utest.Test {
 	}
 
 	public function testAScrapeTakenWhileObservationsArriveAgreesWithItself():Void {
-		// The +Inf bucket and _count are one number, written twice. They were
-		// read separately, each under an acquisition of its own, so an
-		// observation landing between the two reads made a scrape contradict
-		// itself, and a collector computing a quantile from buckets that
-		// are not monotonic, or do not add up to the count, gets nonsense.
+		// The +Inf bucket and _count are one number, written twice. Read
+		// separately, each under an acquisition of its own, an observation
+		// landing between the two reads would make a scrape contradict itself,
+		// and a collector computing a quantile from buckets that are not
+		// monotonic, or do not add up to the count, gets nonsense.
 		var latency = metrics.histogram("scraped_seconds", [0.1, 1.0]);
 		var writers:Int = 3;
 		// Null<Bool>, not Bool: an empty Deque<Bool> pops false on the jvm,
-		// not null, which each writer took for the stop and left after its
-		// first 1,024 observations, the scrapes below raced nothing there.
+		// not null, which each writer would take for the stop and leave after its
+		// first 1,024 observations, so the scrapes below would race nothing there.
 		var stop = new sys.thread.Deque<Null<Bool>>();
 		var finished = new sys.thread.Deque<Null<Bool>>();
 
@@ -423,13 +423,13 @@ class MetricsTest extends utest.Test {
 		The first reads of `Metrics.shared` in a process, from eight threads
 		at once, find one registry.
 
-		It was made at the first read, with nothing to stop two threads from
-		both finding it missing. On the jvm eight threads reading it first got
-		eight registries every time, and seven of the eight counters they
-		registered went into registries that were then dropped, no scrape
-		ever showed them. Only a process's first read can tell, so this runs
-		its own binary again for one: the native suite and the jvm's, which
-		are the binaries that can be run again.
+		Made at the first read with nothing to stop two threads from both
+		finding it missing, eight threads reading it first on the jvm would get
+		eight registries, and seven of the eight counters they registered would
+		go into registries then dropped, never shown by any scrape. Only a
+		process's first read can tell, so this runs its own binary again for
+		one: the native suite and the jvm's, which are the binaries that can be
+		run again.
 	**/
 	@:timeout(90000)
 	public function testTheFirstReadsOfTheSharedRegistryFindOne():Void {

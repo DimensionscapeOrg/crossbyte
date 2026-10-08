@@ -49,9 +49,9 @@ class BloomFilterTest extends utest.Test {
 	}
 
 	public function testFalsePositiveRateIsLow():Void {
-		// Regression guard: the previous hash collapsed every input to ~16 bucket
-		// values, so the filter saturated and reported almost everything present.
-		// A correct hash spread keeps the false-positive rate far below this bound.
+		// A hash that collapsed every input to ~16 bucket values would saturate
+		// the filter and report almost everything present. A correct hash spread
+		// keeps the false-positive rate far below this bound.
 		var bf = new BloomFilter(16384, 4);
 		for (i in 0...500) {
 			bf.add("present-" + i);
@@ -144,10 +144,10 @@ class BloomFilterTest extends utest.Test {
 	private var __hits:Int = 0;
 
 	/**
-		A check allocates nothing, and a filter holds a bit per bit. Each call
-		hashed a UTF-8 copy of the item and a second, concatenated copy, ~470
-		bytes a check, and each bit was an array element: 38 MB on the jvm
-		for a 10-million-bit filter.
+		A check allocates nothing, and a filter holds a bit per bit. Hashing a
+		UTF-8 copy of the item and a second, concatenated copy would cost ~470
+		bytes a check, and a bit per array element 38 MB on the jvm for a
+		10-million-bit filter.
 	**/
 	public function testChecksAllocateNothingAndBitsArePacked():Void {
 		var bf = new BloomFilter(95851, 7);

@@ -126,8 +126,8 @@ class ByteArrayInputTest extends utest.Test {
 	}
 
 	public function testReadVarUIntRejectsOverflow():Void {
-		// A fifth byte holds the last four bits of 32. Past them, 2^32 + 1
-		// here, the bits were shifted off the top, and this read 1.
+		// A fifth byte holds the last four bits of 32. Past them (2^32 + 1
+		// here) the bits must not be shifted off the top, reading 1.
 		for (top in [0x10, 0x7F]) {
 			var bytes = Bytes.alloc(5);
 			bytes.set(0, 0x81);
@@ -142,8 +142,8 @@ class ByteArrayInputTest extends utest.Test {
 	}
 
 	public function testReadVarUIntReadsTheTopOfTheUnsignedRange():Void {
-		// 0xFFFFFFFF, which the writer can send: the reader used to stop at
-		// 2^31 - 1, so a ZigZag value that far out could not be read.
+		// 0xFFFFFFFF, which the writer can send: the reader must not stop at
+		// 2^31 - 1, or a ZigZag value that far out could not be read.
 		var bytes = Bytes.alloc(5);
 		bytes.set(0, 0xFF);
 		bytes.set(1, 0xFF);
@@ -174,8 +174,8 @@ class ByteArrayInputTest extends utest.Test {
 	}
 
 	public function testReadVarUIntRejectsAVarintTheBufferEndsInside():Void {
-		// Every byte asks for another and the buffer runs out. The bound was
-		// `#if !final`, so a release build kept reading past the end.
+		// Every byte asks for another and the buffer runs out. The bound holds
+		// in a `final` release build too, which must not read past the end.
 		var bytes = Bytes.alloc(2);
 		bytes.set(0, 0x80);
 		bytes.set(1, 0x80);
@@ -185,11 +185,10 @@ class ByteArrayInputTest extends utest.Test {
 	}
 
 	public function testReadVarUTFRejectsALengthTheBufferCannotHold():Void {
-		// The length is a varint, so a peer can name up to 2^31-1. __need
-		// tested `position + n > length`, and that sum overflows at this size
-		// and wraps negative, so the guard passed and readUTFBytes went
-		// ahead and read off the end. This one failed in ordinary builds too,
-		// not just `final`.
+		// The length is a varint, so a peer can name up to 2^31-1. A guard
+		// testing `position + n > length` would overflow at this size and wrap
+		// negative, so it would pass and readUTFBytes would read off the end,
+		// in ordinary builds too, not just `final`.
 		var bytes = Bytes.alloc(6);
 		bytes.set(0, 0xFF);
 		bytes.set(1, 0xFF);

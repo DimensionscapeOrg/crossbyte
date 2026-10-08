@@ -13,14 +13,13 @@ import haxe.io.Bytes;
  * socket when the runtime's poll set reports them; Node is handed them by an
  * event. Both feed `receive`, and neither knows anything about records.
  *
- * That split is also what makes the two implementations testable as one thing.
- * The old bridge read and parsed in a single blocking loop, so the parser could
- * only be exercised by standing up a real php-fpm.
+ * That split is also what makes the two implementations testable as one
+ * thing: the parser can be exercised without standing up a real php-fpm.
  */
 class PHPExchange {
 	/**
-		Bytes a response may take by default, its CGI header block and body
-		together, as the script writes them, before the exchange fails: 8
+		Bytes a response may take by default (its CGI header block and body
+		together, as the script writes them) before the exchange fails: 8
 		MB. `HTTPServerConfig.phpMaxResponseSize` sets it.
 	**/
 	public static inline var DEFAULT_MAX_RESPONSE_SIZE:Int = 8 * 1024 * 1024;
@@ -50,8 +49,7 @@ class PHPExchange {
 
 	// Bytes that have arrived and not yet formed a whole record. FastCGI has no
 	// framing above the record header, so a partial record is normal and has to
-	// be carried until the rest of it turns up, which the blocking reader
-	// never had to think about, because it simply asked for more.
+	// be carried until the rest of it turns up.
 	private var pending:ByteArray = new ByteArray();
 
 	// FCGI_STDOUT content, accumulated across records.
@@ -77,9 +75,9 @@ class PHPExchange {
 	 * A response past `maxResponseSize`, or whose header block runs past
 	 * `MAX_HEADER_BYTES` or `MAX_HEADER_FIELDS`, fails the exchange here, as it
 	 * arrives: this then returns false with `settled` set, and the caller lets
-	 * the connection go. Nothing bounded a response, so a script, or a
-	 * backend not running PHP at all, chose how much of the server's memory
-	 * it took.
+	 * the connection go. Without these bounds a script, or a backend not
+	 * running PHP at all, could choose how much of the server's memory it
+	 * took.
 	 */
 	public function receive(chunk:Bytes, length:Int):Bool {
 		if (finished || settled || length <= 0) {
@@ -126,9 +124,8 @@ class PHPExchange {
 	 *
 	 * The `cause` is what lets a caller tell a timeout from a refused
 	 * connection without reading the message. `HTTPRequestHandler` answers
-	 * `504` for one and `502` for the other, and it decided that by searching
-	 * the message for "did not respond within", so rewording a `PHPTimeout`
-	 * would have silently changed a status code.
+	 * `504` for one and `502` for the other, and rewording a `PHPTimeout`
+	 * must not silently change a status code.
 	 */
 	public function fail(message:String, ?cause:Dynamic):Void {
 		if (settled) {
@@ -160,9 +157,8 @@ class PHPExchange {
 			var padding:Int = pending.readUnsignedByte();
 			var record:Int = HEADER_LENGTH + contentLength + padding;
 
-			// The whole record or none of it. Reading a header and then waiting
-			// for its content mid-parse is what the blocking loop did, and it
-			// is exactly what an event-driven reader cannot do.
+			// The whole record or none of it: an event-driven reader cannot read
+			// a header and then wait for its content mid-parse.
 			if (pending.length - offset < record) {
 				break;
 			}
@@ -184,11 +180,8 @@ class PHPExchange {
 				break;
 			}
 
-			// FCGI_STDERR is read and dropped, which is what the blocking
-			// implementation did with the logging commented out. Kept the same
-			// here deliberately: changing it belongs with a decision about
-			// where a backend's diagnostics should go, not with a rewrite of
-			// how bytes arrive.
+			// FCGI_STDERR is read and dropped. Changing that belongs with a
+			// decision about where a backend's diagnostics should go.
 			offset += record;
 		}
 
@@ -250,21 +243,20 @@ class PHPExchange {
 	 * Splits the CGI header block from the body.
 	 *
 	 * On the bytes. Only the header block is text; the body is whatever the
-	 * script sent, an image, a PDF, a zip, gzip output, a Latin-1 page, and
-	 * is handed on untouched. The whole payload used to be decoded as UTF-8 to
-	 * find the separator and the body re-encoded from the string, which
-	 * mangled every byte sequence that was not valid UTF-8, truncated the body
-	 * at its first NUL on Node, and threw from inside the tick on eval.
+	 * script sent (an image, a PDF, a zip, gzip output, a Latin-1 page) and
+	 * is handed on untouched. Decoding it as UTF-8 would mangle every byte
+	 * sequence that is not valid UTF-8, truncate the body at its first NUL
+	 * on Node, and throw from inside the tick on eval.
 	 *
 	 * A repeated field is joined rather than overwritten, by the rule
 	 * `HTTPRequestContext.onHeaders` documents: `", "` between values, except
 	 * `set-cookie`, which is joined with `"\n"` because a cookie carries commas
-	 * of its own. PHP sends one `Set-Cookie` line per cookie, and storing each
-	 * under its name kept only the last.
+	 * of its own. PHP sends one `Set-Cookie` line per cookie, and every one
+	 * is kept.
 	 *
-	 * The repeats of a field are gathered and joined once, at the end. Each
-	 * was added to the whole value so far, which is quadratic in the repeats:
-	 * 40,000 lines of one field held the runtime 5.6 s, measured.
+	 * The repeats of a field are gathered and joined once, at the end:
+	 * adding each to the whole value so far is quadratic in the repeats,
+	 * and 40,000 lines of one field would hold the runtime for seconds.
 	 */
 	private function __toResponse():PHPResponse {
 		var raw:Bytes = stdout;

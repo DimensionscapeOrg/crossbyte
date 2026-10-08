@@ -19,16 +19,16 @@ import sys.thread.Thread;
 	its runtime: `close()` hands the close over, as `CrossByte.post` hands any
 	work over, and returns.
 
-	What a runtime owns, its socket registry, its timers, its listeners,
-	is not thread-safe, and a close touches all three. A WebSocket's session
-	took its timers from the calling thread: from any other its `close()`
-	threw inside the heartbeat's clear, which was swallowed half way through,
-	the close frame sent, the socket left open and registered, the
-	heartbeat left running for good, and `close` never dispatched, and
-	`closeWith()` threw the same error at its caller. A reliable session's
-	`close()` threw at its caller, from its close timer. A plain socket and
-	a `NetConnection` closed there, and told their listeners on the wrong
-	thread.
+	What a runtime owns (its socket registry, its timers, its listeners)
+	is not thread-safe, and a close touches all three. Run from another
+	thread, a WebSocket session's `close()` taking its timers from the
+	calling thread would throw inside the heartbeat's clear, swallowed half
+	way through (the close frame sent, the socket left open and registered,
+	the heartbeat left running for good, and `close` never dispatched), and
+	`closeWith()` would throw the same error at its caller; a reliable
+	session's `close()` would throw at its caller, from its close timer; and
+	a plain socket and a `NetConnection` would close there, and tell their
+	listeners on the wrong thread.
 
 	Each case closes from a real second thread, which the test thread waits
 	for without pumping, so nothing touches the runtime from two threads at
@@ -52,9 +52,9 @@ class CrossThreadCloseTest extends utest.Test {
 		__webSocketPair(function(client:WebSocket, accepted:WebSocket, finish:Void->Void):Void {
 			var runtime:CrossByte = CrossByte.current();
 			var session = client.__webSocket;
-			// The heartbeat a closed session leaves running fires for the
-			// life of the process. Its flag said it had stopped either way:
-			// the scheduler is what says whether it did.
+			// The heartbeat a closed session leaves running would fire for the
+			// life of the process. Its flag says it has stopped either way: the
+			// scheduler is what says whether it did.
 			var heartbeat:Int = session.__heartbeat;
 			Assert.isTrue(runtime.__timer.isActive(heartbeat), "an open session has no heartbeat to watch");
 			var clientClose:WebSocketCloseEvent = null;
@@ -114,7 +114,7 @@ class CrossThreadCloseTest extends utest.Test {
 	/**
 		A session a server accepted, closed from another thread. Its client
 		asks for the upgrade by hand, so this runs where no WebSocket client
-		can, the interpreter, hl and neko have no secure random source for
+		can: the interpreter, hl and neko have no secure random source for
 		a client's key.
 	**/
 	@:timeout(30000)
@@ -314,10 +314,10 @@ class CrossThreadCloseTest extends utest.Test {
 		runs on its runtime's tick, there: here a public-address question
 		still waiting, which it fails, on the runtime's thread.
 
-		Its close took the runtime from the calling thread to take its tick
-		listeners off, which threw there and was swallowed: the question's
-		tick stayed on the runtime for good, and the question was failed on
-		the closing thread.
+		Taking the runtime from the calling thread to take its tick listeners
+		off would throw there and be swallowed: the question's tick would stay
+		on the runtime for good, and the question be failed on the closing
+		thread.
 	**/
 	@:timeout(30000)
 	public function testAReliableServerClosedFromAnotherThreadStopsItsTicksOnItsRuntime(async:Async):Void {
@@ -364,11 +364,9 @@ class CrossThreadCloseTest extends utest.Test {
 	/**
 		A server closed from another thread lets go of its runtime there: its
 		listener leaves the runtime's poll set, and its tick the runtime's
-		listeners, on the runtime's thread, plain and WebSocket alike.
-
-		Each was taken out from the closing thread, while the runtime might
-		be polling the listener or dispatching its tick: neither is
-		thread-safe.
+		listeners, on the runtime's thread, plain and WebSocket alike, not from
+		the closing thread, while the runtime might be polling the listener or
+		dispatching its tick: neither is thread-safe.
 	**/
 	@:timeout(30000)
 	public function testAServerClosedFromAnotherThreadLetsGoOnItsRuntime(async:Async):Void {
@@ -432,9 +430,9 @@ class CrossThreadCloseTest extends utest.Test {
 
 	/**
 		A WebSocket server drained from another thread: `onComplete` is
-		called on the runtime's thread, as `drain` promises. With no session
-		open the drain finished at once, on the calling thread, the server
-		closed there, and `onComplete` called there.
+		called on the runtime's thread, as `drain` promises, even with no
+		session open, where the drain finishes at once: not on the calling
+		thread, with the server closed there.
 	**/
 	@:timeout(30000)
 	public function testAServerDrainedFromAnotherThreadCompletesOnItsRuntime(async:Async):Void {
@@ -464,7 +462,7 @@ class CrossThreadCloseTest extends utest.Test {
 	/**
 		A datagram socket closed from another thread closes on its runtime:
 		out of the runtime's poll set there, and `close` dispatched there,
-		once. Both happened on the closing thread.
+		once, not on the closing thread.
 	**/
 	@:timeout(30000)
 	public function testADatagramSocketClosedFromAnotherThreadClosesOnItsRuntime(async:Async):Void {
@@ -529,8 +527,8 @@ class CrossThreadCloseTest extends utest.Test {
 
 	/**
 		An ICE agent detached from another thread stops on its server's
-		runtime: its tick comes off the runtime there. It came off from the
-		detaching thread.
+		runtime: its tick comes off the runtime there, not from the detaching
+		thread.
 	**/
 	@:timeout(30000)
 	public function testAnAgentDetachedFromAnotherThreadStopsOnItsRuntime(async:Async):Void {
@@ -562,7 +560,7 @@ class CrossThreadCloseTest extends utest.Test {
 	/**
 		A relay released from another thread, its allocation still waiting:
 		the `allocateRelay` it fails is failed on the server's runtime, and the
-		relay's tick comes off there. Both happened on the releasing thread.
+		relay's tick comes off there, not on the releasing thread.
 	**/
 	@:timeout(30000)
 	public function testARelayReleasedFromAnotherThreadEndsOnItsRuntime(async:Async):Void {
@@ -666,8 +664,8 @@ class CrossThreadCloseTest extends utest.Test {
 	}
 
 	/**
-		Runs `act` on a thread of its own, and waits for it, without
-		pumping, so the runtime is touched by one thread at a time, then
+		Runs `act` on a thread of its own, and waits for it (without
+		pumping, so the runtime is touched by one thread at a time), then
 		says what it threw, or null.
 	**/
 	private static function __fromAnotherThread(act:Void->Void):Null<String> {

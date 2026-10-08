@@ -43,8 +43,8 @@ class DatagramSocketDataEvent extends Event {
 		The received payload bytes, from position 0 to `length`.
 
 		Valid only during the listener call: the socket fills the same
-		`ByteArray` with the next datagram, and empties it, length and
-		position 0, once the call returns. To keep the bytes, copy them
+		`ByteArray` with the next datagram, and empties it (length and
+		position 0) once the call returns. To keep the bytes, copy them
 		out, as `data.readBytes(mine)` does, or keep a `clone()`. Sending
 		them back from the listener is safe: every send copies what it is
 		given before it returns.

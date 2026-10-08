@@ -18,7 +18,7 @@ package crossbyte.rpc;
 	```
 
 	It is an `RPCError`, so a handler answering its own caller with the
-	response that timed out, forwarding it, tells that caller the call
+	response that timed out (forwarding it) tells that caller the call
 	timed out, word for word, where anything else it failed with would reach
 	the caller as `RPCError.INTERNAL_MESSAGE`. And it is reported to
 	`RPCSession.onHandlerError` as well, since a handler whose answers do not

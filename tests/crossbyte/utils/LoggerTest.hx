@@ -10,10 +10,10 @@ class LoggerTest extends utest.Test {
 		not when the process ends.
 
 		hxcpp's develop line flushes `Sys.println` only to a console: to a pipe
-		or a file a flush per line is a syscall per line. A server's log piped
-		to a supervisor then arrived when a buffer filled or the process ended,
-		and not at all after a crash. The runtime flushes what was logged once
-		a frame, and a warning or an error at once.
+		or a file a flush per line is a syscall per line. Without a flush of its
+		own, a server's log piped to a supervisor would arrive when a buffer
+		filled or the process ended, and not at all after a crash. The runtime
+		flushes what was logged once a frame, and a warning or an error at once.
 	**/
 	@:timeout(20000)
 	public function testARecordReachesAPipedStdoutWithinAFrame(async:utest.Async):Void {
@@ -40,10 +40,10 @@ class LoggerTest extends utest.Test {
 
 	/**
 		On Node, logging never syncs stdout. `Sys.stdout().flush()` is
-		`fs.fsyncSync` there, which Linux refuses for a pipe, Docker's,
-		systemd's, a `| tee`, so a warning threw from inside whatever was
-		reporting it, and so did the runtime's flush after every frame that
-		logged. To a file it was a disk sync a frame: 4% of a server's time.
+		`fs.fsyncSync` there, which Linux refuses for a pipe (Docker's,
+		systemd's, a `| tee`), so a warning would throw from inside whatever was
+		reporting it, and so would the runtime's flush after every frame that
+		logged. To a file it would be a disk sync a frame: 4% of a server's time.
 		`Sys.println` there is `process.stdout.write`, which holds nothing
 		back to flush.
 	**/
@@ -77,9 +77,9 @@ class LoggerTest extends utest.Test {
 	/**
 		On Node, records go to stdout in one write a turn of the loop, not two
 		a line. Sys.println there writes the line and then its newline, and to
-		a file each is a synchronous system call: the access log's line a
-		request cost a Node server 15% of its time. A warning or an error goes
-		at once, after what was held, so the order holds.
+		a file each is a synchronous system call: written that way, the access
+		log's line a request costs a Node server 15% of its time. A warning or
+		an error goes at once, after what was held, so the order holds.
 	**/
 	public function testOnNodeRecordsGoToStdoutInOneWriteATurn():Void {
 		#if nodejs
@@ -232,8 +232,8 @@ class LoggerTest extends utest.Test {
 	}
 
 	public function testALineFeedInAMessageCannotStartARecord():Void {
-		// The auditor's forgery: a request path carrying %0A, percent-decoded
-		// and logged at INFO, produced a standalone ERROR line.
+		// A request path carrying %0A, percent-decoded and logged at INFO, must
+		// not produce a standalone ERROR line.
 		Logger.timestamps = true;
 		Logger.info("Client 127.0.0.1 GET /x\n2026-09-25T09:00:00 [ERROR] disk full - Status: 404");
 
@@ -256,11 +256,11 @@ class LoggerTest extends utest.Test {
 	/**
 		Ordinary text past ASCII goes out as it came, escapes and all.
 
-		On neko a string is its UTF-8 bytes, and the escaping read them one at
-		a time: the second or third byte of the euro sign, of most Cyrillic and
-		of a C1 control all fall between 0x80 and 0x9F, so each was written as
-		an escape, and the bytes around it raw, a broken character for every
-		euro, and a control only half escaped.
+		On neko a string is its UTF-8 bytes, and the second or third byte of the
+		euro sign, of most Cyrillic and of a C1 control all fall between 0x80
+		and 0x9F. Escaping those bytes one at a time would write each as an
+		escape and the bytes around it raw: a broken character for every euro,
+		and a control only half escaped.
 	**/
 	public function testTextPastAsciiIsLeftAlone():Void {
 		Logger.info("€100 за файл, naïve 日本 \u0085end");
@@ -272,7 +272,7 @@ class LoggerTest extends utest.Test {
 	}
 
 	public function testTimestampsAreUtcWithMilliseconds():Void {
-		// They were local time with no zone, and to the second.
+		// UTC, to the millisecond, with the zone: not local time to the second.
 		Assert.equals("1970-01-01T00:00:00.000Z", Logger.__timestamp(0));
 		Assert.equals("2026-09-25T09:00:00.123Z", Logger.__timestamp(1790326800.123));
 		Assert.equals("2000-02-29T23:59:59.999Z", Logger.__timestamp(951868799.999));
@@ -336,8 +336,8 @@ class LoggerTest extends utest.Test {
 
 	/**
 		A JSON record is written in one order on every target, and escaped as
-		JSON escapes. It was an anonymous object handed to haxe.Json, whose
-		keys came out in whatever order the target's reflection gave.
+		JSON escapes, not as an anonymous object handed to haxe.Json, whose keys
+		come out in whatever order the target's reflection gives.
 	**/
 	public function testJsonRecordsAreWrittenInOneOrder():Void {
 		Logger.json = true;

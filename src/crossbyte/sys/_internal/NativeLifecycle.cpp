@@ -21,7 +21,7 @@ namespace {
 namespace {
 	// The longest the handler holds a closing console, a logoff or a
 	// shutdown for the runtime to shut down in. Windows' own limit is the
-	// shorter one for a closed console, about five seconds, and it ends
+	// shorter one for a closed console (about five seconds), and it ends
 	// the process then whatever this is.
 	std::atomic<int> g_close_wait_ms{20000};
 
@@ -66,11 +66,11 @@ namespace {
 				// runtime sees the request at its next tick and shuts down.
 				return TRUE;
 			case CTRL_LOGOFF_EVENT:
-				// Windows sends this to services when anyone logs off, someone
-				// else, since no one logs on to session 0, and does not end
-				// them. A service, or a process one started, shut down here,
-				// so it stopped serving whenever a user signed out. Claimed and
-				// let be.
+				// Windows sends this to services when anyone logs off (someone
+				// else, since no one logs on to session 0) and does not end
+				// them. A service, or a process one started, that shut down
+				// here would stop serving whenever a user signed out. Claimed
+				// and let be.
 				if (inServiceSession()) {
 					return TRUE;
 				}
@@ -79,11 +79,10 @@ namespace {
 			case CTRL_CLOSE_EVENT:
 			case CTRL_SHUTDOWN_EVENT:
 				// For these Windows ends the process as soon as the handler
-				// returns, whatever it returns. This returned at once, so the
-				// process was gone before the runtime's next tick saw the
-				// request and onShutdown never ran: only Ctrl+C and Ctrl+Break
-				// shut down cleanly. Held here instead while the runtime shuts
-				// down.
+				// returns, whatever it returns. Returning at once, the process
+				// would be gone before the runtime's next tick saw the request
+				// and onShutdown never run, so the handler holds here while
+				// the runtime shuts down.
 				holdWhileShuttingDown();
 				return TRUE;
 			default:
@@ -96,14 +95,13 @@ namespace {
 		return 0;
 	}
 
-	// A process that loads user32.dll, a window, a GUI toolkit, a Shell
-	// function that calls into it, is a Windows application to Windows, and
+	// A process that loads user32.dll (a window, a GUI toolkit, a Shell
+	// function that calls into it) is a Windows application to Windows, and
 	// its console handler is not called for CTRL_LOGOFF_EVENT or
 	// CTRL_SHUTDOWN_EVENT: it is told of a logoff or a shutdown through
 	// WM_QUERYENDSESSION and WM_ENDSESSION, sent to its top-level windows.
-	// Such a process got neither, and the session ended it without a
-	// shutdown. One gets a hidden window of its own, as Windows documents, on
-	// a thread of its own.
+	// So such a process gets a hidden window of its own, as Windows
+	// documents, on a thread of its own.
 	//
 	// user32 is reached through the module already loaded, never linked:
 	// CrossByte loads none of it, and linking it would make every process a
@@ -277,13 +275,13 @@ namespace {
 	struct sigaction g_previous_hup;
 	bool g_hup_installed = false;
 
-	// Whether `signal` takes its default action, not ignored, and not
+	// Whether `signal` takes its default action: not ignored, and not
 	// handled by anything else. By the handler alone: sa_handler and
 	// sa_sigaction share their storage, and SIG_DFL is the one value
 	// neither kind of handler can have. SA_SIGINFO is no guide, as macOS
 	// keeps it set across exec for a signal the parent handled with it
 	// while putting the handler itself back to SIG_DFL; read as "handled",
-	// SIGHUP went without a handler and still ended the process.
+	// SIGHUP would go without a handler and still end the process.
 	bool takesDefaultAction(int signal) {
 		struct sigaction current;
 		if (sigaction(signal, nullptr, &current) != 0) {
@@ -309,10 +307,10 @@ extern "C" bool crossbyte_lifecycle_install() {
 	ok = (sigaction(SIGTERM, &action, &g_previous_term) == 0) && ok;
 
 	// SIGHUP: the terminal a server was started from going away, or a
-	// session ending. Its default ended the process at once, with no
-	// onShutdown and no drain; it shuts down as SIGTERM does now. Left
-	// alone when it was ignored, nohup, which asks for the process to
-	// outlive its terminal, or when something else handles it, a reload
+	// session ending. It shuts down as SIGTERM does rather than ending the
+	// process at once by default, with no onShutdown and no drain. Left
+	// alone when it was ignored (nohup, which asks for the process to
+	// outlive its terminal) or when something else handles it, a reload
 	// say.
 	g_hup_installed = takesDefaultAction(SIGHUP) && sigaction(SIGHUP, &action, &g_previous_hup) == 0;
 

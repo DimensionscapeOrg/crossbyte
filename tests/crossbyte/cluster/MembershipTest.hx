@@ -101,8 +101,8 @@ class MembershipTest extends utest.Test {
 	}
 
 	/**
-		`now` left out, or negative, asks the membership's clock. It was a
-		`?now:Float`: a `Null<Float>`, which a native build makes an object
+		`now` left out, or negative, asks the membership's clock. It is not a
+		`?now:Float`: a `Null<Float>`, which a native build would make an object
 		of on every heartbeat that passes one.
 	**/
 	public function testANegativeNowAsksTheClock():Void {
@@ -124,9 +124,9 @@ class MembershipTest extends utest.Test {
 
 	/**
 		A node that leaves is reported once, and counted once, when what is
-		told of another leaving forgets it first. The sweep found both and
-		then dropped each: the second a second time, reported again, and
-		counted off `length` again.
+		told of another leaving forgets it first: the sweep, having found both,
+		does not drop the second a second time, report it again, or count it
+		off `length` again.
 	**/
 	public function testALeaveThatForgetsAnotherIsReportedOnce():Void {
 		var now:Float = 0;
@@ -189,8 +189,8 @@ class MembershipTest extends utest.Test {
 
 	/**
 		A timeout of 0 is none, as it is everywhere in CrossByte: no node is
-		declared gone for being quiet, a process paused in a debugger, say,
-		and one leaves only when it is forgotten. It was refused.
+		declared gone for being quiet (a process paused in a debugger, say),
+		and one leaves only when it is forgotten.
 	**/
 	public function testATimeoutOfZeroIsNone():Void {
 		var now:Float = 0;
@@ -209,24 +209,24 @@ class MembershipTest extends utest.Test {
 	}
 
 	/**
-		A timeout that is not a number of seconds is refused. NaN was taken,
-		and no node ever left: every comparison with it is false.
+		A timeout that is not a number of seconds is refused. With NaN no node
+		would ever leave: every comparison with it is false.
 	**/
 	public function testANegativeOrNaNTimeoutIsRefused():Void {
 		Assert.raises(() -> new Membership(-1), ArgumentError);
 		Assert.raises(() -> new Membership(Math.NaN), ArgumentError);
 	}
 
-	/** A negative bound was read as no bound at all, without a word. **/
+	/** A negative bound is refused, not read as no bound at all without a word. **/
 	public function testANegativeMaxNodesIsRefused():Void {
 		Assert.raises(() -> new Membership(5, -1), ArgumentError);
 		Assert.equals(0, new Membership(5, 0).maxNodes, "0 is no limit, and allowed");
 	}
 
 	/**
-		A name is bounded in length as the names are in number. `maxNodes`
-		held the count down, but each of the 1,024 names a peer made up
-		could be as long as it liked.
+		A name is bounded in length as the names are in number: `maxNodes`
+		holds the count down, but without this each of the 1,024 names a peer
+		made up could be as long as it liked.
 	**/
 	public function testANameLongerThanTheBoundIsRefused():Void {
 		var alive = new Membership(5, 1024, function():Float return 0);
@@ -240,7 +240,7 @@ class MembershipTest extends utest.Test {
 
 	/**
 		A time of NaN is refused rather than recorded. A node heard at NaN
-		could never be found quiet for long enough, and stayed for good.
+		could never be found quiet for long enough, and would stay for good.
 	**/
 	public function testATimeOfNaNIsRefused():Void {
 		var now:Float = 0;

@@ -8,9 +8,9 @@ import haxe.io.Bytes;
 
 	Plain `haxe.io.Bytes` is binary of subtype 0, the generic one, and the
 	decoder returns subtype 0 as `Bytes`; this carries every other subtype,
-	a UUID (4), an MD5 digest (5), encrypted data (6), a column (7), a
-	sensitive value (8), a vector (9) or a user-defined one (128 and up), so
-	it survives a round trip.
+	so it survives a round trip: a UUID (4), an MD5 digest (5), encrypted
+	data (6), a column (7), a sensitive value (8), a vector (9) or a
+	user-defined one (128 and up).
 **/
 @:access(crossbyte.db.mongodb.bson.ObjectId)
 final class BsonBinary {

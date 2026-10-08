@@ -129,8 +129,8 @@ class FakeTurnRelaySocket {
 
 	/**
 		Takes TCP connections too, on a port of its own: RFC 8656's framing,
-		each message whole, a STUN message by its header's length, ChannelData
-		by its own, padded to four bytes both ways. A connection's end is its
+		each message whole (a STUN message by its header's length, ChannelData
+		by its own, padded to four bytes both ways). A connection's end is its
 		allocation's. Call after `start`. Given a certificate, the port is TLS.
 	**/
 	public function startTcp(?certificate:Certificate, ?key:Key):Void {

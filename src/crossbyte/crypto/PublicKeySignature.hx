@@ -76,8 +76,7 @@ class PublicKeySignature {
 	 *
 	 * @param keyPem PEM text.
 	 * @param isPrivate Whether `keyPem` is a private key.
-	 * @throws IllegalOperationError On a target other than native cpp, where it
-	 *         answered `UNKNOWN` for every key.
+	 * @throws IllegalOperationError On a target other than native cpp.
 	 */
 	public static function keyType(keyPem:String, isPrivate:Bool = false):PublicKeyType {
 		var key:Null<SignatureKey> = @:privateAccess SignatureKey.__load(keyPem, isPrivate, false);
@@ -91,8 +90,8 @@ class PublicKeySignature {
 	}
 
 	/**
-	 * Length in bytes of a JOSE-format ECDSA signature for this key,
-	 * twice the curve's coordinate size, so 64 for P-256.
+	 * Length in bytes of a JOSE-format ECDSA signature for this key: twice
+	 * the curve's coordinate size, so 64 for P-256.
 	 *
 	 * @return The length, or `-1` when the key is not an EC key.
 	 * @throws IllegalOperationError On a target other than native cpp.
@@ -119,9 +118,8 @@ class PublicKeySignature {
 	 *         wrong-length signatures return `false` rather than throwing,
 	 *         so a hostile token cannot raise out of a verification path.
 	 * @throws IllegalOperationError On a target other than native cpp,
-	 *         whatever it is handed: no token chooses the target. It answered
-	 *         `false` there, the answer for a forged signature, so every
-	 *         signature was refused, genuine ones included.
+	 *         whatever it is handed: no token chooses the target, and `false`
+	 *         there would be the answer for a forged signature.
 	 */
 	public static function verify(publicKeyPem:String, message:Bytes, signature:Bytes, format:SignatureFormat = NATIVE):Bool {
 		#if cpp

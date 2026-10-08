@@ -42,7 +42,7 @@ class EventDispatcher implements IEventDispatcher {
 
 	/**
 		The next listener's place in the order of additions. Dispatch does not
-		read it, a list is kept in priority order as listeners are added,
+		read it (a list is kept in priority order as listeners are added),
 		but a listener's entry keeps it, so a subclass can tell one entry from
 		another without comparing functions: on HashLink a listener is stored
 		wrapped, and compares equal to nothing it was added as.
@@ -55,10 +55,9 @@ class EventDispatcher implements IEventDispatcher {
 		list rather than changing it, so the walk goes on over the list it
 		started with; otherwise the list is changed where it is.
 
-		A listener that throws out of `dispatchEvent` leaves this raised, and
-		the dispatcher then copies on every change, as it always used to:
-		slower, never wrong. The containing dispatch catches, so a runtime's
-		own dispatcher is never left that way.
+		A listener that throws out of `dispatchEvent` has the count lowered
+		on its way out, so the dispatcher does not go on copying its list on
+		every change.
 	**/
 	@:noCompletion private var __walking:Int;
 
@@ -143,11 +142,10 @@ class EventDispatcher implements IEventDispatcher {
 			return;
 		}
 
-		// Nothing is walking it, so it is changed where it is. It used to be
-		// copied on every add and every remove, dispatching or not, which
-		// made a list of n listeners cost n^2 to build and to empty: every
-		// connection or task that attached a listener of its own paid for all
-		// the others.
+		// Nothing is walking it, so it is changed where it is. Copied on
+		// every add and remove instead, a list of n listeners would cost n^2
+		// to build and to empty, and every connection or task that attached a
+		// listener of its own would pay for all the others.
 		if (idx == length) {
 			list.push(entry);
 		} else {
@@ -185,7 +183,7 @@ class EventDispatcher implements IEventDispatcher {
 			// `removeEventListener(type, this.handler)` reads the method again.
 			// hxcpp compares two reads of one bound method equal and JavaScript
 			// caches the binding, but on eval and the jvm each read is a new
-			// closure `==` never matches, so the listener was never removed.
+			// closure `==` never matches, so the listener would never be removed.
 			if (!same) {
 				same = Reflect.compareMethods(registered, listener);
 			}
@@ -259,7 +257,7 @@ class EventDispatcher implements IEventDispatcher {
 	/**
 	 * Removes **all** event listeners from this dispatcher.
 	 *
-	 * Use with caution, this clears the entire internal event map.
+	 * Use with caution: this clears the entire internal event map.
 	 */
 	public function removeAllListeners():Void {
 		if (__eventMap != null) {
@@ -298,14 +296,14 @@ class EventDispatcher implements IEventDispatcher {
 		// array rather than change it, so nothing can change the one being
 		// walked here. Listeners added during dispatch are still not invoked
 		// until the next dispatch, and a listener removed during dispatch is
-		// still invoked for this one, the same contract a per-dispatch copy
-		// gave, without allocating an array every time an event is sent.
+		// still invoked for this one: the same contract a per-dispatch copy
+		// would give, without allocating an array every time an event is sent.
 		// One listener is not walked, so the count is left alone for it.
 		//
-		// A listener that throws ends the walk too: the count was left raised,
-		// and every add and remove on this dispatcher copied its listeners
-		// from then on. A try costs nothing natively or on the jvm until
-		// something throws.
+		// A listener that throws ends the walk too, and the count is lowered
+		// again, so the dispatcher does not go on copying its listeners for
+		// every add and remove. A try costs nothing natively or on the jvm
+		// until something throws.
 		__walking++;
 		try {
 			for (i in 0...len) {
@@ -329,15 +327,14 @@ class EventDispatcher implements IEventDispatcher {
 		that throws does not stop the ones after it: what it threw goes to
 		`__listenerThrew`, and the dispatch carries on.
 
-		For events whose listeners belong to unrelated components, a
-		runtime's tick, its INIT and EXIT, where one's bug is not the
+		For events whose listeners belong to unrelated components (a
+		runtime's tick, its INIT and EXIT), where one's bug is not the
 		others' business and must not end the loop that dispatched it.
-		Everything else still propagates, as it always has: a component
-		dispatching its own events to its own listeners may rely on hearing
-		that one failed.
+		Everything else still propagates: a component dispatching its own
+		events to its own listeners may rely on hearing that one failed.
 
 		A separate method rather than a flag on the ordinary one, so the
-		dispatch every other event takes is exactly what it was.
+		dispatch every other event takes pays nothing for it.
 	**/
 	@:noCompletion private function __dispatchContained(event:Event):Bool {
 		if (event == null) {
@@ -417,8 +414,8 @@ class EventDispatcher implements IEventDispatcher {
 /**
 	One registered listener. A class rather than an anonymous structure: on
 	hxcpp a read of an anonymous object's field is a lookup by its name, and
-	every dispatch read `listener` twice per listener, half of what a
-	dispatch cost each listener, 8.0 ns against 3.7 ns as a class.
+	a dispatch reads `listener` twice per listener: 8.0 ns a listener
+	against 3.7 ns as a class.
 **/
 private final class ListenerEntry {
 	public final listener:Function;

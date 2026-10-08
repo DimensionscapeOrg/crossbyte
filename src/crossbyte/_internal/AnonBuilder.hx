@@ -5,18 +5,18 @@ import sys.thread.Mutex;
 #end
 
 /**
-	Builds anonymous objects of one shape, one list of field names, the
+	Builds anonymous objects of one shape (one list of field names) the
 	way hxcpp builds an object literal.
 
 	On hxcpp a literal such as `{a: 1, b: 2}` keeps its fields in fixed slots,
 	ordered by the hash of their names and found by a binary search; an
 	object made as `{}` and filled with `Reflect.setField` keeps every field
 	in a hash map instead, allocated beside it, and every read is a lookup
-	there. Rows and documents decoded from the wire were all of the second
-	kind. Made here they are of the first: the slot order is worked out once
-	for the shape, and each object then costs one allocation, and each field
-	one store. Reading a field of one costs 38-51% less, and building and
-	reading a row of 8 a quarter to a third less (the audit's SqlitePerf).
+	there. Objects made here are of the first kind: the slot order is worked
+	out once for the shape, and each object then costs one allocation, and
+	each field one store. Reading a field of one costs 38-51% less than
+	through the hash map, and building and reading a row of 8 a quarter to a
+	third less.
 
 	Elsewhere it is `{}` and `Reflect.setField`: the jvm, JavaScript, hl,
 	neko and eval have no such distinction to exploit.
@@ -29,7 +29,7 @@ import sys.thread.Mutex;
 	assignment go to the object's hash map as usual.
 
 	The shape falls back to `Reflect.setField` on hxcpp too when its names
-	repeat (the last value wins, as before), when one is not ASCII (hxcpp
+	repeat (the last value wins), when one is not ASCII (hxcpp
 	looks fixed slots up by ASCII name only), when one is longer than
 	`MAX_NAME_LENGTH`, or when the process has already made `MAX_NAMES`
 	distinct names, or `MAX_NAME_CHARACTERS` characters of them, permanent:

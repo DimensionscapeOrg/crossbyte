@@ -12,7 +12,7 @@ import utest.Async;
 @:timeout(20000)
 class HTTPRateLimitTest extends utest.Test {
 	public function testA429SaysWhenToComeBack(async:Async):Void {
-		// The 429 said nothing about when, so a client could only guess.
+		// The 429 says when to try again, so a client need not guess.
 		var server:HTTPServer = __serve(config -> config.rateLimiter = new RateLimiter(1, 60.0));
 
 		HTTPTestSupport.exchangeEach(server, [__get("/"), __get("/")], function(responses:Array<HTTPTestResponse>):Void {
@@ -26,9 +26,10 @@ class HTTPRateLimitTest extends utest.Test {
 	}
 
 	public function testTheKeyCanComeFromTheRequest(async:Async):Void {
-		// The limiter could key on nothing but the address it was handed, so a
-		// server behind a proxy limited the proxy, and a login route could not
-		// limit per account without reaching into the handler.
+		// The limiter keys on what the application chooses, not only the
+		// address it is handed, so a server behind a proxy need not limit the
+		// proxy, and a login route can limit per account without reaching into
+		// the handler.
 		var server:HTTPServer = __serve(config -> {
 			config.rateLimiter = new RateLimiter(1, 60.0);
 			config.rateLimitKey = handler -> handler.getHeader("x-user");

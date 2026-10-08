@@ -26,8 +26,8 @@ class H2Stream {
 	public var resetCode:Null<H2ErrorCode> = null;
 
 	/**
-	 * Set when this side gave up on the stream for a reason of its own, a
-	 * response whose header section went past the limit, so the caller can
+	 * Set when this side gave up on the stream for a reason of its own (a
+	 * response whose header section went past the limit), so the caller can
 	 * report that rather than a reset or a hang-up.
 	 */
 	public var failure:Null<String> = null;
@@ -84,8 +84,8 @@ class H2Stream {
 
 	/**
 		On the client, the most response body this stream holds, in bytes;
-		`0` or less for no limit. Past it the stream is given up, `failure`
-		says why, and reset.
+		`0` or less for no limit. Past it the stream is given up (`failure`
+		says why) and reset.
 	**/
 	public var maxBodyLength:Int = 0;
 
@@ -128,7 +128,7 @@ class H2Stream {
 	/**
 		On the server, set once a final response's head has been written on
 		this stream: an interim `100` does not count. What a refusal is told
-		apart by, answered, or failed before anything went out.
+		apart by: answered, or failed before anything went out.
 	**/
 	public var answered:Bool = false;
 
@@ -148,7 +148,7 @@ class H2Stream {
 	 *
 	 * RFC 9113 6.9.1 forbids sending a DATA frame longer than the space left in
 	 * either window, so a body larger than the peer's window cannot simply be
-	 * written, it has to wait here for a WINDOW_UPDATE. A server cannot block
+	 * written: it has to wait here for a WINDOW_UPDATE. A server cannot block
 	 * for one, because the runtime loop it would block is the same one that
 	 * delivers it.
 	 */
@@ -233,10 +233,10 @@ class H2Stream {
 	/**
 		Adds `chunk` to what waits on the windows, taking it as it is, not a
 		copy, when nothing is waiting: whoever hands a chunk over is done with
-		it. The whole queue was copied into a new one for every chunk, so a
-		response written as it goes, in small pieces, into a window its
-		client keeps shut cost a copy of everything queued per piece,
-		quadratic in what it held. It grows to twice what it needs now.
+		it. Otherwise it is appended, the queue growing to twice what it
+		needs, so a response written as it goes, in small pieces, into a
+		window its client keeps shut costs no copy of everything queued per
+		piece.
 	**/
 	public function queue(chunk:Bytes):Void {
 		if (chunk == null || chunk.length == 0) {
@@ -318,9 +318,9 @@ class H2Stream {
 	}
 
 	/**
-		A DATA frame of up to `count` queued bytes, `flags` on it, made from the
-		queue where they sit: take() cut them out into a Bytes of their own and
-		the frame copied them again.
+		A DATA frame of up to `count` queued bytes, `flags` on it, made from
+		the queue where they sit, without cutting them out into a Bytes of
+		their own first.
 	**/
 	public function takeFrame(count:Int, flags:Int):Bytes {
 		if (count > queued) {

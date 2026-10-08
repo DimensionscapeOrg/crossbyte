@@ -22,29 +22,27 @@ import crossbyte.test.Require;
 /**
 	HTTPS end to end through `HTTPServer`, from a configuration to a response.
 
-	Nothing covered this on any target. `ServerSocketTLSTest` proves the socket
-	layer terminates TLS, and the HTTP cases prove the server answers requests,
-	but the seam between them, `HTTPServerConfig.tlsCertificatePath` being
-	loaded and installed on the listener, was joined by no test at all. It was
-	also broken on jvm: the constructor built a secure `ServerSocket` and then
-	skipped `setCertificate` behind a `#if (!java && !jvm)` gate left over from
-	when the jvm target had no TLS, so an HTTPS configuration there produced a
-	listener with nothing to present.
+	HTTPS end to end: `ServerSocketTLSTest` proves the socket layer
+	terminates TLS, and the HTTP cases prove the server answers requests,
+	and this joins the seam between them, `HTTPServerConfig.tlsCertificatePath`
+	loaded and installed on the listener, on every target with TLS, the jvm
+	included.
 
-	A gap of exactly that shape is why this is an end-to-end case and not an
-	assertion about the configuration object: the configuration was always
-	right, and every piece it named worked. Only the wiring was missing.
+	A gap in the wiring alone is why this is an end-to-end case and not an
+	assertion about the configuration object: the configuration can be
+	right, and every piece it names work, with the certificate never
+	installed.
 **/
 class HTTPServerTLSTest extends utest.Test {
 	/**
 		A configured HTTPS server answers a real request over TLS.
 
 		The client is CrossByte's own, which is the weaker choice and the
-		portable one, the same case then runs on cpp, hl, neko and jvm. What
-		it can be fooled by is a TLS bug both halves share; what it catches, and
-		what actually shipped, is a server that never installed its certificate.
-		The handshake against a foreign implementation is `ServerSocketTLSTest`'s
-		job, and it does it against openssl and the JDK.
+		portable one: the same case then runs on cpp, hl, neko and jvm. What
+		it can be fooled by is a TLS bug both halves share; what it catches is
+		a server that never installed its certificate. The handshake against a
+		foreign implementation is `ServerSocketTLSTest`'s job, and it does it
+		against openssl and the JDK.
 	**/
 	#if (cpp || hl || neko || java || jvm)
 	public function testAConfiguredServerAnswersOverTls():Void {
@@ -92,9 +90,8 @@ class HTTPServerTLSTest extends utest.Test {
 
 					// Self-signed, so trusted as its own authority: the check
 					// then proves the server presented the certificate it was
-					// configured with. It was turned off here, which neko's
-					// TLS does not honour, and which proved only that the
-					// server presented something.
+					// configured with, not merely something, as turning the check off
+					// would (which neko's TLS does not honour anyway).
 					client.setCA(@:privateAccess fixture.certificate.__native);
 					client.connect("127.0.0.1", port);
 
@@ -162,11 +159,12 @@ class HTTPServerTLSTest extends utest.Test {
 		A request body larger than one TLS record arrives whole, over both
 		versions.
 
-		The client wrote the body with `Output.writeBytes`, which writes what it
-		can and says how much, and over TLS that is one record, 16 KB, at most:
-		the rest of a larger body was dropped, and the server waited for it
-		until the request timed out. HTTP/2 wrote each frame the same way, so
-		a DATA frame of the largest default size lost its last nine bytes.
+		The client writes the body until all of it is gone, not once with
+		`Output.writeBytes`, which writes what it can and says how much, and
+		over TLS that is one record, 16 KB, at most: the rest of a larger body
+		would be dropped, and the server wait for it until the request timed
+		out. HTTP/2 writes each frame the same way, or a DATA frame of the
+		largest default size would lose its last nine bytes.
 	**/
 	public function testALargeUploadOverTlsArrivesWhole():Void {
 		// Names 127.0.0.1, so the client can verify it once told to trust it.
@@ -240,11 +238,11 @@ class HTTPServerTLSTest extends utest.Test {
 	/**
 		A request trusts the authority it names, and a refusal says why.
 
-		`URLRequest` had no TLS settings at all: trusting a private authority
-		meant setting `FlexSocket.DEFAULT_CA` through `@:privateAccess`, for
-		every request in the process at once. And whatever went wrong, an
-		untrusted certificate, a refused port, the request failed with
-		"Connection Failed" and nothing else.
+		`URLRequest` has TLS settings of its own: trusting a private authority
+		needs no `FlexSocket.DEFAULT_CA` set through `@:privateAccess` for every
+		request in the process at once. And a failure says what went wrong (an
+		untrusted certificate, a refused port), not "Connection Failed" and
+		nothing else.
 	**/
 	public function testARequestTrustsTheAuthorityItNames():Void {
 		var fixture = TLSTestFixture.trusted();
@@ -258,8 +256,8 @@ class HTTPServerTLSTest extends utest.Test {
 		var url:String = 'https://127.0.0.1:${server.port}/who';
 		var outcomes:Array<String> = [];
 		for (version in __versions()) {
-			// The fixture is in no system store, so the defaults refuse it,
-			// with the reason.
+			// The fixture is in no system store, so the defaults refuse it, with
+			// the reason.
 			var refused:String = __fetch(url, null, version);
 			outcomes.push(version + " unconfigured: " + refused);
 			outcomes.push(version + " trusting: " + __fetch(url, new HTTPTLSOptions(true, fixture.certificate), version));
@@ -293,10 +291,11 @@ class HTTPServerTLSTest extends utest.Test {
 	/**
 		A kept connection carries only a request made under the same TLS.
 
-		The pool kept connections by origin alone. A request that turned
-		verification off left behind a connection to a server nobody had
-		checked, and the next request to that origin, one that did check,
-		was sent down it: its verification never ran.
+		The pool keeps connections by TLS settings as well as origin: by
+		origin alone, a request that turned verification off would leave
+		behind a connection to a server nobody had checked, and the next
+		request to that origin, one that did check, would be sent down it with
+		its verification never run.
 	**/
 	public function testAConnectionIsReusedOnlyUnderTheSameTls():Void {
 		var fixture = TLSTestFixture.trusted();
@@ -307,10 +306,9 @@ class HTTPServerTLSTest extends utest.Test {
 
 		var server = __tlsServer(fixture);
 		var url:String = 'https://127.0.0.1:${server.port}/who';
-		// A connection opened unchecked, or on neko, whose TLS cannot skip
-		// the check, one checked against an authority the defaults do not
-		// trust, which a request trusting only the system's must not ride
-		// either.
+		// A connection opened unchecked (or on neko, whose TLS cannot skip the
+		// check, one checked against an authority the defaults do not trust),
+		// which a request trusting only the system's must not ride either.
 		function opening():HTTPTLSOptions {
 			return #if neko new HTTPTLSOptions(true, fixture.certificate) #else new HTTPTLSOptions(false) #end;
 		}
@@ -371,9 +369,8 @@ class HTTPServerTLSTest extends utest.Test {
 
 	/**
 		A request presents the client certificate it is given to a server that
-		asks for one, mutual TLS, which could not be done at all, and
-		leaves it behind when a redirect takes it to another origin, as it
-		leaves `Authorization`.
+		asks for one (mutual TLS), and leaves it behind when a redirect takes it
+		to another origin, as it leaves `Authorization`.
 	**/
 	public function testAClientCertificateIsPresentedToTheOriginNamed():Void {
 		var serverFixture = TLSTestFixture.trusted();
@@ -392,8 +389,8 @@ class HTTPServerTLSTest extends utest.Test {
 		var presented:String = __fetch(direct, new HTTPTLSOptions(true, serverFixture.certificate, clientFixture.certificate, clientFixture.key));
 		var afterPresented:Int = guarded.admitted();
 
-		// Another origin, another port, sending the request on to the
-		// guarded server.
+		// Another origin (another port) sending the request on to the guarded
+		// server.
 		var router = new Router();
 		router.get("/away", ctx -> ctx.handler.respond(302, "text/plain", "", [new URLRequestHeader("Location", direct)]));
 		var config = new HTTPServerConfig("127.0.0.1", 0);
@@ -561,14 +558,13 @@ class HTTPServerTLSTest extends utest.Test {
 		Closing an HTTP/2 session leaves its TLS socket to the reader thread,
 		rather than closing it under the reader's read.
 
-		`H2ClientSession.close` closed the socket from the calling thread,
-		the pool's sweep, a request discarding the session, `closeAll`,
-		while the session's reader sat in a read on it. That freed the
+		`H2ClientSession.close` must not close the socket from the calling
+		thread (the pool's sweep, a request discarding the session, `closeAll`)
+		while the session's reader sits in a read on it: that would free the
 		socket's mbedTLS context under the read, and when the read returned,
-		with the server answering the GOAWAY, mbedTLS carried on with it: a
-		SIGSEGV in `mbedtls_ssl_read`, seen on Linux in this class's own
-		pool clean-up. The socket stands in for the TLS one here and records
-		whether it was closed while a read was under way.
+		with the server answering the GOAWAY, mbedTLS would carry on with it, a
+		SIGSEGV in `mbedtls_ssl_read`. The socket stands in for the TLS one here
+		and records whether it was closed while a read was under way.
 	**/
 	public function testClosingAnHttp2SessionLeavesItsSocketToTheReader():Void {
 		var fixture = TLSTestFixture.trusted();
@@ -670,10 +666,10 @@ class HTTPServerTLSTest extends utest.Test {
 
 	/**
 		One of the two paths, and not the other, is refused rather than served
-		as plain HTTP. `tlsEnabled` answered false for it, which the case above
-		pins, and the server went on to listen in plaintext for a caller who
-		had asked for HTTPS and been told nothing: a misspelt key variable was
-		an unencrypted server.
+		as plain HTTP. `tlsEnabled` answers false for it, which the case above
+		pins, and a server that went on to listen in plaintext would leave a
+		caller who asked for HTTPS told nothing: a misspelt key variable would
+		be an unencrypted server.
 	**/
 	public function testHalfATlsConfigurationIsRefused():Void {
 		for (half in [{certificate: "cert.pem", key: null}, {certificate: null, key: "key.pem"}, {certificate: "cert.pem", key: ""}]) {

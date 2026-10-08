@@ -16,16 +16,16 @@ import sys.thread.Thread;
 	caller waits, how many names queue, and how often one name is asked of
 	the system.
 
-	Each lookup was a thread started for it, with no cap, no answer kept and
-	nothing ending a wait the system did not: ten thousand connects by name
-	were ten thousand threads, and a wedged resolver held every one of them,
-	and its caller, for as long as it stayed wedged. A real resolver cannot be
-	made to wedge, or to answer a name a set number of times, so these cases
-	put a lookup of their own in the system's place (`Resolver.__system`), and
-	a clock of their own (`Resolver.__clock`). The resolver is shared by the
-	whole process, so every case puts back what it changed, and lets go of any
-	lookup it wedged before it ends, a thread left wedged would be one of the
-	four the rest of the suite looks names up on.
+	A lookup is not a thread started for it with no cap, no answer kept and
+	nothing ending a wait the system does not: ten thousand connects by name
+	would be ten thousand threads, and a wedged resolver would hold every
+	one of them, and its caller, for as long as it stayed wedged. A real
+	resolver cannot be made to wedge, or to answer a name a set number of
+	times, so these cases put a lookup of their own in the system's place
+	(`Resolver.__system`), and a clock of their own (`Resolver.__clock`). The
+	resolver is shared by the whole process, so every case puts back what it
+	changed, and lets go of any lookup it wedged before it ends: a thread left
+	wedged would be one of the four the rest of the suite looks names up on.
 
 	The names are under `.test`, which RFC 6761 keeps for testing, and fresh
 	each run, so an answer kept by one case is never another's.
@@ -350,16 +350,15 @@ class ResolverTest extends utest.Test {
 	}
 
 	/**
-		A name a lookup thread answers at once, while its caller is still
+		A name a lookup thread answers at once (while its caller is still
 		inside `lookup` or `resolve`, between filing the ask and starting
-		to wait, is answered once, and with the answer.
+		to wait) is answered once, and with the answer.
 
-		The caller read whether its ask had been answered without the lock,
-		to catch a full queue's refusal, and the thread answering sets that
-		before what the answer is: a caller that looked in between threw
-		`null` for a name that had resolved (natively on Linux and on the
-		jvm in CI, 2026-10-05), and `resolve` called back twice, with `null`
-		and no reason first.
+		The caller reads whether its ask has been answered under the lock, to
+		catch a full queue's refusal; the thread answering sets that before
+		what the answer is, so a caller looking in between without the lock
+		would throw `null` for a name that had resolved, and `resolve` would call
+		back twice, with `null` and no reason first.
 	**/
 	@:timeout(60000)
 	public function testANameAnsweredAtOnceIsAnsweredOnceAndRight(async:Async):Void {
@@ -431,12 +430,11 @@ class ResolverTest extends utest.Test {
 
 	/**
 		An answer written out on the resolver's threads, several at once.
-		hxcpp formatted an address with `inet_ntoa`, whose buffer is one for
-		the whole process on macOS and the BSDs: a thread reading it while
-		another wrote read back "[inet_ntoa error]", the text it is filled
-		with first, where 127.0.0.1 was answered (macOS CI, the queued-lookup
-		case above). Glibc and Winsock keep it per thread, so this fails only
-		there.
+		hxcpp formatting an address with `inet_ntoa`, whose buffer is one for
+		the whole process on macOS and the BSDs, would let a thread reading it
+		while another wrote read back "[inet_ntoa error]", the text it is filled
+		with first, where 127.0.0.1 was answered. Glibc and Winsock keep it per
+		thread, so this fails only there.
 	**/
 	public function testAddressesWrittenOutOnManyThreadsAtOnceAreEachTheirOwn():Void {
 		var threads:Int = 8;

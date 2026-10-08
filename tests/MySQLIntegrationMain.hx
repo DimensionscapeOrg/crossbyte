@@ -5,7 +5,7 @@ import utest.Runner;
  *
  * Separate from every other entry point because it needs a live server, which
  * no other suite does. The `Data | MySQL` jobs in `.github/workflows/mysql.yml`
- * supply one through a service container, MySQL 8.4 and MariaDB 11, and
+ * supply one through a service container (MySQL 8.4 and MariaDB 11), and
  * anywhere `CROSSBYTE_MYSQL_HOST` is unset the cases skip and the run stays
  * green.
  */

@@ -38,9 +38,9 @@ function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 
 /**
 	`parseURL` for an endpoint to listen on, where port 0 is the system's
-	choice of a free port rather than nowhere: `NetHost`'s. It was read as
-	one to dial, and refused, so a host made from a URI could only be given
-	a port someone had found free a moment before.
+	choice of a free port rather than nowhere: `NetHost`'s. Read as one to
+	dial, port 0 would be refused, and a host made from a URI could only be
+	given a port someone had found free a moment before.
 **/
 @:noCompletion function __parseListenURL(input:String):Endpoint {
 	return __parseURL(input, Protocol.TCP, null, true);

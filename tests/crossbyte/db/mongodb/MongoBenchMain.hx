@@ -19,14 +19,14 @@ import haxe.io.Bytes;
 	only at a collection, so what a call allocates and drops again cannot
 	be counted this way, only what it keeps. The round trips run against
 	`FakeMongoServer` on loopback, so they include that server's own Haxe
-	decoding and encoding, a ceiling on the driver's share, not a measure
+	decoding and encoding: a ceiling on the driver's share, not a measure
 	of MongoDB.
 **/
 @:access(crossbyte.core.CrossByte)
 class MongoBenchMain {
 	static function main():Void {
 		new crossbyte.core.CrossByte(true, DEFAULT, true);
-		Sys.println("CrossByte MongoDB driver, best of 5 samples, calibrated reps");
+		Sys.println("CrossByte MongoDB driver: best of 5 samples, calibrated reps");
 		Bench.header();
 
 		var document:Dynamic = __document(7);

@@ -211,8 +211,8 @@ Dynamic crossbyte_socket_accept(Dynamic socket) {
 	// ECONNABORTED is a connection reset while it waited in the queue: macOS
 	// and the BSDs fail its accept, where Linux and Windows hand it over.
 	// That connection is gone, not the listener, so this takes the next, as
-	// libuv and Go do. Thrown, it read as the server's own failure, "could
-	// not accept a connection", whenever a client connected and reset.
+	// libuv and Go do, rather than report the server's own failure
+	// whenever a client connected and reset.
 	do {
 		addressLength = sizeof(address);
 	#if defined(HX_LINUX) && defined(SOCK_CLOEXEC)
@@ -296,8 +296,8 @@ int crossbyte_socket_send_to(Dynamic socket, Array<unsigned char> buffer, int po
 		// A connected datagram socket: macOS and the BSDs refuse an address
 		// on its sends (EISCONN), where Linux takes the one it is connected
 		// to. DatagramSocket names its peer whether or not it is connected,
-		// and every send failed there; the peer it is connected to is the
-		// only one it may send to, so it goes without one.
+		// so the send goes again without one: the peer it is connected to is
+		// the only one it may send to.
 		if (sent == SOCKET_ERROR && errno == EISCONN) {
 			sent = send(nativeSocket, data + position, length, MSG_NOSIGNAL);
 		}
@@ -365,11 +365,12 @@ int crossbyte_socket_recv_from(Dynamic socket, Array<unsigned char> buffer, int 
 	throws only for a real failure, as the throwing forms do.
 
 	A would-block is the ordinary end of every pass over a non-blocking
-	socket, the read that finds a UDP socket empty, the send a slow peer's
-	full window refuses, and reported by a C++ throw it cost 1.9 us, caught
+	socket (the read that finds a UDP socket empty, the send a slow peer's
+	full window refuses), and reported by a C++ throw it costs 1.9 us, caught
 	in Haxe and thrown again as haxe.io.Error.Blocked for 4.3 us in all,
 	where the call itself is a few hundred nanoseconds. A server writing to
-	a peer that stopped reading paid that on every pass, for every such peer.
+	a peer that stopped reading would pay that on every pass, for every such
+	peer.
 */
 namespace {
 
@@ -417,8 +418,8 @@ static bool crossbyte_too_large() {
 
 /**
 	What a send of a datagram too large for its socket throws, in place of
-	"Socket operation failed": DatagramSocket names the datagram's size and
-	the socket's send buffer from it, where every other failure read alike.
+	"Socket operation failed", so DatagramSocket can name the datagram's size
+	and the socket's send buffer.
 **/
 #define CROSSBYTE_TOO_LARGE "Datagram too large"
 
@@ -583,8 +584,8 @@ int crossbyte_socket_try_recv_from(Dynamic socket, Array<unsigned char> buffer, 
 }
 
 /**
-	Stops Windows reporting an earlier datagram's ICMP error, a "port
-	unreachable" for something this socket sent, or "TTL expired", as a
+	Stops Windows reporting an earlier datagram's ICMP error (a "port
+	unreachable" for something this socket sent, or "TTL expired") as a
 	failed receive on this socket: it does so unless told not to, on
 	whichever read comes next, though nothing is wrong with the socket. Elsewhere
 	an unconnected datagram socket is told nothing of them. Nothing to do,
@@ -605,7 +606,7 @@ void crossbyte_udp_ignore_unreachable(Dynamic socket) {
 	Why a non-blocking connect failed, or null when it did not: SO_ERROR, in
 	the system's words. A connect that has finished, either way, makes the
 	socket writable, and on POSIX a refused or unreachable one is writable
-	too, only SO_ERROR tells them apart. Windows reports the failure in
+	too; only SO_ERROR tells them apart. Windows reports the failure in
 	select's exception set instead, and the answer here agrees with it.
 **/
 String crossbyte_socket_connect_error(Dynamic socket) {
@@ -686,8 +687,8 @@ static int crossbyte_gso_run(Array<int> spans, Array<Dynamic> targets, int first
 	sys.net.Address. Answers how many went, from `first`, before one did not;
 	that one is for the caller to send alone, which raises what stopped it.
 
-	On Linux a run to one peer, end to end, each the same length but the
-	last, goes as one send the kernel cuts up (UDP_SEGMENT): over loopback,
+	On Linux a run to one peer (end to end, each the same length but the
+	last) goes as one send the kernel cuts up (UDP_SEGMENT): over loopback,
 	a seventh of the CPU a datagram that sending them one at a time costs.
 	The rest go 64 to a call with sendmmsg. Elsewhere each is a sendto.
 **/
@@ -834,7 +835,7 @@ int crossbyte_socket_send_batch(Dynamic socket, Array<unsigned char> buffer, Arr
 /*
 	Datagrams received in batches, on Linux: recvmmsg takes in every datagram
 	waiting, up to a batch, in one system call, where recvfrom takes one,
-	and a pass over a socket ended with one recvfrom more, to find it empty.
+	and a pass over a socket ends with one recvfrom more, to find it empty.
 
 	A batch is `capacity` slots of 65,536 bytes, past the largest datagram
 	UDP carries (65,507 bytes over IPv4, 65,527 over IPv6), so none is ever
@@ -973,7 +974,7 @@ int crossbyte_udp_batch_capacity(Dynamic batch) {
 }
 
 /**
-	Takes in up to `max` waiting datagrams, no more than the batch holds,
+	Takes in up to `max` waiting datagrams (no more than the batch holds)
 	in one recvmmsg: how many, or -1 when none is waiting, or -2 where the
 	kernel has no recvmmsg. What the last call took in is gone. Any other
 	failure throws, as crossbyte_socket_try_recv_from does; one that comes
@@ -1076,18 +1077,18 @@ void crossbyte_udp_batch_free(Dynamic batch) {
 
 /**
 	select, for a socket of any number. On Linux and macOS select takes no
-	descriptor at or past FD_SETSIZE, 1,024, and hxcpp refuses one
-	rather than overflow the set: a process holding a thousand descriptors
-	could ask about none of its newer sockets, so a client's connect never
-	finished and a listener opened then accepted nothing. poll has no such
+	descriptor at or past FD_SETSIZE (1,024), and hxcpp refuses one rather
+	than overflow the set, so a process holding a thousand descriptors could
+	ask about none of its newer sockets: a client's connect would never
+	finish, and a listener opened then would accept nothing. poll has no such
 	ceiling. Windows keeps hxcpp's select, whose set is a
 	counted array where a socket's number is no limit, and so does a call
 	with no sockets, which is a wait that select times more finely.
 
 	The arguments and the answer are hxcpp's: three arrays of sockets and a
 	timeout in seconds, or null for none; then the sockets of each that are
-	ready, in the order given. Readable and writable mean what select means,
-	data, the end, or an error, and the third is out-of-band data, as
+	ready, in the order given. Readable and writable mean what select means
+	(data, the end, or an error), and the third is out-of-band data, as
 	select's exception set is on POSIX. A wait is in whole milliseconds,
 	rounded up.
 **/

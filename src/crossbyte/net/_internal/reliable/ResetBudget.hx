@@ -8,7 +8,7 @@ package crossbyte.net._internal.reliable;
 
 	One for the process rather than one a server, because what it bounds is
 	what the process can be made to send to an address it has never heard
-	from, a source a sender writes for itself, and a process with many
+	from (a source a sender writes for itself), and a process with many
 	servers is one source to whoever is on the receiving end.
 
 	Taken under a lock where there are threads: a reset is sent only to a

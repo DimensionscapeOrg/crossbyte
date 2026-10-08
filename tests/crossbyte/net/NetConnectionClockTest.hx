@@ -12,12 +12,12 @@ import utest.Async;
 	the runtime its socket runs on: `outTimestamp` and `inTimestamp`, which an
 	`RPCSession`'s heartbeat reads against that runtime's clock.
 
-	The reliable and WebSocket connections asked `CrossByte.current()` for
-	the runtime on every message: a thread-local lookup a message, both ways,
-	on the path every message takes, and on JavaScript the wrong runtime. A
-	socket's callbacks run there as the application's, so a child runtime's
-	connection that received anything, or sent from a callback, was stamped
-	with the application's clock instead of its own.
+	The reliable and WebSocket connections do not ask `CrossByte.current()`
+	for the runtime on every message, which would be a thread-local lookup a
+	message, both ways, on the path every message takes, and on JavaScript
+	the wrong runtime: a socket's callbacks run there as the application's,
+	so a child runtime's connection that received anything, or sent from a
+	callback, would be stamped with the application's clock instead of its own.
 
 	On Node the connections run in a child runtime, where the two clocks
 	differ; elsewhere in the runtime the suite runs on, where the case holds
@@ -49,8 +49,8 @@ class NetConnectionClockTest extends utest.Test {
 	}
 
 	/**
-		A host and a client of `scheme` in one runtime, a child on Node,
-		the client sending from `onReady` and the host's connection receiving:
+		A host and a client of `scheme` in one runtime (a child on Node), the
+		client sending from `onReady` and the host's connection receiving:
 		both from a socket's callback. Each stamp is compared with the
 		runtime's uptime where it was taken.
 	**/

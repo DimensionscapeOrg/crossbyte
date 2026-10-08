@@ -8,32 +8,32 @@ import haxe.Unserializer;
 	before the stack does, and one holding more than `values` values, before
 	memory does, with an `IOError`.
 
-	Unserializing takes a frame or two per level, and natively a payload
-	another process or a peer wrote nested 6,000 deep, 12 KB, inside a
-	region's, a message's or a socket's limit, overflowed the stack and
-	ended the process reading it, where no catch can see it. On Windows'
-	1 MB thread stacks nested objects overflowed past 2,000 levels and
-	arrays past 3,000, and a macOS worker thread has half the stack. What
-	reads HXSF from elsewhere reads it through this: `ByteArray.readObject`
-	(and so every socket's), `SharedObject` and `SharedChannel`.
+	Unserializing takes a frame or two per level, so natively a payload
+	another process or a peer wrote nested 6,000 deep (12 KB, inside a
+	region's, a message's or a socket's limit) would overflow the stack and
+	end the process reading it, where no catch can see it. On Windows'
+	1 MB thread stacks nested objects overflow past 2,000 levels and arrays
+	past 3,000, and a macOS worker thread has half the stack. What reads
+	HXSF from elsewhere reads it through this: `ByteArray.readObject` (and
+	so every socket's), `SharedObject` and `SharedChannel`.
 
 	Every level goes through `unserialize()`, a class's own `hxUnserialize`
 	included, so counting there bounds them all.
 
 	Counting values there bounds what a payload can make of its bytes. Every
 	value costs a byte at least, but for one: a run of nulls in an array, `u`
-	and a count, which made an array of that many slots from twelve bytes,
-	`au100000000h`, 800 MB natively. And a negative string or bytes length
-	moved the read back over what it had read, so a six-byte payload read
-	the same value again for ever, adding it to an array until memory ran
-	out. Both are refused.
+	and a count, which makes an array of that many slots from twelve bytes
+	(`au100000000h`, 800 MB natively). And the standard library moves the
+	read back by a negative string or bytes length, so a six-byte payload
+	would read the same value again for ever, adding it to an array until
+	memory ran out. Both are refused.
 **/
 class BoundedUnserializer extends Unserializer {
 	/**
 		Values within values, at most: deeper than any structure a program
-		keeps, and well inside the smallest stack a reader runs on, a macOS
-		worker thread's, or the interpreter's, which this class's own frame
-		per level ran out of near 510 levels.
+		keeps, and well inside the smallest stack a reader runs on: a macOS
+		worker thread's, or the interpreter's, where this class's own frame
+		per level runs out near 510 levels.
 	**/
 	public static inline var LIMIT:Int = 256;
 
@@ -112,7 +112,7 @@ class BoundedUnserializer extends Unserializer {
 	}
 
 	// `haxe.Unserializer`'s string, refusing a negative length: the standard
-	// library moved the read back by it, onto bytes it had read already.
+	// library moves the read back by it, onto bytes it has read already.
 	@:noCompletion private function __string():String {
 		var start:Int = pos++;
 		var len:Int = readDigits();

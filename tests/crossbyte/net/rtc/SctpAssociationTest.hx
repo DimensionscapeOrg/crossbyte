@@ -13,8 +13,8 @@ import utest.Assert;
 	Two associations opening one between them, with no network in the way.
 
 	The handshake is four messages rather than three on purpose, and what the
-	extra one buys, that the side being asked commits nothing until the asker
-	has proved it can receive, is a property that can be tested directly here
+	extra one buys (that the side being asked commits nothing until the asker
+	has proved it can receive) is a property that can be tested directly here
 	by watching what each side holds and when.
 **/
 class SctpAssociationTest extends utest.Test {
@@ -54,9 +54,9 @@ class SctpAssociationTest extends utest.Test {
 		Closing before it completes tells whoever was waiting.
 
 		Every path that settled this future ran from the handshake, and closing
-		is what stops the handshake, so a caller that closed mid-negotiation
-		was left holding a future that could not settle either way. The same gap
-		existed in every class in this stack that hands one out.
+		is what stops the handshake, so closing has to settle it too: a caller
+		that closed mid-negotiation would otherwise be left holding a future
+		that could not settle either way.
 	**/
 	public function testClosingBeforeTheAssociationOpensTellsWhoeverWaited():Void {
 		if (unsupported()) return;
@@ -97,7 +97,7 @@ class SctpAssociationTest extends utest.Test {
 
 		A peer that is asked to open an association holds nothing until a cookie
 		comes back to it. That is what makes a flood of forged INITs from
-		addresses that cannot answer cost the receiver nothing, the same
+		addresses that cannot answer cost the receiver nothing: the same
 		attack SYN cookies were retrofitted onto TCP to survive, designed into
 		SCTP from the start.
 	**/
@@ -122,8 +122,8 @@ class SctpAssociationTest extends utest.Test {
 	/**
 		A cookie that was never issued opens nothing.
 
-		The cookie is the whole of what the answering side trusts, it holds no
-		other state about the peer, so accepting one it did not issue would
+		The cookie is the whole of what the answering side trusts (it holds no
+		other state about the peer), so accepting one it did not issue would
 		make the fourth message decorative and the defence with it.
 	**/
 	public function testAForgedCookieIsRefused():Void {
@@ -230,11 +230,10 @@ class SctpAssociationTest extends utest.Test {
 	/**
 		A peer that aborts is reported, with the reason it gave.
 
-		An ABORT used to close the association without telling anything above
-		it: no event, no future, and the channels on top went on reporting
-		themselves open. This is what a browser's `pc.close()` puts on the
-		wire, so it was the ordinary way for a peer to leave, and nothing heard
-		it.
+		An ABORT closes the association and tells what is above it: the
+		event, the future and the channels on top. This is what a browser's
+		`pc.close()` puts on the wire, so it is the ordinary way for a peer to
+		leave.
 	**/
 	public function testAnAbortFromThePeerIsReported():Void {
 		if (unsupported()) return;
@@ -265,10 +264,9 @@ class SctpAssociationTest extends utest.Test {
 		An ABORT stamped for some other association ends nothing.
 
 		RFC 4960 section 8.5.1: the association's own tag, or the peer's
-		reflected with the T bit set. It used to take any ABORT at all, which
-		inside a DTLS session only the peer can send, but an ABORT belonging
-		to an association that has already been replaced is still not about
-		this one.
+		reflected with the T bit set. Inside a DTLS session only the peer can
+		send an ABORT, but one belonging to an association that has already
+		been replaced is still not about this one.
 	**/
 	public function testAnAbortCarryingTheWrongTagIsIgnored():Void {
 		if (unsupported()) return;
@@ -303,11 +301,10 @@ class SctpAssociationTest extends utest.Test {
 	/**
 		A HEARTBEAT is answered, with what it carried copied back unchanged.
 
-		RFC 4960 section 8.3 says it must be. It never was: only DATA and SACK
-		reached anything, and HEARTBEAT ACK was defined and never sent. A peer
-		whose stack probes idle paths, a browser's does, counts every
-		unanswered probe as a failure and gives the association up after a
-		few minutes of a channel that only received.
+		RFC 4960 section 8.3 says it must be. A peer whose stack probes idle
+		paths (a browser's does) counts every unanswered probe as a failure
+		and gives the association up after a few minutes of a channel that
+		only received.
 	**/
 	public function testAHeartbeatIsAnsweredWithWhatItCarried():Void {
 		if (unsupported()) return;
@@ -361,11 +358,11 @@ class SctpAssociationTest extends utest.Test {
 		One packet draws one answer, however many HEARTBEATs or INITs it
 		carries.
 
-		Each was answered with a packet of its own, a DTLS record and a
-		`sendto` each: a 1,212-byte packet of 300 HEARTBEATs drew 300 packets,
-		and one of 60 INITs drew 60 INIT ACKs. A peer probes its one path with
-		one HEARTBEAT at a time, and an INIT travels alone (RFC 9260 section
-		6.10).
+		Answered one for one, each answer a packet of its own, a DTLS record
+		and a `sendto`, a 1,212-byte packet of 300 HEARTBEATs would draw 300
+		packets, and one of 60 INITs 60 INIT ACKs. A peer probes its one path
+		with one HEARTBEAT at a time, and an INIT travels alone (RFC 9260
+		section 6.10).
 	**/
 	public function testOnePacketDrawsOneAnswer():Void {
 		if (unsupported()) return;
@@ -401,9 +398,9 @@ class SctpAssociationTest extends utest.Test {
 	/**
 		A peer that shuts down gracefully is answered, and its going reported.
 
-		RFC 4960 section 9.2: SHUTDOWN, SHUTDOWN ACK, SHUTDOWN COMPLETE. It was
-		ignored, so the peer retransmitted its SHUTDOWN until it gave up and
-		aborted, and this end heard of none of it.
+		RFC 4960 section 9.2: SHUTDOWN, SHUTDOWN ACK, SHUTDOWN COMPLETE.
+		Ignored, the peer would retransmit its SHUTDOWN until it gave up and
+		aborted, and this end would hear of none of it.
 	**/
 	public function testAShutdownFromThePeerIsAnsweredAndReported():Void {
 		if (unsupported()) return;
@@ -491,11 +488,11 @@ class SctpAssociationTest extends utest.Test {
 	/**
 		Both ends say they understand FORWARD TSN, and both hear it.
 
-		RFC 3758 has a peer abandon nothing it sends, and act on no FORWARD TSN,
-		unless the other said it understands them, with the parameter, or by
-		listing the chunk as a supported extension. Neither INIT nor INIT ACK
-		carried either, so a browser opening a channel with
-		`maxRetransmits: 0` had it made reliable without a word.
+		RFC 3758 has a peer abandon nothing it sends, and act on no FORWARD
+		TSN, unless the other said it understands them, with the parameter or
+		by listing the chunk as a supported extension. Without either in INIT
+		and INIT ACK, a browser opening a channel with `maxRetransmits: 0`
+		would have it made reliable without a word.
 	**/
 	public function testBothEndsSayTheyUnderstandForwardTsn():Void {
 		if (unsupported()) return;

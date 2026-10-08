@@ -4,7 +4,7 @@
 // which has already had hxcpp.h through the precompiled header. Including it
 // again makes gcc resolve <hxcpp.h> a second time, and the first thing on the
 // include path is hxcpp's own __pch directory, which holds hxcpp.h.gch rather
-// than hxcpp.h. See NativeAlpn.h, where this broke the Linux build.
+// than hxcpp.h. See NativeAlpn.h.
 #ifndef HXCPP_H
 #include <hxcpp.h>
 #endif
@@ -15,10 +15,10 @@
 // RSA (RS256) and ECDSA (ES256).
 //
 // A PEM key is parsed once, into a key object the GC owns: the parsed context
-// lives in native memory and is freed, and wiped, since mbedtls_pk_free
-// zeroes the key material, by the object's finalizer, or at once by
-// crossbyte_pk_key_dispose. Parsing on every call left a copy of the private
-// key in freed memory per signature and rebuilt EC tables every time.
+// lives in native memory and is freed (and wiped, since mbedtls_pk_free
+// zeroes the key material) by the object's finalizer, or at once by
+// crossbyte_pk_key_dispose. Parsing on every call would leave a copy of the
+// private key in freed memory per signature and rebuild EC tables every time.
 //
 // Signing and verifying run in a GC-free zone, since RSA-4096 signing alone
 // takes tens of milliseconds. Operations on one key are serialized: mbedTLS

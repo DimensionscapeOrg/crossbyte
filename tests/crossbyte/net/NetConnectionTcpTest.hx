@@ -14,12 +14,12 @@ import utest.Async;
 	A `NetConnection` dialled over TCP carries data, and an RPC call, on
 	every target with sockets, Node included.
 
-	On Node it carried nothing. The connection stamped each send and each
-	arrival with the uptime of the socket's runtime, which it read from a
-	field only a native connect sets: a send threw a TypeError, and the first
-	bytes to arrive threw inside Node's data callback, which closed the
-	connection. So `RPCSession.dial("tcp://...")` could never complete a
-	call there, and nothing ran one to see.
+	The connection stamps each send and each arrival with the uptime of the
+	socket's runtime, which on Node must not come from a field only a native
+	connect sets: a send would throw a TypeError, and the first bytes to
+	arrive would throw inside Node's data callback, which closes the
+	connection, so `RPCSession.dial("tcp://...")` could never complete a
+	call there.
 **/
 class NetConnectionTcpTest extends utest.Test {
 	#if (cpp || java || jvm || eval || nodejs)
@@ -97,10 +97,10 @@ class NetConnectionTcpTest extends utest.Test {
 
 	/**
 		An RPC session whose heartbeat hears nothing ends its connection as
-		`Reason.Timeout`: the connection's `onClose` and the session's
-		`onDown` both hear it. They heard `Closed`, because the session closed
-		the connection the way an application does, after failing its calls
-		with the timeout. The peer accepts and never says a word.
+		`Reason.Timeout`: the connection's `onClose` and the session's `onDown`
+		both hear it, not `Closed`, as they would if the session closed the
+		connection the way an application does, after failing its calls with
+		the timeout. The peer accepts and never says a word.
 	**/
 	@:timeout(15000)
 	public function testAHeartbeatThatHearsNothingEndsTheConnectionAsATimeout(async:Async):Void {

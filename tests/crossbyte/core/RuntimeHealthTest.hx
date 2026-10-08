@@ -21,11 +21,11 @@ import sys.net.Socket;
 class RuntimeHealthTest extends utest.Test {
 	#if target.threaded
 	/**
-		A frame shorter than the poll floor still reads its sockets. Poll was
-		given only what was left of a frame once that was at least a
-		millisecond, so at 1,000 ticks a second, a frame of exactly one,
-		less the tick's own work, the sockets were never polled: a server
-		at that rate accepted nothing and read nothing, and said nothing.
+		A frame shorter than the poll floor still reads its sockets. At 1,000
+		ticks a second a frame is exactly a millisecond, less the tick's own
+		work, so a poll given only what is left of a frame once that is at least
+		a millisecond would never run: a server at that rate would accept
+		nothing, read nothing, and say nothing.
 	**/
 	public function testAFrameShorterThanThePollFloorStillReadsItsSockets():Void {
 		var ready = BusySocket.create(0);
@@ -49,11 +49,11 @@ class RuntimeHealthTest extends utest.Test {
 	}
 
 	/**
-		A frame whose tick ran past its deadline still reads its sockets. With
-		nothing left of the frame, poll was skipped, so a server that fell
-		behind, a game whose step took longer than its tick, stopped
-		reading its clients for as long as it stayed behind: their inputs and
-		acknowledgements waited, which only put it further behind.
+		A frame whose tick ran past its deadline still reads its sockets.
+		Skipping the poll when nothing is left of the frame would stop a server
+		that fell behind (a game whose step took longer than its tick) reading
+		its clients for as long as it stayed behind: their inputs and
+		acknowledgements would wait, which only puts it further behind.
 	**/
 	public function testAFrameThatRanPastItsDeadlineStillReadsItsSockets():Void {
 		var ready = BusySocket.create(0);
@@ -86,9 +86,7 @@ class RuntimeHealthTest extends utest.Test {
 		A POLL frame with nothing to do is not an overrun, however late the
 		system's wait in poll ends. The loop waits in poll until its deadline,
 		and Windows ends that wait on the system timer's tick, up to a
-		millisecond or two past it; each such frame was counted as one whose
-		work outran its tick. The load harness's game server, idle at sixty
-		ticks a second, reported 165 overruns in 301 frames.
+		millisecond or two past it; such a frame's work did not outrun its tick.
 	**/
 	public function testAQuietPollFrameIsNotAnOverrun():Void {
 		var quiet = BusySocket.create(0);
@@ -111,19 +109,18 @@ class RuntimeHealthTest extends utest.Test {
 		quiet.close();
 
 		// Not 0: a shared CI runner sometimes takes the process off its core
-		// for longer than a frame, and that frame really did outrun its tick,
-		// macOS runners counted 2 of 30 twice (2026-10-07, 10-08), passing
-		// on rerun. What this guards counted most quiet frames: 165 of 301
-		// on Windows, which would be 16 of these 30.
+		// for longer than a frame, and that frame really does outrun its tick.
+		// Counting quiet frames as overruns would count most of them: about 16
+		// of these 30.
 		Assert.isTrue(overruns <= 3, "30 frames with nothing to do counted " + overruns + " overruns");
 	}
 
 	/**
 		A socket that stopped with its share of a pass taken is read again
 		before the frame is waited out. With a megabyte the most a socket may
-		read in one pass, a POLL loop at 1,000 ticks a second, a frame too
-		short to wait in, so polled once, read an upload a megabyte per
-		sleep: 34 MB/s, a tenth of what the same socket read unbounded.
+		read in one pass, a POLL loop at 1,000 ticks a second (a frame too short
+		to wait in, so polled once) would otherwise read an upload a megabyte
+		per sleep, a tenth of what the same socket reads unbounded.
 	**/
 	public function testASocketWithMoreToReadIsReadAgainBeforeThePollLoopWaits():Void {
 		var ready = BusySocket.create(0);
@@ -135,8 +132,9 @@ class RuntimeHealthTest extends utest.Test {
 		var runtime = new CrossByte(false, POLL, true);
 		runtime.tps = 1000;
 		// Whether the frame still had time once the first read was done. It
+		// Whether the frame still had time once the first read was done. It
 		// is read again for as long as the frame lasts, and no longer: on neko
-		// under load the first read alone outlasted the millisecond.
+		// under load the first read alone can outlast the millisecond.
 		var timeLeft:Null<Bool> = null;
 		ready.onRead = () -> {
 			if (timeLeft == null) {
@@ -164,8 +162,8 @@ class RuntimeHealthTest extends utest.Test {
 	/**
 		The DEFAULT loop, which polls once a frame and sleeps the rest, reads
 		such a socket again before it sleeps: at the default 12 ticks a
-		second, a socket stopped at its share otherwise waited 84 ms for each
-		megabyte.
+		second, a socket stopped at its share would otherwise wait 84 ms for
+		each megabyte.
 	**/
 	public function testASocketWithMoreToReadIsReadAgainBeforeTheDefaultLoopSleeps():Void {
 		var ready = BusySocket.create(0);
@@ -211,9 +209,8 @@ class RuntimeHealthTest extends utest.Test {
 	}
 
 	public function testAPollLoopCountsTheTimeItsSocketHandlersTake():Void {
-		// The load was measured before the poll, so a POLL server's socket
-		// handlers, nearly all of what it does, never counted: busy half
-		// of every frame, it reported 0%.
+		// The load counts a POLL server's socket handlers, which are nearly all
+		// of what it does: busy half of every frame, it must not report 0%.
 		var busy = BusySocket.create(0.005);
 		if (busy == null) {
 			Assert.fail("could not open a loopback connection");
@@ -259,8 +256,8 @@ class RuntimeHealthTest extends utest.Test {
 	}
 
 	public function testWorkPostedDuringTheWaitCountsAsLoad():Void {
-		// Posted callbacks the loop runs while waiting out its frame were
-		// missing from the load as well.
+		// Posted callbacks the loop runs while waiting out its frame count
+		// toward the load as well.
 		var runtime = new CrossByte(false, DEFAULT, true);
 		runtime.tps = 20;
 		runtime.__frameDeadline = Timer.stamp() + runtime.__tickInterval;
@@ -278,8 +275,8 @@ class RuntimeHealthTest extends utest.Test {
 	}
 
 	public function testAFrameThatOutrunsItsTickIsCounted():Void {
-		// Nothing said how far behind its schedule a loop was, or how often
-		// a frame's work outran its tick.
+		// The runtime reports how far behind its schedule a loop is, and how
+		// often a frame's work outran its tick.
 		var runtime = new CrossByte(false, DEFAULT, true);
 		runtime.tps = 20;
 		// The frame was due to end 30ms ago, so its work left it no wait.
@@ -312,8 +309,8 @@ class RuntimeHealthTest extends utest.Test {
 
 	public function testAStallTooLongToRepayIsCountedAsDropped():Void {
 		// Past MAX_SCHEDULE_DEBT the schedule restarts from now rather than
-		// running a burst of frames to catch up, and nothing recorded that
-		// it had.
+		// running a burst of frames to catch up, and the time given up is
+		// counted.
 		var runtime = new CrossByte(false, DEFAULT, true);
 		runtime.tps = 20;
 		runtime.__frameDeadline = Timer.stamp() - 2.0;
@@ -355,7 +352,7 @@ class RuntimeHealthTest extends utest.Test {
 
 		// Checked until the loop has come round twice after the long frame,
 		// not after a fixed 300ms: on a loaded machine the platform's timers
-		// come back late, and it once ticked only three times in that.
+		// come back late, and the loop can tick only three times in that.
 		var deadline = Timer.stamp() + 4.0;
 		function check():Void {
 			if (ticks <= 4 && Timer.stamp() < deadline) {
@@ -374,8 +371,8 @@ class RuntimeHealthTest extends utest.Test {
 	#end
 
 	public function testMemoryUsageIsReportedWhereThePlatformHasAFigure():Void {
-		// It was 0 on every target but native, and natively the collector's
-		// 32-bit figure, which wrapped negative past 2GiB.
+		// Non-zero on every target, and natively not the collector's 32-bit
+		// figure, which wraps negative past 2GiB.
 		var used:Float = crossbyte.sys.System.memoryUsage();
 		#if (cpp || java || jvm || nodejs)
 		Assert.isTrue(used > 0, "memoryUsage is " + used);
@@ -385,7 +382,7 @@ class RuntimeHealthTest extends utest.Test {
 	}
 
 	public function testPostedWorkIsCountedUntilItRuns():Void {
-		// Nothing reported how much handed-over work was waiting.
+		// The runtime reports how much handed-over work is waiting.
 		var runtime = new CrossByte(false, DEFAULT, true);
 		var ran = 0;
 		Assert.equals(0, runtime.postQueueDepth);

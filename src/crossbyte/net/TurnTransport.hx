@@ -4,8 +4,8 @@ package crossbyte.net;
 	How a `TurnClient` reaches its relay. What the relay relays is UDP either
 	way; this is only the leg between the client and the relay.
 
-	A network that lets nothing out but TCP, a corporate firewall, a hotel's
-	captive portal, blocks the UDP a relay is usually reached by, and the
+	A network that lets nothing out but TCP (a corporate firewall, a hotel's
+	captive portal) blocks the UDP a relay is usually reached by, and the
 	peers behind it are exactly the ones that need a relay most. RFC 8656
 	section 3.1 lets them reach it over TCP, or TLS over TCP to look like any
 	other HTTPS, and carry the same messages framed for a stream.

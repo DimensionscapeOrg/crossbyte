@@ -22,7 +22,7 @@ import haxe.io.FPHelper;
  * The bytes are the peer's, so nothing here trusts them: every read checks
  * that the bits it asks for are there and throws `EOFError` when they are
  * not, a range that decodes past its maximum throws `RangeError`, and the
- * last few bytes, fewer than a whole word, are read one at a time rather
+ * last few bytes (fewer than a whole word) are read one at a time rather
  * than as a word that would run past the end.
  *
  * One reader can be pointed at message after message with `reset`, so

@@ -2,11 +2,10 @@
 # job runs from ci/native-tests.hxml, built for the host instead of for
 # Windows.
 #
-# Every networking class in that suite: sockets, the poll registry, TLS,
-# HTTP/1.1 and HTTP/2, WebSocket, reliable UDP: ran only on Windows, and
-# the Linux jobs built the crypto and system groups alone; so a Linux-only
-# fault in the code servers run on most, such as the datagram port sharing
-# fixed in the hxcpp fork's 7ddf550b, passed CI without being looked at.
+# Every networking class in that suite (sockets, the poll registry, TLS,
+# HTTP/1.1 and HTTP/2, WebSocket, reliable UDP) runs here on Linux and
+# macOS too, so a Linux-only fault in the code servers run on most, such as
+# datagram port sharing, does not pass CI without being looked at.
 -cp src
 -cp tests
 -lib utest

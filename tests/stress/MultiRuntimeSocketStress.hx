@@ -13,12 +13,10 @@ import sys.thread.Thread;
 /**
  * Several CrossByte runtimes, one per thread, all moving bytes at once.
  *
- * Running a runtime per thread is a designed capability with no coverage: the
- * only cross-thread test in the suite asserts that `CrossByte.current()`
- * throws on a thread that has none. Nothing exercised several of them doing
- * real work simultaneously, which is where the state they are supposed to keep
- * apart, a socket registry, a timer scheduler, the thread's current-runtime
- * slot, would show it had not been kept apart.
+ * Running a runtime per thread is a designed capability, and the state the
+ * runtimes keep apart (a socket registry, a timer scheduler, the thread's
+ * current-runtime slot) would show it had not been kept apart only with
+ * several of them doing real work simultaneously.
  *
  * The payloads are the assertion. Each client sends a pattern seeded from its
  * own index and expects exactly that pattern back, in order, byte for byte.
@@ -26,7 +24,7 @@ import sys.thread.Thread;
  * scratch buffer held per thread rather than per socket: were that buffer
  * shared across threads instead, two runtimes reading at once would splice
  * each other's bytes into their own streams, and the pattern check is what
- * notices. A length-only check would not, the byte counts would still be
+ * notices. A length-only check would not: the byte counts would still be
  * right.
  *
  * Payloads are sized well past the read chunk so each transfer takes many

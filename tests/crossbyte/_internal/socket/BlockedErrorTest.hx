@@ -6,11 +6,10 @@ import utest.Assert;
 /**
  * The shared "would block" predicate.
  *
- * Each spelling here was previously recognised by some call sites and not
- * others, and the consequence of missing one is not cosmetic: a
- * would-block read as fatal closes a healthy connection, and a would-block
- * read as success silently discards what was being written. Both have
- * shipped in this codebase.
+ * Each spelling here has to be recognised at every call site, and the
+ * consequence of missing one is not cosmetic: a would-block read as fatal
+ * closes a healthy connection, and a would-block read as success silently
+ * discards what was being written.
  */
 class BlockedErrorTest extends utest.Test {
 	public function testTypedBlockedIsRecognised():Void {

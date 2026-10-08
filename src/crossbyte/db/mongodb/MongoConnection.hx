@@ -2,7 +2,7 @@ package crossbyte.db.mongodb;
 
 // The client is not built for any JavaScript target, where an unsupported shell
 // stands in (at the end of this file). Every call here blocks its thread until
-// the server answers, which is the shape of all of CrossByte's database drivers,
+// the server answers, which is the shape of all of CrossByte's database drivers:
 // they run on a worker, through ConnectionPool and AsyncDatabase. Node has no
 // synchronous socket to block on, nor a second thread to do the blocking on; and
 // the browser has no TCP. The BSON codec in crossbyte.db.mongodb.bson builds and
@@ -38,8 +38,8 @@ import haxe.io.Bytes;
 	SCRAM-SHA-1 (or X.509 or PLAIN) authentication, and TLS.
 
 	Every call blocks until the server answers, as with the other drivers
-	here, so run it on a worker, `AsyncDatabase` over a `ConnectionPool` is
-	the usual way, never on a runtime's own thread.
+	here, so run it on a worker (`AsyncDatabase` over a `ConnectionPool` is
+	the usual way), never on a runtime's own thread.
 
 	```haxe
 	import crossbyte.db.AsyncDatabase;
@@ -71,7 +71,7 @@ import haxe.io.Bytes;
 	**Transactions** need a replica set or a sharded cluster. `begin`,
 	`commit` and `rollback` run one on this connection's own session, and
 	`inTransaction` is true from `begin` until `commit` or `rollback` ends it,
-	including after a statement in it failed, MongoDB aborts the transaction
+	including after a statement in it failed: MongoDB aborts the transaction
 	then, and it still has to be ended here. `ConnectionPool` rolls back a
 	transaction a borrower left open.
 
@@ -108,17 +108,14 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	/**
 		Documents the last write inserted, matched or deleted, as the server
 		counted them: a `Float`, exact to 2^53, as MySQL's and Postgres's
-		counts are. MongoDB counts in 64 bits; this was an `Int`, held at
-		2^31 - 1.
+		counts are, since MongoDB counts in 64 bits.
 	**/
 	public var affectedRows(get, null):Float;
 
 	/**
-		The `_id` of the last document this connection inserted, the one it
-		had, or the `ObjectId` made for it, or `null`. MongoDB has no row ids,
-		so this stands where SQLite's and MySQL's `lastInsertRowID` does; one
-		here could only ever have read 0, as Postgres's does on PostgreSQL 12
-		and later.
+		The `_id` of the last document this connection inserted (the one it
+		had, or the `ObjectId` made for it), or `null`. MongoDB has no row
+		ids, so this stands where SQLite's and MySQL's `lastInsertRowID` does.
 	**/
 	public var lastInsertId(get, null):Dynamic;
 
@@ -359,8 +356,8 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		Inserts documents, in batches as the server's limits require. A
 		document without an `_id` is given an `ObjectId`, written first.
 
-		@throws MongoError When any document is refused, a duplicate key,
-		a failed validation. Its `result` counts what was inserted; with
+		@throws MongoError When any document is refused (a duplicate key,
+		a failed validation). Its `result` counts what was inserted; with
 		`ordered: false` every document was tried.
 	**/
 	public function insert(collection:String, documents:Array<Dynamic>, ?options:MongoInsertOptions):MongoWriteResult {
@@ -471,7 +468,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	}
 
 	/**
-		Finds documents matching `filter`, all of them when it is `null`,
+		Finds documents matching `filter` (all of them when it is `null`)
 		and answers a cursor over them.
 	**/
 	public function find(collection:String, ?filter:Dynamic, ?options:MongoFindOptions):MongoCursor {
@@ -488,8 +485,8 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 
 	/**
 		`find`, or with `single` `findOne`'s: a limit and a batch of one
-		whatever `options` say, its other options as given. It made a copy of
-		the options for that, every call.
+		whatever `options` say, its other options as given, with no copy of
+		the options made.
 	**/
 	@:noCompletion private function __find(collection:String, filter:Dynamic, options:MongoFindOptions, single:Bool):MongoCursor {
 		var w:BsonWriter = __command("find", collection);
@@ -554,8 +551,8 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	}
 
 	/**
-		Applies `update`, operators such as `{"$set": {...}}`, a replacement
-		document, or a pipeline array, to the first document matching
+		Applies `update` (operators such as `{"$set": {...}}`, a replacement
+		document, or a pipeline array) to the first document matching
 		`filter`, or to every one with `multi`.
 	**/
 	public function update(collection:String, filter:Dynamic, update:Dynamic, ?options:MongoUpdateOptions):MongoWriteResult {
@@ -688,8 +685,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		Counts the documents matching `filter`, with the `count` command. Not
 		allowed inside a transaction; there, aggregate with `$count`.
 
-		A `Float`, exact to 2^53: the server counts in 64 bits, and this was
-		an `Int`, held at 2^31 - 1.
+		A `Float`, exact to 2^53, since the server counts in 64 bits.
 	**/
 	public function count(collection:String, ?filter:Dynamic, ?options:MongoCountOptions):Float {
 		var w:BsonWriter = __command("count", collection);
@@ -807,7 +803,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		until the first command, which carries it to the server.
 
 		@throws SQLError When one is already open, or the server cannot run
-		transactions, a standalone server cannot; they need a replica set
+		transactions: a standalone server cannot; they need a replica set
 		or a sharded cluster.
 	**/
 	public function begin():Void {
@@ -870,8 +866,8 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	}
 
 	/**
-		Aborts the transaction. A server that has already ended it, after a
-		failed statement, or its time limit, is not an error: the transaction
+		Aborts the transaction. A server that has already ended it (after a
+		failed statement, or its time limit) is not an error: the transaction
 		is over either way, which is what was asked. A connection that fails
 		under it is, since its state is then unknown; it is closed.
 	**/
@@ -956,11 +952,9 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	@:noCompletion private function __connectTo(host:MongoHost, settings:MongoSettings):String {
 		var socket:FlexSocket = new FlexSocket(settings.tls);
 		var peer:String = host.host + ":" + host.port;
-		// One deadline for all of it, the connect, TLS, the hello and the
-		// login, as MySQL's connectTimeout covers its login. It bounded only
-		// the connect, and not even that on Windows; the hello and the login
-		// then waited on socketTimeout, no limit by default, so a server that
-		// accepted and never answered held open() for good.
+		// One deadline for all of it (the connect, TLS, the hello and the
+		// login), as MySQL's connectTimeout covers its login, so a server
+		// that accepts and never answers cannot hold open() for good.
 		__handshakeDeadline = settings.connectTimeout > 0 ? haxe.Timer.stamp() + settings.connectTimeout : NO_DEADLINE;
 
 		try {
@@ -971,9 +965,9 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			__connectSocket(socket, host, peer);
 
 			// With no keepalive and no socket timeout, the default, a read
-			// waiting on a server that went silent, a partition, a host
-			// that died, waited for good. Best effort, as setFastSend is:
-			// a target without the option connects as before.
+			// waiting on a server that went silent (a partition, a host that
+			// died) would wait for good. Best effort, as setFastSend is: a
+			// target without the option connects without it.
 			if (settings.keepAlive) {
 				SocketKeepAlive.enable(socket, settings.keepAliveIdle, settings.keepAliveInterval, settings.keepAliveCount);
 			}
@@ -1045,8 +1039,8 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	/**
 		Connects `socket`, within the handshake's deadline where the target
 		allows: natively and on neko a connect in progress, which select
-		finishes or abandons. On the jvm a blocking connect, and a TLS one's
-		handshake, is bounded by the socket's timeout. hl's is bounded where
+		finishes or abandons. On the jvm a blocking connect (and a TLS one's
+		handshake) is bounded by the socket's timeout. hl's is bounded where
 		the system applies a send timeout to a connect, which Linux does and
 		Windows does not, and eval connects with no bound at all. The name is
 		looked up first, on this thread, for as long as the resolver takes.
@@ -1140,8 +1134,8 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 
 	/**
 		Bounds the next wait on `socket` by what is left of the handshake's
-		deadline, a socket timeout, which a read or a write that runs out
-		fails with, or fails at once when nothing is left. Not on eval: it
+		deadline (a socket timeout, which a read or a write that runs out
+		fails with), or fails at once when nothing is left. Not on eval: it
 		fails an expired socket timeout by aborting, so the wire selects there.
 	**/
 	@:noCompletion private function __boundNextWait(socket:FlexSocket, peer:String):Void {
@@ -1179,8 +1173,8 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		Whether the handshake's deadline has passed, so a wait that failed was
 		its timeout, which a read reports only as having blocked, or as an
 		end of stream. A socket timeout fires on the system's timer, which
-		can run a little ahead of `haxe.Timer.stamp()`: measured on Windows,
-		the read failed before the stamp reached the deadline.
+		can run a little ahead of `haxe.Timer.stamp()`: on Windows a read can
+		fail before the stamp reaches the deadline.
 	**/
 	@:noCompletion private inline function __ranOut():Bool {
 		return haxe.Timer.stamp() >= __handshakeDeadline - 0.1;
@@ -1298,8 +1292,8 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 
 	/**
 		Keeps the server's hello, as `serverInfo` answers it, and reads what
-		the connection asks of it later once, into typed fields: they were
-		looked up by name on every `begin()`.
+		the connection asks of it later once, into typed fields, rather than
+		by name on every `begin()`.
 	**/
 	@:noCompletion private function __setHello(hello:Dynamic):Void {
 		__hello = hello;
@@ -1359,7 +1353,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		if (reply == null || scram == null) {
 			// Negotiate. The server's list of the user's mechanisms decides
 			// between SHA-256 and SHA-1 when the config did not, and a server
-			// that sends no list, older than 4.0, or no such user, gets
+			// that sends no list (older than 4.0, or no such user) gets
 			// SHA-1, as the MongoDB authentication specification has it.
 			var chosen:String = mechanism;
 
@@ -1380,8 +1374,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			reply = __checkAuth(__handshakeSend());
 		}
 
-		// An int32, the conversation the server numbered; it was carried as
-		// whatever the reply held.
+		// An int32, the conversation the server numbered.
 		var conversation:Int = __int(Reflect.field(reply, "conversationId"));
 		var proof:Bytes = scram.clientFinal(__payload(reply));
 		var w:BsonWriter = __commandOne("saslContinue");
@@ -1519,7 +1512,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 
 			if (__txnState == TXN_STARTING) {
 				w.boolField("startTransaction", true);
-				// Started once this is sent, see __send, and not before: a
+				// Started once this is sent (see __send), and not before: a
 				// command refused here, too large to send, starts nothing.
 				__startsTransaction = true;
 			}
@@ -1562,7 +1555,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 
 	/**
 		Sends the message the writer holds and answers the reply's body, or
-		`null` when no reply is wanted, a write with `w: 0`, sent with
+		`null` when no reply is wanted: a write with `w: 0`, sent with
 		moreToCome, which the server does not answer.
 	**/
 	@:noCompletion private function __send(expectReply:Bool):Dynamic {
@@ -1788,7 +1781,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		The `writeConcern` field, written straight into the message rather
 		than made a `BsonDocument` for every write first. Its values go
 		through `BsonWriter.value`: a concern loaded from JSON holds whatever
-		types the JSON had, as it was sent before.
+		types the JSON had.
 	**/
 	@:noCompletion private static function __writeConcernField(w:BsonWriter, concern:MongoWriteConcern):Void {
 		var at:Int = w.beginDocumentField("writeConcern");
@@ -1970,8 +1963,8 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	}
 
 	/**
-		`value` when its field order cannot matter or is kept, a
-		`BsonDocument`, a name, an object of one field, and a refusal
+		`value` when its field order cannot matter or is kept (a
+		`BsonDocument`, a name, an object of one field), and a refusal
 		otherwise, rather than a sort by whichever field the target lists
 		first.
 	**/
@@ -2025,8 +2018,8 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		}
 
 		// The value's kind asked once, as BsonWriter asks it, here and in the
-		// helpers below: a reply's numbers were each re-typed through a chain
-		// of Int64.isInt64 and Std.isOfType.
+		// helpers below, rather than re-typing each number through a chain of
+		// Int64.isInt64 and Std.isOfType.
 		var ok:Dynamic = Reflect.field(reply, "ok");
 
 		return switch (BsonWriter.__kindOf(ok)) {
@@ -2053,8 +2046,8 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	}
 
 	/**
-		A count the server gave, whichever BSON number type it came as,
-		int32, or int64 past 2^31, whole to 2^53; 0 for anything else.
+		A count the server gave, whichever BSON number type it came as
+		(int32, or int64 past 2^31), whole to 2^53; 0 for anything else.
 		`__int` holds a number at 2^31 - 1, which a count of MongoDB's, 64
 		bits, can pass.
 	**/
@@ -2065,7 +2058,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 
 		var number:Float = __number(value);
 		// Plus 0.0: eval keeps an int32 handed in as a Float an Int, whose
-		// sums, a result's counts, batch by batch, wrap past 2^31.
+		// sums (a result's counts, batch by batch) wrap past 2^31.
 		return Math.isNaN(number) ? 0.0 : number + 0.0;
 	}
 
@@ -2130,7 +2123,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		Reports a failed transaction step both ways, as the other drivers do:
 		as the `SQLErrorEvent` listeners expect, and as the `SQLError` thrown
 		so a caller that does not listen cannot mistake it for success. The
-		cause is carried as text, a Java exception passed where a `String`
+		cause is carried as text: a Java exception passed where a `String`
 		belongs is a ClassCastException on the jvm.
 	**/
 	@:noCompletion private function __fail(operation:String, message:String, reason:String):Void {
@@ -2164,7 +2157,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	Not on JavaScript. The driver's every call blocks its thread until the
 	server answers, and JavaScript has neither a socket that can block nor,
 	on Node, a second thread to block on; the browser has no TCP at all. The
-	class is here so code naming it builds, as it did; it opens nothing.
+	class is here so code naming it builds; it opens nothing.
 	The BSON codec in `crossbyte.db.mongodb.bson` is built everywhere.
 **/
 class MongoConnection extends crossbyte.events.EventDispatcher {

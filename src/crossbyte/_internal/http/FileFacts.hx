@@ -4,20 +4,18 @@ package crossbyte._internal.http;
 #if !(js && !nodejs)
 
 /**
-	What the static file server needs to know of a path, whether something
+	What the static file server needs to know of a path (whether something
 	is there, whether it is a directory, its size and when it was last
-	modified, asked of the system once.
+	modified), asked of the system once.
 
-	Serving one static file asked seven times: the resolver's exists and
-	isDirectory, then `File`'s exists, isDirectory (exists again, then the
-	type), size and modification date, each its own system call, some two.
-	At about 19 us a call on Windows that was half of what a small file cost
-	to serve. Natively this is one `stat` and, for a file, the exact size by
-	`NativeFileSync.size` (the `stat` size is an `Int`, and wraps past 2 GB
-	on Linux); on the jvm one `readAttributes`; on Node one `statSync`.
+	Asking `File` takes about seven system calls to serve one static file,
+	at about 19 us a call on Windows. Natively this is one `stat` and, for a
+	file, the exact size by `NativeFileSync.size` (the `stat` size is an
+	`Int`, and wraps past 2 GB on Linux); on the jvm one `readAttributes`;
+	on Node one `statSync`.
 
-	`FAST` is false on the targets where none of that is to hand, eval,
-	neko, HashLink, and the callers ask `File` as they always did. `of`
+	`FAST` is false on the targets where none of that is to hand (eval,
+	neko, HashLink), and the callers ask `File`. `of`
 	answers `NONE` when nothing is there, and `UNKNOWN` for a path the system
 	has but will not describe in one call (natively, a file past 2 GB on
 	Windows, where `_stat` fails), which the callers ask `File` about too.

@@ -25,21 +25,19 @@ using StringTools;
  *
  * The exchange goes through `URLLoader`, CrossByte's own HTTP client, which
  * runs it off the runtime's thread on native targets and asynchronously on
- * Node, and delivers the result on the calling runtime's thread. It used the
- * blocking `haxe.Http` there, so a token endpoint taking 1.5 s stalled every
- * connection the server had for 1.5 s per sign-in; and on Node an endpoint
- * that never answered left both callbacks waiting forever. Every exchange now
- * has a deadline, `timeout`.
+ * Node, and delivers the result on the calling runtime's thread, so a slow
+ * token endpoint stalls no other connection. Every exchange has a deadline,
+ * `timeout`.
  *
  * An answer whose objects and arrays nest more than 32 levels deep is a
  * failure, measured before it is parsed: parsing takes a frame per level,
- * and natively an answer nested 6,000 deep, 12 KB, from the endpoint or
- * from whoever can answer for it, overflowed the stack and ended the
+ * and natively an answer nested 6,000 deep (12 KB, from the endpoint or
+ * from whoever can answer for it) would overflow the stack and end the
  * process. Real answers nest a few levels.
  *
  * Use PKCE (RFC 7636): it keeps an intercepted authorization code from being
- * exchanged by anyone else, and a client with no secret, a mobile or
- * single-page app's backend, needs it:
+ * exchanged by anyone else, and a client with no secret (a mobile or
+ * single-page app's backend) needs it:
  *
  * ```haxe
  * var verifier = OAuth.createCodeVerifier();   // keep it with the session
@@ -61,11 +59,9 @@ class OAuth {
 	 * default.
 	 *
 	 * `0` is no deadline of OAuth's own, and so is `Math.POSITIVE_INFINITY`:
-	 * the exchange then waits for as long as the client does on its own,
-	 * `URLRequest`'s defaults, a 30 second idle timeout among them. `0` was
-	 * read as a deadline of no time at all, which failed every exchange at
-	 * once. A negative number or `NaN` is refused with an `ArgumentError`: a
-	 * `NaN` was taken, and ran the client's idle timeout with it.
+	 * the exchange then waits for as long as the client does on its own
+	 * (`URLRequest`'s defaults, a 30 second idle timeout among them). A
+	 * negative number or `NaN` is refused with an `ArgumentError`.
 	 */
 	public var timeout(get, set):Float;
 
@@ -121,7 +117,7 @@ class OAuth {
 	 * Generates the authorization URL for the OAuth flow.
 	 *
 	 * The flow's parameters are added to `OAuthConfig.authorizeUrl`, after any
-	 * query it carries of its own, the place for parameters that never
+	 * query it carries of its own: the place for parameters that never
 	 * change, such as Google's `access_type=offline`.
 	 *
 	 * @param state A unique state parameter to prevent CSRF attacks.
@@ -134,9 +130,8 @@ class OAuth {
 	 * @return The authorization URL.
 	 */
 	public function getAuthorizationUrl(state:String, scope:String, ?codeChallenge:String, ?extra:Map<String, String>):String {
-		// After the endpoint's own query, if it has one: the parameters were
-		// added after a second "?", so the endpoint's last parameter took the
-		// rest of the URL as its value.
+		// After the endpoint's own query, if it has one, joined to it with "&"
+		// rather than a second "?".
 		var endpoint:String = config.authorizeUrl;
 		var joiner:String = endpoint.indexOf("?") < 0 ? "?" : (StringTools.endsWith(endpoint, "?") || StringTools.endsWith(endpoint, "&") ? "" : "&");
 		var url:String = endpoint
@@ -215,7 +210,7 @@ class OAuth {
 	}
 
 	/**
-	 * A public client, one using PKCE with no secret, sends none. An empty
+	 * A public client (one using PKCE with no secret) sends none. An empty
 	 * `client_secret` is refused as a wrong one by some providers. With Basic
 	 * authentication the secret goes in a header instead; see
 	 * `__authorization`.
@@ -233,8 +228,7 @@ class OAuth {
 	/**
 	 * The `Authorization` header for Basic client authentication, or null:
 	 * RFC 6749 2.3.1, the client id and the secret each form-encoded, joined
-	 * by a colon, in base64. The secret went in the body whatever the
-	 * provider took, and one configured for Basic alone refused it.
+	 * by a colon, in base64.
 	 */
 	@:noCompletion private function __authorization():Null<String> {
 		if (!__hasSecret() || config.clientAuthentication != SECRET_BASIC) {
@@ -308,10 +302,10 @@ class OAuth {
 			}
 		});
 
-		// Armed before the load, so a load that settles inside load(),
-		// refused before it starts, clears it rather than leaving it armed.
-		// None for no deadline: a timer of 0 ran at the next tick and failed
-		// the exchange then.
+		// Armed before the load, so a load that settles inside load() (refused
+		// before it starts) clears it rather than leaving it armed. None for no
+		// deadline: a timer of 0 would run at the next tick and fail the
+		// exchange then.
 		var seconds:Float = __timeout;
 		if (deadlined) {
 			deadline = crossbyte.Timer.setTimeout(seconds, () -> {
@@ -323,9 +317,8 @@ class OAuth {
 				// rather than waiting out its own idle limit. Through the token,
 				// not `loader.close()`: close drops the loader's worker while the
 				// request is still running, and the worker then reports through a
-				// null reference, an access violation on native. The token
-				// closes the socket, and the loader winds down on its own,
-				// unheard.
+				// null reference, an access violation on native. The token closes
+				// the socket, and the loader winds down on its own, unheard.
 				#if js
 				loader.close();
 				#else
@@ -341,8 +334,8 @@ class OAuth {
 	}
 
 	/**
-	 * The provider's reason from the body of a failing response, its `error`
-	 * and `error_description`, or what the client reported when it gave none.
+	 * The provider's reason from the body of a failing response (its `error`
+	 * and `error_description`), or what the client reported when it gave none.
 	 */
 	@:noCompletion private static function __errorBody(body:Null<String>, transportError:String):String {
 		if (body == null || body.trim() == "" || !JsonNesting.within(body, JsonNesting.LIMIT)) {
@@ -380,9 +373,9 @@ class OAuth {
 
 			if (accessToken == null || Std.string(accessToken) == "") {
 				// Providers answer a rejected grant with an error document, and
-				// not always with a failing status. Passing that through as a
-				// success handed back a token whose accessToken was null, which
-				// then failed later somewhere with nothing to connect it to.
+				// not always with a failing status. Passed through as a success,
+				// it would hand back a token whose accessToken was null, which
+				// would fail later somewhere with nothing to connect it to.
 				__fail(operation, __describeFailure(data), onError);
 				return;
 			}
@@ -432,9 +425,8 @@ class OAuth {
 
 	/**
 	 * `expires_in` as seconds, or 0 when absent or unusable. Some providers send
-	 * it as a string; either form is read with `IntParse`, so a value too large
-	 * for an `Int` is 0 on every target rather than whatever `Std.parseInt`
-	 * made of it on that one.
+	 * it as a string; either form is read with `IntParse`, so a value too
+	 * large for an `Int` is 0 on every target.
 	 */
 	@:noCompletion private static function __toInt(value:Dynamic):Int {
 		if (value == null) {

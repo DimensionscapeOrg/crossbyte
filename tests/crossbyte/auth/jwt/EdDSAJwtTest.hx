@@ -10,7 +10,7 @@ import crossbyte.test.Require;
 /**
  * EdDSA JWT signing per RFC 8037.
  *
- * Known-answer source: RFC 8037 appendix A, Ed25519 key (A.1) and the JWS
+ * Known-answer source: RFC 8037 appendix A: the Ed25519 key (A.1) and the JWS
  * signing example (A.4/A.5).
  */
 class EdDSAJwtTest extends utest.Test {

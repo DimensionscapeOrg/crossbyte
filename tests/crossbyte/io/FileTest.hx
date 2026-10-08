@@ -22,9 +22,8 @@ class FileTest extends utest.Test {
 	}
 
 	public function testACloneHasListenersOfItsOwn():Void {
-		// The documentation says registrations are not copied. The clone shared
-		// the original's listener map instead, so a listener on either reached
-		// both.
+		// The documentation says registrations are not copied: a clone sharing
+		// the original's listener map would let a listener on either reach both.
 		var original = File.applicationDirectory;
 		var heardOnOriginal = 0;
 		var heardOnCopy = 0;
@@ -47,11 +46,11 @@ class FileTest extends utest.Test {
 	}
 
 	public function testACloneAsksTheDiskNothing():Void {
-		// clone() copied every property through its getter, to set it on a
-		// clone that cannot be given most of them: each clone started a
-		// process for spaceAvailable, `fsutil` on Windows, `df` elsewhere,
-		// and read the file's size and dates. 200 clones took 1.2 s on the
-		// interpreter; they take too little to measure now.
+		// clone() does not copy every property through its getter to set it on
+		// a clone that cannot be given most of them: that would start a process
+		// per clone for spaceAvailable (`fsutil` on Windows, `df` elsewhere) and
+		// read the file's size and dates, so 200 clones would take over a second
+		// on the interpreter.
 		var dir = File.createTempDirectory();
 		var file = dir.resolvePath("a.txt");
 		HaxeFile.saveContent(file.nativePath, "x");
@@ -84,10 +83,10 @@ class FileTest extends utest.Test {
 			return;
 		}
 
-		// isHidden ran `attrib "<path>"` through cmd.exe, which expanded a
-		// %NAME% in the path, so a hidden file whose name has one was asked
-		// about under another name, one that was not there, and read as
-		// not hidden. A path is taken literally everywhere else.
+		// isHidden must not run `attrib "<path>"` through cmd.exe, which
+		// expands a %NAME% in the path, so a hidden file whose name has one
+		// would be asked about under another name (one that is not there) and
+		// read as not hidden. A path is taken literally everywhere else.
 		var named = dir.resolvePath("100%TEMP%.txt");
 		var plain = dir.resolvePath("plain.txt");
 		var every:String = dir.resolvePath("*").nativePath;
@@ -109,9 +108,9 @@ class FileTest extends utest.Test {
 	}
 
 	public function testSpaceAvailableForAFileAndForNothing():Void {
-		// fsutil took only a directory, so on Windows every file read as
-		// having no room to grow; and Node threw ENOENT for a path with
-		// nothing there, which is documented as 0.
+		// Not fsutil, which takes only a directory, so on Windows every file
+		// would read as having no room to grow; and on Node a path with nothing
+		// there is 0, as documented, not ENOENT.
 		var dir = File.createTempDirectory();
 		var file = dir.resolvePath("a.txt");
 		HaxeFile.saveContent(file.nativePath, "x");
@@ -121,18 +120,17 @@ class FileTest extends utest.Test {
 	}
 
 	public function testSpaceAvailableReportsFreeBytes():Void {
-		// Nothing ever called this, which is how it came to be wrong on every
-		// target at once: it reported a Windows volume's total capacity rather
-		// than its free space, returned zero on POSIX because it compared df's
-		// device column against a path, and threw `ReferenceError: sys is not
-		// defined` on Node.
+		// The ways this goes wrong across targets: a Windows volume's total
+		// capacity reported rather than its free space, zero on POSIX from
+		// comparing df's device column against a path, `ReferenceError: sys is
+		// not defined` on Node.
 		//
-		// A greater-than-zero assertion is what is portably available, the
+		// A greater-than-zero assertion is what is portably available (the
 		// real free figure is not knowable from here without reimplementing the
-		// thing under test, and it is enough to catch three of those four:
-		// the POSIX zero, the Node throw, and eval taking the POSIX branch on
-		// a Windows machine. The capacity-for-free confusion was found by
-		// reading what `fsutil` actually prints.
+		// thing under test) and it is enough to catch three of those four: the
+		// POSIX zero, the Node throw, and eval taking the POSIX branch on a
+		// Windows machine. The capacity-for-free confusion shows only in what
+		// `fsutil` actually prints.
 		var free:Float = File.applicationStorageDirectory.spaceAvailable;
 
 		Assert.isTrue(free > 0, "reported " + free + " bytes free");
@@ -147,8 +145,8 @@ class FileTest extends utest.Test {
 		var nested = root.resolvePath("child");
 
 		// Compared without trailing separators: createTempDirectory() hands
-		// back a path with one and parent strips it, which is pre-existing and
-		// not what this case is about.
+		// back a path with one and parent strips it, which is not what this
+		// case is about.
 		Assert.equals(haxe.io.Path.removeTrailingSlashes(root.nativePath), haxe.io.Path.removeTrailingSlashes(nested.parent.nativePath));
 
 		try {
@@ -159,14 +157,15 @@ class FileTest extends utest.Test {
 	public function testTheRootAndAPathDirectlyUnderIt():Void {
 		// Path.directory("/root") is "": the only separator is the root, so
 		// Haxe counts no directory at all. The check meant to refuse a bare
-		// name took that for one and refused every absolute path a level
-		// under "/", a HOME of /root, which is where HTTPServerConfig's
+		// name must not take that for one and refuse every absolute path a
+		// level under "/": a HOME of /root, which is where HTTPServerConfig's
 		// default document root comes from, a working directory of /app, and
-		// "/" itself. CI never saw it: the runner's HOME is /home/runner.
+		// "/" itself. A CI runner's HOME is /home/runner, so only this case
+		// sees it.
 		if (System.isWindows) {
-			// A drive never had the constructor's problem, the directory of
-			// "C:\tmp" is "C:", but its root had parent's: the parent of
-			// "C:\" was new File(""), which throws.
+			// A drive does not have the constructor's problem (the directory of
+			// "C:\tmp" is "C:"), but its root has parent's: the parent of "C:\"
+			// must not be new File(""), which throws.
 			Assert.equals("C:\\", Require.notNull(new File("C:\\tmp").parent).nativePath);
 			Assert.isNull(new File("C:\\").parent);
 			return;
@@ -186,9 +185,9 @@ class FileTest extends utest.Test {
 	}
 
 	public function testRootDirectoriesAreDirectoriesWithNoParent():Void {
-		// On POSIX this is new File("/"), so it threw before it could return
-		// anything. On Windows every drive root was built and then threw from
-		// parent, which the documentation says is null for a root.
+		// On POSIX this is new File("/"), which must not throw before it can
+		// return anything. On Windows every drive root is built, and parent is
+		// null for a root, as documented, rather than a throw.
 		var roots = File.getRootDirectories();
 
 		Assert.isTrue(roots.length > 0);
@@ -547,8 +546,8 @@ class FileTest extends utest.Test {
 	}
 
 	public function testGetDirectoryListingAsyncReportsANonDirectoryAsAnEvent():Void {
-		// As documented: an ioError event. It threw, synchronously, a base
-		// Error.
+		// As documented: an ioError event, not a base Error thrown
+		// synchronously.
 		var root = File.createTempDirectory();
 		var file = root.resolvePath("payload.txt");
 		var missing = root.resolvePath("missing");
@@ -576,8 +575,8 @@ class FileTest extends utest.Test {
 	}
 
 	public function testFailuresAreIOErrorsWithAirsNumbers():Void {
-		// The base Error and bare strings were thrown where IOError is
-		// documented, so `catch (e:IOError)` missed them.
+		// IOError, as documented, not a base Error or a bare string, which
+		// `catch (e:IOError)` would miss.
 		var root = File.createTempDirectory();
 		var file = root.resolvePath("file.txt");
 		var full = root.resolvePath("full");
@@ -619,7 +618,7 @@ class FileTest extends utest.Test {
 	}
 
 	public function testSaveSaysWhyItCouldNotWrite():Void {
-		// Every failure to write was "File is open", a bare string.
+		// A failure to write says what failed, not "File is open", a bare string.
 		var root = File.createTempDirectory();
 		var blocker = root.resolvePath("blocker");
 		HaxeFile.saveContent(blocker.nativePath, "a file, where a directory would have to be");
@@ -640,7 +639,7 @@ class FileTest extends utest.Test {
 	}
 
 	public function testDeleteDirectorySaysWhyItCouldNot():Void {
-		// Each failure was "Folder is not empty", whatever it was.
+		// Each failure says what it was, not "Folder is not empty" whatever it was.
 		if (!System.isWindows) {
 			// Windows refuses to delete a file that is open; POSIX does not, and
 			// a refused permission is no refusal to root.
@@ -663,8 +662,8 @@ class FileTest extends utest.Test {
 		input.close();
 
 		if (raised == null) {
-			// Opened with delete sharing, Node opens files so, the file
-			// went, and so did the directory: nothing refused, nothing to say.
+			// Opened with delete sharing (Node opens files so), the file goes,
+			// and so does the directory: nothing refused, nothing to say.
 			Assert.isFalse(root.exists);
 			return;
 		}
@@ -681,9 +680,9 @@ class FileTest extends utest.Test {
 		directory.deleteDirectory(true);
 		Assert.isFalse(directory.exists);
 
-		// hxcpp answers a listing of a directory it cannot open with null rather than
-		// an exception, so this second call used to iterate null and take the whole
-		// process down, a segfault no `catch` could reach.
+		// hxcpp answers a listing of a directory it cannot open with null rather
+		// than an exception, so iterating that null on this second call would
+		// take the whole process down: a segfault no `catch` could reach.
 		Assert.raises(() -> directory.deleteDirectory(true));
 		Assert.raises(() -> directory.deleteDirectory(false));
 	}
@@ -741,7 +740,7 @@ class FileTest extends utest.Test {
 		Require.notNull(message);
 		// The source is right there. Reporting this as "does not exist" sends
 		// whoever is reading the error looking for the wrong thing entirely,
-		// the same way the null-listing crash presented as a moveTo bug.
+		// as a null listing presented as a moveTo failure would.
 		Assert.isFalse(message.indexOf("does not exist") >= 0);
 		Assert.isTrue(message.indexOf("source.txt") >= 0);
 
@@ -767,12 +766,12 @@ class FileTest extends utest.Test {
 
 	public function testASizeAnIntCannotStateThrowsRatherThanAnsweringWrong():Void {
 		// File.size is an Int. On Windows native a 3 GB file and a 5 GB one
-		// both read as 0, indistinguishable from an empty file; elsewhere the
-		// size wrapped or clamped. It throws instead now.
+		// would both read as 0, indistinguishable from an empty file, and
+		// elsewhere the size would wrap or clamp. It throws instead.
 		if (System.isWindows) {
-			// NTFS writes out the gap of a file extended past its end, three
-			// gigabytes of zeros, unless the file is marked sparse, which
-			// nothing here can do. Checked there by hand with a file sized by
+			// NTFS writes out the gap of a file extended past its end (three
+			// gigabytes of zeros) unless the file is marked sparse, which nothing
+			// here can do. Checked there by hand with a file sized by
 			// SetEndOfFile, which allocates without writing.
 			Assert.pass();
 			return;
@@ -783,8 +782,8 @@ class FileTest extends utest.Test {
 
 		// To 3 GB a gigabyte at a time, because seek takes an Int and neko's
 		// Int is 31 bits: 0x3FFFFFFF is the most it holds, and a larger step
-		// failed inside neko's file_seek. A sparse file on the filesystems
-		// that have them, so this costs no disk.
+		// fails inside neko's file_seek. A sparse file on the filesystems that
+		// have them, so this costs no disk.
 		output.seek(0x3FFFFFFF, sys.io.FileSeek.SeekBegin);
 		output.seek(0x3FFFFFFF, sys.io.FileSeek.SeekCur);
 		output.seek(0x3FFFFFFF, sys.io.FileSeek.SeekCur);
@@ -806,9 +805,9 @@ class FileTest extends utest.Test {
 	}
 
 	public function testTemporaryNamesAreLongAndDoNotRepeat():Void {
-		// They were "ofl" and a Math.random number under 2^24, created after
-		// checking the name was free, so on a shared /tmp another user could
-		// plant links at the names ahead of time.
+		// Not "ofl" and a Math.random number under 2^24, created after checking
+		// the name was free, where on a shared /tmp another user could plant
+		// links at the names ahead of time.
 		var seen = new Map<String, Bool>();
 		var files:Array<File> = [];
 
@@ -837,8 +836,8 @@ class FileTest extends utest.Test {
 	}
 
 	public function testATemporaryNameThatIsTakenIsLeftAlone():Void {
-		// Created only where nothing is, so whatever holds the name, a file,
-		// a directory, a link, is reported and left as it was.
+		// Created only where nothing is, so whatever holds the name (a file,
+		// a directory, a link) is reported and left as it was.
 		var existing = File.createTempFile();
 		HaxeFile.saveContent(existing.nativePath, "someone else's");
 
@@ -870,8 +869,8 @@ class FileTest extends utest.Test {
 
 		Assert.equals(0, Sys.command("ln", ["-s", target, link]));
 
-		// The old check-then-write saw no file at a dangling link, exists()
-		// follows it, and wrote through it, creating the target.
+		// A check-then-write would see no file at a dangling link (exists()
+		// follows it) and write through it, creating the target.
 		Assert.equals(1, @:privateAccess File.__createExclusive(link, false));
 		Assert.isFalse(sys.FileSystem.exists(target), "the file was created through the link");
 
@@ -880,8 +879,8 @@ class FileTest extends utest.Test {
 	#end
 
 	public function testResolvePathNormalizesDotsAndDotDot():Void {
-		// It concatenated: "../x" came back as "<dir>\..\x", with the climb
-		// still in it for whatever opened the path to act on.
+		// Not concatenated: "../x" must not come back as "<dir>\..\x", with the
+		// climb still in it for whatever opened the path to act on.
 		var root = File.createTempDirectory();
 		var base:String = haxe.io.Path.removeTrailingSlashes(root.nativePath);
 		var dir = root.resolvePath("a");
@@ -903,8 +902,8 @@ class FileTest extends utest.Test {
 	}
 
 	public function testResolvePathReturnsAnAbsolutePathAsItIs():Void {
-		// It was appended: "<dir>\C:\Windows\win.ini", a path that names a
-		// stream on a file called "C" rather than the file asked for.
+		// Not appended: "<dir>\C:\Windows\win.ini" names a stream on a file
+		// called "C" rather than the file asked for.
 		var dir = File.createTempDirectory();
 
 		if (System.isWindows) {
@@ -922,9 +921,8 @@ class FileTest extends utest.Test {
 	}
 
 	public function testResolvePathNeverClimbsOutOfTheStorageRoot():Void {
-		// The documentation's rule, which nothing implemented: a `..` that
-		// reaches the application storage root goes no further. Paths only;
-		// nothing is created.
+		// The documentation's rule: a `..` that reaches the application storage
+		// root goes no further. Paths only; nothing is created.
 		var storage = File.applicationStorageDirectory;
 		var top:String = haxe.io.Path.removeTrailingSlashes(storage.nativePath);
 		var expected:String = top + File.separator + "x";
@@ -944,8 +942,8 @@ class FileTest extends utest.Test {
 	}
 
 	public function testTheDocumentedCheckRefusesWhatResolvesOutside():Void {
-		// resolvePath is not a sandbox, an absolute path passes through, as
-		// AIR's does, so its documentation shows the check to run.
+		// resolvePath is not a sandbox (an absolute path passes through, as
+		// AIR's does), so its documentation shows the check to run.
 		var dir = File.createTempDirectory().resolvePath("uploads");
 		var outside:String = System.isWindows ? "C:\\Windows\\win.ini" : "/etc/passwd";
 
@@ -960,10 +958,10 @@ class FileTest extends utest.Test {
 	}
 
 	public function testAPathIsTakenLiterally():Void {
-		// On Windows the first %NAME% in a path was replaced by that
-		// environment variable, after resolvePath had normalized the path,
-		// so a name a peer sent, "%SystemRoot%", reached a directory nobody
-		// had named: the HTTP server served files outside its root by it.
+		// On Windows a %NAME% in a path must not be replaced by that environment
+		// variable after resolvePath has normalized the path, or a name a peer
+		// sent, "%SystemRoot%", would reach a directory nobody had named: an
+		// HTTP server would serve files outside its root by it.
 		var dir = File.createTempDirectory();
 		var base:String = haxe.io.Path.removeTrailingSlashes(dir.nativePath);
 
@@ -988,9 +986,9 @@ class FileTest extends utest.Test {
 	public function testWritingAFileAnotherHandleHasOpenReplacesItsContents():Void {
 		// On the jvm under Windows the standard library's write deletes the
 		// file and opens it afresh; Windows refuses the delete while another
-		// handle has the file open, and the old file was then opened without
-		// being cut: "0123456789" saved over with "ab" read "ab23456789", and
-		// nothing said so.
+		// handle has the file open, and the old file is then opened without
+		// being cut, so without care "0123456789" saved over with "ab" would
+		// read "ab23456789", and nothing would say so.
 		var dir = File.createTempDirectory();
 		var file = dir.resolvePath("held.txt");
 		var copySource = dir.resolvePath("source.txt");
@@ -1028,11 +1026,11 @@ class FileTest extends utest.Test {
 	}
 
 	public function testAFileThatIsOpenIsCopiedButOnWindowsNotMoved():Void {
-		// The documentation said, after AIR, that on Windows a file that is
-		// open could not be copied, nor a directory with one inside it.
-		// CrossByte locks nothing, and a reader stops no copy. A move is
-		// another matter: Windows refuses one while a handle without delete
-		// sharing is open, which FileStream's is on every target but Node.
+		// On Windows a file that is open can be copied, as can a directory with
+		// one inside it: CrossByte locks nothing, and a reader stops no copy. A
+		// move is another matter: Windows refuses one while a handle without
+		// delete sharing is open, which FileStream's is on every target but
+		// Node.
 		var dir = File.createTempDirectory();
 		var inner = dir.resolvePath("inner");
 		inner.createDirectory();
@@ -1081,7 +1079,8 @@ class FileTest extends utest.Test {
 	}
 
 	public function testGetRelativePathAnswersNullForWhatIsNotBelow():Void {
-		// A sibling came back as its bare name, "c", which reads as a child.
+		// A sibling is not below: null, not its bare name, "c", which reads as
+		// a child.
 		var root = File.createTempDirectory();
 		var a = root.resolvePath("a");
 		var b = a.resolvePath("b");
@@ -1097,7 +1096,7 @@ class FileTest extends utest.Test {
 	}
 
 	public function testGetRelativePathUsesForwardSlashes():Void {
-		// The documented separator. It was the platform's: `\` on Windows.
+		// The documented separator, not the platform's (`\` on Windows).
 		var root = File.createTempDirectory();
 		var deep = root.resolvePath("b").resolvePath("c");
 
@@ -1107,7 +1106,7 @@ class FileTest extends utest.Test {
 	}
 
 	public function testGetRelativePathRefusesANullReference():Void {
-		// It was a null access.
+		// Not a null access.
 		var root = File.createTempDirectory();
 		Assert.raises(() -> root.getRelativePath(null), ArgumentError);
 		try root.deleteDirectory(true) catch (_:Dynamic) {}
@@ -1121,8 +1120,8 @@ class FileTest extends utest.Test {
 			return;
 		}
 
-		// "D:\a" and "C:\a" shared no segment, so the answer was the whole
-		// of the other path, a relative path naming another drive.
+		// "D:\a" and "C:\a" share no segment, and the answer must not be the
+		// whole of the other path: a relative path naming another drive.
 		var c = new File("C:\\a");
 		var d = new File("D:\\a\\b");
 		Assert.isNull(c.getRelativePath(d));
@@ -1131,8 +1130,8 @@ class FileTest extends utest.Test {
 
 	public function testCopyToOntoItselfIsRefusedAndKeepsTheFile():Void {
 		// The standard library's copy truncates the destination before it
-		// reads the source. Onto itself, with overwrite, that emptied the
-		// file and reported success.
+		// reads the source. Onto itself, with overwrite, that would empty the
+		// file and report success.
 		var dir = File.createTempDirectory();
 		var file = dir.resolvePath("self.txt");
 		HaxeFile.saveContent(file.nativePath, "precious data");
@@ -1185,9 +1184,9 @@ class FileTest extends utest.Test {
 
 	public function testACaseOnlyRenameRenames():Void {
 		// On Windows, and macOS by default, "case.txt" and "CASE.txt" are one
-		// file. With overwrite, moveTo copied it onto itself, emptying it,
-		// and deleted it; without, it refused, because the destination
-		// "existed". There was no way to change a name's case.
+		// file. With overwrite, a moveTo that copied it onto itself would empty
+		// it and delete it; without, it would refuse because the destination
+		// "existed", leaving no way to change a name's case.
 		for (overwrite in [false, true]) {
 			var dir = File.createTempDirectory();
 			HaxeFile.saveContent(dir.resolvePath("case.txt").nativePath, "precious data");
@@ -1227,7 +1226,7 @@ class FileTest extends utest.Test {
 		#if (neko || hl)
 		if (System.isWindows) {
 			// No file index here to tell the two names apart: the copy finds
-			// the same bytes and leaves them. It emptied the file.
+			// the same bytes and leaves them, rather than emptying the file.
 			try {
 				file.copyTo(link, true);
 			} catch (e:crossbyte.errors.IOError) {}
@@ -1241,9 +1240,9 @@ class FileTest extends utest.Test {
 	}
 
 	public function testAMergeLeavesAHardLinkToItsOwnFile():Void {
-		// copyTo compared only its two ends. A directory merged into one
-		// holding a second name of one of its own files, a hard link,
-		// copied that file onto itself, truncating it before reading it.
+		// copyTo compares more than its two ends: a directory merged into one
+		// holding a second name of one of its own files (a hard link) must not
+		// copy that file onto itself, truncating it before reading it.
 		var root = File.createTempDirectory();
 		var source = root.resolvePath("source");
 		var target = root.resolvePath("target");
@@ -1278,10 +1277,10 @@ class FileTest extends utest.Test {
 	}
 
 	public function testMoveToIsARename():Void {
-		// It was a copy and a delete: a new file with the old one's bytes.
-		// A rename keeps the file itself, which the file system's own name
-		// for it, its index on the volume, shows where a target reports
-		// one.
+		// A rename, not a copy and a delete making a new file with the old
+		// one's bytes: a rename keeps the file itself, which the file system's
+		// own name for it (its index on the volume) shows where a target
+		// reports one.
 		var dir = File.createTempDirectory();
 		var source = dir.resolvePath("before.txt");
 		HaxeFile.saveContent(source.nativePath, "payload");
@@ -1336,7 +1335,7 @@ class FileTest extends utest.Test {
 
 	public function testAMoveToAnotherVolumeCopiesThenDeletes():Void {
 		// One volume here, so the second is pretended: the move takes the
-		// path a rename cannot, which is the one the old moveTo always took.
+		// path a rename cannot, copying and then deleting.
 		var root = File.createTempDirectory();
 		var source = root.resolvePath("source");
 		var target = root.resolvePath("target");
@@ -1409,8 +1408,8 @@ class FileTest extends utest.Test {
 	}
 
 	public function testSizeAndModificationDateAreReadLive():Void {
-		// A snapshot taken when the path was set, while `exists` was live: a
-		// File made before its file was written reported a size of 0 for good.
+		// Read live, not a snapshot taken when the path was set: a File made
+		// before its file was written must not report a size of 0 for good.
 		var dir = File.createTempDirectory();
 		var path:String = dir.resolvePath("live.txt").nativePath;
 		var probe = new File(path);
@@ -1431,8 +1430,8 @@ class FileTest extends utest.Test {
 	}
 
 	public function testAMissingFileThrowsForItsSizeAndDates():Void {
-		// As documented. A missing file read a size of 0, the size of an
-		// empty one, and null dates.
+		// As documented: a missing file does not read a size of 0 (the size of
+		// an empty one) and null dates.
 		var dir = File.createTempDirectory();
 		var missing = dir.resolvePath("missing.txt");
 
@@ -1444,8 +1443,8 @@ class FileTest extends utest.Test {
 	}
 
 	public function testCreationDateIsNotTheChangeTime():Void {
-		// It was stat's ctime, which on POSIX is when the file's status last
-		// changed: rewriting a file moved its "creation date" along with it.
+		// Not stat's ctime, which on POSIX is when the file's status last
+		// changed: rewriting a file would move its "creation date" along with it.
 		var file = File.createTempFile();
 		HaxeFile.saveContent(file.nativePath, "a");
 
@@ -1481,8 +1480,8 @@ class FileTest extends utest.Test {
 	}
 
 	public function testOpenWithDefaultApplicationStartsTheSystemsOpener():Void {
-		// It was empty. Checked without opening anything: the launch is
-		// recorded rather than made.
+		// Not empty. Checked without opening anything: the launch is recorded
+		// rather than made.
 		var dir = File.createTempDirectory();
 		var note = dir.resolvePath("note.txt");
 		HaxeFile.saveContent(note.nativePath, "hello");
@@ -1573,8 +1572,8 @@ class FileTest extends utest.Test {
 	}
 
 	public function testCancelWithNothingPendingDoesNothing():Void {
-		// It cancelled a worker without asking whether there was one: with
-		// nothing pending, a null access.
+		// It does not cancel a worker without asking whether there is one:
+		// with nothing pending, that would be a null access.
 		var dir = File.createTempDirectory();
 		var cancels:Int = 0;
 		dir.addEventListener(Event.CANCEL, _ -> cancels++);
@@ -1591,8 +1590,9 @@ class FileTest extends utest.Test {
 
 	#if target.threaded
 	public function testACancelledCopyStopsAndLeavesNoPartialDestination():Void {
-		// It went on: a 64 MB copy finished after it had been cancelled. The
-		// copy is slowed here, a block at a time, so the cancel lands part way.
+		// A cancelled copy stops: a 64 MB copy must not finish after it has
+		// been cancelled. The copy is slowed here, a block at a time, so the
+		// cancel lands part way.
 		var root = File.createTempDirectory();
 		var source = root.resolvePath("source.bin");
 		var copy = root.resolvePath("copy.bin");
@@ -1673,9 +1673,10 @@ class FileTest extends utest.Test {
 	#end
 
 	public function testTwoOperationsAtOnceBothReport():Void {
-		// One worker field served every operation, so the first to finish
-		// disposed of the other's worker, whose result was then never
-		// heard, or, the other way round, found the field empty.
+		// Each operation has its own worker: one worker field serving every
+		// operation would let the first to finish dispose of the other's worker
+		// (whose result would then never be heard) or, the other way round,
+		// find the field empty.
 		var root = File.createTempDirectory();
 		var file = root.resolvePath("data.txt");
 		HaxeFile.saveContent(file.nativePath, "payload");
@@ -1697,7 +1698,7 @@ class FileTest extends utest.Test {
 	}
 
 	public function testANameWithNoDotHasNoExtension():Void {
-		// As documented: null. It was "", which reads as an extension that is
+		// As documented: null, not "", which reads as an extension that is
 		// empty, as "name." has.
 		var dir = File.createTempDirectory();
 		Assert.isNull(dir.resolvePath("README").extension);
@@ -1712,7 +1713,7 @@ class FileTest extends utest.Test {
 	}
 
 	public function testDataBeforeASuccessfulLoadThrows():Void {
-		// As documented. It answered null.
+		// As documented, not null.
 		var dir = File.createTempDirectory();
 		var file = dir.resolvePath("payload.txt");
 		HaxeFile.saveContent(file.nativePath, "payload");
@@ -1730,8 +1731,8 @@ class FileTest extends utest.Test {
 	}
 
 	public function testAFileUrlNamesItsPath():Void {
-		// As the constructor documents. "file:///C:/x" was taken for a native
-		// path and became "file:\C:\x", which names nothing.
+		// As the constructor documents: "file:///C:/x" is a URL, not a native
+		// path to become "file:\C:\x", which names nothing.
 		var dir = File.createTempDirectory();
 		var file = dir.resolvePath("a b+c.txt");
 		HaxeFile.saveContent(file.nativePath, "x");
@@ -1757,8 +1758,8 @@ class FileTest extends utest.Test {
 	}
 
 	public function testCanonicalizeFollowsALink():Void {
-		// As documented. Only the case of each name was corrected, by listing
-		// each directory on the way down; a link was left as it was.
+		// As documented: links are resolved, not only the case of each name
+		// corrected by listing each directory on the way down.
 		#if (eval || neko || hl)
 		if (System.isWindows) {
 			// Their standard library resolves no link there, as documented.

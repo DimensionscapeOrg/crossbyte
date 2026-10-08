@@ -26,21 +26,21 @@ import crossbyte.io.ByteArrayInput;
 	connection up. Throw an `RPCError` for a failure the caller should see: its
 	message is the caller's answer. Anything else reaches the caller as
 	`RPCError.INTERNAL_MESSAGE`, and `RPCSession.onHandlerError` is told what
-	it was. A call this side cannot take, for a method it has not got, or
-	whose arguments do not read, is answered saying so if it is a request,
+	it was. A call this side cannot take (for a method it has not got, or
+	whose arguments do not read) is answered saying so if it is a request,
 	and dropped if it is one-way, and the connection carries on: see
 	`RPCSession.onUnreadableFrame`. Only a frame too long to trust ends it. A
 	handler that writes its own `dispatch` decodes and calls in one place, so
 	whatever that throws still ends the connection.
 
 	A method can answer later: declared to return `Future<T>` instead of `T`,
-	its caller is answered once the future completes, at once if it has, on
-	the session's thread in any case, and a failure is answered as a throw
+	its caller is answered once the future completes (at once if it has, on
+	the session's thread in any case), and a failure is answered as a throw
 	is. The caller's side and the wire are the same as for `T`. A session
 	limits how many calls may wait at once; see `RPCSession.maxCallsWaiting`.
 
-	Override `beforeCall` to decide on each call before it runs, to
-	authorize it, rate limit it, or refuse one too large, and `afterCall` to
+	Override `beforeCall` to decide on each call before it runs (to
+	authorize it, rate limit it, or refuse one too large) and `afterCall` to
 	see how it went, in one place rather than in every method. A handler that
 	overrides neither pays nothing for them.
 
@@ -63,14 +63,13 @@ abstract class RPCHandler {
 
 	/**
 		The session whose call is running, while one is: a method reads it to
-		tell its callers apart, `session.data` for what the application
+		tell its callers apart: `session.data` for what the application
 		keeps per client, `session.commands` to call that client back, and
 		`session.connection` for where it is. `null` between calls.
 
-		A handler held the one session it was given last, so a handler given
-		to a second session answered every call on that session's connection:
-		one client's answer went to another, and since each client numbers its
-		calls from 1, it answered whichever call of theirs had the same number.
+		So one handler given to several sessions answers each call on the
+		connection it came in on, rather than every call on the last session's
+		connection, where one client's answer would go to another.
 
 		A method that answers later, with a `Future`, is answered on its
 		caller's connection whatever `session` says by then. Code that needs
@@ -102,7 +101,7 @@ abstract class RPCHandler {
 
 	/**
 		Called before each inbound call, before its arguments are read, with
-		the method's name, the request's id, 0 for a one-way call, and
+		the method's name, the request's id (0 for a one-way call), and
 		the bytes its arguments take. Return `null` to let the call run, or an
 		`RPCError` to refuse it: a request is answered with the error's
 		message, and a one-way call is dropped. A refusal is not reported to
@@ -126,7 +125,7 @@ abstract class RPCHandler {
 		Called after each call `beforeCall` let through, once its method has
 		run and its answer, if it has one, has been sent. `error` is `null`
 		when the method returned, and what it threw when it did not, as a
-		`haxe.Exception`: what was thrown, if it was one, an `RPCError`, say,
+		`haxe.Exception`: what was thrown, if it was one (an `RPCError`, say)
 		and otherwise a `haxe.ValueException` holding it in its `value`. It is
 		not given the result: handing over an `Int` or a `Float` as `Dynamic`
 		would allocate on every call.
@@ -142,10 +141,9 @@ abstract class RPCHandler {
 		read: an error answer to a request, and a report on this side of
 		whatever the caller is not told.
 
-		It used to reach the session as if the frame had been unreadable,
-		which ended the connection and failed every call still waiting on it.
-		The frame was sound, only the method failed, so the read goes on
-		at the next one.
+		The frame was sound, only the method failed, so the read goes on at
+		the next one rather than ending the connection and failing every call
+		still waiting on it.
 	**/
 	@:noCompletion private function __rpc_fail(op:Int, method:String, requestId:Int, error:haxe.Exception):Void {
 		final session = this_session;
@@ -197,8 +195,8 @@ abstract class RPCHandler {
 	}
 
 	/**
-		Settles a call whose method answered with `future`, not complete yet,
-		or failed, once it completes, on the session's thread: `answer` sends
+		Settles a call whose method answered with `future` (not complete yet,
+		or failed) once it completes, on the session's thread: `answer` sends
 		its value, a failure is answered as a throw is, and `afterCall` is told
 		then, not when the method returned.
 
@@ -206,8 +204,8 @@ abstract class RPCHandler {
 		time the future completes, this handler may be running another
 		session's call. And only while that session's connection is the one
 		the call came in on. One that has ended gets nothing, and neither does
-		the next peer of a connection that takes another, a `LocalConnection`
-		listening again, which could have a call of its own waiting under
+		the next peer of a connection that takes another (a `LocalConnection`
+		listening again), which could have a call of its own waiting under
 		the old one's id.
 	**/
 	@:noCompletion private function __rpc_later<T>(op:Int, method:String, requestId:Int, future:Future<T>,

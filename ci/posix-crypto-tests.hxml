@@ -4,7 +4,7 @@
 -main PosixCryptoMain
 --cpp export/ci-posix-crypto
 # Names the OS, as extraParams.hxml does for `-lib crossbyte`. Built from
-# `-cp src` without it, nothing defined `linux` or `mac`, and the classes
-# this job exists to test compiled out of it.
+# `-cp src` without it, nothing would define `linux` or `mac`, and the
+# classes this job exists to test would compile out of it.
 --macro crossbyte._internal.macro.HostPlatform.define()
 --macro crossbyte.test.SuiteCoverage.check()

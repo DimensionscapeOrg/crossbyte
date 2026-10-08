@@ -9,7 +9,7 @@ import haxe.Timer;
 	over loopback: a round sends `burst` datagrams of `size` bytes from one
 	socket to another, then pumps the runtime until the receiver has them.
 	Each pass that reads ends with the read that finds the socket empty, so
-	this prices what a receive pass costs around its datagrams, the shape
+	this prices what a receive pass costs around its datagrams: the shape
 	of a lightly loaded server, woken for each arrival. Process CPU per
 	datagram, best and median of `samples` samples.
 

@@ -6,9 +6,9 @@ package crossbyte.net;
 
 	The same three words describe two different things. *Mapping* is which
 	public address and port the NAT gives this socket's traffic toward a
-	destination, one for all of them, or a new one per destination address,
+	destination: one for all of them, or a new one per destination address,
 	or per address and port. *Filtering* is who may send back through a
-	mapping once it exists, anyone, only a host this socket has sent to, or
+	mapping once it exists: anyone, only a host this socket has sent to, or
 	only the exact address and port it sent to.
 
 	Together they say whether a peer can be reached directly. A peer learns
@@ -34,8 +34,8 @@ enum NatBehavior {
 	ADDRESS_DEPENDENT;
 
 	/**
-		Mapping: a new one per destination address and port, the "symmetric
-		NAT" of RFC 3489. Filtering: only the exact address and port this
+		Mapping: a new one per destination address and port (the "symmetric
+		NAT" of RFC 3489). Filtering: only the exact address and port this
 		socket sent to may answer.
 	**/
 	ADDRESS_AND_PORT_DEPENDENT;

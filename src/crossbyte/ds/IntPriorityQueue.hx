@@ -8,8 +8,8 @@ import haxe.ds.Vector;
 /**
  * A priority queue of `Int` ids, each held with its own priority.
  *
- * For what a `PriorityQueue` cannot hold: plain ids, players, sessions,
- * entity slots, rather than objects. An id carries no priority of its own,
+ * For what a `PriorityQueue` cannot hold: plain ids (players, sessions,
+ * entity slots) rather than objects. An id carries no priority of its own,
  * so the queue keeps one beside it, given when the id is enqueued; nothing
  * is looked up while the heap is sifted and no comparator is called. That
  * keeps it free of allocation per operation on every target: a comparator
@@ -282,14 +282,14 @@ final class IntPriorityQueue {
 }
 
 /**
-	Ids to slots: open addressing, linear probing, and no tombstones,
+	Ids to slots: open addressing and linear probing, with no tombstones;
 	removal shifts the entries after it back instead, so a lookup always ends
 	at the first empty bucket.
 
 	Not an `IntMap` because the jvm's does not end there. Its probe for a
-	missing key visits every bucket, so the check each new id is given cost
-	a pass over the whole table: 50,000 ids took a second where Node took
-	17 ms.
+	missing key visits every bucket, so the check each new id is given costs
+	a pass over the whole table: 50,000 ids take a second there, where Node
+	takes 17 ms.
 **/
 private class IdTable {
 	private var __keys:Vector<Int>;

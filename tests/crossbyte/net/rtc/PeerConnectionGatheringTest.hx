@@ -18,7 +18,7 @@ import utest.Assert;
 	becomes a candidate. A real server would answer the same question no
 	differently and would make the suite depend on the network.
 
-	What a fake server cannot show is a NAT translating anything, on loopback
+	What a fake server cannot show is a NAT translating anything: on loopback
 	the address reported is the address asked from. So the server here reports
 	an address deliberately unlike the one it sees, which is what a NAT would
 	do and what makes the difference between reporting the answer and reporting
@@ -43,9 +43,9 @@ class PeerConnectionGatheringTest extends utest.Test {
 		A relayed candidate added from outside is refused, saying where one
 		that works comes from.
 
-		It was taken in silence, with no way to send through the relay, so the
-		checks "from" it went straight at the peer from this socket while the
-		peer was told to answer the relay, a pair that could never work, and
+		Taken in silence, with no way to send through the relay, the checks
+		"from" it would go straight at the peer from this socket while the
+		peer was told to answer the relay: a pair that could never work, with
 		nothing said why. A host candidate is still taken, and a shared
 		socket's host refuses a relayed one too.
 	**/
@@ -157,8 +157,8 @@ class PeerConnectionGatheringTest extends utest.Test {
 			Assert.isTrue(carried, "the reflexive address never reached the description");
 
 			// And it knows the address it was discovered through. Nothing sends
-			// from a reflexive address, the datagram leaves the socket that
-			// asked, and the translation happens on the way, so ICE pairs it
+			// from a reflexive address (the datagram leaves the socket that
+			// asked, and the translation happens on the way), so ICE pairs it
 			// as its base, and a candidate that did not record one would be
 			// checked as a place of its own and send every check twice.
 			Assert.notNull(gathered.base, "the reflexive candidate recorded no base");
@@ -296,7 +296,7 @@ class PeerConnectionGatheringTest extends utest.Test {
 		message format, and the reflexive query is offered every datagram first.
 		What separates them is the transaction, and a query that settled on a
 		peer's connectivity check would report the peer's address as this
-		connection's own, an address on the wrong side of the NAT, advertised
+		connection's own: an address on the wrong side of the NAT, advertised
 		with confidence.
 	**/
 	public function testAnotherPeersCheckDoesNotAnswerTheQuery():Void {

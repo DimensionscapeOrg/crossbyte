@@ -1,10 +1,10 @@
 // Runs the portable suite in a headless browser and fails if anything in it
 // fails, or if the page throws at all.
 //
-// That second condition is the reason this exists. The bug that prompted it
-// threw while the bundle was loading, so no test ran, no assertion failed, and
-// a runner that only read the test result would have called an empty run a
-// pass. A page error is a failure here whether or not any assertion noticed.
+// That second condition is the reason this exists. A bundle that throws
+// while it loads runs no test and fails no assertion, and a runner that only
+// read the test result would call that empty run a pass. A page error is a
+// failure here whether or not any assertion noticed.
 //
 // Usage: node ci/browser/run.js
 // Needs puppeteer (`npm install --no-save puppeteer`) and the bundle built by
@@ -14,10 +14,10 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-// Whatever port the system has free, read back once listening. It was fixed
-// at 50573, which lies in a range Windows can reserve (see `netsh interface
-// ipv4 show excludedportrange protocol=tcp`); where it had, listening failed
-// with EACCES and the suite could not run at all.
+// Whatever port the system has free, read back once listening. A fixed port
+// can lie in a range Windows reserves (see `netsh interface ipv4 show
+// excludedportrange protocol=tcp`), where listening fails with EACCES and
+// the suite cannot run at all.
 let port = 0;
 const ROOT = __dirname;
 const BUNDLE = path.join(__dirname, '..', '..', 'export', 'browser-tests', 'tests.js');

@@ -16,10 +16,7 @@ import crossbyte.test.Require;
 	backend with an uninitialised reference live across a branch, and the
 	verifier rejects the whole class: "Inconsistent stackmap frames". That is
 	not a failing test, it is a `VerifyError` at class-load that takes the
-	process with it, which is why this suite was skipped on jvm entirely.
-
-	`crossbyte.rpc` itself was never the problem and works there unchanged. It
-	simply had nothing running to say so.
+	process with it, and the whole suite with it on jvm.
 **/
 class RPCTest extends utest.Test {
 	public function testOneWayCallDecodesScalarsBytesAndOptionals():Void {
@@ -110,9 +107,9 @@ class RPCTest extends utest.Test {
 
 	/**
 		`respond()` binds or replaces the responder, as it says: the one bound
-		last hears the outcome, and only it. It added one each time, so a
-		responder replaced was told as well, the one passed to the
-		constructor included. Handlers added with `then` all run beside it.
+		last hears the outcome, and only it, so a responder replaced (the one
+		passed to the constructor included) is not told as well. Handlers added
+		with `then` all run beside it.
 	**/
 	public function testRespondReplacesTheResponder():Void {
 		var heard:Array<String> = [];
@@ -160,7 +157,7 @@ class RPCTest extends utest.Test {
 
 	public function testUnknownOpDoesNotCollideIntoHandler():Void {
 		// A one-way call for an op the handler has not got runs nothing, and
-		// is passed over with the session told: it ended the connection.
+		// is passed over with the session told; the connection stays.
 		var link = LinkedConnection.pair();
 		var handler = new TestHandler();
 		var serverSession = new RPCSession(link.server, null, handler);
@@ -244,10 +241,10 @@ class RPCTest extends utest.Test {
 
 	/**
 		A `ByteArray` goes on the runtime lane as the bytes it holds, as the
-		guide says `haxe.io.Bytes` does, and a `ByteArray` is one. It was
-		refused, "Unsupported runtime RPC value", in an argument and in an
-		answer alike: the codec matched the `Bytes` class exactly, and at run
-		time a `ByteArray` is a subclass of it.
+		guide says `haxe.io.Bytes` does, and a `ByteArray` is one: at run time
+		it is a subclass of `Bytes`, so a codec matching the `Bytes` class
+		exactly would refuse it ("Unsupported runtime RPC value") in an argument
+		and in an answer alike.
 	**/
 	public function testTheRuntimeLaneCarriesAByteArray():Void {
 		var link = LinkedConnection.pair();
@@ -320,11 +317,11 @@ class RPCTest extends utest.Test {
 	}
 
 	public function testAMethodTakesAsManyArgumentsAsItDeclares():Void {
-		// A handler's @:rpc method was held to eight arguments, which nothing
-		// else was: a commands stub or a contract with more built, and a
-		// handler written without a contract could never answer it. Nothing in
-		// the encoding needs a limit. Ten here, the last optional, so their
-		// order and the optional's flag are both checked past the old line.
+		// A handler's @:rpc method is not held to eight arguments, which nothing
+		// else is: a commands stub or a contract with more builds, so a handler
+		// written without a contract must be able to answer it. Nothing in the
+		// encoding needs a limit. Ten here, the last optional, so their order
+		// and the optional's flag are both checked past eight.
 		var link = LinkedConnection.pair();
 		var commands = new ManyArgumentCommands();
 		var clientSession = new RPCSession<ManyArgumentCommands>(link.client, commands);
@@ -385,9 +382,8 @@ class RPCTest extends utest.Test {
 		var reported = reportsOf(serverSession);
 		var ended = endingOf(link.server);
 
-		// The session took a handler throwing for the peer sending something
-		// unreadable: the connection closed, and the caller was told nothing
-		// but that it had.
+		// A handler throwing is not taken for the peer sending something
+		// unreadable: the connection stays, and the caller is told what failed.
 		var failed = commands.lookup(0);
 		Assert.isTrue(failed.completed, "the caller was never answered");
 		Assert.isFalse(failed.succeeded);
@@ -453,11 +449,11 @@ class RPCTest extends utest.Test {
 	}
 
 	public function testAListenerThatThrowsLeavesTheConnectionAndTheOtherCallsAlone():Void {
-		// `then` callbacks were contained and RESULT and ERROR listeners were
-		// not: a listener's throw reached the session reading the answers,
-		// which took it for a frame it could not read, closed the connection,
-		// and failed every call still waiting, including the next answer in
-		// the same read.
+		// `then` callbacks, RESULT and ERROR listeners are all contained: a
+		// listener's throw reaching the session reading the answers would be
+		// taken for a frame it could not read, closing the connection and
+		// failing every call still waiting, including the next answer in the
+		// same read.
 		var link = LinkedConnection.pair();
 		var commands = new FailingCommands();
 		var clientSession = new RPCSession<FailingCommands>(link.client, commands);
@@ -488,7 +484,7 @@ class RPCTest extends utest.Test {
 	public function testCallsWaitingOnThisSideSurviveAHandlerThatThrows():Void {
 		// Each side both calls and answers. The server has a call out to the
 		// client when a call from the client fails on the server: ending the
-		// connection failed the server's own call too.
+		// connection would fail the server's own call too.
 		var link = LinkedConnection.pair();
 		var clientCommands = new FailingCommands();
 		var serverCommands = new TestCommands();
@@ -513,7 +509,7 @@ class RPCTest extends utest.Test {
 		var reported = reportsOf(serverSession);
 		var ended = endingOf(link.server);
 
-		// It sent the caller `Std.string(error)`, whatever that held.
+		// The caller is not sent `Std.string(error)`, whatever that held.
 		serverSession.register(404, args -> throw "stack at /home/app/secret.hx:12");
 		var failed:RPCResponse<String> = clientSession.request(404, [1]);
 		Assert.equals(RPCError.INTERNAL_MESSAGE, failed.error);
@@ -533,7 +529,7 @@ class RPCTest extends utest.Test {
 		var reported = reportsOf(serverSession);
 		var ended = endingOf(link.server);
 
-		// It rethrew, and the connection closed.
+		// Not rethrown, and the connection does not close.
 		serverSession.register(406, args -> throw "boom");
 		serverSession.register(202, args -> "player-" + args[0]);
 		clientSession.call(406, []);
@@ -561,9 +557,9 @@ class RPCTest extends utest.Test {
 	}
 
 	public function testAFrameWhoseArgumentsDoNotDecodeIsAnsweredAndTheConnectionStays():Void {
-		// A request for `lookup` with a byte where its Int should be. It ended
-		// the connection, and every call waiting on it; the frame carries its
-		// length, so the next is read where it begins.
+		// A request for `lookup` with a byte where its Int should be. The frame
+		// carries its length, so the next is read where it begins, and neither
+		// the connection nor the calls waiting on it end.
 		var link = LinkedConnection.pair();
 		var handler = new FailingHandler();
 		var serverSession = new RPCSession(link.server, null, handler);
@@ -607,8 +603,8 @@ class RPCTest extends utest.Test {
 			var answers = errorAnswersAt(link.client);
 
 			// A request for `lookup` one Int short, and a sound one after it,
-			// in one read. The Int was read from the next frame's length, and
-			// the handler ran on it. Now the short one is answered as unreadable
+			// in one read. The Int must not be read from the next frame's length,
+			// with the handler run on it: the short one is answered as unreadable
 			// and the sound one runs on its own.
 			var short = frameOf(out -> {
 				out.writeByte(RPCWire.FLAG_REQUEST);
@@ -642,9 +638,9 @@ class RPCTest extends utest.Test {
 			var ended = endingOf(link.client);
 			var pending = commands.getName(1);
 
-			// An answer with no String in it, read from what followed: the
-			// length of the next frame begins with a zero, which read as an
-			// empty name.
+			// An answer with no String in it, which read from what followed
+			// would take the length of the next frame, beginning with a zero, for
+			// an empty name.
 			var short = frameOf(out -> {
 				out.writeByte(RPCWire.FLAG_RESPONSE);
 				out.writeInt(opOf("getName(i32):utf8"));
@@ -669,8 +665,8 @@ class RPCTest extends utest.Test {
 			var ended = endingOf(link.client);
 			var pending = commands.getName(1);
 
-			// An error with no message: it was failed with the empty one read
-			// from the next frame, and the connection went on as if sound.
+			// An error with no message, which must not be failed with an empty
+			// one read from the next frame, the connection going on as if sound.
 			var short = frameOf(out -> {
 				out.writeByte(RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR);
 				out.writeInt(opOf(method));
@@ -693,7 +689,7 @@ class RPCTest extends utest.Test {
 			var pending:RPCResponse<Dynamic> = clientSession.request(600, []);
 
 			// An Int answer whose tag is in the frame and whose Int is not, or
-			// an error with no message: read from the next frame, as a number
+			// an error with no message: not read from the next frame, as a number
 			// or an empty message.
 			var short = frameOf(out -> {
 				out.writeByte(RPCWire.FLAG_RUNTIME | RPCWire.FLAG_RESPONSE | (failed ? RPCWire.FLAG_ERROR : 0));
@@ -729,8 +725,8 @@ class RPCTest extends utest.Test {
 				return null;
 			});
 
-			// One Int argument, its tag in the frame and the Int itself not:
-			// it was read from the length of the next frame.
+			// One Int argument, its tag in the frame and the Int itself not, which
+			// must not be read from the length of the next frame.
 			var short = frameOf(out -> {
 				out.writeByte(RPCWire.FLAG_RUNTIME | (request ? RPCWire.FLAG_REQUEST : 0));
 				out.writeInt(500);
@@ -782,8 +778,8 @@ class RPCTest extends utest.Test {
 		var passed = passedOverBy(serverSession);
 
 		// `sendData` with a Bytes argument claiming two gigabytes, in a frame
-		// of a couple of dozen bytes. It was allocated before a byte of it
-		// was read.
+		// of a couple of dozen bytes: nothing is allocated for it before a byte
+		// of it is read.
 		link.client.send(frameOf(out -> {
 			out.writeByte(0);
 			out.writeInt(opOf("sendData(i32,bool,f64,utf8,bytes,?utf8)"));
@@ -807,8 +803,8 @@ class RPCTest extends utest.Test {
 		var passed = passedOverBy(serverSession);
 		serverSession.register(502, args -> null);
 
-		// Two billion arguments, in a frame of ten bytes: an array that size
-		// was made before any of them was read.
+		// Two billion arguments, in a frame of ten bytes: no array that size
+		// is made before any of them is read.
 		link.client.send(frameOf(out -> {
 			out.writeByte(RPCWire.FLAG_RUNTIME);
 			out.writeInt(502);
@@ -842,7 +838,7 @@ class RPCTest extends utest.Test {
 
 	public function testARuntimeValueOfAKindNotKnownIsACallNotTaken():Void {
 		// A tag a later release may add: the call it is in cannot be read, and
-		// is answered so, where the connection ended.
+		// is answered so, rather than the connection ended.
 		var link = LinkedConnection.pair();
 		var serverSession = new RPCSession(link.server);
 		var ended = endingOf(link.server);
@@ -1042,11 +1038,11 @@ private class WideCommands extends RPCCommands {
 }
 
 // Ten methods, because the handler macro switches from a direct switch to a
-// generated perfect hash above eight, and that path had no test on any
-// target. It builds its tables at compile time on the eval interpreter and
-// emits the same arithmetic to run on the target, so the two have to agree
-// about what an opcode hashes to. They did not on js: every index differed,
-// and every dispatch would have thrown "Unknown RPC op".
+// generated perfect hash above eight. It builds its tables at compile time
+// on the eval interpreter and emits the same arithmetic to run on the
+// target, so the two have to agree about what an opcode hashes to; on js,
+// if they did not, every index would differ, and every dispatch would throw
+// "Unknown RPC op".
 private class WideHandler extends RPCHandler {
 	public var seen:Array<String> = [];
 

@@ -15,10 +15,11 @@ import sys.thread.Thread;
 /**
  * OAuth's token exchange against a real endpoint, and PKCE.
  *
- * The exchange used the blocking `haxe.Http` on native targets, so a token
- * endpoint taking 1.5 s stalled the whole server for 1.5 s per sign-in, and on
- * Node a provider that never answered left both callbacks unfired forever.
- * There was nowhere to put a PKCE challenge or verifier.
+ * The exchange runs off the runtime's thread: with the blocking `haxe.Http`
+ * on native targets, a token endpoint taking 1.5 s would stall the whole
+ * server for 1.5 s per sign-in, and on Node a provider that never answered
+ * would leave both callbacks unfired forever. PKCE's challenge and verifier
+ * have a place in the request.
  *
  * The endpoint is a socket served from a thread on the sys targets and Node's
  * own http server on Node; the browser has neither and runs the PKCE cases.
@@ -53,7 +54,7 @@ class OAuthExchangeTest extends utest.Test {
 			{json: '"3600"', expected: 3600},
 			{json: '3600', expected: 3600},
 			{json: '" 60 "', expected: 60},
-			// Past an Int: Std.parseInt made 0, 2147483647, a throw or a wider
+			// Past an Int: Std.parseInt makes 0, 2147483647, a throw or a wider
 			// number of this depending on the target.
 			{json: '"4294967296"', expected: 0},
 			{json: '4294967296', expected: 0},
@@ -71,8 +72,8 @@ class OAuthExchangeTest extends utest.Test {
 	/**
 		A token endpoint's answer nested deeper than any real one is a failure,
 		refused before it is parsed: parsing takes a frame per level, and
-		natively an answer nested 6,000 deep, 12 KB, overflowed the stack
-		and ended the process. So did an error document that deep, read for
+		natively an answer nested 6,000 deep (12 KB) would overflow the stack
+		and end the process. So would an error document that deep, read for
 		the provider's reason. The bound is 32 levels, objects and arrays
 		together: here the answer's object, then a member nesting the rest.
 	**/
@@ -108,8 +109,8 @@ class OAuthExchangeTest extends utest.Test {
 	/**
 		`timeout` is a number of seconds, or `0` for no deadline: a negative
 		number or `NaN` is refused where it is set, and leaves the timeout as
-		it was. `NaN` was taken, and reached the client as an idle timeout of
-		whatever `Std.int` made of it on the target.
+		it was, rather than reaching the client as an idle timeout of whatever
+		`Std.int` makes of it on the target.
 	**/
 	public function testATimeoutThatIsNotSecondsIsRefused():Void {
 		var oauth:OAuth = new OAuth(new OAuthConfig("client", "", "https://auth.example/authorize", "https://auth.example/token",
@@ -128,8 +129,8 @@ class OAuthExchangeTest extends utest.Test {
 	#if (sys || nodejs)
 	/**
 		A timeout of `0` is no deadline, as it is everywhere in CrossByte: the
-		exchange waits for the endpoint. It was a deadline of no time at all,
-		which failed every exchange at once.
+		exchange waits for the endpoint, rather than failing at once on a
+		deadline of no time at all.
 	**/
 	public function testATimeoutOfZeroIsNoDeadline(async:Async):Void {
 		serve(0.4, 200, TOKEN_RESPONSE, endpoint -> {
@@ -198,8 +199,8 @@ class OAuthExchangeTest extends utest.Test {
 				Assert.isTrue(finished, "the exchange ended");
 				Assert.isNull(delivered);
 				Require.notNull(failure);
-				// The exchange runs off the runtime on every target now, so the
-				// deadline is what ends it everywhere.
+				// The exchange runs off the runtime on every target, so the deadline
+				// is what ends it everywhere.
 				Assert.isTrue(failure.indexOf("did not answer within 0.5 s") >= 0, failure);
 				endpoint.close();
 				async.done();
@@ -211,10 +212,9 @@ class OAuthExchangeTest extends utest.Test {
 		A provider set up for HTTP Basic client authentication gets the secret
 		in an `Authorization` header and not in the body.
 
-		The secret went in the body whatever the provider took, and RFC 6749
-		has every provider accept Basic and calls the body NOT RECOMMENDED: a
-		provider configured for Basic alone answered `invalid_client`, with no
-		way to send anything else.
+		RFC 6749 has every provider accept Basic and calls the secret in the
+		body NOT RECOMMENDED, so a provider configured for Basic alone would
+		answer `invalid_client` to a secret sent anywhere else.
 	**/
 	public function testTheSecretGoesInABasicHeaderWhenTheProviderAsks(async:Async):Void {
 		serve(0, 200, TOKEN_RESPONSE, endpoint -> {

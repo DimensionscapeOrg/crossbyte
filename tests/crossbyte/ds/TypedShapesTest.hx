@@ -11,11 +11,10 @@ private enum Shape {
 }
 
 /**
-	The typed shapes 1.0 gives what were anonymous structures, `Dynamic`
-	and `Function`: classes built from the same literals, callbacks of known
-	arity called directly, and a dispatcher that looks typed keys up typed.
-	Each case names the type, which did not exist, or checks what did not
-	hold, before.
+	The typed shapes for what would otherwise be anonymous structures,
+	`Dynamic` and `Function`: classes built from the same literals,
+	callbacks of known arity called directly, and a dispatcher that looks
+	typed keys up typed. Each case names the type, or checks what it holds.
 **/
 class TypedShapesTest extends utest.Test {
 	public function testAPairIsAClassBuiltFromALiteral():Void {
@@ -100,8 +99,8 @@ class TypedShapesTest extends utest.Test {
 
 	/**
 		Typed keys are found typed, and whatever is not one of them still
-		reaches `otherwise` as it did: a String where the keys are Ints, a key
-		no case names.
+		reaches `otherwise`: a String where the keys are Ints, a key no case
+		names.
 	**/
 	public function testATypedSwitchTableMatchesAsTheChainDid():Void {
 		var hits:Array<String> = [];

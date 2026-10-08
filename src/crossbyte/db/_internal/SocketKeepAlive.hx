@@ -5,8 +5,8 @@ package crossbyte.db._internal;
 
 /**
 	TCP keepalive on a `sys.net.Socket` a database client drives itself, so a
-	connection to a server that has vanished, a partition, a host that died
-	without closing, is noticed instead of waited on: `idle` seconds without
+	connection to a server that has vanished (a partition, a host that died
+	without closing) is noticed instead of waited on: `idle` seconds without
 	traffic before the first probe, `interval` between probes, `count`
 	unanswered probes before the connection is dropped, and 0 for any of them
 	leaves the system's own. The MySQL client in the hxcpp fork sets it the

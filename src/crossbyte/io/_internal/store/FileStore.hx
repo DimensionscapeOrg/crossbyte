@@ -11,16 +11,16 @@ import sys.io.File as SysFile;
  *
  * One file per key, under a directory named for the store, inside the
  * application storage directory: `<storage>/stores/<name>`, where `<storage>`
- * is `System.appStorageDir`, the application's own directory. It was the
- * account's root, `%APPDATA%` or `$HOME`, which every CrossByte program on
- * the account shared. A single index file was the alternative and
+ * is `System.appStorageDir`, the application's own directory, not a root
+ * every CrossByte program on the account shares. A single index file was
+ * the alternative and
  * is worse: every write would rewrite the whole index, and a value larger than
  * memory could never be streamed in later without changing the format. A
  * directory is also inspectable, which matters the first time someone has to
  * find out what their application actually saved.
  *
  * Keys are encoded rather than used as file names. A key is any string and a
- * file name is not, `a/b`, `..`, `CON` on Windows, and case-insensitive
+ * file name is not: `a/b`, `..`, `CON` on Windows, and case-insensitive
  * collisions between `Token` and `token` are all real keys and all impossible
  * or dangerous as paths.
  *
@@ -28,18 +28,17 @@ import sys.io.File as SysFile;
  * then renamed over the old value in one step. A store that corrupts on a power
  * cut is worse than no store, because it is trusted. Rename is the only
  * operation a filesystem gives that is atomic enough to build on, as long as
- * it is one rename. This used to delete the old value and then rename, because
- * the standard library's rename refuses to replace a file on Windows; a process
- * that died between the two lost the key, and the next open threw away the
- * complete new value as debris. Every writer also shared one temporary name,
- * and nothing was flushed.
+ * it is one rename: deleting the old value and then renaming (the standard
+ * library's rename refuses to replace a file on Windows) would lose the key
+ * to a process that died between the two, and so would a temporary name
+ * every writer shared, or one never flushed.
  *
  * The flush is what the interpreter cannot do: eval has no fsync. There a
  * power cut can cost the latest write, though never tear one.
  *
  * Asynchronous by signature and synchronous underneath. That is deliberate and
  * it is not a lie: the callback contract is what lets a target that genuinely
- * cannot block, the browser, implement the same API, and it lets this one
+ * cannot block (the browser) implement the same API, and it lets this one
  * grow a thread or a queue later without any caller changing. What it must not
  * do is pretend to be non-blocking, so this is said plainly here rather than
  * implied by the shape.
@@ -206,8 +205,8 @@ class FileStore implements IStoreBackend {
 
 	public function forEach(prefix:Null<String>, visit:(key:String, value:ByteArray) -> Bool, done:String->Void):Void {
 		try {
-			// The directory listing is unavoidable, a filesystem has no
-			// cursor, but the values are not, and those are what a large
+			// The directory listing is unavoidable (a filesystem has no
+			// cursor), but the values are not, and those are what a large
 			// store is made of. One is read, handed over, and released before
 			// the next is touched.
 			for (entry in FileSystem.readDirectory(directory)) {
@@ -223,8 +222,8 @@ class FileStore implements IStoreBackend {
 
 				var path:String = haxe.io.Path.join([directory, entry]);
 
-				// Deleted between listing and reading, by another runtime, or
-				// by the visitor itself removing as it goes. Skipped, because a
+				// Deleted between listing and reading (by another runtime, or
+				// by the visitor itself removing as it goes): skipped, because a
 				// key that is gone is not an error for an iteration that has
 				// already promised nothing about ordering or a snapshot.
 				var bytes:Null<Bytes> = FileSystem.exists(path) ? __read(path) : null;
@@ -282,7 +281,7 @@ class FileStore implements IStoreBackend {
 	 * On Windows a file that is being renamed over refuses to open for the
 	 * moment the replace takes, where POSIX hands a reader the old file or the
 	 * new one. That is a write in progress, not a failed read, so it is ridden
-	 * out, briefly, and only there, rather than reported.
+	 * out (briefly, and only there) rather than reported.
 	 */
 	private static function __read(path:String):Null<Bytes> {
 		var attempt:Int = 0;

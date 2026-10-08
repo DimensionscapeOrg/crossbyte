@@ -12,7 +12,7 @@ package crossbyte._internal.socket._jvm;
 	fails to compile. Everything the backend touches is therefore declared here
 	rather than taken from the library.
 
-	Two details cost a compile each and are worth stating:
+	Two details are worth stating:
 
 	- Nested Java classes are named with `$`, not `.`. `SSLEngineResult.Status`
 	  is `javax.net.ssl.SSLEngineResult$Status`; written with a dot it compiles
@@ -21,9 +21,8 @@ package crossbyte._internal.socket._jvm;
 	- An extern's kind has to match Java's. `SSLSession`, `List`, `KeyManager`
 	  and `TrustManager` are interfaces; any of them declared as a class compiles
 	  and then throws `IncompatibleClassChangeError` the first time it is used.
-	  This one has been made three times here. If something fails with "Found
-	  interface X, but class was expected", the extern for X says `extern class`
-	  and Java says `interface`.
+	  If something fails with "Found interface X, but class was expected",
+	  the extern for X says `extern class` and Java says `interface`.
 
 	Both failures are invisible until the code runs, which is why the backend
 	has an end-to-end case rather than only unit ones.
@@ -146,8 +145,8 @@ extern class PKCS8EncodedKeySpec implements KeySpec {
 }
 
 // What an encrypted private key takes to read: PKCS#8's own encryption
-// through the JDK's password-based ciphers, and the older OpenSSL one,
-// a block cipher keyed from the password with MD5, through its plain ones.
+// through the JDK's password-based ciphers, and the older OpenSSL one
+// (a block cipher keyed from the password with MD5) through its plain ones.
 
 @:native("java.security.spec.AlgorithmParameterSpec")
 extern interface AlgorithmParameterSpec {}
@@ -333,8 +332,8 @@ extern class SSLContext {
 }
 
 /**
-	The blocking client socket. Unusable by the runtime itself, that is why
-	the backend is built on SSLEngine, but exactly right as an independent
+	The blocking client socket. Unusable by the runtime itself (that is why
+	the backend is built on SSLEngine) but exactly right as an independent
 	peer in a test, where it exercises the server against the JDK's own TLS
 	stack rather than against more of CrossByte.
 **/

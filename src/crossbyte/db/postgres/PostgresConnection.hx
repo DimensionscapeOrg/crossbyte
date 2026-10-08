@@ -27,9 +27,9 @@ import php.Syntax;
 
 /**
 	A connection to PostgreSQL. Natively (cpp) it drives libpq, loaded when
-	the connection opens, from `PostgresConfig.libraryPath` or
+	the connection opens (from `PostgresConfig.libraryPath` or
 	`libraryPaths`, or where the system keeps it, as `libraryPath` lists
-	for Windows, macOS and Linux, with bound parameters
+	for Windows, macOS and Linux), with bound parameters
 	(`requestParams`), `cancel()` and the timeouts `PostgresConfig` sets. On
 	php it runs on PDO. No other target has a driver: `isSupported` is
 	`false` there, and `open()` throws.
@@ -43,7 +43,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		Whether a transaction is open, including one a failed statement has
 		left waiting for a rollback. On the native driver this is the server's
 		own account, taken after every statement, so a transaction begun or
-		ended as SQL text, `request("BEGIN;")`, counts as surely as one
+		ended as SQL text (`request("BEGIN;")`) counts as surely as one
 		begun with `begin()`. `ConnectionPool` reads it to roll back what a
 		borrower left open.
 	**/
@@ -59,9 +59,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 	/**
 		The rows the last statement changed, or a `SELECT` returned, as the
-		server counts them in its command tag: a `Float`, exact to 2^53. The
-		native bridge read it with `atoi`, into 32 bits, so a write of three
-		billion rows read 2147483647, or, on Linux, a negative number.
+		server counts them in its command tag: a `Float`, exact to 2^53.
 	**/
 	public var affectedRows(get, null):Float;
 	public var serverVersion(get, null):String;
@@ -75,9 +73,6 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		`BEGIN` itself. Set back to `true`, a transaction that is open is
 		committed first, as MySQL commits it. A new connection starts with it
 		on: `close()` resets it.
-
-		It was stored and never read: set `false`, every statement still
-		committed on its own.
 	**/
 	public var autocommit(get, set):Bool;
 
@@ -115,9 +110,8 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	/**
 		Connects, and dispatches `SQLEvent.OPEN`. On a connection already
 		open, the connection it had is closed first, dispatching `CLOSE`, as
-		`MySQLConnection.open()` does. It was replaced and left open,
-		unreachable, a server connection held for the life of the process
-		each time a reconnect or a pool factory opened twice.
+		`MySQLConnection.open()` does, so a reconnect or a pool factory that
+		opens twice leaves no server connection held.
 
 		@throws IOError When the server cannot be reached or refuses.
 	**/
@@ -144,9 +138,9 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 		try {
 			var handle:VoidPointer = NativePostgres.open(conninfo, __libraryCandidates(cfg));
-			// Read from the handle rather than from anything shared: the reason
-			// used to be one process-wide string, so connections opening on
-			// several pool workers at once could each report another's failure.
+			// Read from the handle rather than from anything shared, so
+			// connections opening on several pool workers at once each report
+			// their own failure.
 			var failure:String = NativePostgres.error(handle);
 
 			if (failure != null && failure != "") {
@@ -226,10 +220,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 	public function ping():Bool {
 		// No handle check of its own: request() already refuses without the
-		// handle this target uses, and that refusal lands in the catch. This
-		// used to test __connection, which only the php target sets, so on cpp
-		// every connection answered false without the server being asked,
-		// and a pool validating with ping() would discard each one it made.
+		// handle this target uses, and that refusal lands in the catch.
 		try {
 			__request("SELECT 1;", false);
 			return true;
@@ -242,12 +233,10 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		Starts a transaction.
 
 		Throws an `SQLError` when the server refuses, after dispatching it as
-		an `SQLErrorEvent` too. So do `commit`, `rollback` and the savepoint
-		methods. They used to dispatch the event and return, which made a
-		failed transaction indistinguishable from a successful one to any
-		caller that did not listen for it: `AsyncDatabase.transaction` completed
-		as success and `SchemaMigrator` recorded a migration that had been
-		rolled back.
+		an `SQLErrorEvent` too, so a failed transaction cannot look like a
+		successful one to a caller that does not listen for it
+		(`AsyncDatabase.transaction`, `SchemaMigrator`). So do `commit`,
+		`rollback` and the savepoint methods.
 	**/
 	public function begin():Void {
 		try {
@@ -271,8 +260,8 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		failure it is. The tag is read on the native driver; PDO does not
 		expose it.
 
-		Either way the transaction is over afterwards, PostgreSQL ends it on
-		a failed COMMIT as surely as on a successful one, so `inTransaction`
+		Either way the transaction is over afterwards (PostgreSQL ends it on
+		a failed COMMIT as surely as on a successful one), so `inTransaction`
 		is `false` whichever way this returns, unless `autocommit` is off.
 	**/
 	public function commit():Void {
@@ -321,10 +310,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 	/**
 		Creates a savepoint and returns its name, so one created without a name
-		can still be released or rolled back to. It returned nothing, which
-		left a generated name known only to the statement that used it, and
-		release and rollback both require a name, so such a savepoint could
-		never be reached again by any means.
+		can still be released or rolled back to.
 	**/
 	public function setSavepoint(name:String = null):String {
 		var sp:String = __sanitizeSavePoint(name);
@@ -346,8 +332,6 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		Rolls back to a savepoint, which stays active afterwards as PostgreSQL
 		leaves it. With no name, rolls back to the innermost savepoint this
 		connection holds, and only to a full rollback() when it holds none.
-		Omitting the name used to roll the whole transaction back, so a caller
-		asking to return to a savepoint lost everything before it instead.
 	**/
 	public function rollbackToSavepoint(name:String = null):Void {
 		if ((name == null || name == "") && __savepoints.length == 0) {
@@ -367,9 +351,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 	/**
 		Releases a savepoint, discarding it and any nested inside it. With no
-		name, releases the innermost this connection holds; it used to mint a
-		brand new name and ask the server to release a savepoint that had
-		never existed.
+		name, releases the innermost this connection holds.
 	**/
 	public function releaseSavepoint(name:String = null):Void {
 		var sp:String = __takeSavepoint(name, false);
@@ -386,17 +368,15 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	/**
 		Runs `sql` and answers its rows. Throws an `SQLError` when the server
 		refuses it or the connection is not open, as `requestParams()` and
-		the other drivers' `request()` do; it threw an `IOError` for a refusal
-		and a `String` for a connection not open, so code catching `SQLError`
-		caught neither.
+		the other drivers' `request()` do.
 	**/
 	public function request(sql:String):PostgresResultSet {
 		return __request(sql, true);
 	}
 
 	/**
-		`request()`, and the connection's own statements, its transaction
-		control, `ping()`, the settings it reads and writes, which pass
+		`request()`, and the connection's own statements (its transaction
+		control, `ping()`, the settings it reads and writes), which pass
 		`implicitBegin` false: none of them may begin a transaction for
 		`autocommit` off.
 	**/
@@ -499,10 +479,8 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 		#if cpp
 		var encoded:Bytes = PostgresWire.encodeParameters(params == null ? [] : params);
-		// One call, and the block it returns is this call's own. It used to be
-		// a length from one call and then the bytes from a second, read a byte
-		// at a time out of a buffer every connection in the process shared,
-		// so between the two another thread's query could replace it.
+		// One call, and the block it returns is this call's own, so another
+		// thread's query cannot replace it between its length and its bytes.
 		var data:haxe.io.BytesData = NativePostgres.requestParams(__nativeHandle, sql == null ? "" : sql, encoded.getData(), encoded.length);
 		__syncTransaction();
 
@@ -525,8 +503,8 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		Asks the server to abandon the statement this connection is running.
 
 		Safe to call from any thread, which is the point: the thread that sent
-		the statement is blocked waiting for its answer, so it is another one,
-		a watchdog, a request that was abandoned, a shutdown, that decides
+		the statement is blocked waiting for its answer, so it is another one
+		(a watchdog, a request that was abandoned, a shutdown) that decides
 		to stop it. The statement then fails on its own thread with the
 		server's "canceling statement due to user request".
 
@@ -610,11 +588,9 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	/**
 		Takes the transaction state from the server after a statement. The
 		server reports it at the end of every one, and libpq keeps it, so
-		asking costs no round trip. The flag used to change only in `begin()`,
-		`commit()` and `rollback()`, and a transaction opened with
-		`request("BEGIN;")` read as none, so a pool returning the connection
-		saw nothing to roll back, and handed the transaction to the next
-		borrower.
+		asking costs no round trip. A transaction opened with
+		`request("BEGIN;")` then reads as one, and a pool returning the
+		connection rolls it back rather than handing it to the next borrower.
 	**/
 	@:noCompletion private function __syncTransaction():Void {
 		switch (NativePostgres.transactionStatus(__nativeHandle)) {
@@ -705,12 +681,11 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 	/**
 		Sets the level of the session's transactions from the next one on,
-		as MySQL's setter does. Throws the `SQLError` when the server refuses,
-		inside a transaction a failed statement has aborted, say, where
-		it swallowed the refusal, so the level read as set while the session
-		went on at the old one. Never begins a transaction itself: one that
-		`autocommit` off began and then rolled back would take the setting
-		with it.
+		as MySQL's setter does. Throws the `SQLError` when the server refuses
+		(inside a transaction a failed statement has aborted, say), so the
+		level never reads as set while the session goes on at the old one.
+		Never begins a transaction itself: one that `autocommit` off began and
+		then rolled back would take the setting with it.
 	**/
 	private function set_isolationLevel(v:PostgresIsolationLevel):PostgresIsolationLevel {
 		__request("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL " + v + ";", false);
@@ -758,12 +733,9 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	}
 
 	@:noCompletion private function __sanitizeSavePoint(name:String):String {
-		// A counter, not a timestamp. Measured on the identical SQLite version:
-		// 2000 names generated back to back produced 47 duplicates, and the
-		// value overflows Int about 36 minutes into a process and wraps every
-		// 72, so a long-lived connection reissues names it has already used.
-		// Two savepoints sharing a name make RELEASE and ROLLBACK TO act on the
-		// wrong one.
+		// A counter, not a timestamp: names from the clock collide when made
+		// back to back and wrap in a long-lived process, and two savepoints
+		// sharing a name make RELEASE and ROLLBACK TO act on the wrong one.
 		var n:String = (name != null && name != "") ? name : ("sp_" + (++__savepointSeq));
 
 		return ~/[^\w]/g.replace(n, "_");
@@ -808,9 +780,8 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 	/**
 		A count or id from the driver as a whole number, exact to 2^53: an
-		`Int`, a `Float`, what JSON makes of a number past 32 bits, or
-		digits as text. It was `Std.parseInt`, which past 2^31 answers
-		differently on every target, and never the number.
+		`Int`, a `Float` (what JSON makes of a number past 32 bits), or
+		digits as text.
 	**/
 	@:noCompletion private static function __count(value:Dynamic):Float {
 		if (value == null) {
@@ -836,9 +807,9 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	}
 
 	/**
-		Reports a failed transaction step both ways: as the `SQLErrorEvent` it
-		always was, for listeners, and as the `SQLError` it now throws, so a
-		caller that does not listen cannot mistake it for success.
+		Reports a failed transaction step both ways: as the `SQLErrorEvent`,
+		for listeners, and as the `SQLError` it throws, so a caller that does
+		not listen cannot mistake it for success.
 	**/
 	@:noCompletion private function __fail(op:String, msg:String, e:Dynamic):Void {
 		var detail:String = Std.string(e);
@@ -862,11 +833,10 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		which has been the default since PostgreSQL 9.1.
 
 		Doubling the quote is the whole of it there. Backslash carries no
-		meaning inside an ordinary string literal, so doubling it as well,
-		which this used to do, turned every one into two: a value of
-		C:\Users came back out of the database as C:\\Users. Silent
-		corruption of anything holding a path, a regular expression, or a UNC
-		name.
+		meaning inside an ordinary string literal, so doubling it as well
+		would turn every one into two: a value of C:\Users would come back out
+		of the database as C:\\Users, corrupting anything holding a path, a
+		regular expression, or a UNC name.
 
 		Correct escaping is a property of the connection rather than of the
 		string: it depends on the server standard_conforming_strings setting
@@ -896,8 +866,8 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 	/**
 		Where libpq is looked for, in order: `libraryPath`, each of
-		`libraryPaths`, then where `platform`, `System.PLATFORM` unless
-		given, keeps it; see `PostgresConfig.libraryPath`.
+		`libraryPaths`, then where `platform` (`System.PLATFORM` unless
+		given) keeps it; see `PostgresConfig.libraryPath`.
 	**/
 	@:noCompletion private function __libraryCandidates(cfg:PostgresConfig, ?platform:String):Array<String> {
 		if (platform == null) {
@@ -914,10 +884,9 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 		var cwd = Sys.getCwd();
 		var exeDir = Path.directory(Sys.programPath());
-		// Runtime: this file is not cpp-only, it builds for eval, the JVM and
-		// Node, and `#if windows` is unset on all three, so a Windows host
-		// would have gone looking for libpq.so. Unreachable while the driver
-		// itself is cpp-only, and wrong the moment that stops being true.
+		// Runtime: this file is not cpp-only (it builds for eval, the JVM and
+		// Node), and `#if windows` is unset on all three, so the platform is
+		// asked here.
 		switch (platform) {
 			case "windows":
 				__pushCandidate(candidates, Path.join([cwd, "php", "libpq.dll"]), platform);
@@ -926,11 +895,10 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 				__pushCandidate(candidates, Path.join([exeDir, "..", "..", "..", "..", "php", "libpq.dll"]), platform);
 				__pushCandidate(candidates, "libpq.dll", platform);
 			case "mac":
-				// macOS names it libpq.5.dylib, and looked for as libpq.so it
-				// was never found: a Mac could not load libpq at all. By name
-				// first, where dyld looks by itself, then beside the program,
-				// then where Homebrew, Postgres.app, the PostgreSQL installer
-				// and MacPorts put it, the newest PostgreSQL first.
+				// macOS names it libpq.5.dylib. By name first, where dyld looks
+				// by itself, then beside the program, then where Homebrew,
+				// Postgres.app, the PostgreSQL installer and MacPorts put it, the
+				// newest PostgreSQL first.
 				__pushCandidate(candidates, "libpq.5.dylib", platform);
 				__pushCandidate(candidates, "libpq.dylib", platform);
 				__pushCandidate(candidates, Path.join([exeDir, "libpq.5.dylib"]), platform);
@@ -950,7 +918,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 	/**
 		`<root>/<directory><rest>` for each directory in `root` named `prefix`
-		and a version, `16`, `postgresql16`, the newest first. Nothing
+		and a version (`16`, `postgresql16`), the newest first. Nothing
 		when `root` cannot be read.
 	**/
 	@:noCompletion private function __pushInstalls(candidates:Array<String>, root:String, prefix:String, rest:String, platform:String):Void {
@@ -987,9 +955,8 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		`raw`, trimmed, unless it is empty or listed already. A directory
 		stands for the names libpq has in it on `platform`: `libpq.dll` on
 		Windows, `libpq.5.dylib` and `libpq.dylib` on macOS, and elsewhere
-		`libpq.so.5` and `libpq.so`. It stood for `libpq.so` alone, which only
-		a development package installs: a directory holding the runtime's
-		`libpq.so.5` was looked in and not found.
+		`libpq.so.5` and `libpq.so`, since only a development package
+		installs `libpq.so` alone.
 	**/
 	@:noCompletion private function __pushCandidate(candidates:Array<String>, raw:String, platform:String):Void {
 		if (raw == null) {

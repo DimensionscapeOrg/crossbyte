@@ -57,11 +57,9 @@ enum PGTransactionStatusType {
 // table of loaded libraries, which is written under a lock and never changes
 // once an entry is in it. Everything a call produces is returned to the caller
 // as a new Haxe object, so there is no buffer for a second thread to
-// overwrite: the bridge used to return every result through one process-wide
-// buffer, and with a worker per pooled connection a query could read another
-// query's rows, or the freed memory of a buffer another thread had grown.
+// overwrite.
 //
-// Collection. Every call that can block, connect, execute, cancel, finish,
+// Collection. Every call that can block (connect, execute, cancel, finish)
 // runs in a GC-free zone, so a query waiting on the server does not hold up
 // a collection on any other thread. Inside a zone nothing may touch the GC
 // heap, which is why each entry point copies its Haxe inputs into native
@@ -227,11 +225,10 @@ namespace {
 	}
 
 	// Where libpq is looked for after the paths the caller gave. On macOS it
-	// is libpq.5.dylib, and looked for only as libpq.so it was never found:
-	// by name, where dyld looks by itself, then where Homebrew (Apple
-	// silicon, then Intel) and Postgres.app keep it. PostgresConnection
-	// gives these and more already; they are here for a caller that gives
-	// nothing.
+	// is libpq.5.dylib: by name, where dyld looks by itself, then where
+	// Homebrew (Apple silicon, then Intel) and Postgres.app keep it.
+	// PostgresConnection gives these and more already; they are here for a
+	// caller that gives nothing.
 	std::vector<std::string> defaultCandidates() {
 		std::vector<std::string> out;
 #if defined(_WIN32)
@@ -284,10 +281,9 @@ namespace {
 	}
 
 	// The count PQcmdTuples gives as decimal digits: rows changed by a write,
-	// or returned by a SELECT, 64 bits since PostgreSQL 14. Read whole,
-	// atoi kept 32 bits, so a write of three billion rows read 2147483647
-	// with MSVC and a negative number with glibc, and saturating, never
-	// wrapping, should it ever be longer.
+	// or returned by a SELECT, 64 bits since PostgreSQL 14. Read whole
+	// (atoi would keep 32 bits), and saturating, never wrapping, should it
+	// ever be longer.
 	unsigned long long parseAffectedRows(const LibPQApi* api, PGresult* result) {
 		const char* raw = api->PQcmdTuples(result);
 		unsigned long long value = 0;
@@ -532,8 +528,7 @@ void* crossbyte_postgres_open(::String conninfo, Array< ::String > libraryPaths)
 		}
 	}
 
-	// Each once: the caller's list holds most of these already, and a failed
-	// open named every one of them twice.
+	// Each once: the caller's list holds most of these already.
 	std::vector<std::string> defaults = defaultCandidates();
 
 	for (size_t i = 0; i < defaults.size(); ++i) {
@@ -628,7 +623,7 @@ Array<unsigned char> crossbyte_postgres_request_block(void* handle, ::String sql
 
 	{
 		hx::AutoGCFreeZone zone;
-		// PQexec, as request() has always run: text that holds several
+		// PQexec, as request() runs: text that holds several
 		// statements runs them all, where PQexecParams takes one.
 		result = api->PQexec(h->conn, text.c_str());
 
@@ -712,10 +707,9 @@ Array<unsigned char> crossbyte_postgres_request_params(void* handle, ::String sq
 	std::string out;
 	out.resize(raw.size() * 2 + 1);
 	int error = 0;
-	// On an encoding error libpq still writes an escaped string, the server
-	// then rejects it as malformed, so that is what is returned. This used to
-	// hand back the value unescaped instead, which is the one answer an escape
-	// function must never give.
+	// On an encoding error libpq still writes an escaped string (the server
+	// then rejects it as malformed), so that is what is returned, never the
+	// value unescaped.
 	size_t written = h->api->PQescapeStringConn(h->conn, &out[0], raw.c_str(), raw.size(), &error);
 	out.resize(written);
 	return toHaxe(out);

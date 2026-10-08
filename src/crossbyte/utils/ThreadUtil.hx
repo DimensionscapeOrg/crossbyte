@@ -11,10 +11,9 @@ class ThreadUtil {
 	/**
 		`true` when called from the primordial/runtime-owning thread.
 
-		Decided by the thread itself on every threaded target. It asked the
-		runtime off native, and the runtime answered the primordial one on
-		every thread there, so this was true on every thread of the jvm, the
-		interpreter, hl and neko.
+		Decided by the thread itself on every threaded target, rather than
+		asked of the runtime, which off native answers the primordial one on
+		every thread.
 	**/
 	public static var isPrimordial(get, never):Bool;
 

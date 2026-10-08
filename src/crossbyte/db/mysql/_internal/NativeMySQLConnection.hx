@@ -18,9 +18,9 @@ class NativeMySQLConnection implements Connection {
 
 	/**
 		Connects, and selects `database` when one is given. Throws a
-		`MySQLError` carrying the error number and SQLSTATE, 1045 for a
+		`MySQLError` carrying the error number and SQLSTATE (1045 for a
 		refused login, 1049 for an unknown database, 2003 for a server that
-		could not be reached. A connection that fails at either step is
+		could not be reached). A connection that fails at either step is
 		closed before the error leaves, rather than left for the collector.
 	**/
 	public static function connect(params:Dynamic, database:String):NativeMySQLConnection {
@@ -126,8 +126,7 @@ class NativeMySQLConnection implements Connection {
 
 	/**
 		From the OK packet the last statement was answered with, where it
-		came free: this was a `SELECT LAST_INSERT_ID()`, a round trip each
-		time it was read.
+		comes free, with no round trip.
 	**/
 	public function lastInsertId():Int {
 		var id:Dynamic = insertId;

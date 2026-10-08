@@ -94,9 +94,8 @@ class Aead {
 	 *
 	 * @return The plaintext, or `null` when authentication fails. Malformed
 	 * nonce/key lengths throw.
-	 * @throws IllegalOperationError On a target other than native cpp. It
-	 *         answered `null` there, which is the answer for a forged message:
-	 *         every message was refused, genuine ones included.
+	 * @throws IllegalOperationError On a target other than native cpp, rather
+	 *         than answering `null`, the answer for a forged message.
 	 */
 	public static function decrypt(ciphertext:Bytes, nonce:Bytes, key:Bytes, ?associatedData:Bytes):Null<Bytes> {
 		#if cpp

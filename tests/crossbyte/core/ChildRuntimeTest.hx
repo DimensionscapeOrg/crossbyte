@@ -27,8 +27,8 @@ class ChildRuntimeTest extends utest.Test {
 	}
 
 	public function testATimerArmedAfterMakeRunsOnTheThreadThatArmedIt():Void {
-		// The auditor's case: a heartbeat armed on the main thread after a
-		// simulation thread was started ran on the simulation's thread.
+		// A heartbeat armed on the main thread after a simulation thread has
+		// started runs on the main thread, not on the simulation's.
 		var runtime = CrossByte.current();
 		var here = new Tls<Bool>();
 		here.value = true;
@@ -69,9 +69,9 @@ class ChildRuntimeTest extends utest.Test {
 	}
 
 	public function testChildrenExitWithTheRuntimeThatMadeThem():Void {
-		// On the primordial runtime this is what ends the process: a child
-		// used to keep running, and the process waiting on its thread, after
-		// the primordial runtime had exited.
+		// On the primordial runtime this is what ends the process: a child must
+		// not keep running, with the process waiting on its thread, after the
+		// primordial runtime has exited.
 		var parent = new CrossByte(false, DEFAULT, true);
 		var exited = new Lock();
 		var child = CrossByte.make(DEFAULT, HEAP, configured -> configured.addEventListener(Event.EXIT, _ -> exited.release()));
@@ -103,9 +103,9 @@ class ChildRuntimeTest extends utest.Test {
 
 	/**
 		A `CUSTOM` loop body runs its runtime by calling `pump`: what was
-		posted, the timers, the tick and the sockets. `pump` refused every
-		runtime but a host-driven one, and everything else that does a frame's
-		work is private, so a custom loop body could run nothing but itself.
+		posted, the timers, the tick and the sockets. Everything else that does
+		a frame's work is private, so `pump` has to accept a custom runtime, not
+		only a host-driven one, or a custom loop body could run nothing but itself.
 	**/
 	public function testACustomLoopRunsItsRuntimeThroughPump():Void {
 		var finished = new Lock();
@@ -229,14 +229,14 @@ class ChildRuntimeTest extends utest.Test {
 	#if js
 	/**
 		On JavaScript a child made once the program is running runs. Its loop
-		was handed to `haxe.EntryPoint`, which runs what it is given only
-		while its own loop goes on, on Node, until the program has started,
-		so a child made later never started: no INIT and no tick, ever.
+		is not left to `haxe.EntryPoint`, which runs what it is given only while
+		its own loop goes on (on Node, until the program has started), so a child
+		made later still gets its INIT and its ticks.
 	**/
 	@:timeout(5000)
 	public function testAChildMadeOnceRunningRuns(async:utest.Async):Void {
 		// From a later turn: one made while main() runs is started with the
-		// program, and always was.
+		// program.
 		__waitThen(() -> true, () -> {
 			var inits = 0;
 			var ticks = 0;
@@ -260,11 +260,11 @@ class ChildRuntimeTest extends utest.Test {
 
 	/**
 		A child's timers are its own, and the program's stay the program's.
-		There is one thread here, and the child's loop bound `crossbyte.Timer`
-		to itself as it started and never gave it back: a timer the program
-		armed afterwards ran on the child's scheduler, and never at all once
-		the child had exited. Now the child has them only while its own work
-		runs, its INIT, ticks and timers, and `CrossByte.current()` is the
+		There is one thread here, so the child's loop must not keep
+		`crossbyte.Timer` bound to itself once it has started: a timer the
+		program arms afterwards runs on the program's scheduler, and still runs
+		once the child has exited. The child has the timers only while its own
+		work runs (its INIT, ticks and timers), and `CrossByte.current()` is the
 		child then too, as it is on a child's own thread elsewhere.
 	**/
 	@:timeout(5000)

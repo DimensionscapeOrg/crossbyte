@@ -19,9 +19,9 @@ import crossbyte.crypto._internal.NativeOnly;
  *
  * `PublicKeySignature.sign` and `verify` take PEM text and parse it on every
  * call, which is right for a key used once. A key used for every token a
- * service issues or checks belongs here: parsing it each time left another
- * copy of a private key in freed memory per signature, and rebuilt an EC key's
- * precomputed tables per operation.
+ * service issues or checks belongs here: parsing it each time would leave
+ * another copy of a private key in freed memory per signature, and rebuild
+ * an EC key's precomputed tables per operation.
  *
  * ```haxe
  * var key = SignatureKey.fromPrivatePem(pem);
@@ -97,8 +97,7 @@ class SignatureKey {
 		#if cpp
 		// Hashed by HmacSha256's SHA-256, which works on the bytes as words in
 		// place: haxe.crypto.Sha256 builds an array of the whole message
-		// first, and took 4.9 microseconds for a JWT's 295-byte signing input
-		// where this takes 1.7.
+		// first, and takes about three times as long for a JWT's signing input.
 		var hash:Bytes = HmacSha256.sha256(message);
 		// Comfortably above the largest signature mbedTLS will emit for the key
 		// sizes this API handles.

@@ -89,12 +89,9 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 	 * - `true` becomes `1`, `false` becomes `0`.
 	 * - `null` converts to `0`.
 	 *
-	 * A string or a Float whose value is not an `Int`, too large, too
-	 * small, not a number, throws, as anything else that cannot be
-	 * converted does. Both went through `Std.parseInt` and `Std.int`, which
-	 * answer differently on each target: "4294967396" was null on eval, that
-	 * number on Node and a thrown `NumberFormatException` on the jvm, and the
-	 * Float 3e9 was 2147483647 on the jvm and -1294967296 elsewhere.
+	 * A string or a Float whose value is not an `Int` (too large, too small,
+	 * not a number) throws on every target, as anything else that cannot be
+	 * converted does.
 	 *
 	 * @return The integer representation of the primitive.
 	 * @throws If conversion is not possible.

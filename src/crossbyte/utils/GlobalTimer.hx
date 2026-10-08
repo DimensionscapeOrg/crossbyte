@@ -11,10 +11,9 @@ import sys.thread.Mutex;
 	Process-level timeout and interval helpers backed by the primordial runtime.
 
 	Safe to call from any thread. The ids and the map behind them are kept
-	under a lock wherever there are threads; it was taken only on hxcpp, so on
-	the jvm four threads setting and clearing timers were issued 498 ids
-	twice, left 264 entries behind, and a `clearTimeout` could stop another
-	thread's timer.
+	under a lock wherever there are threads, so threads setting and
+	clearing timers at once are never issued one id twice, and a
+	`clearTimeout` never stops another thread's timer.
 **/
 final class GlobalTimer {
 	@:noCompletion private static var __lastTimerID:UInt = 0;
@@ -181,8 +180,8 @@ final class GlobalTimer {
 		var id:UInt = 0;
 		__lock();
 		// The counter wraps after 2^32 timers. Taking an id still in use
-		// replaced that timer in the map, where clearInterval could no
-		// longer reach it, so ids in use, and 0, are skipped.
+		// would replace that timer in the map, where clearInterval could no
+		// longer reach it, so ids in use (and 0) are skipped.
 		do {
 			id = ++__lastTimerID;
 			if (id == 0) {

@@ -131,7 +131,7 @@ class RPCEnumTest extends utest.Test {
 	}
 
 	public function testAnEnumOfOtherConstructorsIsAnotherMethod():Void {
-		// Another list of constructors, one more, at the end, is another
+		// Another list of constructors (one more, at the end) is another
 		// op, answered as a method not there, rather than an index read
 		// against the other list.
 		var link = LinkedConnection.pair();

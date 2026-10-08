@@ -11,14 +11,13 @@ import sys.thread.Thread;
 	it on its own.
 
 	Every thread that hands a runtime something wakes it: a post, an
-	`exit()`, a parent exiting its children as it exits, and that runtime
+	`exit()`, a parent exiting its children as it exits; and that runtime
 	may be exiting at that moment, closing its wake socket on its own
-	thread. The wake checked whether the socket was closed and then wrote to
-	it, unsynchronised, so a close between the two left the write going to a
+	thread. Checking whether the socket is closed and then writing to it,
+	unsynchronised, a close between the two would leave the write going to a
 	closed descriptor: on the interpreter an error no `catch` can see, which
-	ended the process (a server's runtimes being exited together found it),
-	and natively a descriptor the system may already have given another
-	socket.
+	ends the process, and natively a descriptor the system may already have
+	given another socket.
 **/
 @:access(crossbyte._internal.socket.poll.WakeSocket)
 class WakeSocketTest extends utest.Test {
@@ -43,10 +42,9 @@ class WakeSocketTest extends utest.Test {
 				try {
 					while (!stop) {
 						waker.wake();
-						// Once closed a wake makes no system call, and a thread
-						// spinning in nothing else holds the interpreter's
-						// runtime lock: the closing thread, back from its
-						// sleep, waited for it for good (alone, 3 runs of 3).
+						// Once closed a wake makes no system call, and a thread spinning in
+						// nothing else holds the interpreter's runtime lock: the closing
+						// thread, back from its sleep, would wait for it for good.
 						if (waker.registryClosed) {
 							crossbyte.sys.System.sleep(0.0001);
 						}

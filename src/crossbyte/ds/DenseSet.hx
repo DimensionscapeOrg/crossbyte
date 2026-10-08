@@ -14,10 +14,8 @@ import haxe.ds.Map;
  *
  * **Removing while iterating.** Removing the element a loop is on is safe:
  * the element moved into its place is visited next, and every other one
- * once. The loop walked the array itself, so the moved element was skipped,
- * four of six visited when every even one was removed. Removing an
- * element the loop has already passed moves one it has not reached behind
- * it, which is then skipped.
+ * once. Removing an element the loop has already passed moves one it has
+ * not reached behind it, which is then skipped.
  *
  * @param K The element type. Keys are compared using `Map` semantics.
  */

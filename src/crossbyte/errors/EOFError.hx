@@ -19,9 +19,8 @@ class EOFError extends IOError {
 			   default, gives Flash's number for this error, 2030.
 	**/
 	public function new(message:String = null, id:Int = 0) {
-		// Both used to be replaced whatever was passed, so a reader's account
-		// of what ran out, "Asked for 8 bytes with 3 left in the file",
-		// reached nobody.
+		// Either is kept as given, so a reader's account of what ran out
+		// ("Asked for 8 bytes with 3 left in the file") reaches the caller.
 		super(message == null || message == "" ? "End of file was encountered" : message);
 
 		name = "EOFError";

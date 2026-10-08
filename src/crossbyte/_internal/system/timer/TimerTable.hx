@@ -7,15 +7,14 @@ import haxe.ds.Vector;
 	table kept no more than half full, a collision taking the next free place.
 
 	A handle's home is its Fibonacci hash, the top bits of it times 2^32 over
-	the golden ratio. Its low bits were the home at first, and handles are
-	counted, so long-lived timers armed together sat in one solid run of
-	places, and every handle the count later brought home inside the run was
-	placed, found and removed by walking it: with 10,000 such timers alive,
-	arming and clearing one took 2.6 microseconds where it had taken 0.11.
-	Hashed, consecutive handles land spread across the table.
+	the golden ratio, so consecutive handles land spread across the table.
+	Handles are counted, so with the low bits as the home, long-lived timers
+	armed together would sit in one solid run of places, and every handle the
+	count later brought home inside the run would be placed, found and
+	removed by walking it.
 
 	Nothing here allocates but growth, which doubles the table: a lookup is
-	a read or two, as the slot array it replaces was, and a removal pulls the
+	a read or two, and a removal pulls the
 	entries after it back over the hole rather than leaving a marker, so a
 	table that churns does not fill up with them.
 **/

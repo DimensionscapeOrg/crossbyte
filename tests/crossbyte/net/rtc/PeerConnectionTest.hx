@@ -21,7 +21,7 @@ import utest.Assert;
 	only ever sees `PeerConnection` and `DataChannel` gets a working connection
 	out of the pieces.
 
-	Loopback, so nothing here crosses a NAT, the punching was proven where a
+	Loopback, so nothing here crosses a NAT: the punching was proven where a
 	fake network could be built. This is the plumbing test, and the closest an
 	automated suite can get to the browser test that still waits on a browser.
 **/
@@ -105,9 +105,9 @@ class PeerConnectionTest extends utest.Test {
 		A peer that closes its connection is heard at once, and so are the
 		channels on it.
 
-		`close()` sent nothing, and an ABORT or close_notify arriving from the
-		peer was swallowed below this class, there was no event to deliver
-		it to. So a departed peer was noticed, if at all, by ICE consent thirty
+		`close()` sends an ABORT and a close_notify, and an ABORT or
+		close_notify arriving from the peer reaches this class. Without them a
+		departed peer would be noticed, if at all, by ICE consent thirty
 		seconds later, with channels reporting themselves open the whole time.
 		The five seconds allowed here are a sixth of that.
 	**/
@@ -179,8 +179,7 @@ class PeerConnectionTest extends utest.Test {
 	/**
 		What is sent just before `close()`, in the same pass, arrives ahead of
 		the close. A pass's messages wait for the pass to end, to share
-		packets; a close in the pass sends them first, as each went at once
-		before they waited.
+		packets; a close in the pass sends them first.
 	**/
 	public function testWhatIsSentJustBeforeClosingArrives():Void {
 		if (unsupported()) return;
@@ -238,7 +237,7 @@ class PeerConnectionTest extends utest.Test {
 		A peer whose DTLS session ends is heard even with no ABORT before it.
 
 		The close_notify on its own, as a peer that tears down the session
-		without the association inside it sends it, and a fatal alert takes
+		without the association inside it sends it; and a fatal alert takes
 		the same path.
 	**/
 	public function testAPeerThatEndsOnlyItsDtlsSessionIsReported():Void {
@@ -286,10 +285,10 @@ class PeerConnectionTest extends utest.Test {
 	/**
 		Closing closes the channels, settles what was waiting, and says why.
 
-		`close()` left every channel open with `onClose` never run, and a
-		channel still waiting for its acknowledgement left `opened` pending,
-		an application had to walk its own list of channels and close each by
-		hand to find out it was finished with them.
+		`close()` closes every channel and runs `onClose`, and a channel still
+		waiting for its acknowledgement has `opened` settled, so an application
+		need not walk its own list of channels and close each by hand to find
+		out it was finished with them.
 	**/
 	public function testClosingClosesEveryChannel():Void {
 		if (unsupported()) return;
@@ -347,13 +346,11 @@ class PeerConnectionTest extends utest.Test {
 	/**
 		Candidates trickle both ways, with none in either description.
 
-		Trickle ICE was left to the application: nothing announced a candidate
-		as the connection gained one, the reader for a trickled line was
-		private, and the only way to hand a peer's candidate in was through
-		`agent`, documented as being for inspection. Here each peer's
-		description goes out empty, the way a trickling application sends it,
-		and every candidate crosses as a line afterwards, so the connection
-		comes up on trickled candidates or not at all.
+		Here each peer's description goes out empty, the way a trickling
+		application sends it, and every candidate crosses as a line afterwards,
+		announced as the connection gains it and handed in through the
+		connection rather than its `agent`, which is for inspection: so the
+		connection comes up on trickled candidates or not at all.
 	**/
 	public function testCandidatesTrickleBothWays():Void {
 		if (unsupported()) return;
@@ -411,11 +408,11 @@ class PeerConnectionTest extends utest.Test {
 		The session goes where the agent's selected pair goes.
 
 		When the controlling peer nominates another pair the agent follows it,
-		and the DTLS records carrying every channel have to follow too: they
-		were sent to the address the path was first found on, for as long as
-		the connection lasted. The agent's decision is made directly here,
-		`IceAgentTest` covers how it gets there, and what is watched is where
-		the next record lands.
+		and the DTLS records carrying every channel have to follow too, not go
+		on to the address the path was first found on for as long as the
+		connection lasts. The agent's decision is made directly here
+		(`IceAgentTest` covers how it gets there), and what is watched is
+		where the next record lands.
 	**/
 	public function testTheSessionFollowsTheSelectedPair():Void {
 		if (unsupported()) return;
@@ -479,12 +476,12 @@ class PeerConnectionTest extends utest.Test {
 		An ICE restart finds the path afresh, and the session carries on.
 
 		What a browser whose network changed does: new credentials, in a new
-		offer. They were dropped, `IceAgent.start` does nothing once an agent
-		has left NEW, so every check sent afterwards was signed with
-		credentials the peer had discarded, consent ran out half a minute
-		later, and the connection died with its channels. Now a new agent
-		checks with the new credentials while the session carries on over the
-		old path, and takes it over once it has one of its own.
+		offer. `IceAgent.start` does nothing once an agent has left NEW, so a
+		new agent checks with the new credentials while the session carries
+		on over the old path, and takes it over once it has one of its own.
+		Dropped, the credentials would leave every check signed with
+		credentials the peer had discarded, consent would run out half a
+		minute later, and the connection would die with its channels.
 	**/
 	public function testAnIceRestartKeepsTheSession():Void {
 		if (unsupported()) return;
@@ -628,10 +625,10 @@ class PeerConnectionTest extends utest.Test {
 	/**
 		A restart toward a peer that has gone ends the connection.
 
-		While a restart was under way, consent lost on the old path closed
-		nothing, the restart's agent was to decide, and that agent, still
-		waiting for the peer's answer to the offer, was never started and had
-		no deadline. So `restartIce()` toward a peer whose tab had closed held
+		While a restart is under way, consent lost on the old path must still
+		close something: the restart's agent, still waiting for the peer's
+		answer to the offer, is not started and has no deadline of its own, so
+		`restartIce()` toward a peer whose tab had closed would otherwise hold
 		the connection open for good.
 	**/
 	public function testARestartTowardAPeerThatHasGoneEndsTheConnection():Void {
@@ -686,9 +683,9 @@ class PeerConnectionTest extends utest.Test {
 		A restart the peer never answers is given up, and the connection goes
 		on over the path it had.
 
-		Nothing ended one: `iceRestarting` stayed true, a second `restartIce()`
-		returned at once as already under way, and `description()` went on
-		offering credentials no agent checked with.
+		Something has to end one: otherwise `iceRestarting` would stay true, a
+		second `restartIce()` would return at once as already under way, and
+		`description()` would go on offering credentials no agent checked with.
 	**/
 	public function testARestartThePeerNeverAnswersIsGivenUp():Void {
 		if (unsupported()) return;
@@ -780,10 +777,10 @@ class PeerConnectionTest extends utest.Test {
 	/**
 		A channel refuses a message larger than the peer said it takes.
 
-		RFC 8841's max-message-size was written into every description and
-		read out of none, so a message past the peer's limit went out and was
-		dropped at the other end after being acknowledged, a send that
-		succeeded and a message that never arrived.
+		RFC 8841's max-message-size is read out of the peer's description as
+		well as written into this one: a message past the peer's limit would
+		otherwise go out and be dropped at the other end after being
+		acknowledged, a send that succeeded and a message that never arrived.
 	**/
 	public function testAChannelRefusesAMessageLargerThanThePeerTakes():Void {
 		if (unsupported()) return;
@@ -848,10 +845,10 @@ class PeerConnectionTest extends utest.Test {
 
 		The peer here answers connectivity checks and then nothing: its
 		description says it will open the DTLS handshake, and it never does.
-		As the DTLS server this end waited for a ClientHello with no timer
-		running, for as long as the process lived, which is exactly what a
-		browser tab closed straight after ICE leaves behind, holding a socket,
-		a tick listener and a TLS session.
+		As the DTLS server this end would wait for a ClientHello with no timer
+		running, for as long as the process lived: exactly what a browser tab
+		closed straight after ICE leaves behind, holding a socket, a tick
+		listener and a TLS session.
 	**/
 	public function testAConnectionThatCannotFinishGivesUp():Void {
 		if (unsupported()) return;
@@ -891,8 +888,8 @@ class PeerConnectionTest extends utest.Test {
 
 	/**
 		A `readyTimeout` of 0 is no deadline, as every other timeout here
-		reads 0. It was read as a deadline already past, so the connection
-		failed at the first poll after `connect`.
+		reads 0, not a deadline already past that would fail the connection at
+		the first poll after `connect`.
 	**/
 	public function testAReadyTimeoutOfZeroIsNoDeadline():Void {
 		if (unsupported()) return;
@@ -954,8 +951,8 @@ class PeerConnectionTest extends utest.Test {
 			alice.readyTimeout = 0;
 			alice.restartIce();
 
-			// The offer never reaches Bob. A deadline of 0 used to give the
-			// restart up at the first poll.
+			// The offer never reaches Bob. A deadline of 0 read as one already
+			// past would give the restart up at the first poll.
 			pumpUntil(() -> !alice.iceRestarting, 1.5);
 
 			Assert.isTrue(alice.iceRestarting, "a restart given no deadline was given up");
@@ -970,9 +967,9 @@ class PeerConnectionTest extends utest.Test {
 
 	/**
 		A `readyTimeout` that is not a number of seconds is refused, and the
-		one it had stays. NaN compared false with every elapsed time, so
-		its deadline never came; a negative one failed every connection at
-		once.
+		one it had stays: NaN compares false with every elapsed time, so its
+		deadline would never come, and a negative one would fail every
+		connection at once.
 	**/
 	public function testAReadyTimeoutThatIsNotANumberOfSecondsIsRefused():Void {
 		if (unsupported()) return;
@@ -1055,9 +1052,9 @@ class PeerConnectionTest extends utest.Test {
 	/**
 		Consent lost before the connection is ready ends it.
 
-		Consent was checked only once everything above ICE was up, so a peer
-		that vanished during the DTLS handshake or the SCTP one was ignored,
-		and neither of those would ever finish.
+		Consent is checked before everything above ICE is up too, or a peer
+		that vanished during the DTLS handshake or the SCTP one would be
+		ignored, and neither of those would ever finish.
 	**/
 	public function testLosingConsentBeforeReadyEndsTheConnection():Void {
 		if (unsupported()) return;
@@ -1175,8 +1172,8 @@ class PeerConnectionTest extends utest.Test {
 		The security capstone: a peer presenting a certificate that is not the
 		one it signalled is refused, after a handshake that succeeded.
 
-		Everything below works perfectly in this test, the path is found, the
-		DTLS handshake completes, and the connection still must not come up,
+		Everything below works perfectly in this test (the path is found, the
+		DTLS handshake completes), and the connection still must not come up,
 		because the certificate is not the one signalling promised. This is the
 		difference between a session encrypted against eavesdroppers and one
 		encrypted against the wrong peer entirely.
@@ -1229,10 +1226,11 @@ class PeerConnectionTest extends utest.Test {
 		time. One bit cannot hold both.
 
 		This drives the answering side exactly as the interop peer does and
-		checks it lands on that combination. Before the roles were separated it
-		took the ICE role for both, so it declined to send the ClientHello a
-		browser was waiting for, and would have declined to open the SCTP
-		association even if the handshake had somehow completed.
+		This drives the answering side exactly as the interop peer does and
+		checks it lands on that combination. Taking the ICE role for both, it
+		would decline to send the ClientHello a browser was waiting for, and
+		would decline to open the SCTP association even if the handshake had
+		somehow completed.
 	**/
 	public function testAnAnswererIsIceControlledAndTheDtlsClient():Void {
 		if (unsupported()) return;
@@ -1331,12 +1329,13 @@ class PeerConnectionTest extends utest.Test {
 	/**
 		A description it cannot use is refused before the agent is touched.
 
-		connect() added every candidate and then built the IceCredentials, which
-		validates the fragment and the password. A description that failed that
-		therefore threw halfway: the candidates were in, agent.start was never
-		reached, and the connection was left configured for something that could
-		never be started. Failing first costs nothing and leaves the object as it
-		was, so a caller can try a corrected description on it.
+		The description is checked before anything is added: adding every
+		candidate and then building the IceCredentials, which validates the
+		fragment and the password, would throw halfway for a description that
+		failed, with the candidates in and agent.start never reached, leaving
+		the connection configured for something that could never be started.
+		Failing first costs nothing and leaves the object as it was, so a
+		caller can try a corrected description on it.
 	**/
 	public function testADescriptionItCannotUseLeavesTheAgentAlone():Void {
 		if (unsupported()) return;
@@ -1375,7 +1374,7 @@ class PeerConnectionTest extends utest.Test {
 	/**
 		The description carries everything the peer needs and nothing secret.
 
-		The ICE password crosses signalling by design, it authenticates checks
+		The ICE password crosses signalling by design: it authenticates checks
 		on a path that does not exist yet, so it has nowhere else to go. The
 		DTLS private key must not: it never leaves the machine, and a
 		description that included it would be publishing the session's whole
@@ -1437,12 +1436,12 @@ class PeerConnectionTest extends utest.Test {
 	/**
 		Closing before the connection comes up tells whoever was waiting.
 
-		close() settled the reflexive and relayed futures with a reason, and said
-		why in a comment, leaving one forever pending is worse than saying what
-		happened, and then left `ready` pending. Those two only exist when the
-		caller asked for them, so the gap was invisible unless someone awaited the
-		connection itself and then closed it, after which neither handler could
-		ever run.
+		close() settles the reflexive and relayed futures with a reason, since
+		leaving one forever pending is worse than saying what happened, and
+		`ready` with them. Those two exist only when the caller asked for
+		them, so a gap in `ready` would be invisible unless someone awaited
+		the connection itself and then closed it, after which neither handler
+		could ever run.
 	**/
 	public function testClosingBeforeReadyTellsWhoeverWasWaiting():Void {
 		if (unsupported()) return;
@@ -1461,12 +1460,12 @@ class PeerConnectionTest extends utest.Test {
 	/**
 		One unusable candidate does not abort the whole connection.
 
-		The candidates come from the peer. Building each one validates its port
-		and component, and the loop in connect() did not guard that, so a
-		description carrying a single bad candidate threw part-way through:
-		some candidates added, the rest dropped, and agent.start never reached.
-		The connection could then never come up, and the throw surfaced in the
-		application that merely relayed the description.
+		The candidates come from the peer. Building each one validates its
+		port and component, and connect() guards each: unguarded, a
+		description carrying a single bad candidate would throw part-way
+		through, with some candidates added, the rest dropped, and agent.start
+		never reached. The connection could then never come up, and the throw
+		would surface in the application that merely relayed the description.
 	**/
 	public function testOneUnusableCandidateDoesNotAbortTheConnection():Void {
 		if (unsupported()) return;
@@ -1505,7 +1504,7 @@ class PeerConnectionTest extends utest.Test {
 
 	It answers connectivity checks, so the path is found, and its description
 	claims the DTLS client role, so the other end waits for a ClientHello that
-	never comes, the shape a browser tab closed straight after ICE leaves.
+	never comes: the shape a browser tab closed straight after ICE leaves.
 **/
 private class IceOnlyPeer {
 	public var agent(default, null):IceAgent;

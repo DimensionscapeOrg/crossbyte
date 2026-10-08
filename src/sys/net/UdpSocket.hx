@@ -23,9 +23,9 @@
 package sys.net;
 
 // Each target's standard implementation, where this module replaces it. hl
-// and neko had none here and got the throwing class at the bottom, so
-// `new UdpSocket()` threw "Not available on this platform" on two targets
-// whose standard library has UDP. IPv4 only, as their natives are.
+// and neko have a branch each, since the throwing class at the bottom would
+// have `new UdpSocket()` throw "Not available on this platform" on two
+// targets whose standard library has UDP. IPv4 only, as their natives are.
 #if hl
 
 import haxe.io.Error;
@@ -212,8 +212,8 @@ class UdpSocket extends Socket {
 	/**
 		`readFrom` without an exception for "would block": -1 when no datagram
 		is waiting, which a non-blocking receiver meets at the end of every
-		pass. That was a native throw caught here and thrown again as
-		`Blocked`: 4.3 us of a datagram's 13.
+		pass, rather than a native throw caught here and thrown again as
+		`Blocked` (4.3 us of a datagram's 13).
 	**/
 	@:noCompletion private function __tryReadFrom(buf:haxe.io.Bytes, pos:Int, len:Int, addr:Address):Int {
 		return try {
@@ -307,11 +307,11 @@ class UdpSocket extends Socket {
 		non-blocking receiver for 2.4 us, a quarter of a datagram's cost here.
 	**/
 	@:noCompletion private function __tryReadFrom(buf:haxe.io.Bytes, pos:Int, len:Int, addr:Address):Int {
-		// Straight into the caller's buffer. A new buffer of `len` bytes was
-		// allocated, and zeroed, for every datagram, 64 KB for each of a
-		// DatagramSocket's reads, and the datagram then copied out of it.
+		// Straight into the caller's buffer, rather than a new buffer of `len`
+		// bytes allocated (and zeroed) for every datagram, 64 KB for each of
+		// a DatagramSocket's reads, and the datagram then copied out of it.
 		// Through a view of that buffer kept for the next read into it: a
-		// view made for each read was 48 bytes a datagram.
+		// view made for each read would be 48 bytes a datagram.
 		var data = buf.getData();
 		var bb:ByteBuffer = __readView;
 		if (bb == null || __readArray != data) {
@@ -339,8 +339,8 @@ class UdpSocket extends Socket {
 			throw OutsideBounds;
 		var target:SocketAddress = cast __socketAddressOf(addr);
 		// Copied into a direct buffer this socket keeps, which the channel
-		// sends from as it is. A view of the caller's array was 48 bytes a
-		// datagram, and the channel copied a heap buffer into a direct one
+		// sends from as it is. A view of the caller's array would be 48 bytes a
+		// datagram, and the channel copies a heap buffer into a direct one
 		// of its own anyway: one copy either way. Sized to the largest
 		// datagram sent so far, so a socket sending small ones holds little.
 		var bb:ByteBuffer = __sendStage;
@@ -377,11 +377,11 @@ class UdpSocket extends Socket {
 	private var __lastIpv6:haxe.io.BytesData = null;
 
 	/**
-		The jvm's form of `addr`, kept with `addr` for the next send to it,
-		a reliable session keeps its peer's Address, a DatagramSocket the last
-		one it sent to, and made again when what it was made from changes:
+		The jvm's form of `addr`, kept with `addr` for the next send to it
+		(a reliable session keeps its peer's Address, a DatagramSocket the last
+		one it sent to), and made again when what it was made from changes:
 		compared by value, host, port and IPv6 bytes, since an Address is
-		mutable. Made for every datagram, it was an `InetSocketAddress`, an
+		mutable. Made for every datagram, it would be an `InetSocketAddress`, an
 		`InetAddress`, their holders and the address's bytes: 120 bytes a
 		datagram.
 	**/
@@ -451,8 +451,8 @@ class UdpSocket extends Socket {
 		Populates the crossbyte Address from the source InetSocketAddress:
 		from what the last datagram's read as when it came from the same
 		sender (the channel hands over the same object then), and otherwise
-		without copying an IPv4 address's bytes out, `getAddress()` makes a
-		new array each time it is asked, which was every datagram.
+		without copying an IPv4 address's bytes out: `getAddress()` makes a
+		new array each time it is asked.
 	**/
 	private function __fromSocketAddress(addr:Address, isa:InetSocketAddress):Void {
 		addr.port = isa.getPort();

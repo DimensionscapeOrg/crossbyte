@@ -13,11 +13,12 @@ import utest.Async;
 	How a connection's end is seen: once, whatever ends it, and the same way
 	on every target.
 
-	Natively a peer that connected and hung up within a tick, a load
-	balancer's health check, was announced closed twice, so a count of live
-	connections drifted down by one for each. On Node a peer that left left
-	its socket connected and flushed from every tick forever, and a peer that
-	half-closed to end its request was cut off before it got its answer.
+	A peer that connects and hangs up within a tick (a load balancer's
+	health check) is announced closed once, not twice, or a count of live
+	connections would drift down by one for each. On Node a peer that
+	leaves takes its socket out of the ticks, rather than leaving it
+	connected and flushed from every tick for ever, and a peer that
+	half-closes to end its request still gets its answer.
 **/
 @:access(crossbyte.core.CrossByte)
 @:access(crossbyte.events.EventDispatcher)
@@ -141,10 +142,9 @@ class SocketCloseTest extends utest.Test {
 		An idle connection costs a Node runtime nothing a tick, and what is
 		written to it without a flush still goes.
 
-		Every Node socket was ticked for as long as it was open, to flush what
-		had been written: a visit a tick for each connection, idle or not. A
-		write now asks for a flush at the end of the pass, and a socket is
-		ticked only while a streaming writer is feeding it.
+		A write asks for a flush at the end of the pass, and a socket is
+		ticked only while a streaming writer is feeding it, rather than every
+		socket being visited every tick for as long as it is open.
 	**/
 	@:timeout(15000)
 	public function testAnIdleNodeConnectionIsNotTicked(async:Async):Void {

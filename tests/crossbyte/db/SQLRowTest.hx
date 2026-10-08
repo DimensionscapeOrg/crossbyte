@@ -16,7 +16,7 @@ import crossbyte.db.postgres.PostgresStatement;
 
 /**
 	Rows read by column (`SQLRow`, `executeEach`), the result block both of
-	Postgres's request paths now share, statement texts split once at their
+	Postgres's request paths share, statement texts split once at their
 	placeholders, and `SQLValue` parameters on MySQL and Postgres. SQLite's
 	are in SQLiteBindingTest, natively.
 **/
@@ -48,7 +48,7 @@ class SQLRowTest extends utest.Test {
 		Assert.equals("", decoded.rows[1].d);
 
 		var raw:PostgresRawResult = PostgresWire.decodeResult(block);
-		// A class, where it was an anonymous structure.
+		// A class, not an anonymous structure.
 		Assert.isTrue(Std.isOfType(raw, PostgresRawResult));
 		Assert.equals("SELECT 2", raw.command);
 		Assert.equals("x", raw.rows[1][0].toString());
@@ -113,7 +113,7 @@ class SQLRowTest extends utest.Test {
 
 	@:access(crossbyte.db.postgres.PostgresStatement)
 	public function testPostgresParametersAreWrittenAsTheirTypes():Void {
-		// Parameters were strings only: an Int, Bytes or a Date did not compile.
+		// Parameters of every type: an Int, Bytes or a Date compiles.
 		var statement:PostgresStatement = new PostgresStatement();
 		var values:Array<SQLValue> = [7, 1.5, true, haxe.Int64.parseString("9007199254740993"), Bytes.ofHex("00ff"), Date.fromTime(1790685296250.0),
 			"it's", null, Math.NaN];

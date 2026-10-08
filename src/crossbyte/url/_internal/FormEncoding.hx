@@ -5,22 +5,22 @@ import crossbyte.url.URLVariables;
 /**
 	`URLRequest.data` as a form, the one way every client encodes it.
 
-	A `URLVariables` is encoded as itself, and any other object, an
-	anonymous structure, an instance, as its fields: a scalar as
+	A `URLVariables` is encoded as itself, and any other object (an
+	anonymous structure, an instance) as its fields: a scalar as
 	`name=value`, an array's items each as `name[]=item`, and an object's
 	fields as `name[field]=value`, to any depth. A `String` or `haxe.io.Bytes`
 	is a body of its own, and nothing here.
 
-	It was the native client's alone. The HTTP/2 backend sent a form as
-	nothing at all, and the JavaScript clients encoded a `URLVariables` only:
-	an object went out as `Std.string` made it, "{ user : bob }".
+	Every client, the HTTP/2 backend and the JavaScript ones included,
+	encodes a form here, so an object goes out as its fields and not as
+	`Std.string` makes it.
 **/
 @:noCompletion
 class FormEncoding {
 	/**
 		`data` encoded as `application/x-www-form-urlencoded`, or null when it
-		is not form data: null, a `String`, `haxe.io.Bytes`, a `ByteArray`
-		included, or a number or `Bool`.
+		is not form data: null, a `String`, `haxe.io.Bytes` (a `ByteArray`
+		included), or a number or `Bool`.
 	**/
 	public static function encode(data:Dynamic):Null<String> {
 		if (data == null || Std.isOfType(data, String) || Std.isOfType(data, haxe.io.Bytes) || !Reflect.isObject(data)) {

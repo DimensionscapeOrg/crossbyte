@@ -8,7 +8,7 @@ import crossbyte.Object;
 	## Copy it to keep it
 
 	An event is valid only during the listener call it is handed to, and so
-	is anything it carries that arrived from the network, the bytes of a
+	is anything it carries that arrived from the network: the bytes of a
 	`DatagramSocketDataEvent` or a `WebSocketMessageEvent`. The same goes for
 	a payload handed to a hook called once per arrival, such as
 	`ReliableDatagramServerSocket.onDatagram`. CrossByte may hand the same
@@ -49,9 +49,9 @@ import crossbyte.Object;
 	keeps it just the same: a closure given to a timer, a `Future`,
 	`CrossByte.post`, a `TaskPool` or an `AsyncDatabase`, which runs on
 	another thread or later; an object stored to be written later. CrossByte's
-	own APIs that take bytes and use them later copy them as they take them,
-	every send, `URLLoader.load`, `File.save`, `Store.put`, an
-	asynchronous `SQLiteStatement.execute`, `TypedWorker.run`, so the
+	own APIs that take bytes and use them later copy them as they take them
+	(every send, `URLLoader.load`, `File.save`, `Store.put`, an
+	asynchronous `SQLiteStatement.execute`, `TypedWorker.run`), so the
 	payload can go straight to those from inside the listener; a closure or
 	a structure of your own holds a copy.
 
@@ -62,13 +62,13 @@ import crossbyte.Object;
 
 	Two defines change how this is kept:
 
-	- `-D crossbyte_fresh_events` makes every event and payload a new one,
-	  as before 1.0, and reuses nothing: a workaround for code that keeps
-	  them, until it copies instead.
+	- `-D crossbyte_fresh_events` makes every event and payload a new one
+	  and reuses nothing: a workaround for code that keeps them, until it
+	  copies instead.
 	- `-D crossbyte_check_events` makes every one new too, and kills each
 	  once the call that handed it out has returned: its bytes overwritten
 	  with `0xDB`, its length and position set to 0, and the event's fields
-	  cleared, strings null, numbers -1. Code that kept one then reads
+	  cleared (strings null, numbers -1). Code that kept one then reads
 	  poison, or reads nothing and throws, at the line that reads it: the
 	  way to find the line that kept one.
 **/
@@ -99,8 +99,8 @@ class Event {
 		The dispatcher the event was dispatched on: always an
 		`IEventDispatcher`, typed `Object` as ActionScript types it.
 
-		Assign it to the type it is for typed access,
-		`var socket:Socket = event.target;`: which costs at most a type check
+		Assign it to the type it is for typed access
+		(`var socket:Socket = event.target;`), which costs at most a type check
 		of a few nanoseconds, natively, and nothing elsewhere: the object is
 		the same one, and the assignment tells the compiler what it is. Reading
 		fields through `Object` instead looks each one up by its name.

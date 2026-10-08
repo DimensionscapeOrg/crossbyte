@@ -11,9 +11,9 @@ import utest.Assert;
 /**
 	RPC over every transport CrossByte ships, a burst at a time: each session
 	writes every frame in one buffer and hands it to its transport's `send`,
-	which has to copy what it keeps, a TCP connection, a WebSocket, a
+	which has to copy what it keeps (a TCP connection, a WebSocket, a
 	reliable UDP session and a local IPC connection each send what one pass
-	gathered when the pass ends, long after the buffer was written over.
+	gathered when the pass ends, long after the buffer was written over).
 
 	A burst of calls of different sizes, made in one pass, and the burst of
 	answers the other side frames in one read: a transport that kept a frame

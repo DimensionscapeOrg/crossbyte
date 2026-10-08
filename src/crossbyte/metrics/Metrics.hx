@@ -32,7 +32,7 @@ import sys.thread.Mutex;
  *
  * **Cardinality and privacy.** Every distinct label combination creates a
  * separate series held for the process's lifetime. Labels must be
- * low-cardinality and describe categories, a route template, a status
+ * low-cardinality and describe categories: a route template, a status
  * class, an outcome. Never label with user identifiers, session tokens,
  * paths containing identifiers, or anything else per-user: doing so grows
  * memory without bound and turns an operational metric into a record of
@@ -46,12 +46,11 @@ class Metrics {
 	public static var shared(get, never):Metrics;
 
 	// Made when the class initializes, which every target does once and
-	// before any thread can ask, the jvm under its class-initialization
-	// lock. It was made at the first read, with nothing stopping two threads
-	// from both finding it missing: on the jvm, eight threads reading it
-	// first got eight registries, and the counters registered into the seven
-	// that were dropped never appeared in a scrape. A lock taken at every
-	// read would cost each lookup as much as the lookup's own.
+	// before any thread can ask (the jvm under its class-initialization
+	// lock), so two threads cannot each find it missing and make a registry
+	// of their own, losing the counters registered into the one dropped. A
+	// lock taken at every read would cost each lookup as much as the
+	// lookup's own.
 	@:noCompletion private static var __shared:Metrics = new Metrics();
 
 	@:noCompletion private static inline function get_shared():Metrics {
@@ -317,10 +316,10 @@ class Metrics {
 	/**
 	 * A whole number below 2^53, every digit of it.
 	 *
-	 * In two halves that each fit an Int. It went through `Std.int`, which
-	 * holds 31 bits, so a counter of bytes sent at three billion printed
-	 * -1294967296 (2147483647 on the jvm), and a counter that falls reads
-	 * to a collector as the process restarting. The remainder and the
+	 * In two halves that each fit an Int, rather than through `Std.int`,
+	 * which holds 31 bits: a counter of bytes sent at three billion would
+	 * print -1294967296 (2147483647 on the jvm), and a counter that falls
+	 * reads to a collector as the process restarting. The remainder and the
 	 * division are exact: the remainder of two Floats always is, and the
 	 * quotient is a whole number a Float holds.
 	 */

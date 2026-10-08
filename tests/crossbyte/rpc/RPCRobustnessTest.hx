@@ -12,10 +12,10 @@ import utest.Assert;
 /**
  * Robustness coverage for RPC request-id generation and pending-response cleanup.
  *
- * These tests guard two regressions:
- *  - the request-id generator must never hand back the reserved single-slot id nor
+ * These tests hold two guarantees:
+ *  - the request-id generator never hands back the reserved single-slot id nor
  *    an id already tracked in the overflow map;
- *  - outstanding `RPCResponse` objects must be rejected (not orphaned) when the
+ *  - outstanding `RPCResponse` objects are rejected (not orphaned) when the
  *    owning session/commands surface is torn down.
  */
 @:access(crossbyte.rpc.RPCCommands)
@@ -215,7 +215,7 @@ class RPCRobustnessTest extends utest.Test {
 	/**
 		What `stop()` says it does: the calls waiting fail, on both lanes,
 		saying the session stopped; an answer arriving for one afterwards is
-		dropped; and the session, and its connection, carry on, a call made
+		dropped; and the session, and its connection, carry on: a call made
 		after it is answered as ever.
 	**/
 	public function testStopFailsTheCallsWaitingAndLeavesTheSessionUsable():Void {
@@ -248,9 +248,9 @@ class RPCRobustnessTest extends utest.Test {
 	// ---- the connection ending ----
 
 	public function testACallWaitingWhenItsConnectionClosesFails():Void {
-		// Only stop(), a heartbeat timeout or an unreadable frame failed a
-		// call waiting on an answer. When the connection closed on its own, it
-		// waited for good.
+		// A call waiting on an answer fails when the connection closes on its
+		// own, not only on stop(), a heartbeat timeout or an unreadable frame;
+		// otherwise it would wait for good.
 		var link = LinkedConnection.pair();
 		var commands = new RobustCommands();
 		var session = new RPCSession<RobustCommands>(link.client, commands);
@@ -269,8 +269,8 @@ class RPCRobustnessTest extends utest.Test {
 	}
 
 	public function testACallFailedByItsConnectionEndingCarriesTheReason():Void {
-		// It failed with a message and no cause, so a caller, a gateway,
-		// could not tell a connection gone from a peer refusing.
+		// It fails with a cause as well as a message, so a caller (a gateway)
+		// can tell a connection gone from a peer refusing.
 		var link = LinkedConnection.pair();
 		var commands = new RobustCommands();
 		var session = new RPCSession<RobustCommands>(link.client, commands);
@@ -308,9 +308,9 @@ class RPCRobustnessTest extends utest.Test {
 	// ---- heartbeat teardown ----
 
 	public function testAHeartbeatThatWasTheFirstTimerStillStops():Void {
-		// A fresh runtime hands out timer handle 0 first. The session took 0 to
-		// mean "no heartbeat", so stop() left that one running, and it went on
-		// pinging a connection that had closed.
+		// A fresh runtime hands out timer handle 0 first. Taking 0 to mean "no
+		// heartbeat" would leave that one running after stop(), pinging a
+		// connection that had closed.
 		var runtime = new crossbyte.core.CrossByte(false, DEFAULT, true);
 		var session = new RPCSession(LinkedConnection.pair().client, new RobustCommands());
 		session.start();
@@ -327,8 +327,8 @@ class RPCRobustnessTest extends utest.Test {
 
 	/**
 		A session reads while it has a runtime handler, and stops with the
-		last: counted as they come and go, where the map was asked whether it
-		was empty, which copied it, on every call on the runtime lane.
+		last: counted as they come and go, rather than by asking the map
+		whether it is empty, which would copy it on every call on the runtime lane.
 	**/
 	public function testRuntimeHandlersKeepTheSessionReadingUntilTheLastGoes():Void {
 		var connection = new StubConnection();

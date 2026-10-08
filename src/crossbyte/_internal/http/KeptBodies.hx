@@ -13,10 +13,8 @@ import sys.thread.Mutex;
 	first. What `HTTPCompression` keeps compressed static files in, a slot
 	per coding, and the server its small static files.
 
-	Most recent use is a link in a list, moved in constant time: it was a
-	position in an array of keys, found by a linear scan with a string
-	comparison per kept body on every hit, and every lookup built its key by
-	joining the coding's name to the path.
+	Most recent use is a link in a list, moved in constant time, and a
+	lookup builds no key.
 
 	A lock is taken per call: a configuration, and so this, can be shared by
 	servers on several runtimes' threads.

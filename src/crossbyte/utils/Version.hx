@@ -69,12 +69,12 @@ abstract Version(String) from String to String {
 	}
 
 	/**
-		The segment's leading digits, so `3-beta` reads as 3 as it always did,
-		held to the three digits a segment has room for in `hash`. It was
-		Std.parseInt, whose answer for more digits than an Int holds differs
-		by target, 0 on Linux native, a throw on the jvm, so a version
-		string from elsewhere could compare differently on each; past 999 it
-		now reads as 999, the largest a segment can be.
+		The segment's leading digits, so `3-beta` reads as 3, held to the
+		three digits a segment has room for in `hash`: past 999 it reads as
+		999, the largest a segment can be. Not `Std.parseInt`, whose answer
+		for more digits than an Int holds differs by target (0 on Linux
+		native, a throw on the jvm), so a version string from elsewhere could
+		compare differently on each.
 	**/
 	private static function parseSegment(parts:Array<String>, index:Int):Int {
 		if (index < 0 || index >= parts.length) {

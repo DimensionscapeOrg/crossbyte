@@ -12,9 +12,9 @@ import crossbyte.test.Require;
  * server because it is pure encoding, and because it is the half of the
  * parameter work that can be proven on a machine with no PostgreSQL on it.
  *
- * The cases that matter are the ones the previous path got wrong: a value with
- * a NUL byte in it, a value that is not valid UTF-8, and the difference between
- * SQL NULL and an empty value.
+ * The cases that matter are the ones string substitution gets wrong: a value
+ * with a NUL byte in it, a value that is not valid UTF-8, and the difference
+ * between SQL NULL and an empty value.
  */
 class PostgresWireTest extends utest.Test {
 	public function testNullIsDistinctFromAnEmptyValue():Void {
@@ -37,8 +37,8 @@ class PostgresWireTest extends utest.Test {
 		Assert.equals(PostgresWire.FORMAT_BINARY, __intAt(encoded, 4));
 		Assert.equals(payload.length, __intAt(encoded, 8));
 
-		// The whole point. Escaping this into SQL text truncates it at byte
-		// zero, so a ciphertext blob became a one-byte blob without an error.
+		// The whole point. Escaping this into SQL text would truncate it at byte
+		// zero, so a ciphertext blob would become a one-byte blob without an error.
 		Assert.equals(payload.toHex(), encoded.sub(12, payload.length).toHex());
 	}
 
@@ -87,9 +87,9 @@ class PostgresWireTest extends utest.Test {
 	}
 
 	public function testCountsPastThirtyTwoBitsDecodeWhole():Void {
-		// The bridge sent a statement's count in 32 bits, read with atoi, so
-		// past 2^31 it arrived clamped or negative; the OID, unsigned, read
-		// negative past 2^31. The count is 64 bits now, and the OID unsigned.
+		// A statement's count is sent in 64 bits, and the OID unsigned: in 32
+		// bits read with atoi, past 2^31 the count would arrive clamped or
+		// negative, and the OID, unsigned, would read negative past 2^31.
 		var block = new ResultBlock();
 		block.ok(5000000001.0, 3000000000.0, ["n"]);
 		var result = PostgresWire.decodeResult(block.finish());
@@ -151,13 +151,12 @@ class PostgresWireTest extends utest.Test {
 	}
 
 	public function testHugeLengthCannotOverflowTheBoundsCheck():Void {
-		// The cursor guarded reads with `position + count > length`, which
-		// overflows Int for a large count and wraps negative, and a negative
-		// is not greater than the length, so the check passed and the read ran
-		// off the end of the buffer. Measured before the fix: this exact block,
-		// twenty bytes long, segfaulted the process. The class exists to make
-		// a disagreement between bridge and decoder an exception; the one
-		// arithmetic that could defeat it lived inside the check itself.
+		// A guard of `position + count > length` overflows Int for a large count
+		// and wraps negative, and a negative is not greater than the length, so
+		// the check would pass and the read run off the end of the buffer: this
+		// exact block, twenty bytes long, would segfault the process. The class
+		// exists to make a disagreement between bridge and decoder an exception,
+		// so the check itself must not hold the one arithmetic that defeats it.
 		var raw = new BytesBuffer();
 		__int(raw, PostgresWire.STATUS_OK);
 		// affectedRows, in two halves, and lastInsertRowID.
@@ -171,12 +170,12 @@ class PostgresWireTest extends utest.Test {
 	}
 
 	public function testRowCountCannotAllocateWithoutConsumingTheBlock():Void {
-		// A row of no columns reads nothing, so with fieldCount at zero the
-		// row loop was bounded by the count alone rather than by the block
-		// containing anything: twenty bytes claiming twenty million rows built
-		// twenty million of them in 1.4 seconds, and the count could have said
-		// two billion. Every other shape limits itself, because each column
-		// costs at least its four-byte length and the cursor runs out.
+		// A row of no columns reads nothing, so with fieldCount at zero the row
+		// loop must be bounded by the block containing something, not by the
+		// count alone: twenty bytes claiming twenty million rows would build
+		// twenty million of them, and the count could say two billion. Every
+		// other shape limits itself, because each column costs at least its
+		// four-byte length and the cursor runs out.
 		var raw = new BytesBuffer();
 		__int(raw, PostgresWire.STATUS_OK);
 		__int(raw, 0);
@@ -189,8 +188,8 @@ class PostgresWireTest extends utest.Test {
 	}
 
 	public function testNegativeCountsAreRefused():Void {
-		// Haxe iterates 0...negative zero times, so these decoded as an empty
-		// result rather than as the malformed block they are.
+		// Haxe iterates 0...negative zero times, so these would decode as an
+		// empty result rather than as the malformed block they are.
 		var fields = new BytesBuffer();
 		__int(fields, PostgresWire.STATUS_OK);
 		__int(fields, 0);

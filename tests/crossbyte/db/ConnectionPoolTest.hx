@@ -180,10 +180,10 @@ class ConnectionPoolTest extends utest.Test {
 	}
 
 	public function testResetRunsOnEveryReleaseIncludingWhenTheBodyThrows():Void {
-		// A body that opened a transaction and then threw handed the next
-		// borrower that transaction: its writes joined it, and the locks it
-		// held stayed held. validate() cannot see it, an open transaction
-		// answers a ping like any other, so the release has to fix it.
+		// A body that opened a transaction and then threw must not hand the
+		// next borrower that transaction, whose writes would join it while the
+		// locks it held stayed held. validate() cannot see it (an open
+		// transaction answers a ping like any other), so the release has to fix it.
 		var resets:Int = 0;
 		var pool = __poolWithReset(c -> {
 			resets++;
@@ -274,10 +274,10 @@ class ConnectionPoolTest extends utest.Test {
 	}
 
 	public function testDoubleDiscardDoesNotBreachTheCeiling():Void {
-		// release() guards against being called twice; discard() did not, and
-		// decremented __created unconditionally. Two discards of one connection
-		// therefore credited the pool with a slot it never gave up, and the
-		// ceiling, the pool's single reason to exist, stopped holding.
+		// discard() guards against being called twice, as release() does:
+		// decrementing __created unconditionally, two discards of one connection
+		// would credit the pool with a slot it never gave up, and the ceiling
+		// (the pool's single reason to exist) would stop holding.
 		var pool = makePool(1);
 
 		var connection = pool.acquire();
@@ -317,8 +317,8 @@ class ConnectionPoolTest extends utest.Test {
 	}
 
 	public function testDiscardingAnIdleConnectionRemovesItFromThePool():Void {
-		// Discarding something already released closed it but left it sitting
-		// in the idle list, so the next acquire handed out a closed connection.
+		// Discarding something already released must not close it and leave it
+		// sitting in the idle list for the next acquire to hand out closed.
 		var pool = makePool(2);
 
 		var connection = pool.acquire();
@@ -334,10 +334,10 @@ class ConnectionPoolTest extends utest.Test {
 
 	public function testConnectionStaysCountedWhileItIsValidated():Void {
 		// Validation runs unlocked, because it may talk to the server. The
-		// connection was discounted from __created for that whole window, so a
-		// second caller arriving mid-validation saw room that did not exist and
-		// opened a connection past the ceiling. It is still open while being
-		// checked, so it stays counted; only a failed check retires it.
+		// connection stays counted in __created for that whole window: were it
+		// discounted, a second caller arriving mid-validation would see room
+		// that did not exist and open a connection past the ceiling. It is still
+		// open while being checked; only a failed check retires it.
 		var observed:Int = -1;
 		var pool:ConnectionPool<FakeConnection> = null;
 
@@ -430,14 +430,14 @@ class ConnectionPoolTest extends utest.Test {
 		Assert.raises(() -> new ConnectionPool({factory: null}), ArgumentError);
 		Assert.raises(() -> new ConnectionPool({factory: () -> new FakeConnection(0), maxSize: 0}), ArgumentError);
 		Assert.raises(() -> new ConnectionPool({factory: () -> new FakeConnection(0), acquireTimeout: -1}), ArgumentError);
-		// NaN was taken, and a saturated pool then waited for ever.
+		// NaN is refused: taken, a saturated pool would wait for ever.
 		Assert.raises(() -> new ConnectionPool({factory: () -> new FakeConnection(0), acquireTimeout: Math.NaN}), ArgumentError);
 	}
 
 	/**
-		A timeout given to one call is checked as the default is. NaN waited
-		for ever once the pool was saturated, and a negative one failed at
-		once; here the pool has room, so the call returned a connection.
+		A timeout given to one call is checked as the default is. NaN would
+		wait for ever once the pool was saturated, and a negative one fail at
+		once; here the pool has room, so the call would return a connection.
 	**/
 	public function testANaNOrNegativeTimeoutForOneCallIsRefused():Void {
 		var pool = makePool(3);
@@ -451,7 +451,7 @@ class ConnectionPoolTest extends utest.Test {
 
 	/**
 		An acquire timeout of 0 is none: a caller waits until a connection
-		comes free, as 0 means everywhere in CrossByte. It failed at once.
+		comes free, as 0 means everywhere in CrossByte, rather than failing at once.
 	**/
 	public function testAnAcquireTimeoutOfZeroWaitsUntilAConnectionComesFree():Void {
 		#if target.threaded
@@ -505,9 +505,9 @@ class ConnectionPoolTest extends utest.Test {
 	}
 
 	public function testAnOpenTransactionIsRolledBackOnReleaseWithNoResetSet():Void {
-		// Rolling back took a reset the application had to know to write, and
-		// without one the next borrower was handed the transaction: its writes
-		// joined it, and the locks it held stayed held.
+		// The pool rolls back itself, without a reset the application would
+		// have to know to write: otherwise the next borrower would be handed
+		// the transaction, its writes joining it and the locks it held held.
 		var pool = __transactionalPool();
 		var warnings:Array<String> = [];
 		Logger.recordSink = record -> {
@@ -598,9 +598,9 @@ class ConnectionPoolTest extends utest.Test {
 
 	public function testAConnectionStillInATransactionAfterTheRollbackIsRetired():Void {
 		// MySQL with autocommit turned off opens the next transaction as the
-		// last one ends, so the pool's ROLLBACK succeeded and the connection
-		// went back still inside a transaction: the next borrower's writes,
-		// made believing autocommit was on, were never committed.
+		// last one ends, so the pool's ROLLBACK succeeds and the connection
+		// would go back still inside a transaction: the next borrower's writes,
+		// made believing autocommit was on, would never be committed.
 		var resets:Int = 0;
 		var pool = __transactionalPool(_ -> resets++);
 		var first = pool.acquire();

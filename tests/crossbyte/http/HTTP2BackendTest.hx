@@ -84,7 +84,7 @@ class HTTP2BackendTest extends utest.Test {
 
 	public function testAnErrorStatusOverHttp2IsAnErrorWithItsBody():Void {
 		// The HTTP/1.1 client reports a 4xx or 5xx through onError with the
-		// body; this completed, so one status meant two outcomes by version.
+		// body, and so does this, so one status does not mean two outcomes by version.
 		var server = new H2cServer();
 		server.respond([new HpackHeader(":status", "404"), new HpackHeader("content-type", "text/plain")], "no such thing");
 		server.start();
@@ -162,7 +162,7 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.isFalse(sent.exists("X-Custom"));
 
 		// §8.2.2: connection-specific fields are malformed in HTTP/2, and Host
-		// is redundant beside :authority, keeping either would let a peer
+		// is redundant beside :authority; keeping either would let a peer
 		// reject the request outright.
 		Assert.isFalse(sent.exists("connection"));
 		Assert.isFalse(sent.exists("host"));
@@ -173,10 +173,9 @@ class HTTP2BackendTest extends utest.Test {
 	public function testAResponseHeaderSectionPastTheLimitIsAnError():Void {
 		// A server chooses how many fields it sends, and 3,000 one-byte
 		// references to one set-cookie crumb decode to 117 KB by HPACK's
-		// accounting. The client took them under an eight megabyte limit it
-		// never advertised and joined them quadratically; at 200,000 that is
-		// the 23.5 seconds the server half was shown to lose. Refused now at
-		// the HTTP/1.1 client's 64 KB, and the limit is said in SETTINGS.
+		// accounting. Taken under an unadvertised eight megabyte limit and
+		// joined quadratically, 200,000 of them would cost over twenty seconds.
+		// Refused at the HTTP/1.1 client's 64 KB, and the limit is said in SETTINGS.
 		var fields:Array<HpackHeader> = [new HpackHeader(":status", "200")];
 		for (_ in 0...3000) {
 			fields.push(new HpackHeader("set-cookie", "a=1"));
@@ -202,14 +201,12 @@ class HTTP2BackendTest extends utest.Test {
 
 	#if (cpp || java || jvm)
 	public function testATlsHandshakeThatNeverAnswersHasADeadline():Void {
-		// A server that accepts TCP and then says nothing. The connect had no
-		// deadline and the per-origin gate was held across it, so three
-		// requests to it had no outcome in 15 s, one TCP connection between
-		// them, and a cancel did nothing. Each is held to its own timeout now,
-		// and the waiters to theirs; they share the one connection attempt.
-		// On the jvm too since J2: its handshake loop retried a timeout
-		// 10,000 times, and now holds to the deadline, saying so in words of
-		// its own that the backend reports as the timeout it was.
+		// A server that accepts TCP and then says nothing. The connect has a
+		// deadline and the per-origin gate is not held across it, so three
+		// requests to it each end at their own timeout, and the waiters at
+		// theirs; they share the one connection attempt, and a cancel works. On
+		// the jvm too, whose handshake loop holds to the deadline, saying so in
+		// words of its own that the backend reports as the timeout it was.
 		if (!crossbyte._internal.socket.FlexSocket.alpnSupported) {
 			Assert.pass("this build has no ALPN, so no HTTP/2 over TLS");
 			return;
@@ -270,8 +267,8 @@ class HTTP2BackendTest extends utest.Test {
 	#end
 
 	public function testAWaiterForAConnectLeavesAtItsOwnDeadline():Void {
-		// Waiters queued on a per-origin mutex for as long as the connect in
-		// front of them took, with no deadline of their own.
+		// Waiters queued on a per-origin gate have deadlines of their own, not
+		// only the connect in front of them.
 		var origin:String = "https://pool.example:1";
 		var release:Lock = new Lock();
 		var connecting:Lock = new Lock();
@@ -349,8 +346,8 @@ class HTTP2BackendTest extends utest.Test {
 	}
 
 	public function testWaitersShareTheConnectorsFailureUnlessItWasCancelled():Void {
-		// The next waiter took the gate and made the same connect again, and
-		// the one after it again: three requests, three timeouts in a row.
+		// The next waiter must not take the gate and make the same connect
+		// again, and the one after it again: three requests, three timeouts in a row.
 		var origin:String = "https://pool.example:3";
 		var release:Lock = new Lock();
 		var connecting:Lock = new Lock();
@@ -420,8 +417,8 @@ class HTTP2BackendTest extends utest.Test {
 	}
 
 	public function testAnIpv6AuthorityKeepsItsBrackets():Void {
-		// URL takes the brackets off an IPv6 literal, and :authority put the
-		// host back bare: ::1:port, which no server can split.
+		// URL takes the brackets off an IPv6 literal, and :authority must put
+		// them back: ::1:port bare, no server can split.
 		var probe = new SysSocket();
 		try {
 			probe.bind(new Host("::1"), 0);
@@ -454,9 +451,9 @@ class HTTP2BackendTest extends utest.Test {
 	/**
 		The client supplies an `Accept-Encoding` when the caller has not, as
 		`URLRequest.requestHeaders` says and as the HTTP/1.1 client and Node
-		do: `identity`. Over HTTP/2 there was none, which RFC 9110 12.5.3
-		reads as any coding at all, zstd included, which nothing here
-		decodes. The caller's own is the one sent.
+		do: `identity`. Over HTTP/2 none at all would read, by RFC 9110 12.5.3,
+		as any coding at all, zstd included, which nothing here decodes. The
+		caller's own is the one sent.
 	**/
 	public function testAnAcceptEncodingIsSentUnlessTheCallerSentOne():Void {
 		var server = new H2RouteServer(_ -> {status: 200, chunks: ["ok"]});
@@ -510,9 +507,9 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.equals("Bearer secret-token", server.requestHeaders.get("authorization"));
 
 		// A credential in the dynamic table is recoverable from how later
-		// requests compress it, so it must be absent, while the ordinary
-		// fields around it are indexed as usual. Asserting an empty table
-		// would pass for the wrong reason, by also forbidding those.
+		// requests compress it, so it must be absent, while the ordinary fields
+		// around it are indexed as usual. Asserting an empty table would pass
+		// for the wrong reason, by also forbidding those.
 		Assert.isTrue(server.decoderTableNames.length > 0);
 		Assert.equals(-1, server.decoderTableNames.indexOf("authorization"));
 		Assert.isTrue(server.decoderTableNames.indexOf("user-agent") >= 0);
@@ -606,21 +603,20 @@ class HTTP2BackendTest extends utest.Test {
 
 		// Which stream the cancelled request actually got, rather than stream 1.
 		// The two requests are opened on two threads, so whichever opens first
-		// takes id 1 and the other takes 3, and when the survivor won that
-		// race this looked for a reset on a stream nobody had cancelled. That
-		// was the intermittent failure here: the reset was sent and the fixture
-		// read it, against an id the assertion was not watching.
+		// takes id 1 and the other takes 3; and when the survivor wins that race,
+		// a look for a reset on stream 1 would watch a stream nobody had
+		// cancelled, reading a reset that was sent as one that was not.
 		var doomedId:Int = server.streamIdFor("/doomed");
 		Assert.isTrue(doomedId > 0, "the cancelled request never reached the server");
 
-		// The reset reaches the server on its own schedule, it is read in the
-		// drain loop, after the responses this test already waited for, so
+		// The reset reaches the server on its own schedule (it is read in the
+		// drain loop, after the responses this test already waited for), so
 		// this waits for the observation rather than assuming it has landed.
 		//
-		// Ten seconds, matching the two Lock.wait calls above rather than the
-		// three this used to allow: the loop leaves the moment the reset is seen,
-		// so the budget only matters on a machine slow enough to need it, and a
-		// busy one was enough to spend three seconds and fail a working reset.
+		// Ten seconds, matching the two Lock.wait calls above: the loop leaves
+		// the moment the reset is seen, so the budget only matters on a machine
+		// slow enough to need it, and a busy one can spend three seconds before
+		// a working reset is seen.
 		var deadline:Float = haxe.Timer.stamp() + 10;
 		while (!server.sawReset(doomedId) && haxe.Timer.stamp() < deadline) {
 			System.sleep(0.01);
@@ -660,8 +656,8 @@ class HTTP2BackendTest extends utest.Test {
 		server.releaseBody();
 
 		Assert.isTrue(done.wait(10), "cancelled request never returned");
-		// A status alone is not a response. This completed with an empty
-		// body, or, when the body won the race to the caller, a full one,
+		// A status alone is not a response. Completing with an empty body (or,
+		// when the body won the race to the caller, a full one) would be wrong
 		// for a request cancelled before its body was even sent.
 		Assert.equals("Request cancelled", outcome);
 		Assert.isTrue(server.waitSawReset(10), "server never saw RST_STREAM for the cancelled stream");
@@ -686,9 +682,9 @@ class HTTP2BackendTest extends utest.Test {
 	}
 
 	public function testARequestCancelledBeforeItStartsLeavesTheConnectionAlone():Void {
-		// Refused by the session before anything was sent, which the backend
-		// took for a failed connection and closed, the connection every
-		// other request to the origin was sharing.
+		// Refused by the session before anything was sent: the backend must not
+		// take that for a failed connection and close it, the connection every
+		// other request to the origin is sharing.
 		var server = new H2RouteServer(request -> request.path == "/slow" ? {status: 200, chunks: ["done"], gap: 0.5} : {status: 200});
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
@@ -747,8 +743,8 @@ class HTTP2BackendTest extends utest.Test {
 
 	public function testConcurrentRequestsAreNotSerialized():Void {
 		// The server will not answer anything until both requests have
-		// arrived. A client that serialized, one connection per request, or
-		// one stream at a time, can never reach that state, so this either
+		// arrived. A client that serialized (one connection per request, or
+		// one stream at a time) can never reach that state, so this either
 		// demonstrates multiplexing or times out.
 		var server = new H2MuxServer(2, true);
 		server.start();
@@ -814,31 +810,24 @@ class HTTP2BackendTest extends utest.Test {
 	 * A sweep beside a stream of requests never closes the connection under
 	 * one of them.
 	 *
-	 * It did, about once in two thousand of the concurrent case above, which
-	 * failed as
-	 *
-	 *     line: 343, expected "/slow" but it is "ERR Connection closed before the response headers arrived"
-	 *     line: 344, expected "/quick" but it is "ERR HTTP/2 request failed: java.net.ConnectException: Connection refused: connect"
-	 *
-	 * The pool judged a session idle from two fields read without the
-	 * session's lock: how many streams were in flight, and when the last one
-	 * ended. A request starting on the session writes both, bumping the count
-	 * and zeroing the time. A sweep that read the count before the bump and
-	 * the time after it saw nothing in flight and a session idle since the
-	 * clock began, 459,622 seconds, when it was caught, and closed the
-	 * connection a request had just opened a stream on. The first request
-	 * lost its connection; the second, finding none, dialled a server that
-	 * had stopped listening.
+	 * The pool judges a session idle under the session's lock. Read without
+	 * it, the two fields involved (how many streams are in flight, and when the
+	 * last one ended) are written by a request starting on the session, which
+	 * bumps the count and zeroes the time; a sweep that read the count before
+	 * the bump and the time after it would see nothing in flight and a session
+	 * idle since the clock began, and close the connection a request had just
+	 * opened a stream on. The first request would lose its connection, and the
+	 * second, finding none, dial a server that had stopped listening.
 	 *
 	 * The window is a few instructions wide, so this widens it the other
 	 * way: one thread sweeps continuously while another sends a thousand
 	 * requests, each of which opens and closes a stream. Nothing here is idle
 	 * for anything like the allowance, so nothing may be reaped.
 	 *
-	 * The allowance is a second rather than the default ninety, because the
-	 * torn read made a session "idle since the clock's origin", and natively
+	 * The allowance is a second rather than the default ninety, because a
+	 * torn read makes a session "idle since the clock's origin", and natively
 	 * that origin is the process's first reading: a short run has not yet
-	 * left ninety seconds behind, and would not see the bug at all. So the
+	 * left ninety seconds behind, and would not see it at all. So the
 	 * allowance is one second and the case runs at least that long after the
 	 * origin. On the jvm the origin is boot, and nothing waits.
 	 */
@@ -869,11 +858,11 @@ class HTTP2BackendTest extends utest.Test {
 				}
 				total += H2ConnectionPool.reapIdle();
 				#if eval
-				// eval runs one thread at a time and hands over between them
-				// only now and then: a sweep with no pause held the requests
-				// it races behind it, and the first of them timed out. A
-				// millisecond's pause still sweeps about a thousand times a
-				// second, and all thousand requests pass.
+				// eval runs one thread at a time and hands over between them only now
+				// and then: a sweep with no pause would hold the requests it races
+				// behind it, and the first of them would time out. A millisecond's pause
+				// still sweeps about a thousand times a second, and all thousand
+				// requests pass.
 				System.sleep(0.001);
 				#end
 			}
@@ -939,13 +928,11 @@ class HTTP2BackendTest extends utest.Test {
 		GOAWAY is answered there, while a request made meanwhile goes out on a
 		connection of its own.
 
-		The pool handed the next request that connection, its stream was
-		refused before anything went out, and the backend discarded the
-		session to send it again, closing it, and every request still on it
-		with it: they failed as "connection closed before the response headers
-		arrived" though the server was answering them. Under eight concurrent
-		clients and CrossByte's own server ending a connection every thousand
-		requests, that lost 42 of 12,001.
+		The request made meanwhile must not be handed that connection: its
+		stream would be refused before anything went out, and a backend that
+		discarded the session to send it again would close it, and every
+		request still on it with it, failing as "connection closed before the
+		response headers arrived" though the server was answering them.
 	**/
 	public function testARequestInFlightOnAConnectionGoingAwayIsStillAnswered():Void {
 		var server = new H2ShutdownServer();
@@ -1028,9 +1015,9 @@ class HTTP2BackendTest extends utest.Test {
 
 		http.load();
 
-		// The status, the headers and part of the body had all arrived, and
-		// the reset used to be reported only when the status had not: this
-		// completed with the part.
+		// The status, the headers and part of the body have all arrived, and
+		// the reset is reported all the same, not only when the status had not:
+		// this must not complete with the part.
 		Assert.isNull(completed, "a reset response completed with " + completed);
 		Assert.equals("Stream reset by peer: INTERNAL_ERROR", error);
 	}
@@ -1070,9 +1057,9 @@ class HTTP2BackendTest extends utest.Test {
 		var outcome:String = __upload(server.port);
 		var took:Float = haxe.Timer.stamp() - started;
 
-		// This waited on the stream's window, which never reopens once the
-		// stream is over, until the connection had been quiet for thirty
-		// seconds, then failed it with a FLOW_CONTROL_ERROR, and every other
+		// The stream's window never reopens once the stream is over, so this
+		// must not wait on it until the connection has been quiet for thirty
+		// seconds, then fail it with a FLOW_CONTROL_ERROR, and every other
 		// request on it.
 		Assert.equals("COMPLETED early answer", outcome);
 		Assert.isTrue(took < 10, 'the answered upload took ${took}s to return');
@@ -1119,9 +1106,9 @@ class HTTP2BackendTest extends utest.Test {
 		var outcome:String = __upload(server.port, 1500);
 		var took:Float = haxe.Timer.stamp() - started;
 
-		// The timeout started only once the body was out. While it waited on
-		// the window any frame counted as progress, so this waited as long as
-		// the PINGs went on, and thirty seconds after, then failed the
+		// The timeout runs while the body waits on the window, and a frame on
+		// the connection is not progress for it: otherwise this would wait as
+		// long as the PINGs went on, and thirty seconds after, and then fail the
 		// connection, and every request on it.
 		Assert.equals('Request to http://127.0.0.1:${server.port} timed out after 1.5s', outcome);
 		Assert.isTrue(took < 5, 'the stalled upload took ${took}s to time out');
@@ -1157,8 +1144,8 @@ class HTTP2BackendTest extends utest.Test {
 		var cancelledAt:Float = haxe.Timer.stamp();
 		http.cancelToken.cancel();
 
-		// The cancel handler was registered only once the body was out, so
-		// this cancel did nothing, and the upload waited on.
+		// The cancel handler is registered before the body goes out, so this
+		// cancel ends the upload rather than leaving it waiting on.
 		Assert.isTrue(done.wait(10), "the cancelled upload never returned");
 		var took:Float = haxe.Timer.stamp() - cancelledAt;
 		Assert.equals("Request cancelled", outcome);
@@ -1183,8 +1170,8 @@ class HTTP2BackendTest extends utest.Test {
 		http.load();
 
 		// A timeout belongs to its stream, which is reset. Reported as a
-		// connection error, it closed the connection, and every other request
-		// on it failed along with this one.
+		// connection error, it would close the connection, and every other
+		// request on it would fail along with this one.
 		Assert.equals('Request to http://127.0.0.1:${server.port} timed out after 1.5s', outcome);
 		Assert.equals("/second", get(server.port, "/second"));
 		Assert.equals(1, server.connections());
@@ -1225,8 +1212,8 @@ class HTTP2BackendTest extends utest.Test {
 	// ------------------------------------------------------ redirects
 
 	public function testARedirectOverHttp2IsFollowed():Void {
-		// A 3xx completed here with its Location unfollowed, where the
-		// HTTP/1.1 client, Node and the browser all followed it.
+		// A 3xx is followed here, as the HTTP/1.1 client, Node and the browser
+		// all follow it.
 		var server = new H2RouteServer(request -> switch (request.path) {
 			case "/dir/start": {status: 302, fields: [new HpackHeader("location", "../final?x=1")]};
 			case "/final?x=1": {status: 200, chunks: ["done"]};
@@ -1413,8 +1400,8 @@ class HTTP2BackendTest extends utest.Test {
 	/**
 		A head the server keeps putting off ends at its deadline. Each 103
 		Early Hints is a frame of the stream, which resets its idle limit, so
-		a server sending one every tenth of a second held the request for as
-		long as it kept going.
+		without a deadline a server sending one every tenth of a second would
+		hold the request for as long as it kept going.
 	**/
 	public function testAnHttp2HeadPutOffEndsAtItsDeadline():Void {
 		var server = new H2ScriptServer(peer -> {
@@ -1478,9 +1465,9 @@ class HTTP2BackendTest extends utest.Test {
 
 	public function testAnHttp2ResponseStillArrivingOutlivesTheTimeout():Void {
 		// A 600 ms idle timeout, and a body in five pieces a quarter second
-		// apart: well over a second in all, never quiet for 600 ms. The
-		// timeout was a deadline on the whole response over HTTP/2, so this
-		// was cut off where the HTTP/1.1 client let it finish.
+		// apart: well over a second in all, never quiet for 600 ms. The timeout
+		// is idle time, not a deadline on the whole response, so this finishes,
+		// as it does over HTTP/1.1.
 		var server = new H2RouteServer(_ -> {status: 200, chunks: ["a", "b", "c", "d", "e"], gap: 0.25});
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
@@ -1497,9 +1484,9 @@ class HTTP2BackendTest extends utest.Test {
 	/**
 		A timeout of `0` is no limit, as `URLRequest.idleTimeout` says and as
 		it is on JavaScript: a stream waits for its answer however long it
-		takes. The session took `0` as a wait of none and failed the stream
-		at once, so the backend could not pass it on and waited 30 seconds
-		instead, one setting, two meanings, depending on the target.
+		takes, rather than the session taking `0` as a wait of none and failing
+		the stream at once (one setting with two meanings, depending on the
+		target).
 	**/
 	public function testAStreamWithNoIdleLimitWaitsForItsAnswer():Void {
 		var server = new H2RouteServer(_ -> {status: 200, chunks: ["late"], gap: 0.4});
@@ -1516,7 +1503,7 @@ class HTTP2BackendTest extends utest.Test {
 		}
 		session.close();
 
-		// And through the backend, which passes the request's 0 on now.
+		// And through the backend, which passes the request's 0 on.
 		HTTPBackendRegistry.register(new HTTP2Backend());
 		var outcome:String = null;
 		var http = new Http('http://127.0.0.1:${server.port}/late', "GET", null, null, null, null, HttpVersion.HTTP_2, 0);
@@ -1545,7 +1532,7 @@ class HTTP2BackendTest extends utest.Test {
 
 		Assert.equals('Request to http://127.0.0.1:${server.port} timed out after 0.5s', outcome);
 		// The last piece came at 0.6 s, so no sooner than 1.1 s: a deadline
-		// counted from the start ended it at half a second.
+		// counted from the start would end it at half a second.
 		Assert.isTrue(took >= 1.0, 'timed out after ${took}s, before the stream had been idle 0.5s');
 		Assert.isTrue(took < 5.0, 'a stalled stream took ${took}s to time out');
 	}
@@ -1553,17 +1540,17 @@ class HTTP2BackendTest extends utest.Test {
 	// ------------------------------------------------------ a hostile server
 
 	public function testAResponseBodyPastTheLimitIsAnError():Void {
-		// The HTTP/1.1 client holds a body to the request's maxBodySize; over
-		// HTTP/2 nothing held it, and the stream's window was opened again as
-		// every half of it arrived, so a server sending without end grew the
-		// body for as long as it liked. 4 MB here against a 256 KB limit.
+		// The HTTP/1.1 client holds a body to the request's maxBodySize, and so
+		// does this: otherwise, with the stream's window opened again as every
+		// half of it arrived, a server sending without end could grow the body
+		// for as long as it liked. 4 MB here against a 256 KB limit.
 		var server = new H2ScriptServer(peer -> {
 			peer.open();
 			var id:Int = peer.readRequest();
 			peer.headers(id, [new HpackHeader(":status", "200")], 0);
-			// Within the windows the client gives, as a server sending an
-			// endless body by the rules does: the client opened them again
-			// as each half was used.
+			// Within the windows the client gives, as a server sending an endless
+			// body by the rules does: the client opens them again as each half is
+			// used.
 			var sent:Int = peer.sendBody(id, 4 * 1024 * 1024);
 			peer.server.note(sent < 0 ? "reset after " + (-sent) : "no reset, sent " + sent);
 			peer.drain();
@@ -1599,16 +1586,14 @@ class HTTP2BackendTest extends utest.Test {
 	}
 
 	public function testAPingFloodTheServerNeverReadsTheAnswersToEndsAtTheTimeout():Void {
-		// PING after PING, and the acknowledgements never read. The client
-		// answered each from its reader with the connection's lock held, so
-		// once the socket's buffers filled, the reader waited in that write
-		// for good, holding the lock, and the request, which needs the lock
-		// to look at its stream, never reached its 1.5 s timeout.
+		// PING after PING, and the acknowledgements never read. Answered from
+		// the reader with the connection's lock held, once the socket's buffers
+		// filled the reader would wait in that write for good, holding the lock,
+		// and the request, which needs the lock to look at its stream, would
+		// never reach its 1.5 s timeout.
 		#if hl
-		// The request still did not end on HashLink in CI, under Linux, and
-		// then under Windows too (2026-10-02), for a reason not yet found;
-		// HashLink is not run where this was written. The CHANGELOG's entry
-		// says so.
+		// The request does not end on HashLink in CI, under Linux or Windows,
+		// for a reason not yet found; the CHANGELOG says so.
 		Assert.pass();
 		return;
 		#end
@@ -1645,9 +1630,9 @@ class HTTP2BackendTest extends utest.Test {
 
 	public function testAnUploadAServerStopsReadingEndsAtTheTimeout():Void {
 		// Every window opened as wide as it goes, and then nothing read: the
-		// body went out in a write that waited on the socket for good, with
-		// the connection's lock held, so the request's 1.5 s timeout, the
-		// longest its body may be kept from going out, never came.
+		// body goes out in a write that waits on the socket for good, so it must
+		// not be made with the connection's lock held, or the request's 1.5 s
+		// timeout (the longest its body may be kept from going out) would never come.
 		var threads:Int = H2ClientSession.liveThreads();
 		var server = __stopsReading();
 		HTTPBackendRegistry.register(new HTTP2Backend());
@@ -1668,9 +1653,9 @@ class HTTP2BackendTest extends utest.Test {
 	}
 
 	public function testCancellingAnUploadAServerStopsReadingReturnsAtOnce():Void {
-		// No timeout, so only a cancel ends it. The cancel needed the
-		// connection's lock, which the upload held in its write: the
-		// cancelling thread, a runtime's, for URLLoader.close(), waited
+		// No timeout, so only a cancel ends it. The cancel needs the
+		// connection's lock, which the upload must not hold in its write, or
+		// the cancelling thread (a runtime's, for URLLoader.close()) would wait
 		// with it.
 		var threads:Int = H2ClientSession.liveThreads();
 		var server = __stopsReading();
@@ -1734,7 +1719,7 @@ class HTTP2BackendTest extends utest.Test {
 	public function testARequestWhoseHeadIsNotTakenEndsAtItsTimeout():Void {
 		// A request with no body writes its own head when nothing else is
 		// being written, and the session's writer watches that write. Here
-		// the write is held, as a peer that has stopped reading holds it,
+		// the write is held (as a peer that has stopped reading holds it)
 		// and has to end at the request's 1 s timeout.
 		var server = new H2RouteServer(_ -> {status: 200, chunks: ["ok"]});
 		var held = __holdingSession(server.port);
@@ -1839,7 +1824,7 @@ class HTTP2BackendTest extends utest.Test {
 	}
 
 	/**
-		Loads `url` on a thread of its own, a POST of `body` when given,
+		Loads `url` on a thread of its own (a POST of `body` when given),
 		waiting `seconds` at most for it, and answers how long it took.
 		`report` is given the outcome, or nothing if there was none in time.
 	**/
@@ -1866,8 +1851,8 @@ class HTTP2BackendTest extends utest.Test {
 
 /**
 	A plain socket whose next write, once `hold()` is called, waits until the
-	socket is shut down or closed, a peer that has stopped reading, met as
-	that write goes out, and then fails, as such a write does once ended.
+	socket is shut down or closed (a peer that has stopped reading, met as
+	that write goes out), and then fails, as such a write does once ended.
 **/
 private class HoldingSocket extends SysSocket {
 	/** Set once a held write has been let go by a shutdown or a close. */
@@ -1893,8 +1878,8 @@ private class HoldingSocket extends SysSocket {
 	/**
 		Holds the next write that carries a HEADERS frame: a request's head.
 		Not simply the next write, which after a request may be the session's
-		WINDOW_UPDATE or SETTINGS ack, holding that left the request unstarted
-		and the cancel finding it "before it started" (CI, 2026-10-03).
+		WINDOW_UPDATE or SETTINGS ack: holding that would leave the request
+		unstarted, and the cancel would find it "before it started".
 	**/
 	public function hold():Void {
 		__lock.acquire();
@@ -2090,8 +2075,8 @@ private class H2ScriptServer {
 	}
 
 	/**
-		Hangs up on the client now, whatever the script is doing, a write
-		the client is not reading included, and ends a `hold`: the end of
+		Hangs up on the client now, whatever the script is doing (a write
+		the client is not reading included), and ends a `hold`: the end of
 		a case that, failing, would leave both ends waiting on each other.
 	**/
 	public function hangUp():Void {
@@ -2767,11 +2752,10 @@ private class H2cServer {
 	}
 
 	public function waitDone():Void {
-		// The client pools its connection now, so it never hangs up on its
-		// own and this fixture's read loop would wait out its socket timeout.
-		// Releasing the pool is what ends the conversation, which is also
-		// the honest shape of the change: a connection outliving one request
-		// is the feature.
+		// The client pools its connection, so it never hangs up on its own and
+		// this fixture's read loop would wait out its socket timeout. Releasing
+		// the pool is what ends the conversation, which is also the honest shape
+		// of it: a connection outliving one request is the feature.
 		H2ConnectionPool.closeAll();
 
 		if (!__done.wait(5.0)) {
@@ -2792,13 +2776,13 @@ private class H2cServer {
 		}
 
 		if (__http1) {
-			// Read what the client has already sent, its SETTINGS and its
-			// HEADERS, before replying. Closing with those still unread makes
-			// the close a RST, and a RST discards the peer's receive buffer, so
-			// the client loses the very bytes it is meant to choke on and fails
-			// with a socket error instead. Draining afterwards does not help:
-			// the reset then lands on this thread, where eval surfaces it as a
-			// native error no catch block sees.
+			// Read what the client has already sent (its SETTINGS and its HEADERS)
+			// before replying. Closing with those still unread makes the close a
+			// RST, and a RST discards the peer's receive buffer, so the client loses
+			// the very bytes it is meant to choke on and fails with a socket error
+			// instead. Draining afterwards does not help: the reset then lands on
+			// this thread, where eval surfaces it as a native error no catch block
+			// sees.
 			__skipFrame(peer);
 			__skipFrame(peer);
 
@@ -2943,11 +2927,9 @@ private class H2MuxServer {
 	// Written by the connection thread, read by the test's. Both go through
 	// `__resetLock` and `sawReset`: an unguarded `push` here against an
 	// `indexOf` there is not just a torn read, it is a push that may reallocate
-	// the array while the other thread walks it. The visible symptom was
-	// milder and more confusing, the reset arrived and was recorded, and the
-	// polling thread spun out its whole ten-second deadline without ever seeing
-	// it, reporting a reset the client had definitely sent as one the server
-	// never got.
+	// the array while the other thread walks it, and the polling thread could
+	// spin out its whole ten-second deadline without ever seeing a reset that
+	// had arrived and been recorded.
 	private var __resetStreamIds:Array<Int> = [];
 
 	// Which stream carried which request. Stream ids are assigned in the order
@@ -3016,8 +2998,8 @@ private class H2MuxServer {
 	 * Called only once the fixture is draining, so the client's SETTINGS ACK
 	 * has already been consumed and this is a clean FIN. Closing with that
 	 * still unread would be a RST, which discards the response the client has
-	 * not finished parsing, and turns a test about pool liveness into a
-	 * coin flip about timing.
+	 * not finished parsing, and turns a test about pool liveness into a coin
+	 * flip about timing.
 	 */
 	public function hangUp():Void {
 		try if (__peer != null) __peer.close() catch (_:Dynamic) {}
@@ -3177,8 +3159,8 @@ private class H2MuxServer {
 }
 
 /**
- * Answers one request in two halves: the headers, then, only once the test
- * says so, the body. Between them it waits until the client has processed
+ * Answers one request in two halves: the headers, then (only once the test
+ * says so) the body. Between them it waits until the client has processed
  * the headers, which it learns from the acknowledgement of a PING sent right
  * behind them.
  */

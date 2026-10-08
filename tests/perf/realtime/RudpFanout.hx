@@ -11,8 +11,8 @@ import haxe.Timer;
 	one process: a server with `sessions` accepted sessions and as many
 	clients, each client losing `loss` of the datagrams it receives and of
 	those it sends (1% unless given). A round sends one `size`-byte reliable
-	message to every session, `mode=prepared`: one `PreparedDatagram`
-	and the server's `broadcast`; `mode=send`: `send` on each session, and
+	message to every session (`mode=prepared`: one `PreparedDatagram`
+	and the server's `broadcast`; `mode=send`: `send` on each session) and
 	pumps until every client has it and every session's frames are
 	acknowledged.
 

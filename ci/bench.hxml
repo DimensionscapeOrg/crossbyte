@@ -4,7 +4,7 @@
 # not.
 #
 # Run it with `export/bench/BenchMain.exe` once built. The harness reports the
-# best of several samples per case: see tests/bench/Bench.hx for why best,
+# best of several samples per case; see tests/bench/Bench.hx for why best,
 # and why these numbers gate nothing in CI.
 -cp src
 -cp tests/bench

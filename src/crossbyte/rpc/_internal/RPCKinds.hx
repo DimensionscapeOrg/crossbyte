@@ -15,7 +15,7 @@ import haxe.macro.TypeTools;
 
 	A kind is found from a type, a typedef followed to what it names: a
 	typedef renamed is the same kind, a field retyped another. A value that
-	may be absent, `Null<T>`, an optional argument, is its kind after a
+	may be absent (`Null<T>`, an optional argument) is its kind after a
 	byte saying whether it is there.
 
 	Every kind keeps the token it has, and with it every op that names it.
@@ -23,7 +23,7 @@ import haxe.macro.TypeTools;
 	inside brackets, `[i32]`. `RPCOps.signature` joins whatever tokens it is
 	given.
 
-	A kind made of others, an array, is written by code that can throw
+	A kind made of others (an array) is written by code that can throw
 	part way through a frame, for a `null` it meets inside the value, and its
 	room is what an empty value of its own takes, not the most it can: its
 	writer makes more as it goes. Both macros give a frame back that such a
@@ -76,7 +76,7 @@ class RPCKinds {
 		For a kind whose `size` is -1, the bytes to begin a frame with for
 		`value`, as an expression of it: the most it takes, or, for a kind
 		made of others, what it takes empty. For one that cannot be absent,
-		it throws for a value that cannot be sent, `null`, before anything
+		it throws for a value that cannot be sent (`null`) before anything
 		is framed.
 	**/
 	public static function room(kind:RPCKind, optional:Bool, value:Expr):Expr {
@@ -249,8 +249,8 @@ class RPCKinds {
 	};
 
 	/**
-		An abstract the table does not name, an `enum abstract` over `Int`,
-		an abstract over `String`, `UInt`, is the kind of the type it
+		An abstract the table does not name (an `enum abstract` over `Int`,
+		an abstract over `String`, `UInt`) is the kind of the type it
 		abstracts, with the same token: it is those bytes. Written as that
 		type and read back as the abstract, both by a cast, which costs
 		nothing.
@@ -308,13 +308,13 @@ class RPCKinds {
 		`Array<T>` of a kind the lane carries, `T` a `Null<>` too: a varint
 		count, then each element as its kind is written, with no tag or
 		length of its own. The count is checked against what the frame has
-		left before anything is made for it, a count is the peer's to
-		choose, at the least each element can take, so twenty bytes cannot
+		left before anything is made for it (a count is the peer's to
+		choose), at the least each element can take, so twenty bytes cannot
 		ask for an array of two billion.
 	**/
 	static function arrayKind(element:RPCKind, optional:Bool, elementType:ComplexType):RPCKind {
-		// The least an element takes: its size, or a byte, a String's count,
-		// an absent element's presence byte, which every kind takes at least.
+		// The least an element takes: its size, or a byte (a String's count,
+		// an absent element's presence byte), which every kind takes at least.
 		final least:Int = !optional && element.size > 0 ? element.size : 1;
 		// Numbers and Bools that cannot be absent: all of them made room for,
 		// or checked, at once.
@@ -420,8 +420,8 @@ class RPCKinds {
 	// ------------------------------------------------------------ types
 
 	/**
-		The kind of `type`, absence aside, a `Null<T>` is `T`'s kind, which
-		a caller asks `isNullType` about, or `null` when the lane does not
+		The kind of `type`, absence aside (a `Null<T>` is `T`'s kind, which
+		a caller asks `isNullType` about), or `null` when the lane does not
 		carry it.
 	**/
 	public static function ofType(type:Type, pos:Position):Null<RPCKind> {
@@ -583,7 +583,7 @@ class RPCKinds {
 	- `read`: reads one from a `ByteArrayInput`, in a frame ending at `end`.
 	- `put` and `get`, for a kind of fixed size that is a number or a
 	  `Bool`: writes a value at a place in a `Bytes`, or reads one, with no
-	  check, an array of them makes room for, or checks it has, all of
+	  check: an array of them makes room for, or checks it has, all of
 	  them at once, then puts or gets each where it goes.
 **/
 typedef RPCKind = {

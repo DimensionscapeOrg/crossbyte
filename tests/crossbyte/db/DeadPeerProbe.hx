@@ -4,7 +4,7 @@ package crossbyte.db;
 	Silences a connection the way a partition does, for the tests of TCP
 	keepalive: from the moment it is called, nothing arriving on the socket
 	reaches TCP, keepalive probes included. A peer that only stops answering
-	is no use for that, its system still acknowledges every probe, and the
+	is no use for that: its system still acknowledges every probe, and the
 	connection looks alive for ever.
 
 	Linux only, through a socket filter (`SO_ATTACH_FILTER`, no privilege

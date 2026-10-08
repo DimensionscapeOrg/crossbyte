@@ -18,10 +18,8 @@ package crossbyte;
 abstract Seq32(Int) from Int to Int {
 	// Arithmetic goes through haxe.Int32, which wraps it at 32 bits where
 	// the target does not: JavaScript, PHP, Python and Lua. Elsewhere it is
-	// plain Int arithmetic, as it always was. On JavaScript it was left to
-	// run past 2^31 - 1, so a sequence counted up past it no longer equalled
-	// the same sequence read off the wire, and a reliable session that got
-	// there stopped delivering.
+	// plain Int arithmetic. Without the wrap, a sequence counted up past
+	// 2^31 - 1 would no longer equal the same sequence read off the wire.
 	public static inline var MAX_INT_32:Int = 0x7FFFFFFF; //  2147483647
 	public static inline var ABS_MIN_INT_32:UInt = 0x80000000; //  2147483648
 	public static inline var MAX_UINT_32:UInt = 0xFFFFFFFF; //  4294967295
@@ -44,8 +42,8 @@ abstract Seq32(Int) from Int to Int {
 
 	// Unsigned, as the rest of the type is. Past the first case the operands
 	// go through Float, where every 32-bit value and the remainder of two are
-	// exact, and the remainder comes back through `__fromUnsigned`: `Std.int`
-	// of one of 2^31 or more saturated at 2147483647 on the jvm.
+	// exact, and the remainder comes back through `__fromUnsigned`, since
+	// `Std.int` of one of 2^31 or more saturates at 2147483647 on the jvm.
 	@:op(A % B) private static inline function mod(a:Seq32, b:Seq32):Seq32 {
 		var ai = (a : Int), bi = (b : Int);
 		if (ai >= 0 && bi > 0)
@@ -156,8 +154,7 @@ abstract Seq32(Int) from Int to Int {
 
 	/**
 		The value as an unsigned number: decimal, or eight hex digits for a
-		radix of 16. Both went through `toFloat`, so on the jvm a value of
-		2^31 or more printed as "4.294967295E9" and in hex as 7FFFFFFF.
+		radix of 16, the same on every target.
 	**/
 	private inline function toString(?radix:Int):String {
 		return radix == 16 ? StringTools.hex(this, 8) : __unsignedDecimal(this);

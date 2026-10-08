@@ -16,10 +16,10 @@ import crossbyte.test.Require;
 
 @:access(crossbyte.http.HTTPRequestHandler)
 // Every case here waits on a socket, and some wait on a server-side timeout
-// deliberately, an idle keep-alive connection closing, an incomplete request
-// answering 408. utest allows an asynchronous case 250ms by default, which is
-// shorter than the behaviour under test, so four of them reported "async is
-// timed out" rather than what they measured. The budget is a ceiling on a hang,
+// deliberately (an idle keep-alive connection closing, an incomplete request
+// answering 408). utest allows an asynchronous case 250ms by default, which is
+// shorter than the behaviour under test, so such a case would report "async is
+// timed out" rather than what it measured. The budget is a ceiling on a hang,
 // not a target: a healthy run spends nowhere near it.
 @:timeout(20000)
 class HTTPRequestHandlerTest extends utest.Test {
@@ -112,9 +112,9 @@ class HTTPRequestHandlerTest extends utest.Test {
 	public function testIfModifiedSinceReturns304(async:Async):Void {
 		// Nested rather than sequential because it has to be: the second request
 		// carries the Last-Modified the first one answered with. Both requests
-		// share one root so they serve the same file, Last-Modified is the mtime
+		// share one root so they serve the same file: Last-Modified is the mtime
 		// at second granularity, and two temp files created a moment apart can land
-		// in different seconds, which returned 200 and failed this intermittently.
+		// in different seconds, which would return 200.
 		var root = File.createTempDirectory();
 		var fixture = new ByteArray();
 		fixture.writeUTFBytes("Hello from middleware test");
@@ -138,9 +138,9 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testAThrowingRouteIsLoggedAndNotShownToTheClient(async:Async):Void {
-		// A route that threw left one INFO line, "Status: 500", and nothing
-		// saying why. The error goes to the log now, at ERROR, with the method
-		// and path; the client still sees only the status.
+		// A route that throws leaves more than one INFO line, "Status: 500":
+		// the error goes to the log at ERROR, with the method and path, saying
+		// why; the client still sees only the status.
 		var lines:Array<String> = [];
 		var previous = crossbyte.utils.Logger.sink;
 		crossbyte.utils.Logger.sink = line -> lines.push(line);
@@ -166,8 +166,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testTheAccessLogCanBeQuietedOnItsOwn(async:Async):Void {
-		// The access log shared the one global level, so quieting it meant
-		// quieting everything at INFO. It has the category http.access now.
+		// The access log has the category http.access, so it can be quieted
+		// without quieting everything at INFO.
 		var lines:Array<String> = [];
 		var previous = crossbyte.utils.Logger.sink;
 		crossbyte.utils.Logger.sink = line -> lines.push(line);
@@ -231,10 +231,10 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testAValidatorPast2038StillAnswers304(async:Async):Void {
-		// Seconds since 1970 leave an Int in January 2038. The comparison
-		// floored both sides with Math.floor, which returns an Int, and on
-		// hxcpp the wrap made a 2100 date compare as long ago, a 200 with
-		// the whole file where a 304 was due.
+		// Seconds since 1970 leave an Int in January 2038. A comparison that
+		// floored both sides with Math.floor, which returns an Int, would on
+		// hxcpp make a 2100 date compare as long ago: a 200 with the whole file
+		// where a 304 was due.
 		__sendRequest(async, [], "GET /index.html HTTP/1.1\r\nHost: localhost\r\nIf-Modified-Since: Fri, 01 Jan 2100 00:00:00 GMT\r\n\r\n",
 			function(response):Void {
 				Assert.equals(304, response.status);
@@ -344,8 +344,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 	/**
 		`deflate` is zlib (RFC 9110 8.4.1.2), and what a client that follows
-		the standard sends. It was inflated as raw DEFLATE, so a correct body
-		failed and was refused as too large.
+		the standard sends. Inflated as raw DEFLATE, a correct body would fail
+		and be refused as too large.
 	**/
 	public function testMiddlewareCanReadAZlibDeflateRequestBody(async:Async):Void {
 		var bodyText:String = null;
@@ -368,7 +368,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 	/**
 		A body that is not what its coding says is a bad request, 400; only
-		one that grows past the ceiling is 413. Both were 413.
+		one that grows past the ceiling is 413.
 	**/
 	public function testAMalformedCodedBodyIsABadRequest(async:Async):Void {
 		var body:ByteArray = new ByteArray();
@@ -408,8 +408,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 	public function testAnInflatedBodyPastTheCeilingIsRefused(async:Async):Void {
 		// Two megabytes of zeros gzip to about two kilobytes, well inside the
-		// wire limit. The limit counted wire bytes and inflation had no ceiling,
-		// so a 32 KB body became 32 MB at the route.
+		// wire limit. The limit counts inflated bytes too, or a 32 KB body could
+		// become 32 MB at the route.
 		var zeros:ByteArray = new ByteArray();
 		zeros.length = 2 * 1024 * 1024;
 		zeros.compress(CompressionAlgorithm.GZIP);
@@ -509,8 +509,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 			Assert.equals(200, response.status);
 			Assert.equals("deflate", response.headers.get("content-encoding"));
 
-			// zlib, which is what `deflate` names; it was raw DEFLATE, which
-			// a client following the standard cannot read.
+			// zlib, which is what `deflate` names, not raw DEFLATE, which a client
+			// following the standard cannot read.
 			var decompressed = new ByteArray();
 			decompressed.writeBytes(response.bodyBytes, 0, response.bodyBytes.length);
 			decompressed.uncompress(CompressionAlgorithm.ZLIB);
@@ -665,8 +665,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testCorsPreflightReturnsConfiguredHeaders(async:Async):Void {
-		// The configured lists, not the request's: this used to echo DELETE and
-		// X-Evil back, approving whatever a page named.
+		// The configured lists, not the request's: echoing DELETE and X-Evil
+		// back would approve whatever a page named.
 		__sendRequest(async, [], "OPTIONS /index.html HTTP/1.1\r\nHost: localhost\r\nOrigin: https://app.example\r\nAccess-Control-Request-Method: DELETE\r\nAccess-Control-Request-Headers: X-Evil, Authorization\r\n\r\n", function(response):Void {
 
 			Assert.equals(204, response.status);
@@ -700,11 +700,11 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testCorsNeverEchoesAnOriginForTheWildcard(async:Async):Void {
-		// The auditor read a signed-in user's /me from https://evil.example:
-		// with credentials on and the origins left at "*", any Origin came
-		// back with Allow-Credentials. validate() now refuses that pairing,
-		// and a config changed after the server started still answers "*",
-		// which a browser will not pair with credentials.
+		// A signed-in user's /me must not be readable from https://evil.example:
+		// with credentials on and the origins left at "*", any Origin would come
+		// back with Allow-Credentials. validate() refuses that pairing, and a
+		// config changed after the server started still answers "*", which a
+		// browser will not pair with credentials.
 		var refused:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
 		refused.corsEnabled = true;
 		refused.corsAllowCredentials = true;
@@ -719,10 +719,11 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 
 	public function testCorsPreflightKeepsTheConnectionAlive(async:Async):Void {
-		// The preflight used to write its own response and close by hand, so
-		// every one cost a fresh connection, and a full TLS handshake where
-		// enabled, immediately before the request it was clearing. Browsers
-		// send these ahead of a great many ordinary requests.
+		// The preflight goes through the ordinary response path and keeps the
+		// connection: writing its own response and closing by hand would cost
+		// a fresh connection (and a full TLS handshake where enabled) right
+		// before the request it was clearing. Browsers send these ahead of a
+		// great many ordinary requests.
 		__sendRequests(async, [], [
 			"OPTIONS /index.html HTTP/1.1\r\nHost: localhost\r\nOrigin: https://app.example\r\nAccess-Control-Request-Method: POST\r\n\r\n",
 			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
@@ -752,8 +753,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 	public function testBodilessStatusesCarryNoContentLength(async:Async):Void {
 		// RFC 7230 3.3.2 forbids Content-Length on a 204, and 3.3.3 has the
 		// client end such a response at the blank line regardless, so the
-		// header was both disallowed and redundant. The preflight sent
-		// "Content-Length: 0" for as long as it built its own response.
+		// header would be both disallowed and redundant.
 		__sendRequest(async, [], "OPTIONS /index.html HTTP/1.1\r\nHost: localhost\r\nOrigin: https://app.example\r\nAccess-Control-Request-Method: POST\r\n\r\n", function(response):Void {
 
 			Assert.equals(204, response.status);
@@ -766,8 +766,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 		// The request-generation guard, isolated.
 		//
 		// A middleware is supposed to respond or call next(), not both. One
-		// that responds and then calls next() later, after an await, a timer,
-		// a worker completion, is calling into a request that has already
+		// that responds and then calls next() later (after an await, a timer, a
+		// worker completion) is calling into a request that has already
 		// finished. The `alreadyCalled` latch beside the guard does not cover
 		// it, because next() was never called the first time; and __responded
 		// does not, because the connection has been reset for the next request
@@ -778,8 +778,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 		// makes this the guard rather than a restatement of the latch: the
 		// generation only advances when request one is reset away, so a
 		// continuation fired any earlier still matches its own slot and proves
-		// nothing. Two earlier attempts at this test passed with the guard
-		// deleted for exactly that reason.
+		// nothing.
 		//
 		// What breaks without it is not an extra response but a substituted
 		// one: the revived chain runs request one's routing to completion and
@@ -803,9 +802,9 @@ class HTTPRequestHandlerTest extends utest.Test {
 			if (stale != null) {
 				var fire = stale;
 				stale = null;
-				// Belongs to a request that is over. Must do nothing at all,
-				// running it would push request one's remaining chain, and its
-				// response, into request two's slot.
+				// Belongs to a request that is over. Must do nothing at all: running
+				// it would push request one's remaining chain, and its response, into
+				// request two's slot.
 				fire();
 			}
 
@@ -831,9 +830,9 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 	public function testHeaderScanResumesAcrossChunkBoundaries():Void {
 		// The completeness scan carries its last three bytes between data
-		// events, so a CRLFCRLF split across arrivals must still be seen,
-		// and a rescan-from-zero regression would pass this test too slowly
-		// to notice, so the boundary placement is the real assertion here.
+		// events, so a CRLFCRLF split across arrivals must still be seen; and
+		// a scan that started again from zero each time would pass this test too
+		// slowly to notice, so the boundary placement is the real assertion here.
 		var handler = new HTTPRequestHandler(new Socket(), new HTTPServerConfig(), null);
 		var buffer = new ByteArray();
 
@@ -861,12 +860,12 @@ class HTTPRequestHandlerTest extends utest.Test {
 		buffer.position = buffer.length;
 		buffer.writeUTFBytes("\n");
 		buffer.position = 0;
-		// Bare LF LF terminates a block too; the rewrite must keep that.
+		// Bare LF LF terminates a block too.
 		Assert.isTrue(handler.__hasCompleteHeaderBlock(buffer));
 	}
 
 	public function testReadLineKeepsByteExactSemantics():Void {
-		// One byte in, one code point out, no UTF-8 decoding. A header
+		// One byte in, one code point out: no UTF-8 decoding. A header
 		// value carrying 0xE9 must read back as 0xE9, not as a decode error
 		// or a replacement character.
 		var handler = new HTTPRequestHandler(new Socket(), new HTTPServerConfig(), null);
@@ -905,8 +904,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testKeepAliveServesTwoSequentialRequestsOnOneSocket(async:Async):Void {
-		// The core promise of the lifecycle change: one connect, two
-		// requests, two responses, no handshake in between.
+		// The core promise of keep-alive: one connect, two requests, two
+		// responses, no handshake in between.
 		__sendRequests(async, [], [
 			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
 			"GET /second.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
@@ -924,9 +923,9 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 	public function testPipelinedRequestsAnsweredInOrder(async:Async):Void {
 		// Both requests land in one flush, so request two is sitting in
-		// __incomingBuffer when response one is written. The old
-		// clear-at-response would have silently discarded it; distinct
-		// bodies prove both answers arrive, in request order.
+		// __incomingBuffer when response one is written. Clearing the buffer at
+		// the response would silently discard it; distinct bodies prove both
+		// answers arrive, in request order.
 		__sendRequests(async, [], [
 			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
 			"GET /second.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
@@ -1001,7 +1000,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 	public function testKeepAliveMaxRequestsClosesOnFinalResponse(async:Async):Void {
 		// A limit of two means exactly two responses, the second already
-		// carrying the close, never a third request answered, never a
+		// carrying the close: never a third request answered, never a
 		// keep-alive header the server does not honor.
 		__sendRequests(async, [], [
 			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
@@ -1016,14 +1015,13 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testDefaultConfigAnswers404ForAMissingPath(async:Async):Void {
-		// No `configure` argument: the default is the point. It used to end
-		// tryFiles with "/index.html", so every unmatched path answered 200
-		// with the root index, a single-page application fallback, on for
-		// everyone. That was documented, but the failure it produces is the
-		// silent one: a missing file answered 200 with unrelated HTML is
-		// cached as valid, passes an uptime check and hides a broken link.
-		// An SPA that wanted the fallback breaks loudly on the first refresh
-		// and is one config line from fixed.
+		// No `configure` argument: the default is the point. A default ending
+		// tryFiles with "/index.html" would answer every unmatched path 200 with
+		// the root index, a single-page application fallback, on for everyone;
+		// and that failure is the silent one: a missing file answered 200 with
+		// unrelated HTML is cached as valid, passes an uptime check and hides a
+		// broken link. An SPA that wants the fallback breaks loudly on the first
+		// refresh and is one config line from fixed.
 		__sendRequest(async, [], "GET /definitely-not-here.html HTTP/1.1\r\nHost: localhost\r\n\r\n", function(response):Void {
 
 			Assert.equals(404, response.status);
@@ -1035,7 +1033,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 		// The other half, and why this is not simply "drop an entry": "$uri/"
 		// still resolves a directory to its index, so the root goes on
 		// answering with index.html. Only the fallback for a path that
-		// resolves to nothing is gone.
+		// resolves to nothing is absent.
 		__sendRequest(async, [], "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n", function(response):Void {
 
 			Assert.equals(200, response.status);
@@ -1045,11 +1043,11 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testNotFoundKeepsConnectionUsable(async:Async):Void {
-		// The motivating case: a page with a missing favicon
-		// must not pay a new handshake for the 404. tryFiles is set here
-		// rather than left to the default, it is the same two entries the
-		// default now carries, but a test that needs a 404 should say so
-		// itself rather than depend on a default staying put.
+		// The motivating case: a page with a missing favicon must not pay a new
+		// handshake for the 404. tryFiles is set here rather than left to the
+		// default (it is the same two entries the default carries), since a test
+		// that needs a 404 should say so itself rather than depend on a default
+		// staying put.
 		__sendRequests(async, [], [
 			"GET /missing.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
 			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
@@ -1215,10 +1213,10 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testAnErrorAnsweringAHeadCarriesNoBody(async:Async):Void {
-		// The server's own error answers, a 404, a 403, a 405, were written
-		// with their text whatever the method, so a HEAD for a missing file
-		// had "404 Not Found" after its head, which a client reads as the
-		// start of the next response on the connection.
+		// The server's own error answers (a 404, a 403, a 405) are written
+		// without their text for a HEAD, or a HEAD for a missing file would have
+		// "404 Not Found" after its head, which a client reads as the start of
+		// the next response on the connection.
 		__sendRequests(async, [], [
 			"HEAD /missing.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
 			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
@@ -1235,10 +1233,10 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 	public function testTheResponseStatusEventSaysWhatWasAnswered(async:Async):Void {
 		// HTTPStatusEvent says responseURL is the URL the response came from
-		// and responseHeaders the fields it carried. On the server the URL was
-		// the client's address and the fields only those a caller had added,
-		// for a static file, Accept-Ranges and Last-Modified, with no
-		// Content-Type, Date or Server among them.
+		// and responseHeaders the fields it carried: on the server, not the
+		// client's address, nor only the fields a caller had added (for a static
+		// file, Accept-Ranges and Last-Modified, with no Content-Type, Date or
+		// Server among them).
 		var seen:crossbyte.events.HTTPStatusEvent = null;
 		__sendRequest(async, [
 			(handler, next) -> {
@@ -1314,9 +1312,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testTheErrorDocumentIsTheBodyOfTheServersOwnErrors(async:Async):Void {
-		// errorDocument was declared, taken by the constructor, and read by
-		// nothing: every error went out as one line of plain text whatever it
-		// named.
+		// errorDocument is read: an error goes out as the page it names, not
+		// one line of plain text whatever it names.
 		var page:String = "<h1>Not here</h1>";
 		__sendRequests(async, [
 			(handler, next) -> {
@@ -1375,16 +1372,16 @@ class HTTPRequestHandlerTest extends utest.Test {
 		// continuation lands while a request is in flight rather than
 		// after it.
 		//
-		// What this pins is the observable contract, two requests, two
-		// responses, no third status line on the wire. It does NOT isolate
+		// What this pins is the observable contract (two requests, two
+		// responses, no third status line on the wire). It does NOT isolate
 		// any single guard: the connection carries three overlapping ones
 		// (`alreadyCalled` per continuation, `__responded` per slot, and
 		// the generation stamp), and this case still passes with the
 		// generation check deleted, so some combination of the other two
 		// covers this particular timing. Deleting the generation stamp on
-		// the strength of that would be a mistake, it is the only guard
+		// the strength of that would be a mistake (it is the only guard
 		// that can refuse a continuation whose slot has already been
-		// answered and replaced, but no test here proves it, and this
+		// answered and replaced), but no test here proves it, and this
 		// comment is the honest record of that gap.
 		var seen:Int = 0;
 		__sendRequests(async, [
@@ -1417,16 +1414,13 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testPhpRewriteWithoutABridgeDoesNotCrash(async:Async):Void {
-		// A PHP-flagged rewrite on a server with no bridge reached a null
-		// pointer and took the process down, not an error on that connection,
-		// but the whole process, and every other connection with it.
+		// A PHP-flagged rewrite on a server with no bridge must not reach a
+		// null pointer and take the process down: not an error on that
+		// connection, but the whole process, and every other connection with it.
 		//
-		// The rule is written out here because the defaults used to carry it:
-		// every /api path to /index.php with the PHP flag, while phpEnabled
-		// defaults to false. That is how a stock server segfaulted on a path a
-		// great many services use. The defaults ship empty now, so this test
-		// supplies its own, and the guard still earns its place, because
-		// rewrites is a public array a PHP rule can be added to at any time.
+		// The rule is written out here because the defaults ship empty; the
+		// guard still earns its place, because rewrites is a public array a PHP
+		// rule can be added to at any time, and phpEnabled defaults to false.
 		__sendRequest(async, [], "GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n", function(response):Void {
 
 			Assert.equals(500, response.status);
@@ -1440,10 +1434,10 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 	public function testDirectoryIndexPrefersOneTheServerCanActuallyServe(async:Async):Void {
 		// directoryIndex leads with index.php, so a directory holding both it
-		// and an index.html selected the PHP file, which without a bridge
-		// cannot be served. Once serving it was refused the directory answered
-		// 404 with a usable index sitting right beside it. Selection now skips
-		// what cannot be delivered rather than picking it and failing later.
+		// and an index.html would select the PHP file, which without a bridge
+		// cannot be served, and the directory would answer 404 with a usable
+		// index sitting right beside it. Selection skips what cannot be
+		// delivered rather than picking it and failing later.
 		//
 		// tryFiles is stated rather than defaulted: a "/index.html" entry
 		// would answer the directory request before the index is resolved,
@@ -1468,10 +1462,10 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testDefaultConfigShipsNoRewrites(async:Async):Void {
-		// The defaults rewrote every /api path to /index.php with the PHP flag
-		// while phpEnabled defaulted to false, so a stock server crashed on a
-		// request path a great many services use. Nothing is routed anywhere
-		// now unless it is asked for.
+		// The defaults route nothing anywhere unless it is asked for: a default
+		// rewriting every /api path to /index.php with the PHP flag, while
+		// phpEnabled defaults to false, would crash a stock server on a request
+		// path a great many services use.
 		var root = File.createTempDirectory();
 		var config = new HTTPServerConfig("127.0.0.1", 0, root);
 		Assert.equals(0, config.rewrites.length);
@@ -1492,8 +1486,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 		// $uri and $uri/ are tested before this list is read and before the
 		// rewrites, so a config that puts a literal first, omits them, or names
 		// one twice describes an order that does not happen. Rejecting it is the
-		// point: a config quietly meaning something else is how the /api default
-		// came to crash a stock server.
+		// point: a config quietly meaning something else is how a default can
+		// crash a stock server.
 		var root = File.createTempDirectory();
 
 		var valid = new HTTPServerConfig("127.0.0.1", 0, root);
@@ -1522,10 +1516,10 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testUnmappedStatusGetsItsClassNotOK(async:Async):Void {
-		// A middleware can raise any status through next(code). Every code the
-		// table did not know rendered "OK", so next(503) put
-		// "HTTP/1.1 503 OK" on the wire, contradicting itself, and reading as
-		// success to anything matching on the phrase.
+		// A middleware can raise any status through next(code), and each is
+		// given its own phrase: rendering "OK" for every code the table did not
+		// know would put "HTTP/1.1 503 OK" on the wire, contradicting itself,
+		// and reading as success to anything matching on the phrase.
 		__sendRequest(async, [
 			function(_:HTTPRequestHandler, next:?Dynamic->Void):Void {
 				next(503);
@@ -1551,9 +1545,9 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 	public function testRejectedIdentityEncodingAnswersOneNotAcceptable(async:Async):Void {
 		// identity;q=0 forbids the only coding an error body can be sent in,
-		// so the 406 explaining that used to be negotiated against the very
-		// header it was answering: reject, send 406, negotiate, reject. The
-		// recursion had no floor and took the connection's thread with it.
+		// so the 406 explaining that must not be negotiated against the very
+		// header it is answering: reject, send 406, negotiate, reject, a
+		// recursion with no floor that would take the connection's thread.
 		__sendRequest(async, [], "GET /index.html HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: identity;q=0\r\n\r\n", function(response):Void {
 
 			Assert.equals(406, response.status);
@@ -1562,9 +1556,9 @@ class HTTPRequestHandlerTest extends utest.Test {
 		}, null, false, null, __compressEverything);
 	}
 	public function testLiteralPlusInPathServesThePlusNamedFile(async:Async):Void {
-		// Form decoding read the `+` as a space, so this request used to
-		// look up, and serve, the decoy. The decoy stays to keep the
-		// failure mode a wrong body rather than a soft 404.
+		// Form decoding reads the `+` as a space, and a path is not form
+		// decoded, or this request would look up, and serve, the decoy. The
+		// decoy stays to keep the failure mode a wrong body rather than a soft 404.
 		var requestPath:String = null;
 		__sendRequest(async, [
 			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
@@ -1620,10 +1614,10 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 	public function testEncodedNulCannotSmuggleAPathPastTheBlacklist(async:Async):Void {
 		// The filesystem reaches a C API through the string's `char*` and
-		// stops at the NUL; the blacklist compares the whole string and
-		// does not. Under the old decoder this request was checked as
-		// `secret.txt\0.html`, matched nothing, then truncated on open and
-		// served the blacklisted file.
+		// stops at the NUL; the blacklist compares the whole string and does
+		// not. Decoded to a NUL, this request would be checked as
+		// `secret.txt\0.html`, match nothing, then be truncated on open and
+		// serve the blacklisted file.
 		__sendRequest(async, [], "GET /secret.txt%00.html HTTP/1.1\r\nHost: localhost\r\n\r\n", function(response):Void {
 
 			Assert.equals(400, response.status);
@@ -1661,9 +1655,9 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testPhpSourceIsNotServedWhenNoBridgeIsConfigured(async:Async):Void {
-		// phpEnabled is false by default, and a .php file used to fall through
-		// to the static path when no bridge existed, so a default server
-		// answered this with 200 and the file itself. PHP source is where
+		// phpEnabled is false by default, and a .php file must not fall through
+		// to the static path when no bridge exists, or a default server would
+		// answer this with 200 and the file itself. PHP source is where
 		// credentials live; serving it verbatim hands them out.
 		__sendRequest(async, [], "GET /config.php HTTP/1.1\r\nHost: localhost\r\n\r\n", function(response):Void {
 
@@ -1683,13 +1677,11 @@ class HTTPRequestHandlerTest extends utest.Test {
 		// with index.php, so a directory resolves to it and reaches the static
 		// path through __serveFile's recursion rather than directly.
 		//
-		// Both config lines exist to make that route reachable, and this test
-		// passed without either of them while the hole was still open. The
-		// harness passes ["index.html"] as directoryIndex, so the directory
-		// never resolved to a .php file at all; and a "/index.html" entry in
+		// Both config lines exist to make that route reachable: without either,
+		// this test would pass against a server that hands over the source. The
+		// harness passes ["index.html"] as directoryIndex, so the directory would
+		// never resolve to a .php file at all; and a "/index.html" entry in
 		// tryFiles answers a directory request before the index is looked up.
-		// Either one alone is enough to make the test green against a server
-		// that would have handed over the source.
 		__sendRequest(async, [], "GET /private/ HTTP/1.1\r\nHost: localhost\r\n\r\n", function(response):Void {
 
 			Assert.equals(404, response.status);
@@ -1727,9 +1719,9 @@ class HTTPRequestHandlerTest extends utest.Test {
 		Runs a case's own check of what came back, reporting what it throws.
 
 		A case that asserts the status and then decodes the body decodes
-		whatever arrived: a response cut short throws, `Eof` from the
-		inflater, and on Node, where this runs from a timer callback, the
-		throw reached the uncaught handler and ended the whole run, with no
+		whatever arrived: a response cut short throws (`Eof` from the
+		inflater), and on Node, where this runs from a timer callback, the
+		throw would reach the uncaught handler and end the whole run, with no
 		report of this case nor of any after it.
 	**/
 	private static function __runCase(async:Async, check:Void->Void):Void {
@@ -1749,7 +1741,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 		// A caller can hand in a root so two requests hit the same file. A
 		// conditional request needs that: Last-Modified is the file's mtime at
 		// second granularity, and two temp files created a moment apart can fall
-		// either side of a second boundary, which is what made the 304 case flaky.
+		// either side of a second boundary.
 		var ownsRoot:Bool = sharedRoot == null;
 		var root = ownsRoot ? File.createTempDirectory() : sharedRoot;
 		if (ownsRoot) {
@@ -1802,8 +1794,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 		client.addEventListener(Event.CLOSE, _ -> closeSeen = true);
 
 		// HEAD responses end at their header terminator; waiting for the
-		// advertised Content-Length would burn the whole pump timeout now
-		// that a HEAD response no longer ends its connection.
+		// advertised Content-Length would burn the whole pump timeout, since a
+		// HEAD response does not end its connection.
 		var headOnly:Bool = StringTools.startsWith(requestText, "HEAD ");
 
 		/**
@@ -1851,7 +1843,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 	/**
 	 * Sends several requests over ONE socket and splits the byte stream
-	 * back into responses, the single-connect-many-responses shape that
+	 * back into responses: the single-connect-many-responses shape that
 	 * keep-alive exists to produce and that `__sendRequest` cannot
 	 * observe.
 	 *
@@ -1933,9 +1925,9 @@ class HTTPRequestHandlerTest extends utest.Test {
 		/**
 		 * Reads response `i`, then asks for the next.
 		 *
-		 * A recursion rather than the loop this was, because sequential mode
-		 * cannot send request N+1 until response N is complete, and waiting
-		 * for that is the one thing a loop cannot do on Node.
+		 * A recursion rather than a loop, because sequential mode cannot send
+		 * request N+1 until response N is complete, and waiting for that is the
+		 * one thing a loop cannot do on Node.
 		 */
 		function step(i:Int):Void {
 			if (i >= requests.length) {
@@ -2001,9 +1993,9 @@ class HTTPRequestHandlerTest extends utest.Test {
 		// 0xFFFFFFFF passes the hex pattern, and Std.parseInt then answers
 		// four different ways: -1 on eval and cpp, a thrown
 		// NumberFormatException on jvm, and 4294967295 on node, which is
-		// neither null nor negative, so node accepted it and went on to wait
-		// for a four gigabyte chunk. A malformed size is a client error on
-		// every target, not a 500 and not a promise of more body.
+		// neither null nor negative, so node would accept it and wait for a
+		// four gigabyte chunk. A malformed size is a client error on every
+		// target, not a 500 and not a promise of more body.
 		__sendRequest(async, [], "POST /index.html HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\nFFFFFFFF\r\n", function(response):Void {
 			Assert.equals(400, response.status);
 			async.done();
@@ -2038,9 +2030,9 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testHeaderLineWithNoFieldNameIsRejected(async:Async):Void {
-		// A line with no colon is not a header. It used to be skipped, which
-		// left this server and anything in front of it disagreeing about what
-		// the message contained.
+		// A line with no colon is not a header. Skipped, it would leave this
+		// server and anything in front of it disagreeing about what the message
+		// contained.
 		__sendRequest(async, [], "GET /index.html HTTP/1.1\r\nHost: localhost\r\ngarbage\r\n\r\n", function(response):Void {
 			Assert.equals(400, response.status);
 			async.done();
@@ -2059,11 +2051,11 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testAThrowAfterAnAsynchronousNextIsAnswered500(async:Async):Void {
-		// A middleware that calls next() from a later tick, once a session
-		// lookup comes back, say, carries the request on with no catch of
-		// its on the stack: what the files then threw went to the runtime's
-		// timer, and the request was never answered at all. The throw is a
-		// status listener's, on the response the file was first given.
+		// A middleware that calls next() from a later tick (once a session
+		// lookup comes back, say) carries the request on with no catch of its
+		// own on the stack: what the files then throw must still answer the
+		// request, not go to the runtime's timer and leave it unanswered. The
+		// throw is a status listener's, on the response the file was first given.
 		var thrown:Bool = false;
 		__sendRequest(async, [
 			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
@@ -2087,9 +2079,9 @@ class HTTPRequestHandlerTest extends utest.Test {
 	public function testAThrowServingAPipelinedRequestAfterAnAsynchronousAnswerIsAnswered500(async:Async):Void {
 		// The request behind an answer given from a later tick is parsed from
 		// inside that answer, with no read handler on the stack to catch what
-		// parsing it throws, here the rate limiter's key: it went to the
-		// runtime's timer, the request was never answered, and the connection
-		// parsed nothing again.
+		// parsing it throws (here the rate limiter's key): it must not go to the
+		// runtime's timer, leaving the request unanswered and the connection
+		// parsing nothing again.
 		__sendRequests(async, [
 			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
 				if (handler.requestPath == "/later") {
@@ -2116,12 +2108,12 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testAResponseCutShortClosesRatherThanAnsweringAgain():Void {
-		// A write that throws after a response's head has gone out, a socket
-		// past its output cap under OutputOverflowPolicy.THROW, was answered
-		// 500 like any other failure, and the 500's status line went out in the
-		// middle of the first response's body. No status can follow a head; the
-		// connection is closed, which a client can tell from the length the
-		// head promised.
+		// A write that throws after a response's head has gone out (a socket
+		// past its output cap under OutputOverflowPolicy.THROW) must not be
+		// answered 500 like any other failure, with the 500's status line going
+		// out in the middle of the first response's body. No status can follow
+		// a head; the connection is closed, which a client can tell from the
+		// length the head promised.
 		for (routed in [true, false]) {
 			var label:String = routed ? "from a middleware" : "from the files";
 			var root:File = File.createTempDirectory();
@@ -2148,8 +2140,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 }
 
 /**
-	A connected socket with nothing behind it, whose first `writeBytes`, the
-	first body written after a head, under HTTP/1.1, throws. What is written
+	A connected socket with nothing behind it, whose first `writeBytes` (the
+	first body written after a head, under HTTP/1.1) throws. What is written
 	otherwise is kept as text.
 **/
 private class BreakingBodySocket extends Socket {

@@ -4,8 +4,8 @@ package crossbyte.io;
 	Points the application storage directory somewhere temporary while a
 	test class runs, and takes it back afterwards.
 
-	The directory is the application's own, `%APPDATA%\<id>`, with the id
-	the main class's name, and is created the first time anything asks for
+	The directory is the application's own (`%APPDATA%\<id>`, with the id
+	the main class's name) and is created the first time anything asks for
 	it. Unsandboxed, a test run would leave one under the account's real
 	application data per suite entry point: `TestMain`, `JvmTestMain`,
 	`NativeSmokeMain` and the rest. A class that touches

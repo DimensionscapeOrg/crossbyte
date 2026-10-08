@@ -15,17 +15,17 @@ import haxe.io.Bytes;
  * Invariant: the message is delivered. A disconnect does not entitle the
  * read loop to discard bytes it already read.
  *
- * The read loop treated "we have data" and "the peer went away" as
- * alternatives, so when a single pass read a whole frame and then hit the
- * peer's FIN, it closed the session and dropped the frame. The last
- * message before a disconnect is precisely the one worth keeping, a
- * goodbye, a final ack, an unsent edit, and losing it looks to the
- * application exactly like the peer never sent it.
+ * The read loop must not treat "we have data" and "the peer went away" as
+ * alternatives: when a single pass reads a whole frame and then hits the
+ * peer's FIN, closing the session would drop the frame. The last message
+ * before a disconnect is precisely the one worth keeping (a goodbye, a
+ * final ack, an unsent edit), and losing it looks to the application
+ * exactly like the peer never sent it.
  *
  * Writing the frame and closing before the server ever ticks is what
  * makes this deterministic: the socket then holds the frame and the FIN
  * together, so one read returns data and the next raises `Eof`, which is
- * the ordering that lost the message.
+ * the ordering that would lose the message.
  */
 class WebSocketFinalMessageStress implements StressCase {
 	private static inline final MESSAGE:String = "the last thing said before hanging up";

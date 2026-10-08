@@ -18,11 +18,10 @@ typedef RawFrame = {
  *
  * Everything else that exercises `ServerWebSocket` end to end drives it
  * with CrossByte's own client, which means the two sides agree by
- * construction and a fault only a foreign peer reaches stays invisible.
- * That is not a hypothetical: a server that could not receive a single
- * client message shipped behind exactly that blind spot, because
- * CrossByte's client happened to leave the handshake buffer in a state
- * the parser tolerated.
+ * construction and a fault only a foreign peer reaches stays invisible:
+ * a server that cannot receive a single client message can pass behind
+ * that blind spot, when CrossByte's client happens to leave the handshake
+ * buffer in a state the parser tolerates.
  *
  * This client therefore composes frames by hand, so a test can send what
  * a browser would send, and, more usefully, what a browser must never
@@ -232,11 +231,11 @@ class RawWebSocketClient {
 
 	/**
 		One pass of the server's runtime, advanced by the time that really
-		passed since the last. It was advanced a fixed 1/240 s a pass in a
-		loop that never sleeps, so the runtime's clock ran as fast as passes
-		could be made, 60 s of it in the 50 ms of a `pumpFor(0.05)` once
-		passes got quicker, and a session was closed as idle while its
-		peer was still in the middle of a frame.
+		passed since the last. Advanced a fixed 1/240 s a pass in a loop that
+		never sleeps, the runtime's clock would run as fast as passes could be
+		made (60 s of it in the 50 ms of a `pumpFor(0.05)` once passes got
+		quicker), and a session would be closed as idle while its peer was
+		still in the middle of a frame.
 	**/
 	private function __pump():Void {
 		pumpRuntime(__runtime);

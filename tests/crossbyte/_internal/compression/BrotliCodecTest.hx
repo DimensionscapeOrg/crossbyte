@@ -14,10 +14,10 @@ class BrotliCodecTest extends utest.Test {
 	/**
 	 * Four bytes declaring a 16 MB metadata block, and then the end.
 	 *
-	 * The loop skipping metadata asked for more input, was told there was
-	 * none, and went round again with the same length still to skip: forever,
-	 * and without allocating, so no output ceiling ever tripped. One POST
-	 * carrying these bytes stopped a server answering anyone, since its
+	 * The loop skipping metadata, asking for more input and told there is
+	 * none, must not go round again with the same length still to skip:
+	 * forever, and without allocating, so no output ceiling would trip. One
+	 * POST carrying these bytes would stop a server answering anyone, since its
 	 * timeouts and its rate limiter all run on the thread that was stuck.
 	 */
 	public function testATruncatedMetadataBlockFailsRatherThanSpinning():Void {
@@ -40,12 +40,12 @@ class BrotliCodecTest extends utest.Test {
 	/**
 	 * A stream that ends where the literal context map should begin.
 	 *
-	 * The decoder scanned that map before asking whether it had been read, so
-	 * it walked a map that was never allocated: null. On eval and the jvm that
-	 * surfaced as an exception from inside the decoder, and natively as a
-	 * segfault, the fuzz suite took the whole native runner down with the
-	 * first four bytes of a valid stream. It must be refused as the codec
-	 * refuses any other damaged stream.
+	 * The decoder must not scan that map before asking whether it has been
+	 * read, walking a map that was never allocated: null. On eval and the jvm
+	 * that would surface as an exception from inside the decoder, and natively
+	 * as a segfault, taking the whole native runner down with the first four
+	 * bytes of a valid stream. It must be refused as the codec refuses any
+	 * other damaged stream.
 	 */
 	public function testAStreamEndingBeforeItsContextMapIsRefused():Void {
 		for (hex in ["1b500000", "1b5000"]) {
@@ -63,12 +63,12 @@ class BrotliCodecTest extends utest.Test {
 	 * CF FF FF FF: a 16 MB window, then a 16 MB uncompressed meta-block, then
 	 * nothing.
 	 *
-	 * The decoder allocated the window the stream header named before it read
-	 * a byte of data, and only then found the data missing: a ring buffer of
-	 * sixteen million entries, bytes or more each, for four bytes of input,
-	 * whatever the caller's limit. A meta-block states its length up front, so
-	 * one longer than the limit is refused as its header is read, and nothing
-	 * is allocated for it.
+	 * A decoder that allocated the window the stream header named before it
+	 * read a byte of data, and only then found the data missing, would make a
+	 * ring buffer of sixteen million entries, bytes or more each, for four
+	 * bytes of input, whatever the caller's limit. A meta-block states its
+	 * length up front, so one longer than the limit is refused as its header is
+	 * read, and nothing is allocated for it.
 	 */
 	public function testAMetaBlockLongerThanTheLimitIsRefusedAtItsHeader():Void {
 		var refusal:Dynamic = null;
@@ -82,9 +82,9 @@ class BrotliCodecTest extends utest.Test {
 
 	/**
 	 * Eighteen bytes asking for a 16 MB window and decoding to twelve, as a
-	 * client is free to send them. Each allocated the whole window: 38.7 ms
-	 * per request on a Node server, 137 ms on eval. The ring buffer now grows
-	 * with the output, so this is a 1 KB buffer.
+	 * client is free to send them. Allocating the whole window for each would
+	 * cost 38.7 ms per request on a Node server, 137 ms on eval. The ring
+	 * buffer grows with the output, so this is a 1 KB buffer.
 	 */
 	public function testASmallStreamWithALargeWindowDecodesCheaply():Void {
 		var body:Bytes = Bytes.ofHex("8f02807b226f6b223a200008747275657d03");
@@ -101,9 +101,10 @@ class BrotliCodecTest extends utest.Test {
 	 * run of uncompressed meta-blocks, each wrapping the ring buffer.
 	 *
 	 * Flushing a wrapped ring buffer in the middle of an uncompressed block
-	 * added the buffer's size back to the bytes still to copy, so the decoder
-	 * read on past the block into whatever followed and refused a valid
-	 * stream. Any window small enough to wrap on incompressible data did it.
+	 * must not add the buffer's size back to the bytes still to copy, or the
+	 * decoder would read on past the block into whatever followed and refuse a
+	 * valid stream, under any window small enough to wrap on incompressible
+	 * data.
 	 */
 	public function testIncompressibleDataUnderASmallWindowDecodes():Void {
 		var expected:Bytes = Bytes.alloc(4200);
@@ -137,11 +138,10 @@ class BrotliCodecTest extends utest.Test {
 	}
 
 	/**
-	 * A stream says how much history its decoder must keep, and the encoder
-	 * said 4 MB (2^22) for everything, two bytes included. A window only has
-	 * to reach back over the input, so a small body now declares 2^16 and a
-	 * larger one the least that covers it, never 2^17, whose header costs
-	 * three bits more than 2^18's.
+	 * A stream says how much history its decoder must keep, and a window only
+	 * has to reach back over the input, so a small body declares 2^16 rather
+	 * than 4 MB (2^22), and a larger one the least that covers it, never 2^17,
+	 * whose header costs three bits more than 2^18's.
 	 */
 	public function testTheWindowDeclaredFitsTheInput():Void {
 		var cases:Array<{length:Int, bits:Int}> = [
@@ -162,12 +162,12 @@ class BrotliCodecTest extends utest.Test {
 	}
 
 	/**
-	 * Every call built a ring buffer for the window whatever the input,
-	 * 2^23 entries for a two-byte body, and allocated and cleared a hash
-	 * table of 2^17. A 2-byte response cost 20 ms on Node, so a server
-	 * answering browsers, which all ask for br, managed 45 a second. The
-	 * buffer is now the input's size and the table is kept, and only the
-	 * buckets the input uses are cleared.
+	 * A call builds a ring buffer the input's size, not one for the window
+	 * whatever the input (2^23 entries for a two-byte body), and keeps its
+	 * hash table, clearing only the buckets the input uses rather than
+	 * allocating and clearing 2^17 of them. Otherwise a 2-byte response would
+	 * cost 20 ms on Node, and a server answering browsers, which all ask for
+	 * br, would manage 45 a second.
 	 */
 	public function testCompressingSmallBodiesIsCheap():Void {
 		var body:Bytes = Bytes.ofString('{"ok":true}');
@@ -208,12 +208,12 @@ class BrotliCodecTest extends utest.Test {
 	/**
 	 * Input with zero bytes in its first four places, at every quality.
 	 *
-	 * The matcher qualities 1 to 4 use, 4 is the default, tries the last
+	 * The matcher qualities 1 to 4 use (4 is the default) tries the last
 	 * distance first, and its guard against reaching back past the start of
-	 * the input compared a UInt with an Int, which HashLink compares signed.
-	 * There, the first positions reached back into the empty end of the ring
-	 * buffer, matched its zeros, and the stream came out undecodable: by this
-	 * decoder and by the reference one alike.
+	 * the input compares a UInt with an Int, which HashLink compares signed.
+	 * Wrong there, the first positions would reach back into the empty end of
+	 * the ring buffer, match its zeros, and the stream would come out
+	 * undecodable, by this decoder and by the reference one alike.
 	 */
 	public function testInputBeginningWithZerosRoundTripsAtEveryQuality():Void {
 		var zeros:Bytes = Bytes.alloc(65536);
@@ -268,14 +268,13 @@ class BrotliCodecTest extends utest.Test {
 	/**
 	 * Eight threads meeting the codec for the first time at once.
 	 *
-	 * The dictionary tables were marked built before they were built, so a
-	 * thread arriving while another built them read a dictionary that was
-	 * null or half filled: on the jvm seven threads in eight threw, in six
-	 * runs of six, and natively about one run in nine crashed the process.
-	 * URLLoader decodes on up to sixteen pool threads, so a burst of loads at
-	 * startup is exactly this. Each thread decodes a stream made of dictionary
-	 * references, which reads the dictionary, and encodes text, which reads
-	 * the hash built from it.
+	 * The dictionary tables are marked built only once they are built: marked
+	 * before, a thread arriving while another built them would read a
+	 * dictionary that was null or half filled, throwing on the jvm and, now and
+	 * then, crashing the process natively. URLLoader decodes on up to sixteen
+	 * pool threads, so a burst of loads at startup is exactly this. Each thread
+	 * decodes a stream made of dictionary references, which reads the
+	 * dictionary, and encodes text, which reads the hash built from it.
 	 */
 	public function testThreadsMeetingTheCodecAtOnceAllSucceed():Void {
 		var threads:Int = 8;

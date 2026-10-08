@@ -17,15 +17,15 @@ interface PollBackend {
 		`socket` is no longer watched, and is about to be closed: called at
 		once, while it is still open, rather than left to the next `prepare`.
 
-		A backend that snapshots the set at each `prepare`, the built-in
-		one, has nothing to do here. One that registers each descriptor
+		A backend that snapshots the set at each `prepare` (the built-in
+		one) has nothing to do here. One that registers each descriptor
 		with the system for as long as it is watched, as libuv's `uv_poll_t`
 		does, must let go of it now: libuv forbids closing a descriptor with a
-		poll handle still active on it, and if the file outlives the close,
-		a child process inherited it, its registration survives, and the
-		loop wakes for it for good. The registry also skips `prepare` once
-		its set is empty, so without this a backend never hears that the last
-		socket left.
+		poll handle still active on it, and if the file outlives the close (a
+		child process inherited it) its registration survives, and the loop
+		wakes for it for good. The registry also skips `prepare` once its set
+		is empty, so without this a backend never hears that the last socket
+		left.
 	**/
 	public function remove(socket:Socket):Void;
 }

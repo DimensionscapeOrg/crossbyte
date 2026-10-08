@@ -24,7 +24,7 @@ import haxe.Timer;
 
 	Each prints `RESULT <scenario> <param> <metric>=<value> ...`. CPU time is
 	the process's, every thread's: Sys.cpuTime natively, the OS MXBean on the
-	jvm, process.cpuUsage() on Node, not the wall, since a blocked poll is
+	jvm, process.cpuUsage() on Node; not the wall, since a blocked poll is
 	not work. Windows' process clock ticks every 15.6 ms, so every scenario
 	runs for seconds, not milliseconds.
 
@@ -162,8 +162,8 @@ class PerfCore {
 	}
 
 	// ------------------------------------------------------------------
-	// One tick listener walking N connections for an idle deadline, the
-	// per-tick sweep a keep-alive or a session timeout does, through a
+	// One tick listener walking N connections for an idle deadline (the
+	// per-tick sweep a keep-alive or a session timeout does) through a
 	// Map (as HTTPServer's __active is) or an Array. Every entry is checked,
 	// none expires: the idle case, which is the common one.
 
@@ -592,8 +592,8 @@ class PerfCore {
 	}
 
 	// ------------------------------------------------------------------
-	// A game message read as ByteArray.readObject reads JSON, parsed, then
-	// its fields read `reads` times each, through haxe.Json.parse, or
+	// A game message read as ByteArray.readObject reads JSON (parsed, then
+	// its fields read `reads` times each) through haxe.Json.parse, or
 	// through ShapedJson, which builds each object with fixed slots.
 
 	static function jsonRead(shaped:Bool, reads:Int, seconds:Float):Void {
@@ -653,8 +653,8 @@ class PerfCore {
 	}
 
 	// ------------------------------------------------------------------
-	// An opcode dispatcher as SwitchTable's doc shows it, sixteen Int keys,
-	// one argument, called once per message with the opcodes spread
+	// An opcode dispatcher as SwitchTable's doc shows it (sixteen Int keys,
+	// one argument), called once per message with the opcodes spread
 	// evenly, against the typed `switch` it stands for. `param` is unused.
 
 	static function switchTable(useTable:Bool, param:Int, seconds:Float):Void {
@@ -947,7 +947,7 @@ class PerfCore {
 
 	// ------------------------------------------------------------------
 	// A Worker reporting N progress messages as fast as it can, then
-	// completing, while the runtime pumps and delivers them, what a
+	// completing, while the runtime pumps and delivers them: what a
 	// FileStream or a process reader does per chunk. Delivery is 256 a turn,
 	// so a fast producer builds a backlog the runtime drains from the front.
 

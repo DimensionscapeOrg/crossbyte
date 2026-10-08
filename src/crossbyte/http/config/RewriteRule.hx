@@ -2,7 +2,7 @@ package crossbyte.http.config;
 
 /**
 	Declarative rule describing a rewrite pattern, target, and optional
-	conditions. Built from an object literal, as before (`@:structInit`):
+	conditions. Built from an object literal (`@:structInit`):
 	`flags` and `conditions` may be left out.
 **/
 @:structInit
@@ -12,8 +12,8 @@ final class RewriteRule {
 	/**
 		The path a matching request is rewritten to, under `rootDirectory`:
 		`$1` to `$9` stand for what the pattern captured, and a `?query` is
-		the request's from then on, merged with the one it brought under
-		`QSA`: for a static file, a script and a `POST` alike.
+		the request's from then on (merged with the one it brought under
+		`QSA`) for a static file, a script and a `POST` alike.
 
 		A path, never a route. Rules run once middleware has passed a request
 		on, and a `Router` is middleware, so a rule cannot send a request to

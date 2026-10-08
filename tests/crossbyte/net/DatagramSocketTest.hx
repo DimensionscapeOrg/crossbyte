@@ -15,10 +15,9 @@ class DatagramSocketTest extends utest.Test {
 	/**
 		The flag says what the target's own UDP socket can do.
 
-		It said `false` on neko after neko was given a working
-		`sys.net.UdpSocket`, which skipped every case here there and left
-		`LocalAddress` refusing to answer; before that it said `true` while
-		the constructor threw. Either way the flag and the socket disagreed.
+		The flag and the socket must agree: neko has a working
+		`sys.net.UdpSocket`, so the flag is `true` there, and every target whose
+		constructor would throw says `false`.
 	**/
 	public function testSupportMatchesWhatTheTargetsSocketCanDo():Void {
 		#if (sys && !js)
@@ -37,11 +36,10 @@ class DatagramSocketTest extends utest.Test {
 	}
 
 	/**
-		There is no read timeout to set. A datagram socket never blocks,
-		every read waits on the registry's poll, and Node's socket has no
-		timeout at all, so the one `timeout` set on the socket underneath
-		had nothing to time, on any target. It went rather than stay a
-		setting that changed nothing.
+		There is no read timeout to set. A datagram socket never blocks
+		(every read waits on the registry's poll, and Node's socket has no
+		timeout at all), so a `timeout` set on the socket underneath would
+		have nothing to time, on any target.
 	**/
 	public function testThereIsNoReadTimeoutToSet():Void {
 		var fields:Array<String> = Type.getInstanceFields(DatagramSocket);
@@ -52,16 +50,16 @@ class DatagramSocketTest extends utest.Test {
 	}
 
 	/**
-		A port one datagram socket holds is not given to another. hxcpp set
-		SO_REUSEADDR on every socket it bound, and on Linux two datagram
-		sockets that both set it may share a port: a bind to port 0 handed out
-		ports already in use, 25 of a thousand game clients over reliable
-		UDP shared one with another client, and never connected, and any
-		local process could bind a server's port as well. Fixed in hxcpp's
-		socket_bind (the fork's production); Windows never set it. Neko's
-		and HashLink's binds still set it, and their natives cannot be asked
-		not to, so on Linux DatagramSocket checks its port after binding
-		there. Node's bind is asynchronous, and refuses through an event.
+		A port one datagram socket holds is not given to another. With
+		SO_REUSEADDR set on every socket it binds, as hxcpp did, Linux lets two
+		datagram sockets share a port: a bind to port 0 would hand out ports
+		already in use (a game client sharing one with another client, never
+		connecting), and any local process could bind a server's port as well.
+		hxcpp's socket_bind no longer sets it (the fork's production); Windows
+		never set it. Neko's and HashLink's binds still set it, and their
+		natives cannot be asked not to, so on Linux DatagramSocket checks its
+		port after binding there. Node's bind is asynchronous, and refuses
+		through an event.
 	**/
 	public function testAPortHeldIsNotGivenToAnother():Void {
 		#if (sys && !nodejs)
@@ -100,9 +98,9 @@ class DatagramSocketTest extends utest.Test {
 		One `Address` sent to, changed, and sent to again goes where it now
 		points, never where it pointed: its port, its IPv4 host, and its IPv6
 		bytes, set anew or changed in place. On the jvm the socket keeps the
-		`InetSocketAddress` it made for an Address with it, for the next send
-		(it was made for every datagram); kept by identity, the second send
-		of each pair below went to the first one's peer.
+		`InetSocketAddress` it made for an Address with it, for the next send,
+		so it must be checked against the Address, not kept by identity, or
+		the second send of each pair below would go to the first one's peer.
 	**/
 	public function testAnAddressChangedBetweenSendsGoesWhereItNowPoints():Void {
 		#if (sys && !nodejs)
@@ -209,9 +207,9 @@ class DatagramSocketTest extends utest.Test {
 	}
 
 	/**
-		`send` is an inline forwarder (it boxed its optional arguments on the
-		jvm), and still works every other way it could be reached: taken as a
-		value, through `Reflect`, and through `Dynamic`, with its arguments
+		`send` is an inline forwarder (so its optional arguments are not boxed
+		on the jvm), and still works every other way it could be reached: taken
+		as a value, through `Reflect`, and through `Dynamic`, with its arguments
 		given or left out.
 	**/
 	public function testSendReachedAsAValueOrDynamicallyStillSends():Void {
@@ -252,11 +250,9 @@ class DatagramSocketTest extends utest.Test {
 
 	/**
 		Every socket bound to port 0 is given a port of its own, however many
-		are bound. With SO_REUSEADDR set on datagram sockets, Linux handed out
-		ports already held, 18 in 1,000 binds in C, and the socket that
-		shared one received none of its own datagrams: on neko,
-		`testInterleavedSendersAreEachNamed` received none of six (CI,
-		2026-10-05).
+		are bound. With SO_REUSEADDR set on datagram sockets, Linux hands out
+		ports already held (18 in 1,000 binds in C), and the socket that shared
+		one would receive none of its own datagrams.
 	**/
 	public function testEachSocketBoundToPortZeroHasAPortOfItsOwn():Void {
 		#if (sys && !nodejs)
@@ -293,10 +289,10 @@ class DatagramSocketTest extends utest.Test {
 
 	/**
 		A socket's own address is asked of the system once, and kept while
-		nothing can change it. Every read of `localAddress` or `localPort` was a
-		getsockname() call, and a reliable session reads both for every message
-		it hands over, two system calls a message, an eighth of a game
-		server's time at a thousand clients.
+		nothing can change it. A getsockname() call on every read of
+		`localAddress` or `localPort`, both read by a reliable session for
+		every message it hands over, would be two system calls a message, an
+		eighth of a game server's time at a thousand clients.
 	**/
 	public function testItsOwnAddressIsAskedOnce():Void {
 		#if (sys && !nodejs)
@@ -333,10 +329,10 @@ class DatagramSocketTest extends utest.Test {
 
 	/**
 		A number written into a new ByteArray reads back as itself from the
-		datagram that carried it. Datagram payloads came big-endian, where a
-		ByteArray an application makes, and every other CrossByte socket, is
-		little-endian, so a message built with `new ByteArray()` arrived with
-		its integers byte-swapped.
+		datagram that carried it: datagram payloads are little-endian, as a
+		ByteArray an application makes is, and every other CrossByte socket's,
+		so a message built with `new ByteArray()` does not arrive with its
+		integers byte-swapped.
 	**/
 	public function testANumberSentIsTheNumberRead():Void {
 		if (!DatagramSocket.isSupported) {
@@ -381,17 +377,15 @@ class DatagramSocketTest extends utest.Test {
 			return;
 		}
 
-		// Sending to an address the socket cannot reach, here an IPv6
-		// destination from a socket bound to IPv4, fails at the `sendto`, and
+		// Sending to an address the socket cannot reach (here an IPv6
+		// destination from a socket bound to IPv4) fails at the `sendto`, and
 		// is supposed to. What must not follow is the socket going deaf.
 		//
-		// It did. `send` routed the failure into __dispatchIoError, which calls
-		// stopReceiving, so one unroutable destination stopped every other peer
-		// being heard from, permanently, and with nothing to say why. ICE
-		// finds a path by trying every candidate a peer offered and expecting
-		// most of them to fail, so this was one failed check away on every
-		// connection, and a browser interoperability run is what finally
-		// surfaced it.
+		// A send failure must not stop the socket receiving: one unroutable
+		// destination would stop every other peer being heard from,
+		// permanently, and with nothing to say why. ICE finds a path by trying
+		// every candidate a peer offered and expecting most of them to fail, so
+		// that would be one failed check away on every connection.
 		var listener = new DatagramSocket();
 		var sender = new DatagramSocket();
 		var received:String = null;
@@ -446,14 +440,13 @@ class DatagramSocketTest extends utest.Test {
 
 		// Sending to a port nothing listens on makes the peer's stack answer
 		// ICMP port unreachable, and Windows reports that back to the sender as
-		// an error on a later read. That read error used to reach
-		// __dispatchIoError, which calls stopReceiving(), so one datagram to
-		// a departed peer silenced the socket for every other peer too.
+		// an error on a later read, which must not stop the socket receiving:
+		// one datagram to a departed peer would silence the socket for every
+		// other peer too.
 		//
 		// A connectionless socket has no connection to lose: the datagram the
 		// error complains about is already gone, and nothing about the socket
-		// has changed. Measured before the fix, a socket that had just
-		// completed an exchange stopped receiving entirely.
+		// has changed.
 		var listener = new DatagramSocket();
 		var sender = new DatagramSocket();
 		var received:String = null;
@@ -513,9 +506,10 @@ class DatagramSocketTest extends utest.Test {
 		the size and dropping it.
 
 		HashLink and Neko have UDP and no native for either socket option.
-		Setting a size there did nothing, silently, and it read 0, so a caller
-		sizing its buffers for a burst could not tell that it had not. It
-		throws now, and `bufferSizeSupported` is how a caller asks first.
+		Setting a size there throws, rather than doing nothing silently and
+		reading 0, which would leave a caller sizing its buffers for a burst
+		unable to tell that it had not; `bufferSizeSupported` is how a caller
+		asks first.
 	**/
 	public function testBufferSizesThatCannotBeSetSaySo():Void {
 		if (!requireDatagramSupport()) return;
@@ -818,10 +812,10 @@ class DatagramSocketTest extends utest.Test {
 	/**
 		A burst larger than one read's worth is taken in on one pass.
 
-		At most 64 datagrams were read each time the socket was reported
-		readable, and that is once a pass, so a socket could take in no more
-		than 64 a pass whatever was arriving, 3,840 a second at 60 passes,
-		and the rest waited in, then overflowed, the kernel's buffer.
+		A socket read only 64 datagrams each time it was reported readable,
+		once a pass, could take in no more than 64 a pass whatever was arriving
+		(3,840 a second at 60 passes), and the rest would wait in, then
+		overflow, the kernel's buffer.
 	**/
 	public function testABurstIsTakenInOnOnePass():Void {
 		if (!requireDatagramSupport()) return;
@@ -869,10 +863,11 @@ class DatagramSocketTest extends utest.Test {
 		Datagrams past what one pass takes are read in the same frame.
 
 		A socket takes at most 1,024 a pass, so that a flood cannot hold the
-		loop, and the registry asks it once a pass: a runtime polled once a
-		frame, the DEFAULT loop, or a host's pump, took no more than
-		1,024 a frame, 12,288 a second at twelve ticks, however many were
-		arriving, and the rest overflowed the kernel's buffer.
+		loop, and the registry asks it once a pass, so it is read again in the
+		same frame: otherwise a runtime polled once a frame (the DEFAULT loop,
+		or a host's pump) would take no more than 1,024 a frame, 12,288 a second
+		at twelve ticks, however many were arriving, and the rest would overflow
+		the kernel's buffer.
 	**/
 	public function testDatagramsPastOnePassesShareAreReadInTheSameFrame():Void {
 		#if (cpp || jvm)
@@ -928,13 +923,13 @@ class DatagramSocketTest extends utest.Test {
 	}
 
 	/**
-		A burst read in batches, Linux, natively: `recvmmsg`, up to 64 a
-		call, arrives as read one at a time: every datagram whole, in the
-		order each sender sent it, named as from its sender, the largest UDP
-		carries over IPv4 included, an empty one handed out as before (not
-		at all), and the batch grown to its most by a burst that keeps
-		filling it. The same with batches turned off, where the result must
-		not differ. Elsewhere both runs read one at a time.
+		A burst read in batches (Linux, natively: `recvmmsg`, up to 64 a call)
+		arrives as read one at a time: every datagram whole, in the order each
+		sender sent it, named as from its sender, the largest UDP carries over
+		IPv4 included, an empty one handed out as one at a time does (not at
+		all), and the batch grown to its most by a burst that keeps filling it.
+		The same with batches turned off, where the result must not differ.
+		Elsewhere both runs read one at a time.
 	**/
 	public function testABurstReadInBatchesArrivesAsReadOneAtATime():Void {
 		if (!requireDatagramSupport()) return;
@@ -985,9 +980,8 @@ class DatagramSocketTest extends utest.Test {
 				sender.bind(0, "127.0.0.1");
 			}
 
-			// Where the receive buffer cannot be raised, HashLink and Neko,
-			// a burst that fits Windows' 64 KB default, without the
-			// largest datagram.
+			// Where the receive buffer cannot be raised (HashLink and Neko), a
+			// burst that fits Windows' 64 KB default, without the largest datagram.
 			var sizable:Bool = DatagramSocket.bufferSizeSupported;
 			var perSender:Int = sizable ? 100 : 30;
 			var expected:Map<Int, Array<String>> = [first.localPort => [], second.localPort => []];
@@ -1402,9 +1396,9 @@ class DatagramSocketTest extends utest.Test {
 		closeQuietly(receiver);
 	}
 
-	// Through a parameter: a local `Dynamic` copied from a typed one was
-	// compiled for neko as the method read off and called unbound, which
-	// called `send` without its socket whatever `send` was.
+	// Through a parameter: a local `Dynamic` copied from a typed one would
+	// be compiled for neko as the method read off and called unbound,
+	// calling `send` without its socket whatever `send` was.
 	private static function sendThroughDynamic(socket:Dynamic, bytes:ByteArray, port:Int):Void {
 		socket.send(bytes, 0, 0, "127.0.0.1", port);
 	}

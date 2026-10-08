@@ -6,20 +6,19 @@ import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
 
 /**
-	Decrypts a PKCS#8 key encrypted the way OpenSSL encrypts one today,
-	PBES2, a PBKDF2 key, AES in CBC mode (RFC 8018 6.2), for the targets
+	Decrypts a PKCS#8 key encrypted the way OpenSSL encrypts one today
+	(PBES2, a PBKDF2 key, AES in CBC mode, RFC 8018 6.2) for the targets
 	whose TLS is mbedTLS.
 
 	mbedTLS 2, which upstream hxcpp, hl, neko and eval carry, decrypts PBES2
 	with DES and triple DES alone: its table of PBES2 ciphers has no AES in
 	it. So the key `openssl pkcs8 -topk8`, `openssl req` or `openssl genpkey
-	-aes256` writes, every encrypted PKCS#8 key OpenSSL has made by
-	default since 1.1, failed to load there with "Requested encryption or
-	digest alg not available", password or no password, on the target
-	CrossByte serves from. The jvm reads it through the JDK and Node through
-	OpenSSL. The hxcpp fork's mbedTLS 3.6 reads it too, but it is decrypted
-	here on every mbedTLS target all the same, so that a key loads
-	whichever hxcpp a build has.
+	-aes256` writes (every encrypted PKCS#8 key OpenSSL has made by default
+	since 1.1) fails to load there with "Requested encryption or digest alg
+	not available", password or no password. The jvm reads it through the
+	JDK and Node through OpenSSL. The hxcpp fork's mbedTLS 3.6 reads it too,
+	but it is decrypted here on every mbedTLS target all the same, so that a
+	key loads whichever hxcpp a build has.
 
 	What this cannot decrypt it leaves to mbedTLS, which reads the rest:
 	PBES2 with DES, the PKCS#12 schemes, and OpenSSL's older encryption of
@@ -28,7 +27,7 @@ import haxe.io.BytesBuffer;
 	Not on a hot path: a key is read once, when a server or client is set
 	up. The AES here is the plain byte-wise one of FIPS 197, written for
 	being checked rather than for speed, and it decrypts a key file the
-	process already holds with a password it was given, nothing an
+	process already holds with a password it was given: nothing an
 	attacker can time.
 **/
 @:noCompletion

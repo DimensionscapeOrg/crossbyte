@@ -6,7 +6,7 @@ The point of the sample is how little there is to it:
 
 - The listener sets `HTTPServerConfig.http2Enabled` and then serves **both**
   versions. Each connection is served as whichever one it turns out to be
-  speaking, over TLS that is settled by ALPN, and over cleartext by the
+  speaking: over TLS that is settled by ALPN, and over cleartext by the
   connection preface, which an HTTP/1.1 client never sends. Run it with
   `serve` and point a browser at it, and it will be served HTTP/1.1 on the
   same port.

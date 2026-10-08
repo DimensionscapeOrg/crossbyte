@@ -44,7 +44,7 @@ const int ERROR_TOO_SMALL = -1000004;
 // A flight of the handshake is resent after one second, then two, four and
 // eight, and the handshake fails when the next wait would pass eight: fifteen
 // seconds in all. mbedtls's own defaults, one and sixty, double to a minute
-// and fail after 123 seconds, a client whose peer had gone held its session
+// and fail after 123 seconds, so a client whose peer had gone would hold its session
 // for two minutes, well past any deadline the caller would set.
 const uint32_t HANDSHAKE_TIMEOUT_MIN_MS = 1000;
 const uint32_t HANDSHAKE_TIMEOUT_MAX_MS = 8000;
@@ -82,10 +82,10 @@ struct Session
 };
 
 // Every session in the process, and the counter that names them. One table
-// for all of them, so peers on different runtimes, different threads,
-// insert into it, erase from it and search it at the same moment, and nothing
-// guarded that: a lookup landing in the middle of a rebalance followed a stale
-// node, so a live handle read as closed, and two opens racing on the counter
+// for all of them, so peers on different runtimes (different threads)
+// insert into it, erase from it and search it at the same moment; unguarded,
+// a lookup landing in the middle of a rebalance would follow a stale node,
+// so a live handle read as closed, and two opens racing on the counter
 // could be handed the same number.
 //
 // g_lock guards the map, the counter and the RNG's first seeding, and is held
@@ -104,8 +104,8 @@ int g_nextHandle = 1;
 std::atomic<unsigned> g_closes(0);
 
 // The last session this thread looked up. A record in or out is half a dozen
-// calls on one session, feed, step, pending, take, available, read, and
-// each took g_lock and searched the map; now the first does. Handles are
+// calls on one session (feed, step, pending, take, available, read), and
+// only the first takes g_lock and searches the map. Handles are
 // never reused, so a remembered one is wrong only once a session has closed
 // since, which g_closes says. A session is only ever used by the thread of
 // the runtime that opened it, and closed by it, so one this thread remembers
@@ -200,7 +200,7 @@ int recvCallback(void *ctx, unsigned char *buf, size_t len)
 }
 
 // A handshake that fails gives back a number and nothing else, and the number
-// names a check rather than a cause, BAD_HS_CLIENT_HELLO is returned from
+// names a check rather than a cause: BAD_HS_CLIENT_HELLO is returned from
 // two dozen places in mbedtls, each a different reason a peer's first message
 // was unacceptable. Setting CROSSBYTE_DTLS_DEBUG to a level from 1 to 4 puts
 // mbedtls's own account of the handshake on stderr, which turns that number
@@ -283,7 +283,7 @@ void drainPlaintext(Session *session)
       // be used again: the peer's close_notify, a fatal alert, or a client
       // starting over on the same port. The error is kept, close_notify
       // included, because it is how the caller tells a peer that said goodbye
-      // from one that failed, and a session left ESTABLISHED here went on
+      // from one that failed, and a session left ESTABLISHED here would go on
       // reporting itself open to a caller that had no other way to find out.
       session->error = read;
       session->state = CROSSBYTE_DTLS_CLOSED;
@@ -357,7 +357,7 @@ int crossbyte_dtls_open(bool isServer, ::String certificatePem, ::String private
          break;
 
       // OPTIONAL, and the distinction from NONE is the whole of mutual
-      // authentication here. There is no chain to verify, WebRTC identifies a
+      // authentication here. There is no chain to verify: WebRTC identifies a
       // peer by the fingerprint it signalled, which the caller checks against
       // crossbyte_dtls_peer_certificate, so it is tempting to ask for no
       // verification at all. But NONE means a server never sends a certificate

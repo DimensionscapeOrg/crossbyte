@@ -31,14 +31,12 @@ class BrotliCodec {
 	/*
 	 * Whether the dictionary and its tables are built: 0 until they are, then
 	 * 1. Set with a barrier as the last thing the build does and read with
-	 * one, so a thread that sees 1 sees every table complete.
-	 *
-	 * It used to be a Bool set as the build began. A second thread arriving
-	 * during the build saw it set and decoded against tables that were null
-	 * or half filled, the build pushes into arrays the encoder reads, which
-	 * natively was a segfault and on the jvm a NullPointerException. URLLoader
-	 * decodes on up to sixteen pool threads, so a burst of loads at startup
-	 * is a first use on several threads at once.
+	 * one, so a thread that sees 1 sees every table complete. A thread arriving
+	 * during the build must not see it set early: it would decode against
+	 * tables that are null or half filled (the build pushes into arrays the
+	 * encoder reads), natively a segfault and on the jvm a
+	 * NullPointerException. URLLoader decodes on up to sixteen pool threads, so
+	 * a burst of loads at startup is a first use on several threads at once.
 	 *
 	 * An Int read atomically rather than a lock taken on every call: on cpp a
 	 * Mutex enters and leaves a GC-free zone, about 250ns, and this sits in
@@ -61,15 +59,13 @@ class BrotliCodec {
 	public static function decompress(input:Bytes, maxOutputSize:Int = 0):Bytes {
 		ensureTables();
 
-		// Read where it lies and written to Bytes, where this used to copy the
-		// input into an Array<UInt> and the output out of one: several bytes
-		// of memory per byte on every target, eight or more on Node.
+		// Read where it lies and written to Bytes, with no copy into an
+		// Array<UInt>, which would cost several bytes of memory per byte on every
+		// target, eight or more on Node.
 		var output = new BrotliOutput(maxOutputSize);
 		if (BrotliDecompress(input == null ? Bytes.alloc(0) : input, output) != 1) {
 			// An IOError, as every codec here throws for data it cannot read,
 			// so a caller can tell a damaged stream from a fault in the code.
-			// This was a bare String, which the HTTP client took for the name
-			// of an unsupported content coding.
 			throw new IOError("Invalid Brotli data");
 		}
 
@@ -90,9 +86,7 @@ class BrotliCodec {
 
 		// The whole input is here, so the compressor is told its size and
 		// sizes its ring buffer and tables to it, and is fed straight from
-		// the Bytes, a block at a time. It used to be handed an Array<UInt>
-		// copy through a reader that copied each block again, and to build a
-		// window's worth of everything whatever the input.
+		// the Bytes, a block at a time.
 		var compressor = new BrotliCompressor(params, length);
 		var blockSize:Int = compressor.input_block_size();
 		var output = new haxe.io.BytesBuffer();
@@ -122,14 +116,14 @@ class BrotliCodec {
 
 	/**
 		The smallest window from 2^16 up that reaches back over all of `length`
-		bytes, and at most the 2^22 the encoder used for everything.
+		bytes, and at most 2^22.
 
 		A window only has to cover the distances a stream can use, and in a
-		stream of `length` bytes none is longer than that. Every input got 2^22,
-		so every decoder was told to keep 4 MB to read two bytes. Not below
-		2^16, and never 2^17: the format spends one bit on 2^16, four on 2^18
-		and up, and seven on the others, and neither encoder nor decoder here
-		sizes its memory by the window any more.
+		stream of `length` bytes none is longer than that; a larger one tells
+		every decoder to keep memory it never needs (4 MB to read two bytes, at
+		2^22). Not below 2^16, and never 2^17: the format spends one bit on 2^16,
+		four on 2^18 and up, and seven on the others, and neither encoder nor
+		decoder here sizes its memory by the window.
 	**/
 	public static function windowBitsFor(length:Int):Int {
 		if (length <= (1 << 16) - 16) {

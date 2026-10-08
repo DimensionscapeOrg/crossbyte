@@ -46,9 +46,9 @@ class URLLoaderBrowserTest extends utest.Test {
 	}
 
 	/**
-		A `ByteArray` body goes to the browser as the bytes it holds. It was
-		handed the buffer under it, which runs on past `length` into the room
-		it keeps to grow, and into whatever it held before it was cleared.
+		A `ByteArray` body goes to the browser as the bytes it holds, not as
+		the buffer under it, which runs on past `length` into the room it keeps
+		to grow, and into whatever it held before it was cleared.
 	**/
 	public function testAByteArrayBodyGoesOutAsItsLength(async:Async):Void {
 		var body:crossbyte.io.ByteArray = new crossbyte.io.ByteArray();
@@ -75,9 +75,8 @@ class URLLoaderBrowserTest extends utest.Test {
 	}
 
 	/**
-		An object's fields go as a form, as they do natively. Only a
-		`URLVariables` was encoded in a page; an object went out as
-		`Std.string` made it, "{ user : bob }".
+		An object's fields go as a form, as they do natively, not as
+		`Std.string` makes it ("{ user : bob }").
 	**/
 	public function testAnObjectsFieldsGoAsAForm(async:Async):Void {
 		var sent:Array<Dynamic> = [];
@@ -95,9 +94,8 @@ class URLLoaderBrowserTest extends utest.Test {
 
 	/**
 		`close()` aborts the load in flight, and the next load is the only one
-		heard from. It only stopped the next load being refused as busy: both
-		requests went on, and the closed one's COMPLETE arrived beside the
-		next one's.
+		heard from: the closed request does not go on, and its COMPLETE does not
+		arrive beside the next one's.
 	**/
 	public function testClosingALoadAbortsItAndDropsItsAnswer(async:Async):Void {
 		var aborted:Int = 0;
@@ -126,7 +124,7 @@ class URLLoaderBrowserTest extends utest.Test {
 
 	/**
 		A load's `cancelToken` aborts it, and the load fails saying it was
-		cancelled, as it does natively. There was no token in a page.
+		cancelled, as it does natively.
 	**/
 	public function testCancellingALoadsTokenAbortsIt(async:Async):Void {
 		var aborted:Int = 0;
@@ -152,9 +150,9 @@ class URLLoaderBrowserTest extends utest.Test {
 	}
 
 	/**
-		A response says it was redirected only when it was. A relative URL
-		was compared, as written, with the absolute one the browser reports,
-		so every load of one said it had been redirected.
+		A response says it was redirected only when it was: a relative URL is
+		not compared, as written, with the absolute one the browser reports,
+		which would say every load of one had been redirected.
 	**/
 	public function testARelativeUrlIsNotReportedRedirected(async:Async):Void {
 		var loader:URLLoader = new URLLoader();
@@ -182,8 +180,8 @@ class URLLoaderBrowserTest extends utest.Test {
 	/**
 		A request asking not to follow redirects is refused in a page, and
 		nothing is sent: the browser follows every redirect itself and shows a
-		page none of them. It went out, and came back as wherever a redirect
-		led, where every other target hands the 3xx back.
+		page none of them, so it would come back as wherever a redirect led,
+		where every other target hands the 3xx back.
 	**/
 	public function testARequestNotToFollowRedirectsIsRefused(async:Async):Void {
 		var sent:Int = 0;
@@ -200,8 +198,7 @@ class URLLoaderBrowserTest extends utest.Test {
 
 	/**
 		A `userAgent` set is handed to the browser, which has the last word on
-		it; it was not passed on at all. Unset, nothing is, and the browser's
-		own goes.
+		it. Unset, nothing is, and the browser's own goes.
 	**/
 	public function testAUserAgentSetIsHandedToTheBrowser(async:Async):Void {
 		var named:Array<String> = [];
@@ -230,8 +227,8 @@ class URLLoaderBrowserTest extends utest.Test {
 	/**
 		A coded body that the browser decoded past `maxDecompressedSize`
 		fails the load, as it does natively and on Node, once the browser has
-		shown it whole. The limit was not consulted in a page. The suite's
-		server codes nothing, so the response is made to say it did.
+		shown it whole. The suite's server codes nothing, so the response is
+		made to say it did.
 	**/
 	public function testABodyDecodedPastTheLimitFails(async:Async):Void {
 		var restore:Void->Void = replace("getResponseHeader", (xhr, args, original) -> {
@@ -265,9 +262,9 @@ class URLLoaderBrowserTest extends utest.Test {
 
 	/**
 		A head that never comes ends at the request's `headTimeout`, and the
-		request is aborted. A page had only the idle timeout, which a server
-		sending a byte at a time keeps from ever firing. The browser is kept
-		from sending at all here, which is a head that never comes.
+		request is aborted; the idle timeout alone is kept from ever firing by
+		a server sending a byte at a time. The browser is kept from sending at
+		all here, which is a head that never comes.
 	**/
 	public function testAHeadThatNeverComesEndsAtItsDeadline(async:Async):Void {
 		var aborted:Int = 0;

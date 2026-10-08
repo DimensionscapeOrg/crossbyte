@@ -10,10 +10,9 @@ import haxe.io.Bytes;
 	A TURN relay written for the tests, from RFC 8656 and RFC 8489 rather than
 	from `TurnClient`, with a switch for each way a relay can be awkward.
 
-	The round-two audit found most of what these switches do with a relay it
-	wrote in Node; this is that relay in Haxe, so the same cases run wherever
-	`TurnClient` does, and in memory on every target, the browser included,
-	since nothing here needs a socket or a clock.
+	The same switches a relay written in Node would have, in Haxe, so the
+	same cases run wherever `TurnClient` does, and in memory on every target,
+	the browser included, since nothing here needs a socket or a clock.
 
 	`receive` takes a datagram, where it came from and the time. Whatever the
 	relay sends goes out through `onToClient` and `onToPeer`, at once or

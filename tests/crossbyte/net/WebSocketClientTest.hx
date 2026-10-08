@@ -15,10 +15,10 @@ class WebSocketClientTest extends utest.Test {
 	/**
 		A server that accepts the connection and never answers the upgrade.
 
-		Nothing bounded the wait: `timeout` covered the TCP connect and no
-		further, and a client that had sent its upgrade sat in CONNECTING for
-		as long as the peer kept the connection open. A TLS listener spoken to
-		in plain text is one such peer, and so is anything at the wrong port.
+		`timeout` bounds the whole wait, not only the TCP connect: a client
+		that had sent its upgrade would otherwise sit in CONNECTING for as
+		long as the peer kept the connection open. A TLS listener spoken to in
+		plain text is one such peer, and so is anything at the wrong port.
 	**/
 	@:timeout(20000)
 	public function testAnUnansweredUpgradeIsGivenUpOnAfterTheTimeout(async:Async):Void {
@@ -68,9 +68,9 @@ class WebSocketClientTest extends utest.Test {
 		A `wss://` server that accepts the connection and never answers the
 		TLS handshake is given up on at `timeout`.
 
-		Natively the handshake had a fixed three seconds of its own, whatever
-		`timeout` said, and on Node nothing bounded a connect until it had
-		opened: a client there waited on a silent server for good.
+		Natively the handshake has no fixed time of its own, whatever
+		`timeout` says, and on Node a connect is bounded before it has opened,
+		not left to wait on a silent server for good.
 	**/
 	@:timeout(20000)
 	public function testATlsHandshakeNobodyAnswersIsGivenUpOnAtTheTimeout(async:Async):Void {
@@ -83,9 +83,8 @@ class WebSocketClientTest extends utest.Test {
 	}
 
 	/**
-		A `timeout` of 0 waits as long as it takes, as the upgrade did and as
-		Node did. Natively a connect still looking its host up failed at
-		once, and a TLS handshake still gave up at its own three seconds.
+		A `timeout` of 0 waits as long as it takes, for the upgrade, a connect
+		still looking its host up, and a TLS handshake alike.
 	**/
 	@:timeout(20000)
 	public function testATimeoutOfZeroWaits(async:Async):Void {
@@ -98,8 +97,8 @@ class WebSocketClientTest extends utest.Test {
 	/**
 		A server that answers the upgrade with a refusal fails the connect as
 		any other failure does, and as a browser's WebSocket does: `ioError`
-		saying so, then `close` with 1006. It closed with 1002 and no error,
-		as if an open session had broken the protocol.
+		saying so, then `close` with 1006, not 1002 with no error, as if an
+		open session had broken the protocol.
 	**/
 	@:timeout(15000)
 	public function testARefusedUpgradeIsAFailedConnect(async:Async):Void {
@@ -120,7 +119,8 @@ class WebSocketClientTest extends utest.Test {
 
 	/**
 		A server that hangs up before answering the upgrade is a failed
-		connect too. It closed with 1006 and said nothing at all.
+		connect too: an `ioError` saying why, then `close` with 1006, not
+		the 1006 alone.
 	**/
 	@:timeout(15000)
 	public function testAServerHangingUpBeforeTheUpgradeIsAFailedConnect(async:Async):Void {
@@ -140,8 +140,8 @@ class WebSocketClientTest extends utest.Test {
 
 	/**
 		Connects a `WebSocket` to the port `port` names once it is known, and
-		calls `check` with the events it dispatched, `connect`, `ioError`
-		and `close` with its code, in order, and the ioError's text.
+		calls `check` with the events it dispatched (`connect`, `ioError`
+		and `close` with its code, in order) and the ioError's text.
 	**/
 	private function __failedConnect(port:Void->Int, check:(Array<String>, String)->Void, async:Async):Void {
 		var client = new WebSocket();
@@ -215,8 +215,9 @@ class WebSocketClientTest extends utest.Test {
 	/**
 		A connection refused is reported as refused: an ioError that says
 		so, and no CONNECT. On Linux and macOS a refused connect leaves the
-		socket writable, which was taken for a connection, so the client sent
-		its upgrade into nothing and ended in a 1006 that did not say why.
+		socket writable, which must not be taken for a connection, or the
+		client would send its upgrade into nothing and end in a 1006 that did
+		not say why.
 	**/
 	@:timeout(15000)
 	public function testARefusedConnectionSaysItWasRefused(async:Async):Void {
@@ -250,9 +251,9 @@ class WebSocketClientTest extends utest.Test {
 
 	/**
 		A server whose answer to the upgrade never ends is given up on once
-		16 KiB of it have arrived (`maxHeaderSize`), not at `timeout`: the
-		client held every byte of it, copied whole with each arrival, for as
-		long as the connect's deadline allowed.
+		16 KiB of it have arrived (`maxHeaderSize`), not at `timeout`, rather
+		than the client holding every byte of it, copied whole with each
+		arrival, for as long as the connect's deadline allowed.
 	**/
 	@:timeout(20000)
 	public function testAnAnswerWithoutEndIsGivenUpOnAtTheLimit(async:Async):Void {

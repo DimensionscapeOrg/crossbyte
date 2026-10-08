@@ -19,8 +19,7 @@ class EnumUtil {
 	 *
 	 * @param e The enum value.
 	 * @return The parameters, in order: an empty array for a constructor
-	 *         that has none. Typed `Dynamic`, it was documented as `null` for
-	 *         that case, which it never was.
+	 *         that has none.
 	 */
 	public static inline function getValue(e:EnumValue):Array<Dynamic> {
 		return Type.enumParameters(e);

@@ -77,12 +77,9 @@ final class Stack<T> {
 	 * Clears all elements from the stack.
 	 *
 	 * The slots that held them are emptied as well as counted out, so the
-	 * stack keeps its capacity but none of what it held. Resetting the count
-	 * alone left every element reachable from the backing array until a later
-	 * push happened to overwrite its slot, and the socket registry's
-	 * writable queue, cleared this way every pass, kept each connection that
-	 * wrote in a busy pass, and everything the connection held, alive after
-	 * it closed.
+	 * stack keeps its capacity but none of what it held: resetting the count
+	 * alone would leave every element reachable from the backing array until
+	 * a later push overwrote its slot.
 	 *
 	 * @param dispose Optional. If `true`, the internal array is resized to zero.
 	 */

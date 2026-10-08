@@ -12,9 +12,8 @@ import utest.Async;
 	endpoint `ci/browser/run.js` serves beside the suite: every message comes
 	back as it was sent, and `close-me` asks the server to close.
 
-	Nothing ran a page's socket against anything before, and it could not have
-	passed: the buffer was sent and never cleared, so one write went out again
-	on every tick for as long as the connection lasted.
+	A sent buffer is cleared once it has gone, or one write would go out
+	again on every tick for as long as the connection lasted.
 **/
 @:access(crossbyte.core.CrossByte)
 @:access(crossbyte.events.EventDispatcher)
@@ -32,8 +31,8 @@ class BrowserSocketTest extends utest.Test {
 			});
 		}, function(socket, peer, done) {
 			NetPump.until(() -> peer.echoed.length >= "one-message".length, 5.0, function(_) {
-				// Long enough for a good many more ticks, each of which sent the
-				// whole buffer again.
+				// Long enough for a good many more ticks, each of which would send a
+				// buffer not cleared again.
 				NetPump.wait(0.5, function() {
 					Assert.equals("one-message", peer.echoed, "one write came back as something other than itself once");
 					done();
@@ -46,7 +45,7 @@ class BrowserSocketTest extends utest.Test {
 	public function testAWriteMadeBeforeTheConnectionOpensIsSentOnceItDoes(async:Async):Void {
 		__session(function(socket, peer) {}, function(socket, peer, done) {
 			// Straight after connect(), while the page's WebSocket is still
-			// connecting, when send() throws.
+			// connecting, when its own send() would throw.
 			socket.writeUTFBytes("early");
 			socket.flush();
 
@@ -64,12 +63,12 @@ class BrowserSocketTest extends utest.Test {
 		The server's close is reported once, and the socket stops: its own
 		tick, which flushes it, comes off the runtime.
 
-		This counted every TICK listener the runtime had, before and after,
-		so another component's listener arriving or leaving meanwhile broke
-		it, a Future failing with nothing listening adds one for a tick, to
-		report it, whatever this socket did. It looks for the socket's own
-		now, with one such listener of another's coming and going during the
-		case to show that it does not count.
+		It looks for the socket's own tick listener, not at a count of every
+		TICK listener the runtime has, which another component's listener
+		arriving or leaving would break (a Future failing with nothing
+		listening adds one for a tick, to report it) whatever this socket did:
+		one such listener of another's comes and goes during the case to show
+		that it does not count.
 	**/
 	@:timeout(15000)
 	public function testTheServerClosingIsReportedOnceAndTheSocketStops(async:Async):Void {
@@ -101,9 +100,9 @@ class BrowserSocketTest extends utest.Test {
 	}
 
 	/**
-		A `NetConnection` over a page's socket carries data. Its send stamped
-		the time from a field only a native connect sets, and threw a
-		TypeError in a page.
+		A `NetConnection` over a page's socket carries data, its send stamping
+		the time from the page's clock, not a field only a native connect sets,
+		which would throw a TypeError in a page.
 	**/
 	@:timeout(15000)
 	public function testANetConnectionCarriesDataOverAPageSocket(async:Async):Void {
@@ -144,7 +143,7 @@ class BrowserSocketTest extends utest.Test {
 
 	/**
 		A `socketData` event's `bytesLoaded` is what arrived for it, as it
-		is natively; in a page it was everything still unread.
+		is natively, not everything still unread.
 	**/
 	@:timeout(15000)
 	public function testBytesLoadedIsWhatArrived(async:Async):Void {

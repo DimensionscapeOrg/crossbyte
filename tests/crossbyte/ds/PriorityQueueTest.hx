@@ -19,11 +19,11 @@ class PriorityQueueTest extends utest.Test {
 	/**
 		A matchmaker at one priority serves its tickets in the order they came.
 
-		Dequeuing moved the newest ticket to the root, and a strict comparison
-		never sank it past an equal, so the newest was served next: with three
-		tickets in and three out a tick behind a ten-tick backlog, 29 of the
-		first 30 were still waiting at tick 20,000. First come, first served
-		makes every wait exactly the backlog.
+		Moving the newest ticket to the root on a dequeue, a strict comparison
+		would never sink it past an equal, so the newest would be served next:
+		with three tickets in and three out a tick behind a ten-tick backlog,
+		29 of the first 30 would still be waiting at tick 20,000. First come,
+		first served makes every wait exactly the backlog.
 	**/
 	public function testEqualPrioritiesAreServedInTheOrderTheyCame():Void {
 		var queue = new PriorityQueue<Ticket>((a, b) -> a.priority - b.priority);
@@ -64,8 +64,8 @@ class PriorityQueueTest extends utest.Test {
 
 	/**
 		`peek` answers the element `dequeue` would, for a class of element.
-		Inlined, it read the queue's storage as an array of that class on the
-		jvm, which the erased array is not: a ClassCastException.
+		Inlined, it would read the queue's storage as an array of that class on
+		the jvm, which the erased array is not: a ClassCastException.
 	**/
 	public function testPeekAnswersWhatDequeueWould():Void {
 		var queue = new PriorityQueue<Ticket>((a, b) -> a.priority - b.priority);
@@ -137,7 +137,7 @@ class PriorityQueueTest extends utest.Test {
 		This is why the queue is not specialised per element type: a
 		`@:generic` class used where its type is still a parameter falls back
 		to its unspecialised body, whose element map is an `IntMap`, and the
-		first object enqueued there threw.
+		first object enqueued there would throw.
 	**/
 	public function testAQueueHeldByAGenericClass():Void {
 		var holder = new QueueHolder<Ticket>((a, b) -> a.priority - b.priority);
@@ -151,8 +151,8 @@ class PriorityQueueTest extends utest.Test {
 
 	/**
 		A queue of plain ids, which is what a matchmaker keyed on player ids
-		holds. `PriorityQueue<Int>` does not compile, its elements are
-		objects, so ids go in an `IntPriorityQueue`, which holds each one's
+		holds. `PriorityQueue<Int>` does not compile (its elements are
+		objects), so ids go in an `IntPriorityQueue`, which holds each one's
 		priority beside it.
 	**/
 	public function testAnIntQueueServesLowestFirstAndEqualsInOrder():Void {

@@ -3,8 +3,8 @@
 	     including it here is safe even when the program also uses sys.ssl,
 	     which includes it too. This is what puts the mbedtls_ssl_* symbols in
 	     the link and, just as importantly, sets MBEDTLS_DIR to whichever
-	     mbedtls hxcpp actually ships, pinning a version here is what broke
-	     the crypto build once already. -->
+	     mbedtls hxcpp actually ships; pinning a version here would break
+	     the crypto build. -->
 	<include name="${HXCPP}/src/hx/libs/ssl/Build.xml"/>
 
 	<files id="crossbyte-alpn-native">

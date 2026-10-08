@@ -11,7 +11,7 @@ import utest.Assert;
 /**
 	An encrypted session attacked through what it is sent: two real
 	sessions whose sealed datagrams go through memory, so a case can change,
-	repeat, hold back or forge any of them, every byte position of a
+	repeat, hold back or forge any of them: every byte position of a
 	session's datagram, header and body, changed; replays; datagrams older
 	than the window; truncated ones, ones sealed under another session's
 	keys, and frames in the clear. Each is dropped, counted, and leaves the
@@ -76,9 +76,9 @@ class ReliableDatagramTamperTest extends utest.Test {
 	}
 
 	/**
-		Every byte of a session's sealed datagram changed in turn, two ways,
-		the type byte and the packet number, which are authenticated as
-		associated data, and every byte of ciphertext and tag: nothing is
+		Every byte of a session's sealed datagram changed in turn, two ways
+		(the type byte and the packet number, which are authenticated as
+		associated data, and every byte of ciphertext and tag): nothing is
 		delivered, every copy is dropped and counted, and the original still
 		opens after, once.
 	**/
@@ -157,10 +157,10 @@ class ReliableDatagramTamperTest extends utest.Test {
 	}
 
 	/**
-		What is not a sealed datagram of this session's: one cut short, one
+		What is not a sealed datagram of this session's (one cut short, one
 		sealed under another session's keys, a hello with another random, and
-		frames in the clear, dropped, counted, nothing delivered, and the
-		session goes on.
+		frames in the clear) is dropped and counted, nothing is delivered, and
+		the session goes on.
 	**/
 	public function testWhatIsNotThisSessionsIsDropped():Void {
 		var link = SealedLink.make();

@@ -10,8 +10,8 @@ import sys.db.ResultSet;
  * without a Connector/J on its class path, hl and neko.
  *
  * Every statement is recorded in `sent`. One named in `failures` throws the
- * value mapped to it, a string, or on the jvm a Java exception, which is
- * what JDBC throws, and one named in `results` answers with those rows.
+ * value mapped to it (a string, or on the jvm a Java exception, which is
+ * what JDBC throws) and one named in `results` answers with those rows.
  * Anything else answers with no rows, as a write does.
  */
 class ScriptedConnection implements Connection {
@@ -21,13 +21,13 @@ class ScriptedConnection implements Connection {
 	public var closed:Bool = false;
 	public var closeCount:Int = 0;
 
-	/** What `lastInsertId()` answers, an Int, as `sys.db.Connection` has it, wrapped past 2^31 where a driver wraps. **/
+	/** What `lastInsertId()` answers: an Int, as `sys.db.Connection` has it, wrapped past 2^31 where a driver wraps. **/
 	public var insertId:Int = 0;
 
 	/**
 		The `length` of what a statement with no rows answers, as a driver
-		gives a write's count, an Int, wrapped past 2^31 where a driver
-		wraps, or null for 0.
+		gives a write's count (an Int, wrapped past 2^31 where a driver
+		wraps), or null for 0.
 	**/
 	public var writeCount:Null<Int> = null;
 

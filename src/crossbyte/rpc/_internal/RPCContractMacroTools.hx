@@ -127,16 +127,16 @@ class RPCContractMacroTools {
 		Every method of the contract `type`, its own and those of every
 		interface it extends, however far up.
 
-		Only its own were read, so a contract built from reusable ones had
-		stubs for part of itself, and its handler, which Haxe made implement
-		the rest, dispatched none of the rest: a call to one arrived as an
-		unknown op and closed the connection.
+		So a contract built from reusable ones has stubs for all of itself,
+		and its handler (which Haxe makes implement the rest) dispatches all
+		of it, rather than a call to an inherited method arriving as an
+		unknown op.
 
 		A parent reached twice, as two contracts extending one base are, gives
 		its methods once. A name declared twice with different signatures is
 		an error, since on the wire the two would be one method. The type
 		parameters of a generic contract are bound to what the extending one
-		passes it, `Repository<String>` reads as methods of `String`.
+		passes it: `Repository<String>` reads as methods of `String`.
 	**/
 	static function readContractClass(type:ClassType, pos:Position, metaName:String, ?typeParams:Array<TypeParameter>,
 			?concrete:Array<Type>):Array<ContractMethod> {
@@ -205,8 +205,8 @@ class RPCContractMacroTools {
 	}
 
 	/**
-		Fails the build if two of `methods` would share an op on the wire,
-		their names hashing alike, or one would share the built-in `ping`'s,
+		Fails the build if two of `methods` would share an op on the wire
+		(their names hashing alike), or one would share the built-in `ping`'s,
 		which every handler answers whether it declares it or not.
 	**/
 	/**
@@ -214,7 +214,7 @@ class RPCContractMacroTools {
 		aliases followed to what they name, since their own names may be
 		private to, or only an alias in, the module that used them; `Null<T>`
 		kept, since it marks an optional argument on the wire, and a full
-		follow drops it. `toComplexType()` alone keeps a typedef's name, so a
+		follow drops it. `toComplexType()` alone keeps a typedef's name, so with it alone a
 		handler or commands class in another module than its contract or its
 		parent could not read a type declared through one.
 	**/
@@ -226,8 +226,8 @@ class RPCContractMacroTools {
 		`fullComplexType`, all the way down: the parameters of a type (an
 		`Array`'s element) and the fields of an anonymous structure written
 		the same way, since they are read in the same other module. A
-		typedef met again inside itself, a structure that holds itself,
-		which the lane refuses, keeps its name, rather than going on for
+		typedef met again inside itself (a structure that holds itself,
+		which the lane refuses) keeps its name, rather than going on for
 		ever.
 	**/
 	static function fullComplexTypeWithin(t:Type, within:Array<String>):ComplexType {
@@ -281,8 +281,8 @@ class RPCContractMacroTools {
 	}
 
 	/**
-		Whether a value of `ct` may be absent, `Null<T>`, however it is
-		named, so that on the wire it is a byte saying whether it is there
+		Whether a value of `ct` may be absent (`Null<T>`, however it is
+		named), so that on the wire it is a byte saying whether it is there
 		and then, if it is, the value.
 
 		Decided on the type and not on how it is written: the side that
@@ -349,7 +349,7 @@ class RPCContractMacroTools {
 
 	/**
 		The op of a compiled method: the hash of its signature (see `RPCOps`),
-		or of `ping`'s name alone. `answer` is the type it is answered with,
+		or of `ping`'s name alone. `answer` is the type it is answered with:
 		`T`, for a method answering with `Future<T>`, or `null` for a
 		one-way method.
 	**/

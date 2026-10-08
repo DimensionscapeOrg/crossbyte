@@ -25,9 +25,9 @@ import crossbyte.crypto._internal.NativeOnly;
  * ASN.1 DER that ECDSA implementations normally emit; that conversion
  * happens in the native layer.
  *
- * Every key is parsed once, here, into a `SignatureKey`. Parsing the PEM per
- * token left another copy of the private key in freed memory for every
- * token signed, and rebuilt an EC key's tables for every one checked.
+ * Every key is parsed once, here, into a `SignatureKey`, so no copy of the
+ * private key is left in freed memory for each token signed, and an EC
+ * key's tables are not rebuilt for each one checked.
  */
 class PkSigner implements IJWTSigner {
 	public var algorithm(get, never):JWTAlgorithm;

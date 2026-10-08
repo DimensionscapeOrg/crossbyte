@@ -138,8 +138,8 @@ class Application extends EventDispatcher {
 		#if !js
 		// Written as a negated ==. On the interpreter Thread overloads == to
 		// compare threads, but != falls back to comparing the wrappers, and
-		// Thread.current() hands out a new one on every call, so != was true
-		// on the main thread itself, and every Application threw there.
+		// Thread.current() hands out a new one on every call, so != would be
+		// true on the main thread itself.
 		if (!(Thread.current() == __mainThread)) {
 			throw "Application must only be instantiated in the main thread!";
 		}

@@ -7,10 +7,9 @@ import crossbyte.net.Socket;
 /**
  * Writes a response as HTTP/1.1 onto a socket.
  *
- * The behaviour extracted verbatim from `HTTPRequestHandler`, including the
- * header order it emitted, which is load-bearing in a way that is easy to miss:
- * the tests assert against whole response strings, and a reordered header block
- * is a diff in every one of them.
+ * The header order is load-bearing in a way that is easy to miss: the tests
+ * assert against whole response strings, and a reordered header block is a
+ * diff in every one of them.
  */
 class HTTP1ResponseWriter implements HTTPResponseWriter {
 	public var connected(get, never):Bool;
@@ -84,8 +83,8 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 	private static final CLOSE_LINE:String = "\r\nConnection: " + Connection.CLOSE + "\r\n";
 
 	public function writeHead(head:HTTPResponseHead):Void {
-		// One buffer, one string: `+=` made a new string of everything so far
-		// for every piece, some thirty a response.
+		// One buffer, one string: `+=` would make a new string of everything so
+		// far for every piece, some thirty a response.
 		var response:HeadText = HeadText.begin();
 		response.add("HTTP/1.1 ");
 		response.addInt(head.statusCode);
@@ -163,13 +162,13 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 
 	Natively an array of its pieces, kept from one head to the next and
 	joined once. A StringBuf there is an array of pieces of its own, which a
-	head grew seven times: 1.6 KB of the 3.6 KB an HTTP/1.1 GET allocated,
-	for a head of about 150 bytes. The array is one a thread, since a server
-	spread over runtimes writes heads on several at once, and nothing that
-	puts a head together can begin another before it ends.
+	head grows seven times: 1.6 KB allocated for a head of about 150 bytes.
+	The array is one a thread, since a server spread over runtimes writes
+	heads on several at once, and nothing that puts a head together can
+	begin another before it ends.
 
-	Elsewhere a StringBuf, as before: the jvm's appends a number without
-	making a string of it, and gains nothing from the array.
+	Elsewhere a StringBuf: the jvm's appends a number without making a
+	string of it, and gains nothing from the array.
 **/
 private abstract HeadText(#if cpp Array<String> #else StringBuf #end) {
 	#if cpp

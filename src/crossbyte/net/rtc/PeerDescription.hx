@@ -15,7 +15,7 @@ typedef CandidateDescription = {
 	var priority:Int;
 
 	/**
-		For a reflexive or relayed candidate, the address it was found from,
+		For a reflexive or relayed candidate, the address it was found from:
 		SDP's `raddr`. Carried for the peer's diagnostics; nothing here pairs
 		by it.
 	**/
@@ -29,7 +29,7 @@ typedef CandidateDescription = {
 	Everything one peer must tell the other before they can connect.
 
 	This is what an application carries over whatever channel already joins the
-	two peers, a WebSocket to a lobby server, an HTTP exchange, a copied and
+	two peers: a WebSocket to a lobby server, an HTTP exchange, a copied and
 	pasted string. CrossByte does not carry it, deliberately: signalling is the
 	one part of WebRTC that is the application's own, and every application
 	already has a channel it would rather use.
@@ -43,7 +43,7 @@ typedef CandidateDescription = {
 	`haxe.Json.stringify` writes one and `haxe.Json.parse` gives one back, on
 	either peer and on any target, with nothing to construct between them, as
 	a browser's `RTCSessionDescriptionInit` is plain JSON. Read once per
-	connection, its fields cost nothing worth a class, a value received is
+	connection, its fields cost nothing worth a class: a value received is
 	checked when it is applied, not when it is typed. Its candidates are
 	`CandidateDescription`s, which are wire data for the same reason.
 **/
@@ -65,7 +65,7 @@ typedef PeerDescription = {
 
 		`active` is the client, `passive` the server, and `actpass` says the
 		peer will take whichever the answer leaves it. Optional here because two
-		CrossByte peers settle it from the ICE role instead, it matters when
+		CrossByte peers settle it from the ICE role instead; it matters when
 		the peer on the other end is a browser, which states it in the offer and
 		expects the answer to choose.
 	**/

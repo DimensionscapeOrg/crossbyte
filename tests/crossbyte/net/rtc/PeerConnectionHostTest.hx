@@ -32,7 +32,7 @@ class PeerConnectionHostTest extends utest.Test {
 
 		Checks are routed by the ufrag they name, the answers to this side's
 		checks by their transaction, and DTLS by the address a path was proved
-		to, all three are needed before a message crosses, so a message each
+		to: all three are needed before a message crosses, so a message each
 		way on each connection covers them.
 	**/
 	public function testConnectionsOnOneHostEachReachTheirOwnPeer():Void {
@@ -160,7 +160,7 @@ class PeerConnectionHostTest extends utest.Test {
 		A peer's candidates are its own to write. If sending a check to an
 		address were enough to be routed what arrives from it, one peer could
 		list another's address as a candidate of its own and have that peer's
-		records handed to it, the victim's connection would go quiet with
+		records handed to it, and the victim's connection would go quiet with
 		nothing to say why. Only a proved path claims an address, and a path to
 		somebody else's address cannot be proved.
 	**/

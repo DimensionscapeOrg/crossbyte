@@ -9,18 +9,17 @@ import haxe.Timer as HxTimer;
  * hold a great many short timers and churn them constantly.
  *
  * The heap is the default and is the right default. It orders timers exactly,
- * treats a one microsecond delay and a six hour delay identically, and after
- * the position map was taken off its sift path it schedules thirty thousand
- * recurring timers in about forty milliseconds of CPU per simulated second.
- * This exists for the shape where the remaining O(log n) still shows: a timer
- * armed per entity or per connection and re-armed on every event, where the
- * work is in the arming rather than in the firing.
+ * treats a one microsecond delay and a six hour delay identically, and
+ * schedules thirty thousand recurring timers in about forty milliseconds of
+ * CPU per simulated second. This exists for the shape where its O(log n)
+ * still shows: a timer armed per entity or per connection and re-armed on
+ * every event, where the work is in the arming rather than in the firing.
  *
  * ## How it trades
  *
  * Time is divided into `RESOLUTION` ticks and `BUCKETS` of them are held in a
  * ring. Arming a timer that falls inside the ring is an index calculation and
- * a list link, no comparisons, no sifting, no growth with the number of
+ * a list link: no comparisons, no sifting, no growth with the number of
  * timers already held. Firing a tick walks one bucket and nothing else.
  *
  * What it gives up:
@@ -41,26 +40,27 @@ import haxe.Timer as HxTimer;
  *   recurring timer does not fire once for each tick it missed. The heap
  *   fires every one.
  *
- * So: many short timers, high churn, granularity to spare, the wheel. Few
- * timers, long or arbitrary delays, or exact ordering, the heap.
+ * So the wheel suits many short timers, high churn and granularity to
+ * spare; the heap suits few timers, long or arbitrary delays, or exact
+ * ordering.
  *
  * ## Where a timer goes
  *
  * A bucket is chosen from the time of the tick the cursor last reached, not
  * from the scheduler's clock. The two differ during a pass: the clock has
  * already moved to the end of the frame while the cursor walks the frame one
- * tick at a time. Placing by the clock put a timer re-armed from a callback
- * behind the cursor, where it waited a whole revolution, a `setInterval`
- * of five milliseconds fired twice a second at sixty frames a second, and
- * put one armed in a callback early, a bucket counted from the end of the
- * frame but reached from its start. A timer due at or before the cursor
- * goes in the next bucket: the cursor's own has been walked already, and
- * `setTimeout(0)` sat there for a revolution, 517 milliseconds.
+ * tick at a time. Placed by the clock, a timer re-armed from a callback
+ * would land behind the cursor and wait a whole revolution (a `setInterval`
+ * of five milliseconds would fire twice a second at sixty frames a second),
+ * and one armed in a callback would land early, a bucket counted from the
+ * end of the frame but reached from its start. A timer due at or before the
+ * cursor goes in the next bucket: the cursor's own has been walked already,
+ * and `setTimeout(0)` would sit there for a revolution, 517 milliseconds.
  */
 class TimerWheel implements ITimerScheduler {
 	/**
 	 * Tick length. One millisecond is finer than any frame this runtime
-	 * produces, the loop calls `advanceTime` once per frame, and the fastest
+	 * produces: the loop calls `advanceTime` once per frame, and the fastest
 	 * configured rate is several milliseconds, so the wheel's granularity is
 	 * never the coarsest thing in the chain.
 	 */
@@ -176,7 +176,7 @@ class TimerWheel implements ITimerScheduler {
 			__retire(node);
 		} else if (node.isPaused()) {
 			// Not linked anywhere, so no tick will ever reach it to retire it.
-			// Retire it now or it stays live, the case the heap calls out.
+			// Retire it now or it stays live: the case the heap calls out.
 			__retire(node);
 		} else {
 			node.enabled = false;
@@ -348,8 +348,8 @@ class TimerWheel implements ITimerScheduler {
 				// still to go. Everything the ring held has been visited, and
 				// anything re-armed on the way sits within a revolution of the
 				// cursor, so the whole revolutions ahead hold nothing new: they
-				// are skipped rather than spun through, for a stall, a
-				// suspend, a breakpoint, that nobody is waiting on. The
+				// are skipped rather than spun through, for a stall (a
+				// suspend, a breakpoint) that nobody is waiting on. The
 				// same call the frame loop makes when it gives up schedule
 				// debt. What they would have caught up on is late, not early.
 				__tick += Math.ffloor((target - __tick) / BUCKETS) * BUCKETS;
@@ -563,7 +563,7 @@ class TimerWheel implements ITimerScheduler {
 		// early would be a lie. The allowance only absorbs rounding in the
 		// subtraction. Kept a Float until it is known to be small: a timer
 		// days out is more ticks than an Int holds, and one that wrapped
-		// negative fired at once.
+		// negative would fire at once.
 		var ticks:Float = Math.fceil((node.time - __tick * RESOLUTION) / RESOLUTION - 1e-9);
 
 		if (ticks < 1) {

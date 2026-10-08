@@ -59,9 +59,9 @@ class SessionDescriptionTest extends utest.Test {
 	/**
 		The message size advertised is the one the receiver actually takes.
 
-		It was the receive window, two megabytes, while the receiver gives up
-		on any message past one: a peer that believed the document sent a
-		message in between, had every fragment acknowledged, and never learned
+		It is the largest message the receiver takes, not the receive window,
+		two megabytes: a peer that believed a larger figure would send a
+		message in between, have every fragment acknowledged, and never learn
 		that it was dropped whole on arrival.
 	**/
 	public function testTheMessageSizeAdvertisedIsWhatTheReceiverTakes():Void {
@@ -91,9 +91,8 @@ class SessionDescriptionTest extends utest.Test {
 		The peer's message size is read, and the RFC's default stands in for
 		one it left out.
 
-		It was not read at all, so nothing stopped this end sending a peer more
-		than it had said it would take. RFC 8841: absent means 64 KB, and 0
-		means any size.
+		Read, it stops this end sending a peer more than it said it would
+		take. RFC 8841: absent means 64 KB, and 0 means any size.
 	**/
 	public function testThePeersMessageSizeIsRead():Void {
 		Assert.equals(262144, SessionDescription.fromSdp(CHROME_OFFER).maxMessageSize, "Chrome's max-message-size was not read");
@@ -119,9 +118,9 @@ class SessionDescriptionTest extends utest.Test {
 	/**
 		A document listing several fingerprints is read for the one this checks.
 
-		Each line overwrote the one before, and a hash this cannot check wrote
-		nothing over it, so a sha-1 line after the sha-256 one erased it, and
-		the document was refused as carrying no fingerprint at all.
+		A line under a hash this cannot check must not overwrite the one it
+		can: a sha-1 line after the sha-256 one would erase it, and the
+		document be refused as carrying no fingerprint at all.
 	**/
 	public function testAFingerprintUnderAnotherHashDoesNotEraseTheOne():Void {
 		var fingerprint = "41:FE:38:80:C1:6C:0C:E2:5E:B1:5F:AF:41:4C:E5:3D:4C:1E:0C:1E:5D:2E:38:63:AA:35:0F:69:82:1A:1E:8C";
@@ -144,8 +143,8 @@ class SessionDescriptionTest extends utest.Test {
 	/**
 		An answer carries the offer's section id.
 
-		It was always "0". A browser whose offer said `a=mid:data` could not
-		match an answer saying `a=mid:0` to it.
+		A browser whose offer said `a=mid:data` could not match an answer
+		saying `a=mid:0` to it.
 	**/
 	public function testTheOffersSectionIdIsCarriedIntoTheAnswer():Void {
 		var offer = SessionDescription.fromSdp(StringTools.replace(CHROME_OFFER, "a=mid:0", "a=mid:data"));
@@ -163,7 +162,7 @@ class SessionDescriptionTest extends utest.Test {
 		Assert.isTrue(answer.indexOf("a=group:BUNDLE data\r\n") >= 0, "the answer's bundle does not name the offer's mid");
 		Assert.isTrue(answer.indexOf("a=mid:0") < 0, "the answer still says mid 0");
 
-		// Without one, "0", as before.
+		// Without one, "0".
 		Assert.equals("0", SessionDescription.fromSdp(SessionDescription.toSdp({
 			usernameFragment: "abcd",
 			password: "a-password-of-adequate-length",
@@ -184,9 +183,9 @@ class SessionDescriptionTest extends utest.Test {
 	/**
 		A document claims the end of candidates only when told to.
 
-		Every one did, so an answer written before a reflexive candidate had
-		come back told the peer to stop waiting for the candidate that would
-		have reached it.
+		Claimed always, an answer written before a reflexive candidate had
+		come back would tell the peer to stop waiting for the candidate that
+		would have reached it.
 	**/
 	public function testTheEndOfCandidatesIsClaimedOnlyWhenTrue():Void {
 		var base:PeerDescription = {
@@ -215,9 +214,9 @@ class SessionDescriptionTest extends utest.Test {
 		A trickled candidate line reads the way a description's does, and a
 		candidate writes out as one.
 
-		The reader was private, so an application passing a browser's
-		`onicecandidate` lines on wrote its own parser, and the writer would not
-		put `raddr`/`rport` on a reflexive candidate.
+		The reader is public, so an application passing a browser's
+		`onicecandidate` lines on needs no parser of its own, and the writer
+		puts `raddr`/`rport` on a reflexive candidate.
 	**/
 	public function testATrickledCandidateLineIsReadAndWritten():Void {
 		var trickled = SessionDescription.readCandidate("candidate:842163049 1 udp 1677729535 203.0.113.7 46154 typ srflx raddr 10.0.0.2 rport 51000 generation 0 network-cost 999");

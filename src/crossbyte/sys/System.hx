@@ -31,14 +31,9 @@ class System {
 		`"linux"`, `"mac"`, `"browser"`, or whatever `Sys.systemName()` reports
 		lowercased.
 
-		This was `#if windows ... #elseif linux ... #else "undefined"`, which
-		is a question about the build rather than about the machine. Haxe
-		sets `windows` for no target. A native build gets it from Lime or
-		Aedifex, or from CrossByte's `HostPlatform` macro, which names the
-		machine doing the building; hl, neko, eval, the JVM and Node get none.
-		So every target but native reported `"undefined"` while running on
-		Windows, and every conditional in this class that followed the same
-		pattern took the branch written for somebody else.
+		Asked of the machine at run time rather than decided by the build:
+		Haxe sets `windows` for no target, and a define naming the machine
+		that did the building says nothing about the one running the program.
 	**/
 	public static var PLATFORM(get, never):String;
 
@@ -85,11 +80,9 @@ class System {
 		ticks, so a tick landing inside the yield leaves a negative remainder,
 		and OCaml's Windows `Unix.sleepf` hands it to `Sleep()` unchecked, as
 		an unsigned count of milliseconds. Any sleep under about 15ms can do
-		it, the more often the busier the process's other threads are. It is
-		what hung the interpreter suite now and then, in a different test
-		each time. Here the interpreter on Windows sleeps through an empty
-		`select`, which OCaml turns into one plain `Sleep()` of the whole
-		duration.
+		it, the more often the busier the process's other threads are. Here
+		the interpreter on Windows sleeps through an empty `select`, which
+		OCaml turns into one plain `Sleep()` of the whole duration.
 
 		Anywhere else this is `Sys.sleep`, with a negative or NaN duration
 		taken as zero. CrossByte itself sleeps through nothing else. Not in a
@@ -109,11 +102,11 @@ class System {
 
 		Not the working directory, which is wherever the program happened to
 		be started from: `C:\Windows\System32` for a Windows service, `/` for
-		many daemons. It was that, so a program started from anywhere but its
-		own directory found none of its files.
+		many daemons. A program started from anywhere but its
+		own directory would find none of its files there.
 
 		On the interpreter (`--interp`), which runs from source and has no
-		program file of its own, it is the working directory, the one the
+		program file of its own, it is the working directory: the one the
 		compiler ran in, where its `-cp` and `resources` paths are read from.
 
 		@throws IllegalOperationError In a browser.
@@ -125,20 +118,20 @@ class System {
 		`appStorageDir`, so what keeps one application's `Store` apart from
 		another's.
 
-		The `crossbyte_app_id` define when the build sets one,
-		`-D crossbyte_app_id=com.example.chat`: which may hold letters,
+		The `crossbyte_app_id` define when the build sets one
+		(`-D crossbyte_app_id=com.example.chat`), which may hold letters,
 		digits, `.`, `-`, `_` and spaces, starting with a letter or a digit;
 		the build refuses anything else. Otherwise the main class's full
 		name, as `com.example.Chat`, which is the same whichever target the
 		application is built for, so its native, jvm and Node builds share
 		their data. Built with Aedifex, which starts every application at a
 		generated `ProgramMain`, it is the class `ProgramMain` starts: the
-		project's own main class. A build with no main class, a library
-		loaded by something else, uses the program's file name without its
+		project's own main class. A build with no main class (a library
+		loaded by something else) uses the program's file name without its
 		extension.
 
-		Two applications whose main classes have one name, `Main` is a
-		common one, share their storage. Give each a name of its own with
+		Two applications whose main classes have one name (`Main` is a
+		common one) share their storage. Give each a name of its own with
 		the define.
 	**/
 	public static var applicationId(get, never):String;
@@ -157,8 +150,8 @@ class System {
 
 		Created, with any parent it needs, the first time it is asked for.
 
-		@throws IOError The environment names no such directory, no
-		`APPDATA` or `USERPROFILE` on Windows, no `HOME` elsewhere, or it
+		@throws IOError The environment names no such directory (no
+		`APPDATA` or `USERPROFILE` on Windows, no `HOME` elsewhere), or it
 		cannot be created.
 		@throws IllegalOperationError In a browser, which has no file
 		system; `Store` keeps its data in IndexedDB there.
@@ -183,8 +176,7 @@ class System {
 
 		@throws IllegalOperationError Anywhere else: natively on macOS, which
 		has no process affinity, and on the jvm, Node, the interpreter, neko,
-		HashLink and in a browser, which have no call to ask. It reported
-		`[false]` there, every processor unusable, and `[]` on macOS.
+		HashLink and in a browser, which have no call to ask.
 	**/
 	public static var processAffinity(get, never):Array<Bool>;
 
@@ -195,20 +187,19 @@ class System {
 
 	/**
 		An identifier of this machine, the same for every program on it and
-		across restarts: Windows' `MachineGuid`, in capitals, without
-		braces, Linux's `/etc/machine-id` (or D-Bus's copy of it in
+		across restarts: Windows' `MachineGuid` (in capitals, without
+		braces), Linux's `/etc/machine-id` (or D-Bus's copy of it in
 		`/var/lib/dbus`), and macOS's `IOPlatformUUID`. The same on every
 		target on one machine; read once, then kept.
 
 		`null` where there is none: in a browser, which lets a page read no
 		such thing, on a Linux system without a machine id (some containers),
-		and on any other system. It answered `""` everywhere but native, and
-		`null` natively on Linux and macOS.
+		and on any other system.
 
 		It identifies the machine to anyone who sees it. systemd's advice for
 		its machine id holds for all three: to tell machines apart from a
-		server, send a keyed hash of it, an HMAC under a key of your
-		application's own, rather than the identifier itself.
+		server, send a keyed hash of it (an HMAC under a key of your
+		application's own) rather than the identifier itself.
 	**/
 	public static function getDeviceId():Null<String> {
 		if (!__deviceIdRead) {
@@ -231,18 +222,18 @@ class System {
 	}
 
 	/**
-		How much of the machine's processing this process has used, all of
-		its threads, in user and kernel time, since the previous call, as a
+		How much of the machine's processing this process has used (all of
+		its threads, in user and kernel time) since the previous call, as a
 		percentage of all its processors from 0 to 100: a process keeping one
 		of eight processors busy reads 12.5. The first call measures from the
 		start: of the process on Node, of the JVM on the jvm, and elsewhere of
 		the program, when its classes were set up.
 
 		Meant to be read now and then, a second or more apart. Processor time
-		is counted in steps, 15.6 ms on Windows, 10 ms on Linux, so a
+		is counted in steps (15.6 ms on Windows, 10 ms on Linux), so a
 		reading over a few milliseconds is mostly the step; a call within
 		10 ms of the previous one returns the previous reading and leaves the
-		next to measure from where that one did. It returned 0.
+		next to measure from where that one did.
 
 		@throws IllegalOperationError In a browser, which reports no
 		processor time, and on a JVM that does not report the process's
@@ -279,9 +270,8 @@ class System {
 		V8 heap in use. Zero where nothing reports it (the interpreter, hl,
 		neko, a browser).
 
-		A `Float`, since a heap outgrows an `Int`: this was the collector's
-		32-bit figure, which wrapped negative past 2GiB, and 0 on every target
-		but native.
+		A `Float`, since a heap outgrows an `Int`: a 32-bit figure would wrap
+		negative past 2GiB.
 	**/
 	public static function memoryUsage():Float {
 		#if cpp
@@ -461,12 +451,11 @@ class System {
 		`GlobalMemoryStatusEx` on Windows, `/proc/meminfo`'s `MemTotal` on
 		Linux and `hw.memsize` on macOS, where off native `sysctl
 		hw.memsize` is run instead. The interpreter, neko and HashLink under
-		Windows have no call for it and run `wmic`, or PowerShell, where
-		Windows no longer has wmic, which takes half a second or more.
+		Windows have no call for it and run `wmic` (or PowerShell, where
+		Windows no longer has wmic), which takes half a second or more.
 
 		@throws IllegalOperationError In a browser, which reports no such
-		thing, and on a system none of these answer on. It answered 0 on
-		macOS, and on a Windows without wmic.
+		thing, and on a system none of these answer on.
 	**/
 	public static function totalSystemMemory():Float {
 		#if nodejs
@@ -516,9 +505,8 @@ class System {
 	#if !(js && !nodejs)
 	/**
 		The machine's physical memory in bytes, or what is available of it;
-		-1 if nothing answered. Each figure was a process: `wmic`, half a
-		second on Windows natively and on the jvm too, and `grep` on Linux;
-		macOS had none, and answered 0.
+		-1 if nothing answered. Asked of the system directly where it can be,
+		rather than of a process (`wmic` takes half a second on Windows).
 	**/
 	@:noCompletion private static function __systemMemory(available:Bool):Float {
 		try {
@@ -672,10 +660,9 @@ class System {
 
 		@return Whether the system accepted the change: it refuses one that
 		would leave the process no processor at all.
-		@throws RangeError `index` names no processor, or, on Windows, one
-		past the 64 a process's mask can hold.
+		@throws RangeError `index` names no processor (or, on Windows, one
+		past the 64 a process's mask can hold).
 		@throws IllegalOperationError Anywhere else, as for `processAffinity`.
-		It answered `false` there.
 	**/
 	public static function setProcessAffinity(index:Int, value:Bool):Bool {
 		__checkAffinityIndex(index);
@@ -692,10 +679,9 @@ class System {
 
 		Natively on Windows and Linux; see `processAffinity`.
 
-		@throws RangeError `index` names no processor, or, on Windows, one
-		past the 64 a process's mask can hold.
+		@throws RangeError `index` names no processor (or, on Windows, one
+		past the 64 a process's mask can hold).
 		@throws IllegalOperationError Anywhere else, as for `processAffinity`.
-		It answered `false` there: no processor usable.
 	**/
 	public static function hasProcessAffinity(index:Int):Bool {
 		__checkAffinityIndex(index);
@@ -770,9 +756,7 @@ class System {
 	#if !(js && !nodejs)
 	/**
 		The directory of the program's own file, absolute and normalized; on
-		the interpreter, the working directory. The working directory was
-		used everywhere, and a service started from System32 looked for its
-		files there.
+		the interpreter, the working directory.
 	**/
 	@:noCompletion private static function __programDirectory():String {
 		#if eval
@@ -843,8 +827,7 @@ class System {
 		var path:String = __storagePath();
 
 		if (!__appStorageDirMade) {
-			// AIR's "created when you first access it", which nothing did:
-			// this was the profile root itself, which exists anyway.
+			// AIR's "created when you first access it".
 			try {
 				if (!sys.FileSystem.exists(path)) {
 					sys.FileSystem.createDirectory(path);
@@ -864,16 +847,10 @@ class System {
 		The application storage directory's path, worked out once, without
 		creating it.
 
-		It was `APPDATA`, or `HOME`, itself: the account's root, shared by
-		every CrossByte program on it, so two applications that opened a
-		`Store` of the same name opened one store, where `Store` promised
-		each its own. It is the application's own directory inside that now.
-
-		Before that it had been wrong on Node: under Windows the old
-		`#if windows` was false there, so it read HOME, the profile root
-		when Git Bash had set it, a different place than a native build used
-		for the same data, and the literal string "undefined" when nothing
-		had. The platform is asked at run time.
+		The application's own directory inside `APPDATA`, or `HOME`, rather
+		than the account's root itself, so two applications that open a
+		`Store` of the same name open one each. The platform is asked at run
+		time, so Node under Windows finds the same place a native build does.
 	**/
 	@:noCompletion private static function __storagePath():String {
 		#if (js && !nodejs)
@@ -966,9 +943,9 @@ class System {
 		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
 		#else
 		if (__documentsDirPath == null) {
-			// xdg-user-dirs, as File.documentsDirectory documents, which was
-			// never read: a desktop in another language, or one moved, keeps
-			// its documents somewhere other than ~/Documents.
+			// xdg-user-dirs, as File.documentsDirectory documents: a desktop
+			// in another language, or one moved, keeps its documents somewhere
+			// other than ~/Documents.
 			var configured:Null<String> = __xdgUserDir("XDG_DOCUMENTS_DIR");
 			__documentsDirPath = configured != null ? configured : userDir + File.separator + "Documents";
 		}
@@ -1065,9 +1042,8 @@ class System {
 	/**
 		Asked of the platform wherever it will say: the native call, the JVM's
 		own count, Node's list of CPUs, a browser's `hardwareConcurrency`.
-		This returned 0 everywhere but native, so `new TaskPool(processorCount)`,
-		the obvious way to size a pool, threw on the jvm, Node and the
-		interpreter. Where nothing reports it, the environment and
+		So `new TaskPool(processorCount)`, the obvious way to size a pool,
+		works on every target. Where nothing reports it, the environment and
 		`/proc/cpuinfo` are asked, and the answer is never below 1: a process
 		running this code has at least one processor to run it on.
 	**/

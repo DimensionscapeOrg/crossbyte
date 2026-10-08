@@ -2,7 +2,7 @@ package crossbyte.http.config;
 
 /**
 	Condition attached to a rewrite rule and evaluated before the rule applies.
-	Built from an object literal, as before (`@:structInit`): `key` may be left
+	Built from an object literal (`@:structInit`): `key` may be left
 	out where the condition needs none, and `negate` where it is `false`.
 **/
 @:structInit

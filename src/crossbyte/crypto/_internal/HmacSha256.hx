@@ -11,12 +11,11 @@ import haxe.io.Bytes;
 	every time, so that state is kept: each MAC is the message's own blocks
 	and one more. `haxe.crypto.Hmac` hashes the key's blocks for every MAC,
 	builds the padded key and both messages as new buffers, and converts
-	each to an array of words first; a JWT verified per request paid that
-	every time.
+	each to an array of words first.
 
 	A message held in a `String` is read straight from it, a character at a
-	time, when every character is ASCII, what a JWT's signing input always
-	is, with no `Bytes.ofString` copy. Other text is encoded as UTF-8
+	time, when every character is ASCII (what a JWT's signing input always
+	is), with no `Bytes.ofString` copy. Other text is encoded as UTF-8
 	first, as `Bytes.ofString` encodes it.
 
 	The arithmetic is `haxe.crypto.Sha256`'s, checked against RFC 4231's
@@ -92,7 +91,7 @@ final class HmacSha256 {
 	}
 
 	/**
-		The MAC of `text`'s characters from `start` up to `end`, as UTF-8,
+		The MAC of `text`'s characters from `start` up to `end`, as UTF-8:
 		what `mac(Bytes.ofString(text.substring(start, end)))` answers.
 	**/
 	public function macText(text:String, start:Int, end:Int):Bytes {
@@ -139,8 +138,8 @@ final class HmacSha256 {
 
 	/**
 		The words a MAC works in: its own on a target with threads, and on
-		JavaScript, which runs one thread, one array kept for every MAC,
-		a typed array is a costly allocation there. Nothing a MAC does can
+		JavaScript, which runs one thread, one array kept for every MAC (a
+		typed array is a costly allocation there). Nothing a MAC does can
 		start another before it ends.
 	**/
 	@:noCompletion private static inline function __newScratch():Words {

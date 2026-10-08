@@ -35,9 +35,9 @@ class PassFlushTest extends utest.Test {
 	}
 
 	public function testAFlushThatThrowsIsReportedAndTheRestStillGo():Void {
-		// It used to rethrow out of the pump and leave the rest for a next
-		// pass, which, driven by the runtime's own loop rather than a test,
-		// the throw had just cancelled along with the loop.
+		// The throw is reported, and the rest flush in the same pass. Rethrowing
+		// out of the pump and leaving the rest for a next pass would lose them
+		// under the runtime's own loop, which the throw would cancel too.
 		var runtime = CrossByte.current();
 		var flushed:Array<String> = [];
 		var reported:Array<crossbyte.events.UncaughtErrorEvent> = [];

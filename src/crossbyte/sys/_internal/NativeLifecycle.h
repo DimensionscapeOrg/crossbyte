@@ -26,7 +26,7 @@ void crossbyte_lifecycle_reset();
 // `closeWaitMs`.
 bool crossbyte_lifecycle_deliver_console_event(int controlType, int closeWaitMs);
 
-// Tests only: how many handlers, console handlers and the session window,
+// Tests only: how many handlers (console handlers and the session window)
 // are holding a close, a logoff or a shutdown.
 int crossbyte_lifecycle_holding();
 

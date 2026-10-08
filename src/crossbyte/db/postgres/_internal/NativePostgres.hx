@@ -24,7 +24,7 @@ extern class NativePostgres {
 	public static function isOpen(handle:VoidPointer):Bool;
 
 	/**
-		Runs `sql` with `PQexec`, several statements, when it holds several,
+		Runs `sql` with `PQexec` (several statements, when it holds several)
 		and returns its result as an encoded block (see `PostgresWire`).
 	**/
 	@:native("crossbyte_postgres_request_block")

@@ -5,8 +5,7 @@ import haxe.io.Bytes;
 
 /**
  * The decoder's one output call. Input is read where it lies, by the bit
- * reader; the callbacks the C used for both, and the file streams the port
- * carried beside them, went with the Array<UInt> buffers they copied through.
+ * reader.
  */
 class Streams
 {

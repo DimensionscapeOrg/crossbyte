@@ -12,7 +12,7 @@ class CryptoTest extends utest.Test {
 		Assert.equals(0, SecureRandom.getSecureRandomBytes(0).length);
 		Assert.equals(32, SecureRandom.getSecureRandomBytes(32).length);
 		#else
-		// An IllegalOperationError naming the target: it threw a String.
+		// An IllegalOperationError naming the target, not a String.
 		Assert.isTrue(throwsIllegalOperation(() -> SecureRandom.getSecureRandomBytes(1)));
 		#end
 	}
@@ -31,7 +31,7 @@ class CryptoTest extends utest.Test {
 		Assert.isFalse(Blake3.isAvailable());
 		Assert.equals(0, Blake3.simdDegree());
 		Assert.isTrue(throwsIllegalOperation(() -> Blake3.hash(Bytes.ofString("abc"))));
-		// The target first: a zero-length digest was handed back here.
+		// The target first, rather than a zero-length digest.
 		Assert.isTrue(throwsIllegalOperation(() -> Blake3.hash(Bytes.ofString("abc"), 0)));
 		#end
 	}
@@ -40,9 +40,9 @@ class CryptoTest extends utest.Test {
 	/**
 	 * The vectors above never reach the SSE and AVX2 code: BLAKE3 only hands
 	 * work to its vector backends once an input holds two whole 1 KiB chunks,
-	 * and "abc" is three bytes. When the flags those files need were being
-	 * dropped, only GCC refusing to compile them gave it away; a backend that
-	 * compiled and hashed wrongly would have passed everything.
+	 * and "abc" is three bytes. A backend that compiled and hashed wrongly
+	 * would pass everything above, and a build dropping the flags those files
+	 * need would show only where a compiler refuses them.
 	 *
 	 * These are upstream's test_vectors.json entries for the same lengths, with
 	 * its input pattern, byte i = i % 251: 2049 is just past where the vector
@@ -106,8 +106,8 @@ class CryptoTest extends utest.Test {
 	/**
 		Verifying an Ed25519 signature where nothing can verify one says so.
 
-		It answered `false` off cpp, the answer for a forged signature, so
-		code checking signed messages there refused every one, genuine ones
+		An answer of `false` off cpp (the answer for a forged signature) would
+		make code checking signed messages there refuse every one, genuine ones
 		included, while looking like a working check. It throws, as signing
 		does there and as `Argon2id.verify` does, whatever it is handed.
 	**/

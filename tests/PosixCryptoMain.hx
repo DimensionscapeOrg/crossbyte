@@ -7,8 +7,8 @@ import utest.Runner;
  * source with hxcpp on every platform, and the native smoke suite covers them
  * on Windows. This target proves the same surface builds and behaves on the
  * other two, under GCC and Clang, which a Windows development machine cannot
- * show: the first run here found SIMD flags MSVC had never needed and a
- * duplicate object only GNU ld objects to.
+ * show: SIMD flags MSVC never needs, and a duplicate object only GNU ld
+ * objects to.
  */
 @:access(crossbyte.core.CrossByte)
 class PosixCryptoMain {

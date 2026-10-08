@@ -13,14 +13,11 @@ import crossbyte.ds.ListedMap.KeyValuePair;
  * Useful when you need predictable iteration order along with map semantics.
  *
  * Each entry sits on a list in the order its key was first set, so `remove`
- * unlinks it in constant time; it searched and shifted an array of keys, and
- * 20,000 removals took 478 ms on the jvm. Positions are counted along the
- * list, so `ofIndex` and `indexOf` cost the position they reach.
+ * unlinks it in constant time. Positions are counted along the list, so
+ * `ofIndex` and `indexOf` cost the position they reach.
  *
  * **Removing while iterating** is safe: an entry removed before the loop
- * reaches it is not visited, and every other entry is visited once. The
- * iterators walked the array of keys, which a removal shifted under them,
- * three of six entries were visited when every other one was removed. An
+ * reaches it is not visited, and every other entry is visited once. An
  * entry added while iterating may or may not be visited.
  *
  * @param K The type of keys used in the map.

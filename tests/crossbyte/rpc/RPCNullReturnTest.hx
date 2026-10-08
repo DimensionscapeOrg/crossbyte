@@ -10,12 +10,12 @@ private typedef MaybeName = Null<String>;
 /**
 	Answers that may be absent: a method returning `Null<T>`.
 
-	They compiled, and then ended the connection. The caller reads a byte
-	saying whether the answer is there before the answer, as it does for an
-	optional argument, and the handler wrote the answer bare: the caller took
-	its first byte for that flag, misread the rest, and closed the connection,
-	failing every other call waiting on it. A null `String` could not be
-	written at all on eval and JavaScript, and went as "" on cpp.
+	The caller reads a byte saying whether the answer is there before the
+	answer, as it does for an optional argument, so the handler writes that
+	byte too. An answer written bare would have its first byte taken for
+	that flag, the rest misread, and the connection closed, failing every
+	other call waiting on it. A null `String` is written as absent on every
+	target: not refused on eval and JavaScript, nor sent as "" on cpp.
 **/
 class RPCNullReturnTest extends utest.Test {
 	public function testAContractAnswerThatMayBeAbsentCrosses():Void {

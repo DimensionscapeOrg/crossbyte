@@ -15,8 +15,8 @@ enum abstract Team(Int) to Int {
 abstract PlayerName(String) from String to String {}
 
 /**
-	Compact numbers on the compiled lane, `Float32` (or `Single`), `Int8`,
-	`UInt8`, `Int16`, `UInt16`, in fewer bytes than an `Int` or a `Float`,
+	Compact numbers on the compiled lane (`Float32` or `Single`, `Int8`,
+	`UInt8`, `Int16`, `UInt16`) in fewer bytes than an `Int` or a `Float`,
 	and abstracts carried as the type they abstract.
 **/
 class RPCCompactTest extends utest.Test {

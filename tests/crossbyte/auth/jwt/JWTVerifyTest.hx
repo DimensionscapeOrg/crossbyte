@@ -9,11 +9,11 @@ import crossbyte.test.Require;
  * `JWT.verify`: tokens from issuers that are not CrossByte, and saying why a
  * token was refused.
  *
- * verifyToken refused any token whose `typ` was not exactly `JWT`, so AWS
- * Cognito's and Sign in with Apple's tokens, which carry none, RFC 9068 access
- * tokens (`at+jwt`) and a lower-case `jwt` all failed, and it answered every
- * refusal, expired or forged alike, with the same null. HS256 only, so this
- * runs on every target.
+ * The `typ`s JWT issuers write are accepted, or none: AWS Cognito's and Sign
+ * in with Apple's tokens carry none, RFC 9068 access tokens carry `at+jwt`,
+ * and some issuers write a lower-case `jwt`. A refusal says why, expired and
+ * forged alike, rather than answering every one with the same null. HS256
+ * only, so this runs on every target.
  */
 class JWTVerifyTest extends utest.Test {
 	static inline final SECRET:String = "0123456789abcdef0123456789abcdef";
@@ -94,13 +94,13 @@ class JWTVerifyTest extends utest.Test {
 	}
 
 	/**
-		A signature is accepted in the one spelling the issuer wrote. It was
-		compared as text with the MAC encoded again; it is compared now as
-		the 32 bytes it decodes to, and only its canonical base64url decodes:
-		the low bits of its last character zero, no padding, no `+` or `/`.
-		Any other spelling of the same bytes would let one token be written
-		several ways, which a replay cache or revocation list keyed by the
-		token's text would not recognise.
+		A signature is accepted in the one spelling the issuer wrote. It is
+		compared as the 32 bytes it decodes to, not as text with the MAC encoded
+		again, and only its canonical base64url decodes: the low bits of its
+		last character zero, no padding, no `+` or `/`. Any other spelling of
+		the same bytes would let one token be written several ways, which a
+		replay cache or revocation list keyed by the token's text would not
+		recognise.
 	**/
 	public function testASignatureIsAcceptedInOneSpellingOnly():Void {
 		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]), ISSUER, "api");
@@ -190,9 +190,9 @@ class JWTVerifyTest extends utest.Test {
 		parsed.
 
 		JSON is parsed a frame per level, and the header is parsed before the
-		signature is checked, so this needed no key. Natively a 16 KB token,
-		within a raised `maxTokenLength`, which the doc suggests for tokens
-		with many claims, nested 6,000 deep overflowed the stack and ended
+		signature is checked, so this needs no key. Natively a 16 KB token
+		(within a raised `maxTokenLength`, which the doc suggests for tokens
+		with many claims) nested 6,000 deep would overflow the stack and end
 		the process, on the runtime's thread and on a worker alike. The claims
 		are parsed only once the signature has shown the issuer wrote them.
 	**/
@@ -219,8 +219,8 @@ class JWTVerifyTest extends utest.Test {
 		A token whose `crit` header names extensions is refused: they are ones
 		it must not be accepted without, this verifier implements none, and RFC
 		7515 makes such a token invalid for it. `"b64":false` (RFC 7797) is
-		one: the payload travels unencoded, and was taken as though it were
-		base64url. A header member nobody marked critical is still ignored.
+		one: the payload travels unencoded, and must not be taken as though it
+		were base64url. A header member nobody marked critical is still ignored.
 	**/
 	public function testATokenNamingCriticalExtensionsIsRefused():Void {
 		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]), ISSUER, "api");
@@ -237,8 +237,8 @@ class JWTVerifyTest extends utest.Test {
 
 		RFC 7519 4.1.3: a recipient that does not identify itself with a value
 		in a token's `aud` must reject it. A verifier with no `expectedAudience`
-		accepted a token minted for any other service the issuer and key
-		serve, the token another service was given, replayed here.
+		would otherwise accept a token minted for any other service the issuer
+		and key serve: the token another service was given, replayed here.
 	**/
 	public function testATokenForSomeAudienceIsRefusedWhereNoneIsExpected():Void {
 		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]), ISSUER);
@@ -246,7 +246,7 @@ class JWTVerifyTest extends utest.Test {
 		expectRefused(jwt, forge(header, claims({aud: "another-service"})), WRONG_AUDIENCE);
 		expectRefused(jwt, forge(header, claims({aud: ["another-service", "a-third"]})), WRONG_AUDIENCE);
 
-		// A token naming none passes, as before.
+		// A token naming none passes.
 		Assert.isTrue(jwt.verify(forge(header, claims({aud: null}))).valid);
 
 		// And one naming this verifier passes once it says which it is.
@@ -311,7 +311,7 @@ class JWTVerifyTest extends utest.Test {
 		return haxe.Json.stringify(base);
 	}
 
-	/** `json`, an object, with `member`, raw JSON, `"name":value`, added at its end. */
+	/** `json`, an object, with `member` (raw JSON, `"name":value`) added at its end. */
 	static function withClaim(json:String, member:String):String {
 		return json.substr(0, json.length - 1) + "," + member + "}";
 	}

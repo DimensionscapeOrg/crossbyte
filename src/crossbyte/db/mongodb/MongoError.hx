@@ -20,8 +20,8 @@ final class MongoWriteError {
 	A command the MongoDB server answered with an error, carrying the
 	server's own account of it.
 
-	`errorID` and `codeName` say which error it was, 11000 `DuplicateKey`, 13
-	`Unauthorized`, 50 `MaxTimeMSExpired`, so a caller can tell a duplicate
+	`errorID` and `codeName` say which error it was (11000 `DuplicateKey`, 13
+	`Unauthorized`, 50 `MaxTimeMSExpired`), so a caller can tell a duplicate
 	from a deadlock without reading prose. A write that applied some
 	documents and refused others reports each refusal in `writeErrors`, and
 	how many it did apply in `result`. A `SQLError`, so code catching the

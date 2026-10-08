@@ -9,7 +9,7 @@ import crossbyte.errors.RangeError;
  *
  * A snapshot that mostly repeats the one a client last acknowledged costs a
  * few bytes for what stayed the same, and the bytes themselves only for
- * what changed. Nothing here knows what the bytes mean, lay the state out
+ * what changed. Nothing here knows what the bytes mean: lay the state out
  * at fixed offsets, with what changes together sitting together, and a
  * tick in which most things held still shrinks to the fields that moved.
  *
@@ -22,8 +22,8 @@ import crossbyte.errors.RangeError;
  * ```
  *
  * **Format.** Unsigned varints, as `ByteArray.writeVarUInt` writes them:
- * the rebuilt length, then pairs, bytes to copy from the baseline at the
- * same offset, then bytes carried in the delta, each pair followed by the
+ * the rebuilt length, then pairs (bytes to copy from the baseline at the
+ * same offset, then bytes carried in the delta), each pair followed by the
  * bytes it carries, until the length is made up. The end is implied by the
  * length, so a delta can sit inside a larger message.
  *
@@ -121,8 +121,7 @@ final class ByteDelta {
 		} catch (error:RangeError) {
 			// A varint that does not fit in 32 bits, which the reader refuses
 			// as out of range; to the caller it is a malformed delta like any
-			// other. Its extra bits used to be shifted off the top, so a
-			// length of 2^32 + 3 decoded as 3.
+			// other.
 			throw new IOError("A delta holds a varint that does not fit in 32 bits.");
 		}
 	}
@@ -149,10 +148,10 @@ final class ByteDelta {
 			if (copy == 0 && carried == 0) {
 				throw new IOError("A delta pair copied and carried nothing.");
 			}
-			// Only a copy needs the baseline: past its end, a snapshot that
-			// grew, a pair that carries everything is exactly right.
+			// Only a copy needs the baseline: past its end (a snapshot that
+			// grew) a pair that carries everything is exactly right.
 			if (copy > 0 && copy > baseLength - pos) {
-				throw new IOError("A delta copies past the end of its baseline, is it the right one?");
+				throw new IOError("A delta copies past the end of its baseline: is it the right one?");
 			}
 			var available:Int = delta.bytesAvailable;
 			if (carried > available) {

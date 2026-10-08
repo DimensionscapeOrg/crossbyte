@@ -31,8 +31,8 @@ class JWKSetTest extends utest.Test {
 	/**
 	 * A document nested deeper than any real JWK Set is refused before it is
 	 * parsed. Parsing takes a frame per level, and natively a set nested
-	 * 6,000 deep, 12 KB, from a provider's endpoint or whoever answers for
-	 * it, overflowed the stack and ended the process.
+	 * 6,000 deep (12 KB, from a provider's endpoint or whoever answers for
+	 * it) would overflow the stack and end the process.
 	 *
 	 * The bound is 32 levels, objects and arrays together: here the set's
 	 * object, its `keys` array and the key's object, then a member nesting

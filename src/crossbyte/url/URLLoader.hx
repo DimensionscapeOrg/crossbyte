@@ -27,8 +27,8 @@ class URLLoader extends EventDispatcher {
 	 *
 	 * A load blocks a thread for as long as its server takes to answer, and
 	 * the threads are shared and kept between loads rather than started for
-	 * each. A program that holds many slow requests open at once, long
-	 * polls, say, should raise this to at least that many, or later loads
+	 * each. A program that holds many slow requests open at once (long
+	 * polls, say) should raise this to at least that many, or later loads
 	 * wait behind them, and fail once they have waited their idle timeout.
 	 */
 	public static var maxConcurrentLoads(get, set):Int;
@@ -75,8 +75,8 @@ class URLLoader extends EventDispatcher {
 
 	/**
 	 * `HTTP_RESPONSE_STATUS`, with what the response said: its headers, the URL
-	 * it came from, and whether a redirect led there. It was never dispatched,
-	 * so `Retry-After`, `ETag` and `Location` could not be read on any target.
+	 * it came from, and whether a redirect led there, so
+	 * `Retry-After`, `ETag` and `Location` can be read on every target.
 	 */
 	@:noCompletion private function __dispatchResponse(status:Int, headers:Array<URLRequestHeader>, url:String, redirected:Bool):Void {
 		var event:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, status, redirected);
@@ -89,12 +89,12 @@ class URLLoader extends EventDispatcher {
 		Reads `dataBytes` into `data` as `dataFormat` says, and answers why it
 		could not, or null when it could.
 
-		A body that is not UTF-8 read as text threw, on JavaScript a
-		RangeError out of `getString`, inside the loader's completion, which
-		on Node ended the process. It is an `IO_ERROR` now, and `data` holds
-		the bytes as they came. On JavaScript the text is read by the
-		platform's decoder, which refuses any malformed sequence; Haxe's
-		refused only some, and read the rest as other characters.
+		A body that is not UTF-8, read as text, is an `IO_ERROR`, and `data`
+		holds the bytes as they came, rather than a throw inside the loader's
+		completion (on JavaScript a RangeError out of `getString`, which on
+		Node would end the process). On JavaScript the text is read by the
+		platform's decoder, which refuses any malformed sequence, where
+		Haxe's refuses only some and reads the rest as other characters.
 	**/
 	@:noCompletion private function __parseData(dataBytes:Bytes):Null<String> {
 		try {
@@ -135,7 +135,7 @@ class URLLoader extends EventDispatcher {
 				__dispatchResponse(status, __headerList(headers), url, redirected);
 			case Complete(bytes):
 				// Free before the event, not after: a COMPLETE listener that
-				// starts the next load on this loader was refused as busy.
+				// starts the next load on this loader would be refused as busy.
 				__finish();
 				var unreadable:Null<String> = __parseData(bytes);
 				if (unreadable != null) {
@@ -266,8 +266,8 @@ class URLLoader extends EventDispatcher {
 
 	/**
 	 * Ends the load in progress, on every target: its request is abandoned
-	 * where it stands, which the server sees at once, an HTTP/1.1
-	 * connection is shut, an HTTP/2 stream reset, and nothing more is
+	 * where it stands, which the server sees at once (an HTTP/1.1
+	 * connection is shut, an HTTP/2 stream reset), and nothing more is
 	 * dispatched for it. The loader is free for its next `load()` as soon as
 	 * this returns.
 	 */
@@ -285,10 +285,10 @@ class URLLoader extends EventDispatcher {
 		}
 		#else
 		// Cancelled before it is let go of. The token reaches the request
-		// itself, an HTTP/2 stream is reset, freeing the slot it held on a
+		// itself (an HTTP/2 stream is reset, freeing the slot it held on a
 		// shared connection, and an HTTP/1.1 socket is shut down under its
-		// blocking read. Abandoning the thread alone left the peer holding a
-		// request nobody was coming back for.
+		// blocking read); abandoning the thread alone would leave the peer
+		// holding a request nobody was coming back for.
 		if (cancelToken != null) {
 			cancelToken.cancel();
 		}

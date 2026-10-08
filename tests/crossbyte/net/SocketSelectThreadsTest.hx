@@ -12,12 +12,11 @@ import utest.Assert;
 /**
 	`select` from two threads at once answers each for its own sockets.
 
-	Every runtime selects on its own thread, once a tick. hl's standard library
-	built the descriptor sets for every thread in one static buffer, so two
-	runtimes on two threads wrote their sets over each other's: `select` failed
-	with "Error while waiting on socket" about two hundred times each in twelve
-	seconds, and a set read back from under the other thread's write answered
-	for the wrong sockets as often as it failed.
+	Every runtime selects on its own thread, once a tick. Descriptor sets
+	built for every thread in one static buffer would have two runtimes on
+	two threads write their sets over each other's: `select` would fail
+	with "Error while waiting on socket", and a set read back from under
+	the other thread's write would answer for the wrong sockets.
 **/
 class SocketSelectThreadsTest extends utest.Test {
 	#if (cpp || hxcpp || java || jvm || hl || neko)

@@ -6,15 +6,15 @@ import utest.Async;
 
 /**
 	What one peer can make a `ServerWebSocket` hold or do before, and while,
-	it is a session, every limit a public listener leans on, each at its
+	it is a session: every limit a public listener leans on, each at its
 	edge and past it.
 
 	Peers are `WirePeer`s, so each says exactly what goes on the wire, on
 	every target, Node included.
 **/
 class ServerWebSocketLimitsTest extends utest.Test {
-	// The default maxHeaderSize, as a literal: these cases also build against
-	// the sources before it existed (-D ws_before), to show them failing.
+	// The default maxHeaderSize, as a literal: these cases can also be built
+	// against sources without it (-D ws_before), to show them failing.
 	private static inline var HEADER_LIMIT:Int = 16 * 1024;
 
 	// ---- maxHeaderSize: the upgrade request ------------------------------
@@ -57,11 +57,12 @@ class ServerWebSocketLimitsTest extends utest.Test {
 		A request whose head never ends is refused once `maxHeaderSize` of it
 		has arrived, not when the peer stops or `handshakeTimeout` passes.
 
-		Each arrival was appended to a string, copied whole every time, and
-		the whole of it searched again for the end: one connection sending
-		a header without end made a server hold 221 MB in 10 s, with single
-		passes of a second. Here the deadline is a minute, so only the limit
-		can end it; and what the session held of it is read off as it goes.
+		Appending each arrival to a string, copied whole every time, with the
+		whole of it searched again for the end, one connection sending a header
+		without end would make a server hold hundreds of megabytes in seconds,
+		with single passes of a second. Here the deadline is a minute, so only
+		the limit can end it; and what the session held of it is read off as it
+		goes.
 	**/
 	@:timeout(30000)
 	public function testAnUpgradeRequestWithoutEndIsRefusedAtTheLimit(async:Async):Void {
@@ -81,8 +82,8 @@ class ServerWebSocketLimitsTest extends utest.Test {
 			var held:Int = 0;
 			var limit:Int = 1024 * 1024;
 
-			// One piece a pass, until the server lets go or a megabyte has
-			// gone, sixty-four times the limit.
+			// One piece a pass, until the server lets go or a megabyte has gone
+			// (sixty-four times the limit).
 			NetPump.until(() -> {
 				peer.poll();
 				if (peer.ended || sent >= limit) {
@@ -140,8 +141,7 @@ class ServerWebSocketLimitsTest extends utest.Test {
 	/**
 		A peer that reads nothing is closed once 8 MiB wait for it, by
 		default, with an `ioError` saying why and 1011; what waited is let
-		go. There was no limit unless the application set one: everything
-		sent to such a peer was held, without end.
+		go, rather than everything sent to such a peer held without end.
 
 		Not on eval, whose sockets block: a write to a peer not reading
 		waits there rather than leaving bytes to hold.
@@ -191,10 +191,10 @@ class ServerWebSocketLimitsTest extends utest.Test {
 
 	/**
 		A peer that pings and reads nothing is owed one answer, the newest
-		ping's, however many it sends: RFC 6455 5.5.3 lets a pong answer
-		only the most recent ping. Each ping had a pong of its own, piling up
-		behind the peer that read none of them, 32 MB in 10 s natively,
-		with passes of 1.4 s, and each was offered to the full socket as it
+		ping's, however many it sends: RFC 6455 5.5.3 lets a pong answer only
+		the most recent ping. A pong of its own for each ping would pile up
+		behind the peer that read none of them (tens of megabytes in seconds,
+		with passes of over a second), each offered to the full socket as it
 		was made.
 	**/
 	@:timeout(60000)
@@ -249,15 +249,13 @@ class ServerWebSocketLimitsTest extends utest.Test {
 					Assert.isTrue(grew <= 12, '$pings pings left $grew bytes of answers waiting for a peer reading nothing');
 					Assert.isTrue(longest < 1.0, 'a pass took ${Math.round(longest * 1000)} ms while the pings were read');
 
-					// The peer reads at last: its data, then the pongs, the last
-					// answering the last ping. One is owed at a time, and goes
-					// whenever the socket takes more: on Windows not once while
-					// the peer reads nothing, so one or two pongs in all; on
-					// Linux, whose send buffer grows as it is used, now and then
-					// during the flood, 14 in WSL. At most two a pass that read
-					// a batch (the one going, and the newest kept, if the socket
-					// took both), and two after: every ping had a pong of its
-					// own.
+					// The peer reads at last: its data, then the pongs, the last answering
+					// the last ping. One is owed at a time, and goes whenever the socket
+					// takes more: on Windows not once while the peer reads nothing, so one
+					// or two pongs in all; on Linux, whose send buffer grows as it is used,
+					// now and then during the flood. At most two a pass that read a batch
+					// (the one going, and the newest kept, if the socket took both), and
+					// two after, rather than a pong of its own for every ping.
 					peer.resume();
 					NetPump.until(() -> {
 						peer.poll();
@@ -295,10 +293,10 @@ class ServerWebSocketLimitsTest extends utest.Test {
 
 	/**
 		One address opening connections and saying nothing takes half the
-		places for upgrades and no more: past that, each of its connections
-		is closed as it is accepted, and the other half is there for every
-		other address. It took every place, and every real client waited
-		behind it, 8-9 s a join, for as long as it went on.
+		places for upgrades and no more: past that, each of its connections is
+		closed as it is accepted, and the other half is there for every other
+		address, rather than every place taken and every real client waiting
+		behind it for as long as it went on.
 	**/
 	@:timeout(20000)
 	public function testOneSilentAddressTakesHalfThePlacesAndNoMore(async:Async):Void {
@@ -349,7 +347,7 @@ class ServerWebSocketLimitsTest extends utest.Test {
 
 	/**
 		While the places are not crowded, one address is not limited: many
-		clients can share one, a carrier's NAT, an office, a proxy.
+		clients can share one (a carrier's NAT, an office, a proxy).
 	**/
 	@:timeout(20000)
 	public function testWhileThePlacesAreNotCrowdedOneAddressIsNotLimited(async:Async):Void {
@@ -379,8 +377,8 @@ class ServerWebSocketLimitsTest extends utest.Test {
 	#if !ws_before
 	/**
 		An address's count goes down as each of its connections stops
-		arriving, upgraded, gone, or given up on at `handshakeTimeout`,
-		and the address is forgotten at none.
+		arriving (upgraded, gone, or given up on at `handshakeTimeout`), and
+		the address is forgotten at none.
 	**/
 	@:timeout(20000)
 	public function testAnAddressIsCountedOnlyWhileItsConnectionsArrive(async:Async):Void {
@@ -522,8 +520,8 @@ class ServerWebSocketLimitsTest extends utest.Test {
 	// ---- maxMessageSize: each server's, and each session's ----------------
 
 	/**
-		A message of 100 KB in one frame, as a browser sends one, is taken.
-		Every frame was held to 64 KiB, so it was refused with 1009 however
+		A message of 100 KB in one frame, as a browser sends one, is taken,
+		rather than every frame held to 64 KiB and refused with 1009 however
 		large a message might be.
 	**/
 	#if !eval
@@ -549,8 +547,7 @@ class ServerWebSocketLimitsTest extends utest.Test {
 	#if !ws_before
 	/**
 		Each server holds its sessions to its own `maxMessageSize`: one set
-		lower in the same process refuses what another takes. It was one
-		limit for the whole process.
+		lower in the same process refuses what another takes.
 	**/
 	@:timeout(20000)
 	public function testEachServerHasItsOwnMessageLimit(async:Async):Void {
@@ -592,8 +589,8 @@ class ServerWebSocketLimitsTest extends utest.Test {
 
 	/**
 		A server's `closeTimeout` is refused for no time too, as its
-		sessions' is: it took 0, NaN or a negative number without a word,
-		and its sessions waited five seconds whatever it said.
+		sessions' is: 0, NaN or a negative number is not taken without a word,
+		with its sessions waiting five seconds whatever it said.
 	**/
 	public function testAServersCloseTimeoutThatIsNoTimeIsRefused():Void {
 		var server = new ServerWebSocket();

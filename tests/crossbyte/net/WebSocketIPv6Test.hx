@@ -13,10 +13,10 @@ import utest.Async;
 /**
 	A WebSocket client dials an IPv6 literal.
 
-	The host it was given had to be a run of letters, digits, dots and
-	hyphens, so `WebSocket.connect("::1", port)` threw "Invalid host" before a
-	socket existed, on every target, and a page's `Socket` read the same
-	pattern.
+	The host may be an IPv6 literal, not only a run of letters, digits,
+	dots and hyphens, so `WebSocket.connect("::1", port)` makes a socket
+	rather than throwing "Invalid host", on every target, and a page's
+	`Socket` reads the host the same way.
 **/
 class WebSocketIPv6Test extends utest.Test {
 	public function testAnIPv6LiteralIsAHost():Void {

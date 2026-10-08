@@ -6,8 +6,8 @@ import crossbyte.io.ByteArray;
 /**
 	One whole WebSocket message, as its sender sent it.
 
-	A `WebSocket` otherwise delivers what arrives as a stream, every message
-	appended to the bytes `ProgressEvent.SOCKET_DATA` announces, which is the
+	A `WebSocket` otherwise delivers what arrives as a stream (every message
+	appended to the bytes `ProgressEvent.SOCKET_DATA` announces), which is the
 	shape a `Socket` has, and loses where one message ends and the next
 	begins. A session with a listener for this event delivers each message
 	here instead, whole, with whether it was sent as text or as binary, and
@@ -15,7 +15,7 @@ import crossbyte.io.ByteArray;
 
 	Valid only during the listener call, with its `data`: the session hands
 	the same event and the same bytes out again for the next message. Copy
-	what you need, `text` is a string of its own, safe to keep, or keep
+	what you need (`text` is a string of its own, safe to keep) or keep
 	a `clone()`; see `Event`.
 **/
 class WebSocketMessageEvent extends Event {
@@ -26,8 +26,8 @@ class WebSocketMessageEvent extends Event {
 		The message, from its start.
 
 		Valid only during the listener call: the session fills the same
-		`ByteArray` with its next message, and empties it, length and
-		position 0, once the call returns. To keep the bytes, copy them
+		`ByteArray` with its next message, and empties it (length and
+		position 0) once the call returns. To keep the bytes, copy them
 		out, as `data.readBytes(mine)` does, or keep a `clone()`. Sending
 		them back from the listener is safe: every send copies what it is
 		given before it returns.

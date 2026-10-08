@@ -23,7 +23,7 @@ import haxe.io.Bytes;
 
 	The kinds are the method's arguments in order, and after the colon its
 	answer's; a one-way method has none. A `?` is a value that may be
-	absent, an optional argument, a `Null<T>`, which a byte before it
+	absent (an optional argument, a `Null<T>`), which a byte before it
 	says. `f32`, `i8`, `u8`, `i16` and `u16` are the compact numbers
 	(`crossbyte.rpc.Float32`, `Int8`, `UInt8`, `Int16`, `UInt16`); an
 	abstract is the kind of what it abstracts. An array is its element's
@@ -40,8 +40,8 @@ import haxe.io.Bytes;
 	still agree. Reordering arguments of different kinds, retyping one,
 	adding or removing one, or making one optional changes the op: a peer
 	built from the other version of the method finds no method with it,
-	and is answered as for a method it does not have, where it read the
-	bytes as its own and ran on what they made. Swapping two arguments of
+	and is answered as for a method it does not have, rather than reading
+	the bytes as its own and running on what they make. Swapping two arguments of
 	the same kind changes nothing on the wire, and so not the op.
 
 	Not the contract the method was declared in: a method keeps its op
@@ -50,7 +50,7 @@ import haxe.io.Bytes;
 	surface with two such fails the build. `ping`, every session's own, is
 	the hash of its name alone (`RPCWire.PING_OP`).
 
-	A kind added later, a structure, an enum, names its own layout, and
+	A kind added later (a structure, an enum) names its own layout, and
 	every kind above keeps its token. Compiled into the macros as well as the runtime, so
 	the check the build makes is the one the tests exercise.
 **/

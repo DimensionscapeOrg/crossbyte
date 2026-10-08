@@ -28,7 +28,7 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 	## Messages, not bytes
 
 	A channel carries whole messages. Send a megabyte and the far side gets a
-	megabyte in one piece, or nothing, never half of one and never two halves
+	megabyte in one piece, or nothing: never half of one and never two halves
 	that have to be rejoined. That is the difference from a stream socket, and
 	it is why an application on top needs no framing of its own.
 
@@ -44,8 +44,8 @@ class DataChannel {
 		A slot for whatever the application wants this connection to carry.
 
 		Untouched by the framework, and it goes when the connection does.
-		Without one, an application holding per-connection state, a session,
-		a player, a room membership, keeps a `Map` beside the connection and
+		Without one, an application holding per-connection state (a session,
+		a player, a room membership) keeps a `Map` beside the connection and
 		has to remember to remove the entry on close. Forgetting is not
 		noisy: the connection is gone, the traffic stops, and the entry stays
 		until the process does.
@@ -94,7 +94,7 @@ class DataChannel {
 
 	/**
 		How long, in milliseconds, a message is tried for before it is given
-		up on, whether or not it was ever sent, or -1 for no limit. RFC
+		up on (whether or not it was ever sent), or -1 for no limit. RFC
 		3758's timed reliability, a browser's `maxPacketLifeTime`.
 
 		Where the WebRTC API answers null, these answer -1: an `Int`, which a
@@ -200,7 +200,7 @@ class DataChannel {
 		// receiving side ignores the content whenever the identifier says
 		// empty. Sending an actually-empty chunk instead is not a shorter
 		// spelling of the same thing: a real browser's SCTP discards it
-		// without a word, which is how this line got its shape.
+		// without a word.
 		var protocolId:Int = SctpDataChunk.PPID_STRING;
 
 		if (payload.length == 0) {
@@ -243,10 +243,8 @@ class DataChannel {
 		`onClose` runs at once, and what arrives on the channel afterwards is
 		dropped, as a browser drops what arrives on a channel it is closing.
 
-		A peer without stream reconfiguration, a CrossByte peer from before
-		1.0, is not told, and its end stays open. It was so for every peer:
-		the close was this end's alone, the peer went on sending into a
-		channel nothing read, and a browser's own `close()` was never heard.
+		A peer without stream reconfiguration (a CrossByte peer from before
+		1.0) is not told, and its end stays open.
 	**/
 	public function close():Void {
 		if (__closed) {
@@ -266,8 +264,8 @@ class DataChannel {
 
 		// `opened` resolves only from __acknowledge, which a closed channel can
 		// never reach, so a caller that waited on it for a channel the peer
-		// never acknowledged waited forever. This class's own doc tells you to
-		// wait on exactly that before sending.
+		// never acknowledged would wait forever; and this class's own doc
+		// says to wait on exactly that before sending.
 		if (!wasOpen) {
 			@:privateAccess opened.__cancel("The channel was closed before the peer acknowledged it.");
 		}

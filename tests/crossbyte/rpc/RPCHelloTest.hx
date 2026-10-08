@@ -9,7 +9,7 @@ import utest.Assert;
 
 /**
 	The hello: one frame each session sends as its connection starts, with
-	its protocol version, its capabilities, none in 1.0, and fingerprints
+	its protocol version, its capabilities (none in 1.0) and fingerprints
 	of the methods it calls and answers. Sent and never waited for, and
 	shaped as a pong is, a response under request id 0, which a session
 	from before 1.0 passes over. From then on a feature beyond 1.0 goes only

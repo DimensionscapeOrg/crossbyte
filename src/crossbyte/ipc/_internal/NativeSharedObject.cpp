@@ -39,17 +39,17 @@ namespace
 	constexpr long LOCK_POLL_MAX_US = 1000;
 
 	// How often, at most, a lock file in use has its times brought up to
-	// date: often enough that a cleaner of old files in /tmp, macOS's
-	// takes what nobody has touched for three days, systemd's for ten,
+	// date: often enough that a cleaner of old files in /tmp (macOS's
+	// takes what nobody has touched for three days, systemd's for ten)
 	// never finds one in use old.
 	constexpr long LOCK_FILE_REFRESH_SECONDS = 3600;
 #endif
 
 #if !defined(_WIN32)
 	// macOS caps a shared memory object's name at 31 characters (PSHMNAMLEN)
-	// and refuses flock() on its descriptor, ENOTSUP, since it locks only
-	// files, so a region there could neither be opened under its name nor
-	// locked, and no SharedObject opened on macOS. There a region takes a
+	// and refuses flock() on its descriptor (ENOTSUP, since it locks only
+	// files), so a region there could neither be opened under its name nor
+	// locked. There a region takes a
 	// short name, its hash alone, and is locked through a regular file in
 	// /tmp, which a process's death unlocks as it does a region's. Both ways
 	// are compiled on every POSIX target, so a Linux build checks the macOS
@@ -77,8 +77,8 @@ namespace
 #else
 		int fd;
 		// The descriptor the region's lock is taken on: `fd` itself, or on
-		// macOS the lock file's, -1 when the file there could not be taken
-		// again; see lockFileOfState.
+		// macOS the lock file's (-1 when the file there could not be taken
+		// again); see lockFileOfState.
 		int lockFd;
 		void* view;
 		size_t viewSize;
@@ -223,10 +223,10 @@ namespace
 	// wait on a thread that is waiting on another process. Nothing the
 	// collector owns is touched until the wait is over.
 	//
-	// The wait ends after `timeoutMs`, or never with 0 or less. It never
-	// ended, so a participant stopped while holding the lock, suspended in
-	// a debugger, sent SIGSTOP, starved on a loaded machine, stopped every
-	// other participant with it, for as long as it stayed stopped. One that
+	// The wait ends after `timeoutMs`, or never with 0 or less, so a
+	// participant stopped while holding the lock (suspended in a debugger,
+	// sent SIGSTOP, starved on a loaded machine) stops every other
+	// participant with it no longer than that. One that
 	// dies releases it: Windows abandons a dead owner's mutex to the next
 	// waiter, and a process's flock() locks go with its descriptors.
 #if defined(_WIN32)
@@ -408,16 +408,16 @@ namespace
 		return fstat(fd, &held) == 0 && lstat(path.c_str(), &named) == 0 && held.st_dev == named.st_dev && held.st_ino == named.st_ino;
 	}
 
-	// macOS: the lock file at `path`, opened, made, if there is none, and
+	// macOS: the lock file at `path`, opened (made, if there is none) and
 	// checked to be this user's own regular file.
 	//
-	// It is in /tmp, where any user can put something at a name first. It
-	// was opened following a link, so another user's link there made this
-	// process make or lock a file wherever it pointed; waiting on a FIFO,
-	// which held the open, and this process's collector with it, until
-	// someone wrote to it; and for anyone to read, which is all flock()
-	// needs, so any user could hold every participant's lock. Not a link,
-	// never waiting, and this user's alone, it is refused otherwise.
+	// It is in /tmp, where any user can put something at a name first, so
+	// it is not opened through a link (another user's link there would make
+	// this process make or lock a file wherever it pointed), not waited on
+	// as a FIFO (which would hold the open, and this process's collector
+	// with it, until someone wrote to it), and is this user's alone (flock()
+	// needs only read access, so any user could otherwise hold every
+	// participant's lock). Anything else is refused.
 	int openLockFile(const std::string& path)
 	{
 		int lockFd = open(path.c_str(), O_RDONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
@@ -446,7 +446,7 @@ namespace
 	// to be the file at `path` still. native_sharedObjectRemove takes the
 	// region and its lock file away under that lock, so a file opened before
 	// a removal and locked after it stands for no region: it is let go, and
-	// the file at the path, a new one, if need be, taken instead. Every
+	// the file at the path (a new one, if need be) taken instead. Every
 	// participant of a region locks the same file.
 	int takeLockFile(const std::string& path, int timeoutMs)
 	{
@@ -476,16 +476,15 @@ namespace
 
 	// macOS: the region's lock, taken through the lock file at its path now.
 	//
-	// The file a handle opened was trusted for as long as the handle lived,
-	// and the file can go while it does: macOS's cleaner deletes what in
+	// The file can go while a handle lives: macOS's cleaner deletes what in
 	// /tmp nobody has touched for three days, and a lock taken does not
-	// touch it. The next participant to open the name then made a new file
-	// and locked that, while this one went on locking the old: two
-	// participants each holding the region's lock, both writing. So the file
-	// held is checked once locked to be the one at the path still, and if it
-	// is not, let go for the one there, made anew if need be, as the next
-	// participant to open would make it. The times of the file in use are
-	// brought up to date hourly, so the cleaner does not find it old to
+	// touch it. The next participant to open the name would then make a new
+	// file and lock that, while this one went on locking the old: two
+	// participants each holding the region's lock, both writing. So the
+	// file held is checked once locked to be the one at the path still, and
+	// if it is not, let go for the one there, made anew if need be, as the
+	// next participant to open would make it. The times of the file in use
+	// are brought up to date hourly, so the cleaner does not find it old to
 	// begin with.
 	bool lockFileOfState(SharedObjectState* state, int timeoutMs)
 	{
@@ -612,10 +611,9 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize, int lock
 	return state;
 #else
 	// Sized and set up under the region's lock, by whichever participant
-	// takes it first. The creator sized it before taking the lock, so one
-	// opening the name in that moment found it empty and failed, or, if it
-	// took the lock before the creator did, wrote its own maxSize into the
-	// header, past the end of a smaller mapping.
+	// takes it first, so one opening the name as it is made does not find
+	// it empty, nor write its own maxSize into the header past the end of a
+	// smaller mapping.
 	//
 	// On macOS the lock file is taken first, and the region opened under its
 	// lock: a removal, which holds that lock, then cannot come between the
@@ -634,10 +632,10 @@ extern "C" void* native_sharedObjectOpen(const char* name, int maxSize, int lock
 	}
 
 	// This user's alone, and one another user made under the name refused.
-	// It was made for anyone to read, 0666 less the umask, so 0644 as a
-	// rule, so every local user could read what every SharedObject held,
-	// and hold its lock on Linux; and one another user had made first, for
-	// anyone to write, was used as if it were this one's.
+	// Made for anyone to read (0666 less the umask), every local user could
+	// read what every SharedObject held, and hold its lock on Linux; and one
+	// another user made first, for anyone to write, would be used as if it
+	// were this one's.
 	int fd = shm_open(sharedName.c_str(), O_RDWR | O_CREAT, 0600);
 	int openError = errno;
 	if (fd >= 0 && !isOwnFile(fd, false))
@@ -819,8 +817,8 @@ extern "C" bool native_sharedObjectWrite(void* handle, const unsigned char* data
 // way, so a caller whose buffer was too small knows what to take next time.
 // -1 when the region cannot be read.
 //
-// The length and the bytes were two calls, each locking for itself, and a
-// flush between them left a copy cut to the old length or short of the new.
+// One lock for both, so a flush between the length and the bytes cannot
+// leave a copy cut to the old length or short of the new.
 extern "C" int native_sharedObjectReadPayload(void* handle, unsigned char* buffer, int bufferSize, int lockTimeoutMs)
 {
 	lastError = SHARED_OBJECT_ERROR_FAILED;
@@ -929,7 +927,7 @@ extern "C" int native_sharedObjectRemove(const char* name, int lockTimeoutMs)
 }
 
 // Tests only: the region's lock, taken through `handle` on the calling thread
-// with no deadline and kept until native_sharedObjectReleaseLockForTest, a
+// with no deadline and kept until native_sharedObjectReleaseLockForTest: a
 // participant stopped while holding it. Windows' mutex belongs to the thread
 // that took it, so another thread of the same process waits on it as another
 // process would, and the same thread releases it.

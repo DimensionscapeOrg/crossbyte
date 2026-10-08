@@ -7,9 +7,9 @@ import crossbyte.io.Endian;
 	An SCTP packet: a twelve byte common header and a list of chunks.
 
 	SCTP is what carries a WebRTC data channel, inside the DTLS session ICE
-	found a path for. It is a full transport in its own right, association
+	found a path for. It is a full transport in its own right (association
 	setup, ordered and unordered delivery, retransmission, several streams over
-	one association, and this is the bottom of it: the framing everything else
+	one association), and this is the bottom of it: the framing everything else
 	is written in.
 
 	```
@@ -32,7 +32,7 @@ import crossbyte.io.Endian;
 	that verifies against itself and against nobody.
 
 	It is then written least significant byte first, while every other field in
-	the header is big endian. That is not a misreading, RFC 4960's reference
+	the header is big endian. That is not a misreading: RFC 4960's reference
 	implementation byte-swaps the result before storing it, and every
 	implementation follows suit. It looks like a bug in the code until it is
 	the only thing that talks to anything.
@@ -103,9 +103,9 @@ class SctpPacket {
 		produces a checksum a peer computes the same way.
 	**/
 	public function encode():ByteArray {
-		// Made at its size, zeroed, the padding and the checksum field are
-		// already what they must be, where it grew from empty a field at a
-		// time, copied each time it did.
+		// Made at its size, zeroed (the padding and the checksum field are
+		// already what they must be), rather than grown from empty a field at
+		// a time and copied each time it grows.
 		var total:Int = HEADER_LENGTH;
 		for (chunk in chunks) {
 			total += SctpChunk.HEADER_LENGTH + ((chunk.value.length + 3) & ~3);
@@ -139,9 +139,9 @@ class SctpPacket {
 	/**
 		Computes and stores the checksum of an already serialised packet.
 
-		Separate from `encode` because a packet altered in place, which is how
+		Separate from `encode` because a packet altered in place (which is how
 		the association layer stamps a verification tag it did not have when it
-		built the packet, has to be checksummed again afterwards.
+		built the packet) has to be checksummed again afterwards.
 	**/
 	public static function writeChecksum(packet:ByteArray):Void {
 		if (packet == null || packet.length < HEADER_LENGTH) {
@@ -174,11 +174,11 @@ class SctpPacket {
 	/**
 		Whether a packet's checksum is the one its contents produce.
 
-		Checked against the bytes as they arrived, untouched, a receiver that
+		Checked against the bytes as they arrived, untouched: a receiver that
 		edited the packet to verify it would hand the layer above something it
 		had already altered. The checksum is taken over the bytes before the
-		field, four zeros in its place and the bytes after, where every packet
-		was copied whole to zero the field in the copy.
+		field, four zeros in its place and the bytes after, rather than a copy of the whole
+		packet with the field zeroed.
 	**/
 	// What the checksum field counts as while the checksum is taken. Only read.
 	private static var __fourZeros:ByteArray = new ByteArray(4);

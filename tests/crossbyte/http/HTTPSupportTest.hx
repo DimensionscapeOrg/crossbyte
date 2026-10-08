@@ -37,19 +37,19 @@ class HTTPSupportTest extends utest.Test {
 		Assert.notNull(first.tryFiles);
 		Assert.notNull(first.rewrites);
 		Assert.equals(2, first.directoryIndex.length);
-		// Two, not three. The third used to be "/index.html", which made a
-		// path matching neither of the first two answer 200 with the root
-		// index instead of 404, an SPA fallback every server carried
-		// whether or not it served an application.
+		// Two, not three: a third of "/index.html" would make a path matching
+		// neither of the first two answer 200 with the root index instead of
+		// 404, an SPA fallback every server would carry whether or not it
+		// served an application.
 		Assert.equals(2, first.tryFiles.length);
 		Assert.equals("$uri", first.tryFiles[0]);
 		Assert.equals("$uri/", first.tryFiles[1]);
-		// No rewrites by default. The defaults used to carry one sending every
-		// /api path to /index.php with the PHP flag while phpEnabled defaults
-		// to false, so a stock server crashed on a path many services use.
+		// No rewrites by default: a default sending every /api path to
+		// /index.php with the PHP flag, while phpEnabled defaults to false, would
+		// crash a stock server on a path many services use.
 		Assert.equals(0, first.rewrites.length);
-		// No root by default, and so no static files. The default was the
-		// account's home directory, served on every interface.
+		// No root by default, and so no static files, rather than the account's
+		// home directory served on every interface.
 		Assert.isNull(first.rootDirectory);
 		Assert.equals("127.0.0.1", first.address);
 		// Keep-alive defaults on: it is what HTTP/1.1 specifies and what
@@ -57,10 +57,10 @@ class HTTPSupportTest extends utest.Test {
 		Assert.isTrue(first.keepAlive);
 		Assert.equals(5.0, first.keepAliveTimeout);
 		// A thousand responses a connection, as nginx: at a hundred, HTTPS
-		// spent two thirds of its time on the handshakes of reconnecting.
+		// spends two thirds of its time on the handshakes of reconnecting.
 		Assert.equals(1000, first.keepAliveMaxRequests);
-		// Ten thousand connections: 256 refused the 257th, which a few dozen
-		// browser users reach at six connections each.
+		// Ten thousand connections: at 256 the 257th would be refused, which a
+		// few dozen browser users reach at six connections each.
 		Assert.equals(10000, first.maxConnections);
 
 		first.directoryIndex.push("fallback.htm");
@@ -189,11 +189,11 @@ class HTTPSupportTest extends utest.Test {
 		Assert.equals("/a+b.html", RewriteEngine.normalize("/a+b.html"));
 		Assert.equals("/100%.html", RewriteEngine.normalize("/100%.html"));
 
-		// Climbing above the root is refused by answering null: it used to
-		// throw "403", which reached the client as a 500.
+		// Climbing above the root is refused by answering null, not by
+		// throwing "403", which would reach the client as a 500.
 		Assert.isNull(RewriteEngine.normalize("/../../secret"));
 		Assert.isNull(RewriteEngine.normalize("/a/../../secret"));
-		// A ".." inside a name is not a step, and used to be refused too.
+		// A ".." inside a name is not a step, and is not refused.
 		Assert.equals("/compare/v1.2..v1.3", RewriteEngine.normalize("/compare/v1.2..v1.3"));
 		Assert.equals("/secret", RewriteEngine.normalize("/a/../secret"));
 	}
@@ -268,9 +268,9 @@ class HTTPSupportTest extends utest.Test {
 				}]
 			);
 
-			// Lowercase, as both parsers store a request's fields. This case
-			// stored "User-Agent" as written, which no request ever has, and so
-			// passed while the condition matched nothing a client sent.
+			// Lowercase, as both parsers store a request's fields: stored as
+			// "User-Agent", as written, which no request ever has, the condition
+			// would match nothing a client sent and the case would pass regardless.
 			var headers = new StringMap<String>();
 			headers.set("user-agent", "Mobile Safari");
 			var allowed = RewriteEngine.decide(cfg, "/content/mobile", "", "GET", headers);
@@ -290,8 +290,7 @@ class HTTPSupportTest extends utest.Test {
 	/**
 		A rewrite rule and its conditions are classes built from literals, and
 		a condition that needs no key, or does not negate, may leave those
-		out. Before, `RewriteCondition` was a typedef with four required
-		fields, so this did not compile.
+		out.
 	**/
 	public function testARewriteConditionMayLeaveOutItsKeyAndNegate():Void {
 		var root = File.createTempDirectory();
@@ -318,9 +317,9 @@ class HTTPSupportTest extends utest.Test {
 
 	public function testAHeaderConditionMatchesWhateverCaseItsKeyIsWrittenIn():Void {
 		// A field's name has no case (RFC 9110 5.1), and both parsers store a
-		// request's fields lowercase. The condition looked its key up as
-		// written, so "X-Test", how a header is written, and how the doc's
-		// example would be, matched nothing a client could send.
+		// request's fields lowercase, so the condition looks its key up
+		// lowercased: as written, "X-Test" (how a header is written, and how the
+		// doc's example would be) would match nothing a client could send.
 		var root = File.createTempDirectory();
 		try {
 			root.resolvePath("a.txt").save(ByteArray.fromBytes(Bytes.ofString("A")));
@@ -347,10 +346,10 @@ class HTTPSupportTest extends utest.Test {
 	}
 
 	public function testARuleThatAsksAboutFilesCanWinOverAnExistingFile():Void {
-		// tryFiles' doc said a rule given a FileExists condition runs before
+		// tryFiles' doc says a rule given a FileExists condition runs before
 		// the file is looked for, which is how a rewrite wins over a file that
-		// exists. Every rule ran only once the request had been found to name
-		// no file at all, so none could.
+		// exists: running every rule only once the request had been found to
+		// name no file at all, none could.
 		var root = File.createTempDirectory();
 		try {
 			root.resolvePath("a.txt").save(ByteArray.fromBytes(Bytes.ofString("A")));
@@ -368,11 +367,11 @@ class HTTPSupportTest extends utest.Test {
 			cfg.rewrites[0].conditions[0].negate = true;
 			Assert.equals("/a.txt", RewriteEngine.decide(cfg, "/a.txt", "", "GET", none).finalPath);
 
-			// Does not ask: an existing file wins, as it always has.
+			// Does not ask: an existing file wins.
 			cfg.rewrites[0].conditions = null;
 			Assert.equals("/a.txt", RewriteEngine.decide(cfg, "/a.txt", "", "GET", none).finalPath);
 
-			// And a rule for a path that is not a file runs as it always has.
+			// And a rule for a path that is not a file runs.
 			cfg.rewrites = [{pattern: "^/gone$", target: "/b.txt"}];
 			Assert.equals("/b.txt", RewriteEngine.decide(cfg, "/gone", "", "GET", none).finalPath);
 		} catch (e:Dynamic) {
@@ -383,9 +382,9 @@ class HTTPSupportTest extends utest.Test {
 	}
 
 	public function testATryFilesEntryCanNameTheRequestPath():Void {
-		// "$uri.html", the request path with .html added, as clean URLs are
-		// served, was looked for as a file named "$uri.html". The entries
-		// after the first two name files, and $uri in them is the path.
+		// "$uri.html" (the request path with .html added, as clean URLs are
+		// served) is looked for as that path, not as a file named "$uri.html".
+		// The entries after the first two name files, and $uri in them is the path.
 		var root = File.createTempDirectory();
 		try {
 			root.resolvePath("about.html").save(ByteArray.fromBytes(Bytes.ofString("about")));
@@ -405,10 +404,10 @@ class HTTPSupportTest extends utest.Test {
 	}
 
 	public function testBackrefExpansionDoesNotReprocessCapturedText():Void {
-		// Expansion used to run one String.replace per group, so a group whose
-		// captured value itself contained "$2" had that "$2" rewritten by the
-		// next pass: the request, not the rule author, decided part of the
-		// target. Here group 1 captures the literal text "$2".
+		// Expansion is one pass, not one String.replace per group, where a group
+		// whose captured value itself contained "$2" would have that "$2"
+		// rewritten by the next pass: the request, not the rule author, would
+		// decide part of the target. Here group 1 captures the literal text "$2".
 		Assert.equals("$2|Q", RewriteEngine.backrefs("^/(.+)/(.+)$", "/$2/Q", "$1|$2", false));
 
 		Assert.equals("/user?name=a$2b&id=ZZZ",
@@ -449,10 +448,9 @@ class HTTPSupportTest extends utest.Test {
 	#if target.threaded
 	/**
 		A thread's compiled patterns and directory listings are its own, on
-		every target with threads. They were held per thread on cpp, neko, hl
-		and the jvm, and shared on eval, which has threads too: runtimes on two
-		threads used one map, and one `EReg`, which carries its last match, so
-		one could read the other's captures.
+		every target with threads, eval included: shared there, runtimes on
+		two threads would use one map, and one `EReg`, which carries its last
+		match, so one could read the other's captures.
 	**/
 	public function testTheCachesAreHeldPerThread():Void {
 		var listings = crossbyte._internal.http.DirectoryListings.current();

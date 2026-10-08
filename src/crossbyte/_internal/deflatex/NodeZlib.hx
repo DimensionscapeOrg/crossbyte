@@ -8,9 +8,9 @@ import js.node.Buffer;
 	Node's own zlib, for the one-shot codings on Node, as `NativeZlib` is on
 	native: gzip, zlib and raw DEFLATE at zlib's default level, and Brotli.
 
-	The Haxe encoders took 888 microseconds for 64 KB of JSON as gzip, and
+	The Haxe encoders take 888 microseconds for 64 KB of JSON as gzip, and
 	2.5 milliseconds as Brotli at quality 4; Node's zlib takes about 170 for
-	either, writing 6.0 KB of gzip where the Haxe one wrote 8.3, and Brotli
+	either, writing 6.0 KB of gzip where the Haxe one writes 8.3, and Brotli
 	the same size. Node ships zlib and Brotli, so this adds no dependency.
 
 	The streaming encoder stays on the Haxe `DeflateStream` here; natively it
@@ -34,8 +34,8 @@ class NodeZlib {
 
 	/**
 		An unnamed gzip member (RFC 1952), with the header `GZCompressor` and
-		`NativeZlib` write: no flags, modification time or system named. Node
-		names its system there, which is all that differed.
+		`NativeZlib` write: no flags, modification time or system named. Node's
+		own names its system there, and is otherwise the same.
 	**/
 	public static function gzip(input:Bytes):Bytes {
 		var out:Bytes = __bytes(ZlibModule.gzipSync(Buffer.hxFromBytes(input), {level: LEVEL}));
@@ -63,7 +63,7 @@ class NodeZlib {
 		`Inflater.inflate` through Node's zlib: the raw DEFLATE, or zlib
 		stream, `input` is at, never more than `maxOutputSize` bytes of it
 		(`0` for no limit), `input` left just past the stream. The Haxe
-		`InflateImpl` built its tables and a 64 KB window as objects for
+		`InflateImpl` builds its tables and a 64 KB window as objects for
 		every call.
 	**/
 	public static function inflate(input:haxe.io.BytesInput, zlib:Bool, maxOutputSize:Int, format:String):Bytes {

@@ -24,12 +24,13 @@ package sys.net;
 
 // This module replaces the standard library's sys.net.Socket on every target,
 // so a target without a branch here falls into the one at the bottom, which
-// throws. hl and neko did, and their own sys.ssl.Socket extends this class and
-// reaches into it, SocketHandle, __s, init() and the socket_* primitives,
-// so the whole TLS stack failed to compile inside Haxe's std, with errors
-// naming nothing in CrossByte. The two branches below are each target's
-// standard implementation, private surface included, with the changes their
-// comments give. Both are IPv4 only, as the targets' natives are.
+// throws. hl and neko have a branch each, since their own sys.ssl.Socket
+// extends this class and reaches into it (SocketHandle, __s, init() and the
+// socket_* primitives): without one the whole TLS stack fails to compile
+// inside Haxe's std, with errors naming nothing in CrossByte. The two
+// branches below are each target's standard implementation, private surface
+// included, with the changes their comments give. Both are IPv4 only, as
+// the targets' natives are.
 #if hl
 
 import haxe.io.Error;
@@ -87,7 +88,7 @@ private class SocketInput extends haxe.io.Input {
 
 	/**
 		Through `readBytes`. The native `socket_recv_char` answers -2 both at
-		the end of the stream and on a failure, so a byte read could not tell
+		the end of the stream and on a failure, so a byte read alone cannot tell
 		a peer that finished from one that was cut off.
 	**/
 	public override function readByte():Int {
@@ -100,10 +101,10 @@ private class SocketInput extends haxe.io.Input {
 
 	/**
 		0 is the end of the stream and -2 a failure: a reset, or a socket
-		already closed. The standard library reported both as `Eof`, and a
-		body whose length is its connection's end, HTTP/1.0 style, came
-		back complete when the connection was reset partway through it. The
-		other targets raise the failure.
+		already closed. The failure is raised, as on the other targets, where
+		the standard library reports both as `Eof`, so a body whose length is
+		its connection's end (HTTP/1.0 style) would come back complete when
+		the connection was reset partway through it.
 	**/
 	public override function readBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
 		if (pos < 0 || len < 0 || pos + len > buf.length)
@@ -184,7 +185,7 @@ class Socket {
 	}
 
 	// socket_init is WSAStartup on Windows, and every call below fails
-	// without it, @:keepInit keeps this even where nothing names the class.
+	// without it; @:keepInit keeps this even where nothing names the class.
 	static function __init__():Void {
 		socket_init();
 	}
@@ -237,16 +238,17 @@ class Socket {
 
 	/**
 		The standard library answers null when nothing is waiting on a
-		non-blocking listener. Every caller here treats an accept as a socket or
-		a would-block, as the other targets report it, and null is neither: it
-		went on to be registered as a connection.
+		non-blocking listener. Every caller here treats an accept as a socket
+		or a would-block, as the other targets report it, and null is
+		neither: it would go on to be registered as a connection.
 
-		hl's accept answers null for any failure, so a real one, a process
-		out of descriptors, read as nothing waiting too: the server never
-		counted it, and polled the listener, still readable, on every pass. A
-		listener still readable after an accept that found nothing has a
-		connection the system would not hand over, which is a failure; one
-		not readable had nothing waiting, or a connection that left first.
+		hl's accept answers null for any failure, so a real one (a process
+		out of descriptors) would read as nothing waiting too, and a server
+		would never count it and would poll the listener, still readable, on
+		every pass. A listener still readable after an accept that found
+		nothing has a connection the system would not hand over, which is a
+		failure; one not readable had nothing waiting, or a connection that
+		left first.
 	**/
 	public function accept():Socket {
 		var c = socket_accept(__s);
@@ -341,9 +343,9 @@ class Socket {
 		if (a == null)
 			return 0;
 		var size = socket_fd_size(a.length);
-		// More sockets than the system's descriptor set holds. Summed as it
-		// was, the -1 shrank the buffer, and the native select then built its
-		// sets past the end of it.
+		// More sockets than the system's descriptor set holds. Summed
+		// without this check, the -1 would shrink the buffer, and the native
+		// select would build its sets past the end of it.
 		if (size < 0)
 			throw "Too many sockets in select: " + a.length;
 		return size;
@@ -657,9 +659,9 @@ class Socket {
 
 	/**
 		Null when there is no peer, as on the other targets. neko's natives
-		throw there instead, which the standard library's own null check never
-		saw, and it named every peer 127.0.0.1, resolving that name to have a
-		Host to overwrite the address of.
+		throw there instead, which the standard library's own null check
+		never sees, and the standard library names every peer 127.0.0.1,
+		resolving that name to have a Host to overwrite the address of.
 	**/
 	public function peer():{host:Host, port:Int} {
 		var a:Dynamic = try socket_peer(__s) catch (_:Dynamic) null;
@@ -780,10 +782,10 @@ private class SocketInput extends haxe.io.Input {
 	}
 
 	/**
-		Through `readBytes`, which knows the end of the stream, a read of
-		nothing, from a failure. The native `socket_recv_char` throws for
-		both, and every error but "Blocking" was taken for the end, so a
-		connection reset partway through read as one that ended cleanly.
+		Through `readBytes`, which knows the end of the stream (a read of
+		nothing) from a failure. The native `socket_recv_char` throws for
+		both, and taking every error but "Blocking" for the end would read a
+		connection reset partway through as one that ended cleanly.
 	**/
 	public override function readByte() {
 		if (one == null) {
@@ -804,9 +806,9 @@ private class SocketInput extends haxe.io.Input {
 
 	/**
 		`readBytes` without an exception for "would block": -1 when nothing is
-		waiting, 0 at the end of the stream. The native read used to throw for
-		it, and this caught that and threw `Blocked`: two exceptions, 4.3 us,
-		ending every pass that read a socket dry.
+		waiting, 0 at the end of the stream, rather than the native read's
+		throw, which this would catch and throw again as `Blocked`: two
+		exceptions, 4.3 us, ending every pass that read a socket dry.
 	**/
 	public function tryReadBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
 		if (__s == null)
@@ -853,9 +855,9 @@ private class SocketOutput extends haxe.io.Output {
 	}
 
 	/**
-		`writeBytes` without an exception for a full send buffer: -1 then. A
-		peer that stopped reading used to cost two exceptions on every pass
-		that tried it again.
+		`writeBytes` without an exception for a full send buffer: -1 then,
+		rather than two exceptions on every pass that tries again a peer that
+		stopped reading.
 	**/
 	public function tryWriteBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
 		return try {
@@ -925,8 +927,8 @@ class Socket {
 		failure throws as `input.readBytes` does. For CrossByte's own read
 		loops, which meet "would block" at the end of every pass.
 
-		A socket whose input is not this module's, TLS, whose reads go
-		through its session, is read through `input`, the exception taken
+		A socket whose input is not this module's (TLS, whose reads go
+		through its session) is read through `input`, the exception taken
 		here; `crossbyte._internal.socket.AlpnSocket` reads its own without.
 	**/
 	@:noCompletion private function __tryRead(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
@@ -1168,30 +1170,30 @@ import sys.thread.Tls;
 	survivable.
 
 	eval raises a failed `send`, `recv`, `shutdown`, `bind` or `listen` as
-	an OCaml `Unix_error` that no Haxe `catch` intercepts, not `Dynamic`,
-	not `haxe.Exception`, and on the interpreter's main thread that ends
+	an OCaml `Unix_error` that no Haxe `catch` intercepts (not `Dynamic`,
+	not `haxe.Exception`), and on the interpreter's main thread that ends
 	the process. A peer that resets its connection is enough: the reset
 	makes the socket readable, the next read fails, and a development
 	server ended over one client. (`connect`, `accept`, `peer`, `host` and
 	`close` are caught by eval itself, and arrive as strings.)
 
 	On any other thread the same error ends only that thread. So a call that
-	may fail that way, `Socket` decides which, and makes the rest at once,
+	may fail that way (`Socket` decides which, and makes the rest at once)
 	is made on a helper thread while its caller waits: a call that fails
 	ends the helper, a watcher that joined the helper tells the caller,
 	which throws an error it can catch, and the next call takes another
 	helper. A call takes an idle helper, or starts one, so a call that
-	blocks, a send to a peer that is not reading, holds up its own
-	thread only, as it did when made there; a helper goes back to wait for
+	blocks (a send to a peer that is not reading) holds up its own
+	thread only, as it would if made there; a helper goes back to wait for
 	the next only while fewer than `MAX_IDLE` wait, and otherwise ends,
 	with its watcher. eval prints the system's error for a helper that
 	fails, as `Thread N killed on uncaught exception Unix.Unix_error(...)`,
 	on its standard error: the one place it says why.
 
 	Every wait here is a `Semaphore`'s. On eval a `Lock` or a `Deque` waits
-	by polling, measured on Linux, half a core while waiting with no
-	timeout, and a whole one with, and a helper that idled in one held
-	the interpreter from every other thread: the read it served came back
+	by polling (measured on Linux, half a core while waiting with no
+	timeout, and a whole one with), and a helper idling in one would hold
+	the interpreter from every other thread, the read it served coming back
 	minutes late.
 
 	Linux and macOS also end a process that writes to a connection the
@@ -1278,8 +1280,8 @@ private class NativeGuard {
 
 	/**
 		Takes SIGPIPE from the process's default, which ends it, with a libuv
-		signal handle on the default loop, never run, and unreferenced, so it
-		holds nothing open. Once, as the first socket is made. Windows has no
+		signal handle on the default loop (never run, and unreferenced, so it
+		holds nothing open). Once, as the first socket is made. Windows has no
 		SIGPIPE.
 	**/
 	static function __takeSigpipe():Void {
@@ -1442,7 +1444,7 @@ private class SocketOutput extends haxe.io.Output {
 		return sent;
 	}
 
-	/** The whole socket, as it always was: through it, so it knows. **/
+	/** The whole socket, through it, so it knows. **/
 	public override function close() {
 		super.close();
 		owner.close();
@@ -1463,8 +1465,8 @@ private class SocketInput extends haxe.io.Input {
 
 	/**
 		Through `readBytes`, which knows the end of the stream when it sees it.
-		`receiveChar` answers 0 there, a byte like any other, so a reader
-		waiting for a delimiter at the end of a connection read zeros for ever.
+		`receiveChar` answers 0 there (a byte like any other), so a reader
+		waiting for a delimiter at the end of a connection would read zeros for ever.
 	**/
 	public override function readByte() {
 		if (one == null) {
@@ -1492,7 +1494,7 @@ private class SocketInput extends haxe.io.Input {
 		}
 		if (call != null) {
 			if (call.failed) {
-				// A read that timed out, `setTimeout`, leaves nothing to
+				// A read that timed out (`setTimeout`) leaves nothing to
 				// read, and is Blocked, as hxcpp reports it; one the peer reset
 				// leaves the socket readable, with the error or the end.
 				throw @:privateAccess owner.__readable() ? Custom(Socket.RECEIVE_FAILED) : Blocked;
@@ -1504,7 +1506,7 @@ private class SocketInput extends haxe.io.Input {
 		return r;
 	}
 
-	/** The whole socket, as it always was: through it, so it knows. **/
+	/** The whole socket, through it, so it knows. **/
 	public override function close() {
 		super.close();
 		owner.close();
@@ -1514,17 +1516,17 @@ private class SocketInput extends haxe.io.Input {
 /**
 	On eval a read or a write on a connection the peer reset, a `shutdown`, a
 	`bind` or a `listen` that fails throws an error Haxe can catch, as on
-	every other target. eval raised each as an error that passed every
-	`catch` and ended the interpreter, for a read or a write, whenever the
-	peer had reset the connection, so a development server ended over one
-	client.
+	every other target, where eval raises each as an error that passes
+	every `catch` and ends the interpreter: for a read or a write, whenever
+	the peer has reset the connection, so a development server would end
+	over one client.
 
 	A call that could fail that way is made on a helper thread, where the
 	error ends only the helper (see `NativeGuard`); a call that cannot is
-	made at once, since the hand-over costs a thread waking twice, tens of
-	microseconds on Linux, and more while another eval thread is busy, so
-	that the interpreter suite ran a quarter slower on Linux when every
-	call took it. `peer()` decides which, and for a read whether there is
+	made at once, since the hand-over costs a thread waking twice (tens of
+	microseconds on Linux, and more while another eval thread is busy), so
+	that the interpreter suite runs a quarter slower on Linux when every
+	call takes it. `peer()` decides which, and for a read whether there is
 	anything to read, which the runtime's own `select` has usually just
 	said; a `select` here costs as much, since it hands the interpreter to
 	every other thread and takes it back.
@@ -1533,8 +1535,8 @@ private class SocketInput extends haxe.io.Input {
 	  is made at once: on Linux the connection has not been reset then, and
 	  Linux returns the data, or the end, that made it readable before any
 	  error, however late a reset comes. One whose peer no longer answers
-	  was reset, or ended in the order that leaves this side's socket
-	  closed with the last of the data still unread, and only a read
+	  was reset (or ended in the order that leaves this side's socket
+	  closed with the last of the data still unread), and only a read
 	  tells which, so it is made on the helper. One with nothing to read
 	  would wait, and waits on the helper.
 	- A write of no more than `DIRECT_SEND_MAX` bytes whose peer still
@@ -1549,8 +1551,8 @@ private class SocketInput extends haxe.io.Input {
 
 	What is left: a reset that lands in the microseconds between the check
 	and a write made at once, or while a small write made at once waits for
-	room the peer has stopped making, or, on macOS, which reports an error
-	before the end, between the check and a read, still ends the
+	room the peer has stopped making, or (on macOS, which reports an error
+	before the end) between the check and a read, still ends the
 	interpreter.
 **/
 class Socket {
@@ -1636,8 +1638,8 @@ class Socket {
 	}
 
 	/**
-		A second close does nothing, as on every other target. This handed it
-		to the system, which threw "not a socket".
+		A second close does nothing, as on every other target, rather than
+		reaching the system, which throws "not a socket".
 	**/
 	public function close():Void {
 		if (__closed) {
@@ -1738,8 +1740,8 @@ class Socket {
 	/**
 		In seconds, as everywhere. eval gives the system a thousand times the
 		value it is handed everywhere but Windows, where the system counts in
-		milliseconds, measured on Linux, 0.3 waited five minutes and 0.005
-		five seconds, so it is handed a thousandth of it there.
+		milliseconds (measured on Linux, 0.3 waited five minutes and 0.005
+		five seconds), so it is handed a thousandth of it there.
 	**/
 	public function setTimeout(timeout:Float):Void {
 		socket.setTimeout(__windows ? timeout : timeout / 1000);
@@ -1761,13 +1763,13 @@ class Socket {
 		so a throw here would break every interp connection.
 
 		`setTimeout` is not a substitute either. The timeout does reach the
-		recv, and SO_RCVTIMEO expires on schedule; eval raised the expiry as
-		an OCaml `Unix.Unix_error` that no Haxe catch intercepted, which ended
-		the interpreter, and a read now makes it on a helper thread and throws
-		`Blocked` for it (see `NativeGuard`). But the read still holds its
+		recv, and SO_RCVTIMEO expires on schedule; eval raises the expiry as
+		an OCaml `Unix.Unix_error` that no Haxe catch intercepts, so a read
+		makes it on a helper thread and throws `Blocked` for it (see
+		`NativeGuard`). But the read still holds its
 		thread for the whole timeout, which a runtime cannot afford.
 
-		What the no-op costs the eval/interp target â€” and what interp test
+		What the no-op costs the eval/interp target, and what interp test
 		results therefore do NOT cover: `connect()` blocks the whole runtime
 		thread for the duration of the TCP handshake; reads block instead of
 		raising `Blocked`, so read loops must gate on a zero-timeout `select`
@@ -1926,11 +1928,10 @@ private class SocketInput extends haxe.io.Input {
 	}
 
 	public override function readBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
-		// Wrapped, not allocated. This used to allocate a buffer the size of the
-		// read and then copy every byte out of it into the caller's, on every
-		// read, sixty-four kilobytes of each per chunk on the framework's own
-		// read path. The write side beside this has always wrapped; the two are
-		// now the same shape.
+		// Wrapped, not allocated: a buffer the size of the read, copied out
+		// of into the caller's on every read, would be sixty-four kilobytes
+		// of each per chunk on the framework's own read path. The write side
+		// beside this wraps too.
 		var n:Int = tryReadBytes(buf, pos, len);
 		if (n < 0)
 			throw Blocked;
@@ -1974,7 +1975,7 @@ private class SocketInput extends haxe.io.Input {
 /**
 	A ByteBuffer over the array last read into or written from, moved to
 	each range asked: one made per array rather than one per call.
-	ByteBuffer.wrap on every read and write was about 190 bytes of garbage
+	ByteBuffer.wrap on every read and write would be about 190 bytes of garbage
 	a TCP round trip; a socket reads into its thread's one read buffer, and
 	writes from its own output, so the array is the same call after call.
 **/
@@ -2068,7 +2069,7 @@ class Socket {
 		read, -1 when nothing is waiting, 0 at the end of the stream; a
 		failure throws as `input.readBytes` does. For CrossByte's own read
 		loops, which meet "would block" at the end of every pass. A socket
-		whose input is not this module's, TLS, is read through `input`.
+		whose input is not this module's (TLS) is read through `input`.
 	**/
 	@:noCompletion private function __tryRead(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
 		var plain:SocketInput = Std.downcast(input, SocketInput);
@@ -2111,18 +2112,17 @@ class Socket {
 	private var __timeout:Float = 0.0;
 
 	// What setBlocking was last asked for, so a channel opened later starts
-	// that way. Before bind() there is no server channel to configure, so the
-	// call had nowhere to land and was silently dropped, and bind() then
-	// opened one hardcoded to blocking. A caller that did the natural thing,
-	// setBlocking(false) before bind(), got a blocking listener anyway, and the
-	// first accept() on an idle port blocked the thread that was polling it.
-	// For ServerWebSocket that thread is the runtime's, so the whole instance
-	// stopped. ServerSocket escaped it only by selecting before it accepts.
+	// that way. Before bind() there is no server channel to configure, so
+	// the call has nowhere to land; without this, bind() would open one
+	// blocking, and a caller that did the natural thing, setBlocking(false)
+	// before bind(), would get a blocking listener anyway, whose first
+	// accept() on an idle port blocks the thread polling it (for
+	// ServerWebSocket, the runtime's).
 	private var __blocking:Bool = true;
 
 	/**
 		A socket of its own channel; or, given `__accepted`, the socket
-		`accept` made for that one. Accepted sockets were made with
+		`accept` made for that one, rather than one made with
 		`Type.createEmptyInstance`, which on the jvm is a reflective
 		constructor lookup per connection.
 	**/
@@ -2178,10 +2178,10 @@ class Socket {
 		Windows the socket itself is not closed until every selector it was
 		registered with has let it go, which a selector does at its next select.
 		`select` keeps what it watches registered between calls, so until the
-		runtime's next pump a closed datagram socket kept its address, a closed
-		connection's peer waited for its FIN, and a closed listener its port,
-		the case that found this rebound a port it had just closed, and was
-		refused. The selector of the thread closing it is told at once; another
+		runtime's next pump a closed datagram socket would keep its address,
+		a closed connection's peer wait for its FIN, and a closed listener its
+		port, refusing a rebind. The selector of the thread closing it is told
+		at once; another
 		thread's is woken, and lets go on the select it returns from.
 	**/
 	@:noCompletion private static function __letGo(selector:Selector):Void {
@@ -2209,17 +2209,13 @@ class Socket {
 		A non-blocking connect returns while the connection is still being made,
 		as it does natively, and `select` finishes it: the socket is reported
 		writable once it is up, and a refusal is reported in the exception set
-		(or as writable, POSIX's way, to a caller that did not ask for that set).
-		This used to spin on `finishConnect()` until the connection came up, on
-		whichever thread called it, for `crossbyte.net.Socket` and the wss
-		client, the runtime's. Against a listener whose queue was full that was
-		two seconds of the runtime doing nothing else; against a host that never
-		answers, the system's whole SYN-retry time, 21 s on Windows and two
-		minutes on Linux.
+		(or as writable, POSIX's way, to a caller that did not ask for that set),
+		rather than spinning on `finishConnect()` on whichever thread called it:
+		against a host that never answers, that would be the system's whole
+		SYN-retry time, 21 s on Windows and two minutes on Linux.
 
-		A blocking connect is bounded by `setTimeout`, as reads are: it was
-		bounded only by the system, so an https request to a host that never
-		answered waited out the SYN retries whatever its timeout said.
+		A blocking connect is bounded by `setTimeout`, as reads are, not only
+		by the system.
 	**/
 	public function connect(host:Host, port:Int):Void {
 		var addr = new InetSocketAddress(host.wrapped, port);
@@ -2342,9 +2338,9 @@ class Socket {
 			var addr = new InetSocketAddress(host.wrapped, port);
 			// The queue length has to be named here, because java.nio takes it
 			// at bind() and a server binds before it says how long a queue it
-			// wants. Left out, NIO asks for 50, and a burst of 51 connections
-			// found the queue full and was refused by the kernel. The largest
-			// value is the system's maximum, what listen(0) means, since the
+			// wants. Left out, NIO asks for 50, and a burst of 51 connections would
+			// find the queue full and be refused by the kernel. The largest
+			// value is the system's maximum (what listen(0) means), since the
 			// system clamps it to its own limit.
 			serverChannel.bind(cast addr, 0x7FFFFFFF);
 		} catch (e:Dynamic)
@@ -2468,23 +2464,22 @@ class Socket {
 		runtime ticks on its own thread, and a `Selector` is not safe to use
 		from several at once.
 
-		The selectors are opened once and kept. They used to be opened and
-		closed on every call, and on Windows a `Selector` builds its wakeup pipe
-		out of a loopback socket pair, so each open cost two sockets and each
-		close left them in TIME_WAIT for the best part of a minute: a runtime at
-		sixty ticks a second worked through the whole ephemeral range in a
-		couple of minutes, and everything socket-shaped then failed at once.
+		The selectors are opened once and kept, not opened and closed on every
+		call: on Windows a `Selector` builds its wakeup pipe out of a loopback
+		socket pair, so each open costs two sockets and each close leaves them
+		in TIME_WAIT for the best part of a minute, and a runtime at sixty
+		ticks a second would work through the whole ephemeral range in a
+		couple of minutes.
 
-		The sockets asked about stay registered between calls too. Each call
-		used to register every socket it was handed, check every pair of them
-		for duplicates, and cancel every key again before returning, and
-		`SocketRegistry` makes that call on every pump, with every socket it
-		holds: 0.55 ms for 1,000 idle sockets, 7.7 ms for 4,000, and on
-		Windows, past 1,023, a selector helper thread started and stopped on
-		every call. Now a call changes only what differs from the last one: a
-		socket asked about for the first time is registered, one asked about
-		differently has its interest changed, and one no longer asked about
-		stops being watched the first time it turns up ready.
+		The sockets asked about stay registered between calls too, rather than
+		each call registering every socket it is handed and cancelling every
+		key again before returning, which with `SocketRegistry` calling on
+		every pump with every socket it holds would cost 0.55 ms for 1,000
+		idle sockets and 7.7 ms for 4,000. A call changes only what differs
+		from the last one: a socket asked about for the first time is
+		registered, one asked about differently has its interest changed, and
+		one no longer asked about stops being watched the first time it turns
+		up ready.
 	**/
 	@:noCompletion private static var __states:JThreadLocal<SelectState> = new JThreadLocal();
 
@@ -2504,8 +2499,8 @@ class Socket {
 	// -1 when the key has to be looked at again.
 	@:noCompletion private var __selectKey:SelectionKey = null;
 	@:noCompletion private var __selectArmed:Int = -1;
-	// A registration made for one call only, a look at one socket, or at a
-	// blocking one, and whether the channel was blocking before it.
+	// A registration made for one call only (a look at one socket, or at a
+	// blocking one), and whether the channel was blocking before it.
 	@:noCompletion private var __lookKey:SelectionKey = null;
 	@:noCompletion private var __lookRestore:Bool = false;
 
@@ -2524,9 +2519,9 @@ class Socket {
 
 	// Every thread's select state, so that those of threads that have ended
 	// can be closed. Java says nothing when a thread ends, and a state holds
-	// up to three selectors, an epoll descriptor and its wakeup pipe each
-	// on Linux, a loopback socket pair each on Windows, until they are
-	// closed: a server whose workers came and went kept every one of them.
+	// up to three selectors (an epoll descriptor and its wakeup pipe each
+	// on Linux, a loopback socket pair each on Windows) until they are
+	// closed: a server whose workers came and went would keep every one of them.
 	@:noCompletion private static var __everyState:Array<SelectState> = [];
 	@:noCompletion private static var __everyStateLock:sys.thread.Mutex = new sys.thread.Mutex();
 
@@ -2553,11 +2548,10 @@ class Socket {
 	}
 
 	/**
-		A blocking NIO channel has no read timeout, SO_TIMEOUT reaches only
-		the stream API, never `channel.read`, so `setTimeout` was stored and
-		never read, and a read with nothing coming waited for ever: the HTTP
-		client's idle limit did nothing here. Waiting for readability first
-		gives the timeout the other targets honour. The TLS socket calls this
+		A blocking NIO channel has no read timeout (SO_TIMEOUT reaches only
+		the stream API, never `channel.read`), so a read with nothing coming
+		would wait for ever. Waiting for readability first gives the timeout
+		the other targets honour. The TLS socket calls this
 		too, before it reads ciphertext.
 	**/
 	@:noCompletion private static function __awaitReadable(channel:SocketChannel, timeout:Float):Void {
@@ -2668,7 +2662,7 @@ class Socket {
 	/**
 		Not an NIO operation: marks a socket asked about in the exception set,
 		which NIO has no set for. Only a connect in progress has anything to
-		report there, its refusal.
+		report there: its refusal.
 	**/
 	@:noCompletion private static inline var OP_EXCEPT:Int = 1 << 30;
 
@@ -2693,7 +2687,7 @@ class Socket {
 	/**
 		Finishes a connect `select` found settled, and files the socket where
 		native reports it: writable once it is up; refused, in the exception
-		set if it was asked about there, Windows' way, and otherwise as
+		set if it was asked about there (Windows' way), and otherwise as
 		writable, POSIX's, for the first read or write to report the failure.
 	**/
 	@:noCompletion private static function __settleConnect(s:Socket, write:Array<Socket>, others:Array<Socket>):Void {
@@ -2734,16 +2728,16 @@ class Socket {
 		not in this one is not reported, and the first time it turns up ready
 		it stops being watched, so it cannot end a wait it is no part of.
 
-		A look at a single socket without waiting, a listener asked whether a
-		connection is waiting, a connect asked whether it is up, runs on a
+		A look at a single socket without waiting (a listener asked whether a
+		connection is waiting, a connect asked whether it is up) runs on a
 		selector of its own, so that it costs one socket rather than every
 		socket the thread's runtime watches, and is registered for the call
 		only (see `__look`).
 
 		A blocking socket is looked at and not kept: made non-blocking for the
-		call and blocking again after, as native `select` leaves it. It used to
-		be left non-blocking, which a blocking reader then met as a read that
-		answered "would block" at once.
+		call and blocking again after, as native `select` leaves it, so a
+		blocking reader does not meet a read that
+		answers "would block" at once.
 	**/
 	public static function select(read:Array<Socket>, write:Array<Socket>, others:Array<Socket>,
 			?timeout:Float):{read:Array<Socket>, write:Array<Socket>, others:Array<Socket>} {
@@ -2755,11 +2749,11 @@ class Socket {
 	}
 
 	/**
-		`select`, its answer added to arrays the caller keeps, emptied by
-		the caller, and its timeout a plain number, a negative one
+		`select`, its answer added to arrays the caller keeps (emptied by
+		the caller), and its timeout a plain number, a negative one
 		polling: what a runtime's socket registry calls each frame. Through
-		`select` a frame made three arrays, their storage and the object
-		holding them, and boxed the timeout.
+		`select` a frame would make three arrays, their storage and the object
+		holding them, and box the timeout.
 	**/
 	@:noCompletion public static function __selectInto(read:Array<Socket>, write:Array<Socket>, others:Array<Socket>, timeout:Float,
 			resRead:Array<Socket>, resWrite:Array<Socket>, resOthers:Array<Socket>):Void {
@@ -2773,7 +2767,7 @@ class Socket {
 		asked.resize(0);
 
 		// Each socket once, with everything it was asked about: a socket in
-		// both lists is one registration. This was a pairwise search, O(n^2)
+		// both lists is one registration, rather than a pairwise search, O(n^2)
 		// in the sockets asked about.
 		if (read != null) {
 			for (s in read) {
@@ -2805,9 +2799,8 @@ class Socket {
 					__watch(s, selector, transients);
 				}
 			} catch (_:Dynamic) {
-				// Closed, or failing: not watched, and so not reported. One
-				// socket like that used to abandon the whole call, and every
-				// other socket in it went unreported with it.
+				// Closed, or failing: not watched, and so not reported, rather
+				// than abandoning the whole call and every other socket in it.
 			}
 		}
 
@@ -2894,10 +2887,10 @@ class Socket {
 			transients.resize(0);
 		}
 
-		// Emptied as the call ends, not only as the next begins. A runtime
-		// whose last connections close stops calling, and these went on
+		// Emptied as the call ends, not only as the next begins: a runtime
+		// whose last connections close stops calling, and these would go on
 		// holding every socket of its last call, each with its buffers and
-		// userData: 40 closed connections of 64 KB survived five collections.
+		// userData (40 closed connections of 64 KB survived five collections).
 		asked.resize(0);
 	}
 
@@ -2916,8 +2909,8 @@ class Socket {
 	/**
 		Has `selector` watch `s` for what it was asked about in this call.
 
-		Nothing to do in the steady state, asked about the same as last time,
-		on the same selector, which is where every socket a runtime holds
+		Nothing to do in the steady state (asked about the same as last time,
+		on the same selector), which is where every socket a runtime holds
 		spends its life.
 	**/
 	@:noCompletion private static function __watch(s:Socket, selector:Selector, transients:Array<Socket>):Void {
@@ -2974,7 +2967,7 @@ class Socket {
 	/**
 		Registers `s` with `selector` for this call only: a look at a single
 		socket, or at a blocking one. Given up again before select returns (see
-		`__unwatch`), so nothing is kept, a listener asked each tick whether a
+		`__unwatch`), so nothing is kept: a listener asked each tick whether a
 		connection waits costs one socket, not every socket its runtime watches,
 		and nothing is left holding it registered once it closes.
 	**/

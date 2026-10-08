@@ -3,12 +3,12 @@ package crossbyte.net._internal.reliable;
 import haxe.ds.Vector;
 
 /**
-	A session's frames in flight, sent, and not yet acknowledged, found
+	A session's frames in flight (sent, and not yet acknowledged), found
 	by sequence: a ring, each frame in the slot its sequence's low bits name.
 
-	They were in an `IntMap`, which hashed every sequence, allocated an
-	entry natively for every frame sent, and on the jvm grew its table with
-	the window. What is in flight is one run of sequences, from the first
+	An `IntMap` would hash every sequence, allocate an entry natively for
+	every frame sent, and on the jvm grow its table with the window. What
+	is in flight is one run of sequences, from the first
 	not acknowledged to the next to send, never more than a session's window
 	of 500 long, so a ring longer than the run holds each in a slot of its
 	own. One whose slot holds another frame is a run that has outgrown the

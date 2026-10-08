@@ -22,20 +22,20 @@ import crossbyte.io.File;
  * **The resources directory is beside the program.** `resourcesDir` is the
  * `resources` directory inside `File.applicationDirectory`: next to the
  * executable natively, the jar on the jvm, the script on Node and the
- * bytecode file on neko and HashLink, found wherever the program is started
- * from, a Windows service's System32 included. It was the working
- * directory's. The build puts it there: the project's `resources` directory
- * is copied beside the program the build writes. A tool that moves the
- * program afterwards must carry `resources` with it. On the interpreter,
- * which has no program file, it is the working directory's `resources`.
+ * bytecode file on neko and HashLink. It is found wherever the program is
+ * started from, a Windows service's System32 included. The build puts it
+ * there: the project's `resources` directory is copied beside the program
+ * the build writes. A tool that moves the program afterwards must carry
+ * `resources` with it. On the interpreter, which has no program file, it is
+ * the working directory's `resources`.
  *
  * **Paths stay inside `resourcesDir`.** A path is a relative one, separated by
  * `/` or `\`, with no `..` segment, no leading separator and no `:`, so no
  * drive letter, no `C:` drive-relative path and no NTFS stream name. Anything
  * else is refused: `exists` answers `false` and `resourceSize` `-1`, and the
- * rest throw `SecurityError`. Paths were joined to the directory as given, so
- * a server loading a map by the name a client sent,
- * `getText("maps/" + name)`, read whatever `"../../config.json"` named.
+ * rest throw `SecurityError`. So a server loading a map by the name a client
+ * sent, `getText("maps/" + name)`, cannot read what `"../../config.json"`
+ * names.
  * Empty and `.` segments are dropped, so `"./maps//a.txt"` is `"maps/a.txt"`.
  */
 final class Resources {

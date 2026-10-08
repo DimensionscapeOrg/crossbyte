@@ -124,8 +124,8 @@ import java.NativeArray;
 	@:noCompletion private static final __stopsAtEmptyBucket:Bool = true;
 
 	// CrossByte: the probe ends at the first empty bucket, as `set` and the
-	// other maps here already stop. Haxe 4.3.7's version stopped only at the
-	// key or after coming round to where it began, so every miss read every
+	// other maps here already stop. Haxe 4.3.7's version stops only at the
+	// key or after coming round to where it began, so every miss reads every
 	// bucket: 110us a miss at 100,000 entries.
 	private final function lookup(key:Int):Int {
 		if (nBuckets != 0) {

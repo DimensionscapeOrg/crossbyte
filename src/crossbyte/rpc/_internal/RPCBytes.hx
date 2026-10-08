@@ -5,7 +5,7 @@ import haxe.io.Bytes;
 /**
 	Little-endian numbers at a place in a `Bytes`, with no check of the
 	place: for code that has checked, once, that a run of values lies
-	within the bytes, an array of numbers, whose count was checked
+	within the bytes: an array of numbers, whose count was checked
 	against its frame, written into a frame made room for all of it.
 
 	Natively, a 32-bit or 16-bit integer is one load or store, where

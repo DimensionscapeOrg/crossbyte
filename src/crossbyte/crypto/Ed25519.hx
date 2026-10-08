@@ -134,9 +134,8 @@ class Ed25519 {
 	 * key, otherwise `false`, including for a signature or key of the wrong
 	 * length.
 	 * @throws IllegalOperationError On a target other than native cpp, whatever
-	 *         it is handed. It answered `false` there, which is the answer for a
-	 *         forged signature: every signature was refused, genuine ones
-	 *         included, by what looked like a working check.
+	 *         it is handed, rather than answering `false`, the answer for a
+	 *         forged signature.
 	 * @throws String When libsodium could not be started, as signing does.
 	 */
 	public static function verifyDetached(signature:Bytes, message:Bytes, publicKey:Bytes):Bool {

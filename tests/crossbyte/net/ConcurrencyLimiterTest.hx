@@ -380,10 +380,10 @@ class ConcurrencyLimiterTest extends utest.Test {
 
 	/**
 		`tryAcquire` delivers what it decided before it takes capacity, so a
-		callback that throws on the way leaves nothing held. It took the
-		capacity first: a waiter's refusal that threw then carried the
-		exception out of `tryAcquire`, and the permit it had made went with
-		it, held, and never returned to anyone who could release it.
+		callback that throws on the way leaves nothing held. Taking the
+		capacity first, a waiter's refusal that threw would carry the exception
+		out of `tryAcquire`, and the permit it had made would go with it: held,
+		and never returned to anyone who could release it.
 	**/
 	public function testATryAcquireThatAThrowingCallbackInterruptsHoldsNothing():Void {
 		var limiter = new ConcurrencyLimiter(2, 10, 5.0, clock);

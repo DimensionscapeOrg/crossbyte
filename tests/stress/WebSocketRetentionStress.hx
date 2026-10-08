@@ -16,17 +16,17 @@ import haxe.io.Bytes;
  * Invariant: every frame arrives, intact and in order, and the session
  * survives.
  *
- * This guards a bug that shipped in both directions at once. A full send
- * buffer is routine on a non-blocking socket, but the two write sites
- * disagreed about what it meant: one caught the blocked write and only
- * traced it, silently discarding the bytes, while the other treated the
- * same condition as fatal and closed the session with 1006. So a peer
- * that paused for a moment either lost messages or lost the connection.
+ * A full send buffer is routine on a non-blocking socket, and both write
+ * sites have to agree on what it means: neither may catch the blocked
+ * write and only trace it, discarding the bytes, nor treat the same
+ * condition as fatal and close the session with 1006. Otherwise a peer
+ * that paused for a moment would either lose messages or lose the
+ * connection.
  */
 class WebSocketRetentionStress implements StressCase {
 	private static inline final FRAMES:Int = 200;
 	// Comfortably past any loopback send buffer, so a run that never
-	// blocks, and therefore never exercises the retry, cannot pass by
+	// blocks (and therefore never exercises the retry) cannot pass by
 	// accident.
 	private static inline final PAYLOAD:Int = 16384;
 

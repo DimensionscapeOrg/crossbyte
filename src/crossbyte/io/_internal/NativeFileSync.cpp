@@ -78,8 +78,8 @@ namespace {
 	{
 		hx::AutoGCFreeZone zone;
 
-		// A reader that has the old file open, as the C runtime opens files,
-		// without FILE_SHARE_DELETE, makes the replace fail for as long as it
+		// A reader that has the old file open, as the C runtime opens files
+		// (without FILE_SHARE_DELETE), makes the replace fail for as long as it
 		// holds it. A read is short, so a moment's retry rides it out rather
 		// than failing a write because someone was looking.
 		for (int attempt = 0; attempt < 200; ++attempt) {
@@ -195,8 +195,8 @@ void crossbyte_file_sync_directory(::String path) {
 #if !defined(_WIN32)
 	// So the rename itself survives a power cut: a new name is an entry in the
 	// directory, and on POSIX that is flushed separately from the file. Best
-	// effort, some filesystems refuse to sync a directory, and a failure here
-	// leaves the value as durable as it was before this call existed.
+	// effort: some filesystems refuse to sync a directory, and a failure here
+	// leaves the value as durable as an unsynced rename would.
 	std::string directory = toNarrow(path);
 
 	{
@@ -217,8 +217,8 @@ void crossbyte_file_sync_directory(::String path) {
 
 ::String crossbyte_file_identity(::String path) {
 	// What a file is, rather than what it is called: its volume and its
-	// index on that volume. Two names with the same identity are one file,
-	// a case-only difference, a hard link, a junction, a short name, which
+	// index on that volume. Two names with the same identity are one file
+	// (a case-only difference, a hard link, a junction, a short name), which
 	// comparing the names cannot see. Copying a file onto another name for
 	// itself truncates the destination before reading it, which is the
 	// source, and the data is gone.
@@ -398,10 +398,10 @@ double crossbyte_file_created(::String path) {
 }
 
 int crossbyte_file_hidden(::String path) {
-	// Windows' hidden attribute, asked of the file system. File asked
-	// `attrib` through cmd.exe: a process for each question, and cmd
-	// expanded any %NAME% in the path, so a file with one in its name was
-	// asked about under another.
+	// Windows' hidden attribute, asked of the file system rather than of
+	// `attrib` through cmd.exe: a process for each question, and cmd would
+	// expand any %NAME% in the path and ask about a file with one in its
+	// name under another.
 #if defined(_WIN32)
 	std::wstring file = toWide(path);
 	DWORD attributes = INVALID_FILE_ATTRIBUTES;
@@ -424,8 +424,8 @@ int crossbyte_file_hidden(::String path) {
 
 double crossbyte_file_space_available(::String path) {
 	// The bytes this process could still write on the volume `path` is on:
-	// a file's, a directory's. File started fsutil or df for each question,
-	// and fsutil refused a file's path, which read as a full disk.
+	// a file's, a directory's. Asked of the system directly, rather than of
+	// fsutil or df, whose refusal of a file's path would read as a full disk.
 #if defined(_WIN32)
 	std::wstring file = toWide(path);
 	ULARGE_INTEGER available;

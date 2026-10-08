@@ -13,12 +13,11 @@ import utest.Assert;
 	A client session that dials its peer, and dials again when the
 	connection ends: `RPCSession.dial`.
 
-	A gateway to a backend built this itself, about thirty lines of it,
-	dial, back off, bind a new session to each connection, and check the
-	backend was up before each call, since a call on a closed TCP connection
-	threw out of its stub. And a call that failed as the backend went had a
-	message and no cause, so a gateway could not tell a backend gone from a
-	backend refusing.
+	A gateway to a backend would otherwise build this itself, about thirty
+	lines of it: dial, back off, bind a new session to each connection, and
+	check the backend is up before each call. And a call that fails as the
+	backend goes has a cause as well as a message, so a gateway can tell a
+	backend gone from a backend refusing.
 
 	Not in the portable suite: these pump real sockets until something has
 	happened, and on Node nothing happens until the pump returns.

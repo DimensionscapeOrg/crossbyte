@@ -78,8 +78,8 @@ class HttpTest extends utest.Test {
 	/**
 		A bound method handed back is the handler it was registered as. On
 		eval and the jvm each mention of `object.method` is a new closure, so
-		comparing by identity never found it: the handler stayed, and ran at
-		a later cancel for a request that had long finished.
+		compared by identity it would never be found: the handler would stay,
+		and run at a later cancel for a request that had long finished.
 	**/
 	public function testARemovedBoundMethodDoesNotRun():Void {
 		var token = new HTTPCancelToken();
@@ -102,27 +102,27 @@ class HttpTest extends utest.Test {
 	public function testVersionWithNoBackendAnywhereIsRejected():Void {
 		HTTPBackendRegistry.clear();
 
-		// HTTP/3 is QUIC and nothing here implements it, so it still fails at
-		// construction. HTTP/2 no longer does, see the next case.
+		// HTTP/3 is QUIC and nothing here implements it, so it fails at
+		// construction. HTTP/2 does not: see the next case.
 		Assert.raises(() -> new Http("http://example.com/", "GET", null, null, null, null, HttpVersion.HTTP_3), NotImplementedException);
 
 		HTTPBackendRegistry.clear();
 	}
 
 	public function testHttp2IsSupportedWhereverTheClientIsBuilt():Void {
-		// It was refused on eval, which raised socket errors as native
-		// exceptions no catch could see: a peer reset killed the reader
-		// thread a pooled connection parks on, or on a send the process.
-		// They can be caught there now, and HTTP2BackendTest runs there too.
+		// Supported on eval too: socket errors there can be caught, where as
+		// native exceptions no catch could see, a peer reset would kill the
+		// reader thread a pooled connection parks on, or on a send the process.
+		// HTTP2BackendTest runs there too.
 		Assert.isTrue(crossbyte.http.HTTP2Backend.isSupported);
 	}
 
 	public function testHttp2WorksWithoutRegisteringAnything():Void {
 		HTTPBackendRegistry.clear();
 
-		// The bundled backend registers itself on demand. Requiring a caller
-		// to register a class that ships in this library was a chore, not a
-		// choice, and the error it produced read as "unsupported".
+		// The bundled backend registers itself on demand, so a caller need not
+		// register a class that ships in this library, nor read an error saying
+		// "unsupported".
 		var http = new Http("http://example.com/", "GET", null, null, null, null, HttpVersion.HTTP_2);
 		Assert.notNull(http);
 		Assert.isTrue(HTTPBackendRegistry.isRegistered(HttpVersion.HTTP_2));
@@ -171,8 +171,8 @@ class HttpTest extends utest.Test {
 		Assert.equals(HttpVersion.HTTP_2, backend.lastContext.version);
 		Assert.equals("X-Test: yes", backend.lastContext.headers[0]);
 		Assert.equals("text/plain", backend.lastContext.contentType);
-		// Typed now (HTTPRequestBody): text given as text, which it was not
-		// before, data was Dynamic, the String itself.
+		// Typed (HTTPRequestBody): text given as text, not data as Dynamic,
+		// the String itself.
 		Assert.isTrue(backend.lastContext.data.isText);
 		Assert.equals("body", backend.lastContext.data.text);
 		Assert.equals("body", backend.lastContext.data.toBytes().toString());
@@ -237,7 +237,7 @@ class HttpTest extends utest.Test {
 
 		// Support does not disappear with it: HTTP/2 is a capability of the
 		// library, and removing one implementation of it leaves the bundled
-		// one. Removing the *last* backend used to mean losing the protocol.
+		// one. Removing the *last* backend does not lose the protocol.
 		Assert.isTrue(HTTPBackendRegistry.isRegistered(HttpVersion.HTTP_2));
 		Assert.isFalse(backend == HTTPBackendRegistry.resolve(HttpVersion.HTTP_2));
 
@@ -245,11 +245,11 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testConcurrentFirstRequestsAllFindTheBundledBackend():Void {
-		// The bundled backend's flag was set under the lock and the backend
-		// added only after the lock was let go: a thread arriving in between
-		// found the flag set and no backend, and its request failed with "HTTP/2
-		// has no registered HTTPBackend". Concurrent first HTTP/2 requests
-		// failed 5 of 6 that way on the jvm, and the http2 sample 3 of 3.
+		// The bundled backend is added under the same lock that sets its flag:
+		// added after the lock was let go, a thread arriving in between would
+		// find the flag set and no backend, and its request would fail with
+		// "HTTP/2 has no registered HTTPBackend", as concurrent first HTTP/2
+		// requests would on the jvm.
 		var workers:Int = 8;
 		var rounds:Int = 150;
 		var misses:Int = 0;
@@ -327,11 +327,11 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testAResponseHeaderSectionPastTheLimitIsRefused():Void {
-		// The client read header lines for as long as the server sent them;
-		// the server holds a request's block to 64 KB, and a response is
-		// held to the same now. About 70 KB of lines here: a little past the
-		// limit, and small enough to sit in the socket's buffers whole, so the
-		// fixture's write finishes whatever the client does next.
+		// A response's header section is held to 64 KB, as the server holds a
+		// request's, rather than read for as long as the server sends lines.
+		// About 70 KB of lines here: a little past the limit, and small enough
+		// to sit in the socket's buffers whole, so the fixture's write finishes
+		// whatever the client does next.
 		var fill:StringBuf = new StringBuf();
 		for (i in 0...1400) {
 			fill.add("X-Fill-" + i + ": 0123456789012345678901234567890123456789\r\n");
@@ -340,15 +340,15 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testAHeaderLineThatNeverEndsIsRefused():Void {
-		// One line, read into memory for as long as it went on. A line with no
-		// colon was then ignored, so the response completed as though nothing
-		// had happened.
+		// One line, which must not be read into memory for as long as it goes
+		// on, and then, having no colon, ignored, with the response completing
+		// as though nothing had happened.
 		__expectRefusal("HTTP/1.1 200 OK\r\n" + __repeat("a".code, 70 * 1024) + "\r\nContent-Length: 2\r\n\r\nok", "exceeded");
 	}
 
 	public function testEndlessInterimResponsesAreRefused():Void {
-		// Each 1xx block was thrown away and the next read, for as long as they
-		// came, and while they kept coming the idle timeout never fired.
+		// 1xx blocks are bounded too: discarding each and reading the next for
+		// as long as they come would keep the idle timeout from ever firing.
 		var interim:StringBuf = new StringBuf();
 		for (_ in 0...3000) {
 			interim.add("HTTP/1.1 100 Continue\r\n\r\n");
@@ -357,8 +357,8 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testAChunkLineThatNeverEndsIsRefused():Void {
-		// A chunk extension is ignored, so one that went on for ever was read
-		// into memory and then dropped, and the body completed.
+		// A chunk extension is ignored, so one that went on for ever must not
+		// be read into memory, dropped, and the body completed.
 		__expectRefusal("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;" + __repeat("e".code, 8 * 1024) + "\r\nhello\r\n0\r\n\r\n", "limit");
 	}
 
@@ -408,7 +408,7 @@ class HttpTest extends utest.Test {
 
 		// A 1xx block is discarded and re-read, so the caller sees one header
 		// block rather than an interim one it would have to know to ignore,
-		// and one status, as HTTPRequestContext says: the 100 was reported.
+		// and one status, as HTTPRequestContext says: the 100 is not reported.
 		Assert.same([200], statuses);
 		Assert.equals(1, reported.length);
 		Assert.equals("yes", reported[0].get("x-final"));
@@ -431,22 +431,23 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testResolveLocationBracketsAnIpv6HostAndKeepsASchemesOtherPort():Void {
-		// The host went in bare, so a relative redirect from [::1]:8080 named
-		// http://::1:8080/..., which is not a URL, and the redirect failed.
+		// The host goes in with its brackets: bare, a relative redirect from
+		// [::1]:8080 would name http://::1:8080/..., which is not a URL.
 		var v6 = new URL("http://[::1]:8080/dir/page");
 		Assert.equals("http://[::1]:8080/dir/next", Http.__resolveLocation(v6, "next"));
 		Assert.equals("http://[::1]:8080/root", Http.__resolveLocation(v6, "/root"));
 		Assert.equals("https://[2001:db8::1]/x", Http.__resolveLocation(new URL("https://[2001:db8::1]/a"), "/x"));
 
-		// The port was dropped for 80 and 443 whatever the scheme, so a
-		// redirect from http://host:443/ went to port 80.
+		// The port is dropped only for the scheme's own default, not for 80 and
+		// 443 whatever the scheme, or a redirect from http://host:443/ would go
+		// to port 80.
 		Assert.equals("http://example.com:443/b", Http.__resolveLocation(new URL("http://example.com:443/a"), "b"));
 		Assert.equals("https://example.com:80/b", Http.__resolveLocation(new URL("https://example.com:80/a"), "b"));
 	}
 
 	public function testTheHostHeaderBracketsAnIpv6Literal():Void {
-		// URL takes the brackets off, and the client put the host back as it
-		// was: Host: ::1:port, which no server can split.
+		// URL takes the brackets off, and the client must put them back: a
+		// Host of ::1:port no server can split.
 		if (!__ipv6Loopback()) {
 			Assert.pass("no IPv6 loopback on this machine");
 			return;
@@ -478,10 +479,10 @@ class HttpTest extends utest.Test {
 	}
 
 	/**
-		An idle timeout of `0` or less is no limit, a socket timeout of `0`,
-		which every target's socket takes as none, as it is on JavaScript
-		and on every socket. It was 30 seconds here, a difference no case
-		shorter than 30 seconds can see, so the mapping is asserted itself.
+		An idle timeout of `0` or less is no limit (a socket timeout of `0`,
+		which every target's socket takes as none), as it is on JavaScript and
+		on every socket. A default like 30 seconds instead is a difference no
+		case shorter than 30 seconds can see, so the mapping is asserted itself.
 	**/
 	public function testAnIdleTimeoutOfZeroIsNoLimit():Void {
 		Assert.equals(0.0, Http.__idleSeconds(0));
@@ -559,17 +560,17 @@ class HttpTest extends utest.Test {
 		Require.notNull(completed);
 		Assert.equals("hello world", completed.toString());
 		// 0 for a length nobody declared, as HTTPRequestContext says and the
-		// JavaScript clients report. It was -1, which ProgressEvent's UInt
-		// made 4294967295.
+		// JavaScript clients report; -1 would reach ProgressEvent's UInt as
+		// 4294967295.
 		Assert.equals(0, progress[0].total);
 		Assert.equals(11, progress[progress.length - 1].loaded);
 		Assert.equals(0, progress[progress.length - 1].total);
 	}
 
 	public function testChunkSizeWithTrailingGarbageIsRejected():Void {
-		// Std.parseInt stops at the first character it cannot use, so this
-		// size line used to read as 5 and the body came back as "hello",
-		// this client agreeing with nobody about where the chunk ended.
+		// Std.parseInt stops at the first character it cannot use, so read
+		// through it this size line would be 5 and the body "hello": this
+		// client agreeing with nobody about where the chunk ended.
 		var fixture = serveOnce("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5 junk\r\nhello\r\n0\r\n\r\n");
 		var http = new Http('http://127.0.0.1:${fixture.port}/garbage');
 		var completed:Bytes = null;
@@ -590,7 +591,7 @@ class HttpTest extends utest.Test {
 		// Eight hex digits is more than Int holds, and Std.parseInt says so
 		// four different ways: -1 on eval and cpp, a thrown
 		// NumberFormatException on jvm, and 4294967295 on node, neither
-		// null nor negative, so node walked straight past the guard.
+		// null nor negative, so on node it would walk straight past a guard.
 		var fixture = serveOnce("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nFFFFFFFF\r\n");
 		var http = new Http('http://127.0.0.1:${fixture.port}/huge');
 		var completed:Bytes = null;
@@ -608,9 +609,9 @@ class HttpTest extends utest.Test {
 
 	public function testContentLengthPastAnIntIsNotALength():Void {
 		// The client reads the field the way the server does. Std.parseInt
-		// took 4294967296 as 0 on Linux and macOS native, an empty body,
-		// reported as a complete download, as 2147483647 on Windows, and
-		// threw on the jvm.
+		// takes 4294967296 as 0 on Linux and macOS native (an empty body,
+		// reported as a complete download), as 2147483647 on Windows, and
+		// throws on the jvm.
 		var http = new Http("http://127.0.0.1/");
 		Assert.isNull(http.__parseContentLength("4294967296"));
 		Assert.isNull(http.__parseContentLength("4294967301"));
@@ -622,8 +623,8 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testAStatusLineCarriesExactlyThreeDigits():Void {
-		// Was (\d+) through Std.parseInt: "HTTP/1.1 4294967496 OK" read as
-		// 200 on Linux native.
+		// Not (\d+) through Std.parseInt, which would read "HTTP/1.1 4294967496
+		// OK" as 200 on Linux native.
 		Assert.equals(200, Http.__parseStatusLine("HTTP/1.1 200 OK"));
 		Assert.equals(200, Http.__parseStatusLine("HTTP/1.1 200"));
 		Assert.equals(404, Http.__parseStatusLine("HTTP/1.0 404 Not Found"));
@@ -660,8 +661,8 @@ class HttpTest extends utest.Test {
 	public function testChunkedThatIsNotTheFinalCodingIsNotChunkDecoded():Void {
 		// RFC 9112 6.1: chunked frames the body only when it is the last
 		// coding applied. With something after it the body is not chunk
-		// framed at all, and the length comes from the connection closing.
-		// Reading it as chunks took the body's first line for a chunk size.
+		// framed at all, and the length comes from the connection closing;
+		// read as chunks, the body's first line would be taken for a chunk size.
 		var fixture = serveOnce("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked, gzip\r\n\r\nnot chunk framed");
 		var http = new Http('http://127.0.0.1:${fixture.port}/notfinal');
 		var completed:Bytes = null;
@@ -710,8 +711,8 @@ class HttpTest extends utest.Test {
 	public function testABrotliBombIsAbandonedRatherThanDecoded():Void {
 		// The same shape as the gzip case, against the coding the modern web
 		// actually sends. Brotli decodes through a ported codec that returns
-		// everything at once, so the ceiling had to go down into the function
-		// every decoded byte passes through rather than measuring the result.
+		// everything at once, so the ceiling goes down into the function every
+		// decoded byte passes through rather than measuring the result.
 		try {
 			var encoded = new ByteArray();
 			encoded.length = 128 * 1024;
@@ -903,7 +904,7 @@ class HttpTest extends utest.Test {
 
 	/**
 		Takes one request and answers `prompt` at once, then `trickled` a byte
-		every `gap` seconds, each byte enough to reset an idle timeout,
+		every `gap` seconds (each byte enough to reset an idle timeout),
 		stopping when the client goes, and then waits for it to.
 	**/
 	private static function serveTrickled(prompt:String, trickled:String, gap:Float):OneShotHttpServer {
@@ -983,10 +984,10 @@ class HttpTest extends utest.Test {
 
 	public function testASessionCookieSurvivesARedirect():Void {
 		// The case this exists for. `followRedirects` is on by default, so a
-		// sign-in that answers 302 with a session cookie used to lose it: the
-		// cookie was read off the wire and dropped with the rest of the
-		// response headers when the next hop reset them, and the page you
-		// landed on saw an anonymous request.
+		// sign-in that answers 302 with a session cookie must keep it: read off
+		// the wire and dropped with the rest of the response headers when the
+		// next hop reset them, the cookie would be lost, and the page landed on
+		// would see an anonymous request.
 		var fixture = serveTwice("HTTP/1.1 302 Found\r\nLocation: /landing\r\nSet-Cookie: session=abc123; Path=/; HttpOnly\r\nContent-Length: 0\r\n\r\n",
 			"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
 
@@ -1017,8 +1018,8 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testCredentialsDoNotFollowARedirectToAnotherOrigin():Void {
-		// A 302 to another origin used to be followed with every header the
-		// caller wrote: the auditor's server received Authorization: Bearer
+		// A 302 to another origin is followed without the headers the caller
+		// wrote: otherwise the next origin would receive Authorization: Bearer
 		// sk-live-secret. The next origin gets the request without them.
 		var elsewhere = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
 		var origin = serveOnce('HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:${elsewhere.port}/landing\r\nContent-Length: 0\r\n\r\n');
@@ -1067,9 +1068,9 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testAHeadStaysAHeadThroughARedirect():Void {
-		// A 301, 302 or 303 turns the request into a GET, as browsers do. A
-		// HEAD was turned into one too, and downloaded the body it had asked
-		// not to be sent.
+		// A 301, 302 or 303 turns the request into a GET, as browsers do, but
+		// not a HEAD, which would then download the body it had asked not to be
+		// sent.
 		var fixture = serveTwice("HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\n\r\n",
 			"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n");
 		var http = new Http('http://127.0.0.1:${fixture.port}/start', "HEAD");
@@ -1086,8 +1087,8 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testTenRedirectsEndingInAResponseSucceed():Void {
-		// maxRedirects is ten; ten followed and then answered is within it.
-		// The old check read the count alone and reported this as too many.
+		// maxRedirects is ten; ten followed and then answered is within it, not
+		// reported as too many by a check reading the count alone.
 		var responses:Array<String> = [for (i in 0...10) 'HTTP/1.1 302 Found\r\nLocation: /hop${i + 1}\r\nContent-Length: 0\r\n\r\n'];
 		responses.push("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndone");
 		var fixture = serveMany(responses);
@@ -1123,9 +1124,9 @@ class HttpTest extends utest.Test {
 	// ------------------------------------------------------ the request's own limits
 
 	/**
-		A request's redirect limit is its own. It was `Http.MAX_REDIRECTS`, a
-		static every request in the process shared, so a library lowering it
-		for its own calls lowered it for everyone's.
+		A request's redirect limit is its own, not `Http.MAX_REDIRECTS`, a
+		static every request in the process would share, so a library lowering
+		it for its own calls would lower it for everyone's.
 	**/
 	public function testTheRedirectLimitIsTheRequests():Void {
 		var three:Array<String> = [for (i in 0...3) 'HTTP/1.1 302 Found\r\nLocation: /hop${i + 1}\r\nContent-Length: 0\r\n\r\n'];
@@ -1188,10 +1189,10 @@ class HttpTest extends utest.Test {
 	}
 
 	/**
-		A body's room grows as it arrives. It was allocated whole from the
-		`Content-Length`: and a chunk's whole from its size line, before a
-		byte of it came, so a response declaring 16 MB and sending a hundred
-		bytes cost 16 MB, on each of the loader's threads.
+		A body's room grows as it arrives. Allocated whole from the
+		`Content-Length` (and a chunk's whole from its size line) before a byte
+		of it came, a response declaring 16 MB and sending a hundred bytes would
+		cost 16 MB, on each of the loader's threads.
 	**/
 	public function testABodyIsNotAllocatedBeforeItArrives():Void {
 		var declared:Int = 16 * 1024 * 1024;
@@ -1230,9 +1231,9 @@ class HttpTest extends utest.Test {
 
 	/**
 		A head trickled a byte at a time is given up at the head's deadline.
-		Each byte reset the idle timeout, so a server sending its head this
-		way held the request, and the loader's thread, for as long as it
-		cared to: here five seconds, against a deadline of 0.6.
+		Each byte resets the idle timeout, so without it a server sending its
+		head this way would hold the request (and the loader's thread) for as
+		long as it cared to: here five seconds, against a deadline of 0.6.
 	**/
 	public function testATrickledHeadEndsAtItsDeadline():Void {
 		var head:String = "HTTP/1.1 200 OK\r\nX-Slow: " + StringTools.rpad("", "s", 60) + "\r\nContent-Length: 2\r\n\r\nok";
@@ -1273,9 +1274,9 @@ class HttpTest extends utest.Test {
 	/**
 		A name is looked up through the resolver's threads, so the wait ends
 		at the idle timeout, or a cancel, though the system's lookup does not.
-		It was made inside the connect, on the load's thread, where a wedged
-		resolver held the load for as long as it stayed wedged, and a cancel
-		could not reach it.
+		Made inside the connect, on the load's thread, a wedged resolver would
+		hold the load for as long as it stayed wedged, and a cancel could not
+		reach it.
 	**/
 	public function testALookupThatNeverAnswersEndsTheLoad():Void {
 		var saved:String->Host = crossbyte._internal.net.Resolver.__system;
@@ -1321,8 +1322,8 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testURLVariablesAreSentAsAForm():Void {
-		// A URLVariables is a StringMap at run time, and Reflect.fields read
-		// the map's own fields: a POST of one went out with an empty body.
+		// A URLVariables is a StringMap at run time, so Reflect.fields would read
+		// the map's own fields, and a POST of one would go out with an empty body.
 		var posted = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
 		var post = new Http('http://127.0.0.1:${posted.port}/form', "POST", null, new crossbyte.url.URLVariables("name=Ada%20L&tag=a&tag=b"));
 		post.onError = (message, ?data) -> Assert.fail("request failed: " + message);
@@ -1345,8 +1346,8 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testACallerHeaderCannotAddALine():Void {
-		// Written as given, a CR or LF in a caller's value ended the header and
-		// began one of the caller's choosing.
+		// Written as given, a CR or LF in a caller's value would end the header
+		// and begin one of the caller's choosing.
 		var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
 		var http = new Http('http://127.0.0.1:${fixture.port}/', "GET", ["X-Forwarded: a\r\nInjected: yes", "Bad\r\nName: v"]);
 		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
@@ -1361,9 +1362,9 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testAUrlCannotAddAHeaderLine():Void {
-		// The request target and Host went out as the URL spelled them, and a
-		// URL kept its CR and LF: this sent "X-Injected: evil" as a header of
-		// its own, and a longer one could smuggle a second request.
+		// The request target and Host do not go out as the URL spelled them
+		// with its CR and LF kept, which would send "X-Injected: evil" as a
+		// header of its own, and a longer one could smuggle a second request.
 		var fixture = serveWithin(["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"], 0.5);
 		var failed:Bool = false;
 		try {
@@ -1380,14 +1381,14 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testTheRequestTargetCarriesNoSpaceOrRawNonAscii():Void {
-		// A space ended the target early, "GET /a b HTTP/1.1" is three words
-		// and a version of "b" to a server, and a path past ASCII went out as
-		// raw bytes. Both are percent-encoded, as a browser sends them.
+		// A space would end the target early ("GET /a b HTTP/1.1" is three
+		// words and a version of "b" to a server), and a path past ASCII would go
+		// out as raw bytes. Both are percent-encoded, as a browser sends them.
 		var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
 		// The e-acute as its UTF-8 bytes read back as text: one character
 		// where strings are Unicode, and those two bytes on neko, whose
-		// strings are bytes, where String.fromCharCode(0xE9) is one byte,
-		// Latin-1, and no URL a user types.
+		// strings are bytes (where String.fromCharCode(0xE9) is one byte,
+		// Latin-1, and no URL a user types).
 		var eAcute:String = Bytes.ofHex("c3a9").toString();
 		var http = new Http('http://127.0.0.1:${fixture.port}/a b/caf' + eAcute + "?q=c d&r=%41");
 		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
@@ -1399,9 +1400,9 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testAMethodThatIsNotATokenIsRefused():Void {
-		// URLRequest.method is any string, and it was written first on the
-		// request line as given: a "method" carrying a line break and a
-		// request of its own smuggled that request onto the connection.
+		// URLRequest.method is any string, and written first on the request
+		// line as given, a "method" carrying a line break and a request of its
+		// own would smuggle that request onto the connection.
 		var fixture = serveWithin(["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"], 0.5);
 		var failure:Null<String> = null;
 		var method:String = "GET / HTTP/1.1" + String.fromCharCode(13) + String.fromCharCode(10) + "Host: x" + String.fromCharCode(13)
@@ -1426,7 +1427,7 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testUserAgentAndContentTypeCannotAddALine():Void {
-		// Both were written into their header lines as given.
+		// Neither is written into its header line as given.
 		var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
 		var crlf:String = String.fromCharCode(13) + String.fromCharCode(10);
 		var http = new Http('http://127.0.0.1:${fixture.port}/', "POST", null, null, "text/plain" + crlf + "Injected-Type: yes", "body", HttpVersion.HTTP_1_1,
@@ -1442,8 +1443,8 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testADeclaredLengthPastTheCapIsRefusedBeforeReading():Void {
-		// The body was allocated whole from the header, before a byte arrived:
-		// one response declaring 2000000000 bytes cost two gigabytes.
+		// The body is not allocated whole from the header before a byte arrives,
+		// which for one response declaring 2000000000 bytes would cost two gigabytes.
 		try {
 			var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 5000\r\n\r\n" + StringTools.rpad("", "x", 5000));
 			var http = new Http('http://127.0.0.1:${fixture.port}/big');
@@ -1484,9 +1485,9 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testAResetInACloseDelimitedBodyIsAnError():Void {
-		// Only the connection closing ends such a body, so every read error
-		// used to be taken for that ending, and a reset partway through was
-		// reported complete with half a body.
+		// Only the connection closing ends such a body, so a read error must not
+		// be taken for that ending, or a reset partway through would be reported
+		// complete with half a body.
 		var fixture = new OneShotHttpServer();
 		Thread.create(() -> {
 			var server = new SysSocket();
@@ -1542,9 +1543,9 @@ class HttpTest extends utest.Test {
 	#if (cpp || java || jvm)
 	/**
 		A TLS handshake the server never answers fails at the request's
-		timeout, and says that is what happened. Natively the failure's
-		reason was "Blocked", the read the handshake waited on had timed
-		out, and on the jvm it came wrapped, as `Custom(Timeout: ...)`.
+		timeout, and says that is what happened, not "Blocked" (the read the
+		handshake waited on having timed out) natively, nor wrapped, as
+		`Custom(Timeout: ...)`, on the jvm.
 	**/
 	public function testAnUnansweredHandshakeSaysItTimedOut():Void {
 		var listener = new SysSocket();
@@ -1585,8 +1586,8 @@ class HttpTest extends utest.Test {
 	// On the jvm since sys.net.Socket.setTimeout reaches a blocking read
 	// there, and on eval since a read that times out there throws.
 	public function testTheIdleTimeoutIsInMilliseconds():Void {
-		// The socket was handed the milliseconds as seconds, so this waited
-		// until the server gave up, three seconds on, rather than 300 ms.
+		// Handed to the socket as milliseconds as seconds, this would wait until
+		// the server gave up, three seconds on, rather than 300 ms.
 		var fixture = holdRequest(false);
 		var http = new Http('http://127.0.0.1:${fixture.port}/slow', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 300);
 		var completed:Bool = false;
@@ -1604,8 +1605,8 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testAServerClosingWithoutAnAnswerIsAnError():Void {
-		// On eval the end of the stream read as endless NUL bytes, so the
-		// status line never ended and load() never returned.
+		// The end of the stream ends the status line: on eval it can read as
+		// endless NUL bytes, and load() would never return.
 		var fixture = holdRequest(true);
 		var http = new Http('http://127.0.0.1:${fixture.port}/gone');
 		var completed:Bool = false;
@@ -1638,9 +1639,9 @@ class HttpTest extends utest.Test {
 
 	public function testACancelBeforeTheSocketIsMadeSendsNothing():Void {
 		// Cancelled after load() looked at its token and before the socket
-		// existed. The cancel found no socket to close and was lost: the
-		// request went out regardless, and its thread then waited out the
-		// idle timeout for an answer nobody wanted.
+		// existed. The cancel, finding no socket to close, must not be lost: the
+		// request would go out regardless, and its thread then wait out the idle
+		// timeout for an answer nobody wanted.
 		var fixture = serveWithin(["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"], 0.5);
 		var http = new CancelledOnTheWay('http://127.0.0.1:${fixture.port}/late', 0);
 		var completed:Bool = false;
@@ -1677,8 +1678,8 @@ class HttpTest extends utest.Test {
 
 	public function testACancelledCloseDelimitedBodyIsNotComplete():Void {
 		// Such a body ends when the stream does, and a cancel ends the stream
-		// the same way the server closing does: what had arrived was delivered
-		// as the whole response.
+		// the same way the server closing does, so what had arrived must not be
+		// delivered as the whole response.
 		var fixture = holdAfter("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\npartial");
 		var http = new Http('http://127.0.0.1:${fixture.port}/partial');
 		var completed:Bytes = null;
@@ -1722,8 +1723,9 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testAConnectionIsKeptForTheNextRequest():Void {
-		// Every request asked for Connection: close, so each was a new
-		// connection, and over https a new handshake.
+		// A connection is kept for the next request: asking for Connection:
+		// close on each would make each a new connection, and over https a new
+		// handshake.
 		HttpConnectionPool.clear();
 		var server = new KeptAliveServer((connection, request) -> "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
 		for (i in 0...3) {
@@ -2074,8 +2076,8 @@ class HttpTest extends utest.Test {
 
 /**
  * A server that keeps connections: each on a thread of its own, answering
- * every request on it as `respond(connection, request)` says, the indexes
- * count from zero, until that answers null, when it closes unanswered.
+ * every request on it as `respond(connection, request)` says (the indexes
+ * count from zero) until that answers null, when it closes unanswered.
  */
 private class KeptAliveServer {
 	public var port(default, null):Int = 0;

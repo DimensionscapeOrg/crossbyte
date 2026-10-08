@@ -14,10 +14,8 @@ import utest.Assert;
 	The connection itself against `FakeMongoServer`: the hello, SCRAM, and a
 	server that misbehaves.
 
-	MongoDB was reachable from no CrossByte target before this, its one
-	backend was PHP's extension, and that stopped compiling, so opening a
-	connection at all is the first thing held here, with the API the old
-	class already had.
+	Opening a connection at all is the first thing held here, with the
+	open, connected, ping and close the class has always offered.
 **/
 class MongoWireTest extends utest.Test {
 	private var server:FakeMongoServer;
@@ -38,7 +36,7 @@ class MongoWireTest extends utest.Test {
 
 	public function testOpensAndPingsAServer():Void {
 		server.start();
-		// Only what MongoConnection already offered: open with a host, a port
+		// What MongoConnection has always offered: open with a host, a port
 		// and a database; connected; ping; close.
 		connection = new MongoConnection();
 		connection.open({host: "127.0.0.1", port: server.port, database: "app"});
@@ -174,7 +172,7 @@ class MongoWireTest extends utest.Test {
 		server.speculativeAuth = false;
 		server.addUser("app", "secret");
 		// A server that answers the proof with "done" and a signature it made
-		// up, what a man in the middle without the user's keys can send.
+		// up: what a man in the middle without the user's keys can send.
 		server.replyNext("saslContinue", new BsonDocument()
 			.add("conversationId", 1)
 			.add("done", true)
@@ -332,8 +330,8 @@ class MongoWireTest extends utest.Test {
 		Assert.equals(2, server.connections());
 	}
 
-	// Not on eval, whose sys.ssl.Socket cannot listen, setCertificate is not
-	// implemented there, so there is no server for its client to reach.
+	// Not on eval, whose sys.ssl.Socket cannot listen (setCertificate is not
+	// implemented there), so there is no server for its client to reach.
 	#if !eval
 	public function testTlsVerifiesTheServerAgainstTheAuthorityItIsGiven():Void {
 		// A certificate for localhost and 127.0.0.1, made with the openssl CLI;
@@ -365,9 +363,9 @@ class MongoWireTest extends utest.Test {
 		Assert.raises(() -> refused.open({host: "127.0.0.1", port: server.port, tls: true, username: "app", password: "secret"}), IOError);
 		Assert.isFalse(refused.connected);
 
-		// And told not to check, it connects anyway, which is what the
-		// option's name warns of. Not on neko, whose sys.ssl.Socket verifies
-		// the certificate whatever verifyCert says: it fails closed there.
+		// And told not to check, it connects anyway, which is what the option's
+		// name warns of. Not on neko, whose sys.ssl.Socket verifies the
+		// certificate whatever verifyCert says: it fails closed there.
 		#if !neko
 		var careless = new MongoConnection();
 		careless.open({host: "127.0.0.1", port: server.port, tls: true, tlsAllowInvalidCertificates: true, username: "app", password: "secret"});

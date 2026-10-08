@@ -33,7 +33,7 @@ import crossbyte.net.rtc._internal.NativeDtls;
 	mbedTLS is what hxcpp links for `sys.ssl`, and it has everything this needs
 	compiled in already. Nothing equivalent exists on the other targets: Node
 	has no DTLS in core at all, and a browser generates its certificates inside
-	`RTCPeerConnection`, where they are deliberately out of reach, a page that
+	`RTCPeerConnection`, where they are deliberately out of reach: a page that
 	could read its own DTLS private key could impersonate itself elsewhere.
 
 	`isSupported` says so rather than leaving a caller to find out from a
@@ -50,7 +50,7 @@ class DtlsCertificate {
 		Whether certificates can be made here.
 
 		False everywhere but native. A caller on another target has to be given
-		a certificate rather than make one, or, in a browser, let
+		a certificate rather than make one or, in a browser, let
 		`RTCPeerConnection` deal with it.
 	**/
 	public static var isSupported(default, null):Bool = #if cpp true #else false #end;
@@ -86,8 +86,7 @@ class DtlsCertificate {
 
 		@throws ArgumentError if either half is missing, or if the certificate
 		will not parse.
-		@throws IllegalOperationError on any target but native, naming it. It
-		threw "That certificate could not be read" there, whatever was given.
+		@throws IllegalOperationError on any target but native, naming it.
 	**/
 	public function new(certificatePem:String, privateKeyPem:String) {
 		if (certificatePem == null || certificatePem.length == 0) {
@@ -125,8 +124,8 @@ class DtlsCertificate {
 		a self-signed certificate vouches for nothing.
 		@param lifetimeDays How long it stays valid. Days rather than years
 		because it is meant to outlive a session and not much more.
-		@throws IllegalOperationError on any target but native, naming it,
-		check `isSupported`, where a bare String was thrown.
+		@throws IllegalOperationError on any target but native, naming it
+		(check `isSupported`).
 	**/
 	public static function generate(commonName:String = "CrossByte", lifetimeDays:Int = DEFAULT_LIFETIME_DAYS):DtlsCertificate {
 		#if cpp
@@ -162,11 +161,12 @@ class DtlsCertificate {
 		one that will not parse.
 
 		Used to check what a peer signalled against what it then presented, so
-		it takes PEM rather than a `DtlsCertificate`, the far side's private
+		it takes PEM rather than a `DtlsCertificate`: the far side's private
 		key is not ours to have.
 
-		@throws IllegalOperationError on any target but native, naming it. It
-		answered null there, which reads as a certificate that will not parse.
+		@throws IllegalOperationError on any target but native, naming it,
+		rather than answering null, which would read as a certificate that
+		will not parse.
 	**/
 	public static function fingerprintOf(certificatePem:String):Null<String> {
 		#if cpp
@@ -185,7 +185,7 @@ class DtlsCertificate {
 		the same certificate.
 
 		@throws IllegalOperationError on any target but native, naming it, as
-		`fingerprintOf` does. It answered false there, as for a mismatch.
+		`fingerprintOf` does, rather than answering false as for a mismatch.
 	**/
 	public static function matches(certificatePem:String, expected:String):Bool {
 		if (certificatePem == null || expected == null) {

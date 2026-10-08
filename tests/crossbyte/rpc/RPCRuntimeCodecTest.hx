@@ -8,11 +8,11 @@ import utest.Assert;
 /**
 	How the runtime lane tells one kind of value from another.
 
-	It asked `Type.typeof`, which made a `TClass`, an object, for every
-	String and Bytes it was asked about, on every call. `tagOf` answers
-	without allocating, and must answer as `Type.typeof` did on every target:
-	which numbers are Ints differs between targets, and a call must arrive as
-	it always did wherever it is made.
+	`tagOf` answers without allocating, unlike `Type.typeof`, which makes a
+	`TClass` (an object) for every String and Bytes it is asked about; and
+	it must answer as `Type.typeof` does on every target: which numbers are
+	Ints differs between targets, and a call must arrive the same wherever
+	it is made.
 **/
 class RPCRuntimeCodecTest extends utest.Test {
 	public function testEachValueGoesUnderTheTagTypeOfGaveIt():Void {

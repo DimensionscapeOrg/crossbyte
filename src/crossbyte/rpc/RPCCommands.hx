@@ -99,19 +99,14 @@ abstract class RPCCommands {
 	}
 
 	/**
-		Completes the call waiting under `requestId` with `value`, the answer
-		to a call for `op`, if that call was for `op`. A response is matched
-		by its id and checked by its op: see `RPCSession.__answeredForAnotherOp`.
-	**/
-	/**
-		What a call through commands no session has is told. They dereferenced
-		a null connection, which on hxcpp in release is a crash.
+		What a call through commands no session has is told, rather than
+		dereferencing a null connection, which on hxcpp in release is a crash.
 	**/
 	@:noCompletion private static inline final UNBOUND_MESSAGE:String = "RPC commands are not bound to a session";
 
 	/**
 		The frame a stub writes its call into, begun: its session's, or with
-		no session, whose call fails as it is sent, one of its own.
+		no session (whose call fails as it is sent), one of its own.
 	**/
 	@:noCompletion private inline function __startFrame(room:Int, op:Int, requestId:Int):RPCFrame {
 		final session = __session;
@@ -126,7 +121,7 @@ abstract class RPCCommands {
 
 	/**
 		Gives back a frame `__startFrame` began whose arguments could not be
-		written, a null inside an array or a structure, so that its
+		written (a null inside an array or a structure), so that its
 		session's next frame is written in it, not in a fresh one.
 	**/
 	@:noCompletion private function __dropFrame(framed:RPCFrame):Void {
@@ -156,7 +151,7 @@ abstract class RPCCommands {
 
 	/**
 		Sends a request's frame, as its stub built it, or fails `response` at
-		once when it cannot go, see `RPCSession.__sendRequestFrame`, or
+		once when it cannot go (see `RPCSession.__sendRequestFrame`) or
 		these commands have no session.
 	**/
 	@:noCompletion private function __sendRequest<T>(response:RPCResponse<T>, framed:RPCFrame):Void {
@@ -183,8 +178,8 @@ abstract class RPCCommands {
 	/**
 		Fails a waiting call with the error the other side answered it with.
 		Its handler meant this caller to see it, so the failure's cause is an
-		`RPCError`: a handler here answering with this response, forwarding
-		it, passes the message on, as it would one it threw.
+		`RPCError`: a handler here answering with this response (forwarding
+		it) passes the message on, as it would one it threw.
 	**/
 	@:noCompletion private function __rejectResponse(op:Int, requestId:Int, message:String):Void {
 		final response = __takeResponse(requestId);
@@ -225,8 +220,8 @@ abstract class RPCCommands {
 	}
 
 	/**
-		An answer whose value did not read, it ran past its frame, or named
-		more than its frame holds: the call it answers fails saying so, and the
+		An answer whose value did not read (it ran past its frame, or named
+		more than its frame holds): the call it answers fails saying so, and the
 		connection carries on, where it ended. See
 		`RPCSession.onUnreadableFrame`.
 	**/
@@ -245,7 +240,7 @@ abstract class RPCCommands {
 			// `| 0` because the guard below is the overflow handler, and it
 			// only fires if the increment actually wraps. It does on a target
 			// whose Int is 32 bits; on JavaScript an Int is a double, so
-			// 0x7FFFFFFF + 1 is 2147483648, positive, past the guard, and
+			// 0x7FFFFFFF + 1 is 2147483648: positive, past the guard, and
 			// past the width of the field this id is written to on the wire.
 			// The id and the pending-response key would then stop agreeing,
 			// and the call would wait for a reply it could not match.

@@ -5,7 +5,7 @@ package crossbyte.auth;
  * secret goes. Named as OpenID Connect's `token_endpoint_auth_method`, which a
  * provider's discovery document lists as `token_endpoint_auth_methods_supported`.
  *
- * A client with no secret, a public client using PKCE, sends none either
+ * A client with no secret (a public client using PKCE) sends none either
  * way.
  */
 enum abstract OAuthClientAuthentication(String) to String {

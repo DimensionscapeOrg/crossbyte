@@ -14,13 +14,12 @@ import utest.Assert;
 
 /**
  * Logging in to a MySQL 8 server: `caching_sha2_password`, the auth switch,
- * the utf8mb4_0900 collation, and TLS. The client spoke only
- * `mysql_native_password`, which MySQL 8.4 disables by default and 9.0
- * removes, took an auth switch for a broken packet, threw "Unsupported
- * charset : #255" on every escape against a default MySQL 8 server, and had
- * no TLS. Against `fakemysql/FakeMySQLServer`, which checks the scramble for
- * each plugin, runs TLS through hxcpp's own mbedTLS server side, and
- * decrypts an RSA-encrypted password with `openssl`.
+ * the utf8mb4_0900 collation, and TLS. MySQL 8.4 disables
+ * `mysql_native_password` by default and 9.0 removes it, an auth switch is
+ * an ordinary packet, and a default MySQL 8 server's collation is #255.
+ * Against `fakemysql/FakeMySQLServer`, which checks the scramble for each
+ * plugin, runs TLS through hxcpp's own mbedTLS server side, and decrypts an
+ * RSA-encrypted password with `openssl`.
  */
 @:access(crossbyte.db.mysql.MySQLConnection)
 class MySQLNativeAuthTest extends utest.Test {
@@ -88,7 +87,7 @@ class MySQLNativeAuthTest extends utest.Test {
 	public function testAnAuthSwitchIsFollowed():Void {
 		// The greeting names caching_sha2_password; the account is on
 		// mysql_native_password, so the server switches the client, with a
-		// fresh nonce. That was "Invalid packet error".
+		// fresh nonce, which is not an invalid packet.
 		__server.plugin = "caching_sha2_password";
 		__server.switchTo = "mysql_native_password";
 		__server.password = "secret";
@@ -243,7 +242,7 @@ class MySQLNativeAuthTest extends utest.Test {
 
 		Require.notNull(error);
 		Assert.isTrue(error.message.indexOf("does not support TLS") >= 0, error.message);
-		// libmysqlclient's number for it, CR_SSL_CONNECTION_ERROR; it was 0.
+		// libmysqlclient's number for it, CR_SSL_CONNECTION_ERROR, not 0.
 		Assert.equals(2026, error.code);
 		Assert.equals(0, __server.eventsOf("handshake").length, "the credentials went out anyway");
 	}

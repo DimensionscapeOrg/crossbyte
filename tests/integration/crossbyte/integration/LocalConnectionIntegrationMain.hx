@@ -101,8 +101,8 @@ class LocalConnectionIntegrationMain {
 
 	private static function waitFor(predicate:Void->Bool, label:String):Void {
 		// Pumped: LocalConnection delivers through the runtime, which this
-		// loop is the host of. It only slept, and timed out waiting for the
-		// first message every run.
+		// loop is the host of; a loop that only slept would wait out its
+		// deadline for the first message.
 		var runtime:CrossByte = CrossByte.current();
 		var deadline:Float = haxe.Timer.stamp() + WAIT_SECONDS;
 		while (haxe.Timer.stamp() < deadline) {

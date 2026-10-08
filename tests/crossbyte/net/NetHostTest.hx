@@ -33,8 +33,8 @@ class NetHostTest extends utest.Test {
 			pumpUntil(() -> accepted != null, 2.0);
 
 			Assert.notNull(accepted);
-			// Guarded: a failed `Assert.notNull` does not stop the test, utest
-			// records it and carries on, and reading a field off the null that
+			// Guarded: a failed `Assert.notNull` does not stop the test (utest
+			// records it and carries on), and reading a field off the null that
 			// follows is a SIGSEGV on hxcpp release, not a catchable error.
 			if (accepted != null) {
 				Assert.equals(Protocol.TCP, accepted.protocol);
@@ -92,8 +92,8 @@ class NetHostTest extends utest.Test {
 		server.dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
 
 		Assert.notNull(accepted);
-		// Guarded: a failed `Assert.notNull` does not stop the test, utest
-		// records it and carries on, and reading a field off the null that
+		// Guarded: a failed `Assert.notNull` does not stop the test (utest
+		// records it and carries on), and reading a field off the null that
 		// follows is a SIGSEGV on hxcpp release, not a catchable error.
 		if (accepted != null) {
 			Assert.equals(Protocol.WEBSOCKET, accepted.protocol);
@@ -124,8 +124,8 @@ class NetHostTest extends utest.Test {
 			pumpUntil(() -> accepted != null && accepted.connected, 2.0);
 
 			Assert.notNull(accepted);
-			// Guarded: a failed `Assert.notNull` does not stop the test, utest
-			// records it and carries on, and reading a field off the null that
+			// Guarded: a failed `Assert.notNull` does not stop the test (utest
+			// records it and carries on), and reading a field off the null that
 			// follows is a SIGSEGV on hxcpp release, not a catchable error.
 			if (accepted != null) {
 				Assert.equals(Protocol.RUDP, accepted.protocol);
@@ -150,7 +150,7 @@ class NetHostTest extends utest.Test {
 		The candidate a peer on the same network can actually use.
 
 		`discoverPublicAddress` describes the outside of the NAT, which is the
-		wrong address for a peer sitting behind the same one, reaching it
+		wrong address for a peer sitting behind the same one: reaching it
 		would need the NAT to hairpin. This is the other answer, and on loopback
 		it is one that holds on every machine.
 	**/
@@ -248,9 +248,9 @@ class NetHostTest extends utest.Test {
 
 			Assert.isFalse(host.canDial, "a stream host should not claim it can dial from its listening endpoint");
 
-			// Refused through the Future it answers with, as every failure of
-			// a Future-returning member is; it used to be thrown, so a caller
-			// handling failure on the Future missed this one.
+			// Refused through the Future it answers with, as every failure of a
+			// Future-returning member is, not thrown, which a caller handling
+			// failure on the Future would miss.
 			var discovery = host.discoverPublicAddress("127.0.0.1");
 			Assert.isTrue(discovery.completed && !discovery.succeeded, "a stream host answered a question about an endpoint it has not got");
 			Assert.isTrue(Std.isOfType(discovery.cause, crossbyte.errors.IllegalOperationError), "the refusal's cause is " + discovery.cause);
@@ -274,11 +274,11 @@ class NetHostTest extends utest.Test {
 	/**
 		A host of the application's own reaches its relay through `NetHost`.
 
-		`NetHost` wraps any `INetHost`, but it found a relay only by
-		downcasting to the reliable datagram host it makes itself, so a host
-		written elsewhere was refused whatever it could do, and code holding
-		an `INetHost` could not ask at all, the relay being on the abstract
-		alone.
+		`NetHost` wraps any `INetHost`, and finds a relay through the interface,
+		not by downcasting to the reliable datagram host it makes itself, which
+		would refuse a host written elsewhere whatever it could do; and code
+		holding an `INetHost` can ask, the relay being on the interface, not on
+		the abstract alone.
 	**/
 	public function testAHostOfItsOwnReachesItsRelay():Void {
 		var own = new RelayingHost();
@@ -301,8 +301,8 @@ class NetHostTest extends utest.Test {
 	public function testAStreamHostRefusesEveryRelayCall():Void {
 		var hosts:Array<NetHost> = [NetHost.fromServerSocket(new ServerSocket()), NetHost.fromServerWebSocket(new ServerWebSocket())];
 
-		// Named, not numbered: joined to a string, the protocol was its Int,
-		// and this read "A 0 host has no relay".
+		// Named, not numbered: joined to a string, the protocol as its Int
+		// would read "A 0 host has no relay".
 		var message:String = null;
 		try {
 			hosts[0].permitRelayedPeer("127.0.0.1");

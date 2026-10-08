@@ -73,8 +73,8 @@ class ReliableDatagramEncryptionTest extends utest.Test {
 	}
 
 	/**
-		Every kind of message both ways, reliable, a reliable one in five
-		fragments, unreliable, sequenced, arrives, and on the wire nothing
+		Every kind of message both ways (reliable, a reliable one in five
+		fragments, unreliable, sequenced) arrives, and on the wire nothing
 		after the client's CONNECT is in the clear: every datagram either way
 		is sealed, the hellos first, and no message's bytes appear in any.
 	**/
@@ -217,9 +217,9 @@ class ReliableDatagramEncryptionTest extends utest.Test {
 	}
 
 	/**
-		A server from before encryption was added reads past the random as
-		past padding and answers in the clear: the client refuses it, saying
-		so, and sends it nothing more in the clear.
+		A server from before encryption reads past the random as past padding
+		and answers in the clear: the client refuses it, saying so, and sends
+		it nothing more in the clear.
 	**/
 	public function testAnOlderServerFailsClosed():Void {
 		if (!requireEncryption()) return;
@@ -245,8 +245,8 @@ class ReliableDatagramEncryptionTest extends utest.Test {
 	}
 
 	/**
-		A CONNECT that asks for no encryption, from a peer on 1.0, or one
-		from before 1.0, opens no session on a server that encrypts: the
+		A CONNECT that asks for no encryption (from a peer on 1.0, or one
+		from before 1.0) opens no session on a server that encrypts: the
 		1.0 one is told why, and the older one, whose CONNECT is too short to
 		answer with more, is dropped.
 	**/
@@ -311,8 +311,8 @@ class ReliableDatagramEncryptionTest extends utest.Test {
 	}
 
 	/**
-		A datagram in the clear, made to look like the server's, a message,
-		an acknowledgement, a FIN, reaches the connected client through the
+		A datagram in the clear, made to look like the server's (a message,
+		an acknowledgement, a FIN), reaches the connected client through the
 		path: none of it is delivered or acted on, the session stays up, and
 		each is counted.
 	**/
@@ -349,9 +349,9 @@ class ReliableDatagramEncryptionTest extends utest.Test {
 		An encrypted session's frames carry at most 1,179 bytes, so no
 		datagram it sends is larger than the largest in the clear: a reliable
 		message split, small ones bundled, the largest unreliable and
-		sequenced ones, both ways, every datagram on the wire at most
-		1,211 bytes, and the largest exactly that. One byte more, unreliable,
-		is refused.
+		sequenced ones, both ways, every datagram on the wire at most 1,211
+		bytes, and the largest exactly that. One byte more, unreliable, is
+		refused.
 	**/
 	public function testASealedDatagramFitsTheSamePath():Void {
 		if (!requireEncryption()) return;
@@ -396,12 +396,12 @@ class ReliableDatagramEncryptionTest extends utest.Test {
 	}
 
 	/**
-		J3 with encryption: the NAT gives the client a new port mid-stream,
-		and the session follows it, every message both ways once and in
-		order, on the same session object, the REBIND's proof keyed with
-		the session's own rebind key, which both ends derived and no
-		datagram carried. The server's hello, carrying no key, is no larger
-		than the CONNECT it answers.
+		A player moving with encryption: the NAT gives the client a new port
+		mid-stream, and the session follows it, every message both ways once
+		and in order, on the same session object, the REBIND's proof keyed with
+		the session's own rebind key, which both ends derived and no datagram
+		carried. The server's hello, carrying no key, is no larger than the
+		CONNECT it answers.
 	**/
 	public function testAnEncryptedSessionFollowsItsPlayer():Void {
 		if (!requireEncryption()) return;
@@ -482,8 +482,8 @@ class ReliableDatagramEncryptionTest extends utest.Test {
 	}
 
 	/**
-		A REBIND whose proof is keyed with anything but the derived key,
-		as one made with a key seen in the clear would be, moves nothing.
+		A REBIND whose proof is keyed with anything but the derived key (as
+		one made with a key seen in the clear would be) moves nothing.
 	**/
 	public function testARebindProvedWithoutTheSessionKeyIsRefused():Void {
 		if (!requireEncryption()) return;

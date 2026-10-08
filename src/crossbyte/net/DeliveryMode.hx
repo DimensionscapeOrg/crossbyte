@@ -14,16 +14,16 @@ import crossbyte.errors.ArgumentError;
  *
  * - `RELIABLE` arrives, once, in the order it was sent: it is split into
  *   frames, each resent until acknowledged, and put back together. It may be
- *   as large as the receiving session's `maxMessageSize`, eight megabytes
- *   unless the receiver changes it, and one larger ends the session, the
+ *   as large as the receiving session's `maxMessageSize` (eight megabytes
+ *   unless the receiver changes it), and one larger ends the session, the
  *   receiver saying why with an `ioError` and both sides dispatching
- *   `close`. What was not yet delivered holds back what came after it,
+ *   `close`. What was not yet delivered holds back what came after it:
  *   the price of the order.
  * - `UNRELIABLE` goes out once and is never resent, and may arrive in any
  *   order or not at all. Nothing waits for it and it waits for nothing.
  * - `sequenced(channel)` is unreliable, and a message arriving after a newer
  *   one on the same channel is dropped rather than delivered late: the
- *   receiver sees only ever-newer messages. What state updates want, a
+ *   receiver sees only ever-newer messages. What state updates want: a
  *   snapshot older than the last one is worse than none. Channels are
  *   independent, so a newer snapshot on one never makes an older input on
  *   another look stale.
@@ -36,8 +36,8 @@ import crossbyte.errors.ArgumentError;
  * means on its own.
  *
  * Neither is paced by the reliable congestion window: it has no
- * acknowledgements to open or close by, and the traffic that uses them,
- * state at a fixed rate, is the traffic that must not wait behind a
+ * acknowledgements to open or close by, and the traffic that uses them
+ * (state at a fixed rate) is the traffic that must not wait behind a
  * queue. How fast to send it is the caller's, who knows what it can shed.
  *
  * An `Int` underneath, so choosing a mode per message costs nothing.

@@ -113,12 +113,11 @@ class DBSupportTest extends utest.Test {
 
 	public function testDriversWithClientsOfTheirOwnAreSupportedOnCpp():Void {
 		#if cpp
-		// Mongo was PHP-only and refused to open here; it speaks the wire
-		// protocol itself now, as MongoWireTest shows against a fake server.
+		// Mongo speaks the wire protocol itself, as MongoWireTest shows against
+		// a fake server, so it opens here.
 		Assert.isTrue(MongoConnection.isSupported);
 
-		// Postgres is not PHP-only any more, it has a native cpp bridge.
-		// This case asserted otherwise until the suite was actually run.
+		// Postgres has a native cpp bridge.
 		Assert.isTrue(PostgresConnection.isSupported);
 		#else
 		Assert.isTrue(true);
@@ -126,12 +125,11 @@ class DBSupportTest extends utest.Test {
 	}
 
 	public function testGeneratedSavepointNamesDoNotRepeat():Void {
-		// The name came from haxe.Timer.stamp() in microseconds through
-		// Std.int. Measured on cpp: 2000 generated back to back produced 47
-		// duplicates, and the value overflows Int about 36 minutes into a
-		// process and wraps every 72, so a long-lived connection reissues
-		// names it has already used. Two savepoints sharing a name make
-		// RELEASE and ROLLBACK TO act on the wrong one.
+		// Not haxe.Timer.stamp() in microseconds through Std.int: names made
+		// that way collide back to back, and the value overflows Int about 36
+		// minutes into a process and wraps every 72, so a long-lived connection
+		// would reissue names it has already used. Two savepoints sharing a name
+		// make RELEASE and ROLLBACK TO act on the wrong one.
 		var connection = new SQLiteConnection();
 		var seen = new Map<String, Bool>();
 		var distinct:Int = 0;
@@ -161,11 +159,10 @@ class DBSupportTest extends utest.Test {
 
 	#if cpp
 	public function testAsyncQueueRunsEveryJobInOrderAndClosesCleanly():Void {
-		// The async queue had no coverage at all, which is how a change to it
-		// passed the whole suite while making the very first queued job
-		// recurse until the process died. Everything here goes through the
-		// worker thread: the open, each statement, and the close that stops
-		// the worker.
+		// The async queue, through the worker thread: the open, each
+		// statement, and the close that stops the worker. A change that made
+		// the very first queued job recurse until the process died would
+		// otherwise pass the whole suite.
 		var connection = new SQLiteConnection();
 		var seen:Array<String> = [];
 
@@ -202,11 +199,11 @@ class DBSupportTest extends utest.Test {
 
 	#if cpp
 	public function testSavepointsNestAndReleaseByNameOrByOmission():Void {
-		// setSavepoint() returned nothing, so a savepoint made without a name
-		// could never be named again, and releaseSavepoint() with no name
-		// generated a fresh one and asked SQLite to release a savepoint that
-		// had never existed. Measured against a real database before the fix:
-		// "RELEASE sp_410; (Sqlite error : SQL logic error)".
+		// setSavepoint() returns the name it made, so a savepoint made without
+		// a name can be named again, and releaseSavepoint() with no name
+		// releases the innermost rather than generating a fresh name and asking
+		// SQLite to release a savepoint that never existed ("RELEASE sp_410;
+		// (Sqlite error : SQL logic error)").
 		var connection = new SQLiteConnection();
 		connection.open(null, SQLiteMode.CREATE, false, 4096);
 		connection.begin();
@@ -295,11 +292,9 @@ class DBSupportTest extends utest.Test {
 		Assert.isTrue(connection.compileOptions().length > 0);
 
 		// `PRAGMA pragma_list` returns nothing on the SQLite hxcpp bundles
-		// (3.23.1), so this cannot assert membership, it asserted
-		// `page_size` was listed, and only never failed because the suite
-		// was registered where its `#if cpp` body compiled out. What is
-		// worth holding is that the call is safe and well-typed; if a
-		// future SQLite does populate it, the contents are checked then.
+		// (3.23.1), so this cannot assert membership. What is worth holding is
+		// that the call is safe and well-typed; if a future SQLite does
+		// populate it, the contents are checked then.
 		var pragmas = connection.pragmaList();
 		Assert.notNull(pragmas);
 		if (pragmas.length > 0) {
@@ -323,11 +318,11 @@ class DBSupportTest extends utest.Test {
 	}
 
 	/**
-		A rowid past 32 bits reads back whole. SQLite's are 64-bit and the
-		connection's was an Int, held at 2^31 - 1 by hxcpp and wrapped by
-		the other drivers: a Snowflake id or a millisecond timestamp used as
-		a key came back as something else, from the connection and from
-		every statement's result.
+		A rowid past 32 bits reads back whole. SQLite's are 64-bit; held in an
+		Int, a rowid would stop at 2^31 - 1 on hxcpp and wrap on the other
+		drivers, so a Snowflake id or a millisecond timestamp used as a key
+		would come back as something else, from the connection and from every
+		statement's result.
 	**/
 	public function testARowIdPastThirtyTwoBitsReadsBackWhole():Void {
 		var connection = new SQLiteConnection();
@@ -352,9 +347,8 @@ class DBSupportTest extends utest.Test {
 
 	/**
 		A database attached is reached as `name.table`, joins included, its
-		schema read, and detached again. `SQLEvent.ATTACH`, `DETACH` and
-		`SCHEMA` were declared, as AIR's `SQLConnection` has them, and
-		nothing could make one: there was no attach, detach or schema.
+		schema read, and detached again: `SQLEvent.ATTACH`, `DETACH` and
+		`SCHEMA` are made, as AIR's `SQLConnection` makes them.
 	**/
 	public function testAnAttachedDatabaseIsJoinedReadAndDetached():Void {
 		var connection = new SQLiteConnection();
@@ -412,7 +406,7 @@ class DBSupportTest extends utest.Test {
 		return result == null || result.data == null ? [] : result.data;
 	}
 
-	/** Sizes past 2 GB, which multiplying two Ints wrapped before they reached the Int64. **/
+	/** Sizes past 2 GB, which multiplying two Ints would wrap before they reached the Int64. **/
 	public function testADatabaseSizeIsNotMultipliedInThirtyTwoBits():Void {
 		var size = @:privateAccess SQLiteConnection.__bytesOf(65536, 49152);
 		Assert.equals("3221225472", haxe.Int64.toStr(size));
@@ -421,13 +415,12 @@ class DBSupportTest extends utest.Test {
 
 	public function testAFailedSQLiteOpenIsAnIOError():Void {
 		// A failed open is an IOError, whatever failed it. Where there is no
-		// SQLite, the jvm without its JDBC driver, eval, that is the
-		// missing driver: on the jvm the ClassNotFoundException that says so
-		// was handed to IOError where a String belongs, a ClassCastException
-		// instead. Where there is one, it is a database in a directory that
-		// does not exist. This opened `null` once, which fails only where
-		// there is no SQLite; hl and neko have one, and opened the in-memory
-		// database `null` names.
+		// SQLite (the jvm without its JDBC driver, eval) that is the missing
+		// driver: on the jvm the ClassNotFoundException that says so must not
+		// be handed to IOError where a String belongs, a ClassCastException.
+		// Where there is one, it is a database in a directory that does not
+		// exist, not `null`, which names the in-memory database on hl and neko,
+		// whose open succeeds.
 		var directory:String = Path.join([Sys.getCwd(), "export", "db-support-absent"]);
 		Assert.isFalse(FileSystem.exists(directory), directory + " exists, so the open below may not fail");
 

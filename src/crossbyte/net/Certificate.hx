@@ -17,17 +17,15 @@ import sys.ssl.Certificate as NativeCertificate;
  * An X.509 certificate a server presents, or a certificate authority it
  * verifies clients against.
  *
- * This exists because the API used to be `sys.ssl.Certificate`, and saying so
- * in a signature is a decision about which targets can implement it. Node
- * terminates TLS perfectly well, `tls.createServer` takes a key and a
- * certificate as PEM, but it has no `sys.ssl`, so a method naming that type
- * could not be compiled there at all. The refusal read as "Node cannot serve
- * TLS", which was never true and which two documents and three error messages
- * repeated before anyone checked.
+ * It is CrossByte's own type rather than `sys.ssl.Certificate` because
+ * naming that type in a signature decides which targets can implement it.
+ * Node terminates TLS perfectly well (`tls.createServer` takes a key and a
+ * certificate as PEM) but has no `sys.ssl`, so a method naming that type
+ * could not be compiled there at all.
  *
  * So what a caller names is certificate *material*, and each target takes it
  * the way it wants: parsed into mbedtls on a native build, kept as PEM text on
- * Node. Nothing here is a wrapper for the sake of one, it is the difference
+ * Node. Nothing here is a wrapper for the sake of one: it is the difference
  * between an API that describes what it needs and one that describes how one
  * target happens to supply it.
  *
@@ -76,8 +74,8 @@ final class Certificate {
 	}
 
 	/**
-	 * Takes a PEM certificate that is already in hand, read from a secret
-	 * store, fetched at startup, or held in configuration, rather than one
+	 * Takes a PEM certificate that is already in hand (read from a secret
+	 * store, fetched at startup, or held in configuration) rather than one
 	 * on disk.
 	 *
 	 * @param pem The certificate in PEM form.
