@@ -43,6 +43,7 @@ import crossbyte._internal.net.IPv6;
 @:access(crossbyte.net.ReliableDatagramServerSocket)
 @:access(crossbyte.net.DatagramSocket)
 @:access(crossbyte.core.CrossByte)
+@:access(crossbyte.net.PreparedDatagram)
 /**
 	The `ReliableDatagramSocket` class provides a session-oriented reliable transport
 	on top of UDP.
@@ -1110,6 +1111,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// acknowledged, for a session with no server; a server's sessions share
 	// the server's (see `__pool`).
 	@:noCompletion private var __ownPool:FramePool = null;
+	// Where this session is in its server's list of them (see
+	// `ReliableDatagramServerSocket.broadcast`), or -1 for none.
+	@:noCompletion private var __listedAt:Int = -1;
 	@:noCompletion private var __retransmitHandle:Int = -1;
 
 	/**
@@ -1923,7 +1927,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		`RELIABLE` message's copy is kept until the peer acknowledges it, in
 		frames taken from a pool its server's sessions share and given back
 		once acknowledged, so a session in steady use allocates nothing for
-		the messages it sends.
+		the messages it sends. One message to many sessions is
+		`sendPrepared`, or a server's `broadcast`, which copy it once for
+		all of them.
 
 		@param bytes The payload bytes to send.
 		@param offset The zero-based offset into `bytes` at which the payload begins.
@@ -1945,6 +1951,76 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__queueBytes(bytes, offset, length);
 		} else {
 			__sendUnreliable(bytes, offset, length, delivery);
+		}
+	}
+
+	/**
+		Sends a message made ready for many sessions, see
+		`PreparedDatagram`: as `send` sends one, in `delivery`'s mode. This
+		session frames it with its own sequence numbers and
+		acknowledgements, paces it by its own window and bundles it with
+		whatever else it sends in the pass, but keeps no copy of it: it sends
+		it, and sends it again until the peer has it, from the prepared
+		message's own bytes, holding a record of each frame in flight. A
+		message larger than a frame is split at this session's
+		`maxPayloadSize`. `ReliableDatagramServerSocket.broadcast` sends one
+		to every session a server has connected, or to a list of them.
+
+		@param message The message, made with `PreparedDatagram.of`.
+		@param delivery `RELIABLE` unless given.
+		@throws ArgumentError If `message` is `null`.
+		@throws IllegalOperationError If the socket is not in `DATAGRAM` mode.
+		@throws IOError If the reliable session is not connected; or, under
+		        the `THROW` `outputOverflowPolicy`, once more than
+		        `maxOutputBufferSize` waits for the window, the message is
+		        queued whole all the same.
+		@throws RangeError If an unreliable or sequenced message is larger
+		        than `maxPayloadSize`: 1,200 bytes, 1,179 for an encrypted
+		        session.
+	**/
+	public function sendPrepared(message:PreparedDatagram, delivery:DeliveryMode = RELIABLE):Void {
+		if (message == null) {
+			throw new ArgumentError("sendPrepared needs a message.");
+		}
+		__requireDatagramMode();
+		__requireOpenConnection();
+		__sendPreparedNow(message, delivery);
+		if (delivery == RELIABLE) {
+			__enforceOutputLimit(true);
+		}
+	}
+
+	/**
+		A prepared message onto this session: an unreliable or sequenced one
+		as `send` sends one, from the message's bytes; a reliable one in
+		frames with no buffer of their own, each sending its part of those
+		bytes. The output limit is the caller's to apply.
+	**/
+	@:noCompletion private function __sendPreparedNow(message:PreparedDatagram, delivery:DeliveryMode):Void {
+		var bytes:ByteArray = message.__bytes;
+		var length:Int = message.length;
+		if (delivery != RELIABLE) {
+			__sendUnreliable(bytes, 0, length, delivery);
+			return;
+		}
+		var pool:FramePool = __pool();
+		var cursor:Int = 0;
+		var remaining:Int = length;
+		var chunk:Int = __framePayload();
+		while (remaining > 0) {
+			// A send that failed as the bundle went has ended the session.
+			if (__closed) {
+				return;
+			}
+			var chunkLength:Int = remaining > chunk ? chunk : remaining;
+			remaining -= chunkLength;
+			var frame:OutstandingFrame = pool.takeBare();
+			frame.payload = bytes;
+			frame.offset = cursor;
+			frame.length = chunkLength;
+			frame.more = remaining > 0;
+			__queueFrame(frame);
+			cursor += chunkLength;
 		}
 	}
 
@@ -4197,7 +4273,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__queueFrame(frame);
 			cursor += chunkLength;
 		}
-		__enforceOutputLimit();
+		__enforceOutputLimit(true);
 	}
 
 	/** A reliable frame, sent if the window has room, or queued behind it. **/
@@ -4254,8 +4330,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		it does, an application producing faster than the path will carry has
 		to be told rather than have the queue grow until the process dies.
 		Same bound and same two policies as `Socket`, for the same reason.
+
+		@param throwing Whether `THROW` throws: not for a server's
+		       `broadcast`, which throws for no one session.
 	**/
-	@:noCompletion private function __enforceOutputLimit():Void {
+	@:noCompletion private function __enforceOutputLimit(throwing:Bool):Void {
 		var limit:Int = maxOutputBufferSize;
 
 		// Not for a close's own stream bytes, the last of what was written.
@@ -4277,7 +4356,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				abort();
 
 			case THROW:
-				throw new IOError(message);
+				if (throwing) {
+					throw new IOError(message);
+				}
 		}
 	}
 

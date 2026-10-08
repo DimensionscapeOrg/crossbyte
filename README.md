@@ -436,7 +436,35 @@ message allocates; a session in the clear is unchanged. An encrypted session a
 server holds costs about 1.8 KB more than one in the clear (keys, IVs, the
 replay window); the buffers it seals and opens into are the server's, shared.
 
-## Reliable UDP: what a message and a session cost
+## Reliable UDP: one message to many, and what each costs
+
+**One message to many sessions.** A server sending the same state to many
+players makes it a `PreparedDatagram` once, and sends that:
+
+```haxe
+var state = PreparedDatagram.of(snapshot);                // copied once
+server.broadcast(state);                                   // every session connected
+server.broadcast(state, room);                             // or the ones the game chose
+server.broadcast(state, room, DeliveryMode.sequenced(0)); // in any delivery mode
+session.sendPrepared(state);                               // or one at a time
+```
+
+Each session frames it with its own sequence numbers, bundles it with what
+else it sends, paces it by its own window and sends it again as often as its
+own peer needs, all from the prepared bytes, holding a record of each frame
+in flight and no copy, where a `send` per session copied the message for each
+and held every copy until that session's peer acknowledged it. A kilobyte to
+1,000 sessions, with 1% loss each way: what the sessions hold for it until
+every peer has it falls from 1.27 MB to their frames' records, under 0.1 MB
+(1.08 MB to 9 KB on the jvm); the call takes 630 ns a session natively where
+a `send` each took 880-940 (500 against 630-645 on the jvm); and neither
+allocates anything for the message natively, where `send` allocated 630 KB
+for it before 1.0. Who receives, rooms, areas of interest, stays the game's. An encrypted
+session shares the message the same way, sealing each datagram as it goes
+into a buffer its server's sessions share; what it cannot share is the
+sealing, since its keys are its own. As with `ServerWebSocket.broadcast`,
+nothing is thrown for one session: one not connected or closing is passed
+over, and one past its output limit under `THROW` is not thrown for.
 
 **Garbage per message: none natively.** A reliable message is copied when
 it is sent, so the caller may reuse its bytes as soon as `send` returns, and
