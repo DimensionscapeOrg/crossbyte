@@ -180,6 +180,7 @@ on the wire:
 | `crossbyte.rpc.Int8`, `UInt8` | 1 byte |
 | `crossbyte.rpc.Int16`, `UInt16` | 2 bytes |
 | `Array<T>`, `T` any of these | a count, then each element as its type is written |
+| a class that implements `crossbyte.rpc.RPCStruct`, or an anonymous structure | its fields, one after another |
 | an abstract over any of these, `enum abstract Team(Int)`, `UInt` | as the type it abstracts |
 
 An argument that may be absent, `?value:Int`, or `value:Null<Int>`, costs
@@ -227,6 +228,87 @@ interface MoveContract {
 	function move(x:Float32, y:Float32, turn:Int16, flags:UInt8):Void;
 }
 ```
+
+### Structures
+
+A value with fields is a class that implements `RPCStruct`, or an anonymous
+structure, named by a typedef or written out. Its reader and writer are
+generated at compile time, once for each, with no reflection:
+
+```haxe
+import crossbyte.rpc.Float32;
+import crossbyte.rpc.RPCStruct;
+import crossbyte.rpc.UInt16;
+import crossbyte.rpc.UInt8;
+
+class Vec3 implements RPCStruct {
+	public var x:Float32 = 0;
+	public var y:Float32 = 0;
+	public var z:Float32 = 0;
+
+	public function new() {}
+}
+
+typedef Slot = {
+	var item:Int;
+	var count:UInt16;
+}
+
+class PlayerState implements RPCStruct {
+	public var id:Int = 0;
+	public var position:Vec3 = new Vec3();
+	public var velocity:Vec3 = new Vec3();
+	public var flags:UInt8 = 0;
+	public var name:String = "";
+	public var inventory:Array<Slot> = [];
+	@:rpcSkip public var lastSeen:Float = 0; // not sent
+
+	public function new() {}
+}
+
+interface WorldContract {
+	function update(state:PlayerState):Void;
+	function slots(id:Int):Array<Slot>;
+}
+```
+
+On the wire a structure is its fields' values one after another, no names,
+tags or lengths, no byte for a field that cannot be absent, and one inside
+another is read and written through the same frame, so nothing is made for it
+but the value itself. The fields go in the order of their names, so moving a
+declaration changes nothing; `@:field(n)` pins a field ahead of the named ones,
+in the order of n (0 to 65535), as the `hxwire` library orders its fields. A
+field that may be absent, `Null<T>`, or `@:optional` in a typedef, has a
+byte before it saying whether it is there.
+
+A class's fields are every `var` it and the classes it extends declare, private
+ones included, except those marked `@:rpcSkip`. One that RPC does not carry, a
+`final` field or a property fails the build, naming it, unless it is marked so.
+A class is read by calling its constructor with no arguments, then setting each
+field, so it needs one that takes none; and it must be public, since its reader
+lives in a module of its own. An anonymous structure is read into locals and
+made as an object literal. Neither may contain itself, directly or through
+another: the build says so, and a tree is sent as a list of nodes.
+
+A null where a structure has to be, or inside one, throws an `ArgumentError`
+before anything is sent, as a null `String` does.
+
+**Prefer a class for hot calls.** Natively a field of an anonymous structure is
+read through a lookup by name, and a number in one is boxed. Measured natively
+on a one-way call carrying `{id:Int, x:Float32, y:Float32, z:Float32,
+flags:UInt8}`: as a class 50 ns and 40 bytes allocated (the object), as a
+typedef 74 ns and 232 bytes; an array of eight, 106 ns and 456 bytes against
+241 ns and 1,992. A class of numbers only is also written and read as one run
+of bytes, and an array of them as one run, as an array of `Int`s is. A typedef
+reads best where the structure is small or the call is not hot, and on
+JavaScript, where both are plain objects.
+
+A structure's layout, each field's pinned id, name and kind, in order, is
+part of the op of every method that carries it, so renaming, retyping, adding,
+removing or making absent a field changes the op, and a peer built from the
+other version answers as for a method it does not have. Its name is not: a
+class and a typedef with the same fields are one layout, and the two ends of a
+call can use one each.
 
 Because nothing on the wire names a field, the two ends must agree on each
 method exactly: its name, its arguments in order, and their types. Build both
@@ -570,14 +652,18 @@ answer.
 signature := name "(" [ kind ("," kind)* ] ")" [ ":" kind ]
 kind      := [ "?" ] ( "i32" | "bool" | "f64" | "utf8" | "bytes"
                      | "f32" | "i8" | "u8" | "i16" | "u16"
-                     | "[" kind "]" )
+                     | "[" kind "]"
+                     | "{" field ("," field)* "}" )
+field     := [ id "=" ] name ":" kind
 ```
 
 `i32` is an `Int`, `bool` a `Bool`, `f64` a `Float`, `utf8` a `String` and
 `bytes` a `haxe.io.Bytes`; `f32`, `i8`, `u8`, `i16` and `u16` are `Float32`,
 `Int8`, `UInt8`, `Int16` and `UInt16`; an array is its element's kind in
-brackets, an abstract the kind of what it abstracts, and `?` one that may be
-absent, `Null<T>` or an optional argument.
+brackets, a structure its fields in braces, in their order on the wire, each
+with its pinned id if it has one, an abstract the kind of what it abstracts,
+and `?` one that may be absent, `Null<T>` or an optional argument.
+`update(state:Vec3):Void`, `Vec3` above, is `update({x:f32,y:f32,z:f32})`.
 `join(room:String):Int` is `join(utf8):i32`;
 `say(room:String, text:String):Void` is `say(utf8,utf8)`;
 `mark(cells:Array<Int>, labels:Array<Null<String>>):Void` is
