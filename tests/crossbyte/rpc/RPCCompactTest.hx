@@ -72,11 +72,18 @@ class RPCCompactTest extends utest.Test {
 		var fixture = new CompactFixture();
 		var single:Float = FPHelper.i32ToFloat(FPHelper.floatToI32(0.1));
 		Assert.notEquals(0.1, single);
-		Assert.floatEquals(single, fixture.commands.scale(0.1).result, 0.0);
-		Assert.isTrue(Math.isNaN(fixture.commands.scale(Math.NaN).result));
-		Assert.equals(Math.POSITIVE_INFINITY, fixture.commands.scale(Math.POSITIVE_INFINITY).result);
+		Assert.floatEquals(single, scaled(fixture, 0.1), 0.0);
+		Assert.isTrue(Math.isNaN(scaled(fixture, Math.NaN)));
+		Assert.equals(Math.POSITIVE_INFINITY, scaled(fixture, Math.POSITIVE_INFINITY));
 		// Past a single's range: infinity, as a C cast gives.
-		Assert.equals(Math.POSITIVE_INFINITY, fixture.commands.scale(1e300).result);
+		Assert.equals(Math.POSITIVE_INFINITY, scaled(fixture, 1e300));
+	}
+
+	// The answer through a Single first: HashLink cannot cast a Null<Single>
+	// to a Float in one step ("Don't know how to cast null(f32) to f64").
+	private static function scaled(fixture:CompactFixture, value:Float):Float {
+		var result:Single = fixture.commands.scale(value).result;
+		return result;
 	}
 
 	public function testCompactNumbersTakeTheirBytesOnTheWire():Void {
@@ -190,7 +197,8 @@ class RPCCompactTest extends utest.Test {
 		var client = new RPCSession<SingleCommands>(link.client, commands);
 		var server = new RPCSession(link.server, null, handler);
 		var value:Single = 3.25;
-		Assert.floatEquals(6.5, commands.scale(value).result, 0.0);
+		var doubled:Single = commands.scale(value).result;
+		Assert.floatEquals(6.5, doubled, 0.0);
 		Assert.notNull(client);
 		Assert.notNull(server);
 	}
