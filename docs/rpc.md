@@ -789,6 +789,36 @@ session.afterRuntimeCall = (op, requestId, error) -> {
 };
 ```
 
+### Typed calls on the runtime lane
+
+`call` and `request` take an `Array<Dynamic>`: an array made for each call,
+and each number in it boxed. `runtimeCall` and `runtimeRequest` write the same
+frame value by value, straight into the session's buffer:
+
+```haxe
+// Given session:RPCSession<ChatCommands>.
+final MOVE = 102;
+final ADD = 101;
+session.runtimeCall(MOVE).float(1.5).float(2.5).string("run").send();
+session.runtimeRequest(ADD).int(7).int(35).send().then(sum -> trace('sum $sum'));
+```
+
+The other side reads it as it reads `call`'s, so the two kinds interoperate
+both ways. Each value goes under its method's tag: `float(2)` is a Float on
+every target, where `call` sends a whole Float as an Int on JavaScript, the
+jvm and HashLink. `string(null)` and `bytes(null)` send the lane's null, and
+`value(v)` tags anything `call` carries, for a value whose type is known only
+at run time.
+
+A writer is valid until it is sent: it is the session's frame, being written.
+Send it once; a writer used after it was sent or cancelled throws an
+`IllegalOperationError`. One never sent keeps the session's buffer, and every
+call after it is framed in a fresh one, `cancel()` gives it back. A request's
+id is taken as it begins, and it waits for its answer only once sent.
+Natively a one-way call of three Floats written so, to a `register` handler,
+takes 105 ns and allocates 184 bytes (the handler's array and its boxed
+values), where `call` takes 155 ns and 368 bytes.
+
 The two lanes share a connection without seeing each other: a runtime number
 and a compiled method's op never collide.
 

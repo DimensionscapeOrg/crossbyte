@@ -52,6 +52,22 @@ class RPCFrame extends ByteArrayData {
 	**/
 	public var busy:Bool = false;
 
+	/**
+		Set while an `RPCCallWriter` or `RPCRequestWriter` fills this frame,
+		from `RPCSession.runtimeCall` or `runtimeRequest` until it is sent
+		or cancelled: a writer used after that throws, rather than write into
+		a frame that is another call's by then.
+	**/
+	public var building:Bool = false;
+
+	/** For a writer: the session that sends the frame, its op and request id, the values written, and where their count goes. **/
+	public var owner:Null<crossbyte.rpc.RPCSession<Dynamic, Dynamic>> = null;
+
+	public var op:Int = 0;
+	public var requestId:Int = 0;
+	public var count:Int = 0;
+	public var countAt:Int = 0;
+
 	/** The bytes the buffer holds before it has to grow. **/
 	public var capacity(get, never):Int;
 
@@ -241,6 +257,106 @@ class RPCFrame extends ByteArrayData {
 			blit(position, bytes, 0, count);
 			position += count;
 		}
+	}
+
+	// ------------------------------------------- a writer's values, tagged
+
+	/** Throws unless a writer may still write into this frame. **/
+	public inline function requireBuilding():Void {
+		if (!building) {
+			throw new crossbyte.errors.IllegalOperationError(USED_WRITER);
+		}
+	}
+
+	/** What a writer used after it was sent or cancelled throws. **/
+	public static inline final USED_WRITER:String = "This RPC call writer has been sent or cancelled: take another from runtimeCall or runtimeRequest";
+
+	public inline function valueInt(value:Int):Void {
+		requireBuilding();
+		putByte(RPCRuntimeCodec.TAG_INT);
+		putInt(value);
+		count++;
+	}
+
+	public inline function valueFloat(value:Float):Void {
+		requireBuilding();
+		putByte(RPCRuntimeCodec.TAG_FLOAT);
+		putDouble(value);
+		count++;
+	}
+
+	public inline function valueBool(value:Bool):Void {
+		requireBuilding();
+		putByte(value ? RPCRuntimeCodec.TAG_TRUE : RPCRuntimeCodec.TAG_FALSE);
+		count++;
+	}
+
+	/** A `null` string goes as the lane's null, as `call` sends one. **/
+	public inline function valueString(value:String):Void {
+		requireBuilding();
+		if (value == null) {
+			putByte(RPCRuntimeCodec.TAG_NULL);
+		} else {
+			putByte(RPCRuntimeCodec.TAG_STRING);
+			putString(value);
+		}
+		count++;
+	}
+
+	/** `null` goes as the lane's null; a `ByteArray` as its `length` bytes. **/
+	public inline function valueBytes(value:Bytes):Void {
+		requireBuilding();
+		if (value == null) {
+			putByte(RPCRuntimeCodec.TAG_NULL);
+		} else {
+			putByte(RPCRuntimeCodec.TAG_BYTES);
+			putBytes(value);
+		}
+		count++;
+	}
+
+	public inline function valueNull():Void {
+		requireBuilding();
+		putByte(RPCRuntimeCodec.TAG_NULL);
+		count++;
+	}
+
+	/** Any value the lane carries, tagged as `call` tags it. **/
+	public function valueAny(value:Dynamic):Void {
+		requireBuilding();
+		RPCRuntimeCodec.writeValue(this, value);
+		count++;
+	}
+
+	/**
+		Ends a frame a writer filled: its count of values goes in the byte
+		kept for it, moving the values along when the count needs more
+		than one byte, past 127 of them, so the varint stays the one
+		`RPCRuntimeCodec.writeArgs` writes, and the frame is finished.
+	**/
+	public function finishValues():RPCFrame {
+		building = false;
+		if (count < 0x80) {
+			set(countAt, count);
+			return finish();
+		}
+		var extra:Int = 0;
+		var v:Int = count >>> 7;
+		while (v != 0) {
+			extra++;
+			v >>>= 7;
+		}
+		__fit(extra);
+		var from:Int = position - 1;
+		while (from > countAt) {
+			set(from + extra, get(from));
+			from--;
+		}
+		final end:Int = position + extra;
+		position = countAt;
+		putVarUInt(count);
+		position = end;
+		return finish();
 	}
 
 	/**
