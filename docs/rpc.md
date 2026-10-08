@@ -815,9 +815,37 @@ Send it once; a writer used after it was sent or cancelled throws an
 `IllegalOperationError`. One never sent keeps the session's buffer, and every
 call after it is framed in a fresh one, `cancel()` gives it back. A request's
 id is taken as it begins, and it waits for its answer only once sent.
-Natively a one-way call of three Floats written so, to a `register` handler,
-takes 105 ns and allocates 184 bytes (the handler's array and its boxed
-values), where `call` takes 155 ns and 368 bytes.
+On the answering side, `registerArgs` hands a handler an `RPCArgs` in place
+of the array: typed getters that read each value where it lies in the frame,
+checked against its tag.
+
+```haxe
+// Given session:RPCSession<ChatCommands>.
+final MOVE = 102;
+session.registerArgs(MOVE, args -> {
+	trace(args.float(0) + args.float(1), args.string(2));
+	return null;
+});
+```
+
+`int(i)` reads an Int, `float(i)` a Float or an Int, `bool(i)`, `string(i)` and
+`bytes(i)` their kinds or the lane's null, `isNull(i)`, `kind(i)` and
+`value(i)` anything; `count` is how many there are. A value of another kind,
+or an index past `count`, throws an `RPCError` that names it, so a request's
+caller is answered with that message. The frame is read once before the
+handler runs, and a call that does not read is answered
+`RPCError.UNREADABLE_MESSAGE` as on `register`'s side. It answers as a
+`register` handler does; registering an op either way replaces its handler.
+The `RPCArgs` is the session's, handed to the next call too: read the
+arguments during the call.
+
+Natively, a one-way call of three Floats written with `runtimeCall` and read
+with `registerArgs` takes 68 ns and allocates nothing, where `call` with an
+array and a `register` handler takes 155 ns and 368 bytes; a request of two
+Ints and its answer 172 ns and 240 bytes against 235 ns and 448. Either half
+alone: the writer to a `register` handler 105 ns, `call` to a `registerArgs`
+handler 114 ns. On the jvm, 48-55 ns and 24 bytes against 100-116 ns and
+272.
 
 The two lanes share a connection without seeing each other: a runtime number
 and a compiled method's op never collide.

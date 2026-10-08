@@ -85,6 +85,7 @@ const STANDALONE = [
   'src/crossbyte/rpc/Float32.hx',
   'src/crossbyte/rpc/Int16.hx',
   'src/crossbyte/rpc/Int8.hx',
+  'src/crossbyte/rpc/RPCArgs.hx',
   'src/crossbyte/rpc/RPCCallWriter.hx',
   'src/crossbyte/rpc/RPCCommands.hx',
   'src/crossbyte/rpc/RPCRequestWriter.hx',

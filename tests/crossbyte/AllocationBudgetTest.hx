@@ -95,6 +95,10 @@ class AllocationBudgetTest extends utest.Test {
 	private static final RPC_ONE_WAY = new Budget("a one-way RPC call", "call", [0, 0, 24], [8, 8, 96]);
 	// The array and the string the handler is given are most of it.
 	private static final RPC_RUNTIME_ONE_WAY = new Budget("a one-way runtime-lane RPC call of a 12-character string", "call", [152, 144, 159], [256, 248, 264]);
+	// Written with runtimeCall and read with registerArgs: no array, nothing
+	// boxed. Measured natively on Windows and on the jvm (Oracle 8),
+	// 2026-10-08; Linux taken as Windows until measured.
+	private static final RPC_TYPED_ONE_WAY = new Budget("a one-way runtime-lane RPC call of three Floats, written and read typed", "call", [0, 0, 24], [8, 8, 96]);
 
 	/**
 		Operations run before measuring, so what the first ones build is not
@@ -626,6 +630,23 @@ class AllocationBudgetTest extends utest.Test {
 		var op = () -> clientSession.call(7, args);
 		__warm(op, WARM_CHEAP);
 		__within(RPC_RUNTIME_ONE_WAY, AllocationMeter.measure(op, 20000));
+		Assert.isTrue(heard[0] > 0);
+	}
+
+	public function testATypedRuntimeRpcCall():Void {
+		// runtimeCall's writer is the session's frame, and registerArgs'
+		// reader the session's own: a call of numbers allocates nothing.
+		var link = LinkedConnection.pair();
+		var serverSession = new RPCSession(link.server);
+		var clientSession = new RPCSession(link.client);
+		var heard:Array<Float> = [0];
+		serverSession.registerArgs(7, args -> {
+			heard[0] += args.float(0) + args.float(1) + args.float(2);
+			return null;
+		});
+		var op = () -> clientSession.runtimeCall(7).float(1.5).float(2.5).float(3.5).send();
+		__warm(op, WARM_CHEAP);
+		__within(RPC_TYPED_ONE_WAY, AllocationMeter.measure(op, 20000));
 		Assert.isTrue(heard[0] > 0);
 	}
 

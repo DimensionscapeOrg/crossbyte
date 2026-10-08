@@ -41,6 +41,7 @@ import haxe.atomic.AtomicInt;
 
 @:access(crossbyte.rpc.RPCHandler)
 @:access(crossbyte.rpc.RPCCommands)
+@:access(crossbyte.rpc.RPCArgs)
 /**
  * Binds an `RPCCommands` client surface and an optional `RPCHandler` to a live connection.
  *
@@ -91,6 +92,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	// judged to have been heard since, until something arrives.
 	@:noCompletion private var __heardSince:Float = 0.0;
 	@:noCompletion private var __runtimeHandlers:Null<IntMap<Array<Dynamic>->Dynamic>> = null;
+	// Handlers registered with registerArgs, and the reader they are handed.
+	@:noCompletion private var __runtimeArgHandlers:Null<IntMap<RPCArgs->Dynamic>> = null;
+	@:noCompletion private var __args:Null<RPCArgs> = null;
 	@:noCompletion private var __runtimeRequestIdSeed:Int = 0;
 	@:noCompletion private var __runtimePendingResponseId:Int = 0;
 	@:noCompletion private var __runtimePendingResponse:RPCResponse<Dynamic> = null;
@@ -708,29 +712,70 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	 * back to the caller. One-way runtime calls ignore the return value.
 	 */
 	public function register(op:Int, handler:Array<Dynamic>->Dynamic):RPCSession<C, D> {
+		if (!__hasRuntimeHandler(op)) {
+			__runtimeHandlerCount++;
+		}
+		if (__runtimeArgHandlers != null) {
+			__runtimeArgHandlers.remove(op);
+		}
 		if (__runtimeHandlers == null) {
 			__runtimeHandlers = new IntMap();
-		}
-		if (!__runtimeHandlers.exists(op)) {
-			__runtimeHandlerCount++;
 		}
 		__runtimeHandlers.set(op, handler);
 		__syncOnDataBinding();
 		return this;
 	}
 
-	/** Removes a previously registered runtime RPC handler. */
+	/**
+		Registers a runtime handler for `op` that reads its arguments where
+		they lie, through `RPCArgs`' typed getters, `args.int(0)`,
+		`args.string(1)`: in place of the `Array<Dynamic>` that `register`
+		builds: no array, and no number boxed. It answers as a `register`
+		handler does: what it returns is the answer of a request (a `Future`
+		answered once it completes), and nothing for a one-way call.
+
+		The wire is the same as `register`'s, so either side can be either
+		kind: a call from `call`, `request`, `runtimeCall` or `runtimeRequest`
+		reaches it. Registering `op` again, either way, replaces its handler.
+		The `RPCArgs` is valid only during the call; see there.
+	**/
+	public function registerArgs(op:Int, handler:RPCArgs->Dynamic):RPCSession<C, D> {
+		if (!__hasRuntimeHandler(op)) {
+			__runtimeHandlerCount++;
+		}
+		if (__runtimeHandlers != null) {
+			__runtimeHandlers.remove(op);
+		}
+		if (__runtimeArgHandlers == null) {
+			__runtimeArgHandlers = new IntMap();
+		}
+		__runtimeArgHandlers.set(op, handler);
+		__syncOnDataBinding();
+		return this;
+	}
+
+	/** Removes a previously registered runtime RPC handler, of either kind. */
 	public function deregister(op:Int):Bool {
-		if (__runtimeHandlers == null || !__runtimeHandlers.exists(op)) {
+		if (!__hasRuntimeHandler(op)) {
 			return false;
 		}
-		__runtimeHandlers.remove(op);
+		if (__runtimeHandlers != null) {
+			__runtimeHandlers.remove(op);
+		}
+		if (__runtimeArgHandlers != null) {
+			__runtimeArgHandlers.remove(op);
+		}
 		__runtimeHandlerCount--;
 		if (!__hasRuntimeHandlers()) {
 			__runtimeHandlers = null;
+			__runtimeArgHandlers = null;
 		}
 		__syncOnDataBinding();
 		return true;
+	}
+
+	@:noCompletion private inline function __hasRuntimeHandler(op:Int):Bool {
+		return (__runtimeHandlers != null && __runtimeHandlers.exists(op)) || (__runtimeArgHandlers != null && __runtimeArgHandlers.exists(op));
 	}
 
 	/**
@@ -1148,6 +1193,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			// A value of a kind this side does not know makes a call it cannot
 			// read, not a connection that has to end: a later release can add
 			// kinds of value without disconnecting this one.
+			final typed:Null<RPCArgs->Dynamic> = __runtimeArgHandlers != null ? __runtimeArgHandlers.get(op) : null;
+			if (typed != null) {
+				__invokeRuntimeArgs(op, typed, input, frameEnd, requestId);
+				return;
+			}
 			var args:Array<Dynamic> = null;
 			try {
 				args = RPCRuntimeCodec.readArgs(input, frameEnd);
@@ -1173,6 +1223,58 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		} else {
 			__resolveRuntimeResponse(op, requestId, value);
 		}
+	}
+
+	/**
+		A call to a handler registered with `registerArgs`: its arguments
+		found where they lie and checked to lie within the frame (one that
+		does not read is answered as `register`'s side answers it), then the
+		handler run on the session's `RPCArgs`, and answered as
+		`__invokeRuntime` answers.
+	**/
+	@:noCompletion private function __invokeRuntimeArgs(op:Int, handler:RPCArgs->Dynamic, input:ByteArrayInput, frameEnd:Int, requestId:Int):Void {
+		var args:Null<RPCArgs> = __args;
+		if (args == null || args.__busy) {
+			args = new RPCArgs();
+			if (__args == null) {
+				__args = args;
+			}
+		}
+		try {
+			args.__read(input, frameEnd);
+		} catch (error:Dynamic) {
+			args.__done();
+			__unreadableCall(op, requestId, true, error);
+			return;
+		}
+		if (__atCallLimit()) {
+			args.__done();
+			if (requestId != 0) {
+				__sendRuntimeError(op, requestId, RPCError.BUSY_MESSAGE);
+			}
+			return;
+		}
+		args.__busy = true;
+		var failure:Null<haxe.Exception> = null;
+		var later:Null<Future<Dynamic>> = null;
+		try {
+			final result = handler(args);
+			if (Std.isOfType(result, Future)) {
+				later = cast result;
+			} else if (requestId != 0) {
+				__sendRuntimeResponse(op, requestId, result);
+			}
+		} catch (error:haxe.Exception) {
+			failure = error;
+			__answerRuntimeFailure(op, requestId, error, __epoch);
+		}
+		args.__done();
+		if (later != null) {
+			final epoch:Int = __epoch;
+			__settleOnThisThread(later, settled -> __settleRuntimeCall(op, requestId, settled, epoch));
+			return;
+		}
+		__afterRuntimeCall(op, requestId, failure);
 	}
 
 	@:noCompletion private function __invokeRuntime(op:Int, args:Array<Dynamic>, requestId:Int):Void {
