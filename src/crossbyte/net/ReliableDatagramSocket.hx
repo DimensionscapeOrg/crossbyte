@@ -481,7 +481,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// session; whether the peer has shown it holds the keys, by sending
 	// something that opened (until then this side sends hellos, which carry
 	// its random); and the buffers a datagram is sealed into and opened into,
-	// the second taken afresh while it is out.
+	// the second taken afresh while it is out, a session's own only where
+	// it has no server: a server's sessions share the server's (see
+	// `__sealBuffer`).
 	@:noCompletion private var __encryptionKey:Null<haxe.io.Bytes> = null;
 	@:noCompletion private var __cipher:Null<SessionCipher> = null;
 	@:noCompletion private var __plainDropped:Float = 0;
@@ -4690,16 +4692,39 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (!__cipher.ready) {
 			return true;
 		}
-		if (__sealed == null) {
-			__sealed = new ByteArray();
-			__sealed.length = __scratch.length + SessionCipher.HELLO_OVERHEAD;
-		}
-		var sealed:Int = __cipher.seal(__scratch, offset, length, __sealed, !__peerHasKeys, __peerConnectionId);
+		var buffer:ByteArray = __sealBuffer();
+		var sealed:Int = __cipher.seal(__scratch, offset, length, buffer, !__peerHasKeys, __peerConnectionId);
 		if (sealed < 0) {
 			__failAttempt("The session sealed as many datagrams as its keys allow (2^62); it was closed.");
 			return false;
 		}
-		return __sendBytes(__sealed, 0, sealed);
+		return __sendBytes(buffer, 0, sealed);
+	}
+
+	/** Room for the largest datagram this sends, and a hello's header and tag. **/
+	@:noCompletion private static inline var SEAL_ROOM:Int = ReliableDatagramProtocol.MAX_FRAME_SIZE + ReliableDatagramProtocol.BUNDLE_HEADER_SIZE
+		+ ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE + ReliableDatagramProtocol.CONNECT_EXTENSION_MAX + SessionCipher.HELLO_OVERHEAD;
+
+	/**
+		What a datagram is sealed into: its server's buffer, for a session a
+		server holds, every one of them on the server's runtime, sealing
+		one datagram at a time, and a send has finished with its bytes
+		before it returns, or the session's own. One for each encrypted
+		session of a server held 1.3 KB apiece.
+	**/
+	@:noCompletion private function __sealBuffer():ByteArray {
+		if (__server != null) {
+			if (__server.__sealed == null) {
+				__server.__sealed = new ByteArray();
+				__server.__sealed.length = SEAL_ROOM;
+			}
+			return __server.__sealed;
+		}
+		if (__sealed == null) {
+			__sealed = new ByteArray();
+			__sealed.length = SEAL_ROOM;
+		}
+		return __sealed;
 	}
 
 	@:noCompletion private function __sendBytes(buffer:ByteArray, offset:Int, length:Int):Bool {
@@ -4890,17 +4915,24 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return false;
 		}
 
-		// Into the session's own buffer, unless it is out: a listener that
-		// pumps the runtime can be handed the next datagram inside its call.
-		var pooled:Bool = Arrivals.REUSE && !__openedOut;
+		// Into the server's buffer, shared as its sealing buffer is, or the
+		// session's own, unless it is out: a listener that pumps the runtime
+		// can be handed the next datagram inside its call.
+		var server:Null<ReliableDatagramServerSocket> = __server;
+		var pooled:Bool = Arrivals.REUSE && !(server != null ? server.__openedOut : __openedOut);
 		var opened:ByteArray;
-		if (pooled) {
+		if (!pooled) {
+			opened = new ByteArray();
+		} else if (server != null) {
+			opened = server.__opened;
+			if (opened == null) {
+				opened = server.__opened = new ByteArray();
+			}
+		} else {
 			opened = __opened;
 			if (opened == null) {
 				opened = __opened = new ByteArray();
 			}
-		} else {
-			opened = new ByteArray();
 		}
 		Arrivals.sized(opened, length);
 		var plain:Int = cipher.open(bytes, length, opened);
@@ -4918,7 +4950,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__peerHasKeys = true;
 		opened.length = plain;
 		if (pooled) {
-			__openedOut = true;
+			if (server != null) {
+				server.__openedOut = true;
+			} else {
+				__openedOut = true;
+			}
 		}
 		try {
 			__acceptOpened(opened);
@@ -4933,7 +4969,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private inline function __openedDone(opened:ByteArray, pooled:Bool):Void {
 		if (pooled) {
 			Arrivals.release(opened);
-			__openedOut = false;
+			if (__server != null) {
+				__server.__openedOut = false;
+			} else {
+				__openedOut = false;
+			}
 		} else {
 			Arrivals.done(opened);
 		}

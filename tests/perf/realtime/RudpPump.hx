@@ -26,7 +26,9 @@ import haxe.Timer;
 	  each (noise only ever adds), and the median.
 
 	Pinned to CPUs 24-27. Arguments: sessions (500), rounds (200),
-	samples (7), rel (64), seq (128), input (16), label.
+	samples (7), rel (64), seq (128), input (16), label, and encrypt=1 for
+	every session encrypted (`ReliableDatagramSocket.encryptionKey`), one
+	key for all of them.
 **/
 class RudpPump extends HostApplication {
 	static var opts:Map<String, String> = new Map();
@@ -90,6 +92,14 @@ class RudpPump extends HostApplication {
 		if (opts.exists("ackdelay")) {
 			server.ackDelay = Std.parseFloat(opts.get("ackdelay"));
 		}
+		var key:haxe.io.Bytes = null;
+		if (opt("encrypt", "0") == "1") {
+			key = haxe.io.Bytes.alloc(32);
+			for (i in 0...32) {
+				key.set(i, i * 7);
+			}
+			server.encryptionKeyFor = (_, _, _) -> key;
+		}
 		#end
 		server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, function(e:ReliableDatagramSocketConnectEvent):Void {
 			accepted.push(e.socket);
@@ -110,6 +120,9 @@ class RudpPump extends HostApplication {
 			#if !rt_before
 			if (opts.exists("ackdelay")) {
 				c.ackDelay = Std.parseFloat(opts.get("ackdelay"));
+			}
+			if (key != null) {
+				c.encryptionKey = key;
 			}
 			#end
 			c.addEventListener(DatagramSocketDataEvent.DATA, function(_:DatagramSocketDataEvent):Void {

@@ -2023,6 +2023,14 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		__handled(payload, pooled);
 	}
 
+	// What its encrypted sessions seal into and open into, shared by all of
+	// them, one runtime, one datagram at a time, rather than a buffer of
+	// each; the second taken afresh while it is out. See
+	// `ReliableDatagramSocket.__sealBuffer`.
+	@:noCompletion private var __sealed:ByteArray = null;
+	@:noCompletion private var __opened:ByteArray = null;
+	@:noCompletion private var __openedOut:Bool = false;
+
 	// The payload a frame is copied out into when it cannot take the
 	// datagram itself, an application's onDatagram, or the relay, saw it
 	// first, one for the server, filled again for each; and whether it is
