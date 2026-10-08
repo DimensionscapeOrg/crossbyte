@@ -176,13 +176,29 @@ on the wire:
 | `Bool` | 1 byte |
 | `String` | a length, then UTF-8 |
 | `haxe.io.Bytes` | a length, then the bytes |
+| `Array<T>`, `T` any of these | a count, then each element as its type is written |
 
 An argument that may be absent, `?value:Int`, or `value:Null<Int>`, costs
-one more byte to say whether it is there. One that may not cannot be null: a
-call with a null `String` or `Bytes` there throws an `ArgumentError` before
-anything is sent, and a handler answering null where its type is not
-`Null<T>` fails the call as a throw does. A return type is any of these, or
-`Void`. Anything else fails the build, naming the method.
+one more byte to say whether it is there, and so does an element of an
+`Array<Null<T>>`. One that may not cannot be null: a call with a null
+`String`, `Bytes` or array there, or inside an array, throws an
+`ArgumentError` before anything is sent, and a handler answering null where
+its type is not `Null<T>` fails the call as a throw does. A return type is
+any of these, or `Void`. Anything else fails the build, naming the method.
+
+Arrays nest, `Array<Array<Int>>` is a count of counts, and an array
+arriving is the handler's to keep: each call's is made for it. Its count is
+the sender's to choose, so it is checked against what is left of the frame,
+at the least each element takes, before anything is made for it: a frame of
+twenty bytes cannot ask for an array of two billion, and is answered as one
+whose arguments could not be read.
+
+```haxe
+interface BoardContract {
+	function mark(cells:Array<Int>, labels:Array<Null<String>>):Void;
+	function rows():Array<Array<Int>>;
+}
+```
 
 Because nothing on the wire names a field, the two ends must agree on each
 method exactly: its name, its arguments in order, and their types. Build both
@@ -524,13 +540,17 @@ answer.
 
 ```
 signature := name "(" [ kind ("," kind)* ] ")" [ ":" kind ]
-kind      := [ "?" ] ( "i32" | "bool" | "f64" | "utf8" | "bytes" )
+kind      := [ "?" ] ( "i32" | "bool" | "f64" | "utf8" | "bytes"
+                     | "[" kind "]" )
 ```
 
 `i32` is an `Int`, `bool` a `Bool`, `f64` a `Float`, `utf8` a `String` and
-`bytes` a `haxe.io.Bytes`, and `?` one that may be absent, `Null<T>` or an
-optional argument. `join(room:String):Int` is `join(utf8):i32`;
-`say(room:String, text:String):Void` is `say(utf8,utf8)`. A one-way call's
+`bytes` a `haxe.io.Bytes`, an array its element's kind in brackets, and `?`
+one that may be absent, `Null<T>` or an optional argument.
+`join(room:String):Int` is `join(utf8):i32`;
+`say(room:String, text:String):Void` is `say(utf8,utf8)`;
+`mark(cells:Array<Int>, labels:Array<Null<String>>):Void` is
+`mark([i32],[?utf8])`. A one-way call's
 signature has no answer, and a method that is answered takes one-way calls
 too: it runs, and its answer goes nowhere. `ping` is the hash of its name
 alone.

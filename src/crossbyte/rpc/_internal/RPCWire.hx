@@ -71,6 +71,18 @@ class RPCWire {
 	}
 
 	/**
+		Throws unless `count` values of at least `least` bytes each fit in
+		what is left of a frame ending at `end`: an array's count, which the
+		peer chose, checked before the array is made. Divided rather than
+		multiplied, which a count near 2^31 would overflow.
+	**/
+	public static inline function requireCount(input:ByteArrayInput, end:Int, count:Int, least:Int):Void {
+		if (count < 0 || count > Std.int((end - input.position) / least)) {
+			throw "RPC frame names more than it holds";
+		}
+	}
+
+	/**
 		Throws if reading a frame went past its end, into whatever follows it.
 
 		A frame's length says where the next begins, and each was read to its

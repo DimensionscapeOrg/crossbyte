@@ -246,6 +246,11 @@ abstract class RPCHandler {
 		return session.__takeFrame(room, RPCWire.FLAG_RESPONSE, op, requestId);
 	}
 
+	/** Gives back an answer's frame its value could not be written into: a null inside an array or a structure. **/
+	@:noCompletion private inline function __rpc_dropFrame(session:RPCSession<Dynamic, Dynamic>, framed:RPCFrame):Void {
+		session.__sent(framed);
+	}
+
 	/** Sends the answer the generated code has framed, on the session it was framed for. **/
 	@:noCompletion private inline function __rpc_answerOn(session:RPCSession<Dynamic, Dynamic>, framed:RPCFrame):Void {
 		session.__sendAnswer(framed);

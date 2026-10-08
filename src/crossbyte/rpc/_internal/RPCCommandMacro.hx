@@ -282,6 +282,7 @@ class RPCCommandMacro {
 		var fixed:Int = FRAME_HEAD;
 		var sized:Null<Expr> = null;
 		final writes:Array<Expr> = [];
+		var compound:Bool = false;
 		for (a in args) {
 			if (a.type == null) {
 				Context.error("RPC arg '" + a.name + "' must have an explicit type.", errPos);
@@ -297,6 +298,7 @@ class RPCCommandMacro {
 				sized = sized == null ? room : macro $sized + $room;
 			}
 			writes.push(RPCKinds.write(kind, optional, macro framed, name));
+			compound = compound || kind.compound;
 		}
 		final room:Expr = sized == null ? macro $v{fixed} : macro $v{fixed} + $sized;
 
@@ -304,8 +306,19 @@ class RPCCommandMacro {
 		// decides what becomes of a call that cannot go. It is its session's,
 		// written over by its next frame once this one is sent.
 		final statements:Array<Expr> = [macro var framed:crossbyte.rpc._internal.RPCFrame = this.__startFrame($room, $v{opCode}, requestId)];
-		for (write in writes) {
-			statements.push(write);
+		if (compound) {
+			// An array or a structure can hold a null where a value has to be,
+			// found only as it is written: the frame goes back to its session
+			// before the error goes on, or every later frame would be a fresh
+			// one.
+			statements.push(macro try $b{writes} catch (__error:Dynamic) {
+				this.__dropFrame(framed);
+				throw __error;
+			});
+		} else {
+			for (write in writes) {
+				statements.push(write);
+			}
 		}
 		statements.push(macro return framed.finish());
 
