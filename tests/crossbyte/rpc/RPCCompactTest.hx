@@ -28,6 +28,28 @@ class RPCCompactTest extends utest.Test {
 		Assert.same(["-128 255 -32768 65535 1.5", "127 0 32767 0 -0.25", "-1 1 -1 1 0"], fixture.handler.calls);
 	}
 
+	public function testOperatorsWorkOnTheIntAValueHolds():Void {
+		var level:UInt8 = 300; // 44
+		var step:Int8 = -3;
+		var count:UInt16 = 7;
+		var speed:Float32 = 0.5;
+		var wide:Int = 300;
+		// Compared with the Int on the other side, not with it narrowed.
+		Assert.isFalse(level == wide);
+		Assert.isTrue(level < wide);
+		Assert.isTrue(wide > level);
+		// Two compact types, and a compact type with a Float or a Float32.
+		Assert.equals(41, level + step);
+		Assert.equals(-47, step - level);
+		Assert.equals(7.5, count + speed);
+		Assert.equals(7.5, speed + count);
+		Assert.equals(3.5, count / 2);
+		Assert.isTrue(count < 7.5);
+		Assert.equals(6.5, count - 0.5);
+		var bumped:UInt16 = count + 65530; // 65537, narrowed to 1
+		Assert.equals(1, (bumped : Int));
+	}
+
 	public function testAnIntNarrowsAsItBecomesOne():Void {
 		// Assigned, an Int keeps its low bits, as a cast in C does, so what
 		// is sent is what the sender holds.

@@ -51,6 +51,11 @@ package crossbyte.rpc;
 	all numbers and `Bool`s is written and read as one run of bytes, and an
 	array of them as one run.
 
+	A class can be an `hxwire.WireObject` as well: RPC orders its fields as
+	hxwire does, so for fields that cannot be absent the call's arguments
+	are what `toBinary()` makes; mark the fields hxwire ignores
+	`@:rpcSkip`. See "Structures" in the RPC guide.
+
 	Prefer a class to a typedef'd anonymous structure for hot calls:
 	natively an anonymous structure's fields are looked up by name and its
 	numbers boxed. A one-way call carrying five numbers took 50 ns and 40

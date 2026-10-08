@@ -5,13 +5,14 @@ package crossbyte.rpc;
 	`Int` takes four. For a count, a level, a set of flags that a signature
 	or a field of an `RPCStruct` declares as this type.
 
-	Held as an `Int`, and an `Int` wherever one is wanted: arithmetic on it
-	is `Int` arithmetic. An `Int` assigned to one keeps its low eight bits,
-	as a cast to a byte does in C or Java, 256 is 0 and -1 is 255, so
-	what a value holds is what is sent and what arrives. The narrowing is a
-	mask, the only cost. Operators and comparisons work on
-	the `Int` it holds, so `value < 300` compares 300 itself. From another
-	compact type, convert through `Int`: `var wide:UInt16 = (small : Int)`.
+	Held as an `Int`, and an `Int` wherever one is wanted: arithmetic on it is
+	`Int` arithmetic. An `Int` assigned to one keeps its low eight bits, as a
+	cast to a byte does in C or Java, 256 is 0 and -1 is 255, so what a
+	value holds is what is sent and what arrives. The narrowing is a mask, the
+	only cost. Operators and comparisons, with an Int or a Float on the other
+	side, work on the `Int` it holds, so `value < 300` compares 300 itself.
+	From another compact type, convert through `Int`: `var wide:UInt16 = (small
+	: Int)`.
 
 	```haxe
 	import crossbyte.rpc.UInt8;
@@ -147,5 +148,71 @@ abstract UInt8(Int) to Int {
 
 	@:op(A >>> B) static inline function ushrFrom(a:Int, b:UInt8):Int {
 		return a >>> (b : Int);
+	}
+
+	// And with a Float on the other side (a Float32 among them), as an Int is.
+
+	@:op(A + B) @:commutative static inline function addFloat(a:UInt8, b:Float):Float {
+		return (a : Int) + b;
+	}
+
+	@:op(A * B) @:commutative static inline function mulFloat(a:UInt8, b:Float):Float {
+		return (a : Int) * b;
+	}
+
+	@:op(A == B) @:commutative static inline function eqFloat(a:UInt8, b:Float):Bool {
+		return (a : Int) == b;
+	}
+
+	@:op(A != B) @:commutative static inline function neqFloat(a:UInt8, b:Float):Bool {
+		return (a : Int) != b;
+	}
+
+	@:op(A - B) static inline function subFloat(a:UInt8, b:Float):Float {
+		return (a : Int) - b;
+	}
+
+	@:op(A - B) static inline function subFloatFrom(a:Float, b:UInt8):Float {
+		return a - (b : Int);
+	}
+
+	@:op(A / B) static inline function divFloat(a:UInt8, b:Float):Float {
+		return (a : Int) / b;
+	}
+
+	@:op(A / B) static inline function divFloatFrom(a:Float, b:UInt8):Float {
+		return a / (b : Int);
+	}
+
+	@:op(A < B) static inline function ltFloat(a:UInt8, b:Float):Bool {
+		return (a : Int) < b;
+	}
+
+	@:op(A < B) static inline function ltFloatFrom(a:Float, b:UInt8):Bool {
+		return a < (b : Int);
+	}
+
+	@:op(A <= B) static inline function lteFloat(a:UInt8, b:Float):Bool {
+		return (a : Int) <= b;
+	}
+
+	@:op(A <= B) static inline function lteFloatFrom(a:Float, b:UInt8):Bool {
+		return a <= (b : Int);
+	}
+
+	@:op(A > B) static inline function gtFloat(a:UInt8, b:Float):Bool {
+		return (a : Int) > b;
+	}
+
+	@:op(A > B) static inline function gtFloatFrom(a:Float, b:UInt8):Bool {
+		return a > (b : Int);
+	}
+
+	@:op(A >= B) static inline function gteFloat(a:UInt8, b:Float):Bool {
+		return (a : Int) >= b;
+	}
+
+	@:op(A >= B) static inline function gteFloatFrom(a:Float, b:UInt8):Bool {
+		return a >= (b : Int);
 	}
 }
