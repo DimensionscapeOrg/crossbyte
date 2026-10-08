@@ -477,6 +477,33 @@ entry below says how:
   the limits for a peer that opens more, or names longer.
 
 ### Added
+- Structures on the compiled RPC lane: a class that implements the new
+  `crossbyte.rpc.RPCStruct`, or an anonymous structure (typedef'd or
+  written out), as an argument, an answer, an array element or another
+  structure's field. Its reader and writer are generated at compile time,
+  once each, with no reflection or `Dynamic`; on the wire it is its fields'
+  values one after another, no names, tags or lengths, no byte for a
+  field that cannot be absent, and a structure inside another goes
+  through the same frame. Fields go in the order of their names, so moving
+  a declaration changes nothing, after those pinned with `@:field(n)` (as
+  the `hxwire` library orders them); `@:rpcSkip` leaves a class's field off
+  the wire. The layout is the token in the op,
+  `{1=id:i32,name:utf8,x:f32}`: so a field renamed, retyped, added,
+  removed or made optional makes another method, and a class and a typedef
+  with the same fields are one layout. A class is read by `new` with no
+  arguments and setting each field, an anonymous structure made as an
+  object literal; a structure of numbers only is written and read as one
+  run, and an array of them as one run. A field RPC does not carry, a
+  `final` field or a property, a constructor that needs arguments, a
+  private class, a structure with no fields or one that contains itself
+  fails the build, naming it. A null where a structure has to be, or
+  inside one, throws `ArgumentError` before anything is sent. Natively a
+  one-way call carrying `{id:Int, x, y, z:Float32, flags:UInt8}` takes 50
+  ns and allocates 40 bytes as a class, 74 ns and 232 bytes as a typedef
+  (an anonymous structure's fields are looked up by name and its numbers
+  boxed), and 45 ns as five arguments; an array of eight, 106 ns as
+  classes, 241 ns as typedefs. Prefer a class for hot calls; the guide's
+  "Structures" says so. Tests: `RPCStructTest`.
 - Compact numbers on the compiled RPC lane: `crossbyte.rpc.Float32` (four
   bytes, single precision; Haxe's `Single` where the target has one, which
   a contract may also declare), `Int8` and `UInt8` (one byte), `Int16` and

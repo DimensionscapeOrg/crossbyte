@@ -33,7 +33,18 @@ class RPCKinds {
 	/** The kind of a value of type `ct`, absence aside, or `null` for a type the compiled lane does not carry. **/
 	public static function of(ct:ComplexType, pos:Position):Null<RPCKind> {
 		final type:Null<Type> = try Context.resolveType(ct, pos) catch (_:Dynamic) null;
-		return type == null ? null : ofType(type, pos);
+		if (type == null) {
+			return null;
+		}
+		final outer = RPCStructs.enter();
+		try {
+			final kind = ofType(type, pos);
+			RPCStructs.leave(outer);
+			return kind;
+		} catch (error:Dynamic) {
+			RPCStructs.leave(outer);
+			throw error;
+		}
 	}
 
 	/** What a type not carried is called in the error that says so. **/
@@ -420,8 +431,16 @@ class RPCKinds {
 			case TLazy(lazy):
 				ofType(lazy(), pos);
 			case TType(_, _):
-				// One typedef at a time, as it names its kind.
-				ofType(Context.follow(type, true), pos);
+				// One typedef at a time, as it names its kind; an anonymous
+				// structure's typedef named in the error that says it holds
+				// itself.
+				final next:Type = Context.follow(type, true);
+				switch (next) {
+					case TAnonymous(anon): RPCStructs.anonKind(anon.get(), next, TypeTools.toString(type), pos);
+					case _: ofType(next, pos);
+				}
+			case TAnonymous(anon):
+				RPCStructs.anonKind(anon.get(), type, null, pos);
 			case TAbstract(ref, params):
 				final abs = ref.get();
 				switch (pathKey(abs.pack, abs.name)) {
@@ -452,6 +471,7 @@ class RPCKinds {
 					case "Array" if (params.length == 1):
 						final element:Null<RPCKind> = ofType(params[0], pos);
 						element == null ? null : arrayKind(element, isNullType(params[0]), RPCContractMacroTools.fullComplexType(stripNull(params[0])));
+					case _ if (RPCStructs.isStruct(cls)): RPCStructs.classKind(cls, type, pos);
 					case _: null;
 				}
 			case _:

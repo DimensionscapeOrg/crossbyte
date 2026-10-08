@@ -86,6 +86,7 @@ const STANDALONE = [
   'src/crossbyte/rpc/Int16.hx',
   'src/crossbyte/rpc/Int8.hx',
   'src/crossbyte/rpc/RPCCommands.hx',
+  'src/crossbyte/rpc/RPCStruct.hx',
   'src/crossbyte/rpc/UInt16.hx',
   'src/crossbyte/rpc/UInt8.hx',
   'src/crossbyte/url/URLVariables.hx',
