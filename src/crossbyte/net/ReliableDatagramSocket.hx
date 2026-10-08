@@ -398,10 +398,38 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	public static inline var ENCRYPTION_OVERHEAD:Int = SessionCipher.OVERHEAD;
 
 	/**
-		The largest CONNECT payload an encrypted session sends: 1,179 bytes,
-		the 1,200 of one frame less `ENCRYPTION_OVERHEAD`.
+		The largest payload one frame of an encrypted session carries: 1,179
+		bytes, the 1,200 of a frame in the clear less `ENCRYPTION_OVERHEAD`,
+		so that a sealed datagram is no larger than the largest datagram in
+		the clear, 1,211 bytes, and fits the same path: 1,259 with IPv6's
+		and UDP's headers, under the 1,280 every IPv6 path carries. It bounds
+		an unreliable or sequenced message and a CONNECT payload, and a
+		reliable message is split into frames of this size; a bundle is held
+		to 1,190 bytes before sealing. See `maxPayloadSize`.
 	**/
 	public static inline var MAX_ENCRYPTED_PAYLOAD_SIZE:Int = ReliableDatagramProtocol.MAX_PAYLOAD_SIZE - SessionCipher.OVERHEAD;
+
+	/**
+		The largest payload one frame of this session carries: 1,200 bytes,
+		or `MAX_ENCRYPTED_PAYLOAD_SIZE`, 1,179, once it has a key, the most
+		an unreliable or sequenced message may be, and the size a reliable
+		message is split into frames of.
+	**/
+	public var maxPayloadSize(get, never):Int;
+
+	@:noCompletion private inline function get_maxPayloadSize():Int {
+		return (__cipher != null || __encryptionKey != null) ? MAX_ENCRYPTED_PAYLOAD_SIZE : ReliableDatagramProtocol.MAX_PAYLOAD_SIZE;
+	}
+
+	/** The most one frame carries here, by whether the session seals. **/
+	@:noCompletion private inline function __framePayload():Int {
+		return __cipher != null ? MAX_ENCRYPTED_PAYLOAD_SIZE : ReliableDatagramProtocol.MAX_PAYLOAD_SIZE;
+	}
+
+	/** The most a bundle may be before it is sealed, so the sealed datagram is no larger than `BUNDLE_LIMIT`. **/
+	@:noCompletion private inline function __bundleLimit():Int {
+		return __cipher != null ? ReliableDatagramProtocol.BUNDLE_LIMIT - SessionCipher.OVERHEAD : ReliableDatagramProtocol.BUNDLE_LIMIT;
+	}
 
 	/**
 		A cipher for a new attempt, made from `key` with a random of this
@@ -1506,8 +1534,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		@throws ArgumentError If `host` is empty, or a malformed address, or,
 		        on Node, a name.
 		@throws RangeError If `port` is outside the valid UDP port range, or
-		        `payload` is larger than one frame,
-		        `ReliableDatagramProtocol.MAX_PAYLOAD_SIZE` bytes.
+		        `payload` is larger than one frame: 1,200 bytes, or
+		        `MAX_ENCRYPTED_PAYLOAD_SIZE` (1,179) with an `encryptionKey`.
 	**/
 	public function connect(host:String, port:Int, ?payload:ByteArray):Void {
 		// A close still waiting on its peer is as closed as one finished.
@@ -1865,7 +1893,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		@throws IOError If the reliable session is not connected.
 		@throws RangeError If `offset` or `length` are out of bounds, or an
 		        unreliable or sequenced message is larger than
-		        `ReliableDatagramProtocol.MAX_PAYLOAD_SIZE`.
+		        `maxPayloadSize`: 1,200 bytes, 1,179 for an encrypted session.
 	**/
 	public function send(bytes:ByteArray, offset:Int = 0, length:Int = 0, delivery:DeliveryMode = RELIABLE):Void {
 		__requireDatagramMode();
@@ -3985,8 +4013,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// knows where the message ends and hands it over in one piece.
 		var cursor:Int = offset;
 		var remaining:Int = length;
+		var chunk:Int = __framePayload();
 		while (remaining > 0) {
-			var chunkLength:Int = remaining > ReliableDatagramProtocol.MAX_PAYLOAD_SIZE ? ReliableDatagramProtocol.MAX_PAYLOAD_SIZE : remaining;
+			var chunkLength:Int = remaining > chunk ? chunk : remaining;
 			remaining -= chunkLength;
 			__queuePacket(__copyRange(bytes, cursor, chunkLength), remaining > 0);
 			cursor += chunkLength;
@@ -4020,8 +4049,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (length < 0 || length > totalLength - offset) {
 			throw new RangeError("The supplied index is out of bounds.");
 		}
-		if (length > ReliableDatagramProtocol.MAX_PAYLOAD_SIZE) {
-			throw new RangeError('An unreliable message must fit one frame, ${ReliableDatagramProtocol.MAX_PAYLOAD_SIZE} bytes, and this one is $length; '
+		if (length > __framePayload()) {
+			throw new RangeError('An unreliable message must fit one frame, ${__framePayload()} bytes${__cipher != null ? " in an encrypted session" : ""}, and this one is $length; '
 				+ 'split it, or send it RELIABLE.');
 		}
 
@@ -4432,7 +4461,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		Adds a frame to the bundle being gathered for the peer, sending the
-		bundle first if the frame would take it past `BUNDLE_LIMIT`. The frame
+		bundle first if the frame would take it past `BUNDLE_LIMIT`, less
+		what sealing adds, for an encrypted session. The frame
 		is written in place, so nothing is copied or allocated for it.
 	**/
 	@:noCompletion private function __sendFrame(type:ReliableDatagramFrameType, sequence:Seq32, payload:ByteArray, offset:Int, length:Int, resend:Bool,
@@ -4449,7 +4479,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		var size:Int = ReliableDatagramProtocol.frameSize(payload == null ? 0 : length, hasAck);
 		if (__pendingCount > 0
-			&& __pendingLength + ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE + size > ReliableDatagramProtocol.BUNDLE_LIMIT) {
+			&& __pendingLength + ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE + size > __bundleLimit()) {
 			__sendBundle();
 		}
 
