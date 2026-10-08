@@ -345,6 +345,56 @@ class ReliableDatagramEncryptionTest extends utest.Test {
 		pair.close();
 	}
 
+	/**
+		An encrypted session's frames carry at most 1,179 bytes, so no
+		datagram it sends is larger than the largest in the clear: a reliable
+		message split, small ones bundled, the largest unreliable and
+		sequenced ones, both ways, every datagram on the wire at most
+		1,211 bytes, and the largest exactly that. One byte more, unreliable,
+		is refused.
+	**/
+	public function testASealedDatagramFitsTheSamePath():Void {
+		if (!requireEncryption()) return;
+		var plain = new ReliableDatagramSocket();
+		Assert.equals(1200, plain.maxPayloadSize);
+		plain.encryptionKey = key(11);
+		Assert.equals(1179, plain.maxPayloadSize);
+		plain.abort();
+		var pair = Pair.open(key(11), key(11));
+		if (pair == null) {
+			Assert.fail("the encrypted pair never connected");
+			return;
+		}
+		try {
+			Assert.equals(ReliableDatagramSocket.MAX_ENCRYPTED_PAYLOAD_SIZE, pair.client.maxPayloadSize);
+			Assert.equals(ReliableDatagramSocket.MAX_ENCRYPTED_PAYLOAD_SIZE, pair.session.maxPayloadSize);
+			var full = marked(ReliableDatagramSocket.MAX_ENCRYPTED_PAYLOAD_SIZE);
+			Assert.raises(() -> pair.client.send(marked(ReliableDatagramSocket.MAX_ENCRYPTED_PAYLOAD_SIZE + 1), 0, 0, DeliveryMode.UNRELIABLE),
+				crossbyte.errors.RangeError);
+			for (socket in [pair.client, pair.session]) {
+				socket.send(marked(5000));
+				for (i in 0...40) {
+					socket.send(Pair.text("small " + i));
+				}
+				socket.send(full, 0, 0, DeliveryMode.UNRELIABLE);
+				socket.send(full, 0, 0, DeliveryMode.sequenced(1));
+			}
+			Pair.pumpUntil(() -> pair.serverGot.length >= 43 && pair.clientGot.length >= 43, 5.0);
+			Assert.equals(43, pair.serverGot.length);
+			Assert.equals(43, pair.clientGot.length);
+			var largest:Int = 0;
+			for (d in pair.wire.out.concat(pair.wire.back)) {
+				if (d.length > largest) {
+					largest = d.length;
+				}
+			}
+			Assert.equals(ReliableDatagramProtocol.MAX_FRAME_SIZE, largest, 'the largest datagram on the wire was $largest bytes');
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		pair.close();
+	}
+
 	// ------------------------------------------------------------ helpers
 
 	public static function requireEncryption():Bool {

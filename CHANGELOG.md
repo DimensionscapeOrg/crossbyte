@@ -492,8 +492,13 @@ entry below says how:
   sessions never seals two datagrams alike; the nonce is a per-direction
   packet number XOR an IV, as TLS 1.3 and QUIC build theirs, of which only
   the low 32 bits are sent; the header is authenticated; a 1,024-number
-  replay window drops replays and anything older before decrypting. It
-  fails closed: a session that asked for encryption never falls back to
+  replay window drops replays and anything older before decrypting.
+  Sealing adds 21 bytes a datagram (`ENCRYPTION_OVERHEAD`: a byte of type,
+  4 of packet number, the 16-byte tag), so an encrypted session's frames
+  carry at most 1,179 bytes (`MAX_ENCRYPTED_PAYLOAD_SIZE`,
+  `maxPayloadSize`, which also bounds its unreliable messages and CONNECT
+  payload) and no sealed datagram is larger than one in the clear, 1,211
+  bytes. It fails closed: a session that asked for encryption never falls back to
   the clear, and a peer that answers without it, a key mismatch, and a
   server that refuses (a new `PATH` frame saying why) end the attempt with
   an `ioError` naming the reason. Natively through libsodium, on Node

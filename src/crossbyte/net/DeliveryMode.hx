@@ -28,8 +28,9 @@ import crossbyte.errors.ArgumentError;
  *   independent, so a newer snapshot on one never makes an older input on
  *   another look stale.
  *
- * An unreliable or sequenced message must fit one frame,
- * `ReliableDatagramProtocol.MAX_PAYLOAD_SIZE` bytes. Split across frames, the
+ * An unreliable or sequenced message must fit one frame: 1,200 bytes, or
+ * 1,179 in an encrypted session (`ReliableDatagramSocket.maxPayloadSize`,
+ * `ReliableDatagramSocket.MAX_ENCRYPTED_PAYLOAD_SIZE`). Split across frames, the
  * loss of any one would lose the whole, so it is refused rather than sent
  * that way; splitting is the caller's to do, where it knows what each part
  * means on its own.
