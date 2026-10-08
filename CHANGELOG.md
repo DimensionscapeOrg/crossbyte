@@ -2193,6 +2193,17 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- An idle reliable UDP session holds about 2.7 KB natively and 1.6 KB on
+  the jvm, where it held 14 KB and 7.6 KB (an encrypted one 4.5 KB and 2.9
+  KB, from 16 KB and 8.9 KB): heap after a full collection with 1,000 idle
+  sessions, less with none. The ring that holds frames arriving past a gap,
+  512 slots, 9.6 KB natively, in every session, is made on the first
+  such frame, with 16 slots, grows as far as the frames held reach, and goes
+  at a keepalive check that finds it empty; the buffer a session sends from,
+  which had room for the largest frame, grows to the largest bundle sent and
+  goes back to a small one after a keepalive period with nothing sent; a
+  server's sessions share the scratch a HANDSHAKE's and an ACK's payload are
+  written into; and a `DATAGRAM` session has no stream buffers.
 - A reliable UDP message allocates nothing natively once a session is
   under way, where its copy kept for resending allocated 424 bytes for a
   200-byte message. The copy is made into a frame taken from a pool, one

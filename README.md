@@ -466,6 +466,22 @@ sealing, since its keys are its own. As with `ServerWebSocket.broadcast`,
 nothing is thrown for one session: one not connected or closing is passed
 over, and one past its output limit under `THROW` is not thrown for.
 
+**Memory per session.** An idle session a server holds costs about 2.7 KB
+natively and 1.6 KB on the jvm, heap after a full collection with 1,000
+idle sessions connected, less with none, over 1,000, and an encrypted one
+about 1.9 KB more natively (1.3 KB on the jvm), where each cost 14 KB and
+7.6 KB. Most of that was what only some sessions use, made for every one: the
+ring holding frames that arrive past a gap (512 slots, 9.6 KB natively) and the
+buffer a session writes what it sends into (room for the largest frame, 1.8
+KB). The ring is made now when a frame first arrives past a gap, with 16 slots,
+grows as far as the frames held reach, and goes at the next keepalive check
+that finds it empty; the buffer grows to the largest bundle the session has
+sent and goes back to a small one after a keepalive period with nothing sent.
+A server's sessions share what each writes a HANDSHAKE's and an ACK's payload
+into, and a session in `DATAGRAM` mode has no stream buffers. What is left is
+mostly the session itself, its fields, listeners and keepalive timer, and
+the server's maps that find it.
+
 **Garbage per message: none natively.** A reliable message is copied when
 it is sent, so the caller may reuse its bytes as soon as `send` returns, and
 the copy is kept until the peer acknowledges it, since only this side can

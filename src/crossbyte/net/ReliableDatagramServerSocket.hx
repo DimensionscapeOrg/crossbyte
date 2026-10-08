@@ -2298,6 +2298,11 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	// `FramePool`. Made when the first session sends.
 	@:noCompletion private var __frames:crossbyte.net._internal.reliable.FramePool = null;
 
+	// Where its sessions write a HANDSHAKE's payload and an ACK's before the
+	// frame copies it out: see `ReliableDatagramSocket.__echoBuffer`.
+	@:noCompletion private var __echoScratch:ByteArray = null;
+	@:noCompletion private var __sackScratch:ByteArray = null;
+
 	@:noCompletion private function __framePool():crossbyte.net._internal.reliable.FramePool {
 		if (__frames == null) {
 			__frames = new crossbyte.net._internal.reliable.FramePool();

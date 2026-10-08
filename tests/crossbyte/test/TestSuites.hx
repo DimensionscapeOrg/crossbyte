@@ -494,6 +494,9 @@ class TestSuites {
 		// The frames a message is kept in until acknowledged, given back for
 		// the next. Also in PortableSuite, for Node.
 		runner.addCase(new crossbyte.net.ReliableDatagramFramePoolTest());
+		// What an idle session holds, and what it makes only when it needs it.
+		// Also in PortableSuite, for Node.
+		runner.addCase(new crossbyte.net.ReliableDatagramSessionMemoryTest());
 		// One message to many sessions: PreparedDatagram, sendPrepared and a
 		// server's broadcast.
 		runner.addCase(new crossbyte.net.ReliableDatagramBroadcastTest());

@@ -106,6 +106,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.ReliableDatagramTamperTest());
 		// The frames a reliable message is kept in, given back for the next.
 		runner.addCase(new crossbyte.net.ReliableDatagramFramePoolTest());
+		// What an idle reliable session holds.
+		runner.addCase(new crossbyte.net.ReliableDatagramSessionMemoryTest());
 		// And what a datagram listener is handed, sends back and keeps.
 		runner.addCase(new crossbyte.net.DatagramArrivalTest());
 		// Red team: a datagram forwarded as an HTTP body from its listener.
