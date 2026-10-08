@@ -151,6 +151,212 @@ class RPCStructs {
 		return define(key, name, fields, full, [], false, null, pos);
 	}
 
+	/**
+		The kind of an enum: its constructor's index, one byte, or two for
+		an enum of more than 256 constructors, then that constructor's
+		arguments, each as its kind is written, positionally, as a
+		structure's fields are. A simple enum is its index alone, of fixed
+		size, and an array of one is one run. A tagged union, as Rust's enums
+		and protobuf's `oneof` are, where a lane of ordinals only would leave
+		an enum with arguments to be packed by hand.
+
+		Its token names each constructor, in index order, with its
+		arguments' kinds: `<Idle,Walk(f32,f32),Hit(i32)>`. Adding, removing,
+		renaming or reordering a constructor, or retyping an argument, makes
+		another method; a constructor's arguments renamed do not.
+	**/
+	public static function enumKind(en:EnumType, type:Type, pos:Position):RPCKind {
+		final path:String = pathKey(en.pack, en.name);
+		final key:String = "enum " + path;
+		final known:Null<RPCKind> = cached(key);
+		if (known != null) {
+			return known;
+		}
+		if (en.isPrivate) {
+			Context.error('RPC cannot carry $path: it is private to its module, and its reader and writer are generated in another. Make it public.', pos);
+		}
+		if (en.params.length > 0) {
+			Context.error('RPC cannot carry $path: an enum with type parameters is not carried. Declare one for the types it holds.', pos);
+		}
+		if (shaping.indexOf(key) >= 0) {
+			Context.error('RPC cannot carry $path: it contains itself, through ${shaping.slice(shaping.indexOf(key)).join(" -> ")}. A value on the wire is a tree of a fixed depth; send a list of nodes with indices instead.', pos);
+		}
+		shaping.push(key);
+		final ctors:Array<EnumCtor> = [];
+		try {
+			for (ctorName in en.names) {
+				final ctor:EnumField = en.constructs.get(ctorName);
+				final args:Array<StructField> = [];
+				switch (Context.follow(ctor.type)) {
+					case TFun(fnArgs, _):
+						for (arg in fnArgs) {
+							final kind:Null<RPCKind> = RPCKinds.ofType(arg.t, ctor.pos);
+							if (kind == null) {
+								Context.error('RPC cannot carry $path: argument ${arg.name} of ${ctorName} is ' + TypeTools.toString(arg.t)
+									+ ', not a kind RPC carries.', ctor.pos);
+							}
+							args.push({
+								name: arg.name,
+								pinned: -1,
+								type: arg.t,
+								optional: arg.opt || RPCKinds.isNullType(arg.t),
+								kind: kind
+							});
+						}
+					case _:
+				}
+				ctors.push({name: ctorName, index: ctor.index, args: args});
+			}
+		} catch (error:Dynamic) {
+			shaping.pop();
+			throw error;
+		}
+		shaping.pop();
+		ctors.sort((a, b) -> a.index - b.index);
+
+		final wide:Bool = ctors.length > 256;
+		final width:Int = wide ? 2 : 1;
+		var simple:Bool = true;
+		for (ctor in ctors) {
+			if (ctor.args.length > 0) {
+				simple = false;
+			}
+		}
+		final token:String = "<" + [
+			for (ctor in ctors)
+				ctor.name + (ctor.args.length == 0 ? "" : "(" + [for (arg in ctor.args) RPCKinds.token(arg.kind, arg.optional)].join(",") + ")")
+		].join(",") + ">";
+
+		final codec:String = codecName(key, "E");
+		final codecPath:Array<String> = ["crossbyte", "rpc", "_internal", "codec", codec];
+		final enumType:ComplexType = RPCContractMacroTools.fullComplexType(type);
+		// Its constructors named through its module, which a type of another
+		// name in that module needs.
+		final moduleParts:Array<String> = en.module.split(".");
+		final enumPath:Array<String> = moduleParts[moduleParts.length - 1] == en.name ? moduleParts : moduleParts.concat([en.name]);
+		final nullName:Expr = macro $v{path};
+		final putOrdinal:Expr = wide ? macro frame.putShort(ordinal) : macro frame.putByte(ordinal);
+		final getOrdinal:Expr = wide ? macro crossbyte.rpc._internal.RPCWire.readU16(input) : macro input.readByte();
+
+		final argCases:Array<Case> = [];
+		final readCases:Array<Case> = [];
+		for (ctor in ctors) {
+			final ctorRef:Expr = macro $p{enumPath.concat([ctor.name])};
+			if (ctor.args.length == 0) {
+				readCases.push({values: [macro $v{ctor.index}], expr: ctorRef});
+				continue;
+			}
+			final names:Array<Expr> = [for (i in 0...ctor.args.length) macro $i{"__a" + i}];
+			final writes:Array<Expr> = [
+				for (i in 0...ctor.args.length)
+					RPCKinds.write(ctor.args[i].kind, ctor.args[i].optional, macro frame, names[i])
+			];
+			argCases.push({values: [{expr: ECall(ctorRef, names), pos: pos}], expr: macro $b{writes}});
+			final reads:Array<Expr> = [
+				for (i in 0...ctor.args.length) {
+					final local:String = "__a" + i;
+					final get:Expr = RPCKinds.read(ctor.args[i].kind, ctor.args[i].optional, macro input, macro end);
+					macro var $local = $get;
+				}
+			];
+			reads.push({expr: ECall(ctorRef, names), pos: pos});
+			readCases.push({values: [macro $v{ctor.index}], expr: macro $b{reads}});
+		}
+		final writeArgs:Expr = argCases.length == 0 ? macro {} : {expr: ESwitch(macro value, argCases, macro {}), pos: pos};
+		final readSwitch:Expr = {expr: ESwitch(getOrdinal, readCases, macro throw "RPC enum constructor out of range"), pos: pos};
+
+		final fields:Array<Field> = [
+			{
+				name: "write",
+				doc: 'Writes $path into a frame: ' + token,
+				access: [APublic, AStatic],
+				kind: FFun({
+					args: [{name: "frame", type: macro :crossbyte.rpc._internal.RPCFrame}, {name: "value", type: enumType}],
+					ret: macro :Void,
+					expr: macro {
+						if (value == null) {
+							throw crossbyte.rpc._internal.RPCFrame.nullValue($nullName);
+						}
+						final ordinal:Int = Type.enumIndex(value);
+						$putOrdinal;
+						$writeArgs;
+					}
+				}),
+				pos: pos
+			},
+			{
+				name: "read",
+				doc: 'Reads $path from a frame ending at `end`.',
+				access: [APublic, AStatic],
+				kind: FFun({
+					args: [{name: "input", type: macro :crossbyte.io.ByteArrayInput}, {name: "end", type: macro :Int}],
+					ret: enumType,
+					expr: macro return $readSwitch
+				}),
+				pos: pos
+			}
+		];
+		if (simple) {
+			// One of fixed size: put and got at a place, for an array of them
+			// as one run.
+			final putIndex:Expr = wide ? macro crossbyte.rpc._internal.RPCBytes.set16(data, at, Type.enumIndex(value)) : macro crossbyte.rpc._internal.RPCBytes.set8(data,
+				at, Type.enumIndex(value));
+			final getIndex:Expr = wide ? macro crossbyte.rpc._internal.RPCBytes.getU16(data, at) : macro crossbyte.rpc._internal.RPCBytes.getU8(data, at);
+			final getSwitch:Expr = {expr: ESwitch(getIndex, readCases, macro throw "RPC enum constructor out of range"), pos: pos};
+			fields.push({
+				name: "put",
+				access: [APublic, AStatic, AInline],
+				kind: FFun({
+					args: [{name: "data", type: macro :haxe.io.Bytes}, {name: "at", type: macro :Int}, {name: "value", type: enumType}],
+					ret: macro :Void,
+					expr: macro {
+						if (value == null) {
+							throw crossbyte.rpc._internal.RPCFrame.nullValue($nullName);
+						}
+						$putIndex;
+					}
+				}),
+				pos: pos
+			});
+			fields.push({
+				name: "get",
+				access: [APublic, AStatic],
+				kind: FFun({
+					args: [{name: "data", type: macro :haxe.io.Bytes}, {name: "at", type: macro :Int}],
+					ret: enumType,
+					expr: macro return $getSwitch
+				}),
+				pos: pos
+			});
+		}
+		if (!exists(codecPath.join("."))) {
+			Context.defineType({
+				pack: codecPath.slice(0, codecPath.length - 1),
+				name: codec,
+				pos: pos,
+				meta: [{name: ":noCompletion", params: [], pos: pos}],
+				kind: TDClass(),
+				fields: fields
+			}, en.module);
+		}
+
+		final ref:Expr = macro $p{codecPath};
+		final kind:RPCKind = {
+			name: path,
+			token: token,
+			size: simple ? width : -1,
+			roomOf: simple ? null : value -> macro $v{width},
+			zero: macro null,
+			compound: true,
+			write: (frame, value) -> macro $ref.write($frame, $value),
+			read: (input, end) -> macro $ref.read($input, $end),
+			put: simple ? (data, at, value) -> macro $ref.put($data, $at, $value) : null,
+			get: simple ? (data, at) -> macro $ref.get($data, $at) : null
+		};
+		codecs.set(key, kind);
+		return kind;
+	}
+
 	/** Every field's kind, in wire order, checked. **/
 	static function shape(name:String, key:String, declared:Array<ClassField>, anonymous:Bool, pos:Position):Array<StructField> {
 		if (shaping.indexOf(key) >= 0) {
@@ -495,6 +701,12 @@ class RPCStructs {
 	static inline function pathKey(pack:Array<String>, name:String):String {
 		return (pack.length > 0 ? pack.join(".") + "." : "") + name;
 	}
+}
+
+private typedef EnumCtor = {
+	final name:String;
+	final index:Int;
+	final args:Array<StructField>;
 }
 
 private typedef StructField = {
