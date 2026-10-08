@@ -509,7 +509,15 @@ entry below says how:
   which is faster there), and on the jvm through a ChaCha20-Poly1305 of
   CrossByte's own, since Java 8 has none; not on HashLink, neko or the
   interpreter, which have no secure random source. Peers that do not ask
-  for encryption see no change on the wire. Tests:
+  for encryption see no change on the wire, and a session in the clear
+  costs what it did. Not protected: who talks to whom, when and how much
+  (sizes, timing, counts, packet numbers), the CONNECT and its token, and
+  past sessions once a key leaks (no forward secrecy in this mode); a
+  server's reset is not authenticated, so it ends no encrypted session.
+  "Encrypted sessions" in `ReliableDatagramServerSocket`'s class doc is a
+  complete login service, game server and client (connect tokens, HKDF),
+  compiled with the doc examples; the README's "Reliable UDP: encrypted
+  sessions" sums it up with figures per target. Tests:
   `ReliableDatagramCipherTest` (RFC 8439 and OpenSSL vectors, whole sealed
   datagrams computed independently with Node's crypto),
   `ReliableDatagramEncryptionTest` (the handshake and every refusal, loss

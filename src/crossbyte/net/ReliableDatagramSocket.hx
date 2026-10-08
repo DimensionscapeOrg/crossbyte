@@ -88,6 +88,13 @@ import crossbyte._internal.net.IPv6;
 	`ioError` saying why, and then `close`: a connect that times out or
 	whose name does not resolve, a send the system refuses, or a peer silent
 	for `idleTimeout`.
+
+	A session given a key (`encryptionKey`, or a server's
+	`encryptionKeyFor`) seals every datagram after its CONNECT with
+	ChaCha20-Poly1305, under keys derived from that key for each direction,
+	and takes nothing in the clear but what is never sealed; it never falls
+	back to the clear. See `encryptionKey` for what that protects, and what
+	it does not.
 	@event connect Dispatched when the reliable handshake completes.
 	@event close Dispatched once, when the session ends: closed by the peer,
 	       by this side's `close()` once it has finished, by `abort()`, or by
@@ -314,8 +321,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		connect token and a key; the client sets the key here and sends the
 		token as its `connect` payload, and the server's
 		`ReliableDatagramServerSocket.encryptionKeyFor` derives or unwraps
-		the same key from the token. The guide's "Encrypted sessions" shows
-		both ends with `HKDF`.
+		the same key from the token. "Encrypted sessions", in
+		`ReliableDatagramServerSocket`'s class doc, shows the login service,
+		the server and the client, with `HKDF`; the README's "Reliable UDP:
+		encrypted sessions" sums it up.
 
 		With a key, every datagram the session sends after its CONNECT,
 		messages of every delivery mode, acknowledgements, bundles,
