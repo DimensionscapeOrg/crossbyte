@@ -187,6 +187,132 @@ import sys.net.Host;
 	join();
 	```
 
+	**Encrypted sessions.** A session can seal every datagram after its
+	CONNECT with a key the application gives both ends
+	(`ReliableDatagramSocket.encryptionKey` on the client,
+	`encryptionKeyFor` here): netcode.io's model, with QUIC's and DTLS
+	1.3's nonce and replay window. CrossByte exchanges no keys and checks
+	no certificates, for that, use DTLS (`crossbyte.net.rtc`) or TLS. The
+	usual shape is a login service, reached over HTTPS, that signs the
+	player in and answers with a connect token and a key; the client sends
+	the token as its `connect` payload, and every game server derives the
+	same key from the token with a secret only the servers hold, keeping
+	nothing per token:
+
+	```haxe
+	import crossbyte.crypto.ConstantTime;
+	import crossbyte.crypto.GenericHash;
+	import crossbyte.crypto.HKDF;
+	import crossbyte.crypto.SecureRandom;
+	import haxe.io.Bytes;
+
+	class ConnectTokens {
+		// Connect tokens: made by the login service, checked by the game
+		// servers, which share `secret` with it and with nobody else. A token
+		// is 16 random bytes, the time it stops being good and the player's
+		// name, under a MAC; the session's key is derived from the secret and
+		// the token's random, a key of its own for every token.
+		//
+		// How long a token is good for, in seconds.
+		public static inline var LIFETIME:Float = 30;
+
+		// For the login service: a token for `player`, and the key its client
+		// is to use.
+		public static function issue(secret:Bytes, player:String):{token:Bytes, key:Bytes} {
+			var name = Bytes.ofString(player);
+			var signed:Int = 16 + 8 + name.length;
+			var token = Bytes.alloc(signed + 16);
+			token.blit(0, SecureRandom.getSecureRandomBytes(16), 0, 16);
+			// time of day: the token is checked on other machines.
+			token.setDouble(16, Sys.time() + LIFETIME);
+			token.blit(24, name, 0, name.length);
+			token.blit(signed, GenericHash.hash(token.sub(0, signed), macKey(secret), 16), 0, 16);
+			return {token: token, key: sessionKey(secret, token)};
+		}
+
+		// For a game server: the player and key a token stands for; null for
+		// one forged, cut short or out of date.
+		public static function open(secret:Bytes, token:Bytes):Null<{player:String, key:Bytes}> {
+			if (token.length < 16 + 8 + 16 || token.length > 16 + 8 + 64 + 16) {
+				return null;
+			}
+			var signed:Int = token.length - 16;
+			var mac:Bytes = GenericHash.hash(token.sub(0, signed), macKey(secret), 16);
+			// time of day: as issue wrote it.
+			if (!ConstantTime.equals(mac, token.sub(signed, 16)) || token.getDouble(16) < Sys.time()) {
+				return null;
+			}
+			return {player: token.getString(24, signed - 24), key: sessionKey(secret, token)};
+		}
+
+		// Two keys from the one secret, neither of which can pass for the other.
+		static function macKey(secret:Bytes):Bytes {
+			return HKDF.sha256(secret, null, Bytes.ofString("connect-token mac"), 32);
+		}
+
+		static function sessionKey(secret:Bytes, token:Bytes):Bytes {
+			return HKDF.sha256(secret, token.sub(0, 16), Bytes.ofString("session key"), 32);
+		}
+	}
+	```
+
+	The login service, once the player has signed in, over HTTPS, since
+	the key in its answer is the session's secret:
+
+	```haxe
+	// Given secret:haxe.io.Bytes, player:String.
+	var grant = ConnectTokens.issue(secret, player);
+	var answer:String = haxe.Json.stringify({token: grant.token.toHex(), key: grant.key.toHex()});
+	```
+
+	A game server, `admit` drops a bad token without a word, and
+	`encryptionKeyFor` gives a good one's session its key:
+
+	```haxe
+	// Given server:ReliableDatagramServerSocket, secret:haxe.io.Bytes.
+	import crossbyte.io.ByteArray;
+
+	server.admit = (address:String, port:Int, payload:ByteArray) -> ConnectTokens.open(secret, payload) != null;
+	server.encryptionKeyFor = function(address:String, port:Int, payload:ByteArray):Null<haxe.io.Bytes> {
+		var opened = ConnectTokens.open(secret, payload);
+		return opened == null ? null : opened.key;
+	};
+	```
+
+	And the client, with what the login service answered:
+
+	```haxe
+	// Given host:String, port:Int, token:String, key:String.
+	import crossbyte.events.IOErrorEvent;
+	import crossbyte.io.ByteArray;
+
+	var socket = new ReliableDatagramSocket();
+	socket.encryptionKey = haxe.io.Bytes.ofHex(key);
+	// A refusal, or a key the server's does not match, ends the attempt
+	// with an ioError that says which.
+	socket.addEventListener(IOErrorEvent.IO_ERROR, (e:IOErrorEvent) -> trace(e.text));
+	socket.connect(host, port, ByteArray.fromBytes(haxe.io.Bytes.ofHex(token)));
+	```
+
+	A token crosses the network in the clear, in the CONNECT, so anyone who
+	saw it can send it again within its 30 seconds, and gets nothing: the
+	key is not in it, so a replayed token opens no session the replayer can
+	use, and holds a pending slot until its attempt times out. A server
+	that wants each token used once keeps the randoms of the last 30
+	seconds (`crossbyte.ds.ExpiringMap`) and refuses one it has seen.
+
+	What encryption protects, and what it does not: every message, and
+	every acknowledgement, keepalive and FIN, is confidential and cannot be
+	changed, replayed or forged undetected; the rebind proof is keyed with
+	a key that is never sent (`allowRebind`). It does not hide who talks to
+	whom, when, how often or how much, datagram sizes, timing, counts and
+	packet numbers, nor the CONNECT and its token, which go in the clear;
+	and there is no forward secrecy in this mode: whoever learns a key, or
+	the servers' secret, can open what they recorded of the sessions it
+	keyed. A reset from a server is not authenticated, so it does not end
+	an encrypted session; a server that has lost one (restarted) is
+	noticed at `idleTimeout`.
+
 	@event close Dispatched when the server socket is closed.
 	@event connect Dispatched when a session a peer opened completes its
 	       handshake. A session this server dials, with `connect` or
@@ -556,8 +682,9 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		login service that hands the client a key and a connect token over
 		HTTPS. The token is the client's `connect` payload, and this derives
 		the key from it, with `crossbyte.crypto.HKDF` and a secret only the
-		servers hold, or unwraps it (`crossbyte.crypto.Aead`). The guide's
-		"Encrypted sessions" shows both ends.
+		servers hold, or unwraps it (`crossbyte.crypto.Aead`). "Encrypted
+		sessions", in the class doc above, shows the login service, the
+		server and the client.
 
 		It fails closed, either way round. A CONNECT asking for encryption
 		that this answers with null, and one asking for none that this gives

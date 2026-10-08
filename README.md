@@ -373,6 +373,69 @@ follow an address: those players reconnect and resume, as
 `ReliableDatagramServerSocket`'s class doc shows under "Resuming a player",
 which is also the fallback for a peer from before 1.0.
 
+## Reliable UDP: encrypted sessions
+
+A reliable UDP session can seal every datagram after its CONNECT with a key
+the application gives both ends, netcode.io's model. CrossByte exchanges no
+keys and checks no certificates here; that is what DTLS (`crossbyte.net.rtc`)
+and TLS are for. Typically a login service, over HTTPS, signs the player in
+and hands it a connect token and a key; the client sends the token as its
+`connect` payload, and the game server derives the same key from the token
+with a secret only the servers hold. "Encrypted sessions", in
+`ReliableDatagramServerSocket`'s class doc, is that whole example, the
+tokens, the key derivation with `HKDF`, the login service, the server and
+the client, compiled with the doc examples.
+
+| Where | What |
+| --- | --- |
+| `ReliableDatagramSocket.encryptionKey` | the client's 32-byte key, set before `connect`; null (default) is a session in the clear |
+| `ReliableDatagramServerSocket.encryptionKeyFor(address, port, payload)` | asked for each CONNECT `admit` lets in: the session's key, or null |
+| `connect` / `connectRelayed` on the server | an `encryptionKey` argument, for sessions it dials |
+| `ReliableDatagramSocket.isEncryptionSupported`, `encrypted` | whether this target can, and whether this session does |
+| `unauthenticatedDatagrams`, `replayedDatagrams`, `lateDatagrams` | what an encrypted session dropped |
+| `ENCRYPTION_OVERHEAD`, `MAX_ENCRYPTED_PAYLOAD_SIZE`, `maxPayloadSize` | 21 bytes a datagram; so 1,179-byte frames, and no sealed datagram past the 1,211 bytes of one in the clear |
+
+**How.** Each end of an attempt contributes 16 random bytes in the clear;
+HKDF-SHA-256 over both and the application's key gives each direction a key
+and an IV of its own, so a key given to two sessions never seals two datagrams alike.
+Every datagram is sealed with ChaCha20-Poly1305 (RFC 8439); its nonce is the
+direction's IV XOR a 64-bit packet number, as TLS 1.3 and QUIC build theirs,
+and only the number's low 32 bits are sent. The header, a type byte and that
+number, is authenticated. A 1,024-number replay window drops a datagram seen
+before, or older, before decrypting it. Messages of every delivery mode,
+acknowledgements, bundles, keepalives and the FIN are all sealed; CONNECTs and
+the rebind's PATH frames are not, and an encrypted session's rebind proof is
+keyed with a key both ends derive and neither sends.
+
+**It fails closed.** A session that asked for encryption never falls back to
+the clear: a peer that answers without it (one from before encryption was
+added, or a server that gave it no key), a key that does not match, and a
+server's refusal each end the attempt with an `ioError` naming the reason,
+then `close`. A server whose `encryptionKeyFor` gives a key to a CONNECT that
+asked for none refuses it too.
+
+**What it does not protect.** Who talks to whom, when, how often and how much
+(datagram sizes, timing, counts, packet numbers); the CONNECT and its token,
+which go in the clear, so a token must be worthless without the key (as the
+example's are); past sessions, once a key or the servers' secret is known,
+there is no forward secrecy in this mode. A server's reset is not
+authenticated either, so it does not end an encrypted session: one whose
+server restarted ends at its `idleTimeout`.
+
+| Target | Sealed with | Seal + open, per datagram, 100 B / 1,200 B |
+| --- | --- | --- |
+| native | libsodium | 0.95 / 2.6 us |
+| jvm | CrossByte's own ChaCha20-Poly1305 (Java 8 has none) | 1.1 / 7.9 us |
+| Node | Node's `crypto` from 896 bytes, CrossByte's own below (faster there) | 1.5 / 6.5 us |
+| HashLink, neko, interpreter | not supported: no secure random source | n/a |
+
+Inside a real workload, 200 sessions over loopback, a reliable and a
+sequenced message each way a round, encryption added about 1.25 us a
+datagram natively (seal at one end, open at the other) and nothing to what a
+message allocates; a session in the clear is unchanged. An encrypted session a
+server holds costs about 1.8 KB more than one in the clear (keys, IVs, the
+replay window); the buffers it seals and opens into are the server's, shared.
+
 ## WebSocket servers: what a peer can cost
 
 Every limit on a `ServerWebSocket` is on by default, and each is the
