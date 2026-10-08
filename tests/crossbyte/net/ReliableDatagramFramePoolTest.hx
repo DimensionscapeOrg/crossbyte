@@ -189,6 +189,11 @@ class ReliableDatagramFramePoolTest extends utest.Test {
 				var shared = server.__framePool();
 				Assert.isTrue(accepted[0].__pool() == shared && accepted[1].__pool() == shared, "a server's sessions took frames from pools of their own");
 				Assert.isTrue(clients[0].__pool() != shared && clients[0].__pool() != clients[1].__pool(), "a client shared a pool");
+				// And the scratch a HANDSHAKE's and an ACK's payload are written
+				// into, copied out at once: the server's, not one a session.
+				Assert.isTrue(accepted[0].__echoBuffer() == accepted[1].__echoBuffer() && accepted[0].__echoBuffer() == server.__echoScratch);
+				Assert.isTrue(accepted[0].__sackBuffer() == accepted[1].__sackBuffer() && accepted[0].__sackBuffer() == server.__sackScratch);
+				Assert.isTrue(clients[0].__echoBuffer() != clients[1].__echoBuffer(), "two clients shared a scratch");
 				// One the server dials, to a port nobody answers on.
 				var dialled = server.connect("127.0.0.1", 9, 1000);
 				Assert.isTrue(dialled.__pool() == shared, "a session the server dialled took frames from a pool of its own");

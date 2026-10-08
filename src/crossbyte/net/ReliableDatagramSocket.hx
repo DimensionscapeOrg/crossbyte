@@ -841,6 +841,14 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// expected, and the window must fit inside it.
 	@:noCompletion private static inline var IN_FRAME_SLOTS:Int = ReliableDatagramProtocol.SACK_BITS;
 
+	// The slots the receive ring is made with, when a frame first arrives
+	// past a gap; it doubles as far as IN_FRAME_SLOTS for one further ahead.
+	@:noCompletion private static inline var IN_FRAME_INITIAL:Int = 16;
+
+	// The most a quiet session's send buffer keeps: past it, a keepalive
+	// check that finds the session quiet lets it go.
+	@:noCompletion private static inline var QUIET_SCRATCH:Int = 256;
+
 	/** `timeout` unless changed, in milliseconds. **/
 	public static inline var DEFAULT_TIMEOUT:Int = 20000;
 
@@ -933,7 +941,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __heardSinceChallenge:Bool = false;
 
 	// A HANDSHAKE's payload when it echoes an id: four bytes, big-endian.
-	@:noCompletion private var __echoScratch:ByteArray;
+	// The session's own only where it has no server (see `__echoBuffer`).
+	@:noCompletion private var __echoScratch:ByteArray = null;
 
 	/**
 		How often the socket looks for frames whose time is up.
@@ -1060,7 +1069,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// natively copies them all first, for every ACK, and one goes at once
 	// for each frame past a gap, so a burst of loss cost the square of the
 	// frames held.
-	@:noCompletion private var __inFrameCache:SequenceRing<ReliableDatagramFrame>;
+	//
+	// Null until a frame first arrives past a gap, made then with
+	// IN_FRAME_INITIAL slots and grown as far as the frames held reach, and
+	// let go again at a keepalive check that finds it empty: a full ring of
+	// 512 was two arrays, 6 KB natively, in every session, most of which
+	// never lose a frame.
+	@:noCompletion private var __inFrameCache:SequenceRing<ReliableDatagramFrame> = null;
 
 	// The reliable message still arriving in fragments, null between
 	// messages, and how much of it has come: each fragment is copied in as it
@@ -1096,12 +1111,19 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// Every frame this socket sends is written here and sent from here. A
 	// send has finished with its bytes before it returns, so one buffer
 	// serves every frame, where encoding each into one of its own was an
-	// allocation per packet and per acknowledgement.
-	@:noCompletion private var __scratch:ByteArray;
+	// allocation per packet and per acknowledgement. Made with the first
+	// frame, and grown to the largest bundle sent: a session that sends
+	// only small frames, keepalives, acknowledgements, a game's inputs,
+	// holds a small one, where every session held room for the largest
+	// frame there is, 1.2 KB.
+	@:noCompletion private var __scratch:ByteArray = null;
 	@:noCompletion private var __inFrameCacheSize:Int = 0;
 	@:noCompletion private var __inSequence:Seq32 = 0;
 	@:noCompletion private var __incoming:Bool = false;
-	@:noCompletion private var __input:ByteArray;
+	// A STREAM session's: what has arrived and not been read, and what has
+	// been written and not flushed; null in DATAGRAM mode (see
+	// `__streamBuffers`).
+	@:noCompletion private var __input:ByteArray = null;
 	@:noCompletion private var __keepAliveHandle:Int = -1;
 	@:noCompletion private var __mode:ReliableDatagramSocketMode = DATAGRAM;
 	// The frames in flight, by sequence: every one from `__windowBase` to
@@ -1209,8 +1231,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	**/
 	@:noCompletion private static inline var MIN_PROBE_TIMEOUT:Float = 0.01;
 
-	// Where a selective acknowledgement is written before it is sent.
-	@:noCompletion private var __sackScratch:ByteArray;
+	// Where a selective acknowledgement is written before it is sent; the
+	// session's own only where it has no server (see `__sackBuffer`).
+	@:noCompletion private var __sackScratch:ByteArray = null;
 
 	// Outstanding frames the peer has said it holds. They have left the
 	// network, so they no longer count against the congestion window.
@@ -1225,7 +1248,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// Frames made and not yet sent. They are the frames the retransmission
 	// cache will hold, made once, carrying the `more` flag with them.
 	@:noCompletion private var __outgoingQueue:Array<OutstandingFrame>;
-	@:noCompletion private var __output:ByteArray;
+	@:noCompletion private var __output:ByteArray = null;
 	@:noCompletion private var __ownsTransport:Bool = true;
 	@:noCompletion private var __remoteAddress:String = "";
 	@:noCompletion private var __remotePort:Int = 0;
@@ -1301,20 +1324,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	public function new(host:String = null, port:Int = 0) {
 		super();
 
-		__inFrameCache = new SequenceRing(IN_FRAME_SLOTS);
 		__inFrameCacheSize = 0;
 		__outFrameCache = new FrameWindow();
 		__outgoingQueue = [];
-		__scratch = new ByteArray();
-		// A single frame of the largest size, with room before it for the
-		// bundle's magic and its length, which it is sent without, and the
-		// largest is a CONNECT carrying a whole frame's payload behind its
-		// extension.
-		__scratch.length = ReliableDatagramProtocol.MAX_FRAME_SIZE + ReliableDatagramProtocol.BUNDLE_HEADER_SIZE
-			+ ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE + ReliableDatagramProtocol.CONNECT_EXTENSION_MAX;
 		objectEncoding = ObjectEncoding.DEFAULT;
-		__input = __createBuffer();
-		__output = __createBuffer();
+		// The stream's buffers are made when the mode becomes STREAM: a
+		// DATAGRAM session, which is most, never reads or writes either.
 		// A session a server makes takes the server's socket, and makes no
 		// socket of its own: each made one, a system socket, its buffers
 		// asked for, its read buffer, that the server closed at once, about
@@ -1399,12 +1414,14 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// close is not.
 		__closing = true;
 		__closeStartedAt = __clock();
-		if (__mode == STREAM && __output.length > 0) {
+		if (__mode == STREAM && __output != null && __output.length > 0) {
 			__queueBytes(__output, 0, __output.length);
 			__output = __createBuffer();
 		}
 		// Unread, and now unreadable: `bytesAvailable` says so.
-		__input = __createBuffer();
+		if (__mode == STREAM) {
+			__input = __createBuffer();
+		}
 
 		__queueFin();
 		__armCloseTimer(__closeTimeout);
@@ -1741,7 +1758,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		        reliable session is not connected.
 	**/
 	public function flush():Void {
-		if (__mode == STREAM && __output.length > 0) {
+		if (__mode == STREAM && __output != null && __output.length > 0) {
 			__requireOpenConnection();
 			// Taken before it is queued: past the output limit under
 			// `THROW`, queueing throws once the bytes are queued, and they
@@ -2231,6 +2248,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			socket.connectPayload.position = 0;
 		}
 		socket.__mode = mode;
+		socket.__streamBuffers();
 		socket.__server = server;
 		socket.__transport = transport;
 		socket.__remoteAddress = remoteAddress;
@@ -2289,6 +2307,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		socket.__incoming = false;
 		socket.__connectOut = payload;
 		socket.__mode = mode;
+		socket.__streamBuffers();
 		socket.__server = server;
 		socket.__transport = transport;
 		socket.__remoteAddress = remoteAddress != null ? remoteAddress : "";
@@ -3453,7 +3472,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__drainBufferedPackets();
 		} else if (__shouldBufferPacket(sequence)) {
 			__cacheFrame(sequence, payload, more);
-		} else if (sequence < __inSequence || __inFrameCache.has(sequence)) {
+		} else if (sequence < __inSequence || (__inFrameCache != null && __inFrameCache.has(sequence))) {
 			// One already here, sent again: its first copy's acknowledgement
 			// was late or lost. The ACK this draws says so, which tells the
 			// peer this copy arrived (see `__creditDuplicate`).
@@ -3590,7 +3609,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return false;
 		}
 
-		if (__inFrameCache.has(sequence)) {
+		if (__inFrameCache != null && __inFrameCache.has(sequence)) {
 			return false;
 		}
 
@@ -3620,16 +3639,51 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// which cost an O(n) iteration plus an iterator allocation for every
 	// buffered datagram.
 	@:noCompletion private function __holdFrame(sequence:Seq32, frame:ReliableDatagramFrame):Void {
-		var added:Bool = !__inFrameCache.has(sequence);
+		var cache:SequenceRing<ReliableDatagramFrame> = __inFrameCache;
+		if (cache == null) {
+			cache = __inFrameCache = new SequenceRing(IN_FRAME_INITIAL);
+		}
+		// The ring reaches from the next expected to this one, or its oldest
+		// would age out: grown first, and what it holds moved.
+		var reach:Int = ((sequence : Int) - (__inSequence : Int)) | 0;
+		if (reach >= cache.capacity && cache.capacity < IN_FRAME_SLOTS) {
+			cache = __growInFrames(reach);
+		}
+		var added:Bool = !cache.has(sequence);
 		if (added && __inFrameCacheSize == 0) {
 			// Nothing held: the ring's window starts again here. It moves only
 			// as frames are put, and one put 2^31 frames ago, a long, clean
 			// stretch, would make this one read as older than the window.
-			__inFrameCache.clear();
+			cache.clear();
 		}
-		if (__inFrameCache.put(sequence, frame) && added) {
+		if (cache.put(sequence, frame) && added) {
 			__inFrameCacheSize++;
 		}
+	}
+
+	/**
+		The receive ring, made larger: enough slots, a power of two and at
+		most IN_FRAME_SLOTS, to reach `reach` past the next expected, with
+		every frame it held moved over. They all lie within the old ring's
+		reach of the next expected, which only ever moves up.
+	**/
+	@:noCompletion private function __growInFrames(reach:Int):SequenceRing<ReliableDatagramFrame> {
+		var old:SequenceRing<ReliableDatagramFrame> = __inFrameCache;
+		var size:Int = old.capacity << 1;
+		while (size <= reach && size < IN_FRAME_SLOTS) {
+			size <<= 1;
+		}
+		var grown = new SequenceRing<ReliableDatagramFrame>(size);
+		if (__inFrameCacheSize > 0) {
+			var sequence:Seq32 = __inSequence + 1;
+			for (_ in 0...old.capacity) {
+				if (old.has(sequence)) {
+					grown.put(sequence, old.get(sequence));
+				}
+				sequence++;
+			}
+		}
+		return __inFrameCache = grown;
 	}
 
 	@:noCompletion private inline function __inFrameCacheCount():Int {
@@ -3696,6 +3750,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		arrive, and takes 31-47 ms now.
 	**/
 	@:noCompletion private function __appendStreamPayload(payload:ByteArray):Void {
+		if (__input == null) {
+			__streamBuffers();
+		}
 		var readTo:Int = __input.position;
 		var unread:Int = __input.length - readTo;
 		if (unread <= 0) {
@@ -3838,7 +3895,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// it now, and no caller further up holds a frame past the send that
 		// failed into this (each loop that sends returns once closed).
 		__giveBackFrames();
-		__inFrameCache = new SequenceRing(IN_FRAME_SLOTS);
+		__inFrameCache = null;
 		__inFrameCacheSize = 0;
 		__assembly = null;
 		__fragmentBytes = 0;
@@ -3871,8 +3928,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__reorderingSeen = false;
 		__peerSacks = false;
 		__probed = false;
-		__input = __createBuffer();
-		__output = __createBuffer();
+		__input = null;
+		__output = null;
+		__streamBuffers();
 		// Anything still gathered is for a session that no longer exists.
 		// abort() sent it before coming here, and so did a peer's close; a
 		// failure or a timeout has nobody left to send it to, and a close
@@ -3910,7 +3968,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	@:noCompletion private function __drainBufferedPackets():Void {
-		while (!__closed && __inFrameCache.has(__inSequence)) {
+		while (!__closed && __inFrameCache != null && __inFrameCache.has(__inSequence)) {
 			var frame:ReliableDatagramFrame = __inFrameCache.get(__inSequence);
 			__inFrameCache.remove(__inSequence);
 			__inFrameCacheSize--;
@@ -4132,12 +4190,24 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
+		// Quiet for the whole period, nothing gathered: a send buffer grown
+		// past a small one goes, and the keepalive below makes a small one.
+		if (!__sentSinceKeepAlive && __pendingCount == 0 && __scratch != null && __scratch.length > QUIET_SCRATCH) {
+			__scratch = null;
+		}
+
 		// Only a session that has been quiet: one sending anyway is already
 		// drawing acknowledgements, which say as much.
 		if (__keepAliveInterval > 0 && !__sentSinceKeepAlive) {
 			__sendHandshake();
 		}
 		__sentSinceKeepAlive = false;
+
+		// A receive ring holding nothing is let go: made again, small, when a
+		// frame next arrives past a gap.
+		if (__inFrameCacheSize == 0) {
+			__inFrameCache = null;
+		}
 
 		// Frames kept for traffic that has stopped are let go; see
 		// `FramePool.quiet`. A pool nothing has sent from is not made for it.
@@ -4378,6 +4448,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (__mode != STREAM) {
 			throw new IllegalOperationError("Cannot use stream I/O while the socket is in datagram mode.");
 		}
+		if (__input == null) {
+			__streamBuffers();
+		}
 	}
 
 	@:noCompletion private function __resetSequences():Void {
@@ -4496,11 +4569,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (givesKey) {
 			length = ReliableDatagramProtocol.REBIND_HANDSHAKE_PAYLOAD_SIZE;
 		}
-		if (__echoScratch == null || __echoScratch.length < length) {
-			__echoScratch = new ByteArray();
-			__echoScratch.length = length;
-		}
-		var bytes:haxe.io.Bytes = __echoScratch;
+		var echo:ByteArray = __echoBuffer();
+		var bytes:haxe.io.Bytes = echo;
 		bytes.set(0, __peerConnectionId >>> 24);
 		bytes.set(1, (__peerConnectionId >>> 16) & 0xFF);
 		bytes.set(2, (__peerConnectionId >>> 8) & 0xFF);
@@ -4511,7 +4581,44 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (givesKey) {
 			bytes.blit(ReliableDatagramProtocol.HANDSHAKE_PAYLOAD_SIZE, __rebindKey, 0, ReliableDatagramProtocol.REBIND_KEY_SIZE);
 		}
-		__sendFrame(HANDSHAKE, __firstSequence, __echoScratch, 0, length, false, __inSequence, __connected, false);
+		__sendFrame(HANDSHAKE, __firstSequence, echo, 0, length, false, __inSequence, __connected, false);
+	}
+
+	/**
+		Where a HANDSHAKE's payload is written, which the frame copies out of
+		at once: its server's, shared by every session of the server, one
+		runtime, one frame at a time, or the session's own. One for each
+		session a server held was 130 bytes apiece natively.
+	**/
+	@:noCompletion private function __echoBuffer():ByteArray {
+		var server:Null<ReliableDatagramServerSocket> = __server;
+		var echo:ByteArray = server != null ? server.__echoScratch : __echoScratch;
+		if (echo == null) {
+			echo = new ByteArray();
+			echo.length = ReliableDatagramProtocol.REBIND_HANDSHAKE_PAYLOAD_SIZE;
+			if (server != null) {
+				server.__echoScratch = echo;
+			} else {
+				__echoScratch = echo;
+			}
+		}
+		return echo;
+	}
+
+	/** Where an ACK's payload is written, shared as `__echoBuffer` is. **/
+	@:noCompletion private function __sackBuffer():ByteArray {
+		var server:Null<ReliableDatagramServerSocket> = __server;
+		var sack:ByteArray = server != null ? server.__sackScratch : __sackScratch;
+		if (sack == null) {
+			sack = new ByteArray();
+			sack.length = 2 + ReliableDatagramProtocol.SACK_BYTES;
+			if (server != null) {
+				server.__sackScratch = sack;
+			} else {
+				__sackScratch = sack;
+			}
+		}
+		return sack;
 	}
 
 	/**
@@ -4744,6 +4851,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		var entry:Int = __pendingLength;
 		var at:Int = entry + ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE;
+		if (__scratch == null || __scratch.length < at + size) {
+			__growScratch(at + size);
+		}
 		var written:Int = ReliableDatagramProtocol.encodeInto(__scratch, type, sequence, payload, offset, length, resend, ack, hasAck, more, at,
 			graceful);
 		var bytes:haxe.io.Bytes = __scratch;
@@ -4760,6 +4870,18 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (!__flushQueued) {
 			__queueFlush();
 		}
+	}
+
+	/**
+		Makes `__scratch` hold at least `needed` bytes, what it holds kept:
+		in steps of 128, so a few frames' growth does not grow it each time.
+	**/
+	@:noCompletion private function __growScratch(needed:Int):Void {
+		var size:Int = (needed + 127) & ~127;
+		if (__scratch == null) {
+			__scratch = new ByteArray();
+		}
+		__scratch.length = size;
 	}
 
 	/**
@@ -4873,7 +4995,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// The resend bit, on an ACK, says a duplicate drew it.
 		var duplicate:Bool = __duplicateArrived;
 		__duplicateArrived = false;
-		__sendFrame(ACK, __inSequence, length > 0 ? __sackScratch : null, 0, length, duplicate, 0, false, false, withDelay);
+		__sendFrame(ACK, __inSequence, length > 0 ? __sackBuffer() : null, 0, length, duplicate, 0, false, false, withDelay);
 	}
 
 	/**
@@ -4882,11 +5004,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		many bytes of it matter.
 	**/
 	@:noCompletion private function __writeAckPayload(withDelay:Bool):Int {
-		if (__sackScratch == null) {
-			__sackScratch = new ByteArray();
-			__sackScratch.length = 2 + ReliableDatagramProtocol.SACK_BYTES;
-		}
-		var bytes:haxe.io.Bytes = __sackScratch;
+		var bytes:haxe.io.Bytes = __sackBuffer();
 		var at:Int = 0;
 		if (withDelay) {
 			var units:Int = ReliableDatagramProtocol.delayUnits(__clock() - __newestArrivalAt);
@@ -5363,11 +5481,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	@:noCompletion private inline function get_bytesAvailable():UInt {
-		return __mode == STREAM ? __input.bytesAvailable : 0;
+		return __mode == STREAM && __input != null ? __input.bytesAvailable : 0;
 	}
 
 	@:noCompletion private inline function get_bytesPending():Int {
-		return __mode == STREAM ? __output.length : 0;
+		return __mode == STREAM && __output != null ? __output.length : 0;
 	}
 
 	@:noCompletion private inline function get_connected():Bool {
@@ -5404,8 +5522,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	@:noCompletion private function set_endian(value:Endian):Endian {
 		__endian = value;
-		__input.endian = value;
-		__output.endian = value;
+		if (__input != null) {
+			__input.endian = value;
+			__output.endian = value;
+		}
 		return value;
 	}
 
@@ -5418,12 +5538,25 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			throw new IllegalOperationError("Socket mode must be set before connecting or accepting a session.");
 		}
 
-		if (__input.bytesAvailable > 0 || __output.length > 0) {
+		if (__input != null && (__input.bytesAvailable > 0 || __output.length > 0)) {
 			throw new IllegalOperationError("Cannot change socket mode while stream buffers contain data.");
 		}
 
 		__mode = value;
+		__streamBuffers();
 		return value;
+	}
+
+	/**
+		A STREAM session's buffers, made if it has none; a DATAGRAM session
+		holds none, nor needs them, since only the stream reads and writes
+		them.
+	**/
+	@:noCompletion private function __streamBuffers():Void {
+		if (__mode == STREAM && __input == null) {
+			__input = __createBuffer();
+			__output = __createBuffer();
+		}
 	}
 
 	@:noCompletion private function set_timeout(value:Int):Int {
