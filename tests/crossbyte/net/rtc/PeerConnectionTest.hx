@@ -890,6 +890,169 @@ class PeerConnectionTest extends utest.Test {
 	}
 
 	/**
+		A `readyTimeout` of 0 is no deadline, as every other timeout here
+		reads 0. It was read as a deadline already past, so the connection
+		failed at the first poll after `connect`.
+	**/
+	public function testAReadyTimeoutOfZeroIsNoDeadline():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var peer = new IceOnlyPeer();
+		var failure:String = null;
+
+		try {
+			alice.ready.then(_ -> {}, error -> failure = error);
+			alice.readyTimeout = 0;
+
+			alice.bind(0, "127.0.0.1");
+			alice.connect(peer.description());
+			peer.start(alice.description());
+
+			pumpWith(peer, () -> failure != null || alice.agent.state == crossbyte.net.ice.IceAgentState.CONNECTED, 10.0);
+			Assert.isNull(failure, "a connection given no deadline failed: " + failure);
+
+			// Long after a deadline would have come, and short of consent
+			// running out: the peer never opens DTLS, so only a deadline could
+			// end this.
+			alice.poll(haxe.Timer.stamp() + IceAgent.CONSENT_TIMEOUT - 5.0);
+
+			Assert.isNull(failure, "a connection given no deadline failed: " + failure);
+			Assert.isFalse(alice.closeReason != null, "a connection given no deadline closed: " + alice.closeReason);
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		peer.close();
+	}
+
+	/**
+		And a restart given no deadline is not given up: the agent's own
+		`timeout` is what ends one that finds no path.
+	**/
+	public function testARestartGivenNoDeadlineIsNotGivenUp():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+
+		try {
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			if (!alice.connected || !bob.connected) {
+				Assert.fail("the two never connected");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			alice.readyTimeout = 0;
+			alice.restartIce();
+
+			// The offer never reaches Bob. A deadline of 0 used to give the
+			// restart up at the first poll.
+			pumpUntil(() -> !alice.iceRestarting, 1.5);
+
+			Assert.isTrue(alice.iceRestarting, "a restart given no deadline was given up");
+			Assert.isTrue(alice.connected, "the connection went down");
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
+		A `readyTimeout` that is not a number of seconds is refused, and the
+		one it had stays. NaN compared false with every elapsed time, so
+		its deadline never came; a negative one failed every connection at
+		once.
+	**/
+	public function testAReadyTimeoutThatIsNotANumberOfSecondsIsRefused():Void {
+		if (unsupported()) return;
+
+		var connection = new PeerConnection(true);
+
+		try {
+			Assert.equals(PeerConnection.DEFAULT_READY_TIMEOUT, connection.readyTimeout);
+			Assert.raises(() -> connection.readyTimeout = Math.NaN, ArgumentError);
+			Assert.raises(() -> connection.readyTimeout = -1.0, ArgumentError);
+			Assert.raises(() -> connection.readyTimeout = Math.NEGATIVE_INFINITY, ArgumentError);
+			Assert.equals(PeerConnection.DEFAULT_READY_TIMEOUT, connection.readyTimeout, "a refused value was kept");
+
+			connection.readyTimeout = 0;
+			Assert.equals(0.0, connection.readyTimeout);
+			connection.readyTimeout = 0.25;
+			Assert.equals(0.25, connection.readyTimeout);
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		connection.close();
+	}
+
+	/**
+		A connection's channel limits reach the channels: set before `ready`,
+		they bound what the peer opens after, and what was refused is
+		counted.
+	**/
+	public function testAConnectionBoundsTheChannelsItsPeerOpens():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+		var accepted:Array<String> = [];
+
+		try {
+			Assert.equals(PeerConnection.DEFAULT_MAX_PEER_CHANNELS, alice.maxPeerChannels);
+			Assert.equals(PeerConnection.DEFAULT_MAX_LABEL_SIZE, alice.maxLabelSize);
+			Assert.equals(0, alice.refusedChannels);
+
+			alice.maxPeerChannels = 1;
+			alice.maxLabelSize = 4;
+			alice.onChannel = channel -> accepted.push(channel.label);
+
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			if (!alice.connected || !bob.connected) {
+				Assert.fail("the two never connected");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			var long = bob.createDataChannel("longer");
+			var first = bob.createDataChannel("one");
+			var second = bob.createDataChannel("two");
+
+			for (channel in [long, first, second]) {
+				channel.opened.then(_ -> {}, _ -> {});
+			}
+
+			pumpUntil(() -> alice.refusedChannels == 2 && first.open, 5.0);
+
+			Assert.equals("one", accepted.join(","), "the peer's channels taken were " + accepted.join(","));
+			Assert.equals(2, alice.refusedChannels);
+			Assert.isTrue(first.open && !long.open && !second.open);
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
 		Consent lost before the connection is ready ends it.
 
 		Consent was checked only once everything above ICE was up, so a peer

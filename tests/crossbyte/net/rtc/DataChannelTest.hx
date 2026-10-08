@@ -702,6 +702,115 @@ class DataChannelTest extends utest.Test {
 		}
 	}
 
+	/**
+		A peer opens no more than `maxPeerChannels` at once.
+
+		There was no bound but the stream numbers: 3,000 OPENs with 1 KB
+		labels left 3,000 channels and 3 MB of labels. One past the bound is
+		refused as RFC 8832 has a channel refused, no acknowledgement, and
+		the stream reset, which closes the peer's end, and once one of the
+		peer's channels closes, the next is taken.
+	**/
+	public function testAPeerOpensNoMoreThanMaxPeerChannels():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var accepted:Array<DataChannel> = [];
+		pair.clientChannels.onChannel = channel -> accepted.push(channel);
+		pair.clientChannels.maxPeerChannels = 3;
+
+		var theirs:Array<DataChannel> = [for (i in 0...5) pair.serverChannels.create("c" + i)];
+
+		var closed:Array<String> = [];
+
+		for (channel in theirs) {
+			channel.opened.then(_ -> {}, _ -> {});
+			channel.onClose = () -> closed.push(channel.label);
+		}
+
+		pair.run(() -> pair.clientChannels.refusedChannels == 2 && closed.length == 2 && pair.settled());
+
+		Assert.equals(3, accepted.length, "the peer opened " + accepted.length + " channels against a limit of 3");
+		Assert.equals(2, pair.clientChannels.refusedChannels);
+		Assert.isTrue(theirs[0].open && theirs[1].open && theirs[2].open, "the channels within the limit did not open");
+		Assert.isFalse(theirs[3].open || theirs[4].open, "a refused channel opened at the peer's end");
+		Assert.equals("c3,c4", closed.join(","), "the refused channels were not the ones closed at the peer's end");
+
+		// Channels this end opens are its own, and not counted.
+		var mine = pair.clientChannels.create("mine");
+		pair.run(() -> mine.open);
+		Assert.isTrue(mine.open, "a channel this end opened was refused by the peer's limit");
+
+		// One of the peer's goes, and another is taken in its place.
+		accepted[0].close();
+		pair.run(() -> pair.settled());
+
+		var another = pair.serverChannels.create("another");
+		another.opened.then(_ -> {}, _ -> {});
+		pair.run(() -> another.open);
+		Assert.isTrue(another.open, "a channel was refused once the peer was back under the limit");
+		Assert.equals(4, accepted.length);
+	}
+
+	/**
+		And names no channel with a label or protocol past `maxLabelSize`
+		bytes; 0 lifts both bounds.
+	**/
+	public function testAPeersChannelNamesAreBounded():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var accepted:Array<DataChannel> = [];
+		pair.clientChannels.onChannel = channel -> accepted.push(channel);
+		pair.clientChannels.maxLabelSize = 8;
+
+		var fits = pair.serverChannels.create("12345678", true, "abc");
+		var longLabel = pair.serverChannels.create("123456789");
+		// Eight characters and nine bytes: the bound is on what the wire carries.
+		var longProtocol = pair.serverChannels.create("ok", true, "éabcdefg");
+
+		var closed:Array<String> = [];
+
+		for (channel in [fits, longLabel, longProtocol]) {
+			channel.opened.then(_ -> {}, _ -> {});
+			channel.onClose = () -> closed.push(channel.label);
+		}
+
+		pair.run(() -> pair.clientChannels.refusedChannels == 2 && fits.open && closed.length == 2 && pair.settled());
+
+		Assert.equals(1, accepted.length);
+		Assert.equals("12345678", accepted.length > 0 ? accepted[0].label : null);
+		Assert.equals(2, pair.clientChannels.refusedChannels);
+		Assert.equals("123456789,ok", closed.join(","), "the refused channels were not the ones closed at the peer's end");
+
+		// No limit.
+		pair.clientChannels.maxLabelSize = 0;
+		pair.clientChannels.maxPeerChannels = 0;
+		var long = pair.serverChannels.create(StringTools.lpad("", "L", 4000));
+		long.opened.then(_ -> {}, _ -> {});
+		pair.run(() -> long.open);
+		Assert.isTrue(long.open, "a 4,000-byte label was refused with the limit lifted");
+	}
+
+	/**
+		A label or protocol too long for the OPEN's sixteen-bit length is
+		refused here, as the W3C API refuses one: it was written cut to its
+		low bits, so the peer read the label short and the protocol out of
+		its bytes.
+	**/
+	public function testALabelTooLongForTheWireIsRefused():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var longest = StringTools.lpad("", "x", DataChannelSet.MAX_NAME_SIZE);
+
+		Assert.raises(() -> pair.clientChannels.create(longest + "x"), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> pair.clientChannels.create("ok", true, longest + "x"), crossbyte.errors.ArgumentError);
+
+		var channel = pair.clientChannels.create(longest);
+		Assert.equals(DataChannelSet.MAX_NAME_SIZE, channel.label.length);
+	}
+
 	public function testATruncatedOpenIsRefused():Void {
 		var truncated = new ByteArray();
 		truncated.writeByte(DcepMessage.OPEN);

@@ -68,6 +68,13 @@ class DcepMessage {
 	public var label(default, null):String;
 	public var protocol(default, null):String;
 
+	/**
+		The longer of the label and the protocol, in the UTF-8 bytes the wire
+		gave them: what a receiver bounds before keeping either. 0 for a
+		message made here.
+	**/
+	public var nameSize(default, null):Int = 0;
+
 	public function new(messageType:Int, channelType:Int = RELIABLE, priority:Int = 0, reliability:Int = 0, label:String = "",
 			protocol:String = "") {
 		this.messageType = messageType;
@@ -207,7 +214,9 @@ class DcepMessage {
 		var label:String = labelLength > 0 ? bytes.readUTFBytes(labelLength) : "";
 		var protocol:String = protocolLength > 0 ? bytes.readUTFBytes(protocolLength) : "";
 
-		return new DcepMessage(OPEN, channelType, priority, reliability, label, protocol);
+		var message = new DcepMessage(OPEN, channelType, priority, reliability, label, protocol);
+		message.nameSize = labelLength > protocolLength ? labelLength : protocolLength;
+		return message;
 	}
 
 	public function toString():String {

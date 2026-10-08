@@ -64,6 +64,21 @@ import haxe.ds.IntMap;
 
 	Ten timeouts in a row with nothing acknowledged between them, and the peer
 	is unreachable: the association ends with an ABORT.
+
+	## What one peer's packet can cost
+
+	A peer that has been through the handshake writes everything here, and
+	shares a runtime with every other peer on it, so what one packet can make
+	this end do is bounded by the packet's size rather than by what the peer
+	sent before it. What is held is bounded in bytes (`RECEIVE_WINDOW`,
+	`MAX_REASSEMBLY`, `MAX_HELD`) and in pieces (`MAX_FRAGMENTS`,
+	`MAX_HELD_PIECES`); a SACK is read once a packet, `MAX_SACK_BLOCKS_READ`
+	blocks of it; a FORWARD TSN finds the streams it gives up on by their
+	first TSN, and walks a stream by the shorter of its range and what the
+	stream holds; and no more than `MAX_TSN_AHEAD` fragments go past the
+	peer's cumulative acknowledgement. One shape is bounded rather than flat:
+	confirming a run of fragments is unbroken means walking it, which
+	`MAX_FRAGMENTS` bounds.
 **/
 class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 	/**
@@ -183,6 +198,20 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 	public static inline var MAX_SACK_BLOCKS:Int = 128;
 
 	/**
+		Gap blocks read from one SACK, at most: the first this many it lists.
+
+		As many as a SACK fits in the largest packet this end sends
+		(`MAX_BUNDLE`), twice what this end's own carry. The count is the
+		peer's to write, and a DTLS record holds four thousand: one 16 KB SACK
+		listing them out of order took 84 ms to sort on the jvm, the runtime
+		serving nothing else meanwhile. A peer lists them lowest first (RFC
+		9260 section 3.3.4), so those past this are the highest, and later
+		SACKs report them again as the holes below fill; until then their
+		fragments count as in flight, which slows this end and loses nothing.
+	**/
+	public static inline var MAX_SACK_BLOCKS_READ:Int = 256;
+
+	/**
 		The most one reassembling message may hold before it is abandoned.
 
 		`__partial` is trimmed only when a message completes, so a peer that
@@ -224,6 +253,27 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 	**/
 	public static inline var MAX_HELD:Int = 1024 * 1024;
 
+	/**
+		The most pieces the association holds for the application at once,
+		every stream together: fragments of messages not yet whole, and whole
+		messages waiting for their turn.
+
+		The other bounds count bytes, and bytes do not bound pieces: the peer
+		picks their size, and a piece of no bytes costs its objects all the
+		same. Fragments flagged B and never E across many streams, or ordered
+		messages behind a sequence never sent, held 20,000 objects with
+		`RECEIVE_WINDOW` untouched, and as many more as the peer cared to send.
+
+		Pinned from what an honest peer can make this end hold. Every piece
+		above the cumulative acknowledgement has a TSN of its own within
+		`MAX_TSN_AHEAD` of it; below it, a peer that numbers a message's
+		fragments in a row, as RFC 9260 section 6.9 has it, leaves at most one
+		message unfinished, of at most `MAX_FRAGMENTS`. Past the sum the
+		association gives back what it holds, as it does past the window,
+		down to half, said on `onFailure`.
+	**/
+	public static inline var MAX_HELD_PIECES:Int = MAX_TSN_AHEAD + MAX_FRAGMENTS;
+
 	/** The association this runs over. **/
 	public var association(default, null):SctpAssociation;
 
@@ -243,7 +293,8 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 	/**
 		Called when a message arriving here had to be given up: one that grew
 		past `MAX_REASSEMBLY` or `MAX_FRAGMENTS`, a stream held past
-		`MAX_HELD`, or more held than the window offered.
+		`MAX_HELD`, or more held than the window offered or than
+		`MAX_HELD_PIECES`.
 
 		Data this end sends that the peer never acknowledges is not reported
 		here. That ends the association, through `SctpAssociation.onClose`.
@@ -394,6 +445,9 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 	/** Streams this end has closed and not yet asked the peer to reset. **/
 	@:noCompletion private var __resetWanted:Array<Int> = [];
 
+	/** The same streams, to ask whether one is among them without a walk: a peer can make this end want thousands reset. **/
+	@:noCompletion private var __resetWantedSet:IntMap<Bool> = new IntMap();
+
 	/** Streams `resetStreams` has taken, ever: how a request from the peer learns whether it caused any. **/
 	@:noCompletion private var __resetsAsked:Int = 0;
 
@@ -453,6 +507,30 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 	@:noCompletion private var __partial:IntMap<Reassembly> = new IntMap();
 	@:noCompletion private var __expectedSequence:IntMap<Int> = new IntMap();
 	@:noCompletion private var __held:IntMap<Held> = new IntMap();
+
+	/**
+		Pieces held across every stream, what `MAX_HELD_PIECES` bounds: the
+		fragments in `__partial` and the messages in `__held`. Followed with
+		`__buffered`, at every change to either.
+	**/
+	@:noCompletion private var __pieces:Int = 0;
+
+	/** The part of `__pieces` that is fragments in `__partial`. **/
+	@:noCompletion private var __partialPieces:Int = 0;
+
+	/**
+		Each reassembling stream by the TSN of its first fragment, lowest
+		first, so a FORWARD TSN finds the streams holding fragments it
+		abandons without asking every stream: it asked every one, once per
+		FORWARD TSN chunk, so 200 chunks over 8,000 streams holding a
+		fragment each cost 1.6 seconds on the interpreter and 22 ms on the
+		jvm, from one packet of 1,612 bytes. Entries go stale as streams
+		change and are passed over when they come to the top.
+	**/
+	@:noCompletion private var __firsts:FirstTsns = new FirstTsns();
+
+	/** Whether the packet being read has had its SACK read. **/
+	@:noCompletion private var __sackRead:Bool = false;
 
 	/** A SACK is owed. **/
 	@:noCompletion private var __sackNeeded:Bool = false;
@@ -745,8 +823,9 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		}
 
 		for (streamId in streams) {
-			if (__resetWanted.indexOf(streamId) < 0 && (__resetRequest == null || __resetRequest.streams.indexOf(streamId) < 0)) {
+			if (!__resetWantedSet.exists(streamId) && (__resetRequest == null || __resetRequest.streams.indexOf(streamId) < 0)) {
 				__resetWanted.push(streamId);
+				__resetWantedSet.set(streamId, true);
 				__resetsAsked++;
 			}
 		}
@@ -901,6 +980,20 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 			// The path's. Filled to the packet that crosses it and no further,
 			// as RFC 4960 section 6.1 allows.
 			if (__flightSize > 0 && __flightSize >= __cwnd) {
+				return;
+			}
+
+			// And how far past the peer's cumulative acknowledgement this end
+			// numbers at all: as far as a receiver here tracks. Neither window
+			// counts a fragment its gap blocks acknowledged, but it is kept
+			// until the cumulative acknowledgement passes it, since a receiver
+			// may take back what it reported (RFC 4960 section 6.2), so a
+			// peer that acknowledged everything but the first made
+			// this end keep everything sent after it, 5,000 fragments, a
+			// kilobyte each, with `bufferedAmount` reading 0 throughout. Past
+			// this what is sent waits in the queue, where `bufferedAmount`
+			// counts it and `MAX_BUFFERED` bounds it.
+			if (__unacknowledged.length - __outstandingAt >= MAX_TSN_AHEAD) {
 				return;
 			}
 
@@ -1239,6 +1332,17 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 			return;
 		}
 
+		// One a packet. A peer writes a SACK as it sends, so two in one packet
+		// were written at the same moment and say the same thing, while
+		// each costs a walk over everything outstanding, so a 16 KB packet of
+		// a thousand of them was a thousand walks. The first is read; this
+		// end's own packets carry one at most.
+		if (__sackRead) {
+			return;
+		}
+
+		__sackRead = true;
+
 		var value = chunk.value;
 		value.endian = Endian.BIG_ENDIAN;
 		value.position = 0;
@@ -1493,14 +1597,17 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 
 		A peer should send them in order and not overlapping. One that did not
 		would have its blocks sorted here rather than trusted, since the walk
-		that uses them only goes forward.
+		that uses them only goes forward. At most `MAX_SACK_BLOCKS_READ` of
+		them, which bounds the sort: it was bounded by the chunk alone, and
+		4,000 blocks listed highest first, which an insertion sort moves one
+		place at a time, cost 84 ms on the jvm from one packet.
 	**/
 	@:noCompletion private function __readGapBlocks(value:ByteArray, gaps:Int):Int {
 		var count:Int = 0;
 		var sorted:Bool = true;
 
 		for (_ in 0...gaps) {
-			if (value.position + 4 > value.length) {
+			if (count == MAX_SACK_BLOCKS_READ || value.position + 4 > value.length) {
 				break;
 			}
 
@@ -1584,6 +1691,8 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		Whatever the packet just read asked for, sent once it has all been read.
 	**/
 	@:noCompletion private function __afterPacket():Void {
+		__sackRead = false;
+
 		if (association.state == SctpAssociationState.CLOSED) {
 			return;
 		}
@@ -1645,6 +1754,14 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 
 	/** Streams one request names at most, which keeps it well inside a packet. **/
 	@:noCompletion private static inline var MAX_RESET_STREAMS:Int = 256;
+
+	/**
+		Answers owed to the peer's requests at once. A conforming peer has one
+		request of each kind outstanding (RFC 6525 section 5.1.1), two to a
+		chunk, and repeats one it has had no answer to; eight answers are 128
+		bytes.
+	**/
+	@:noCompletion private static inline var MAX_ANSWERS_OWED:Int = 8;
 
 	@:noCompletion private function __onReconfig(chunk:SctpChunk):Void {
 		// RFC 6525 section 3.1: one or two parameters to a chunk.
@@ -1719,6 +1836,15 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		as out of sequence.
 	**/
 	@:noCompletion private function __onPeerRequest(sequence:Int, streams:Null<Array<Int>>, lastTsn:Int, incoming:Bool, refused:Bool):Void {
+		// A packet's worth of answers, and the rest of its requests go as if
+		// lost: a peer asks again for what it is still owed an answer to.
+		// Every request was answered, all in one packet, so 800 of them built
+		// a 25,612-byte answer, past the largest datagram DTLS sends, which
+		// threw and ended the connection.
+		if (__answersOwed.length >= MAX_ANSWERS_OWED) {
+			return;
+		}
+
 		if (sequence != __peerRequestSeq) {
 			var repeat:Bool = __peerReset != null && sequence == __peerReset.sequence;
 			__answersOwed.push(new ReconfigAnswer(sequence, repeat ? -1 : RESULT_BAD_SEQUENCE));
@@ -1866,11 +1992,16 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		// is no time to reconfigure it, and the channels go with it anyway.
 		if (association.state != SctpAssociationState.ESTABLISHED) {
 			__resetWanted.resize(0);
+			__resetWantedSet = new IntMap();
 		}
 
 		if (__resetWanted.length > 0 && __resetRequest == null && ((__taken - __resetAfter) | 0) >= 0) {
 			var count:Int = __resetWanted.length < MAX_RESET_STREAMS ? __resetWanted.length : MAX_RESET_STREAMS;
 			var streams:Array<Int> = __resetWanted.splice(0, count);
+
+			for (streamId in streams) {
+				__resetWantedSet.remove(streamId);
+			}
 
 			// Before anything more can be sent on them: what the next channel on
 			// one of these streams sends is its sequence zero.
@@ -1915,6 +2046,7 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		if (association.state != SctpAssociationState.ESTABLISHED) {
 			__resetRequest = null;
 			__resetWanted.resize(0);
+			__resetWantedSet = new IntMap();
 			return;
 		}
 
@@ -1999,7 +2131,7 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 
 		__reassemble(data);
 
-		if (__buffered > SctpAssociation.RECEIVE_WINDOW) {
+		if (__buffered > SctpAssociation.RECEIVE_WINDOW || __pieces > MAX_HELD_PIECES) {
 			__reclaim();
 		}
 	}
@@ -2033,11 +2165,17 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		very large messages on different streams at the same time, which is
 		not what a data channel is usually carrying, and it cannot happen to
 		a peer that reads the window, which this end's own sender now does.
+
+		The same for `MAX_HELD_PIECES`, which no honest peer reaches: down to
+		half of both.
 	**/
 	@:noCompletion private function __reclaim():Void {
 		var target:Int = Std.int(SctpAssociation.RECEIVE_WINDOW / 2);
+		var pieceTarget:Int = Std.int(MAX_HELD_PIECES / 2);
+		var byCount:Bool = __buffered <= SctpAssociation.RECEIVE_WINDOW;
 		var dropped:Int = 0;
 		var freed:Int = 0;
+		var pieces:Int = __pieces;
 
 		// Taken first and walked after. Removing from a map while iterating
 		// its own keys is not something every target defines, and this one
@@ -2045,7 +2183,7 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		var reassembling:Array<Int> = [for (key in __partial.keys()) key];
 
 		for (key in reassembling) {
-			if (__buffered <= target) {
+			if (__buffered <= target && __pieces <= pieceTarget) {
 				break;
 			}
 
@@ -2057,7 +2195,7 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		var queued:Array<Int> = [for (streamId in __held.keys()) streamId];
 
 		for (streamId in queued) {
-			if (__buffered <= target) {
+			if (__buffered <= target && __pieces <= pieceTarget) {
 				break;
 			}
 
@@ -2067,8 +2205,9 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		}
 
 		if (dropped > 0) {
-			onFailure("The peer sent more than the " + SctpAssociation.RECEIVE_WINDOW + " bytes this end offered to hold, so "
-				+ freed + " bytes of unfinished messages on " + dropped + " streams were given up.");
+			onFailure((byCount ? "The peer sent more than the " + MAX_HELD_PIECES + " pieces this end holds at once, so "
+				: "The peer sent more than the " + SctpAssociation.RECEIVE_WINDOW + " bytes this end offered to hold, so ")
+				+ (pieces - __pieces) + " pieces, " + freed + " bytes, of unfinished messages on " + dropped + " streams were given up.");
 		}
 	}
 
@@ -2086,23 +2225,44 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		// Put in TSN order rather than appended and the whole array re-sorted,
 		// which cost a comparison against everything already held on every
 		// arrival, quadratic in a count the peer chooses. Fragments normally
-		// arrive in order, which this walks straight past; `__onData` has
-		// already refused a TSN seen before, so nothing lands on an equal one.
+		// arrive in order, which lands at the end at once; out of order, the
+		// place is found by halving, where a walk back from the end cost a
+		// comparison per fragment held for every one arriving in reverse.
+		// `__onData` has already refused a TSN seen before, so nothing lands
+		// on an equal one.
 		var at:Int = fragments.length;
 
-		while (at > 0 && SctpDataChunk.isEarlier(data.tsn, fragments[at - 1].tsn)) {
-			at--;
+		if (at > 0 && SctpDataChunk.isEarlier(data.tsn, fragments[at - 1].tsn)) {
+			var low:Int = 0;
+
+			while (low < at) {
+				var middle:Int = (low + at) >> 1;
+
+				if (SctpDataChunk.isEarlier(data.tsn, fragments[middle].tsn)) {
+					at = middle;
+				} else {
+					low = middle + 1;
+				}
+			}
 		}
 
 		fragments.insert(at, data);
 		holding.bytes += data.payload.length;
 		__buffered += data.payload.length;
+		__pieces++;
+		__partialPieces++;
 
 		if (data.ending) {
 			holding.endings++;
 		}
 
 		__partial.set(key, holding);
+
+		// A new first fragment for the stream, which is what a FORWARD TSN
+		// looks streams up by.
+		if (at == 0) {
+			__noteFirst(data.tsn, key);
+		}
 
 		// Bounded here rather than as each fragment arrives: a fragment is only
 		// oversized in the context of the message it is joining. Dropping what
@@ -2155,12 +2315,14 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		}
 
 		var whole = new ByteArray();
+		var taken:Int = 0;
 
 		for (i in start...end + 1) {
 			var fragment = fragments[i].payload;
 
 			if (fragment.length > 0) {
 				whole.writeBytes(fragment, 0, fragment.length);
+				taken += fragment.length;
 			}
 		}
 
@@ -2168,24 +2330,30 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 
 		var head = fragments[start];
 
-		var before:Int = holding.bytes;
+		// The message's own fragments, and nothing either side of them. Every
+		// fragment before it went too, so an earlier message on the stream
+		// still missing a piece was dropped when a later one completed,
+		// and, ordered, the later one then waited for good on a sequence that
+		// could no longer arrive. Exactly one of the message's fragments ends
+		// it: the walks above stop at the first B and the first E.
+		fragments.splice(start, end - start + 1);
+		holding.bytes -= taken;
+		holding.endings--;
+		__pieces -= end - start + 1;
+		__partialPieces -= end - start + 1;
 
-		holding.fragments = fragments.slice(end + 1);
-		holding.bytes = 0;
-		holding.endings = 0;
-
-		for (fragment in holding.fragments) {
-			holding.bytes += fragment.payload.length;
-
-			if (fragment.ending) {
-				holding.endings++;
-			}
+		// A stream with nothing left reassembling is not kept, so what walks
+		// the streams reassembling walks only those.
+		if (fragments.length == 0) {
+			__partial.remove(key);
+		} else if (start == 0) {
+			__noteFirst(fragments[0].tsn, key);
 		}
 
 		// What the message took with it. Released before the handover, so a
 		// listener that sends from inside it sees the window this end has
 		// rather than the one it had a moment ago.
-		__buffered -= before - holding.bytes;
+		__buffered -= taken;
 
 		__deliverOrHold(head.streamId, head.streamSequence, head.protocolId, whole, head.unordered);
 	}
@@ -2242,12 +2410,27 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		Drops held fragments at or below `through`, parts of messages the
 		peer abandoned, and any left after them that no longer begin a
 		message, which could now never complete either.
+
+		Only the streams whose first fragment is at or below it can hold any,
+		and `__firsts` gives those lowest first, so this costs what it drops
+		rather than a pass over every stream reassembling.
 	**/
 	@:noCompletion private function __abandonFragmentsThrough(through:Int):Void {
-		var keys:Array<Int> = [for (key in __partial.keys()) key];
+		var firsts = __firsts;
 
-		for (key in keys) {
-			var holding = __partial.get(key);
+		while (firsts.length > 0 && !SctpDataChunk.isEarlier(through, firsts.topTsn())) {
+			var tsn:Int = firsts.topTsn();
+			var key:Int = firsts.topKey();
+			firsts.pop();
+
+			var holding:Reassembly = __partial.get(key);
+
+			// Stale: the stream has since dropped the fragment, delivered it, or
+			// gone, and a later entry says where it starts now.
+			if (holding == null || holding.fragments.length == 0 || holding.fragments[0].tsn != tsn) {
+				continue;
+			}
+
 			var fragments = holding.fragments;
 			var keep:Int = 0;
 
@@ -2257,10 +2440,6 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 
 			while (keep < fragments.length && !fragments[keep].beginning) {
 				keep++;
-			}
-
-			if (keep == 0) {
-				continue;
 			}
 
 			if (keep == fragments.length) {
@@ -2278,9 +2457,14 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 				}
 			}
 
-			holding.fragments = fragments.slice(keep);
+			fragments.splice(0, keep);
 			holding.bytes -= dropped;
 			__buffered -= dropped;
+			__pieces -= keep;
+			__partialPieces -= keep;
+
+			// Past `through`, so not met again in this walk.
+			__noteFirst(fragments[0].tsn, key);
 		}
 	}
 
@@ -2302,25 +2486,42 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		var waiting:Held = __held.exists(streamId) ? __held.get(streamId) : null;
 
 		if (waiting != null && waiting.count > 0) {
-			// Walked by what is held rather than by the range, which a peer
-			// could make thirty thousand numbers long.
-			var due:Array<Int> = [];
+			var span:Int = ((sequence - expected) & 0xFFFF) + 1;
 
-			for (held in waiting.bySequence.keys()) {
-				if (((held - expected) & 0xFFFF) <= ((sequence - expected) & 0xFFFF)) {
-					due.push(held);
+			if (span <= waiting.count) {
+				// Walked by the range when it is the shorter: one entry moving
+				// the stream on by one used to walk everything held, so a
+				// FORWARD TSN naming a stream 2,000 times, each a step, over
+				// 8,000 messages held far ahead cost 1.9 seconds on the
+				// interpreter and 73 ms on the jvm. In order, so nothing to sort.
+				var at:Int = expected;
+
+				for (_ in 0...span) {
+					if (waiting.bySequence.exists(at)) {
+						__deliverHeld(streamId, waiting, at);
+					}
+
+					at = (at + 1) & 0xFFFF;
 				}
-			}
+			} else {
+				// And by what is held when that is, since the range can be
+				// thirty thousand numbers long. Either way a stream costs the
+				// smaller of the two, and the range moves on with each entry:
+				// what is held is passed, and delivered, within a sweep of the
+				// sixteen-bit space.
+				var due:Array<Int> = [];
 
-			due.sort((a, b) -> ((a - expected) & 0xFFFF) - ((b - expected) & 0xFFFF));
+				for (held in waiting.bySequence.keys()) {
+					if (((held - expected) & 0xFFFF) < span) {
+						due.push(held);
+					}
+				}
 
-			for (held in due) {
-				var pending = waiting.bySequence.get(held);
-				waiting.bySequence.remove(held);
-				waiting.count--;
-				waiting.bytes -= pending.payload.length;
-				__buffered -= pending.payload.length;
-				onMessage(streamId, pending.payload, pending.protocolId);
+				due.sort((a, b) -> ((a - expected) & 0xFFFF) - ((b - expected) & 0xFFFF));
+
+				for (held in due) {
+					__deliverHeld(streamId, waiting, held);
+				}
 			}
 		}
 
@@ -2328,12 +2529,52 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		__drainHeld(streamId);
 	}
 
+	/** Takes one held message off its stream's queue, and up. **/
+	@:noCompletion private function __deliverHeld(streamId:Int, waiting:Held, sequence:Int):Void {
+		var pending = waiting.bySequence.get(sequence);
+		waiting.bySequence.remove(sequence);
+		waiting.count--;
+		waiting.bytes -= pending.payload.length;
+		__buffered -= pending.payload.length;
+		__pieces--;
+		onMessage(streamId, pending.payload, pending.protocolId);
+	}
+
 	/** Drops what a stream was reassembling, and stops counting it. **/
 	@:noCompletion private function __forget(key:Int):Void {
-		if (__partial.exists(key)) {
-			__buffered -= __partial.get(key).bytes;
+		var holding:Reassembly = __partial.get(key);
+
+		if (holding != null) {
+			__buffered -= holding.bytes;
+			__pieces -= holding.fragments.length;
+			__partialPieces -= holding.fragments.length;
 			__partial.remove(key);
 		}
+	}
+
+	/**
+		Files a stream under the TSN its fragments now start at, for
+		`__abandonFragmentsThrough`. The entries a stream leaves behind are
+		passed over there, and cleared out here once they outnumber the
+		fragments held four to one, so the heap is bounded by what is held.
+	**/
+	@:noCompletion private function __noteFirst(tsn:Int, key:Int):Void {
+		var firsts = __firsts;
+
+		if (firsts.length >= 64 && firsts.length >= 4 * __partialPieces) {
+			firsts.clear();
+
+			// Every stream here holds a fragment: one left with none is taken
+			// out of `__partial`, so this walks no more streams than there are
+			// fragments.
+			for (stream in __partial.keys()) {
+				if (stream != key) {
+					firsts.push(__partial.get(stream).fragments[0].tsn, stream);
+				}
+			}
+		}
+
+		firsts.push(tsn, key);
 	}
 
 	/**
@@ -2368,6 +2609,7 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 			waiting.count++;
 			waiting.bytes += payload.length;
 			__buffered += payload.length;
+			__pieces++;
 			__held.set(streamId, waiting);
 
 			if (waiting.bytes > MAX_HELD) {
@@ -2413,6 +2655,7 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 			waiting.count--;
 			waiting.bytes -= pending.payload.length;
 			__buffered -= pending.payload.length;
+			__pieces--;
 
 			expected = (expected + 1) & 0xFFFF;
 			__expectedSequence.set(streamId, expected);
@@ -2424,8 +2667,11 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 
 	/** Drops what a stream was holding for its turn, and stops counting it. **/
 	@:noCompletion private function __release(streamId:Int):Void {
-		if (__held.exists(streamId)) {
-			__buffered -= __held.get(streamId).bytes;
+		var waiting:Held = __held.get(streamId);
+
+		if (waiting != null) {
+			__buffered -= waiting.bytes;
+			__pieces -= waiting.count;
 			__held.remove(streamId);
 		}
 	}
@@ -2486,6 +2732,95 @@ private class Reassembly {
 	public var endings:Int = 0;
 
 	public function new() {}
+}
+
+/**
+	Streams by a TSN, lowest first: a binary heap of pairs in two arrays,
+	compared as TSNs are, by distance, so wrapping past 2^32 orders nothing
+	wrongly. Everything in it is within `MAX_TSN_AHEAD` of the cumulative
+	acknowledgement or held from below it, far inside the half of the space
+	that comparison needs.
+
+	Two arrays of `Int` rather than an object per entry, so filing a stream
+	allocates nothing once the arrays have grown; `clear` keeps their room.
+**/
+private class FirstTsns {
+	public var length(default, null):Int = 0;
+
+	private var __tsns:Array<Int> = [];
+	private var __keys:Array<Int> = [];
+
+	public function new() {}
+
+	public inline function topTsn():Int {
+		return __tsns[0];
+	}
+
+	public inline function topKey():Int {
+		return __keys[0];
+	}
+
+	public inline function clear():Void {
+		length = 0;
+	}
+
+	public function push(tsn:Int, key:Int):Void {
+		var at:Int = length++;
+
+		while (at > 0) {
+			var parent:Int = (at - 1) >> 1;
+
+			if (!SctpDataChunk.isEarlier(tsn, __tsns[parent])) {
+				break;
+			}
+
+			__tsns[at] = __tsns[parent];
+			__keys[at] = __keys[parent];
+			at = parent;
+		}
+
+		__tsns[at] = tsn;
+		__keys[at] = key;
+	}
+
+	public function pop():Void {
+		if (length == 0) {
+			return;
+		}
+
+		length--;
+
+		if (length == 0) {
+			return;
+		}
+
+		var tsn:Int = __tsns[length];
+		var key:Int = __keys[length];
+		var at:Int = 0;
+
+		while (true) {
+			var child:Int = 2 * at + 1;
+
+			if (child >= length) {
+				break;
+			}
+
+			if (child + 1 < length && SctpDataChunk.isEarlier(__tsns[child + 1], __tsns[child])) {
+				child++;
+			}
+
+			if (!SctpDataChunk.isEarlier(__tsns[child], tsn)) {
+				break;
+			}
+
+			__tsns[at] = __tsns[child];
+			__keys[at] = __keys[child];
+			at = child;
+		}
+
+		__tsns[at] = tsn;
+		__keys[at] = key;
+	}
 }
 
 /**

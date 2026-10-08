@@ -268,8 +268,97 @@ class PeerConnection {
 		another pair before this ends the connection, though the ICE agent on
 		its own would retry (its `timeout` is 80 s): raise this past 80 to
 		give it that chance on a lossy path.
+
+		0 for no deadline, as `IceAgent.timeout` and every other timeout here
+		read it. Then only the agent's own `timeout` ends a connect or a
+		restart that finds no path, and nothing ends one whose peer stops
+		after ICE, a DTLS server waiting for a ClientHello, an SCTP listener
+		for an INIT, so a connection given no deadline is one the
+		application closes itself. 0 used to fail the connection at the first
+		poll after `connect`.
+
+		@throws ArgumentError When negative or not a number. NaN compared
+		false with every elapsed time, so the deadline it was given never
+		came; a negative one failed every connection at once.
 	**/
-	public var readyTimeout:Float = DEFAULT_READY_TIMEOUT;
+	public var readyTimeout(default, set):Float = DEFAULT_READY_TIMEOUT;
+
+	@:noCompletion private function set_readyTimeout(value:Float):Float {
+		if (!(value >= 0)) {
+			throw new ArgumentError('readyTimeout must be a number of seconds, 0 for no deadline, and was $value.');
+		}
+
+		return readyTimeout = value;
+	}
+
+	/** The default `maxPeerChannels`: 512. **/
+	public static inline var DEFAULT_MAX_PEER_CHANNELS:Int = DataChannelSet.DEFAULT_MAX_PEER_CHANNELS;
+
+	/** The default `maxLabelSize`: 1,024 bytes. **/
+	public static inline var DEFAULT_MAX_LABEL_SIZE:Int = DataChannelSet.DEFAULT_MAX_LABEL_SIZE;
+
+	/**
+		The most channels the peer may have open at once that it opened
+		itself; 0 or less for no limit but the 32,768 stream numbers of its
+		parity. 512 by default, which is what libwebrtc gives one side: its
+		1,024 SCTP streams, half of them each peer's. Read as each of the
+		peer's OPENs arrives, so it can be set before or after `ready`.
+
+		Each channel the peer opens costs this end the channel, its label and
+		protocol, and a stream's sequence numbers, for as long as the peer
+		leaves it open, and costs the peer an OPEN of a few bytes: there was
+		no bound but the stream numbers. One past this is refused as RFC 8832
+		refuses a channel, no acknowledgement, and the stream reset, which
+		closes the peer's end; `onChannel` is not called, and counted in
+		`refusedChannels`. Channels this end creates are not counted.
+	**/
+	public var maxPeerChannels(get, set):Int;
+
+	/**
+		The longest label, and the longest protocol, a channel the peer opens
+		may name, in UTF-8 bytes; 0 or less for no limit but the OPEN's
+		sixteen-bit field, 65,535. 1,024 by default. An OPEN past it is
+		refused as one past `maxPeerChannels` is.
+
+		The W3C API takes names of up to 65,535 bytes, so a peer naming each
+		channel so made this end keep 128 KB a channel; an application names a
+		channel for what it carries, and a kilobyte is far past that.
+	**/
+	public var maxLabelSize(get, set):Int;
+
+	/** The peer's OPENs refused for `maxPeerChannels` or `maxLabelSize`. **/
+	public var refusedChannels(get, never):Int;
+
+	@:noCompletion private var __maxPeerChannels:Int = DEFAULT_MAX_PEER_CHANNELS;
+	@:noCompletion private var __maxLabelSize:Int = DEFAULT_MAX_LABEL_SIZE;
+
+	@:noCompletion private function get_maxPeerChannels():Int {
+		return __maxPeerChannels;
+	}
+
+	@:noCompletion private function set_maxPeerChannels(value:Int):Int {
+		if (__channels != null) {
+			__channels.maxPeerChannels = value;
+		}
+
+		return __maxPeerChannels = value;
+	}
+
+	@:noCompletion private function get_maxLabelSize():Int {
+		return __maxLabelSize;
+	}
+
+	@:noCompletion private function set_maxLabelSize(value:Int):Int {
+		if (__channels != null) {
+			__channels.maxLabelSize = value;
+		}
+
+		return __maxLabelSize = value;
+	}
+
+	@:noCompletion private function get_refusedChannels():Int {
+		return __channels == null ? 0 : __channels.refusedChannels;
+	}
 
 	/** Called when the peer opens a channel rather than answering one. **/
 	public dynamic function onChannel(channel:DataChannel):Void {}
@@ -920,7 +1009,8 @@ class PeerConnection {
 		way to say the same; -1, unless given, for no limit. One or the other,
 		not both.
 		@throws ArgumentError For both limits, or for one past 65535 or below
-		-1.
+		-1, or for a label or protocol of more than 65,535 bytes in UTF-8, as
+		the W3C API refuses one: the OPEN carries each length in sixteen bits.
 	**/
 	public function createDataChannel(label:String, ordered:Bool = true, protocol:String = "", maxRetransmits:Int = -1,
 			maxPacketLifeTime:Int = -1):DataChannel {
@@ -976,7 +1066,7 @@ class PeerConnection {
 			}
 
 			// Given as long to find its path as a connection is to come up.
-			if (__restartAgent != null && now - __restartStartedAt >= readyTimeout) {
+			if (__restartAgent != null && readyTimeout > 0 && now - __restartStartedAt >= readyTimeout) {
 				__abandonRestart("The ICE restart found no path to the peer within " + readyTimeout + " seconds.");
 
 				if (__closed) {
@@ -1002,7 +1092,7 @@ class PeerConnection {
 			return;
 		}
 
-		if (!connected && __connecting && now - __connectStartedAt >= readyTimeout) {
+		if (!connected && __connecting && readyTimeout > 0 && now - __connectStartedAt >= readyTimeout) {
 			__fail("The connection did not become ready within " + readyTimeout + " seconds: " + __phase() + ".");
 			return;
 		}
@@ -2001,6 +2091,8 @@ class PeerConnection {
 		// disagreed about which of them that is would collide on every channel
 		// they opened at the same moment.
 		__channels = new DataChannelSet(__transfer, dtlsClient);
+		__channels.maxPeerChannels = __maxPeerChannels;
+		__channels.maxLabelSize = __maxLabelSize;
 		__channels.onChannel = channel -> onChannel(channel);
 
 		connected = true;

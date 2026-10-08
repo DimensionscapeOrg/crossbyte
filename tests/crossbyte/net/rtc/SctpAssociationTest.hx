@@ -358,6 +358,47 @@ class SctpAssociationTest extends utest.Test {
 	}
 
 	/**
+		One packet draws one answer, however many HEARTBEATs or INITs it
+		carries.
+
+		Each was answered with a packet of its own, a DTLS record and a
+		`sendto` each: a 1,212-byte packet of 300 HEARTBEATs drew 300 packets,
+		and one of 60 INITs drew 60 INIT ACKs. A peer probes its one path with
+		one HEARTBEAT at a time, and an INIT travels alone (RFC 9260 section
+		6.10).
+	**/
+	public function testOnePacketDrawsOneAnswer():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.make();
+		pair.run(() -> pair.client.state == SctpAssociationState.ESTABLISHED && pair.server.state == SctpAssociationState.ESTABLISHED);
+
+		var sent:Int = 0;
+		pair.client.onSend = _ -> sent++;
+
+		pair.client.receive(pair.server.packetFor([for (_ in 0...300) new SctpChunk(SctpPacket.CHUNK_HEARTBEAT, 0, new ByteArray())]), 0);
+		Assert.equals(1, sent, "a packet of 300 HEARTBEATs drew " + sent + " packets");
+
+		// INITs bundled together, or with anything, are not acted on: the
+		// association keeps the peer it has.
+		var tag:Int = pair.client.remoteTag;
+		var init = new ByteArray();
+		init.endian = Endian.BIG_ENDIAN;
+		init.writeInt(0x77);
+		init.writeInt(65536);
+		init.writeShort(10);
+		init.writeShort(10);
+		init.writeInt(5);
+		init.position = 0;
+
+		sent = 0;
+		pair.client.receive(new SctpPacket(SctpAssociation.DEFAULT_PORT, SctpAssociation.DEFAULT_PORT, 0,
+			[for (_ in 0...60) new SctpChunk(SctpPacket.CHUNK_INIT, 0, init)]).encode(), 0);
+		Assert.equals(0, sent, "a packet of 60 INITs drew " + sent + " packets");
+		Assert.equals(tag, pair.client.remoteTag, "INITs bundled together changed the peer's tag");
+	}
+
+	/**
 		A peer that shuts down gracefully is answered, and its going reported.
 
 		RFC 4960 section 9.2: SHUTDOWN, SHUTDOWN ACK, SHUTDOWN COMPLETE. It was

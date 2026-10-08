@@ -550,6 +550,38 @@ instead, where `bytesPending` counts it and `maxOutputBufferSize` bounds it.
 A smaller buffer is cheaper and slower over a long path: a connection moves
 at most one buffer per round trip.
 
+## WebRTC: what a peer can cost
+
+A `PeerConnectionHost` creates nothing for a datagram until it has proved
+who sent it, a STUN check is answered only once its MESSAGE-INTEGRITY
+checks against a connection's credentials, and DTLS is routed by an address
+ICE has proved, so there is no reflection and no half-open table to fill.
+What follows bounds a peer that has been through signalling: one that can
+send whatever it likes once connected, sharing a runtime with every other
+peer on it.
+
+| On the connection | Default | Bounds |
+| --- | --- | --- |
+| `readyTimeout` | 30 s | `connect` until the whole stack is up, and an ICE restart; 0 for no deadline |
+| `maxPeerChannels` | 512 | channels the peer opened that are open at once, what libwebrtc's 1,024 streams give one side; past it an OPEN is refused (no ACK, the stream reset) and counted in `refusedChannels`; 0 for no limit |
+| `maxLabelSize` | 1 KiB | the label, and the protocol, of a channel the peer opens, in UTF-8 bytes; refused past it likewise; 0 for the wire's 65,535 |
+| `IceAgent.MAX_REMOTE_CANDIDATES` | 64 | the peer's candidates, advertised and learned from where its checks arrive; past it a check from a new place goes unanswered |
+| `IceAgent.MAX_LEARNED_LOCAL_CANDIDATES` | 64 | places the peer's answers say it saw this end's checks come from; never paired, since a check leaves from their base |
+
+Under the data channels, an SCTP association holds at most 2 MiB the
+application has not been given (the window it advertises), 1 MiB of one
+message being reassembled in at most 2,048 pieces, and 18,432 pieces in all,
+fragments and whole messages waiting their turn, every stream together,
+the most an honest peer can make it hold, giving back half of what it
+holds, unfinished messages dropped, past either total. What one
+packet can make it do is bounded by the packet: one SACK is read a packet,
+256 of its gap blocks; a FORWARD TSN finds the streams it gives up on by the
+TSN each starts at, and walks a stream by the shorter of the range it names
+and what the stream holds; HEARTBEATs and stream-reset requests draw one
+packet of answers; and no more than 16,384 fragments go past the peer's
+cumulative acknowledgement, the rest waiting where `bufferedAmount` counts
+them.
+
 ## Extensions
 
 CrossByte's extension story is intentional: features that benefit from native backends or external platform libraries can live in sibling haxelibs instead of bloating the core.
