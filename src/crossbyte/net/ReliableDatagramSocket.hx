@@ -21,6 +21,8 @@ import crossbyte.io.ByteArray;
 import crossbyte.io.Endian;
 import crossbyte.io.IDataInput;
 import crossbyte.io.IDataOutput;
+import crossbyte.net._internal.reliable.FramePool;
+import crossbyte.net._internal.reliable.FrameWindow;
 import crossbyte.net._internal.reliable.OutstandingFrame;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrame;
@@ -30,7 +32,6 @@ import crossbyte.net._internal.RuntimeHandOff;
 import haxe.Serializer;
 import haxe.Unserializer;
 import crossbyte.ds.SequenceRing;
-import haxe.ds.IntMap;
 import haxe.ds.Vector;
 #if !(js && !nodejs)
 #if !nodejs
@@ -1102,7 +1103,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __input:ByteArray;
 	@:noCompletion private var __keepAliveHandle:Int = -1;
 	@:noCompletion private var __mode:ReliableDatagramSocketMode = DATAGRAM;
-	@:noCompletion private var __outFrameCache:IntMap<OutstandingFrame>;
+	// The frames in flight, by sequence: every one from `__windowBase` to
+	// `__outSequence`, until the peer acknowledges it.
+	@:noCompletion private var __outFrameCache:FrameWindow;
+	// Where this session's frames come from and go back to once
+	// acknowledged, for a session with no server; a server's sessions share
+	// the server's (see `__pool`).
+	@:noCompletion private var __ownPool:FramePool = null;
 	@:noCompletion private var __retransmitHandle:Int = -1;
 
 	/**
@@ -1292,7 +1299,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		__inFrameCache = new SequenceRing(IN_FRAME_SLOTS);
 		__inFrameCacheSize = 0;
-		__outFrameCache = new IntMap();
+		__outFrameCache = new FrameWindow();
 		__outgoingQueue = [];
 		__scratch = new ByteArray();
 		// A single frame of the largest size, with room before it for the
@@ -1445,7 +1452,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		PACKET is.
 	**/
 	@:noCompletion private function __queueFin():Void {
-		var frame = new OutstandingFrame(new ByteArray(), 0, 0, false);
+		var frame:OutstandingFrame = __pool().takeBare();
 		frame.fin = true;
 		if (__queueAt < __outgoingQueue.length || __windowExceeded()) {
 			__outgoingQueue.push(frame);
@@ -1732,8 +1739,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	public function flush():Void {
 		if (__mode == STREAM && __output.length > 0) {
 			__requireOpenConnection();
-			__queueBytes(__output, 0, __output.length);
+			// Taken before it is queued: past the output limit under
+			// `THROW`, queueing throws once the bytes are queued, and they
+			// were then still here to be queued again by the next flush.
+			var written:ByteArray = __output;
 			__output = __createBuffer();
+			__queueBytes(written, 0, written.length);
 		}
 
 		__sendBundle();
@@ -1908,14 +1919,21 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		It goes out when the runtime's loop finishes its pass, in a datagram
 		with whatever else this session sends in the same pass, or at
-		`flush()`. The bytes are copied now, so the caller may reuse them.
+		`flush()`. The bytes are copied now, so the caller may reuse them. A
+		`RELIABLE` message's copy is kept until the peer acknowledges it, in
+		frames taken from a pool its server's sessions share and given back
+		once acknowledged, so a session in steady use allocates nothing for
+		the messages it sends.
 
 		@param bytes The payload bytes to send.
 		@param offset The zero-based offset into `bytes` at which the payload begins.
 		@param length The number of bytes to send. Use `0` to send all remaining bytes from `offset`.
 		@param delivery `RELIABLE` unless given.
 		@throws IllegalOperationError If the socket is not in `DATAGRAM` mode.
-		@throws IOError If the reliable session is not connected.
+		@throws IOError If the reliable session is not connected; or, under
+		        the `THROW` `outputOverflowPolicy`, once more than
+		        `maxOutputBufferSize` waits for the window, the message is
+		        queued whole all the same.
 		@throws RangeError If `offset` or `length` are out of bounds, or an
 		        unreliable or sequenced message is larger than
 		        `maxPayloadSize`: 1,200 bytes, 1,179 for an encrypted session.
@@ -2896,6 +2914,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 					}
 				}
 				__outFrameCache.remove(sequence);
+				// Its buffer, and the record, for the next message.
+				__pool().give(frame, now);
 				released++;
 			}
 
@@ -3274,7 +3294,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		its loop after its `ackDelay`, which on a loop at 30 Hz is up to 33
 		milliseconds, not 25, and on one slower longer still.
 	**/
-	@:noCompletion private function __sampleRoundTrip(raw:Float, heldFor:Float = 0):Void {
+	@:noCompletion private function __sampleRoundTrip(raw:Float, heldFor:Float):Void {
 		if (raw <= 0) {
 			return;
 		}
@@ -3589,16 +3609,6 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 	}
 
-	@:noCompletion private static function __copyRange(bytes:ByteArray, offset:Int, length:Int):ByteArray {
-		var copy:ByteArray = new ByteArray();
-		// Room for exactly what is copied: grown by writing, a 200-byte
-		// message was held in 301 bytes, every message sent.
-		@:privateAccess (copy : ByteArrayData).__reserve(length);
-		copy.writeBytes(bytes, offset, length);
-		copy.position = 0;
-		return copy;
-	}
-
 	/**
 		Appends a frame's bytes to what a stream has not read, in place, as
 		`Socket` appends: the read part goes only once it is at least as long
@@ -3748,7 +3758,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		__stopRetransmitClock();
 
-		__outFrameCache = new IntMap();
+		// What was in flight or waiting, back to the pool: nothing will send
+		// it now, and no caller further up holds a frame past the send that
+		// failed into this (each loop that sends returns once closed).
+		__giveBackFrames();
 		__inFrameCache = new SequenceRing(IN_FRAME_SLOTS);
 		__inFrameCacheSize = 0;
 		__assembly = null;
@@ -3844,6 +3857,50 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 	}
 
+	/**
+		Every frame in flight and every one waiting for the window, given back
+		to the pool, for a session that has ended.
+	**/
+	@:noCompletion private function __giveBackFrames():Void {
+		if (__outFrameCache == null || __outgoingQueue == null) {
+			return;
+		}
+		var pool:FramePool = __pool();
+		var now:Float = __clock();
+		if (__outFrameCache.count > 0) {
+			var sequence:Seq32 = __windowBase;
+			while (sequence < __outSequence) {
+				var frame:Null<OutstandingFrame> = __outFrameCache.remove(sequence);
+				if (frame != null) {
+					pool.give(frame, now);
+				}
+				sequence++;
+			}
+			// Any filed outside the run, as only a test files them.
+			__outFrameCache.clear();
+		}
+		for (index in __queueAt...__outgoingQueue.length) {
+			var frame:Null<OutstandingFrame> = __outgoingQueue[index];
+			if (frame != null) {
+				pool.give(frame, now);
+			}
+		}
+	}
+
+	/**
+		The pool this session takes its frames from: its server's, shared by
+		every session of the server, or its own (see `FramePool`).
+	**/
+	@:noCompletion private function __pool():FramePool {
+		if (__server != null) {
+			return __server.__framePool();
+		}
+		if (__ownPool == null) {
+			__ownPool = new FramePool();
+		}
+		return __ownPool;
+	}
+
 	@:noCompletion private function __drainQueue():Void {
 		// A cursor rather than taking the front off, which moves everything
 		// still queued for each packet that leaves.
@@ -3851,7 +3908,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			var frame:OutstandingFrame = __outgoingQueue[__queueAt];
 			__outgoingQueue[__queueAt] = null;
 			__queueAt++;
-			__queuedBytes -= frame.payload.length;
+			__queuedBytes -= frame.length;
 			__sendPacket(frame);
 		}
 
@@ -4005,6 +4062,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__sendHandshake();
 		}
 		__sentSinceKeepAlive = false;
+
+		// Frames kept for traffic that has stopped are let go; see
+		// `FramePool.quiet`. A pool nothing has sent from is not made for it.
+		var pool:Null<FramePool> = __server != null ? __server.__frames : __ownPool;
+		if (pool != null) {
+			pool.quiet(__clock());
+		}
 	}
 
 	/**
@@ -4086,7 +4150,16 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__transportListenerReady = true;
 	}
 
-	@:noCompletion private function __queueBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+	/**
+		A reliable message: split into frames of `__framePayload()`, each
+		copied into a frame from the pool (see `FramePool`), so the caller
+		may reuse its bytes once this returns, and queued or sent. The
+		output limit is applied once the whole message is queued: applied
+		after each frame, as it was, `THROW` left a message larger than a
+		frame half queued, its frames saying more followed, and the next
+		message sent was put together onto it at the peer.
+	**/
+	@:noCompletion private function __queueBytes(bytes:ByteArray, offset:Int, length:Int):Void {
 		var totalLength:Int = bytes.length;
 		if (offset < 0 || offset > totalLength) {
 			throw new RangeError("The supplied index is out of bounds.");
@@ -4106,23 +4179,32 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		// Every frame but the last says more follows, which is how the receiver
 		// knows where the message ends and hands it over in one piece.
+		var source:haxe.io.Bytes = bytes;
+		var pool:FramePool = __pool();
 		var cursor:Int = offset;
 		var remaining:Int = length;
 		var chunk:Int = __framePayload();
 		while (remaining > 0) {
+			// A send that failed as the bundle went has ended the session.
+			if (__closed) {
+				return;
+			}
 			var chunkLength:Int = remaining > chunk ? chunk : remaining;
 			remaining -= chunkLength;
-			__queuePacket(__copyRange(bytes, cursor, chunkLength), remaining > 0);
+			var frame:OutstandingFrame = pool.take(chunkLength);
+			(frame.buffer : haxe.io.Bytes).blit(0, source, cursor, chunkLength);
+			frame.more = remaining > 0;
+			__queueFrame(frame);
 			cursor += chunkLength;
 		}
+		__enforceOutputLimit();
 	}
 
-	@:noCompletion private function __queuePacket(payload:ByteArray, more:Bool = false):Void {
-		var frame = new OutstandingFrame(payload, 0, 0, more);
+	/** A reliable frame, sent if the window has room, or queued behind it. **/
+	@:noCompletion private function __queueFrame(frame:OutstandingFrame):Void {
 		if (__windowExceeded()) {
 			__outgoingQueue.push(frame);
-			__queuedBytes += payload.length;
-			__enforceOutputLimit();
+			__queuedBytes += frame.length;
 			return;
 		}
 
@@ -4404,7 +4486,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		or the graceful FIN that ends the sequence.
 	**/
 	@:noCompletion private inline function __transmit(sequence:Seq32, frame:OutstandingFrame, resend:Bool):Void {
-		__sendFrame(frame.fin ? FIN : PACKET, sequence, frame.payload, 0, frame.payload.length, resend, __inSequence, __connected, frame.more,
+		__sendFrame(frame.fin ? FIN : PACKET, sequence, frame.payload, frame.offset, frame.length, resend, __inSequence, __connected, frame.more,
 			frame.fin);
 	}
 

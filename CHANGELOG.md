@@ -2174,6 +2174,19 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A reliable UDP message allocates nothing natively once a session is
+  under way, where its copy kept for resending allocated 424 bytes for a
+  200-byte message. The copy is made into a frame taken from a pool, one
+  for all of a server's sessions, whose buffer is the smallest of 64, 128,
+  256, 512, 768, 1,024 or 1,200 bytes that holds the message, and the frame
+  goes back once the peer acknowledges it; the frames in flight are found
+  by sequence in a ring rather than an `IntMap`. `AllocationBudgetTest`'s
+  reliable lines: 424 to 0 bytes natively, plain and encrypted, and 392-544
+  to 64-80 on the jvm, where what is left is Java 8's selector and the
+  caller's boxed `length`. The pool keeps as many frames as were in flight
+  at once in the last ten to twenty seconds, and 64 more, so a tick that
+  sends to every session and has it all back before the next keeps them
+  all; once nothing comes back for ten seconds it keeps 64.
 - `PeerConnection.readyTimeout` reads 0 as no deadline, as
   `IceAgent.timeout`, `Socket.timeout` and every other timeout here do;
   it read 0 as a deadline already past, so a connection given 0 failed
@@ -4149,6 +4162,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A reliable UDP session under the `THROW` `outputOverflowPolicy` queues
+  a message larger than a frame whole before it throws for
+  `maxOutputBufferSize`. It threw part way through: what was queued said
+  more of the message followed, nothing did, and the peer put the next
+  message sent together onto it. And a `STREAM` session's `flush()` past
+  the limit queues what was written once: the bytes stayed in the output
+  buffer when it threw, and the next `flush()` queued them again.
 - A reliable UDP frame lost behind one that was sent again needlessly,
   its first copy had arrived, only the acknowledgement was held up or lost,
   is sent again a round trip after that copy, where it waited for the

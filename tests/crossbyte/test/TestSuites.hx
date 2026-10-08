@@ -491,6 +491,9 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.CongestionControlTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramAckDelayTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramSendQueueTest());
+		// The frames a message is kept in until acknowledged, given back for
+		// the next. Also in PortableSuite, for Node.
+		runner.addCase(new crossbyte.net.ReliableDatagramFramePoolTest());
 		// Joins under a flood, and the resets strangers are sent.
 		runner.addCase(new crossbyte.net.ReliableDatagramJoinTest());
 		// A session following its player to a new address, through a NAT

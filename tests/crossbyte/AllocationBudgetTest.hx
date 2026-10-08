@@ -85,14 +85,17 @@ class AllocationBudgetTest extends utest.Test {
 	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3448, 3432, 2392], [4376, 4360, 3056]);
 	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [1344, 1344, 10472], [1744, 1744, 13160]);
 	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [116, 116, 624], [216, 216, 848]);
-	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [504, 504, 528], [696, 696, 728]);
+	// Nothing natively since RUDP-3 (2026-10-08), where the copy of each
+	// message kept until it is acknowledged was 424 B: the frames it is kept
+	// in come from a pool and go back to it (FramePool). The jvm's 80 B is
+	// CI's Temurin 8 on Linux, the largest read (Oracle 8 on Windows: 64);
+	// none of it is reliable UDP's. Linux natively taken as Windows until
+	// measured.
+	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [0, 0, 80], [8, 8, 168]);
 	// The same, every datagram sealed and opened (RUDP-2): what encryption
-	// adds is buffers the server's sessions share, made once. Measured
-	// natively on Windows, 2026-10-08; Linux taken as Windows until measured.
-	// The jvm column is CI's Temurin 8 on Linux, 544 B, where Oracle 8 here
-	// read 384 and its budget of 544 failed CI (2026-10-08), the plain
-	// reliable line reads 528 there.
-	private static final RELIABLE_ENCRYPTED = new Budget("a 200-byte encrypted reliable UDP message delivered and acknowledged", "message", [424, 424, 544], [600, 600, 744]);
+	// adds is buffers the server's sessions share, made once. Measured as
+	// the line above, 2026-10-08 (Oracle 8 on Windows: 73).
+	private static final RELIABLE_ENCRYPTED = new Budget("a 200-byte encrypted reliable UDP message delivered and acknowledged", "message", [0, 0, 80], [8, 8, 168]);
 	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 144], [8, 8, 248]);
 	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [0, 0, 312], [8, 8, 456]);
 	// Over LinkedConnection, the in-memory pair, which copies each message

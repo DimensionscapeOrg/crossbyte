@@ -18,6 +18,7 @@ import utest.Assert;
 	server held 1.2 GB for its sessions.
 **/
 @:access(crossbyte.net.ReliableDatagramSocket)
+@:access(crossbyte.net.CongestionControl)
 class ReliableDatagramSendQueueTest extends utest.Test {
 	public function testTheQueueIsCappedByDefault():Void {
 		Assert.equals(256 * 1024, ReliableDatagramSocket.DEFAULT_MAX_OUTPUT_BUFFER_SIZE);
@@ -78,6 +79,59 @@ class ReliableDatagramSendQueueTest extends utest.Test {
 		}
 		Assert.isTrue(socket.connected);
 		Assert.isTrue(socket.bufferedAmount > ReliableDatagramSocket.DEFAULT_MAX_OUTPUT_BUFFER_SIZE);
+		socket.abort();
+	}
+
+	/**
+		Under `THROW` the limit is applied once the whole message is queued.
+		It was applied after each frame, and threw part way through a message
+		larger than a frame: what was queued said more followed, nothing
+		followed, and the peer put the next message sent together onto it.
+	**/
+	public function testAMessageLargerThanAFrameIsQueuedWholeBeforeTheLimitThrows():Void {
+		var socket = QueueWire.make();
+		if (socket == null) return;
+		// Nothing may go out: everything sent waits for the window.
+		socket.__congestion.window = 0;
+		socket.maxOutputBufferSize = 2000;
+		socket.outputOverflowPolicy = THROW;
+
+		var message = new ByteArray();
+		message.length = 3000;
+		Assert.raises(() -> socket.send(message), crossbyte.errors.IOError);
+		var queued:Int = socket.__outgoingQueue.length - socket.__queueAt;
+		Assert.equals(3, queued, "the message was not queued whole");
+		if (queued > 0) {
+			Assert.isFalse(socket.__outgoingQueue[socket.__outgoingQueue.length - 1].more,
+				"the message was left half queued, its last frame saying more follows");
+		}
+		Assert.equals(3000, socket.bufferedAmount);
+		Assert.isTrue(socket.connected, "THROW ended the session");
+		socket.abort();
+	}
+
+	/**
+		And a stream's bytes flushed past the limit under `THROW` are queued
+		once: they were left in the output buffer when the limit threw, and
+		the next flush queued them again.
+	**/
+	public function testStreamBytesFlushedPastTheLimitAreQueuedOnce():Void {
+		var socket = QueueWire.make();
+		if (socket == null) return;
+		socket.__mode = STREAM;
+		socket.__congestion.window = 0;
+		socket.maxOutputBufferSize = 2000;
+		socket.outputOverflowPolicy = THROW;
+
+		var bytes = new ByteArray();
+		bytes.length = 3000;
+		socket.writeBytes(bytes);
+		Assert.raises(() -> socket.flush(), crossbyte.errors.IOError);
+		Assert.equals(0, socket.bytesPending, "the bytes queued were kept to be queued again");
+		try {
+			socket.flush();
+		} catch (_:Dynamic) {}
+		Assert.equals(3000, socket.bufferedAmount, "the bytes were queued twice");
 		socket.abort();
 	}
 
