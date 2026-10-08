@@ -477,6 +477,34 @@ entry below says how:
   the limits for a peer that opens more, or names longer.
 
 ### Added
+- Encrypted reliable UDP sessions, opt-in and keyed by the application, as
+  netcode.io's are: `ReliableDatagramSocket.encryptionKey` (set before
+  `connect`), `ReliableDatagramServerSocket.encryptionKeyFor(address,
+  port, payload)` (a hook beside `admit`, asked for each admitted CONNECT,
+  null for a session in the clear) and an `encryptionKey` argument on the
+  server's `connect` and `connectRelayed`; `isEncryptionSupported`,
+  `encrypted`, and the counts `unauthenticatedDatagrams`,
+  `replayedDatagrams` and `lateDatagrams`. Every datagram after the CONNECT,
+  messages of every delivery mode, acknowledgements, bundles,
+  keepalives, the FIN, is sealed with ChaCha20-Poly1305 (RFC 8439) under
+  a key of its own for each direction, derived with HKDF-SHA-256 from the
+  application's key and a random of each end's, so a key given to two
+  sessions never seals two datagrams alike; the nonce is a per-direction
+  packet number XOR an IV, as TLS 1.3 and QUIC build theirs, of which only
+  the low 32 bits are sent; the header is authenticated; a 1,024-number
+  replay window drops replays and anything older before decrypting. It
+  fails closed: a session that asked for encryption never falls back to
+  the clear, and a peer that answers without it, a key mismatch, and a
+  server that refuses (a new `PATH` frame saying why) end the attempt with
+  an `ioError` naming the reason. Natively through libsodium, on Node
+  through its `crypto` (for datagrams from 896 bytes; its own code below,
+  which is faster there), and on the jvm through a ChaCha20-Poly1305 of
+  CrossByte's own, since Java 8 has none; not on HashLink, neko or the
+  interpreter, which have no secure random source. Peers that do not ask
+  for encryption see no change on the wire. Tests:
+  `ReliableDatagramCipherTest` (RFC 8439 and OpenSSL vectors, whole sealed
+  datagrams computed independently with Node's crypto),
+  `ReliableDatagramEncryptionTest`.
 - Typed arguments for RPC runtime handlers: `RPCSession.registerArgs(op,
   handler)` registers, beside `register`'s `Array<Dynamic>` handlers, one
   handed an `RPCArgs`, `int(i)`, `float(i)` (an Int too), `bool(i)`,

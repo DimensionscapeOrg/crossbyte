@@ -102,6 +102,16 @@ final class ReliableDatagramFrame {
 	public var cookieHigh(default, null):Int = 0;
 	public var cookieLow(default, null):Int = 0;
 
+	/**
+		On an extended CONNECT with `FEATURE_ENCRYPT`: its sender's random,
+		`RANDOM_SIZE` bytes, in `random`, storage of the frame's own, made
+		the first time and filled again for each, so read it before anything
+		else is decoded into the frame.
+	**/
+	public var hasRandom(default, null):Bool = false;
+
+	public var random(default, null):haxe.io.Bytes = null;
+
 	/** For a frame to keep; the hot path decodes into one with `decodeInto`. **/
 	public function new(type:ReliableDatagramFrameType, sequence:Seq32, payload:ByteArray, resend:Bool, ?ack:Seq32, more:Bool = false,
 			bundles:Bool = false, graceful:Bool = false) {
@@ -122,12 +132,22 @@ final class ReliableDatagramFrame {
 		this.ackDelay = ackDelay;
 	}
 
-	@:noCompletion public inline function __setConnect(extended:Bool, features:Int, hasCookie:Bool, cookieHigh:Int, cookieLow:Int):Void {
+	@:noCompletion public inline function __setConnect(extended:Bool, features:Int, hasCookie:Bool, cookieHigh:Int, cookieLow:Int,
+			hasRandom:Bool):Void {
 		this.extended = extended;
 		this.features = features;
 		this.hasCookie = hasCookie;
 		this.cookieHigh = cookieHigh;
 		this.cookieLow = cookieLow;
+		this.hasRandom = hasRandom;
+	}
+
+	/** Copies a CONNECT's random from `bytes` at `at` into the frame's own storage. **/
+	@:noCompletion public function __takeRandom(bytes:haxe.io.Bytes, at:Int):Void {
+		if (random == null) {
+			random = haxe.io.Bytes.alloc(ReliableDatagramProtocol.RANDOM_SIZE);
+		}
+		random.blit(0, bytes, at, ReliableDatagramProtocol.RANDOM_SIZE);
 	}
 
 	private function get_ack():Null<Seq32> {
@@ -223,6 +243,26 @@ final class ReliableDatagramFrame {
 	from, and answers from the session with a `PATH_REBOUND`, 12 bytes: the
 	connection id, and the challenge it answers. Neither is acknowledged or
 	resent: the peer sends its REBIND again until a REBOUND comes.
+
+	An encrypted session (`ReliableDatagramSocket.encryptionKey`) seals
+	every datagram it sends but its CONNECTs and its PATH frames; see
+	`SessionCipher` for the envelopes, which start with a byte no frame
+	starts with, and the keys. Its CONNECT says so with `FEATURE_ENCRYPT`,
+	and carries its random, `RANDOM_SIZE` bytes, after the cookie when
+	there is one. Answered with a sealed HANDSHAKE that carries the other
+	side's random, an encrypted CONNECT is padded to
+	`MIN_SEALED_CONNECT_SIZE` rather than `MIN_CONNECT_SIZE`; shorter, or
+	with an extension too short for the random, it is not a frame. A peer
+	from before this reads past the random as past padding, and answers
+	in the clear, which the CONNECT's sender refuses.
+
+	A server that will not open the session a CONNECT asks for, because
+	of encryption, says why with a `PATH_REFUSE`, 9 bytes: the CONNECT's
+	connection id in the sequence field, then the reason,
+	`REFUSE_ENCRYPTION_REQUIRED` (the server gives this peer a key, and
+	the CONNECT asked for none) or `REFUSE_NO_KEY` (the CONNECT asked for
+	encryption, and the server has no key for it). It is no larger than
+	the CONNECT it answers, and counts against `maxResetsPerSecond`.
 **/
 final class ReliableDatagramProtocol {
 	public static inline var HEADER_SIZE:Int = 7;
@@ -281,6 +321,16 @@ final class ReliableDatagramProtocol {
 	/** A CONNECT's feature: its sender answers a reset carrying a rebind challenge with a REBIND. **/
 	public static inline var FEATURE_REBIND:Int = 0x02;
 
+	/**
+		A CONNECT's feature: its sender seals its session, and its random,
+		`RANDOM_SIZE` bytes, follows the features byte, and the cookie when
+		there is one.
+	**/
+	public static inline var FEATURE_ENCRYPT:Int = 0x04;
+
+	/** The random an encrypted CONNECT carries. **/
+	public static inline var RANDOM_SIZE:Int = SessionCipher.RANDOM_SIZE;
+
 	/** A join cookie's length. **/
 	public static inline var COOKIE_SIZE:Int = 8;
 
@@ -297,11 +347,30 @@ final class ReliableDatagramProtocol {
 	/** The most an extension adds to a CONNECT whose payload needs no padding: its length, its features, a cookie. **/
 	public static inline var CONNECT_EXTENSION_MAX:Int = 2 + COOKIE_SIZE;
 
+	/** And to an encrypted CONNECT's: the random besides. **/
+	public static inline var SEALED_CONNECT_EXTENSION_MAX:Int = CONNECT_EXTENSION_MAX + RANDOM_SIZE;
+
+	/**
+		The most a server sends back to an encrypted CONNECT, and so the least
+		one may be: its HANDSHAKE, sealed as a hello, 54 bytes.
+	**/
+	public static inline var MIN_SEALED_CONNECT_SIZE:Int = SessionCipher.HELLO_OVERHEAD + HEADER_SIZE + HANDSHAKE_PAYLOAD_SIZE;
+
 	/** A PATH frame's kinds, its payload's first byte. **/
 	public static inline var PATH_COOKIE:Int = 1;
 
 	public static inline var PATH_REBIND:Int = 2;
 	public static inline var PATH_REBOUND:Int = 3;
+	public static inline var PATH_REFUSE:Int = 4;
+
+	/** A REFUSE's reasons: the server encrypts this session, and the CONNECT asked for no encryption. **/
+	public static inline var REFUSE_ENCRYPTION_REQUIRED:Int = 1;
+
+	/** The CONNECT asked for encryption, and the server has no key for it. **/
+	public static inline var REFUSE_NO_KEY:Int = 2;
+
+	/** A REFUSE's frame: the header, the kind, the reason; 9 bytes. **/
+	public static inline var REFUSE_FRAME_SIZE:Int = HEADER_SIZE + 2;
 
 	/** A cookie's frame: the header, the kind, the cookie. **/
 	public static inline var COOKIE_FRAME_SIZE:Int = HEADER_SIZE + 1 + COOKIE_SIZE;
@@ -447,6 +516,7 @@ final class ReliableDatagramProtocol {
 		var hasCookie:Bool = false;
 		var cookieHigh:Int = 0;
 		var cookieLow:Int = 0;
+		var hasRandom:Bool = false;
 		if (connect && (meta & CONNECT_EXTENDED_MASK) != 0) {
 			// Padded by every sender to what may be sent back: shorter, it
 			// would draw more than it brought.
@@ -465,6 +535,16 @@ final class ReliableDatagramProtocol {
 				hasCookie = true;
 				cookieHigh = __getInt(bytes, from + start + 2);
 				cookieLow = __getInt(bytes, from + start + 6);
+			}
+			if ((features & FEATURE_ENCRYPT) != 0) {
+				// The random after the cookie, and padded to what a sealed
+				// answer is. Copied now, before the payload is moved over it.
+				var before:Int = hasCookie ? COOKIE_SIZE : 0;
+				if (extension < 1 + before + RANDOM_SIZE || length < MIN_SEALED_CONNECT_SIZE) {
+					return null;
+				}
+				into.__takeRandom(bytes, from + start + 2 + before);
+				hasRandom = true;
 			}
 			extended = true;
 			start += 1 + extension;
@@ -502,7 +582,7 @@ final class ReliableDatagramProtocol {
 		into.__set(cast typeValue, sequence, payload, (meta & RESEND_MASK) != 0, ack, ackPresent, (meta & MORE_MASK) != 0,
 			(meta & BUNDLES_MASK) != 0, typeValue == (FIN : Int) && (meta & GRACEFUL_MASK) != 0, delay);
 		if (connect) {
-			into.__setConnect(extended, features, hasCookie, cookieHigh, cookieLow);
+			into.__setConnect(extended, features, hasCookie, cookieHigh, cookieLow, hasRandom);
 		}
 		return into;
 	}
@@ -516,23 +596,34 @@ final class ReliableDatagramProtocol {
 		`CONNECT_EXTENSION_MAX` more than the payload, or `MIN_CONNECT_SIZE`.
 
 		@param features `FEATURE_REBIND`, or 0; `FEATURE_COOKIE` is added
-		       when `hasCookie`.
+		       when `hasCookie`, and `FEATURE_ENCRYPT` with a `random`.
+		@param random The sender's random, for an encrypted session; the
+		       frame is then padded to `MIN_SEALED_CONNECT_SIZE`, and `out`
+		       needs `SEALED_CONNECT_EXTENSION_MAX` more than the payload,
+		       or that.
 	**/
 	public static function writeConnectPayload(out:Bytes, at:Int, features:Int, hasCookie:Bool, cookieHigh:Int, cookieLow:Int, payload:Bytes,
-			offset:Int, length:Int):Int {
-		var extension:Int = 1 + (hasCookie ? COOKIE_SIZE : 0);
-		// Zeros after the cookie, until the frame is as long as an answer.
-		var short:Int = MIN_CONNECT_SIZE - (HEADER_SIZE + 1 + extension + length);
+			offset:Int, length:Int, ?random:Bytes):Int {
+		var extension:Int = 1 + (hasCookie ? COOKIE_SIZE : 0) + (random != null ? RANDOM_SIZE : 0);
+		// Zeros after the cookie and the random, until the frame is as long
+		// as an answer.
+		var short:Int = (random != null ? MIN_SEALED_CONNECT_SIZE : MIN_CONNECT_SIZE) - (HEADER_SIZE + 1 + extension + length);
 		if (short > 0) {
 			extension += short;
 		}
+		features = hasCookie ? (features | FEATURE_COOKIE) : (features & ~FEATURE_COOKIE);
+		features = random != null ? (features | FEATURE_ENCRYPT) : (features & ~FEATURE_ENCRYPT);
 		out.set(at, extension);
-		out.set(at + 1, hasCookie ? (features | FEATURE_COOKIE) : (features & ~FEATURE_COOKIE));
+		out.set(at + 1, features);
 		var next:Int = at + 2;
 		if (hasCookie) {
 			__setInt(out, next, cookieHigh);
 			__setInt(out, next + 4, cookieLow);
 			next += COOKIE_SIZE;
+		}
+		if (random != null) {
+			out.blit(next, random, 0, RANDOM_SIZE);
+			next += RANDOM_SIZE;
 		}
 		var end:Int = at + 1 + extension;
 		while (next < end) {
@@ -552,11 +643,11 @@ final class ReliableDatagramProtocol {
 		want a frame to keep.
 	**/
 	public static function encodeConnect(connectionId:Int, ?payload:ByteArray, features:Int = FEATURE_REBIND, hasCookie:Bool = false,
-			cookieHigh:Int = 0, cookieLow:Int = 0):ByteArray {
+			cookieHigh:Int = 0, cookieLow:Int = 0, ?random:Bytes):ByteArray {
 		var length:Int = payload != null ? payload.length : 0;
 		var body = new ByteArray();
-		body.length = CONNECT_EXTENSION_MAX + MIN_CONNECT_SIZE + length;
-		var written:Int = writeConnectPayload(body, 0, features, hasCookie, cookieHigh, cookieLow, payload, 0, length);
+		body.length = SEALED_CONNECT_EXTENSION_MAX + MIN_SEALED_CONNECT_SIZE + length;
+		var written:Int = writeConnectPayload(body, 0, features, hasCookie, cookieHigh, cookieLow, payload, 0, length, random);
 		var frame = new ByteArray();
 		frame.length = HEADER_SIZE + written;
 		var size:Int = encodeInto(frame, CONNECT, connectionId, body, 0, written, false, 0, false, false, 0, true);
