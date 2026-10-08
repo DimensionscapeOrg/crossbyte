@@ -330,6 +330,9 @@ class TestSuites {
 		// assertion out of having no UDP at all rather than a skip.
 		runner.addCase(new crossbyte.net.LocalAddressTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramProtocolTest());
+		// The cipher an encrypted session seals with, against RFC 8439 and
+		// OpenSSL. Also in PortableSuite, for Node's crypto and the browser.
+		runner.addCase(new crossbyte.net.ReliableDatagramCipherTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramSocketTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramLifecycleTest());
 		runner.addCase(new crossbyte.net.SocketCloseTest());

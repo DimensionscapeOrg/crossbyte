@@ -29,6 +29,12 @@ extern class NativeSodium {
 	@:native("crossbyte_crypto_aead_xchacha20poly1305_decrypt")
 	public static function aeadDecrypt(out:RawPointer<UInt8>, ciphertext:ConstPointer<UInt8>, ciphertextLength:Int, additionalData:ConstPointer<UInt8>, additionalDataLength:Int, nonce:ConstPointer<UInt8>, key:ConstPointer<UInt8>):Int;
 
+	@:native("crossbyte_crypto_aead_chacha20poly1305_ietf_encrypt")
+	public static function chachaEncrypt(out:RawPointer<UInt8>, message:ConstPointer<UInt8>, messageLength:Int, additionalData:ConstPointer<UInt8>, additionalDataLength:Int, nonce:ConstPointer<UInt8>, key:ConstPointer<UInt8>):Int;
+
+	@:native("crossbyte_crypto_aead_chacha20poly1305_ietf_decrypt")
+	public static function chachaDecrypt(out:RawPointer<UInt8>, ciphertext:ConstPointer<UInt8>, ciphertextLength:Int, additionalData:ConstPointer<UInt8>, additionalDataLength:Int, nonce:ConstPointer<UInt8>, key:ConstPointer<UInt8>):Int;
+
 	@:native("crossbyte_crypto_scalarmult_base")
 	public static function scalarmultBase(point:RawPointer<UInt8>, scalar:ConstPointer<UInt8>):Int;
 

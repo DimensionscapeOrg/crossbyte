@@ -17,6 +17,12 @@ int crossbyte_crypto_ed25519_verify_detached(const uint8_t *signature, const uin
 int crossbyte_crypto_aead_xchacha20poly1305_encrypt(uint8_t *out, const uint8_t *message, int messageLength, const uint8_t *additionalData, int additionalDataLength, const uint8_t *nonce, const uint8_t *key);
 int crossbyte_crypto_aead_xchacha20poly1305_decrypt(uint8_t *out, const uint8_t *ciphertext, int ciphertextLength, const uint8_t *additionalData, int additionalDataLength, const uint8_t *nonce, const uint8_t *key);
 
+// ChaCha20-Poly1305-IETF (RFC 8439: 12-byte nonce), combined mode, for a
+// reliable UDP session's datagrams. `out` holds messageLength + 16 bytes
+// for encrypt and ciphertextLength - 16 for decrypt, and may be the input.
+int crossbyte_crypto_aead_chacha20poly1305_ietf_encrypt(uint8_t *out, const uint8_t *message, int messageLength, const uint8_t *additionalData, int additionalDataLength, const uint8_t *nonce, const uint8_t *key);
+int crossbyte_crypto_aead_chacha20poly1305_ietf_decrypt(uint8_t *out, const uint8_t *ciphertext, int ciphertextLength, const uint8_t *additionalData, int additionalDataLength, const uint8_t *nonce, const uint8_t *key);
+
 // Curve25519 scalar multiplication.
 int crossbyte_crypto_scalarmult_base(uint8_t *point, const uint8_t *scalar);
 int crossbyte_crypto_scalarmult(uint8_t *point, const uint8_t *scalar, const uint8_t *peerPoint);
