@@ -1,5 +1,6 @@
 package crossbyte.rpc._internal;
 
+import crossbyte.io.ByteArray;
 import crossbyte.io.ByteArrayInput;
 
 class RPCWire {
@@ -94,6 +95,62 @@ class RPCWire {
 	public static inline function requireWithin(input:ByteArrayInput, end:Int):Void {
 		if (input.position > end) {
 			throw "RPC frame read past its end";
+		}
+	}
+
+	// -------------------------------------------------- numbers, read whole
+
+	/**
+		The compiled lane's readers of a number: checked against what the
+		input holds, in every build, a frame is the peer's, and then one
+		load natively (`RPCBytes`), where `ByteArrayInput.readInt` was four
+		bounds-checked byte reads, and no check at all in `final`.
+	**/
+	public static inline function readI32(input:ByteArrayInput):Int {
+		final data:ByteArrayData = cast input;
+		final at:Int = data.position;
+		need(data, at, 4);
+		data.position = at + 4;
+		return RPCBytes.getI32(data, at);
+	}
+
+	public static inline function readF64(input:ByteArrayInput):Float {
+		final data:ByteArrayData = cast input;
+		final at:Int = data.position;
+		need(data, at, 8);
+		data.position = at + 8;
+		return RPCBytes.getF64(data, at);
+	}
+
+	public static inline function readF32(input:ByteArrayInput):Float {
+		final data:ByteArrayData = cast input;
+		final at:Int = data.position;
+		need(data, at, 4);
+		data.position = at + 4;
+		return RPCBytes.getF32(data, at);
+	}
+
+	/** An unsigned 16-bit integer. **/
+	public static inline function readU16(input:ByteArrayInput):Int {
+		final data:ByteArrayData = cast input;
+		final at:Int = data.position;
+		need(data, at, 2);
+		data.position = at + 2;
+		return RPCBytes.getU16(data, at);
+	}
+
+	/** A signed 16-bit integer. **/
+	public static inline function readI16(input:ByteArrayInput):Int {
+		final data:ByteArrayData = cast input;
+		final at:Int = data.position;
+		need(data, at, 2);
+		data.position = at + 2;
+		return RPCBytes.getI16(data, at);
+	}
+
+	static inline function need(data:ByteArrayData, at:Int, count:Int):Void {
+		if (count > data.length - at) {
+			throw "ByteArrayInput underflow";
 		}
 	}
 }

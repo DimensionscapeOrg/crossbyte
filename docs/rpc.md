@@ -176,7 +176,11 @@ on the wire:
 | `Bool` | 1 byte |
 | `String` | a length, then UTF-8 |
 | `haxe.io.Bytes` | a length, then the bytes |
+| `crossbyte.rpc.Float32` (or `Single`) | 4 bytes, single precision |
+| `crossbyte.rpc.Int8`, `UInt8` | 1 byte |
+| `crossbyte.rpc.Int16`, `UInt16` | 2 bytes |
 | `Array<T>`, `T` any of these | a count, then each element as its type is written |
+| an abstract over any of these, `enum abstract Team(Int)`, `UInt` | as the type it abstracts |
 
 An argument that may be absent, `?value:Int`, or `value:Null<Int>`, costs
 one more byte to say whether it is there, and so does an element of an
@@ -197,6 +201,30 @@ whose arguments could not be read.
 interface BoardContract {
 	function mark(cells:Array<Int>, labels:Array<Null<String>>):Void;
 	function rows():Array<Array<Int>>;
+}
+```
+
+An `Int` is always four bytes and a `Float` eight. Where a value needs less, a
+signature says so with a compact type: `Float32` for a position or a speed,
+seven significant digits; `UInt8` for a level, a set of flags; `Int16` for a
+small signed delta; `UInt16` for a count. Each is an `Int` (or a `Float`)
+wherever one is wanted, so arithmetic on them is `Int` arithmetic, and
+comparisons compare the `Int` it holds. An `Int` assigned to one keeps its low
+bits, as a cast to a byte or a short does in C, `var level:UInt8 = 300` holds
+44, so what a value holds is what is sent and what arrives. A `Float32` is
+Haxe's own `Single` where the target has one (natively, the jvm, HashLink),
+rounded as it is assigned; on JavaScript, the interpreter and neko it is a
+`Float`, rounded as it is sent. A contract may declare `Single` itself, and
+builds then only for those targets.
+
+```haxe
+import crossbyte.rpc.Float32;
+import crossbyte.rpc.Int16;
+import crossbyte.rpc.UInt8;
+
+interface MoveContract {
+	// 4 + 4 + 2 + 1 bytes, where Floats and Ints would take 8 + 8 + 4 + 4.
+	function move(x:Float32, y:Float32, turn:Int16, flags:UInt8):Void;
 }
 ```
 
@@ -541,12 +569,15 @@ answer.
 ```
 signature := name "(" [ kind ("," kind)* ] ")" [ ":" kind ]
 kind      := [ "?" ] ( "i32" | "bool" | "f64" | "utf8" | "bytes"
+                     | "f32" | "i8" | "u8" | "i16" | "u16"
                      | "[" kind "]" )
 ```
 
 `i32` is an `Int`, `bool` a `Bool`, `f64` a `Float`, `utf8` a `String` and
-`bytes` a `haxe.io.Bytes`, an array its element's kind in brackets, and `?`
-one that may be absent, `Null<T>` or an optional argument.
+`bytes` a `haxe.io.Bytes`; `f32`, `i8`, `u8`, `i16` and `u16` are `Float32`,
+`Int8`, `UInt8`, `Int16` and `UInt16`; an array is its element's kind in
+brackets, an abstract the kind of what it abstracts, and `?` one that may be
+absent, `Null<T>` or an optional argument.
 `join(room:String):Int` is `join(utf8):i32`;
 `say(room:String, text:String):Void` is `say(utf8,utf8)`;
 `mark(cells:Array<Int>, labels:Array<Null<String>>):Void` is
