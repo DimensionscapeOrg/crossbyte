@@ -783,6 +783,28 @@ jobs:
           node ci/relay/run.js
           if ($LASTEXITCODE -ne 0) { Write-Host ("::error::node ci/relay/run.js exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
 
+      # Encrypted reliable UDP sessions between targets that seal with three
+      # different implementations: native (libsodium), the jvm (CrossByte's
+      # own ChaCha20-Poly1305, since Java 8 has none) and Node (its crypto).
+      # The suites check each target's sealed bytes against vectors; this
+      # checks whole sessions across processes, the handshake, the key
+      # schedule, every delivery mode and a close, each pair both ways,
+      # and that different keys are refused. Locally: three builds of about
+      # 40 s together, and 3 s to run.
+      - name: Build the reliable UDP interop native end
+        run: haxe ci/rudp-interop.hxml
+
+      - name: Build the reliable UDP interop jvm end
+        run: haxe ci/rudp-interop-jvm.hxml
+
+      - name: Build the reliable UDP interop Node end
+        run: haxe ci/rudp-interop-node.hxml
+
+      - name: Interoperate encrypted reliable UDP across native, jvm and Node
+        run: |
+          node ci/rudp-interop/run.js
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::node ci/rudp-interop/run.js exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
+
       - name: Build the performance suite
         run: haxe ci/bench.hxml
 
