@@ -110,7 +110,12 @@ class RuntimeHealthTest extends utest.Test {
 		runtime.exit();
 		quiet.close();
 
-		Assert.equals(0, overruns, "30 frames with nothing to do counted " + overruns + " overruns");
+		// Not 0: a shared CI runner sometimes takes the process off its core
+		// for longer than a frame, and that frame really did outrun its tick,
+		// macOS runners counted 2 of 30 twice (2026-10-07, 10-08), passing
+		// on rerun. What this guards counted most quiet frames: 165 of 301
+		// on Windows, which would be 16 of these 30.
+		Assert.isTrue(overruns <= 3, "30 frames with nothing to do counted " + overruns + " overruns");
 	}
 
 	/**
