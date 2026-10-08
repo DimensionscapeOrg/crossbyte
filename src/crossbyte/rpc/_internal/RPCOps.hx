@@ -15,8 +15,10 @@ import haxe.io.Bytes;
 	kind      := [ "?" ] ( "i32" | "bool" | "f64" | "utf8" | "bytes"
 	                     | "f32" | "i8" | "u8" | "i16" | "u16"
 	                     | "[" kind "]"
-	                     | "{" field ("," field)* "}" )
+	                     | "{" field ("," field)* "}"
+	                     | "<" ctor ("," ctor)* ">" )
 	field     := [ id "=" ] name ":" kind
+	ctor      := name [ "(" kind ("," kind)* ")" ]
 	```
 
 	The kinds are the method's arguments in order, and after the colon its
@@ -27,7 +29,9 @@ import haxe.io.Bytes;
 	abstract is the kind of what it abstracts. An array is its element's
 	kind in brackets, and a structure (`RPCStructs`) its fields in braces,
 	in their order on the wire, each with its `@:field` id if pinned:
-	`{1=id:i32,name:utf8,x:f32}`. `add(a:Int, b:Int):Int`
+	`{1=id:i32,name:utf8,x:f32}`; an enum its constructors in angle
+	brackets, in index order, with their arguments' kinds:
+	`<Stop,Walk(f32,f32)>`. `add(a:Int, b:Int):Int`
 	is `add(i32,i32):i32`, `say(text:String):Void` is `say(utf8)`, and
 	`grid(rows:Array<Array<Null<Int>>>):Void` is `grid([[?i32]])`.
 

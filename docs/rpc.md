@@ -181,6 +181,7 @@ on the wire:
 | `crossbyte.rpc.Int16`, `UInt16` | 2 bytes |
 | `Array<T>`, `T` any of these | a count, then each element as its type is written |
 | a class that implements `crossbyte.rpc.RPCStruct`, or an anonymous structure | its fields, one after another |
+| an enum | its constructor's index, 1 byte (2 past 256 constructors), then that constructor's arguments |
 | an abstract over any of these, `enum abstract Team(Int)`, `UInt` | as the type it abstracts |
 
 An argument that may be absent, `?value:Int`, or `value:Null<Int>`, costs
@@ -309,6 +310,36 @@ removing or making absent a field changes the op, and a peer built from the
 other version answers as for a method it does not have. Its name is not: a
 class and a typedef with the same fields are one layout, and the two ends of a
 call can use one each.
+
+### Enums
+
+A simple enum is its constructor's index: one byte, or two for an enum of more
+than 256 constructors. An enum with arguments is the same index followed by
+that constructor's arguments, each as its type is written, a tagged union, as
+Rust's enums and protobuf's `oneof` are, so a message that is one of several
+shapes is one argument rather than several methods or a hand-packed `Bytes`:
+
+```haxe
+import crossbyte.rpc.Float32;
+
+enum Command {
+	Stop;
+	Walk(x:Float32, y:Float32);
+	Say(text:String, ?to:Int);
+}
+
+interface CommandContract {
+	function order(unit:Int, command:Command):Void;
+}
+```
+
+`Walk(1, 2)` is 9 bytes: the index and two `Float32`s. An index past the
+constructors makes a call that cannot be read, answered so. An enum's
+constructors, in order, with their arguments' kinds, are part of the op, so
+adding, removing, renaming or reordering a constructor changes it; renaming a
+constructor's argument does not. An enum with type parameters, a private one,
+and one that contains itself fail the build; so does an argument of a type RPC
+does not carry.
 
 Because nothing on the wire names a field, the two ends must agree on each
 method exactly: its name, its arguments in order, and their types. Build both
@@ -653,17 +684,23 @@ signature := name "(" [ kind ("," kind)* ] ")" [ ":" kind ]
 kind      := [ "?" ] ( "i32" | "bool" | "f64" | "utf8" | "bytes"
                      | "f32" | "i8" | "u8" | "i16" | "u16"
                      | "[" kind "]"
-                     | "{" field ("," field)* "}" )
+                     | "{" field ("," field)* "}"
+                     | "<" ctor ("," ctor)* ">" )
 field     := [ id "=" ] name ":" kind
+ctor      := name [ "(" kind ("," kind)* ")" ]
 ```
 
 `i32` is an `Int`, `bool` a `Bool`, `f64` a `Float`, `utf8` a `String` and
 `bytes` a `haxe.io.Bytes`; `f32`, `i8`, `u8`, `i16` and `u16` are `Float32`,
 `Int8`, `UInt8`, `Int16` and `UInt16`; an array is its element's kind in
 brackets, a structure its fields in braces, in their order on the wire, each
-with its pinned id if it has one, an abstract the kind of what it abstracts,
+with its pinned id if it has one, an enum its constructors in angle brackets,
+in index order, each with its arguments' kinds, an abstract the kind of what
+it abstracts,
 and `?` one that may be absent, `Null<T>` or an optional argument.
-`update(state:Vec3):Void`, `Vec3` above, is `update({x:f32,y:f32,z:f32})`.
+`update(state:Vec3):Void`, `Vec3` above, is `update({x:f32,y:f32,z:f32})`, and
+`order(unit:Int, command:Command):Void` is
+`order(i32,<Stop,Walk(f32,f32),Say(utf8,?i32)>)`.
 `join(room:String):Int` is `join(utf8):i32`;
 `say(room:String, text:String):Void` is `say(utf8,utf8)`;
 `mark(cells:Array<Int>, labels:Array<Null<String>>):Void` is

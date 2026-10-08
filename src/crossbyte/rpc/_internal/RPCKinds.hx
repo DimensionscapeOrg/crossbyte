@@ -441,6 +441,8 @@ class RPCKinds {
 				}
 			case TAnonymous(anon):
 				RPCStructs.anonKind(anon.get(), type, null, pos);
+			case TEnum(ref, _):
+				RPCStructs.enumKind(ref.get(), type, pos);
 			case TAbstract(ref, params):
 				final abs = ref.get();
 				switch (pathKey(abs.pack, abs.name)) {

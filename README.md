@@ -66,7 +66,7 @@ CrossByte currently includes:
   - `TurnClient` and relayed candidates for the peers no direct path reaches, verified in CI against an independent TURN server
   - hole punching on the reliable datagram sockets, for the same problem without the browser, with a TURN relay to fall back on where punching fails (`ReliableDatagramServerSocket.allocateRelay`)
 - RPC sessions, commands, handlers, and typed responses, carrying numbers, compact
-  numbers, strings, bytes, arrays and structures with no reflection, see the
+  numbers, strings, bytes, arrays, structures and enums with no reflection, see the
   [RPC guide](docs/rpc.md)
 - IPC primitives such as `LocalConnection`, `SharedChannel`, and `SharedObject`, natively (cpp) on Windows, Linux and macOS; on every other target they say so with `isSupported` and throw when used
 - file APIs, `ByteArray`, `ByteArrayInput`, and `ByteArrayOutput`

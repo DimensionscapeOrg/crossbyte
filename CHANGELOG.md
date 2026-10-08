@@ -477,6 +477,20 @@ entry below says how:
   the limits for a peer that opens more, or names longer.
 
 ### Added
+- Enums on the compiled RPC lane. A simple enum is its constructor's
+  index, one byte (two for more than 256 constructors), and an array of
+  them is written and read as one run. An enum with arguments is the same
+  index followed by that constructor's arguments, each as its kind is
+  written, a tagged union, as Rust's enums and protobuf's `oneof` are,
+  generated at compile time with no reflection: `Walk(x:Float32,
+  y:Float32)` is 9 bytes. The op carries each constructor in index order
+  with its arguments' kinds (`<Stop,Walk(f32,f32),Say(utf8,?i32)>`), so a
+  constructor added, removed, renamed or reordered makes another method,
+  and an index past the constructors is a call that cannot be read. An
+  enum with type parameters, a private one, one that contains itself, or
+  one with an argument RPC does not carry fails the build. Natively a
+  one-way call carrying a simple enum takes 49 ns (one Int 41), sixteen of
+  them 102 ns, and `Walk(1.5, 2.5)` 63 ns. Tests: `RPCEnumTest`.
 - Structures on the compiled RPC lane: a class that implements the new
   `crossbyte.rpc.RPCStruct`, or an anonymous structure (typedef'd or
   written out), as an argument, an answer, an array element or another
