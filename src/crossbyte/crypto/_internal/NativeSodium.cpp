@@ -36,6 +36,9 @@ extern "C" {
 	int crypto_aead_xchacha20poly1305_ietf_encrypt(unsigned char *c, unsigned long long *clen_p, const unsigned char *m, unsigned long long mlen, const unsigned char *ad, unsigned long long adlen, const unsigned char *nsec, const unsigned char *npub, const unsigned char *k);
 	int crypto_aead_xchacha20poly1305_ietf_decrypt(unsigned char *m, unsigned long long *mlen_p, unsigned char *nsec, const unsigned char *c, unsigned long long clen, const unsigned char *ad, unsigned long long adlen, const unsigned char *npub, const unsigned char *k);
 
+	int crypto_aead_chacha20poly1305_ietf_encrypt(unsigned char *c, unsigned long long *clen_p, const unsigned char *m, unsigned long long mlen, const unsigned char *ad, unsigned long long adlen, const unsigned char *nsec, const unsigned char *npub, const unsigned char *k);
+	int crypto_aead_chacha20poly1305_ietf_decrypt(unsigned char *m, unsigned long long *mlen_p, unsigned char *nsec, const unsigned char *c, unsigned long long clen, const unsigned char *ad, unsigned long long adlen, const unsigned char *npub, const unsigned char *k);
+
 	int crypto_scalarmult_curve25519_base(unsigned char *q, const unsigned char *n);
 	int crypto_scalarmult_curve25519(unsigned char *q, const unsigned char *n, const unsigned char *p);
 
@@ -222,6 +225,49 @@ extern "C" int crossbyte_crypto_aead_xchacha20poly1305_decrypt(
 
 	unsigned long long messageLength = 0;
 	return crypto_aead_xchacha20poly1305_ietf_decrypt(
+		out, &messageLength, nullptr,
+		ciphertext, (unsigned long long) ciphertextLength,
+		opt(additionalData, additionalDataLength), (unsigned long long) additionalDataLength,
+		nonce, key);
+}
+
+extern "C" int crossbyte_crypto_aead_chacha20poly1305_ietf_encrypt(
+	uint8_t *out,
+	const uint8_t *message,
+	int messageLength,
+	const uint8_t *additionalData,
+	int additionalDataLength,
+	const uint8_t *nonce,
+	const uint8_t *key) {
+	SodiumState &sodium = state();
+	if (!sodium.ready || out == nullptr || nonce == nullptr || key == nullptr || messageLength < 0 || additionalDataLength < 0) {
+		return -1;
+	}
+
+	unsigned long long ciphertextLength = 0;
+	return crypto_aead_chacha20poly1305_ietf_encrypt(
+		out, &ciphertextLength,
+		opt(message, messageLength), (unsigned long long) messageLength,
+		opt(additionalData, additionalDataLength), (unsigned long long) additionalDataLength,
+		nullptr, nonce, key);
+}
+
+extern "C" int crossbyte_crypto_aead_chacha20poly1305_ietf_decrypt(
+	uint8_t *out,
+	const uint8_t *ciphertext,
+	int ciphertextLength,
+	const uint8_t *additionalData,
+	int additionalDataLength,
+	const uint8_t *nonce,
+	const uint8_t *key) {
+	SodiumState &sodium = state();
+	if (!sodium.ready || out == nullptr || ciphertext == nullptr || nonce == nullptr || key == nullptr || ciphertextLength < 16
+		|| additionalDataLength < 0) {
+		return -1;
+	}
+
+	unsigned long long messageLength = 0;
+	return crypto_aead_chacha20poly1305_ietf_decrypt(
 		out, &messageLength, nullptr,
 		ciphertext, (unsigned long long) ciphertextLength,
 		opt(additionalData, additionalDataLength), (unsigned long long) additionalDataLength,
@@ -518,6 +564,16 @@ extern "C" int crossbyte_crypto_aead_xchacha20poly1305_encrypt(uint8_t *out, con
 }
 
 extern "C" int crossbyte_crypto_aead_xchacha20poly1305_decrypt(uint8_t *out, const uint8_t *ciphertext, int ciphertextLength, const uint8_t *additionalData, int additionalDataLength, const uint8_t *nonce, const uint8_t *key) {
+	(void) out; (void) ciphertext; (void) ciphertextLength; (void) additionalData; (void) additionalDataLength; (void) nonce; (void) key;
+	return -1;
+}
+
+extern "C" int crossbyte_crypto_aead_chacha20poly1305_ietf_encrypt(uint8_t *out, const uint8_t *message, int messageLength, const uint8_t *additionalData, int additionalDataLength, const uint8_t *nonce, const uint8_t *key) {
+	(void) out; (void) message; (void) messageLength; (void) additionalData; (void) additionalDataLength; (void) nonce; (void) key;
+	return -1;
+}
+
+extern "C" int crossbyte_crypto_aead_chacha20poly1305_ietf_decrypt(uint8_t *out, const uint8_t *ciphertext, int ciphertextLength, const uint8_t *additionalData, int additionalDataLength, const uint8_t *nonce, const uint8_t *key) {
 	(void) out; (void) ciphertext; (void) ciphertextLength; (void) additionalData; (void) additionalDataLength; (void) nonce; (void) key;
 	return -1;
 }

@@ -51,6 +51,9 @@ class PortableSuite {
 		// stack it did not write.
 		runner.addCase(new crossbyte.net.ice.IceCandidateTest());
 		runner.addCase(new crossbyte.net.ice.IceAgentTest());
+		// No socket in it: the cipher an encrypted reliable UDP session seals
+		// with, Node's crypto on Node, and the Haxe one in the browser.
+		runner.addCase(new crossbyte.net.ReliableDatagramCipherTest());
 		// The one guarded entry here, and not the kind of guard that makes a
 		// case run nowhere: it still runs on Node through this list and on cpp,
 		// jvm and the interpreter through `addNet`. The browser is excluded
