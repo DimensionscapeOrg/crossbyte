@@ -477,6 +477,22 @@ entry below says how:
   the limits for a peer that opens more, or names longer.
 
 ### Added
+- Typed arguments for RPC runtime handlers: `RPCSession.registerArgs(op,
+  handler)` registers, beside `register`'s `Array<Dynamic>` handlers, one
+  handed an `RPCArgs`, `int(i)`, `float(i)` (an Int too), `bool(i)`,
+  `string(i)`, `bytes(i)`, `isNull(i)`, `kind(i)`, `value(i)`, `count`,
+  that reads each value where it lies in the frame, checked against its
+  tag: a value of another kind, or an index past `count`, throws an
+  `RPCError` naming it, which a request's caller is answered with. The
+  frame is read once before the handler runs, a call that does not read
+  answered `UNREADABLE_MESSAGE`. Same wire, same answers (a `Future`
+  answered later), either registration replacing the other; the `RPCArgs`
+  is valid only during the call. With `runtimeCall`, natively a one-way
+  call of three Floats takes 68 ns and allocates nothing, where
+  `call`/`register` take 155 ns and 368 bytes; on the jvm 48-55 ns and 24
+  bytes against 100-116 ns and 272. A new allocation budget holds it at
+  that (`testATypedRuntimeRpcCall`: 0 B natively, 24 B on the jvm). Tests:
+  `RPCArgsTest`.
 - Typed calls on the RPC runtime lane: `RPCSession.runtimeCall(op)` and
   `runtimeRequest(op)` give an `RPCCallWriter` / `RPCRequestWriter<T>` that
   writes each value, `.int(7).float(1.5).string("x").bool(true)
