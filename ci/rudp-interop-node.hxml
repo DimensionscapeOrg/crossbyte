@@ -1,0 +1,7 @@
+# The Node end of the encrypted reliable UDP interoperability check; see
+# ci/rudp-interop.hxml.
+-cp src
+-cp tests/rudp-interop
+-lib hxnodejs
+-main RudpInteropPeer
+--js export/rudp-interop-node/peer.js

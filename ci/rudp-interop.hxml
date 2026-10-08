@@ -1,0 +1,11 @@
+# Builds the native end of the encrypted reliable UDP interoperability check.
+#
+# Run `node ci/rudp-interop/run.js` once this, ci/rudp-interop-jvm.hxml and
+# ci/rudp-interop-node.hxml are built: each end's sealed datagrams are opened by
+# the others': libsodium, the jvm's Haxe ChaCha20-Poly1305, Node's crypto.
+-cp src
+-cp tests/rudp-interop
+-D windows
+-D HXCPP_M64
+-main RudpInteropPeer
+--cpp export/rudp-interop

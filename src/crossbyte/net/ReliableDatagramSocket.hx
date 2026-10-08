@@ -4837,7 +4837,14 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 		var frame = ReliableDatagramProtocol.decodeInto(data, 0, data.length, true, __decoded());
-		if (frame == null || !__matchesRemoteEndpoint(address, port, frame)) {
+		if (frame == null) {
+			// Not a frame, nor sealed: from the peer, it is counted.
+			if (__matchesRemoteEndpoint(address, port, null)) {
+				__plainDropped++;
+			}
+			return;
+		}
+		if (!__matchesRemoteEndpoint(address, port, frame)) {
 			return;
 		}
 		__acceptPlain(frame);

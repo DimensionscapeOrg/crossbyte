@@ -1,0 +1,7 @@
+# The jvm end of the encrypted reliable UDP interoperability check; see
+# ci/rudp-interop.hxml.
+-cp src
+-cp tests/rudp-interop
+--macro crossbyte._internal.macro.StdOverrides.use()
+-main RudpInteropPeer
+--jvm export/rudp-interop-jvm/RudpInteropPeer.jar

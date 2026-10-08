@@ -512,7 +512,12 @@ entry below says how:
   for encryption see no change on the wire. Tests:
   `ReliableDatagramCipherTest` (RFC 8439 and OpenSSL vectors, whole sealed
   datagrams computed independently with Node's crypto),
-  `ReliableDatagramEncryptionTest`.
+  `ReliableDatagramEncryptionTest` (the handshake and every refusal, loss
+  and reordering, rebind, over real sockets), `ReliableDatagramTamperTest`
+  (every byte position of a session's datagram changed, replays, datagrams
+  older than the window, truncated, foreign and plaintext ones: each
+  dropped and counted); `node ci/rudp-interop/run.js` runs whole sessions
+  between native, jvm and Node builds, a wrong key refused each way.
 - Typed arguments for RPC runtime handlers: `RPCSession.registerArgs(op,
   handler)` registers, beside `register`'s `Array<Dynamic>` handlers, one
   handed an `RPCArgs`, `int(i)`, `float(i)` (an Int too), `bool(i)`,
